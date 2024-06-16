@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+
+    <head>
+        <title>NEXRAD Workbench</title>
+
+        <link data-trunk rel="rust" data-wasm-opt="2" />
+        <base data-trunk-public-url />
+
+        <link data-trunk rel="icon" href="assets/favicon.ico">
+
+        <link data-trunk rel="copy-file" href="assets/sw.js" />
+        <link data-trunk rel="copy-file" href="assets/manifest.json" />
+        <link data-trunk rel="copy-file" href="assets/icon-16x16.png" />
+        <link data-trunk rel="copy-file" href="assets/icon-32x32.png" />
+        <link data-trunk rel="copy-file" href="assets/icon-192x192.png" />
+        <link data-trunk rel="copy-file" href="assets/icon-512x512.png" />
+
+        <link rel="manifest" href="manifest.json">
+        <meta name="theme-color" media="(prefers-color-scheme: light)" content="white">
+        <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#404040">
+
+        <style>
+            html {
+                touch-action: manipulation;
+            }
+
+            body {
+                background: #909090;
+            }
+
+            @media (prefers-color-scheme: dark) {
+                body {
+                    background: #404040;
+                }
+            }
+
+            html, body {
+                overflow: hidden;
+                margin: 0 !important;
+                padding: 0 !important;
+                height: 100%;
+                width: 100%;
+            }
+
+            canvas {
+                margin-right: auto;
+                margin-left: auto;
+                display: block;
+                position: absolute;
+                top: 0;
+                left: 50%;
+                transform: translate(-50%, 0%);
+            }
+        </style>
+    </head>
+
+    <body>
+        <canvas id="workbench-canvas"></canvas>
+
+        <script>
+            if ('serviceWorker' in navigator && window.location.hash !== "#dev") {
+                window.addEventListener('load', function () {
+                    navigator.serviceWorker.register('sw.js');
+                });
+            }
+        </script>
+    </body>
+</html>

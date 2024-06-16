@@ -1,0 +1,25 @@
+[package]
+authors = ["Daniel Way <contact@danieldway.com>"]
+name = "nexrad-workbench"
+edition = "2021"
+version = "0.1.0"
+exclude = [".github"]
+
+[dependencies]
+egui = "0.27.0"
+eframe = { version = "0.27.0", default-features = false, features = [ "default_fonts", "glow" ] }
+log = "0.4"
+
+# native:
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.10"
+
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4"
+
+[profile.release]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 2
