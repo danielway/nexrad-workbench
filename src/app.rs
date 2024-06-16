@@ -1,18 +1,23 @@
+use chrono::{NaiveDate, NaiveTime};
+
 pub struct NEXRADWorkbench {
-    label: String,
+    site_string: String,
+    date_string: String,
+    time_string: String,
 }
 
 impl Default for NEXRADWorkbench {
     fn default() -> Self {
         Self {
-            label: "Hello World!".to_owned(),
+            site_string: String::from("KDMX"),
+            date_string: String::from("03/05/2022"),
+            time_string: String::from("23:30"),
         }
     }
 }
 
 impl NEXRADWorkbench {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        // todo: `cc.egui_ctx.set_visuals` and `cc.egui_ctx.set_fonts`.
         Default::default()
     }
 }
@@ -30,18 +35,30 @@ impl eframe::App for NEXRADWorkbench {
                     });
                     ui.add_space(16.0);
                 }
-
-                egui::widgets::global_dark_light_mode_buttons(ui);
             });
         });
 
+        egui::SidePanel::left("side_panel")
+            .exact_width(200.0)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label("Site");
+                ui.text_edit_singleline(&mut self.site_string);
+
+                ui.label("Date");
+                ui.text_edit_singleline(&mut self.date_string);
+
+                ui.label("Time");
+                ui.text_edit_singleline(&mut self.time_string);
+
+                let date_valid = NaiveDate::parse_from_str(&self.date_string, "%m/%d/%Y").is_ok();
+                let time_valid = NaiveTime::parse_from_str(&self.time_string, "%H:%M").is_ok();
+
+                ui.add_enabled(date_valid && time_valid, egui::Button::new("Load"));
+            });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("NEXRAD Workbench");
-
-            ui.horizontal(|ui| {
-                ui.label("Write something: ");
-                ui.text_edit_singleline(&mut self.label);
-            });
 
             ui.separator();
 
