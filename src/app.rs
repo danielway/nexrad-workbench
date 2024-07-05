@@ -1,7 +1,8 @@
+use std::sync::{Arc, Mutex};
 use chrono::{NaiveDate, NaiveTime};
 
 pub struct NEXRADWorkbench {
-    state: WorkbenchState,
+    state: Arc<Mutex<WorkbenchState>>,
 }
 
 struct WorkbenchState {
@@ -13,11 +14,11 @@ struct WorkbenchState {
 impl Default for NEXRADWorkbench {
     fn default() -> Self {
         Self {
-            state: WorkbenchState {
+            state: Arc::new(Mutex::new(WorkbenchState {
                 site_string: String::from("KDMX"),
                 date_string: String::from("03/05/2022"),
                 time_string: String::from("23:30"),
-            }
+            })),
         }
     }
 }
@@ -48,7 +49,7 @@ impl eframe::App for NEXRADWorkbench {
             .exact_width(200.0)
             .resizable(false)
             .show(ctx, |ui| {
-                let state = &mut self.state;
+                let mut state = self.state.lock().unwrap();
                 
                 ui.label("Site");
                 ui.text_edit_singleline(&mut state.site_string);
