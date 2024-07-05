@@ -15,7 +15,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "NEXRAD Workbench",
         native_options,
-        Box::new(|cc| Box::new(nexrad_workbench::NEXRADWorkbench::new(cc))),
+        Box::new(|cc| Ok(Box::new(nexrad_workbench::NEXRADWorkbench::new(cc)))),
     )
 }
 
@@ -31,7 +31,7 @@ fn main() {
             .start(
                 "workbench-canvas",
                 web_options,
-                Box::new(|cc| Box::new(nexrad_workbench::NEXRADWorkbench::new(cc))),
+                Box::new(|cc| Ok(Box::new(nexrad_workbench::NEXRADWorkbench::new(cc)))),
             )
             .await
             .expect("failed to start NEXRAD workbench");
