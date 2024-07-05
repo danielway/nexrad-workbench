@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex};
 use chrono::{NaiveDate, NaiveTime};
 use log::info;
+
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen_futures::spawn_local;
 
 pub struct NEXRADWorkbench {
@@ -62,15 +64,14 @@ impl eframe::App for NEXRADWorkbench {
                 ui.label("Time");
                 ui.text_edit_singleline(&mut state.time_string);
 
-                let date_valid = NaiveDate::parse_from_str(&state.date_string, "%m/%d/%Y").is_ok();
-                let time_valid = NaiveTime::parse_from_str(&state.time_string, "%H:%M").is_ok();
+                let date = NaiveDate::parse_from_str(&state.date_string, "%m/%d/%Y");
+                let time = NaiveTime::parse_from_str(&state.time_string, "%H:%M");
 
-                if ui.add_enabled(date_valid && time_valid, egui::Button::new("Load")).clicked() {
+                let input_valid = date.is_ok() && time.is_ok();
+
+                if ui.add_enabled(input_valid, egui::Button::new("Load")).clicked() {
                     info!("Loading data for site: {}, date: {}, time: {}", state.site_string, state.date_string, state.time_string);
-                    
-                    spawn_local(async move {
-                        info!("Data loaded");
-                    })
+                    load_nexrad_data(state.site_string.to_string(), date.unwrap(), time.unwrap());
                 }
             });
 
@@ -84,4 +85,16 @@ impl eframe::App for NEXRADWorkbench {
             });
         });
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn load_nexrad_data(site: String, date: NaiveDate, time: NaiveTime) {
+    info!("Data loaded: site: {}, date: {}, time: {}", site, date, time);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn load_nexrad_data(site: String, date: NaiveDate, time: NaiveTime) {
+    spawn_local(async move {
+        info!("Data loaded: site: {}, date: {}, time: {}", site, date, time);
+    })
 }
