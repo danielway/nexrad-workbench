@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex};
 use chrono::{NaiveDate, NaiveTime};
+use log::info;
+use wasm_bindgen_futures::spawn_local;
 
 pub struct NEXRADWorkbench {
     state: Arc<Mutex<WorkbenchState>>,
@@ -50,7 +52,7 @@ impl eframe::App for NEXRADWorkbench {
             .resizable(false)
             .show(ctx, |ui| {
                 let mut state = self.state.lock().unwrap();
-                
+
                 ui.label("Site");
                 ui.text_edit_singleline(&mut state.site_string);
 
@@ -63,7 +65,13 @@ impl eframe::App for NEXRADWorkbench {
                 let date_valid = NaiveDate::parse_from_str(&state.date_string, "%m/%d/%Y").is_ok();
                 let time_valid = NaiveTime::parse_from_str(&state.time_string, "%H:%M").is_ok();
 
-                ui.add_enabled(date_valid && time_valid, egui::Button::new("Load"));
+                if ui.add_enabled(date_valid && time_valid, egui::Button::new("Load")).clicked() {
+                    info!("Loading data for site: {}, date: {}, time: {}", state.site_string, state.date_string, state.time_string);
+                    
+                    spawn_local(async move {
+                        info!("Data loaded");
+                    })
+                }
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
