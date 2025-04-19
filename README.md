@@ -1,13 +1,14 @@
 # NEXRAD Workbench
 
-## Running
+## Desktop
 
-Desktop: cargo run --release
+```
+cargo run --bin nexrad-workbench
+```
 
-Web (rebuilds automatically): trunk serve
+## WASM
 
-## Building
-
-Desktop (artifact in target): cargo build --release
-
-Web (artifact in dist): trunk build --release
+```
+wasm-pack build --target web --out-dir web/pkg --out-name nexrad_workbench
+basic-http-server --addr 0.0.0.0:8080 ./web
+```

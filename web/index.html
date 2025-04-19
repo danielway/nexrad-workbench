@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>NEXRAD Workbench</title>
+    <style>
+        html,
+        body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="canvas_id"></canvas>
+
+    <script type="module">
+        import init from './pkg/nexrad_workbench.js';
+        init('./pkg/nexrad_workbench_bg.wasm').catch(console.error);
+    </script>
+</body>
+
+</html>
