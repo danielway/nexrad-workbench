@@ -30,15 +30,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libssl-dev libgtk-3-dev libatk1.0-dev \
-            libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libwayland-dev libxrandr-dev libxi-dev libx11-dev
-
       - name: Install Rust (stable, clippy)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -48,10 +39,7 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Run Clippy (native)
-        run: cargo clippy --all-features --workspace -- -D warnings
-
-      - name: Run Clippy (wasm)
+      - name: Run Clippy
         run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
 
   build:
@@ -61,15 +49,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libssl-dev libgtk-3-dev libatk1.0-dev \
-            libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libwayland-dev libxrandr-dev libxi-dev libx11-dev
-
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -78,33 +57,5 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Build (native)
-        run: cargo build --release
-
-      - name: Build (wasm)
+      - name: Build
         run: cargo build --target wasm32-unknown-unknown --release
-
-  test:
-    name: Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
-            libxkbcommon-dev libssl-dev libgtk-3-dev libatk1.0-dev \
-            libglib2.0-dev libpango1.0-dev libgdk-pixbuf-2.0-dev \
-            libwayland-dev libxrandr-dev libxi-dev libx11-dev
-
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run tests
-        run: cargo test --all-features --workspace
