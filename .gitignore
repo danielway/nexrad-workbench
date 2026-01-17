@@ -1,4 +1,20 @@
-Cargo.lock
-target/
+# Rust
+/target/
 **/*.rs.bk
-**/*.DS_Store
+Cargo.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Trunk / WASM build output
+/dist/
+
+# Debug
+*.pdb
