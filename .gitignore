@@ -1,5 +1,4 @@
-dist
-target
-target_ra
-target_wasm
-.idea
+Cargo.lock
+target/
+**/*.rs.bk
+**/*.DS_Store
