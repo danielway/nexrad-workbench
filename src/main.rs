@@ -6,11 +6,13 @@
 //! NEXRAD weather radar data. It supports local file upload, AWS archive browsing,
 //! and realtime streaming (when implemented).
 
+mod file_ops;
 mod renderer;
 mod state;
 mod ui;
 
 use eframe::egui;
+use file_ops::FilePickerChannel;
 use state::AppState;
 
 // Native entry point
@@ -86,6 +88,9 @@ pub struct WorkbenchApp {
 
     /// Whether the placeholder texture has been initialized
     texture_initialized: bool,
+
+    /// Channel for async file picker operations
+    file_picker: FilePickerChannel,
 }
 
 impl WorkbenchApp {
@@ -94,6 +99,7 @@ impl WorkbenchApp {
         Self {
             state: AppState::new(),
             texture_initialized: false,
+            file_picker: FilePickerChannel::new(),
         }
     }
 }
@@ -106,11 +112,28 @@ impl eframe::App for WorkbenchApp {
             self.texture_initialized = true;
         }
 
+        // Check for completed file pick operations
+        if let Some(result) = self.file_picker.try_recv() {
+            self.state.upload_state.loading = false;
+            match result {
+                Some(file_result) => {
+                    self.state.upload_state.file_name = Some(file_result.file_name.clone());
+                    self.state.upload_state.file_size = Some(file_result.file_size);
+                    self.state.upload_state.file_data = Some(file_result.file_data);
+                    self.state.status_message = format!("Loaded file: {}", file_result.file_name);
+                }
+                None => {
+                    // User cancelled the file dialog
+                    self.state.status_message = "File selection cancelled".to_string();
+                }
+            }
+        }
+
         // Render UI panels in the correct order for egui layout
         // Side and top/bottom panels must be rendered before CentralPanel
         ui::render_top_bar(ctx, &mut self.state);
         ui::render_bottom_panel(ctx, &mut self.state);
-        ui::render_left_panel(ctx, &mut self.state);
+        ui::render_left_panel(ctx, &mut self.state, &self.file_picker);
         ui::render_right_panel(ctx, &mut self.state);
         ui::render_canvas(ctx, &mut self.state);
     }

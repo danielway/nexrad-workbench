@@ -33,6 +33,9 @@ pub struct UploadState {
 
     /// Raw file data (placeholder for future use)
     pub file_data: Option<Vec<u8>>,
+
+    /// Whether a file pick operation is in progress
+    pub loading: bool,
 }
 
 /// State for the AWS archive browser mode.

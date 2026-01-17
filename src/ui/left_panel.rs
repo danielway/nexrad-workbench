@@ -1,9 +1,14 @@
 //! Left panel UI: data source controls that vary by mode.
 
+use crate::file_ops::FilePickerChannel;
 use crate::state::{AppState, DataSourceMode};
 use eframe::egui::{self, RichText, ScrollArea, Ui};
 
-pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
+pub fn render_left_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    file_picker: &FilePickerChannel,
+) {
     egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(250.0)
@@ -14,43 +19,63 @@ pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
             ui.separator();
 
             match state.data_source_mode {
-                DataSourceMode::UploadFile => render_upload_mode(ui, state),
+                DataSourceMode::UploadFile => render_upload_mode(ctx, ui, state, file_picker),
                 DataSourceMode::ArchiveBrowser => render_archive_mode(ui, state),
                 DataSourceMode::RealtimeStream => render_realtime_mode(ui, state),
             }
         });
 }
 
-fn render_upload_mode(ui: &mut Ui, state: &mut AppState) {
+fn render_upload_mode(
+    ctx: &egui::Context,
+    ui: &mut Ui,
+    state: &mut AppState,
+    file_picker: &FilePickerChannel,
+) {
     ui.label(RichText::new("Upload File").strong());
     ui.add_space(10.0);
 
-    if ui.button("Choose file...").clicked() {
-        // Placeholder: In a real implementation, this would open a file picker
-        // For WASM, we'd use rfd or a custom file input
-        state.upload_state.file_name = Some("example_radar_file.ar2v".to_string());
-        state.upload_state.file_size = Some(1_234_567);
-        state.status_message = "File selected (placeholder)".to_string();
+    let is_loading = state.upload_state.loading;
+
+    ui.add_enabled_ui(!is_loading, |ui| {
+        if ui.button("Choose file...").clicked() {
+            state.upload_state.loading = true;
+            state.status_message = "Opening file dialog...".to_string();
+            file_picker.pick_file(ctx.clone());
+        }
+    });
+
+    if is_loading {
+        ui.add_space(5.0);
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Selecting file...");
+        });
     }
 
     ui.add_space(10.0);
 
     if let Some(ref name) = state.upload_state.file_name {
         ui.group(|ui| {
-            ui.label(RichText::new("Selected file:").small());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("\u{2713}").color(egui::Color32::from_rgb(100, 200, 100)));
+                ui.label(RichText::new("File loaded").small());
+            });
             ui.label(RichText::new(name).strong().monospace());
 
             if let Some(size) = state.upload_state.file_size {
                 ui.label(format_file_size(size));
             }
+
+            if state.upload_state.file_data.is_some() {
+                ui.label(
+                    RichText::new("Ready for processing")
+                        .small()
+                        .color(egui::Color32::from_rgb(100, 200, 100)),
+                );
+            }
         });
-
-        ui.add_space(10.0);
-
-        if ui.button("Load file").clicked() {
-            state.status_message = "Loading file... (placeholder)".to_string();
-        }
-    } else {
+    } else if !is_loading {
         ui.label(RichText::new("No file selected").italics().weak());
     }
 }
