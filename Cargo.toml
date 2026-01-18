@@ -13,6 +13,8 @@ eframe = { version = "0.33", default-features = false, features = [
 ] }
 log = "0.4"
 rfd = "0.17"  # Cross-platform file dialog
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 # Native-specific dependencies
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -23,7 +25,25 @@ pollster = "0.4"  # Lightweight async executor for native
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = "0.3"
+futures-channel = "0.3"
+web-sys = { version = "0.3", features = [
+    "Window",
+    "Event",
+    "EventTarget",
+    "IdbFactory",
+    "IdbDatabase",
+    "IdbObjectStore",
+    "IdbObjectStoreParameters",
+    "IdbTransaction",
+    "IdbTransactionMode",
+    "IdbRequest",
+    "IdbOpenDbRequest",
+    "IdbKeyRange",
+    "IdbVersionChangeEvent",
+    "DomException",
+    "DomStringList",
+] }
+js-sys = "0.3"
 
 [profile.release]
 opt-level = 2

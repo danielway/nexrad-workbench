@@ -9,6 +9,7 @@
 mod file_ops;
 mod renderer;
 mod state;
+mod storage;
 mod ui;
 
 use eframe::egui;
