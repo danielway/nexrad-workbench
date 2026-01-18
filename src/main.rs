@@ -15,6 +15,10 @@ mod ui;
 use eframe::egui;
 use file_ops::FilePickerChannel;
 use state::AppState;
+use storage::{CachedFile, StorageConfig};
+
+#[cfg(target_arch = "wasm32")]
+use storage::IndexedDbStore;
 
 // Native entry point
 #[cfg(not(target_arch = "wasm32"))]
@@ -92,6 +96,10 @@ pub struct WorkbenchApp {
 
     /// Channel for async file picker operations
     file_picker: FilePickerChannel,
+
+    /// File cache storage (IndexedDB on WASM)
+    #[cfg(target_arch = "wasm32")]
+    file_cache: IndexedDbStore,
 }
 
 impl WorkbenchApp {
@@ -101,6 +109,8 @@ impl WorkbenchApp {
             state: AppState::new(),
             texture_initialized: false,
             file_picker: FilePickerChannel::new(),
+            #[cfg(target_arch = "wasm32")]
+            file_cache: IndexedDbStore::new(StorageConfig::new("nexrad-workbench", "file-cache")),
         }
     }
 }
@@ -118,6 +128,24 @@ impl eframe::App for WorkbenchApp {
             self.state.upload_state.loading = false;
             match result {
                 Some(file_result) => {
+                    // Cache the file to IndexedDB (WASM only)
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        use storage::KeyValueStore;
+                        let cached = CachedFile::new(
+                            file_result.file_name.clone(),
+                            &file_result.file_data,
+                        );
+                        let cache = self.file_cache.clone();
+                        let file_name = file_result.file_name.clone();
+                        wasm_bindgen_futures::spawn_local(async move {
+                            match cache.put(&file_name, &cached).await {
+                                Ok(()) => log::info!("Cached file: {}", file_name),
+                                Err(e) => log::error!("Failed to cache file: {}", e),
+                            }
+                        });
+                    }
+
                     self.state.upload_state.file_name = Some(file_result.file_name.clone());
                     self.state.upload_state.file_size = Some(file_result.file_size);
                     self.state.upload_state.file_data = Some(file_result.file_data);

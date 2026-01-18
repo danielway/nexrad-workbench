@@ -10,8 +10,40 @@ mod indexeddb;
 #[cfg(target_arch = "wasm32")]
 pub use indexeddb::IndexedDbStore;
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::future::Future;
+
+/// A cached file with metadata.
+///
+/// This struct is used to persist uploaded files in the browser's IndexedDB.
+/// The data is stored as a base64-encoded string for JSON serialization.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedFile {
+    /// Original file name
+    pub file_name: String,
+    /// File size in bytes
+    pub file_size: u64,
+    /// File data encoded as base64
+    pub data_base64: String,
+}
+
+impl CachedFile {
+    /// Creates a new cached file from raw bytes.
+    pub fn new(file_name: String, file_data: &[u8]) -> Self {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        Self {
+            file_name,
+            file_size: file_data.len() as u64,
+            data_base64: STANDARD.encode(file_data),
+        }
+    }
+
+    /// Decodes the file data from base64.
+    pub fn decode_data(&self) -> Result<Vec<u8>, base64::DecodeError> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        STANDARD.decode(&self.data_base64)
+    }
+}
 
 /// Errors that can occur during storage operations.
 #[derive(Debug, Clone)]
