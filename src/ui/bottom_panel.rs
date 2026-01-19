@@ -36,31 +36,83 @@ struct TickConfig {
 
 const TICK_CONFIGS: &[TickConfig] = &[
     // Years (approximate - 365 days)
-    TickConfig { major_interval: 365 * 24 * 3600, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 365 * 24 * 3600,
+        minor_divisions: 4,
+        min_pixels_per_major: 60.0,
+    },
     // Quarters (approximate - 91 days)
-    TickConfig { major_interval: 91 * 24 * 3600, minor_divisions: 3, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 91 * 24 * 3600,
+        minor_divisions: 3,
+        min_pixels_per_major: 60.0,
+    },
     // Months (approximate - 30 days)
-    TickConfig { major_interval: 30 * 24 * 3600, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 30 * 24 * 3600,
+        minor_divisions: 4,
+        min_pixels_per_major: 60.0,
+    },
     // Weeks
-    TickConfig { major_interval: 7 * 24 * 3600, minor_divisions: 7, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 7 * 24 * 3600,
+        minor_divisions: 7,
+        min_pixels_per_major: 60.0,
+    },
     // Days
-    TickConfig { major_interval: 24 * 3600, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 24 * 3600,
+        minor_divisions: 4,
+        min_pixels_per_major: 60.0,
+    },
     // 6 hours
-    TickConfig { major_interval: 6 * 3600, minor_divisions: 6, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 6 * 3600,
+        minor_divisions: 6,
+        min_pixels_per_major: 60.0,
+    },
     // Hours
-    TickConfig { major_interval: 3600, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 3600,
+        minor_divisions: 4,
+        min_pixels_per_major: 60.0,
+    },
     // 15 minutes
-    TickConfig { major_interval: 15 * 60, minor_divisions: 3, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 15 * 60,
+        minor_divisions: 3,
+        min_pixels_per_major: 60.0,
+    },
     // 5 minutes
-    TickConfig { major_interval: 5 * 60, minor_divisions: 5, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 5 * 60,
+        minor_divisions: 5,
+        min_pixels_per_major: 60.0,
+    },
     // 1 minute
-    TickConfig { major_interval: 60, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 60,
+        minor_divisions: 4,
+        min_pixels_per_major: 60.0,
+    },
     // 15 seconds
-    TickConfig { major_interval: 15, minor_divisions: 3, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 15,
+        minor_divisions: 3,
+        min_pixels_per_major: 60.0,
+    },
     // 5 seconds
-    TickConfig { major_interval: 5, minor_divisions: 5, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 5,
+        minor_divisions: 5,
+        min_pixels_per_major: 60.0,
+    },
     // 1 second
-    TickConfig { major_interval: 1, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    TickConfig {
+        major_interval: 1,
+        minor_divisions: 4,
+        min_pixels_per_major: 60.0,
+    },
 ];
 
 fn select_tick_config(zoom: f64) -> &'static TickConfig {
@@ -305,11 +357,7 @@ fn format_timestamp_full(ts: f64) -> String {
     let secs = ts.floor() as i64;
     let millis = ((ts.fract()) * 1000.0).round() as u32;
     let dt = Utc.timestamp_opt(secs, 0).unwrap();
-    format!(
-        "{}.{:03}",
-        dt.format("%Y-%m-%d %H:%M:%S"),
-        millis
-    )
+    format!("{}.{:03}", dt.format("%Y-%m-%d %H:%M:%S"), millis)
 }
 
 fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {

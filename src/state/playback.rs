@@ -106,8 +106,8 @@ impl PlaybackState {
         let now = 1714521600.0_f64; // 2024-05-01 00:00:00 UTC
 
         Self {
-            total_frames: 0, // No data loaded initially
-            timeline_zoom: 0.0001, // Start very zoomed out to see months
+            total_frames: 0,                                 // No data loaded initially
+            timeline_zoom: 0.0001,                           // Start very zoomed out to see months
             timeline_view_start: now - 15.0 * 24.0 * 3600.0, // Center view around "now"
             selected_timestamp: None,
             data_start_timestamp: None,
