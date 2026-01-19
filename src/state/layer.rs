@@ -1,5 +1,8 @@
 //! Layer visibility state.
 
+// Allow dead code for layer options that will be used when layer UI is fully implemented
+#![allow(dead_code)]
+
 /// State for toggling various overlay layers.
 pub struct LayerState {
     /// Show NWS weather alerts overlay

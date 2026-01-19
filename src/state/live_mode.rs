@@ -3,6 +3,9 @@
 //! This module handles the state machine for real-time streaming mode,
 //! including phase tracking, animation state, and exit conditions.
 
+// Allow dead code for infrastructure that will be used when networking is implemented
+#![allow(dead_code)]
+
 /// Live mode phase - current state in the streaming state machine.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LivePhase {

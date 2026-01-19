@@ -1,5 +1,8 @@
 //! NWS weather alert data structures.
 
+// Allow dead code for alert types and fields that will be used when alert display is fully implemented
+#![allow(dead_code)]
+
 use eframe::egui::Color32;
 
 /// Severity level for NWS alerts.
