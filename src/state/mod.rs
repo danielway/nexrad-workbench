@@ -13,7 +13,7 @@ mod viz;
 
 pub use data_source::UploadState;
 pub use layer::{GeoLayerVisibility, LayerState};
-pub use playback::{PlaybackMode, PlaybackSpeed, PlaybackState};
+pub use playback::{PlaybackSpeed, PlaybackState};
 pub use processing::ProcessingState;
 pub use radar_data::RadarTimeline;
 pub use viz::{ColorPalette, RadarProduct, VizState};
