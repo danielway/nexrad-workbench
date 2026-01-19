@@ -131,7 +131,7 @@ impl Default for StorageConfig {
         Self {
             database_name: "nexrad-workbench".to_string(),
             store_name: "cache".to_string(),
-            version: 1,
+            version: 2, // Bumped to support nexrad-scans object store
         }
     }
 }
@@ -142,7 +142,7 @@ impl StorageConfig {
         Self {
             database_name: database_name.into(),
             store_name: store_name.into(),
-            version: 1,
+            version: 2, // Bumped to support nexrad-scans object store
         }
     }
 }

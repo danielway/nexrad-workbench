@@ -9,6 +9,7 @@
 mod data;
 mod file_ops;
 mod geo;
+mod nexrad;
 mod state;
 mod storage;
 mod ui;
@@ -101,6 +102,21 @@ pub struct WorkbenchApp {
 
     /// Geographic layer data for map overlays
     geo_layers: geo::GeoLayerSet,
+
+    /// NEXRAD scan cache for AWS downloads
+    nexrad_cache: nexrad::NexradCache,
+
+    /// Channel for async NEXRAD download operations
+    download_channel: nexrad::DownloadChannel,
+
+    /// Currently loaded NEXRAD scan
+    current_scan: Option<nexrad::CachedScan>,
+
+    /// Decoded sweep data ready for rendering
+    decoded_sweep: Option<nexrad::DecodedSweep>,
+
+    /// Reflectivity color palette
+    reflectivity_palette: nexrad::ReflectivityPalette,
 }
 
 // Embed shapefile data at compile time
@@ -155,6 +171,11 @@ impl WorkbenchApp {
             #[cfg(target_arch = "wasm32")]
             file_cache: IndexedDbStore::new(StorageConfig::new("nexrad-workbench", "file-cache")),
             geo_layers,
+            nexrad_cache: nexrad::NexradCache::new(),
+            download_channel: nexrad::DownloadChannel::new(),
+            current_scan: None,
+            decoded_sweep: None,
+            reflectivity_palette: nexrad::ReflectivityPalette::default(),
         }
     }
 
@@ -204,12 +225,65 @@ impl eframe::App for WorkbenchApp {
             }
         }
 
+        // Check for completed NEXRAD download operations
+        if let Some(result) = self.download_channel.try_recv() {
+            self.state.download_in_progress = false;
+            match &result {
+                nexrad::DownloadResult::Success(scan) | nexrad::DownloadResult::CacheHit(scan) => {
+                    let is_cache_hit = matches!(result, nexrad::DownloadResult::CacheHit(_));
+                    self.state.status_message = if is_cache_hit {
+                        format!("Loaded from cache: {}", scan.file_name)
+                    } else {
+                        format!("Downloaded: {}", scan.file_name)
+                    };
+
+                    // Decode the sweep for rendering
+                    match nexrad::decode_sweep_from_data(&scan.data) {
+                        Ok(sweep) => {
+                            log::info!(
+                                "Decoded sweep with {} radials at {:.1}° elevation",
+                                sweep.radials.len(),
+                                sweep.elevation
+                            );
+                            self.decoded_sweep = Some(sweep);
+                        }
+                        Err(e) => {
+                            log::error!("Failed to decode sweep: {}", e);
+                            self.state.status_message = format!("Decode error: {}", e);
+                        }
+                    }
+
+                    self.current_scan = Some(scan.clone());
+                }
+                nexrad::DownloadResult::Error(msg) => {
+                    self.state.status_message = format!("Download failed: {}", msg);
+                    log::error!("Download failed: {}", msg);
+                }
+                nexrad::DownloadResult::Progress(current, total) => {
+                    self.state.status_message =
+                        format!("Downloading: {} / {} bytes", current, total);
+                }
+            }
+        }
+
         // Render UI panels in the correct order for egui layout
         // Side and top/bottom panels must be rendered before CentralPanel
         ui::render_top_bar(ctx, &mut self.state);
         ui::render_bottom_panel(ctx, &mut self.state);
-        ui::render_left_panel(ctx, &mut self.state, &self.file_picker);
+        ui::render_left_panel(
+            ctx,
+            &mut self.state,
+            &self.file_picker,
+            &self.download_channel,
+            &self.nexrad_cache,
+        );
         ui::render_right_panel(ctx, &mut self.state);
-        ui::render_canvas_with_geo(ctx, &mut self.state, Some(&self.geo_layers));
+        ui::render_canvas_with_geo(
+            ctx,
+            &mut self.state,
+            Some(&self.geo_layers),
+            self.decoded_sweep.as_ref(),
+            &self.reflectivity_palette,
+        );
     }
 }

@@ -2,16 +2,19 @@
 
 use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::{GeoLayerSet, MapProjection};
+use crate::nexrad::{render_sweep, DecodedSweep, ReflectivityPalette};
 use crate::state::{AlertsState, AppState, GeoLayerVisibility, NwsAlert};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use geo_types::Coord;
 use std::f32::consts::PI;
 
-/// Render canvas with optional geographic layers.
+/// Render canvas with optional geographic layers and NEXRAD data.
 pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
     geo_layers: Option<&GeoLayerSet>,
+    decoded_sweep: Option<&DecodedSweep>,
+    palette: &ReflectivityPalette,
 ) {
     egui::CentralPanel::default().show(ctx, |ui| {
         let available_size = ui.available_size();
@@ -49,6 +52,19 @@ pub fn render_canvas_with_geo(
             &state.viz_state.site_id,
             &state.layer_state.geo,
         );
+
+        // Draw NEXRAD radar data if available
+        if let Some(sweep) = decoded_sweep {
+            render_sweep(
+                &painter,
+                &projection,
+                sweep,
+                state.viz_state.center_lat,
+                state.viz_state.center_lon,
+                palette,
+                300.0, // Max range in km
+            );
+        }
 
         // Draw NWS alerts layer if enabled
         if state.layer_state.nws_alerts {

@@ -58,6 +58,12 @@ pub struct AppState {
 
     /// Live streaming mode state
     pub live_mode_state: LiveModeState,
+
+    /// Selected date for AWS archive download
+    pub archive_date: Option<chrono::NaiveDate>,
+
+    /// Whether an archive download is in progress
+    pub download_in_progress: bool,
 }
 
 impl AppState {
