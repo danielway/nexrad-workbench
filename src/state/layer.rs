@@ -1,20 +1,20 @@
 //! Layer visibility state.
 
-// Allow dead code for layer options that will be used when layer UI is fully implemented
-#![allow(dead_code)]
-
 /// State for toggling various overlay layers.
 pub struct LayerState {
-    /// Show NWS weather alerts overlay
+    /// Show NWS weather alerts overlay.
     pub nws_alerts: bool,
 
-    /// Show historical tornado tracks
+    /// Show historical tornado tracks.
+    #[allow(dead_code)] // Future feature
     pub tornado_tracks: bool,
 
-    /// Show political boundaries (state/county lines)
+    /// Show political boundaries (state/county lines).
+    #[allow(dead_code)] // Future feature
     pub political_boundaries: bool,
 
-    /// Show terrain/topography
+    /// Show terrain/topography.
+    #[allow(dead_code)] // Future feature
     pub terrain: bool,
 
     /// Enable globe/3D mode

@@ -1,22 +1,8 @@
 //! Top bar UI: app title, status, and alert summary.
 
+use super::colors::{alerts as alert_colors, live, ui as ui_colors};
 use crate::state::{AlertSummary, AppState, LivePhase};
 use eframe::egui::{self, Color32, RichText};
-
-/// Warning color (red).
-const WARNING_COLOR: Color32 = Color32::from_rgb(255, 80, 80);
-/// Watch color (orange).
-const WATCH_COLOR: Color32 = Color32::from_rgb(255, 180, 50);
-/// Advisory color (yellow).
-const ADVISORY_COLOR: Color32 = Color32::from_rgb(200, 200, 100);
-/// Statement color (blue-gray).
-const STATEMENT_COLOR: Color32 = Color32::from_rgb(140, 140, 180);
-/// Muted label color.
-const LABEL_COLOR: Color32 = Color32::from_rgb(120, 120, 120);
-
-/// Live mode colors
-const LIVE_COLOR_ACQUIRING: Color32 = Color32::from_rgb(255, 180, 50); // Orange
-const LIVE_COLOR_STREAMING: Color32 = Color32::from_rgb(255, 80, 80); // Red
 
 pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
     egui::TopBottomPanel::top("top_bar")
@@ -71,36 +57,34 @@ fn render_live_status(ui: &mut egui::Ui, state: &AppState) {
 
     match phase {
         LivePhase::AcquiringLock => {
-            // Show "CONNECTING" with orange pulsing
             let pulsed_color = Color32::from_rgba_unmultiplied(
-                LIVE_COLOR_ACQUIRING.r(),
-                LIVE_COLOR_ACQUIRING.g(),
-                LIVE_COLOR_ACQUIRING.b(),
+                live::ACQUIRING.r(),
+                live::ACQUIRING.g(),
+                live::ACQUIRING.b(),
                 (128.0 + 127.0 * pulse_alpha) as u8,
             );
-            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color)); // •
+            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color));
 
             let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
             ui.label(
                 RichText::new(format!("Acquiring lock... {}s", elapsed))
                     .size(13.0)
-                    .color(LIVE_COLOR_ACQUIRING),
+                    .color(live::ACQUIRING),
             );
         }
         LivePhase::Streaming | LivePhase::WaitingForChunk => {
-            // Show red "LIVE" indicator (always visible once streaming)
             let pulsed_color = Color32::from_rgba_unmultiplied(
-                LIVE_COLOR_STREAMING.r(),
-                LIVE_COLOR_STREAMING.g(),
-                LIVE_COLOR_STREAMING.b(),
+                live::STREAMING.r(),
+                live::STREAMING.g(),
+                live::STREAMING.b(),
                 (128.0 + 127.0 * pulse_alpha) as u8,
             );
-            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color)); // •
+            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color));
             ui.label(
                 RichText::new("LIVE")
                     .size(13.0)
                     .strong()
-                    .color(LIVE_COLOR_STREAMING),
+                    .color(live::STREAMING),
             );
 
             // Show chunk count and status
@@ -135,7 +119,7 @@ fn render_alert_summary(ui: &mut egui::Ui, summary: &AlertSummary) {
         ui.label(
             RichText::new("No active alerts")
                 .size(12.0)
-                .color(LABEL_COLOR),
+                .color(ui_colors::LABEL),
         );
         return;
     }
@@ -145,7 +129,7 @@ fn render_alert_summary(ui: &mut egui::Ui, summary: &AlertSummary) {
         ui.label(
             RichText::new(format!("{} STS", summary.statements))
                 .size(12.0)
-                .color(STATEMENT_COLOR),
+                .color(alert_colors::STATEMENT),
         );
     }
 
@@ -153,7 +137,7 @@ fn render_alert_summary(ui: &mut egui::Ui, summary: &AlertSummary) {
         ui.label(
             RichText::new(format!("{} ADV", summary.advisories))
                 .size(12.0)
-                .color(ADVISORY_COLOR),
+                .color(alert_colors::ADVISORY),
         );
     }
 
@@ -161,7 +145,7 @@ fn render_alert_summary(ui: &mut egui::Ui, summary: &AlertSummary) {
         ui.label(
             RichText::new(format!("{} WCH", summary.watches))
                 .size(12.0)
-                .color(WATCH_COLOR),
+                .color(alert_colors::WATCH),
         );
     }
 
@@ -170,9 +154,9 @@ fn render_alert_summary(ui: &mut egui::Ui, summary: &AlertSummary) {
             RichText::new(format!("{} WRN", summary.warnings))
                 .size(12.0)
                 .strong()
-                .color(WARNING_COLOR),
+                .color(alert_colors::WARNING),
         );
     }
 
-    ui.label(RichText::new("Alerts:").size(12.0).color(LABEL_COLOR));
+    ui.label(RichText::new("Alerts:").size(12.0).color(ui_colors::LABEL));
 }

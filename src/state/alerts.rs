@@ -1,8 +1,5 @@
 //! NWS weather alert data structures.
 
-// Allow dead code for alert types and fields that will be used when alert display is fully implemented
-#![allow(dead_code)]
-
 use eframe::egui::Color32;
 
 /// Severity level for NWS alerts.
@@ -20,6 +17,7 @@ pub enum AlertSeverity {
 
 impl AlertSeverity {
     /// Display label for the severity level.
+    #[allow(dead_code)] // Used when alert legend is implemented
     pub fn label(&self) -> &'static str {
         match self {
             Self::Statement => "Statement",
@@ -52,6 +50,7 @@ impl AlertSeverity {
 
 /// Type of NWS alert product.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // All variants defined for completeness; not all used in demo data
 pub enum AlertType {
     /// Tornado Warning
     TornadoWarning,
@@ -73,6 +72,7 @@ pub enum AlertType {
 
 impl AlertType {
     /// Display label for the alert type.
+    #[allow(dead_code)] // Used when alert panel is implemented
     pub fn label(&self) -> &'static str {
         match self {
             Self::TornadoWarning => "Tornado Warning",
@@ -119,12 +119,15 @@ impl AlertType {
 #[derive(Debug, Clone)]
 pub struct NwsAlert {
     /// Unique identifier for the alert.
+    #[allow(dead_code)] // Used when alert details panel is implemented
     pub id: String,
     /// Type of alert.
     pub alert_type: AlertType,
     /// Headline/title text.
+    #[allow(dead_code)] // Used when alert details panel is implemented
     pub headline: String,
     /// Issuing Weather Forecast Office.
+    #[allow(dead_code)] // Used when alert details panel is implemented
     pub wfo: String,
     /// Start time (Unix timestamp).
     pub start_time: f64,

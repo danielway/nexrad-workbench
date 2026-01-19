@@ -1,6 +1,38 @@
-//! Visualization state (canvas, zoom/pan, product/palette selection).
+//! Visualization state (canvas, zoom/pan, product/palette selection, processing options).
 
 use eframe::egui::Vec2;
+
+// ============================================================================
+// Processing Options
+// ============================================================================
+
+/// State for radar data processing options.
+#[derive(Default)]
+pub struct ProcessingState {
+    /// Enable spatial smoothing.
+    pub smoothing_enabled: bool,
+    /// Smoothing strength (0.0 - 1.0).
+    pub smoothing_strength: f32,
+    /// Enable velocity dealiasing.
+    pub dealiasing_enabled: bool,
+    /// Dealiasing aggressiveness (0.0 - 1.0).
+    pub dealiasing_strength: f32,
+}
+
+impl ProcessingState {
+    #[allow(dead_code)] // Convenience constructor with non-default values
+    pub fn new() -> Self {
+        Self {
+            smoothing_strength: 0.5,
+            dealiasing_strength: 0.5,
+            ..Default::default()
+        }
+    }
+}
+
+// ============================================================================
+// Product and Palette Selection
+// ============================================================================
 
 /// Available radar products for display.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]

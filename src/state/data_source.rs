@@ -1,8 +1,5 @@
 //! Data source state structures.
 
-// Fields and methods are defined for future integration
-#![allow(dead_code)]
-
 /// State for file upload.
 #[derive(Default)]
 pub struct UploadState {

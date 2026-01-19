@@ -9,7 +9,6 @@ mod data_source;
 mod layer;
 mod live_mode;
 mod playback;
-mod processing;
 pub mod radar_data;
 mod stats;
 pub mod vcp;
@@ -20,11 +19,10 @@ pub use data_source::UploadState;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use playback::{PlaybackSpeed, PlaybackState};
-pub use processing::ProcessingState;
 pub use radar_data::RadarTimeline;
 pub use stats::SessionStats;
 pub use vcp::get_vcp_definition;
-pub use viz::{ColorPalette, RadarProduct, VizState};
+pub use viz::{ColorPalette, ProcessingState, RadarProduct, VizState};
 
 /// Root application state containing all sub-states.
 #[derive(Default)]

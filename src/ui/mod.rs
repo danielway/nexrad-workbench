@@ -9,6 +9,7 @@
 
 mod bottom_panel;
 mod canvas;
+pub mod colors;
 mod left_panel;
 mod right_panel;
 mod top_bar;

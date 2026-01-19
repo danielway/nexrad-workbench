@@ -1,8 +1,5 @@
 //! Playback controls state.
 
-// Fields and methods are defined for future integration
-#![allow(dead_code)]
-
 /// Playback speed multiplier options.
 #[derive(Default, Clone, Copy, PartialEq)]
 pub enum PlaybackSpeed {
@@ -39,9 +36,11 @@ impl PlaybackSpeed {
         ]
     }
 
+    /// Returns relative multiplier (1.0 = Normal speed).
+    #[allow(dead_code)] // Alternative to timeline_seconds_per_real_second
     pub fn multiplier(&self) -> f32 {
         match self {
-            PlaybackSpeed::Realtime => 1.0 / 300.0, // Relative to "Normal" baseline
+            PlaybackSpeed::Realtime => 1.0 / 300.0,
             PlaybackSpeed::Quarter => 0.25,
             PlaybackSpeed::Half => 0.5,
             PlaybackSpeed::Normal => 1.0,
@@ -66,14 +65,16 @@ impl PlaybackSpeed {
 
 /// Playback mode options.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Feature not yet implemented
 pub enum PlaybackMode {
-    /// Radial-accurate playback (renders each radial as received)
+    /// Radial-accurate playback (renders each radial as received).
     #[default]
     RadialAccurate,
-    /// Frame step playback (jumps between complete frames)
+    /// Frame step playback (jumps between complete frames).
     FrameStep,
 }
 
+#[allow(dead_code)] // Feature not yet implemented
 impl PlaybackMode {
     pub fn label(&self) -> &'static str {
         match self {
@@ -95,10 +96,11 @@ pub struct PlaybackState {
     /// Total number of frames available
     pub total_frames: usize,
 
-    /// Current playback speed
+    /// Current playback speed.
     pub speed: PlaybackSpeed,
 
-    /// Current playback mode
+    /// Current playback mode.
+    #[allow(dead_code)] // Feature not yet implemented
     pub mode: PlaybackMode,
 
     /// Timeline zoom level (pixels per second)
@@ -119,6 +121,7 @@ pub struct PlaybackState {
 }
 
 impl PlaybackState {
+    #[allow(dead_code)] // Convenience constructor
     pub fn new() -> Self {
         Self::new_at_time(1714521600.0) // 2024-05-01 00:00:00 UTC
     }
@@ -139,15 +142,17 @@ impl PlaybackState {
         }
     }
 
+    #[allow(dead_code)] // Convenience method
     pub fn toggle_playback(&mut self) {
         self.playing = !self.playing;
     }
 
+    #[allow(dead_code)] // Used when frame counter is displayed
     pub fn frame_label(&self) -> String {
         format!("{} / {}", self.current_frame, self.total_frames)
     }
 
-    /// Get the duration of loaded data in seconds
+    /// Get the duration of loaded data in seconds.
     pub fn data_duration_secs(&self) -> f64 {
         match (self.data_start_timestamp, self.data_end_timestamp) {
             (Some(start), Some(end)) => (end - start) as f64,
@@ -155,12 +160,14 @@ impl PlaybackState {
         }
     }
 
-    /// Check if we have any loaded data
+    /// Check if we have any loaded data.
+    #[allow(dead_code)] // Used when data status is displayed
     pub fn has_data(&self) -> bool {
         self.data_start_timestamp.is_some() && self.total_frames > 0
     }
 
-    /// Get the timestamp for the current frame (if data is loaded)
+    /// Get the timestamp for the current frame (if data is loaded).
+    #[allow(dead_code)] // Used when frame-based navigation is implemented
     pub fn current_timestamp(&self) -> Option<i64> {
         let start = self.data_start_timestamp?;
         let duration = self.data_duration_secs();

@@ -3,27 +3,26 @@
 //! This module handles the state machine for real-time streaming mode,
 //! including phase tracking, animation state, and exit conditions.
 
-// Allow dead code for infrastructure that will be used when networking is implemented
-#![allow(dead_code)]
-
 /// Live mode phase - current state in the streaming state machine.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LivePhase {
-    /// Not in live mode
+    /// Not in live mode.
     #[default]
     Idle,
-    /// Initial connection phase (typically 5-10 seconds)
+    /// Initial connection phase (typically 5-10 seconds).
     AcquiringLock,
-    /// Actively receiving data
+    /// Actively receiving data.
     Streaming,
-    /// Countdown to next chunk (10-15 second intervals)
+    /// Countdown to next chunk (10-15 second intervals).
     WaitingForChunk,
-    /// Connection failed or lost
+    /// Connection failed or lost.
+    #[allow(dead_code)] // Used when networking is implemented
     Error,
 }
 
 impl LivePhase {
     /// Human-readable label for the phase.
+    #[allow(dead_code)] // Used when status bar shows phase name
     pub fn label(&self) -> &'static str {
         match self {
             LivePhase::Idle => "Idle",
@@ -35,13 +34,14 @@ impl LivePhase {
     }
 
     /// Color for the phase indicator (RGB).
+    #[allow(dead_code)] // Alternative to ui::colors module
     pub fn color(&self) -> (u8, u8, u8) {
         match self {
-            LivePhase::Idle => (100, 100, 100),            // Gray
-            LivePhase::AcquiringLock => (255, 180, 50),    // Orange
-            LivePhase::Streaming => (255, 80, 80),         // Red
-            LivePhase::WaitingForChunk => (100, 180, 255), // Blue
-            LivePhase::Error => (255, 50, 50),             // Bright red
+            LivePhase::Idle => (100, 100, 100),
+            LivePhase::AcquiringLock => (255, 180, 50),
+            LivePhase::Streaming => (255, 80, 80),
+            LivePhase::WaitingForChunk => (100, 180, 255),
+            LivePhase::Error => (255, 50, 50),
         }
     }
 }
@@ -49,15 +49,17 @@ impl LivePhase {
 /// Reason why live mode was exited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LiveExitReason {
-    /// User pressed pause
+    /// User pressed pause.
+    #[allow(dead_code)] // Used when pause behavior differs from stop
     UserPaused,
-    /// User clicked on timeline or used seek controls
+    /// User clicked on timeline or used seek controls.
     UserSeeked,
-    /// User used jog forward/backward buttons
+    /// User used jog forward/backward buttons.
     UserJogged,
-    /// Network or connection error
+    /// Network or connection error.
+    #[allow(dead_code)] // Used when networking is implemented
     ConnectionError,
-    /// User explicitly stopped live mode
+    /// User explicitly stopped live mode.
     UserStopped,
 }
 
@@ -100,7 +102,8 @@ pub struct LiveModeState {
     /// Animation pulse phase (0.0 to 1.0, wraps)
     pub pulse_phase: f32,
 
-    /// Whether to auto-scroll timeline to follow live data
+    /// Whether to auto-scroll timeline to follow live data.
+    #[allow(dead_code)] // Used when auto-scroll feature is implemented
     pub auto_scroll_enabled: bool,
 }
 
@@ -122,11 +125,13 @@ impl Default for LiveModeState {
 
 impl LiveModeState {
     /// Create a new idle live mode state.
+    #[allow(dead_code)] // Convenience constructor
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a state initialized for testing with dummy streaming data.
+    #[allow(dead_code)] // Used for testing different live mode states
     pub fn with_dummy_streaming(phase: LivePhase, now: f64) -> Self {
         let mut state = Self::new();
         state.phase = phase;
@@ -171,6 +176,7 @@ impl LiveModeState {
     }
 
     /// Set error state with message.
+    #[allow(dead_code)] // Used when networking is implemented
     pub fn set_error(&mut self, message: String) {
         self.phase = LivePhase::Error;
         self.error_message = Some(message);
@@ -234,6 +240,7 @@ impl LiveModeState {
     }
 
     /// Format status text for display.
+    #[allow(dead_code)] // Alternative to inline formatting in UI
     pub fn status_text(&self, now: f64) -> String {
         match self.phase {
             LivePhase::Idle => String::new(),

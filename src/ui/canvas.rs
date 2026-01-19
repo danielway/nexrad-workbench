@@ -1,5 +1,6 @@
 //! Central canvas UI: radar visualization area.
 
+use super::colors::{canvas as canvas_colors, radar, sites as site_colors};
 use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::{render_sweep, DecodedSweep, ReflectivityPalette};
@@ -25,7 +26,7 @@ pub fn render_canvas_with_geo(
         let rect = response.rect;
 
         // Draw background
-        painter.rect_filled(rect, 0.0, Color32::from_rgb(20, 20, 35));
+        painter.rect_filled(rect, 0.0, canvas_colors::BACKGROUND);
 
         // Create projection for geo layers
         let mut projection =
@@ -189,17 +190,15 @@ fn render_radar_sweep(painter: &Painter, rect: &Rect, state: &AppState, azimuth:
     let base_radius = rect.width().min(rect.height()) * 0.4;
     let radius = base_radius * state.viz_state.zoom;
 
-    // Range ring colors
-    let ring_color = Color32::from_rgba_unmultiplied(60, 80, 60, 120);
-    let ring_color_major = Color32::from_rgba_unmultiplied(80, 100, 80, 150);
-
     // Draw range rings (every 50km nominal, with major rings at 100km)
+    let ring_color = canvas_colors::ring();
+    let ring_major_color = canvas_colors::ring_major();
     let num_rings = 6;
     for i in 1..=num_rings {
         let ring_radius = radius * (i as f32 / num_rings as f32);
         let is_major = i % 2 == 0;
         let color = if is_major {
-            ring_color_major
+            ring_major_color
         } else {
             ring_color
         };
@@ -208,7 +207,7 @@ fn render_radar_sweep(painter: &Painter, rect: &Rect, state: &AppState, azimuth:
     }
 
     // Draw radial lines (every 30 degrees)
-    let radial_color = Color32::from_rgba_unmultiplied(50, 70, 50, 80);
+    let radial_color = canvas_colors::radial();
     for i in 0..12 {
         let angle = (i as f32) * 30.0 * PI / 180.0 - PI / 2.0; // Start from North
         let end_x = center.x + radius * angle.cos();
@@ -220,45 +219,45 @@ fn render_radar_sweep(painter: &Painter, rect: &Rect, state: &AppState, azimuth:
     }
 
     // Draw cardinal direction labels
-    let label_color = Color32::from_rgba_unmultiplied(120, 140, 120, 200);
     let label_offset = radius + 15.0;
     let font_id = egui::FontId::proportional(12.0);
+    let cardinal_color = canvas_colors::cardinal_label();
 
     painter.text(
         center + Vec2::new(0.0, -label_offset),
         egui::Align2::CENTER_BOTTOM,
         "N",
         font_id.clone(),
-        label_color,
+        cardinal_color,
     );
     painter.text(
         center + Vec2::new(label_offset, 0.0),
         egui::Align2::LEFT_CENTER,
         "E",
         font_id.clone(),
-        label_color,
+        cardinal_color,
     );
     painter.text(
         center + Vec2::new(0.0, label_offset),
         egui::Align2::CENTER_TOP,
         "S",
         font_id.clone(),
-        label_color,
+        cardinal_color,
     );
     painter.text(
         center + Vec2::new(-label_offset, 0.0),
         egui::Align2::RIGHT_CENTER,
         "W",
         font_id,
-        label_color,
+        cardinal_color,
     );
 
     // Draw center marker (radar site)
-    painter.circle_filled(center, 4.0, Color32::from_rgb(180, 180, 200));
+    painter.circle_filled(center, 4.0, canvas_colors::CENTER_MARKER);
     painter.circle_stroke(
         center,
         4.0,
-        Stroke::new(1.0, Color32::from_rgb(100, 100, 120)),
+        Stroke::new(1.0, canvas_colors::CENTER_MARKER_STROKE),
     );
 
     // Draw the sweep line if we have azimuth data
@@ -269,7 +268,12 @@ fn render_radar_sweep(painter: &Painter, rect: &Rect, state: &AppState, azimuth:
         for i in 0..num_trail_segments {
             let trail_az = az - (i as f32) * (trail_length / num_trail_segments as f32);
             let alpha = ((num_trail_segments - i) as f32 / num_trail_segments as f32 * 60.0) as u8;
-            let trail_color = Color32::from_rgba_unmultiplied(80, 200, 80, alpha);
+            let trail_color = Color32::from_rgba_unmultiplied(
+                radar::SWEEP_LINE.r(),
+                radar::SWEEP_LINE.g(),
+                radar::SWEEP_LINE.b(),
+                alpha,
+            );
 
             let angle_rad = (trail_az - 90.0) * PI / 180.0;
             let end_x = center.x + radius * angle_rad.cos();
@@ -289,13 +293,21 @@ fn render_radar_sweep(painter: &Painter, rect: &Rect, state: &AppState, azimuth:
         // Bright sweep line
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
-            Stroke::new(3.0, Color32::from_rgb(100, 255, 100)),
+            Stroke::new(3.0, radar::SWEEP_LINE),
         );
 
         // Glow effect
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
-            Stroke::new(6.0, Color32::from_rgba_unmultiplied(100, 255, 100, 40)),
+            Stroke::new(
+                6.0,
+                Color32::from_rgba_unmultiplied(
+                    radar::SWEEP_LINE.r(),
+                    radar::SWEEP_LINE.g(),
+                    radar::SWEEP_LINE.b(),
+                    40,
+                ),
+            ),
         );
     }
 }
@@ -390,13 +402,7 @@ fn render_nexrad_sites(
 ) {
     let current_site_id_upper = current_site_id.to_uppercase();
 
-    // Colors for sites
-    let other_site_color = Color32::from_rgb(255, 180, 80); // Orange for other sites
-    let current_site_color = Color32::from_rgb(50, 200, 255); // Cyan for current site
-    let label_color = Color32::from_rgb(220, 220, 240);
-    let current_label_color = Color32::from_rgb(50, 200, 255);
-
-    // Get visible bounds to cull off-screen sites (min_lon, min_lat, max_lon, max_lat)
+    // Get visible bounds to cull off-screen sites
     let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
 
     // Render other sites if the layer is enabled
@@ -408,7 +414,7 @@ fn render_nexrad_sites(
             }
 
             // Cull sites outside visible bounds (with some padding)
-            let padding = 2.0; // degrees
+            let padding = 2.0;
             if site.lat < min_lat - padding
                 || site.lat > max_lat + padding
                 || site.lon < min_lon - padding
@@ -422,22 +428,16 @@ fn render_nexrad_sites(
                 y: site.lat,
             });
 
-            // Draw site marker (small circle)
-            painter.circle_filled(screen_pos, 4.0, other_site_color);
-            painter.circle_stroke(
-                screen_pos,
-                4.0,
-                Stroke::new(1.0, Color32::from_rgb(180, 120, 40)),
-            );
+            painter.circle_filled(screen_pos, 4.0, site_colors::OTHER);
+            painter.circle_stroke(screen_pos, 4.0, Stroke::new(1.0, site_colors::OTHER_STROKE));
 
-            // Draw label if labels are enabled
             if visibility.labels {
                 painter.text(
                     screen_pos + Vec2::new(6.0, -2.0),
                     egui::Align2::LEFT_CENTER,
                     site.id,
                     egui::FontId::proportional(10.0),
-                    label_color,
+                    site_colors::LABEL,
                 );
             }
         }
@@ -450,21 +450,19 @@ fn render_nexrad_sites(
             y: site.lat,
         });
 
-        // Draw larger marker for current site
-        painter.circle_filled(screen_pos, 6.0, current_site_color);
+        painter.circle_filled(screen_pos, 6.0, site_colors::CURRENT);
         painter.circle_stroke(
             screen_pos,
             6.0,
-            Stroke::new(1.5, Color32::from_rgb(30, 150, 200)),
+            Stroke::new(1.5, site_colors::CURRENT_STROKE),
         );
 
-        // Always show label for current site
         painter.text(
             screen_pos + Vec2::new(8.0, -2.0),
             egui::Align2::LEFT_CENTER,
             site.id,
             egui::FontId::proportional(11.0),
-            current_label_color,
+            site_colors::CURRENT_LABEL,
         );
     }
 }

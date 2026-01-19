@@ -1,5 +1,6 @@
 //! Bottom panel UI: playback controls, timeline, and session statistics.
 
+use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use crate::state::radar_data::RadarTimeline;
 use crate::state::{AppState, LiveExitReason, LivePhase, PlaybackSpeed, SessionStats};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
@@ -19,18 +20,6 @@ fn current_timestamp_secs() -> f64 {
             .unwrap_or(0.0)
     }
 }
-
-/// Muted gray for stat labels.
-const LABEL_COLOR: Color32 = Color32::from_rgb(100, 100, 100);
-/// Slightly brighter for stat values.
-const VALUE_COLOR: Color32 = Color32::from_rgb(160, 160, 160);
-/// Emphasized color for active requests.
-const ACTIVE_COLOR: Color32 = Color32::from_rgb(100, 180, 255);
-
-/// Live mode colors
-const LIVE_COLOR_ACQUIRING: Color32 = Color32::from_rgb(255, 180, 50); // Orange
-const LIVE_COLOR_STREAMING: Color32 = Color32::from_rgb(255, 80, 80); // Red
-const LIVE_COLOR_WAITING: Color32 = Color32::from_rgb(100, 180, 255); // Blue
 
 /// Level of detail for radar data rendering
 #[derive(Clone, Copy, PartialEq)]
@@ -56,9 +45,8 @@ fn render_radar_data(
     // Helper to convert timestamp to x position
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    // Colors for different elements
-    let scan_color = Color32::from_rgb(60, 120, 80);
-    let scan_border = Color32::from_rgb(80, 160, 100);
+    let scan_color = tl_colors::SCAN_FILL;
+    let scan_border = tl_colors::SCAN_BORDER;
     let sweep_colors: [Color32; 4] = [
         Color32::from_rgb(50, 100, 70),
         Color32::from_rgb(60, 120, 80),
@@ -388,11 +376,11 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     let rect = response.rect;
 
     // Background
-    painter.rect_filled(rect, 2.0, Color32::from_rgb(30, 30, 40));
+    painter.rect_filled(rect, 2.0, tl_colors::BACKGROUND);
     painter.rect_stroke(
         rect,
         2.0,
-        Stroke::new(1.0, Color32::from_rgb(60, 60, 80)),
+        Stroke::new(1.0, tl_colors::BORDER),
         StrokeKind::Outside,
     );
 
@@ -450,9 +438,9 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             let is_major = tick % major_interval == 0;
             let tick_height = if is_major { 12.0 } else { 6.0 };
             let tick_color = if is_major {
-                Color32::from_rgb(120, 120, 140)
+                tl_colors::TICK_MAJOR
             } else {
-                Color32::from_rgb(60, 60, 80)
+                tl_colors::TICK_MINOR
             };
 
             painter.line_segment(
@@ -471,7 +459,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
                     egui::Align2::CENTER_CENTER,
                     label,
                     egui::FontId::monospace(9.0),
-                    Color32::from_rgb(140, 140, 160),
+                    tl_colors::TICK_LABEL,
                 );
             }
         }
@@ -484,7 +472,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         let sel_x = ts_to_x(selected_ts);
 
         if sel_x >= rect.left() && sel_x <= rect.right() {
-            let marker_color = Color32::from_rgb(255, 100, 100);
+            let marker_color = tl_colors::SELECTION;
 
             // Selection line
             painter.line_segment(
@@ -574,7 +562,7 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
             RichText::new(format_timestamp_full(selected_ts))
                 .monospace()
                 .size(13.0)
-                .color(Color32::from_rgb(255, 100, 100)),
+                .color(tl_colors::SELECTION),
         );
         ui.separator();
     }
@@ -706,35 +694,35 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
         LivePhase::AcquiringLock => {
             // Show "CONNECTING" with orange pulsing
             let pulsed_color = Color32::from_rgba_unmultiplied(
-                LIVE_COLOR_ACQUIRING.r(),
-                LIVE_COLOR_ACQUIRING.g(),
-                LIVE_COLOR_ACQUIRING.b(),
+                live::ACQUIRING.r(),
+                live::ACQUIRING.g(),
+                live::ACQUIRING.b(),
                 (128.0 + 127.0 * pulse_alpha) as u8,
             );
-            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color)); // •
+            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color));
 
             let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
             ui.label(
                 RichText::new(format!("CONNECTING {}s", elapsed))
                     .size(11.0)
                     .strong()
-                    .color(LIVE_COLOR_ACQUIRING),
+                    .color(live::ACQUIRING),
             );
         }
         LivePhase::Streaming | LivePhase::WaitingForChunk => {
             // Show red "LIVE" indicator (always visible once streaming)
             let pulsed_color = Color32::from_rgba_unmultiplied(
-                LIVE_COLOR_STREAMING.r(),
-                LIVE_COLOR_STREAMING.g(),
-                LIVE_COLOR_STREAMING.b(),
+                live::STREAMING.r(),
+                live::STREAMING.g(),
+                live::STREAMING.b(),
                 (128.0 + 127.0 * pulse_alpha) as u8,
             );
-            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color)); // •
+            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color));
             ui.label(
                 RichText::new("LIVE")
                     .size(11.0)
                     .strong()
-                    .color(LIVE_COLOR_STREAMING),
+                    .color(live::STREAMING),
             );
 
             // Show chunk count
@@ -742,7 +730,7 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
                 ui.label(
                     RichText::new(format!("({})", state.live_mode_state.chunks_received))
                         .size(10.0)
-                        .color(Color32::from_rgb(180, 180, 180)),
+                        .color(ui_colors::VALUE),
                 );
             }
 
@@ -752,13 +740,13 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
                     RichText::new("receiving...")
                         .size(10.0)
                         .italics()
-                        .color(Color32::from_rgb(150, 200, 150)),
+                        .color(ui_colors::SUCCESS),
                 );
             } else if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now) {
                 ui.label(
                     RichText::new(format!("next in {}s", remaining.ceil() as i32))
                         .size(10.0)
-                        .color(LIVE_COLOR_WAITING),
+                        .color(live::WAITING),
                 );
             }
         }
@@ -772,9 +760,9 @@ fn render_session_stats(ui: &mut egui::Ui, stats: &SessionStats) {
     ui.label(
         RichText::new(stats.format_latency_stats())
             .size(11.0)
-            .color(VALUE_COLOR),
+            .color(ui_colors::VALUE),
     );
-    ui.label(RichText::new("median:").size(11.0).color(LABEL_COLOR));
+    ui.label(RichText::new("median:").size(11.0).color(ui_colors::LABEL));
 
     ui.separator();
 
@@ -782,9 +770,9 @@ fn render_session_stats(ui: &mut egui::Ui, stats: &SessionStats) {
     ui.label(
         RichText::new(stats.format_cache_size())
             .size(11.0)
-            .color(VALUE_COLOR),
+            .color(ui_colors::VALUE),
     );
-    ui.label(RichText::new("cache:").size(11.0).color(LABEL_COLOR));
+    ui.label(RichText::new("cache:").size(11.0).color(ui_colors::LABEL));
 
     ui.separator();
 
@@ -792,9 +780,13 @@ fn render_session_stats(ui: &mut egui::Ui, stats: &SessionStats) {
     ui.label(
         RichText::new(stats.format_transferred())
             .size(11.0)
-            .color(VALUE_COLOR),
+            .color(ui_colors::VALUE),
     );
-    ui.label(RichText::new("transferred:").size(11.0).color(LABEL_COLOR));
+    ui.label(
+        RichText::new("transferred:")
+            .size(11.0)
+            .color(ui_colors::LABEL),
+    );
 
     ui.separator();
 
@@ -804,13 +796,17 @@ fn render_session_stats(ui: &mut egui::Ui, stats: &SessionStats) {
             RichText::new(format!("({} active)", stats.active_request_count))
                 .size(11.0)
                 .italics()
-                .color(ACTIVE_COLOR),
+                .color(ui_colors::ACTIVE),
         );
     }
     ui.label(
         RichText::new(format!("{}", stats.session_request_count))
             .size(11.0)
-            .color(VALUE_COLOR),
+            .color(ui_colors::VALUE),
     );
-    ui.label(RichText::new("requests:").size(11.0).color(LABEL_COLOR));
+    ui.label(
+        RichText::new("requests:")
+            .size(11.0)
+            .color(ui_colors::LABEL),
+    );
 }
