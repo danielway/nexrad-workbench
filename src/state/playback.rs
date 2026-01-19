@@ -86,12 +86,12 @@ pub struct PlaybackState {
     /// Timeline zoom level (pixels per second)
     pub timeline_zoom: f64,
 
-    /// Timeline view position - absolute timestamp of left edge (Unix seconds)
-    pub timeline_view_start: i64,
+    /// Timeline view position - absolute timestamp of left edge (Unix seconds, with sub-second precision)
+    pub timeline_view_start: f64,
 
-    /// User-selected timestamp for seeking/downloading (Unix seconds)
+    /// User-selected timestamp for seeking/downloading (Unix seconds with sub-second precision)
     /// This is where the user clicked, independent of loaded data
-    pub selected_timestamp: Option<i64>,
+    pub selected_timestamp: Option<f64>,
 
     /// Start timestamp of loaded data (Unix seconds), if any
     pub data_start_timestamp: Option<i64>,
@@ -103,12 +103,12 @@ pub struct PlaybackState {
 impl PlaybackState {
     pub fn new() -> Self {
         // Start view at current time (roughly - using a recent date for demo)
-        let now = 1714521600_i64; // 2024-05-01 00:00:00 UTC
+        let now = 1714521600.0_f64; // 2024-05-01 00:00:00 UTC
 
         Self {
             total_frames: 0, // No data loaded initially
             timeline_zoom: 0.0001, // Start very zoomed out to see months
-            timeline_view_start: now - 15 * 24 * 3600, // Center view around "now"
+            timeline_view_start: now - 15.0 * 24.0 * 3600.0, // Center view around "now"
             selected_timestamp: None,
             data_start_timestamp: None,
             data_end_timestamp: None,

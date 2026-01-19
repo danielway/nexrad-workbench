@@ -127,22 +127,22 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         return;
     }
 
-    let view_start = state.playback_state.timeline_view_start; // absolute timestamp
+    let view_start = state.playback_state.timeline_view_start; // absolute timestamp (f64)
 
     // Calculate visible time range
     let visible_secs = available_width / zoom;
-    let view_end = view_start + visible_secs as i64;
+    let view_end = view_start + visible_secs;
 
     // Helper to convert timestamp to x position
-    let ts_to_x = |ts: i64| -> f32 { rect.left() + ((ts - view_start) as f64 * zoom) as f32 };
+    let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
     // Draw loaded data range highlight (if any data is loaded)
     if let (Some(data_start), Some(data_end)) = (
         state.playback_state.data_start_timestamp,
         state.playback_state.data_end_timestamp,
     ) {
-        let data_x_start = ts_to_x(data_start).max(rect.left());
-        let data_x_end = ts_to_x(data_end).min(rect.right());
+        let data_x_start = ts_to_x(data_start as f64).max(rect.left());
+        let data_x_end = ts_to_x(data_end as f64).min(rect.right());
 
         if data_x_end > data_x_start {
             painter.rect_filled(
@@ -159,16 +159,16 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     // Select appropriate tick configuration
     let tick_config = select_tick_config(zoom);
     let major_interval = tick_config.major_interval;
-    let minor_interval = major_interval / tick_config.minor_divisions as i64;
+    let minor_interval = (major_interval / tick_config.minor_divisions as i64).max(1);
 
-    // Align to tick boundaries
-    let first_tick = (view_start / minor_interval) * minor_interval;
-    let last_tick = ((view_end / minor_interval) + 1) * minor_interval;
+    // Align to tick boundaries (use integer timestamps for ticks)
+    let first_tick = ((view_start as i64) / minor_interval) * minor_interval;
+    let last_tick = (((view_end as i64) / minor_interval) + 1) * minor_interval;
 
     // Draw tick marks
     let mut tick = first_tick;
     while tick <= last_tick {
-        let x = ts_to_x(tick);
+        let x = ts_to_x(tick as f64);
 
         if x >= rect.left() && x <= rect.right() {
             let is_major = tick % major_interval == 0;
@@ -205,7 +205,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
     // Draw playhead at current frame position (if data is loaded)
     if let Some(current_ts) = state.playback_state.current_timestamp() {
-        let playhead_x = ts_to_x(current_ts);
+        let playhead_x = ts_to_x(current_ts as f64);
 
         if playhead_x >= rect.left() && playhead_x <= rect.right() {
             // Playhead line
@@ -263,11 +263,11 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     // Handle click to select time
     if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
-            let clicked_ts = view_start + ((pos.x - rect.left()) as f64 / zoom) as i64;
+            let clicked_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
             state.playback_state.selected_timestamp = Some(clicked_ts);
 
             // If clicked within loaded data range, also seek to that frame
-            if let Some(frame) = state.playback_state.timestamp_to_frame(clicked_ts) {
+            if let Some(frame) = state.playback_state.timestamp_to_frame(clicked_ts as i64) {
                 state.playback_state.current_frame = frame;
             }
         }
@@ -275,7 +275,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
     // Handle drag to pan - NO CLAMPING, free scrolling anywhere in time
     if response.dragged() {
-        let delta_secs = (-response.drag_delta().x as f64 / zoom) as i64;
+        let delta_secs = -response.drag_delta().x as f64 / zoom;
         state.playback_state.timeline_view_start += delta_secs;
     }
 
@@ -290,10 +290,8 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
             // Zoom centered on cursor position
             if let Some(cursor_pos) = response.hover_pos() {
-                let cursor_ts =
-                    view_start + ((cursor_pos.x - rect.left()) as f64 / old_zoom) as i64;
-                let new_view_start =
-                    cursor_ts - ((cursor_pos.x - rect.left()) as f64 / new_zoom) as i64;
+                let cursor_ts = view_start + (cursor_pos.x - rect.left()) as f64 / old_zoom;
+                let new_view_start = cursor_ts - (cursor_pos.x - rect.left()) as f64 / new_zoom;
                 state.playback_state.timeline_view_start = new_view_start;
             }
 
@@ -302,7 +300,30 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
+/// Format a timestamp (f64 unix seconds) for display with sub-second precision
+fn format_timestamp_full(ts: f64) -> String {
+    let secs = ts.floor() as i64;
+    let millis = ((ts.fract()) * 1000.0).round() as u32;
+    let dt = Utc.timestamp_opt(secs, 0).unwrap();
+    format!(
+        "{}.{:03}",
+        dt.format("%Y-%m-%d %H:%M:%S"),
+        millis
+    )
+}
+
 fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
+    // Selected timestamp display (prominent)
+    if let Some(selected_ts) = state.playback_state.selected_timestamp {
+        ui.label(
+            RichText::new(format_timestamp_full(selected_ts))
+                .monospace()
+                .size(13.0)
+                .color(Color32::from_rgb(100, 150, 255)),
+        );
+        ui.separator();
+    }
+
     // Play/Pause button
     let play_text = if state.playback_state.playing {
         "\u{23F8}" // Pause symbol
@@ -328,15 +349,6 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
             state.playback_state.current_frame += 1;
         }
     }
-
-    ui.separator();
-
-    // Frame label
-    ui.label(
-        RichText::new(state.playback_state.frame_label())
-            .monospace()
-            .size(12.0),
-    );
 
     ui.separator();
 
