@@ -73,9 +73,7 @@ fn render_load_data_section(
     if let Some(ref name) = state.upload_state.file_name {
         ui.group(|ui| {
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("\u{2713}").color(egui::Color32::from_rgb(100, 200, 100)),
-                );
+                ui.label(RichText::new("\u{2713}").color(egui::Color32::from_rgb(100, 200, 100)));
                 ui.label(RichText::new("File loaded").small());
             });
             ui.label(RichText::new(name).strong().monospace());
@@ -256,7 +254,10 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     let ground_y = rect.bottom() - 8.0;
     let ground_color = Color32::from_rgb(80, 60, 40);
     painter.line_segment(
-        [Pos2::new(rect.left() + 5.0, ground_y), Pos2::new(rect.right() - 5.0, ground_y)],
+        [
+            Pos2::new(rect.left() + 5.0, ground_y),
+            Pos2::new(rect.right() - 5.0, ground_y),
+        ],
         Stroke::new(2.0, ground_color),
     );
 
@@ -267,12 +268,19 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
 
     // Tower base
     painter.line_segment(
-        [Pos2::new(tower_x, tower_bottom), Pos2::new(tower_x, tower_top)],
+        [
+            Pos2::new(tower_x, tower_bottom),
+            Pos2::new(tower_x, tower_top),
+        ],
         Stroke::new(3.0, Color32::from_rgb(150, 150, 150)),
     );
 
     // Dish (small circle at top of tower)
-    painter.circle_filled(Pos2::new(tower_x, tower_top), 4.0, Color32::from_rgb(200, 200, 200));
+    painter.circle_filled(
+        Pos2::new(tower_x, tower_top),
+        4.0,
+        Color32::from_rgb(200, 200, 200),
+    );
 
     // Reference angle lines (0°, 10°, 20°)
     let beam_origin = Pos2::new(tower_x, tower_top);
@@ -371,9 +379,17 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                             let is_current = radar_state.sweep_index == Some(idx);
                             // Try to match elevation with VCP definition for metadata
                             let elev_meta = vcp_def.and_then(|def| {
-                                def.elevations.iter().find(|e| (e.angle - sweep.elevation).abs() < 0.1)
+                                def.elevations
+                                    .iter()
+                                    .find(|e| (e.angle - sweep.elevation).abs() < 0.1)
                             });
-                            render_elevation_row(ui, sweep.elevation, elev_meta, is_current, available_width);
+                            render_elevation_row(
+                                ui,
+                                sweep.elevation,
+                                elev_meta,
+                                is_current,
+                                available_width,
+                            );
                         }
                     });
             } else if let Some(def) = vcp_def {
@@ -382,13 +398,23 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                     .show(ui, |ui| {
                         ui.set_min_width(available_width);
                         for elev in def.elevations.iter() {
-                            render_elevation_row(ui, elev.angle, Some(elev), false, available_width);
+                            render_elevation_row(
+                                ui,
+                                elev.angle,
+                                Some(elev),
+                                false,
+                                available_width,
+                            );
                         }
                     });
             }
         }
         None => {
-            ui.label(RichText::new("No scan data at current time").small().color(Color32::GRAY));
+            ui.label(
+                RichText::new("No scan data at current time")
+                    .small()
+                    .color(Color32::GRAY),
+            );
         }
     }
 }
@@ -465,7 +491,12 @@ fn render_elevation_row(
 
         // Waveform type
         let waveform = elev_meta.map(|e| e.waveform).unwrap_or("--");
-        ui.label(RichText::new(format!(" {:2}", waveform)).color(dim_color).monospace().small());
+        ui.label(
+            RichText::new(format!(" {:2}", waveform))
+                .color(dim_color)
+                .monospace()
+                .small(),
+        );
 
         // PRF
         let prf = elev_meta.map(|e| e.prf).unwrap_or("--");
@@ -475,7 +506,12 @@ fn render_elevation_row(
             "High" => "H",
             _ => "-",
         };
-        ui.label(RichText::new(format!(" {}", prf_short)).color(dim_color).monospace().small());
+        ui.label(
+            RichText::new(format!(" {}", prf_short))
+                .color(dim_color)
+                .monospace()
+                .small(),
+        );
 
         // Info/description - right aligned
         let info = get_sweep_info(elevation, elev_meta.map(|e| e.waveform));

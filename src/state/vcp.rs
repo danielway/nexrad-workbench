@@ -31,20 +31,76 @@ pub struct VcpDefinition {
 /// VCP 215 - Precipitation Mode (most common)
 /// 14 elevations, ~5 minute volume scan
 static VCP_215_ELEVATIONS: &[VcpElevation] = &[
-    VcpElevation { angle: 0.5, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 0.9, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 1.3, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 1.8, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 2.4, waveform: "CD", prf: "Med" },
-    VcpElevation { angle: 3.1, waveform: "CD", prf: "Med" },
-    VcpElevation { angle: 4.0, waveform: "CD", prf: "Med" },
-    VcpElevation { angle: 5.1, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 6.4, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 8.0, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 10.0, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 12.5, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 15.6, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 19.5, waveform: "CD", prf: "High" },
+    VcpElevation {
+        angle: 0.5,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 0.9,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 1.3,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 1.8,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 2.4,
+        waveform: "CD",
+        prf: "Med",
+    },
+    VcpElevation {
+        angle: 3.1,
+        waveform: "CD",
+        prf: "Med",
+    },
+    VcpElevation {
+        angle: 4.0,
+        waveform: "CD",
+        prf: "Med",
+    },
+    VcpElevation {
+        angle: 5.1,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 6.4,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 8.0,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 10.0,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 12.5,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 15.6,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 19.5,
+        waveform: "CD",
+        prf: "High",
+    },
 ];
 
 static VCP_215: VcpDefinition = VcpDefinition {
@@ -57,11 +113,31 @@ static VCP_215: VcpDefinition = VcpDefinition {
 /// VCP 35 - Clear Air Mode
 /// 5 elevations, ~10 minute volume scan (slower rotation for sensitivity)
 static VCP_35_ELEVATIONS: &[VcpElevation] = &[
-    VcpElevation { angle: 0.5, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 1.5, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 2.5, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 3.5, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 4.5, waveform: "CS", prf: "Low" },
+    VcpElevation {
+        angle: 0.5,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 1.5,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 2.5,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 3.5,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 4.5,
+        waveform: "CS",
+        prf: "Low",
+    },
 ];
 
 static VCP_35: VcpDefinition = VcpDefinition {
@@ -74,20 +150,76 @@ static VCP_35: VcpDefinition = VcpDefinition {
 /// VCP 212 - Precipitation Mode (faster)
 /// 14 elevations, ~4.5 minute volume scan
 static VCP_212_ELEVATIONS: &[VcpElevation] = &[
-    VcpElevation { angle: 0.5, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 0.9, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 1.3, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 1.8, waveform: "CS", prf: "Low" },
-    VcpElevation { angle: 2.4, waveform: "CD", prf: "Med" },
-    VcpElevation { angle: 3.1, waveform: "CD", prf: "Med" },
-    VcpElevation { angle: 4.0, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 5.1, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 6.4, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 8.0, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 10.0, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 12.5, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 15.6, waveform: "CD", prf: "High" },
-    VcpElevation { angle: 19.5, waveform: "CD", prf: "High" },
+    VcpElevation {
+        angle: 0.5,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 0.9,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 1.3,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 1.8,
+        waveform: "CS",
+        prf: "Low",
+    },
+    VcpElevation {
+        angle: 2.4,
+        waveform: "CD",
+        prf: "Med",
+    },
+    VcpElevation {
+        angle: 3.1,
+        waveform: "CD",
+        prf: "Med",
+    },
+    VcpElevation {
+        angle: 4.0,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 5.1,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 6.4,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 8.0,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 10.0,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 12.5,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 15.6,
+        waveform: "CD",
+        prf: "High",
+    },
+    VcpElevation {
+        angle: 19.5,
+        waveform: "CD",
+        prf: "High",
+    },
 ];
 
 static VCP_212: VcpDefinition = VcpDefinition {

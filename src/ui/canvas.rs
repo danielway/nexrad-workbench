@@ -40,13 +40,21 @@ pub fn render_canvas_with_geo(
             );
         }
 
-        // Query current azimuth from radar timeline
-        let azimuth = state
-            .playback_state
-            .selected_timestamp
-            .and_then(|ts| state.radar_timeline.find_scan_at_timestamp(ts))
-            .and_then(|scan| scan.find_sweep_at_timestamp(state.playback_state.selected_timestamp.unwrap()))
-            .and_then(|(_, sweep)| sweep.interpolate_azimuth(state.playback_state.selected_timestamp.unwrap()));
+        // Query current azimuth from radar timeline (only show sweep line in real-time mode)
+        let azimuth = if state.playback_state.speed == crate::state::PlaybackSpeed::Realtime {
+            state
+                .playback_state
+                .selected_timestamp
+                .and_then(|ts| state.radar_timeline.find_scan_at_timestamp(ts))
+                .and_then(|scan| {
+                    scan.find_sweep_at_timestamp(state.playback_state.selected_timestamp.unwrap())
+                })
+                .and_then(|(_, sweep)| {
+                    sweep.interpolate_azimuth(state.playback_state.selected_timestamp.unwrap())
+                })
+        } else {
+            None
+        };
 
         // Draw the radar sweep visualization
         render_radar_sweep(&painter, &rect, state, azimuth);
@@ -155,7 +163,11 @@ fn render_radar_sweep(painter: &Painter, rect: &Rect, state: &AppState, azimuth:
     for i in 1..=num_rings {
         let ring_radius = radius * (i as f32 / num_rings as f32);
         let is_major = i % 2 == 0;
-        let color = if is_major { ring_color_major } else { ring_color };
+        let color = if is_major {
+            ring_color_major
+        } else {
+            ring_color
+        };
         let width = if is_major { 1.5 } else { 1.0 };
         painter.circle_stroke(center, ring_radius, Stroke::new(width, color));
     }
@@ -208,7 +220,11 @@ fn render_radar_sweep(painter: &Painter, rect: &Rect, state: &AppState, azimuth:
 
     // Draw center marker (radar site)
     painter.circle_filled(center, 4.0, Color32::from_rgb(180, 180, 200));
-    painter.circle_stroke(center, 4.0, Stroke::new(1.0, Color32::from_rgb(100, 100, 120)));
+    painter.circle_stroke(
+        center,
+        4.0,
+        Stroke::new(1.0, Color32::from_rgb(100, 100, 120)),
+    );
 
     // Draw the sweep line if we have azimuth data
     if let Some(az) = azimuth {
