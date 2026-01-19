@@ -1,7 +1,7 @@
 //! Bottom panel UI: playback controls, timeline, and session statistics.
 
 use crate::state::radar_data::RadarTimeline;
-use crate::state::{AppState, PlaybackSpeed, SessionStats};
+use crate::state::{AppState, LiveExitReason, LivePhase, PlaybackSpeed, SessionStats};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
@@ -11,6 +11,11 @@ const LABEL_COLOR: Color32 = Color32::from_rgb(100, 100, 100);
 const VALUE_COLOR: Color32 = Color32::from_rgb(160, 160, 160);
 /// Emphasized color for active requests.
 const ACTIVE_COLOR: Color32 = Color32::from_rgb(100, 180, 255);
+
+/// Live mode colors
+const LIVE_COLOR_ACQUIRING: Color32 = Color32::from_rgb(255, 180, 50); // Orange
+const LIVE_COLOR_STREAMING: Color32 = Color32::from_rgb(255, 80, 80); // Red
+const LIVE_COLOR_WAITING: Color32 = Color32::from_rgb(100, 180, 255); // Blue
 
 /// Level of detail for radar data rendering
 #[derive(Clone, Copy, PartialEq)]
@@ -122,17 +127,78 @@ fn render_radar_data(
 }
 
 pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
+    let dt = ctx.input(|i| i.stable_dt);
+
+    // Update live mode pulse animation
+    state.live_mode_state.update_pulse(dt);
+
+    // Get current "now" time for live mode (use selected_timestamp as base, advancing in real-time)
+    let now = state
+        .playback_state
+        .selected_timestamp
+        .unwrap_or(1714564800.0);
+
+    // Live mode state machine - automatic transitions for testing/demo
+    if state.live_mode_state.is_active() {
+        let elapsed = state.live_mode_state.phase_elapsed_secs(now);
+
+        match state.live_mode_state.phase {
+            LivePhase::AcquiringLock => {
+                // After 5 seconds, transition to Streaming
+                if elapsed >= 5.0 {
+                    state.live_mode_state.start_streaming(now);
+                }
+            }
+            LivePhase::Streaming => {
+                // After 3 seconds of streaming, transition to WaitingForChunk
+                if elapsed >= 3.0 {
+                    state.live_mode_state.wait_for_next_chunk(now);
+                }
+            }
+            LivePhase::WaitingForChunk => {
+                // When countdown expires, transition back to Streaming
+                if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now) {
+                    if remaining <= 0.0 {
+                        state.live_mode_state.start_streaming(now);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // When live, playback position tracks real time exactly (1:1)
+        // Advance by real dt, not playback speed
+        if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
+            *ts += dt as f64;
+        }
+
+        // Request continuous repaint for live mode
+        ctx.request_repaint();
+    }
+
     // Handle spacebar to toggle playback (only when no text input is focused)
     let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space) && !i.modifiers.any());
     let has_focus = ctx.memory(|m| m.focused().is_some());
     if space_pressed && !has_focus {
-        state.playback_state.toggle_playback();
+        if state.playback_state.playing {
+            // Stop - also exits live mode if active
+            if state.live_mode_state.is_active() {
+                state.live_mode_state.stop(LiveExitReason::UserStopped);
+                state.status_message = state
+                    .live_mode_state
+                    .last_exit_reason
+                    .map(|r| r.message().to_string())
+                    .unwrap_or_default();
+            }
+            state.playback_state.playing = false;
+        } else {
+            state.playback_state.playing = true;
+        }
     }
 
-    // Advance playback position when playing
-    if state.playback_state.playing {
-        let dt = ctx.input(|i| i.stable_dt) as f64;
-        let advance = dt
+    // Advance playback position when playing (but not in live mode - handled above)
+    if state.playback_state.playing && !state.live_mode_state.is_active() {
+        let advance = dt as f64
             * state
                 .playback_state
                 .speed
@@ -431,6 +497,16 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     // Handle click to select time
     if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
+            // Exit live mode when user clicks timeline
+            if state.live_mode_state.is_active() {
+                state.live_mode_state.stop(LiveExitReason::UserSeeked);
+                state.status_message = state
+                    .live_mode_state
+                    .last_exit_reason
+                    .map(|r| r.message().to_string())
+                    .unwrap_or_default();
+            }
+
             let clicked_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
             state.playback_state.selected_timestamp = Some(clicked_ts);
 
@@ -488,15 +564,58 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
         ui.separator();
     }
 
-    // Play/Pause button
+    // Live mode indicator badge (when active)
+    if state.live_mode_state.is_active() {
+        render_live_indicator(ui, state);
+        ui.separator();
+    }
+
+    // Live button (only shown when not in live mode)
+    #[allow(clippy::collapsible_if)]
+    if !state.live_mode_state.is_active() {
+        if ui
+            .button(
+                RichText::new("\u{2022} Live")
+                    .size(12.0)
+                    .color(Color32::from_rgb(150, 150, 150)),
+            )
+            .on_hover_text("Start live streaming")
+            .clicked()
+        {
+            let now = state
+                .playback_state
+                .selected_timestamp
+                .unwrap_or(1714564800.0);
+            state.live_mode_state.start(now);
+            state.playback_state.playing = true;
+            state.playback_state.speed = PlaybackSpeed::Realtime;
+            state.status_message = "Live mode started".to_string();
+        }
+    }
+
+    // Play/Stop button
     let play_text = if state.playback_state.playing {
-        "\u{23F8}" // Pause symbol
+        "\u{25A0}" // ■ Stop
     } else {
-        "\u{25B6}" // Play symbol
+        "\u{25B6}" // ▶ Play
     };
 
     if ui.button(RichText::new(play_text).size(14.0)).clicked() {
-        state.playback_state.toggle_playback();
+        if state.playback_state.playing {
+            // Stop - also exits live mode if active
+            if state.live_mode_state.is_active() {
+                state.live_mode_state.stop(LiveExitReason::UserStopped);
+                state.status_message = state
+                    .live_mode_state
+                    .last_exit_reason
+                    .map(|r| r.message().to_string())
+                    .unwrap_or_default();
+            }
+            state.playback_state.playing = false;
+        } else {
+            // Play
+            state.playback_state.playing = true;
+        }
     }
 
     // Jog amount: skip by the playback speed amount (1 second worth of playback)
@@ -506,14 +625,34 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
         .timeline_seconds_per_real_second();
 
     // Step backward
-    if ui.button(RichText::new("\u{23EE}").size(14.0)).clicked() {
+    if ui.button(RichText::new("\u{25C0}").size(14.0)).clicked() {
+        // ◀
+        // Exit live mode when jogging
+        if state.live_mode_state.is_active() {
+            state.live_mode_state.stop(LiveExitReason::UserJogged);
+            state.status_message = state
+                .live_mode_state
+                .last_exit_reason
+                .map(|r| r.message().to_string())
+                .unwrap_or_default();
+        }
         if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
             *ts -= jog_amount;
         }
     }
 
     // Step forward
-    if ui.button(RichText::new("\u{23ED}").size(14.0)).clicked() {
+    if ui.button(RichText::new("\u{25B6}").size(14.0)).clicked() {
+        // ▶
+        // Exit live mode when jogging
+        if state.live_mode_state.is_active() {
+            state.live_mode_state.stop(LiveExitReason::UserJogged);
+            state.status_message = state
+                .live_mode_state
+                .last_exit_reason
+                .map(|r| r.message().to_string())
+                .unwrap_or_default();
+        }
         if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
             *ts += jog_amount;
         }
@@ -536,6 +675,81 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         render_session_stats(ui, &state.session_stats);
     });
+}
+
+/// Render live mode indicator badge with pulsing dot.
+fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
+    let phase = state.live_mode_state.phase;
+    let pulse_alpha = state.live_mode_state.pulse_alpha();
+
+    // Get current time for status text
+    let now = state
+        .playback_state
+        .selected_timestamp
+        .unwrap_or(1714564800.0);
+
+    match phase {
+        LivePhase::AcquiringLock => {
+            // Show "CONNECTING" with orange pulsing
+            let pulsed_color = Color32::from_rgba_unmultiplied(
+                LIVE_COLOR_ACQUIRING.r(),
+                LIVE_COLOR_ACQUIRING.g(),
+                LIVE_COLOR_ACQUIRING.b(),
+                (128.0 + 127.0 * pulse_alpha) as u8,
+            );
+            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color)); // •
+
+            let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
+            ui.label(
+                RichText::new(format!("CONNECTING {}s", elapsed))
+                    .size(11.0)
+                    .strong()
+                    .color(LIVE_COLOR_ACQUIRING),
+            );
+        }
+        LivePhase::Streaming | LivePhase::WaitingForChunk => {
+            // Show red "LIVE" indicator (always visible once streaming)
+            let pulsed_color = Color32::from_rgba_unmultiplied(
+                LIVE_COLOR_STREAMING.r(),
+                LIVE_COLOR_STREAMING.g(),
+                LIVE_COLOR_STREAMING.b(),
+                (128.0 + 127.0 * pulse_alpha) as u8,
+            );
+            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color)); // •
+            ui.label(
+                RichText::new("LIVE")
+                    .size(11.0)
+                    .strong()
+                    .color(LIVE_COLOR_STREAMING),
+            );
+
+            // Show chunk count
+            if state.live_mode_state.chunks_received > 0 {
+                ui.label(
+                    RichText::new(format!("({})", state.live_mode_state.chunks_received))
+                        .size(10.0)
+                        .color(Color32::from_rgb(180, 180, 180)),
+                );
+            }
+
+            // Show status: downloading or waiting
+            if phase == LivePhase::Streaming {
+                ui.label(
+                    RichText::new("receiving...")
+                        .size(10.0)
+                        .italics()
+                        .color(Color32::from_rgb(150, 200, 150)),
+                );
+            } else if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now) {
+                ui.label(
+                    RichText::new(format!("next in {}s", remaining.ceil() as i32))
+                        .size(10.0)
+                        .color(LIVE_COLOR_WAITING),
+                );
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Render session statistics (right-aligned in the bottom bar).

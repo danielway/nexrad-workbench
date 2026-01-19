@@ -7,6 +7,7 @@
 mod alerts;
 mod data_source;
 mod layer;
+mod live_mode;
 mod playback;
 mod processing;
 pub mod radar_data;
@@ -17,6 +18,7 @@ mod viz;
 pub use alerts::{AlertSummary, AlertsState, NwsAlert};
 pub use data_source::UploadState;
 pub use layer::{GeoLayerVisibility, LayerState};
+pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use playback::{PlaybackSpeed, PlaybackState};
 pub use processing::ProcessingState;
 pub use radar_data::RadarTimeline;
@@ -53,6 +55,9 @@ pub struct AppState {
 
     /// NWS weather alerts
     pub alerts_state: AlertsState,
+
+    /// Live streaming mode state
+    pub live_mode_state: LiveModeState,
 }
 
 impl AppState {
