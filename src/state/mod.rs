@@ -9,7 +9,7 @@ mod layer;
 mod playback;
 mod processing;
 pub mod radar_data;
-mod vcp;
+pub mod vcp;
 mod viz;
 
 pub use data_source::UploadState;

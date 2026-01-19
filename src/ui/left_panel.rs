@@ -28,14 +28,16 @@ pub fn render_left_panel(
 ) {
     egui::SidePanel::left("left_panel")
         .resizable(true)
-        .default_width(250.0)
-        .min_width(200.0)
+        .default_width(280.0)
+        .min_width(240.0)
         .max_width(400.0)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                render_load_data_section(ui, state, file_picker);
-                ui.add_space(10.0);
                 render_radar_operations_section(ui, state);
+                ui.add_space(15.0);
+                ui.separator();
+                ui.add_space(10.0);
+                render_load_data_section(ui, state, file_picker);
             });
         });
 }
@@ -94,27 +96,28 @@ fn render_load_data_section(
 }
 
 fn render_radar_operations_section(ui: &mut egui::Ui, state: &AppState) {
-    ui.collapsing("Radar Operations", |ui| {
-        let radar_state = query_radar_state_at_timestamp(state);
+    ui.heading("Radar Operations");
+    ui.add_space(5.0);
 
+    let radar_state = query_radar_state_at_timestamp(state);
+
+    // Top-down and side views side-by-side
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.label(RichText::new("Azimuth").small());
+            render_top_down_view(ui, radar_state.azimuth);
+        });
         ui.add_space(5.0);
-
-        // Top-down view (azimuth)
-        ui.label(RichText::new("Top View (Azimuth)").strong());
-        render_top_down_view(ui, radar_state.azimuth);
-
-        ui.add_space(10.0);
-
-        // Side view (elevation)
-        ui.label(RichText::new("Side View (Elevation)").strong());
-        render_side_view(ui, radar_state.elevation);
-
-        ui.add_space(10.0);
-        ui.separator();
-
-        // VCP breakdown
-        render_vcp_breakdown(ui, &radar_state);
+        ui.vertical(|ui| {
+            ui.label(RichText::new("Elevation").small());
+            render_side_view(ui, radar_state.elevation);
+        });
     });
+
+    ui.add_space(10.0);
+
+    // VCP breakdown
+    render_vcp_breakdown(ui, &radar_state);
 }
 
 fn query_radar_state_at_timestamp(state: &AppState) -> RadarStateAtTimestamp<'_> {
@@ -169,29 +172,25 @@ fn query_radar_state_at_timestamp(state: &AppState) -> RadarStateAtTimestamp<'_>
 }
 
 fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>) {
-    let size = Vec2::new(120.0, 120.0);
+    let size = Vec2::new(100.0, 100.0);
     let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
     let rect = response.rect;
     let center = rect.center();
-    let radius = (rect.width().min(rect.height()) / 2.0) - 10.0;
+    let radius = (rect.width().min(rect.height()) / 2.0) - 8.0;
 
     // Dark background
     painter.rect_filled(rect, 4.0, Color32::from_rgb(30, 30, 40));
 
     // Concentric range rings
     let ring_color = Color32::from_rgb(60, 60, 80);
-    for factor in [0.25, 0.5, 0.75, 1.0] {
-        painter.circle_stroke(
-            center,
-            radius * factor,
-            Stroke::new(1.0, ring_color),
-        );
+    for factor in [0.33, 0.66, 1.0] {
+        painter.circle_stroke(center, radius * factor, Stroke::new(1.0, ring_color));
     }
 
     // Cardinal direction labels
-    let label_color = Color32::from_rgb(150, 150, 170);
-    let label_offset = radius + 6.0;
-    let font_id = egui::FontId::proportional(10.0);
+    let label_color = Color32::from_rgb(120, 120, 140);
+    let label_offset = radius + 5.0;
+    let font_id = egui::FontId::proportional(9.0);
 
     painter.text(
         center + Vec2::new(0.0, -label_offset),
@@ -223,7 +222,7 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>) {
     );
 
     // Center dot (radar dish)
-    painter.circle_filled(center, 3.0, Color32::from_rgb(200, 200, 200));
+    painter.circle_filled(center, 2.5, Color32::from_rgb(200, 200, 200));
 
     // Azimuth line (if we have data)
     if let Some(az) = azimuth {
@@ -238,15 +237,14 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>) {
             Stroke::new(2.0, Color32::from_rgb(100, 255, 100)),
         );
 
-        // Azimuth label below
-        ui.label(format!("Az: {:.1}\u{00B0}", az));
+        ui.label(RichText::new(format!("{:.1}\u{00B0}", az)).small());
     } else {
-        ui.label(RichText::new("No scan data").small().color(Color32::GRAY));
+        ui.label(RichText::new("--").small().color(Color32::GRAY));
     }
 }
 
 fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
-    let size = Vec2::new(140.0, 70.0);
+    let size = Vec2::new(120.0, 100.0);
     let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
     let rect = response.rect;
 
@@ -254,7 +252,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     painter.rect_filled(rect, 4.0, Color32::from_rgb(30, 30, 40));
 
     // Ground line at bottom
-    let ground_y = rect.bottom() - 10.0;
+    let ground_y = rect.bottom() - 8.0;
     let ground_color = Color32::from_rgb(80, 60, 40);
     painter.line_segment(
         [Pos2::new(rect.left() + 5.0, ground_y), Pos2::new(rect.right() - 5.0, ground_y)],
@@ -262,9 +260,9 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     );
 
     // Tower/dish on left side
-    let tower_x = rect.left() + 20.0;
+    let tower_x = rect.left() + 15.0;
     let tower_bottom = ground_y;
-    let tower_top = tower_bottom - 15.0;
+    let tower_top = tower_bottom - 20.0;
 
     // Tower base
     painter.line_segment(
@@ -277,10 +275,10 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
 
     // Reference angle lines (0°, 10°, 20°)
     let beam_origin = Pos2::new(tower_x, tower_top);
-    let beam_length = rect.width() - 40.0;
+    let beam_length = rect.width() - 30.0;
     let ref_line_color = Color32::from_rgb(60, 60, 80);
     let label_color = Color32::from_rgb(100, 100, 120);
-    let font_id = egui::FontId::proportional(9.0);
+    let font_id = egui::FontId::proportional(8.0);
 
     for angle in [0.0_f32, 10.0, 20.0] {
         let angle_rad = angle * PI / 180.0;
@@ -315,10 +313,9 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
             Stroke::new(2.5, Color32::from_rgb(100, 255, 100)),
         );
 
-        // Elevation label below
-        ui.label(format!("Elev: {:.1}\u{00B0}", elev));
+        ui.label(RichText::new(format!("{:.1}\u{00B0}", elev)).small());
     } else {
-        ui.label(RichText::new("No scan data").small().color(Color32::GRAY));
+        ui.label(RichText::new("--").small().color(Color32::GRAY));
     }
 }
 
@@ -326,76 +323,107 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
     match radar_state.vcp {
         Some(vcp) => {
             // VCP header
-            if let Some(def) = get_vcp_definition(vcp) {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("VCP {}", vcp)).strong());
-                    ui.label(RichText::new(def.name).small());
-                });
-                ui.label(RichText::new(def.description).small().color(Color32::GRAY));
-            } else {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("VCP {}", vcp)).strong());
-                    ui.label(RichText::new("(details not available)").small().color(Color32::GRAY));
-                });
-            }
-
-            ui.add_space(5.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("VCP {}", vcp)).strong());
+                if let Some(def) = get_vcp_definition(vcp) {
+                    ui.label(RichText::new(def.name).small().color(Color32::GRAY));
+                }
+            });
 
             // Progress bar
             if let Some(progress) = radar_state.scan_progress {
+                ui.add_space(3.0);
                 let progress_bar = egui::ProgressBar::new(progress)
                     .show_percentage()
                     .animate(false);
                 ui.add(progress_bar);
             }
 
-            ui.add_space(5.0);
+            ui.add_space(8.0);
 
-            // Elevation list
-            ui.label(RichText::new("Elevations").strong());
+            // Elevation list header
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("  ").monospace()); // Spacer for indicator
+                ui.label(RichText::new("Elev").small().color(Color32::GRAY));
+                ui.add_space(8.0);
+                ui.label(RichText::new("Type").small().color(Color32::GRAY));
+                ui.add_space(4.0);
+                ui.label(RichText::new("PRF").small().color(Color32::GRAY));
+                ui.add_space(4.0);
+                ui.label(RichText::new("Info").small().color(Color32::GRAY));
+            });
 
-            // Use the scan's actual sweeps if available, otherwise fall back to VCP definition
+            ui.add_space(2.0);
+
+            // Use the scan's actual sweeps with VCP metadata if available
+            let vcp_def = get_vcp_definition(vcp);
             if let Some(scan) = radar_state.scan {
                 egui::ScrollArea::vertical()
-                    .max_height(150.0)
+                    .max_height(200.0)
                     .show(ui, |ui| {
                         for (idx, sweep) in scan.sweeps.iter().enumerate() {
                             let is_current = radar_state.sweep_index == Some(idx);
-                            render_elevation_row(
-                                ui,
-                                idx,
-                                sweep.elevation,
-                                is_current,
-                            );
+                            // Try to match elevation with VCP definition for metadata
+                            let elev_meta = vcp_def.and_then(|def| {
+                                def.elevations.iter().find(|e| (e.angle - sweep.elevation).abs() < 0.1)
+                            });
+                            render_elevation_row(ui, sweep.elevation, elev_meta, is_current);
                         }
                     });
-            } else if let Some(def) = get_vcp_definition(vcp) {
+            } else if let Some(def) = vcp_def {
                 egui::ScrollArea::vertical()
-                    .max_height(150.0)
+                    .max_height(200.0)
                     .show(ui, |ui| {
-                        for (idx, elev) in def.elevations.iter().enumerate() {
-                            render_elevation_row_with_details(
-                                ui,
-                                idx,
-                                elev.angle,
-                                elev.waveform,
-                                elev.prf,
-                                false,
-                            );
+                        for elev in def.elevations.iter() {
+                            render_elevation_row(ui, elev.angle, Some(elev), false);
                         }
                     });
             }
         }
         None => {
-            ui.label(RichText::new("No scan data at current time").color(Color32::GRAY));
+            ui.label(RichText::new("No scan data at current time").small().color(Color32::GRAY));
+        }
+    }
+}
+
+/// Get a brief description of what a sweep at this elevation/waveform does
+fn get_sweep_info(elevation: f32, waveform: Option<&str>) -> &'static str {
+    match waveform {
+        Some("CS") => {
+            // Contiguous Surveillance - optimized for reflectivity at long range
+            if elevation < 1.0 {
+                "Refl, long rng"
+            } else {
+                "Refl, surv"
+            }
+        }
+        Some("CD") => {
+            // Contiguous Doppler - optimized for velocity data
+            if elevation < 3.0 {
+                "Vel+Refl"
+            } else if elevation < 8.0 {
+                "Vel, mid alt"
+            } else {
+                "Vel, high alt"
+            }
+        }
+        _ => {
+            // Fallback based on elevation
+            if elevation < 2.0 {
+                "Low tilt"
+            } else if elevation < 6.0 {
+                "Mid tilt"
+            } else {
+                "High tilt"
+            }
         }
     }
 }
 
 fn render_elevation_row(
     ui: &mut egui::Ui,
-    _idx: usize,
     elevation: f32,
+    elev_meta: Option<&crate::state::vcp::VcpElevation>,
     is_current: bool,
 ) {
     let text_color = if is_current {
@@ -403,39 +431,45 @@ fn render_elevation_row(
     } else {
         Color32::from_rgb(180, 180, 180)
     };
-
-    ui.horizontal(|ui| {
-        if is_current {
-            ui.label(RichText::new("\u{25B6}").color(text_color)); // Right-pointing triangle
-        } else {
-            ui.label(RichText::new("  ").monospace());
-        }
-        ui.label(RichText::new(format!("{:5.1}\u{00B0}", elevation)).color(text_color).monospace());
-    });
-}
-
-fn render_elevation_row_with_details(
-    ui: &mut egui::Ui,
-    _idx: usize,
-    elevation: f32,
-    waveform: &str,
-    prf: &str,
-    is_current: bool,
-) {
-    let text_color = if is_current {
-        Color32::from_rgb(100, 255, 100)
+    let dim_color = if is_current {
+        Color32::from_rgb(80, 200, 80)
     } else {
-        Color32::from_rgb(180, 180, 180)
+        Color32::from_rgb(120, 120, 130)
     };
 
     ui.horizontal(|ui| {
+        // Current indicator
         if is_current {
-            ui.label(RichText::new("\u{25B6}").color(text_color));
+            ui.label(RichText::new("\u{25B6}").color(text_color).small());
         } else {
-            ui.label(RichText::new("  ").monospace());
+            ui.label(RichText::new(" ").monospace().small());
         }
-        ui.label(RichText::new(format!("{:5.1}\u{00B0}", elevation)).color(text_color).monospace());
-        ui.label(RichText::new(format!("{}  {}", waveform, prf)).small().color(Color32::GRAY));
+
+        // Elevation angle
+        ui.label(
+            RichText::new(format!("{:5.1}\u{00B0}", elevation))
+                .color(text_color)
+                .monospace()
+                .small(),
+        );
+
+        // Waveform type
+        let waveform = elev_meta.map(|e| e.waveform).unwrap_or("--");
+        ui.label(RichText::new(format!(" {:2}", waveform)).color(dim_color).monospace().small());
+
+        // PRF
+        let prf = elev_meta.map(|e| e.prf).unwrap_or("--");
+        let prf_short = match prf {
+            "Low" => "L",
+            "Med" => "M",
+            "High" => "H",
+            _ => "-",
+        };
+        ui.label(RichText::new(format!(" {}", prf_short)).color(dim_color).monospace().small());
+
+        // Info/description
+        let info = get_sweep_info(elevation, elev_meta.map(|e| e.waveform));
+        ui.label(RichText::new(format!(" {}", info)).color(dim_color).small());
     });
 }
 

@@ -22,6 +22,7 @@ pub struct VcpDefinition {
     /// Short name for the VCP
     pub name: &'static str,
     /// Description of when this VCP is used
+    #[allow(dead_code)] // Part of data model API
     pub description: &'static str,
     /// List of elevation angles in this VCP
     pub elevations: &'static [VcpElevation],
