@@ -109,12 +109,12 @@ impl Default for VizState {
             pan_offset: Vec2::ZERO,
             product: RadarProduct::default(),
             palette: ColorPalette::default(),
-            site_id: "----".to_string(),
+            site_id: "KDMX".to_string(),
             timestamp: "--:--:-- UTC".to_string(),
             elevation: "-- deg".to_string(),
-            // Default to center of continental US (KTLX - Oklahoma City)
-            center_lat: 35.3331,
-            center_lon: -97.2778,
+            // Default to KDMX - Des Moines, Iowa
+            center_lat: 41.7312,
+            center_lon: -93.7229,
         }
     }
 }

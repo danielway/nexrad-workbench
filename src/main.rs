@@ -216,7 +216,7 @@ impl eframe::App for WorkbenchApp {
 
         // Render UI panels in the correct order for egui layout
         // Side and top/bottom panels must be rendered before CentralPanel
-        ui::render_top_bar(ctx, &self.state);
+        ui::render_top_bar(ctx, &mut self.state);
         ui::render_bottom_panel(ctx, &mut self.state);
         ui::render_left_panel(ctx, &mut self.state, &self.file_picker);
         ui::render_right_panel(ctx, &mut self.state);

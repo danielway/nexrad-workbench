@@ -1,7 +1,7 @@
 //! Bottom panel UI: playback controls and timeline.
 
 use crate::state::radar_data::RadarTimeline;
-use crate::state::{AppState, PlaybackMode, PlaybackSpeed};
+use crate::state::{AppState, PlaybackSpeed};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
@@ -115,6 +115,23 @@ fn render_radar_data(
 }
 
 pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
+    // Advance playback position when playing
+    if state.playback_state.playing {
+        let dt = ctx.input(|i| i.stable_dt) as f64;
+        let advance = dt
+            * state
+                .playback_state
+                .speed
+                .timeline_seconds_per_real_second();
+
+        if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
+            *ts += advance;
+        }
+
+        // Request continuous repaint while playing
+        ctx.request_repaint();
+    }
+
     egui::TopBottomPanel::bottom("bottom_panel")
         .exact_height(70.0)
         .show(ctx, |ui| {
@@ -446,13 +463,13 @@ fn format_timestamp_full(ts: f64) -> String {
 }
 
 fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
-    // Selected timestamp display (prominent)
+    // Current position timestamp display
     if let Some(selected_ts) = state.playback_state.selected_timestamp {
         ui.label(
             RichText::new(format_timestamp_full(selected_ts))
                 .monospace()
                 .size(13.0)
-                .color(Color32::from_rgb(100, 150, 255)),
+                .color(Color32::from_rgb(255, 100, 100)),
         );
         ui.separator();
     }
@@ -468,18 +485,24 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
         state.playback_state.toggle_playback();
     }
 
+    // Jog amount: skip by the playback speed amount (1 second worth of playback)
+    let jog_amount = state
+        .playback_state
+        .speed
+        .timeline_seconds_per_real_second();
+
     // Step backward
-    if ui.button(RichText::new("\u{23EE}").size(14.0)).clicked()
-        && state.playback_state.current_frame > 0
-    {
-        state.playback_state.current_frame -= 1;
+    if ui.button(RichText::new("\u{23EE}").size(14.0)).clicked() {
+        if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
+            *ts -= jog_amount;
+        }
     }
 
     // Step forward
-    if ui.button(RichText::new("\u{23ED}").size(14.0)).clicked()
-        && state.playback_state.current_frame < state.playback_state.total_frames.saturating_sub(1)
-    {
-        state.playback_state.current_frame += 1;
+    if ui.button(RichText::new("\u{23ED}").size(14.0)).clicked() {
+        if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
+            *ts += jog_amount;
+        }
     }
 
     ui.separator();
@@ -488,30 +511,10 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
     ui.label(RichText::new("Speed:").size(11.0));
     egui::ComboBox::from_id_salt("speed_selector")
         .selected_text(state.playback_state.speed.label())
-        .width(55.0)
+        .width(75.0)
         .show_ui(ui, |ui| {
             for speed in PlaybackSpeed::all() {
                 ui.selectable_value(&mut state.playback_state.speed, *speed, speed.label());
             }
-        });
-
-    ui.separator();
-
-    // Mode selector
-    ui.label(RichText::new("Mode:").size(11.0));
-    egui::ComboBox::from_id_salt("mode_selector")
-        .selected_text(state.playback_state.mode.label())
-        .width(100.0)
-        .show_ui(ui, |ui| {
-            ui.selectable_value(
-                &mut state.playback_state.mode,
-                PlaybackMode::RadialAccurate,
-                PlaybackMode::RadialAccurate.label(),
-            );
-            ui.selectable_value(
-                &mut state.playback_state.mode,
-                PlaybackMode::FrameStep,
-                PlaybackMode::FrameStep.label(),
-            );
         });
 }

@@ -17,11 +17,11 @@ pub enum PlaybackSpeed {
 impl PlaybackSpeed {
     pub fn label(&self) -> &'static str {
         match self {
-            PlaybackSpeed::Quarter => "0.25x",
-            PlaybackSpeed::Half => "0.5x",
-            PlaybackSpeed::Normal => "1x",
-            PlaybackSpeed::Double => "2x",
-            PlaybackSpeed::Quadruple => "4x",
+            PlaybackSpeed::Quarter => "1 min/s",
+            PlaybackSpeed::Half => "2 min/s",
+            PlaybackSpeed::Normal => "5 min/s",
+            PlaybackSpeed::Double => "10 min/s",
+            PlaybackSpeed::Quadruple => "20 min/s",
         }
     }
 
@@ -42,6 +42,18 @@ impl PlaybackSpeed {
             PlaybackSpeed::Normal => 1.0,
             PlaybackSpeed::Double => 2.0,
             PlaybackSpeed::Quadruple => 4.0,
+        }
+    }
+
+    /// Returns how many seconds of timeline time pass per real second.
+    /// Based on the label (e.g., "5 min/s" = 300 seconds per real second).
+    pub fn timeline_seconds_per_real_second(&self) -> f64 {
+        match self {
+            PlaybackSpeed::Quarter => 60.0,     // 1 min/s
+            PlaybackSpeed::Half => 120.0,       // 2 min/s
+            PlaybackSpeed::Normal => 300.0,     // 5 min/s
+            PlaybackSpeed::Double => 600.0,     // 10 min/s
+            PlaybackSpeed::Quadruple => 1200.0, // 20 min/s
         }
     }
 }
