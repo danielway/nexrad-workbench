@@ -1,6 +1,7 @@
 //! Bottom panel UI: playback controls and timeline.
 
 use crate::state::{AppState, PlaybackMode, PlaybackSpeed};
+use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Pos2, RichText, Sense, Stroke, StrokeKind, Vec2};
 
 pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
@@ -22,12 +23,92 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
         });
 }
 
+/// Time intervals for tick marks, from coarsest to finest
+#[derive(Clone, Copy)]
+struct TickConfig {
+    /// Interval in seconds for major ticks
+    major_interval: i64,
+    /// Number of minor ticks between major ticks
+    minor_divisions: i32,
+    /// Minimum pixels per major tick to use this config
+    min_pixels_per_major: f64,
+}
+
+const TICK_CONFIGS: &[TickConfig] = &[
+    // Years (approximate - 365 days)
+    TickConfig { major_interval: 365 * 24 * 3600, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    // Quarters (approximate - 91 days)
+    TickConfig { major_interval: 91 * 24 * 3600, minor_divisions: 3, min_pixels_per_major: 60.0 },
+    // Months (approximate - 30 days)
+    TickConfig { major_interval: 30 * 24 * 3600, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    // Weeks
+    TickConfig { major_interval: 7 * 24 * 3600, minor_divisions: 7, min_pixels_per_major: 60.0 },
+    // Days
+    TickConfig { major_interval: 24 * 3600, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    // 6 hours
+    TickConfig { major_interval: 6 * 3600, minor_divisions: 6, min_pixels_per_major: 60.0 },
+    // Hours
+    TickConfig { major_interval: 3600, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    // 15 minutes
+    TickConfig { major_interval: 15 * 60, minor_divisions: 3, min_pixels_per_major: 60.0 },
+    // 5 minutes
+    TickConfig { major_interval: 5 * 60, minor_divisions: 5, min_pixels_per_major: 60.0 },
+    // 1 minute
+    TickConfig { major_interval: 60, minor_divisions: 4, min_pixels_per_major: 60.0 },
+    // 15 seconds
+    TickConfig { major_interval: 15, minor_divisions: 3, min_pixels_per_major: 60.0 },
+    // 5 seconds
+    TickConfig { major_interval: 5, minor_divisions: 5, min_pixels_per_major: 60.0 },
+    // 1 second
+    TickConfig { major_interval: 1, minor_divisions: 4, min_pixels_per_major: 60.0 },
+];
+
+fn select_tick_config(zoom: f64) -> &'static TickConfig {
+    // zoom is pixels per second
+    // We want at least min_pixels_per_major pixels between major ticks
+    // Iterate from finest (seconds) to coarsest (years), return the finest that fits
+    for config in TICK_CONFIGS.iter().rev() {
+        let pixels_per_major = zoom * config.major_interval as f64;
+        if pixels_per_major >= config.min_pixels_per_major {
+            return config;
+        }
+    }
+    // Fallback to coarsest if nothing fits
+    &TICK_CONFIGS[0]
+}
+
+fn format_timestamp(timestamp: i64, tick_config: &TickConfig) -> String {
+    let dt = Utc.timestamp_opt(timestamp, 0).unwrap();
+    let interval = tick_config.major_interval;
+
+    if interval >= 30 * 24 * 3600 {
+        // Months or longer: show "Jan 2024" or "2024"
+        if interval >= 365 * 24 * 3600 {
+            format!("{}", dt.year())
+        } else {
+            format!("{}", dt.format("%b %Y"))
+        }
+    } else if interval >= 24 * 3600 {
+        // Days to weeks: show "May 15" or "Mon 15"
+        format!("{}", dt.format("%b %d"))
+    } else if interval >= 3600 {
+        // Hours: show "14:00"
+        format!("{:02}:{:02}", dt.hour(), dt.minute())
+    } else if interval >= 60 {
+        // Minutes: show "14:30"
+        format!("{:02}:{:02}", dt.hour(), dt.minute())
+    } else {
+        // Seconds: show "14:30:45"
+        format!("{:02}:{:02}:{:02}", dt.hour(), dt.minute(), dt.second())
+    }
+}
+
 fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
-    let available_width = ui.available_width();
+    let available_width = ui.available_width() as f64;
     let timeline_height = 28.0;
 
     let (response, painter) = ui.allocate_painter(
-        Vec2::new(available_width, timeline_height),
+        Vec2::new(available_width as f32, timeline_height),
         Sense::click_and_drag(),
     );
     let rect = response.rect;
@@ -41,152 +122,184 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         StrokeKind::Outside,
     );
 
-    let total_frames = state.playback_state.total_frames;
-    if total_frames == 0 {
+    let zoom = state.playback_state.timeline_zoom; // pixels per second
+    if zoom <= 0.0 {
         return;
     }
 
-    let zoom = state.playback_state.timeline_zoom;
-    let pan = state.playback_state.timeline_pan;
+    let view_start = state.playback_state.timeline_view_start; // absolute timestamp
 
-    // Calculate visible frame range
-    let visible_frames = available_width / zoom;
-    let start_frame = pan;
-    let end_frame = (pan + visible_frames).min(total_frames as f32);
+    // Calculate visible time range
+    let visible_secs = available_width / zoom;
+    let view_end = view_start + visible_secs as i64;
 
-    // Determine tick interval based on zoom
-    let tick_interval = determine_tick_interval(zoom);
-    let tick_interval_f = tick_interval as f32;
-    let minor_tick_interval = tick_interval / 5;
+    // Helper to convert timestamp to x position
+    let ts_to_x = |ts: i64| -> f32 { rect.left() + ((ts - view_start) as f64 * zoom) as f32 };
 
-    // Draw tick marks
-    let first_tick = ((start_frame / tick_interval_f).floor() * tick_interval_f) as i32;
-    let last_tick = ((end_frame / tick_interval_f).ceil() * tick_interval_f) as i32;
+    // Draw loaded data range highlight (if any data is loaded)
+    if let (Some(data_start), Some(data_end)) = (
+        state.playback_state.data_start_timestamp,
+        state.playback_state.data_end_timestamp,
+    ) {
+        let data_x_start = ts_to_x(data_start).max(rect.left());
+        let data_x_end = ts_to_x(data_end).min(rect.right());
 
-    for tick in (first_tick..=last_tick).step_by(minor_tick_interval.max(1) as usize) {
-        if tick < 0 || tick >= total_frames as i32 {
-            continue;
-        }
-
-        let x = rect.left() + (tick as f32 - pan) * zoom;
-        if x < rect.left() || x > rect.right() {
-            continue;
-        }
-
-        let is_major = tick % tick_interval == 0;
-        let tick_height = if is_major { 12.0 } else { 6.0 };
-        let tick_color = if is_major {
-            Color32::from_rgb(120, 120, 140)
-        } else {
-            Color32::from_rgb(60, 60, 80)
-        };
-
-        painter.line_segment(
-            [
-                Pos2::new(x, rect.bottom() - tick_height),
-                Pos2::new(x, rect.bottom()),
-            ],
-            Stroke::new(1.0, tick_color),
-        );
-
-        // Draw label for major ticks
-        if is_major {
-            let label = format_frame_label(tick as usize, zoom);
-            painter.text(
-                Pos2::new(x, rect.top() + 10.0),
-                egui::Align2::CENTER_CENTER,
-                label,
-                egui::FontId::monospace(9.0),
-                Color32::from_rgb(140, 140, 160),
+        if data_x_end > data_x_start {
+            painter.rect_filled(
+                egui::Rect::from_min_max(
+                    Pos2::new(data_x_start, rect.top()),
+                    Pos2::new(data_x_end, rect.bottom()),
+                ),
+                0.0,
+                Color32::from_rgba_unmultiplied(60, 100, 60, 40),
             );
         }
     }
 
-    // Draw playhead
-    let playhead_x = rect.left() + (state.playback_state.current_frame as f32 - pan) * zoom;
-    if playhead_x >= rect.left() && playhead_x <= rect.right() {
-        // Playhead line
-        painter.line_segment(
-            [
-                Pos2::new(playhead_x, rect.top()),
-                Pos2::new(playhead_x, rect.bottom()),
-            ],
-            Stroke::new(2.0, Color32::from_rgb(255, 100, 100)),
-        );
+    // Select appropriate tick configuration
+    let tick_config = select_tick_config(zoom);
+    let major_interval = tick_config.major_interval;
+    let minor_interval = major_interval / tick_config.minor_divisions as i64;
 
-        // Playhead triangle
-        let triangle = vec![
-            Pos2::new(playhead_x - 5.0, rect.top()),
-            Pos2::new(playhead_x + 5.0, rect.top()),
-            Pos2::new(playhead_x, rect.top() + 8.0),
-        ];
-        painter.add(egui::Shape::convex_polygon(
-            triangle,
-            Color32::from_rgb(255, 100, 100),
-            Stroke::NONE,
-        ));
+    // Align to tick boundaries
+    let first_tick = (view_start / minor_interval) * minor_interval;
+    let last_tick = ((view_end / minor_interval) + 1) * minor_interval;
+
+    // Draw tick marks
+    let mut tick = first_tick;
+    while tick <= last_tick {
+        let x = ts_to_x(tick);
+
+        if x >= rect.left() && x <= rect.right() {
+            let is_major = tick % major_interval == 0;
+            let tick_height = if is_major { 12.0 } else { 6.0 };
+            let tick_color = if is_major {
+                Color32::from_rgb(120, 120, 140)
+            } else {
+                Color32::from_rgb(60, 60, 80)
+            };
+
+            painter.line_segment(
+                [
+                    Pos2::new(x, rect.bottom() - tick_height),
+                    Pos2::new(x, rect.bottom()),
+                ],
+                Stroke::new(1.0, tick_color),
+            );
+
+            // Draw label for major ticks
+            if is_major {
+                let label = format_timestamp(tick, tick_config);
+                painter.text(
+                    Pos2::new(x, rect.top() + 10.0),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::monospace(9.0),
+                    Color32::from_rgb(140, 140, 160),
+                );
+            }
+        }
+
+        tick += minor_interval;
     }
 
-    // Handle interactions
-    if response.clicked() {
-        if let Some(pos) = response.interact_pointer_pos() {
-            let clicked_frame = pan + (pos.x - rect.left()) / zoom;
-            state.playback_state.current_frame =
-                (clicked_frame.round() as usize).clamp(0, total_frames.saturating_sub(1));
+    // Draw playhead at current frame position (if data is loaded)
+    if let Some(current_ts) = state.playback_state.current_timestamp() {
+        let playhead_x = ts_to_x(current_ts);
+
+        if playhead_x >= rect.left() && playhead_x <= rect.right() {
+            // Playhead line
+            painter.line_segment(
+                [
+                    Pos2::new(playhead_x, rect.top()),
+                    Pos2::new(playhead_x, rect.bottom()),
+                ],
+                Stroke::new(2.0, Color32::from_rgb(255, 100, 100)),
+            );
+
+            // Playhead triangle
+            let triangle = vec![
+                Pos2::new(playhead_x - 5.0, rect.top()),
+                Pos2::new(playhead_x + 5.0, rect.top()),
+                Pos2::new(playhead_x, rect.top() + 8.0),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                triangle,
+                Color32::from_rgb(255, 100, 100),
+                Stroke::NONE,
+            ));
         }
     }
 
-    if response.dragged_by(egui::PointerButton::Middle)
-        || (response.dragged() && ui.input(|i| i.modifiers.shift))
-    {
-        let delta_frames = -response.drag_delta().x / zoom;
-        state.playback_state.timeline_pan =
-            (pan + delta_frames).clamp(0.0, (total_frames as f32 - visible_frames).max(0.0));
+    // Draw selection marker (if user has selected a time)
+    if let Some(selected_ts) = state.playback_state.selected_timestamp {
+        let sel_x = ts_to_x(selected_ts);
+
+        if sel_x >= rect.left() && sel_x <= rect.right() {
+            // Selection line (different color from playhead)
+            painter.line_segment(
+                [
+                    Pos2::new(sel_x, rect.top()),
+                    Pos2::new(sel_x, rect.bottom()),
+                ],
+                Stroke::new(2.0, Color32::from_rgb(100, 150, 255)),
+            );
+
+            // Selection diamond
+            let diamond = vec![
+                Pos2::new(sel_x, rect.top()),
+                Pos2::new(sel_x + 5.0, rect.top() + 5.0),
+                Pos2::new(sel_x, rect.top() + 10.0),
+                Pos2::new(sel_x - 5.0, rect.top() + 5.0),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                diamond,
+                Color32::from_rgb(100, 150, 255),
+                Stroke::NONE,
+            ));
+        }
     }
 
-    // Handle zoom with scroll
+    // Handle click to select time
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let clicked_ts = view_start + ((pos.x - rect.left()) as f64 / zoom) as i64;
+            state.playback_state.selected_timestamp = Some(clicked_ts);
+
+            // If clicked within loaded data range, also seek to that frame
+            if let Some(frame) = state.playback_state.timestamp_to_frame(clicked_ts) {
+                state.playback_state.current_frame = frame;
+            }
+        }
+    }
+
+    // Handle drag to pan - NO CLAMPING, free scrolling anywhere in time
+    if response.dragged() {
+        let delta_secs = (-response.drag_delta().x as f64 / zoom) as i64;
+        state.playback_state.timeline_view_start += delta_secs;
+    }
+
+    // Handle zoom with scroll wheel
     if response.hovered() {
         let scroll_delta = ui.input(|i| i.raw_scroll_delta);
         if scroll_delta.y != 0.0 {
-            let zoom_factor = 1.0 + scroll_delta.y * 0.002;
+            let zoom_factor = 1.0 + scroll_delta.y as f64 * 0.002;
             let old_zoom = state.playback_state.timeline_zoom;
-            let new_zoom = (old_zoom * zoom_factor).clamp(0.5, 50.0);
+            // Allow zooming from ~10 years visible to ~1 second visible
+            let new_zoom = (old_zoom * zoom_factor).clamp(0.000001, 1000.0);
 
             // Zoom centered on cursor position
             if let Some(cursor_pos) = response.hover_pos() {
-                let cursor_frame = pan + (cursor_pos.x - rect.left()) / old_zoom;
-                let new_pan = cursor_frame - (cursor_pos.x - rect.left()) / new_zoom;
-                state.playback_state.timeline_pan = new_pan.clamp(
-                    0.0,
-                    (total_frames as f32 - available_width / new_zoom).max(0.0),
-                );
+                let cursor_ts =
+                    view_start + ((cursor_pos.x - rect.left()) as f64 / old_zoom) as i64;
+                let new_view_start =
+                    cursor_ts - ((cursor_pos.x - rect.left()) as f64 / new_zoom) as i64;
+                state.playback_state.timeline_view_start = new_view_start;
             }
 
             state.playback_state.timeline_zoom = new_zoom;
         }
     }
-}
-
-fn determine_tick_interval(zoom: f32) -> i32 {
-    // Choose tick interval based on zoom level
-    // At higher zoom (more pixels per frame), show finer intervals
-    if zoom > 20.0 {
-        5 // Every 5 frames
-    } else if zoom > 10.0 {
-        10 // Every 10 frames
-    } else if zoom > 5.0 {
-        20 // Every 20 frames
-    } else if zoom > 2.0 {
-        50 // Every 50 frames
-    } else if zoom > 1.0 {
-        100 // Every 100 frames
-    } else {
-        200 // Every 200 frames
-    }
-}
-
-fn format_frame_label(frame: usize, _zoom: f32) -> String {
-    format!("{}", frame)
 }
 
 fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {

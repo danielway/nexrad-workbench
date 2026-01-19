@@ -83,18 +83,35 @@ pub struct PlaybackState {
     /// Current playback mode
     pub mode: PlaybackMode,
 
-    /// Timeline zoom level (pixels per frame)
-    pub timeline_zoom: f32,
+    /// Timeline zoom level (pixels per second)
+    pub timeline_zoom: f64,
 
-    /// Timeline pan offset (in frames from start)
-    pub timeline_pan: f32,
+    /// Timeline view position - absolute timestamp of left edge (Unix seconds)
+    pub timeline_view_start: i64,
+
+    /// User-selected timestamp for seeking/downloading (Unix seconds)
+    /// This is where the user clicked, independent of loaded data
+    pub selected_timestamp: Option<i64>,
+
+    /// Start timestamp of loaded data (Unix seconds), if any
+    pub data_start_timestamp: Option<i64>,
+
+    /// End timestamp of loaded data (Unix seconds), if any
+    pub data_end_timestamp: Option<i64>,
 }
 
 impl PlaybackState {
     pub fn new() -> Self {
+        // Start view at current time (roughly - using a recent date for demo)
+        let now = 1714521600_i64; // 2024-05-01 00:00:00 UTC
+
         Self {
-            total_frames: 100,  // Placeholder for UI demonstration
-            timeline_zoom: 5.0, // Default: 5 pixels per frame
+            total_frames: 0, // No data loaded initially
+            timeline_zoom: 0.0001, // Start very zoomed out to see months
+            timeline_view_start: now - 15 * 24 * 3600, // Center view around "now"
+            selected_timestamp: None,
+            data_start_timestamp: None,
+            data_end_timestamp: None,
             ..Default::default()
         }
     }
@@ -105,5 +122,44 @@ impl PlaybackState {
 
     pub fn frame_label(&self) -> String {
         format!("{} / {}", self.current_frame, self.total_frames)
+    }
+
+    /// Get the duration of loaded data in seconds
+    pub fn data_duration_secs(&self) -> f64 {
+        match (self.data_start_timestamp, self.data_end_timestamp) {
+            (Some(start), Some(end)) => (end - start) as f64,
+            _ => 0.0,
+        }
+    }
+
+    /// Check if we have any loaded data
+    pub fn has_data(&self) -> bool {
+        self.data_start_timestamp.is_some() && self.total_frames > 0
+    }
+
+    /// Get the timestamp for the current frame (if data is loaded)
+    pub fn current_timestamp(&self) -> Option<i64> {
+        let start = self.data_start_timestamp?;
+        let duration = self.data_duration_secs();
+        if self.total_frames == 0 || duration <= 0.0 {
+            return Some(start);
+        }
+        let position = self.current_frame as f64 / self.total_frames as f64;
+        Some(start + (position * duration) as i64)
+    }
+
+    /// Convert a timestamp to a frame index (clamped to valid range)
+    pub fn timestamp_to_frame(&self, timestamp: i64) -> Option<usize> {
+        let start = self.data_start_timestamp?;
+        let duration = self.data_duration_secs();
+        if self.total_frames == 0 || duration <= 0.0 {
+            return Some(0);
+        }
+        let position = (timestamp - start) as f64 / duration;
+        Some(
+            (position * self.total_frames as f64)
+                .round()
+                .clamp(0.0, (self.total_frames - 1) as f64) as usize,
+        )
     }
 }
