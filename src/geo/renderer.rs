@@ -49,6 +49,7 @@ fn render_layer(
 }
 
 /// Renders a single geographic feature.
+#[allow(clippy::too_many_arguments)]
 fn render_feature(
     painter: &Painter,
     feature: &GeoFeature,
@@ -299,45 +300,6 @@ fn render_line_string(
             if dist_sq > 0.5 {
                 painter.line_segment([*p1, *p2], stroke);
             }
-        }
-    }
-}
-
-/// Simplified line rendering with Douglas-Peucker simplification.
-/// Use this for very detailed geometries to improve performance.
-pub fn render_line_string_simplified(
-    painter: &Painter,
-    coords: &[Coord<f64>],
-    projection: &MapProjection,
-    stroke: Stroke,
-    tolerance: f64,
-) {
-    if coords.len() < 2 {
-        return;
-    }
-
-    // Simple simplification: skip points that are very close together
-    let mut simplified: Vec<Pos2> = Vec::with_capacity(coords.len() / 2);
-    let mut last_pos: Option<Pos2> = None;
-
-    for coord in coords {
-        let pos = projection.geo_to_screen(*coord);
-
-        if let Some(last) = last_pos {
-            let dist_sq = (pos.x - last.x).powi(2) + (pos.y - last.y).powi(2);
-            if dist_sq < (tolerance as f32).powi(2) {
-                continue;
-            }
-        }
-
-        simplified.push(pos);
-        last_pos = Some(pos);
-    }
-
-    // Draw simplified line
-    for window in simplified.windows(2) {
-        if let [p1, p2] = window {
-            painter.line_segment([*p1, *p2], stroke);
         }
     }
 }

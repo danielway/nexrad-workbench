@@ -55,12 +55,6 @@ impl MapProjection {
         self.screen_rect = screen_rect;
     }
 
-    /// Sets the center coordinates (e.g., when radar site changes).
-    pub fn set_center(&mut self, lat: f64, lon: f64) {
-        self.center_lat = lat;
-        self.center_lon = lon;
-    }
-
     /// Converts geographic coordinates (lon, lat) to screen position.
     ///
     /// Uses a simple equirectangular projection which is adequate for
@@ -149,57 +143,4 @@ impl MapProjection {
             || max_lat < vis_min_lat - margin
             || min_lat > vis_max_lat + margin)
     }
-}
-
-/// Lookup table for common NEXRAD radar site locations.
-/// Format: (site_id, latitude, longitude)
-pub const NEXRAD_SITES: &[(&str, f64, f64)] = &[
-    ("KTLX", 35.3331, -97.2778),  // Oklahoma City, OK
-    ("KFWS", 32.5730, -97.3031),  // Dallas/Fort Worth, TX
-    ("KEWX", 29.7039, -98.0286),  // Austin/San Antonio, TX
-    ("KFDR", 34.3622, -98.9764),  // Frederick, OK
-    ("KINX", 36.1750, -95.5647),  // Tulsa, OK
-    ("KVNX", 36.7408, -98.1275),  // Vance AFB, OK
-    ("KDYX", 32.5381, -99.2542),  // Dyess AFB, TX
-    ("KAMA", 35.2331, -101.7092), // Amarillo, TX
-    ("KLBB", 33.6542, -101.8142), // Lubbock, TX
-    ("KMAF", 31.9433, -102.1892), // Midland, TX
-    ("KSJT", 31.3711, -100.4925), // San Angelo, TX
-    ("KGRK", 30.7217, -97.3828),  // Fort Hood, TX
-    ("KHGX", 29.4719, -95.0792),  // Houston, TX
-    ("KCRP", 27.7842, -97.5111),  // Corpus Christi, TX
-    ("KBRO", 25.9158, -97.4189),  // Brownsville, TX
-    ("KLZK", 34.8364, -92.2622),  // Little Rock, AR
-    ("KSRX", 35.2906, -94.3617),  // Fort Smith, AR
-    ("KSHV", 32.4508, -93.8414),  // Shreveport, LA
-    ("KLCH", 30.1253, -93.2161),  // Lake Charles, LA
-    ("KPOE", 31.1556, -92.9758),  // Fort Polk, LA
-    ("KLIX", 30.3367, -89.8256),  // New Orleans, LA
-    ("KDGX", 32.2797, -89.9844),  // Jackson, MS
-    ("KGWX", 33.8967, -88.3292),  // Columbus AFB, MS
-    ("KMOB", 30.6794, -88.2397),  // Mobile, AL
-    ("KBMX", 33.1722, -86.7697),  // Birmingham, AL
-    ("KEOX", 31.4606, -85.4594),  // Fort Rucker, AL
-    ("KMXX", 32.5369, -85.7897),  // Maxwell AFB, AL
-    ("KHTX", 34.9306, -86.0833),  // Huntsville, AL
-    ("KJGX", 32.6753, -83.3511),  // Robins AFB, GA
-    ("KFFC", 33.3636, -84.5658),  // Atlanta, GA
-    ("KVAX", 30.8903, -83.0019),  // Moody AFB, GA
-    ("KJAX", 30.4847, -81.7019),  // Jacksonville, FL
-    ("KTLH", 30.3975, -84.3289),  // Tallahassee, FL
-    ("KEVX", 30.5644, -85.9214),  // Eglin AFB, FL
-    ("KMLB", 28.1131, -80.6542),  // Melbourne, FL
-    ("KTBW", 27.7056, -82.4017),  // Tampa Bay, FL
-    ("KAMX", 25.6111, -80.4128),  // Miami, FL
-    ("KBYX", 24.5975, -81.7031),  // Key West, FL
-                                  // Add more sites as needed...
-];
-
-/// Looks up radar site coordinates by ID.
-pub fn lookup_site(site_id: &str) -> Option<(f64, f64)> {
-    let site_upper = site_id.to_uppercase();
-    NEXRAD_SITES
-        .iter()
-        .find(|(id, _, _)| *id == site_upper)
-        .map(|(_, lat, lon)| (*lat, *lon))
 }

@@ -39,6 +39,7 @@ impl CachedFile {
     }
 
     /// Decodes the file data from base64.
+    #[allow(dead_code)] // Part of storage API
     pub fn decode_data(&self) -> Result<Vec<u8>, base64::DecodeError> {
         use base64::{engine::general_purpose::STANDARD, Engine};
         STANDARD.decode(&self.data_base64)
@@ -47,6 +48,7 @@ impl CachedFile {
 
 /// Errors that can occur during storage operations.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // NotFound variant is part of storage API
 pub enum StorageError {
     /// The database could not be opened or initialized.
     DatabaseOpenFailed(String),
@@ -82,6 +84,7 @@ impl std::error::Error for StorageError {}
 ///
 /// Note: This trait does not require `Send` bounds since WASM is single-threaded
 /// and JS types cannot be sent between threads.
+#[allow(dead_code)] // Trait methods are part of storage API, only `put` currently used
 pub trait KeyValueStore {
     /// Stores a value under the given key.
     ///
@@ -141,12 +144,6 @@ impl StorageConfig {
             store_name: store_name.into(),
             version: 1,
         }
-    }
-
-    /// Sets the database version.
-    pub fn with_version(mut self, version: u32) -> Self {
-        self.version = version;
-        self
     }
 }
 

@@ -496,18 +496,17 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
     }
 
     // Step backward
-    if ui.button(RichText::new("\u{23EE}").size(14.0)).clicked() {
-        if state.playback_state.current_frame > 0 {
-            state.playback_state.current_frame -= 1;
-        }
+    if ui.button(RichText::new("\u{23EE}").size(14.0)).clicked()
+        && state.playback_state.current_frame > 0
+    {
+        state.playback_state.current_frame -= 1;
     }
 
     // Step forward
-    if ui.button(RichText::new("\u{23ED}").size(14.0)).clicked() {
-        if state.playback_state.current_frame < state.playback_state.total_frames.saturating_sub(1)
-        {
-            state.playback_state.current_frame += 1;
-        }
+    if ui.button(RichText::new("\u{23ED}").size(14.0)).clicked()
+        && state.playback_state.current_frame < state.playback_state.total_frames.saturating_sub(1)
+    {
+        state.playback_state.current_frame += 1;
     }
 
     ui.separator();

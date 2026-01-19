@@ -61,6 +61,7 @@ impl GeoLayerType {
 
 /// A geographic feature that can be rendered.
 #[derive(Debug, Clone)]
+#[allow(dead_code, clippy::type_complexity)] // holes field is part of data model; complex type for polygon coords
 pub enum GeoFeature {
     /// A series of connected line segments (for boundaries, rivers, etc.)
     LineString(Vec<Coord<f64>>),
@@ -152,10 +153,8 @@ impl GeoLayer {
                     .and_then(|record: &shapefile::dbase::Record| {
                         // Try common name fields
                         for field_name in &["NAME", "name", "Name", "NAMELSAD", "FULLNAME"] {
-                            if let Some(value) = record.get(*field_name) {
-                                if let FieldValue::Character(Some(s)) = value {
-                                    return Some(s.trim().to_string());
-                                }
+                            if let Some(FieldValue::Character(Some(s))) = record.get(field_name) {
+                                return Some(s.trim().to_string());
                             }
                         }
                         None
@@ -235,6 +234,7 @@ impl GeoLayer {
                 } else {
                     // Multiple outer rings = MultiPolygon
                     // Note: This simplified approach doesn't associate holes with their outer rings
+                    #[allow(clippy::type_complexity)]
                     let polygons: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)> = outer_rings
                         .into_iter()
                         .map(|ext| (ext, Vec::new()))
@@ -347,6 +347,7 @@ impl GeoLayer {
                 })
             }
             Value::MultiPolygon(polygons) => {
+                #[allow(clippy::type_complexity)]
                 let polygons: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)> = polygons
                     .iter()
                     .filter_map(|rings| {
@@ -407,21 +408,6 @@ impl GeoLayerSet {
             self.rivers.as_ref(),
             self.roads.as_ref(),
             self.cities.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-    }
-
-    /// Returns a mutable iterator over all loaded layers.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut GeoLayer> {
-        [
-            self.coastline.as_mut(),
-            self.states.as_mut(),
-            self.counties.as_mut(),
-            self.lakes.as_mut(),
-            self.rivers.as_mut(),
-            self.roads.as_mut(),
-            self.cities.as_mut(),
         ]
         .into_iter()
         .flatten()
