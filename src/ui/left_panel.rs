@@ -93,8 +93,43 @@ fn render_load_data_section(
     }
 }
 
-fn render_radar_operations_section(ui: &mut egui::Ui, state: &AppState) {
-    ui.heading("Radar Operations");
+fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
+    // Header with site name and edit button
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(format!("{} Radar Operations", state.viz_state.site_id))
+                .strong()
+                .size(14.0),
+        );
+
+        // Right-align the edit button
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Edit icon button - gear icon
+            let edit_btn = ui.button(RichText::new("\u{2699}").size(14.0));
+
+            // Popup for editing site
+            egui::Popup::from_toggle_button_response(&edit_btn)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    ui.set_min_width(150.0);
+                    ui.label(RichText::new("Radar Site").strong());
+                    ui.add_space(4.0);
+
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut state.viz_state.site_id)
+                            .desired_width(80.0)
+                            .font(egui::FontId::monospace(14.0))
+                            .hint_text("KDMX"),
+                    );
+
+                    // Convert to uppercase as user types
+                    if response.changed() {
+                        state.viz_state.site_id = state.viz_state.site_id.to_uppercase();
+                    }
+                });
+        });
+    });
+
     ui.add_space(5.0);
 
     let radar_state = query_radar_state_at_timestamp(state);
