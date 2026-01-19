@@ -28,8 +28,8 @@ pub fn render_left_panel(
 ) {
     egui::SidePanel::left("left_panel")
         .resizable(true)
-        .default_width(280.0)
-        .min_width(240.0)
+        .default_width(235.0)
+        .min_width(235.0)
         .max_width(400.0)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -342,16 +342,20 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
 
             ui.add_space(8.0);
 
+            // Elevation list - use full available width
+            let available_width = ui.available_width();
+
             // Elevation list header
             ui.horizontal(|ui| {
-                ui.label(RichText::new("  ").monospace()); // Spacer for indicator
+                ui.set_min_width(available_width);
+                ui.label(RichText::new(" ").monospace().small()); // Spacer for indicator
                 ui.label(RichText::new("Elev").small().color(Color32::GRAY));
-                ui.add_space(8.0);
-                ui.label(RichText::new("Type").small().color(Color32::GRAY));
-                ui.add_space(4.0);
+                ui.add_space(6.0);
+                ui.label(RichText::new("Wf").small().color(Color32::GRAY));
                 ui.label(RichText::new("PRF").small().color(Color32::GRAY));
-                ui.add_space(4.0);
-                ui.label(RichText::new("Info").small().color(Color32::GRAY));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new("Info").small().color(Color32::GRAY));
+                });
             });
 
             ui.add_space(2.0);
@@ -362,21 +366,23 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                 egui::ScrollArea::vertical()
                     .max_height(200.0)
                     .show(ui, |ui| {
+                        ui.set_min_width(available_width);
                         for (idx, sweep) in scan.sweeps.iter().enumerate() {
                             let is_current = radar_state.sweep_index == Some(idx);
                             // Try to match elevation with VCP definition for metadata
                             let elev_meta = vcp_def.and_then(|def| {
                                 def.elevations.iter().find(|e| (e.angle - sweep.elevation).abs() < 0.1)
                             });
-                            render_elevation_row(ui, sweep.elevation, elev_meta, is_current);
+                            render_elevation_row(ui, sweep.elevation, elev_meta, is_current, available_width);
                         }
                     });
             } else if let Some(def) = vcp_def {
                 egui::ScrollArea::vertical()
                     .max_height(200.0)
                     .show(ui, |ui| {
+                        ui.set_min_width(available_width);
                         for elev in def.elevations.iter() {
-                            render_elevation_row(ui, elev.angle, Some(elev), false);
+                            render_elevation_row(ui, elev.angle, Some(elev), false, available_width);
                         }
                     });
             }
@@ -426,6 +432,7 @@ fn render_elevation_row(
     elevation: f32,
     elev_meta: Option<&crate::state::vcp::VcpElevation>,
     is_current: bool,
+    row_width: f32,
 ) {
     let text_color = if is_current {
         Color32::from_rgb(100, 255, 100)
@@ -439,6 +446,8 @@ fn render_elevation_row(
     };
 
     ui.horizontal(|ui| {
+        ui.set_min_width(row_width);
+
         // Current indicator
         if is_current {
             ui.label(RichText::new("\u{25B6}").color(text_color).small());
@@ -448,7 +457,7 @@ fn render_elevation_row(
 
         // Elevation angle
         ui.label(
-            RichText::new(format!("{:5.1}\u{00B0}", elevation))
+            RichText::new(format!("{:4.1}\u{00B0}", elevation))
                 .color(text_color)
                 .monospace()
                 .small(),
@@ -468,9 +477,11 @@ fn render_elevation_row(
         };
         ui.label(RichText::new(format!(" {}", prf_short)).color(dim_color).monospace().small());
 
-        // Info/description
+        // Info/description - right aligned
         let info = get_sweep_info(elevation, elev_meta.map(|e| e.waveform));
-        ui.label(RichText::new(format!(" {}", info)).color(dim_color).small());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(info).color(dim_color).small());
+        });
     });
 }
 
