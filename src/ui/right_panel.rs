@@ -80,6 +80,12 @@ fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                 "Political Boundaries",
             );
             ui.checkbox(&mut state.layer_state.terrain, "Terrain");
+
+            ui.separator();
+            ui.label(RichText::new("Map Overlays").small());
+
+            ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
+            ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
         });
 }
 

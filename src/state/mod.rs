@@ -11,7 +11,7 @@ mod processing;
 mod viz;
 
 pub use data_source::{ArchiveState, DataSourceMode, RealtimeState, UploadState};
-pub use layer::LayerState;
+pub use layer::{GeoLayerVisibility, LayerState};
 pub use playback::{PlaybackMode, PlaybackSpeed, PlaybackState};
 pub use processing::ProcessingState;
 pub use viz::{ColorPalette, RadarProduct, VizState};

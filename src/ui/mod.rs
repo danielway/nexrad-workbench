@@ -14,7 +14,7 @@ mod right_panel;
 mod top_bar;
 
 pub use bottom_panel::render_bottom_panel;
-pub use canvas::render_canvas;
+pub use canvas::render_canvas_with_geo;
 pub use left_panel::render_left_panel;
 pub use right_panel::render_right_panel;
 pub use top_bar::render_top_bar;

@@ -7,6 +7,7 @@
 //! and realtime streaming (when implemented).
 
 mod file_ops;
+mod geo;
 mod renderer;
 mod state;
 mod storage;
@@ -100,18 +101,63 @@ pub struct WorkbenchApp {
     /// File cache storage (IndexedDB on WASM)
     #[cfg(target_arch = "wasm32")]
     file_cache: IndexedDbStore,
+
+    /// Geographic layer data for map overlays
+    geo_layers: geo::GeoLayerSet,
 }
+
+// Embed shapefile data at compile time
+static STATES_SHP: &[u8] = include_bytes!("../assets/vectors/cb_2023_us_state_20m/cb_2023_us_state_20m.shp");
+static STATES_DBF: &[u8] = include_bytes!("../assets/vectors/cb_2023_us_state_20m/cb_2023_us_state_20m.dbf");
+static COUNTIES_SHP: &[u8] = include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.shp");
+static COUNTIES_DBF: &[u8] = include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.dbf");
 
 impl WorkbenchApp {
     /// Creates a new WorkbenchApp instance.
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+        let mut geo_layers = geo::GeoLayerSet::new();
+
+        // Load embedded geographic data
+        if let Err(e) = geo_layers.load_layer_from_shapefile(
+            geo::GeoLayerType::States,
+            STATES_SHP,
+            Some(STATES_DBF),
+        ) {
+            log::error!("Failed to load states layer: {}", e);
+        }
+
+        if let Err(e) = geo_layers.load_layer_from_shapefile(
+            geo::GeoLayerType::Counties,
+            COUNTIES_SHP,
+            Some(COUNTIES_DBF),
+        ) {
+            log::error!("Failed to load counties layer: {}", e);
+        }
+
+        log::info!(
+            "Loaded geo layers: {} states, {} counties",
+            geo_layers.states.as_ref().map(|l| l.features.len()).unwrap_or(0),
+            geo_layers.counties.as_ref().map(|l| l.features.len()).unwrap_or(0),
+        );
+
         Self {
             state: AppState::new(),
             texture_initialized: false,
             file_picker: FilePickerChannel::new(),
             #[cfg(target_arch = "wasm32")]
             file_cache: IndexedDbStore::new(StorageConfig::new("nexrad-workbench", "file-cache")),
+            geo_layers,
         }
+    }
+
+    /// Loads geographic layer data from GeoJSON string.
+    #[allow(dead_code)]
+    pub fn load_geo_layer(
+        &mut self,
+        layer_type: geo::GeoLayerType,
+        geojson_str: &str,
+    ) -> Result<(), String> {
+        self.geo_layers.load_layer(layer_type, geojson_str)
     }
 }
 
@@ -164,6 +210,6 @@ impl eframe::App for WorkbenchApp {
         ui::render_bottom_panel(ctx, &mut self.state);
         ui::render_left_panel(ctx, &mut self.state, &self.file_picker);
         ui::render_right_panel(ctx, &mut self.state);
-        ui::render_canvas(ctx, &mut self.state);
+        ui::render_canvas_with_geo(ctx, &mut self.state, Some(&self.geo_layers));
     }
 }

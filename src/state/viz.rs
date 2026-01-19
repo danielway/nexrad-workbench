@@ -93,6 +93,12 @@ pub struct VizState {
 
     /// Overlay info: current elevation/sweep
     pub elevation: String,
+
+    /// Geographic center latitude (radar site location)
+    pub center_lat: f64,
+
+    /// Geographic center longitude (radar site location)
+    pub center_lon: f64,
 }
 
 impl Default for VizState {
@@ -106,6 +112,9 @@ impl Default for VizState {
             site_id: "----".to_string(),
             timestamp: "--:--:-- UTC".to_string(),
             elevation: "-- deg".to_string(),
+            // Default to center of continental US (KTLX - Oklahoma City)
+            center_lat: 35.3331,
+            center_lon: -97.2778,
         }
     }
 }

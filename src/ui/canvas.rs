@@ -1,9 +1,15 @@
 //! Central canvas UI: radar visualization area.
 
+use crate::geo::{GeoLayerSet, MapProjection};
 use crate::state::AppState;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Vec2};
 
-pub fn render_canvas(ctx: &egui::Context, state: &mut AppState) {
+/// Render canvas with optional geographic layers.
+pub fn render_canvas_with_geo(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    geo_layers: Option<&GeoLayerSet>,
+) {
     egui::CentralPanel::default().show(ctx, |ui| {
         let available_size = ui.available_size();
 
@@ -14,6 +20,17 @@ pub fn render_canvas(ctx: &egui::Context, state: &mut AppState) {
 
         // Draw background
         painter.rect_filled(rect, 0.0, Color32::from_rgb(20, 20, 35));
+
+        // Create projection for geo layers
+        let mut projection = MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
+        projection.update(state.viz_state.zoom, state.viz_state.pan_offset, rect);
+
+        // Draw geographic layers BEFORE radar (so radar appears on top)
+        if let Some(layers) = geo_layers {
+            // Create a filtered layer set based on visibility settings
+            let filtered = filter_geo_layers(layers, &state.layer_state.geo);
+            crate::geo::render_geo_layers(&painter, &filtered, &projection, state.viz_state.zoom);
+        }
 
         // Draw the radar texture if available
         if let Some(ref texture) = state.viz_state.texture {
@@ -47,6 +64,24 @@ pub fn render_canvas(ctx: &egui::Context, state: &mut AppState) {
         // Handle zoom/pan interactions (store state but don't fully implement)
         handle_canvas_interaction(&response, state);
     });
+}
+
+/// Filter geo layers based on visibility settings.
+fn filter_geo_layers(
+    layers: &GeoLayerSet,
+    visibility: &crate::state::GeoLayerVisibility,
+) -> GeoLayerSet {
+    let mut filtered = layers.clone();
+
+    // Apply visibility settings
+    if let Some(ref mut layer) = filtered.states {
+        layer.visible = visibility.states;
+    }
+    if let Some(ref mut layer) = filtered.counties {
+        layer.visible = visibility.counties;
+    }
+
+    filtered
 }
 
 fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {

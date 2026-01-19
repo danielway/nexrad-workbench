@@ -20,4 +20,25 @@ pub struct LayerState {
 
     /// Enable multi-radar mosaic view
     pub multi_radar_mosaic: bool,
+
+    /// Geographic layer visibility settings
+    pub geo: GeoLayerVisibility,
+}
+
+/// Visibility settings for geographic map layers.
+#[derive(Clone)]
+pub struct GeoLayerVisibility {
+    /// Show state/province boundaries
+    pub states: bool,
+    /// Show county boundaries (auto-hidden at low zoom)
+    pub counties: bool,
+}
+
+impl Default for GeoLayerVisibility {
+    fn default() -> Self {
+        Self {
+            states: true,
+            counties: false,
+        }
+    }
 }
