@@ -8,7 +8,6 @@
 
 mod file_ops;
 mod geo;
-mod renderer;
 mod state;
 mod storage;
 mod ui;
@@ -92,9 +91,6 @@ pub struct WorkbenchApp {
     /// Application state containing all sub-states
     state: AppState,
 
-    /// Whether the placeholder texture has been initialized
-    texture_initialized: bool,
-
     /// Channel for async file picker operations
     file_picker: FilePickerChannel,
 
@@ -154,7 +150,6 @@ impl WorkbenchApp {
 
         Self {
             state: AppState::new(),
-            texture_initialized: false,
             file_picker: FilePickerChannel::new(),
             #[cfg(target_arch = "wasm32")]
             file_cache: IndexedDbStore::new(StorageConfig::new("nexrad-workbench", "file-cache")),
@@ -175,12 +170,6 @@ impl WorkbenchApp {
 
 impl eframe::App for WorkbenchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Initialize the placeholder texture on first frame
-        if !self.texture_initialized {
-            self.state.viz_state.texture = Some(renderer::create_placeholder_texture(ctx));
-            self.texture_initialized = true;
-        }
-
         // Check for completed file pick operations
         if let Some(result) = self.file_picker.try_recv() {
             self.state.upload_state.loading = false;

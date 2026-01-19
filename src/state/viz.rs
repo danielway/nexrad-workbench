@@ -1,6 +1,6 @@
 //! Visualization state (canvas, zoom/pan, product/palette selection).
 
-use eframe::egui::{TextureHandle, Vec2};
+use eframe::egui::Vec2;
 
 /// Available radar products for display.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -68,11 +68,8 @@ impl ColorPalette {
     }
 }
 
-/// Visualization state including texture handle and view controls.
+/// Visualization state including view controls.
 pub struct VizState {
-    /// Handle to the rendered radar texture
-    pub texture: Option<TextureHandle>,
-
     /// Current zoom level (1.0 = 100%)
     pub zoom: f32,
 
@@ -104,7 +101,6 @@ pub struct VizState {
 impl Default for VizState {
     fn default() -> Self {
         Self {
-            texture: None,
             zoom: 1.0,
             pan_offset: Vec2::ZERO,
             product: RadarProduct::default(),

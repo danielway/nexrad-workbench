@@ -176,7 +176,8 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>) {
     let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
     let rect = response.rect;
     let center = rect.center();
-    let radius = (rect.width().min(rect.height()) / 2.0) - 8.0;
+    // Leave more room for cardinal labels (12px margin instead of 8)
+    let radius = (rect.width().min(rect.height()) / 2.0) - 12.0;
 
     // Dark background
     painter.rect_filled(rect, 4.0, Color32::from_rgb(30, 30, 40));
@@ -187,10 +188,10 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>) {
         painter.circle_stroke(center, radius * factor, Stroke::new(1.0, ring_color));
     }
 
-    // Cardinal direction labels
-    let label_color = Color32::from_rgb(120, 120, 140);
-    let label_offset = radius + 5.0;
-    let font_id = egui::FontId::proportional(9.0);
+    // Cardinal direction labels (inside the radar circle for cleaner look)
+    let label_color = Color32::from_rgb(100, 100, 120);
+    let label_offset = radius - 6.0;
+    let font_id = egui::FontId::proportional(8.0);
 
     painter.text(
         center + Vec2::new(0.0, -label_offset),
