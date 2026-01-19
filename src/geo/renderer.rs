@@ -197,6 +197,11 @@ fn render_polygon_label(
         return;
     }
 
+    // Check if zoom level is sufficient for labels on this layer type
+    if zoom < layer_type.min_label_zoom() {
+        return;
+    }
+
     // Compute centroid using proper polygon centroid formula
     let centroid = compute_polygon_centroid(coords);
 

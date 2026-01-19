@@ -74,16 +74,6 @@ fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         .default_open(true)
         .show(ui, |ui| {
             ui.checkbox(&mut state.layer_state.nws_alerts, "NWS Alerts");
-            ui.checkbox(&mut state.layer_state.tornado_tracks, "Tornado Tracks");
-            ui.checkbox(
-                &mut state.layer_state.political_boundaries,
-                "Political Boundaries",
-            );
-            ui.checkbox(&mut state.layer_state.terrain, "Terrain");
-
-            ui.separator();
-            ui.label(RichText::new("Map Overlays").small());
-
             ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
             ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
             ui.checkbox(&mut state.layer_state.geo.labels, "Labels");

@@ -57,6 +57,20 @@ impl GeoLayerType {
             GeoLayerType::Coastline => 0.0,
         }
     }
+
+    /// Minimum zoom level at which labels for this layer become visible.
+    /// Labels require higher zoom than the layer itself.
+    pub fn min_label_zoom(&self) -> f32 {
+        match self {
+            GeoLayerType::States => 0.0,
+            GeoLayerType::Counties => 3.0, // Labels appear after more zooming
+            GeoLayerType::Rivers => 1.5,
+            GeoLayerType::Lakes => 1.5,
+            GeoLayerType::Cities => 1.5,
+            GeoLayerType::Roads => 3.0,
+            GeoLayerType::Coastline => 0.0,
+        }
+    }
 }
 
 /// A geographic feature that can be rendered.

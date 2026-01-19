@@ -1,7 +1,6 @@
 //! Layer visibility state.
 
 /// State for toggling various overlay layers.
-#[derive(Default)]
 pub struct LayerState {
     /// Show NWS weather alerts overlay
     pub nws_alerts: bool,
@@ -36,12 +35,26 @@ pub struct GeoLayerVisibility {
     pub labels: bool,
 }
 
+impl Default for LayerState {
+    fn default() -> Self {
+        Self {
+            nws_alerts: true,
+            tornado_tracks: false,
+            political_boundaries: false,
+            terrain: false,
+            globe_mode: false,
+            multi_radar_mosaic: false,
+            geo: GeoLayerVisibility::default(),
+        }
+    }
+}
+
 impl Default for GeoLayerVisibility {
     fn default() -> Self {
         Self {
             states: true,
-            counties: false,
-            labels: false,
+            counties: true,
+            labels: true,
         }
     }
 }
