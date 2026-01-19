@@ -4,6 +4,7 @@
 //! State is organized into logical groupings that correspond to different
 //! areas of functionality.
 
+mod alerts;
 mod data_source;
 mod layer;
 mod playback;
@@ -13,6 +14,7 @@ mod stats;
 pub mod vcp;
 mod viz;
 
+pub use alerts::{AlertSummary, AlertsState, NwsAlert};
 pub use data_source::UploadState;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use playback::{PlaybackSpeed, PlaybackState};
@@ -48,6 +50,9 @@ pub struct AppState {
 
     /// Session and performance statistics
     pub session_stats: SessionStats,
+
+    /// NWS weather alerts
+    pub alerts_state: AlertsState,
 }
 
 impl AppState {
@@ -72,6 +77,7 @@ impl AppState {
             radar_timeline,
             status_message: "Ready".to_string(),
             session_stats: SessionStats::with_dummy_data(),
+            alerts_state: AlertsState::with_dummy_data(),
             ..Default::default()
         }
     }

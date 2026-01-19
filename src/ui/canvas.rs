@@ -1,8 +1,9 @@
 //! Central canvas UI: radar visualization area.
 
 use crate::geo::{GeoLayerSet, MapProjection};
-use crate::state::AppState;
+use crate::state::{AlertsState, AppState, NwsAlert};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use geo_types::Coord;
 use std::f32::consts::PI;
 
 /// Render canvas with optional geographic layers.
@@ -38,6 +39,15 @@ pub fn render_canvas_with_geo(
                 state.viz_state.zoom,
                 state.layer_state.geo.labels,
             );
+        }
+
+        // Draw NWS alerts layer if enabled
+        if state.layer_state.nws_alerts {
+            let current_time = state
+                .playback_state
+                .selected_timestamp
+                .unwrap_or(1714564800.0);
+            render_nws_alerts(&painter, &projection, &state.alerts_state, current_time);
         }
 
         // Query current azimuth from radar timeline (only show sweep line in real-time mode)
@@ -263,4 +273,84 @@ fn render_radar_sweep(painter: &Painter, rect: &Rect, state: &AppState, azimuth:
             Stroke::new(6.0, Color32::from_rgba_unmultiplied(100, 255, 100, 40)),
         );
     }
+}
+
+/// Render NWS alert polygons on the canvas.
+fn render_nws_alerts(
+    painter: &Painter,
+    projection: &MapProjection,
+    alerts_state: &AlertsState,
+    current_time: f64,
+) {
+    // Get alerts active at the current time, sorted by severity (lowest first so highest draws on top)
+    let mut active_alerts: Vec<&NwsAlert> = alerts_state.active_alerts(current_time);
+    active_alerts.sort_by_key(|a| a.severity());
+
+    for alert in active_alerts {
+        render_alert_polygon(painter, projection, alert);
+    }
+}
+
+/// Render a single alert polygon.
+fn render_alert_polygon(painter: &Painter, projection: &MapProjection, alert: &NwsAlert) {
+    if alert.polygon.is_empty() {
+        return;
+    }
+
+    // Convert lat/lon vertices to screen coordinates
+    let screen_points: Vec<Pos2> = alert
+        .polygon
+        .iter()
+        .map(|&(lat, lon)| projection.geo_to_screen(Coord { x: lon, y: lat }))
+        .collect();
+
+    if screen_points.len() < 3 {
+        return;
+    }
+
+    let severity = alert.severity();
+    let fill_color = severity.fill_color();
+    let stroke_color = severity.stroke_color();
+
+    // Draw filled polygon
+    painter.add(egui::Shape::convex_polygon(
+        screen_points.clone(),
+        fill_color,
+        Stroke::NONE,
+    ));
+
+    // Draw polygon outline
+    let mut stroke_points = screen_points.clone();
+    stroke_points.push(screen_points[0]); // Close the polygon
+
+    for i in 0..stroke_points.len() - 1 {
+        painter.line_segment(
+            [stroke_points[i], stroke_points[i + 1]],
+            Stroke::new(2.0, stroke_color),
+        );
+    }
+
+    // Draw alert type label at centroid
+    if let Some(centroid) = polygon_centroid(&screen_points) {
+        painter.text(
+            centroid,
+            egui::Align2::CENTER_CENTER,
+            alert.alert_type.short_label(),
+            egui::FontId::proportional(11.0),
+            stroke_color,
+        );
+    }
+}
+
+/// Calculate the centroid of a polygon.
+fn polygon_centroid(points: &[Pos2]) -> Option<Pos2> {
+    if points.is_empty() {
+        return None;
+    }
+
+    let sum = points.iter().fold(Vec2::ZERO, |acc, p| acc + p.to_vec2());
+    Some(Pos2::new(
+        sum.x / points.len() as f32,
+        sum.y / points.len() as f32,
+    ))
 }
