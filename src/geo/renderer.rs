@@ -92,6 +92,50 @@ fn render_feature(
     }
 }
 
+/// Computes the true geometric centroid of a polygon using the shoelace formula.
+/// This gives better results than a simple vertex average for irregular shapes.
+fn compute_polygon_centroid(coords: &[Coord<f64>]) -> Coord<f64> {
+    if coords.is_empty() {
+        return Coord { x: 0.0, y: 0.0 };
+    }
+    if coords.len() < 3 {
+        // For degenerate cases, fall back to simple average
+        let (sum_x, sum_y) = coords.iter().fold((0.0, 0.0), |(sx, sy), c| (sx + c.x, sy + c.y));
+        return Coord {
+            x: sum_x / coords.len() as f64,
+            y: sum_y / coords.len() as f64,
+        };
+    }
+
+    let mut signed_area = 0.0;
+    let mut cx = 0.0;
+    let mut cy = 0.0;
+
+    for i in 0..coords.len() {
+        let j = (i + 1) % coords.len();
+        let cross = coords[i].x * coords[j].y - coords[j].x * coords[i].y;
+        signed_area += cross;
+        cx += (coords[i].x + coords[j].x) * cross;
+        cy += (coords[i].y + coords[j].y) * cross;
+    }
+
+    signed_area *= 0.5;
+
+    // Avoid division by zero for degenerate polygons
+    if signed_area.abs() < 1e-10 {
+        let (sum_x, sum_y) = coords.iter().fold((0.0, 0.0), |(sx, sy), c| (sx + c.x, sy + c.y));
+        return Coord {
+            x: sum_x / coords.len() as f64,
+            y: sum_y / coords.len() as f64,
+        };
+    }
+
+    Coord {
+        x: cx / (6.0 * signed_area),
+        y: cy / (6.0 * signed_area),
+    }
+}
+
 /// Computes the bounding box area of a polygon (for finding largest polygon).
 fn polygon_bbox_area(coords: &[Coord<f64>]) -> f64 {
     if coords.is_empty() {
@@ -121,12 +165,8 @@ fn render_polygon_label(
         return;
     }
 
-    // Compute centroid (simple average of coordinates)
-    let (sum_x, sum_y) = coords.iter().fold((0.0, 0.0), |(sx, sy), c| (sx + c.x, sy + c.y));
-    let centroid = Coord {
-        x: sum_x / coords.len() as f64,
-        y: sum_y / coords.len() as f64,
-    };
+    // Compute centroid using proper polygon centroid formula
+    let centroid = compute_polygon_centroid(coords);
 
     // Skip if centroid is outside visible bounds
     if !projection.is_visible(centroid, 0.5) {
@@ -138,7 +178,7 @@ fn render_polygon_label(
     // Style based on layer type
     let (base_size, color) = match layer_type {
         GeoLayerType::States => (12.0, Color32::from_rgb(220, 220, 240)), // Larger, brighter
-        GeoLayerType::Counties => (8.0, Color32::from_rgb(140, 140, 160)), // Smaller, dimmer
+        GeoLayerType::Counties => (8.0, Color32::from_rgb(100, 100, 115)), // Smaller, dimmer
         _ => (10.0, Color32::from_rgb(180, 180, 200)),
     };
 
