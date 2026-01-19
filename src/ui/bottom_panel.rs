@@ -115,6 +115,15 @@ fn render_radar_data(
 }
 
 pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
+    // Handle spacebar to toggle playback (only when no text input is focused)
+    let space_pressed = ctx.input(|i| {
+        i.key_pressed(egui::Key::Space) && !i.modifiers.any()
+    });
+    let has_focus = ctx.memory(|m| m.focused().is_some());
+    if space_pressed && !has_focus {
+        state.playback_state.toggle_playback();
+    }
+
     // Advance playback position when playing
     if state.playback_state.playing {
         let dt = ctx.input(|i| i.stable_dt) as f64;

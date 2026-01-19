@@ -6,6 +6,8 @@
 /// Playback speed multiplier options.
 #[derive(Default, Clone, Copy, PartialEq)]
 pub enum PlaybackSpeed {
+    /// Real-time: 1 second of timeline = 1 second of real time
+    Realtime,
     Quarter,
     Half,
     #[default]
@@ -17,6 +19,7 @@ pub enum PlaybackSpeed {
 impl PlaybackSpeed {
     pub fn label(&self) -> &'static str {
         match self {
+            PlaybackSpeed::Realtime => "1x (real)",
             PlaybackSpeed::Quarter => "1 min/s",
             PlaybackSpeed::Half => "2 min/s",
             PlaybackSpeed::Normal => "5 min/s",
@@ -27,6 +30,7 @@ impl PlaybackSpeed {
 
     pub fn all() -> &'static [PlaybackSpeed] {
         &[
+            PlaybackSpeed::Realtime,
             PlaybackSpeed::Quarter,
             PlaybackSpeed::Half,
             PlaybackSpeed::Normal,
@@ -37,6 +41,7 @@ impl PlaybackSpeed {
 
     pub fn multiplier(&self) -> f32 {
         match self {
+            PlaybackSpeed::Realtime => 1.0 / 300.0, // Relative to "Normal" baseline
             PlaybackSpeed::Quarter => 0.25,
             PlaybackSpeed::Half => 0.5,
             PlaybackSpeed::Normal => 1.0,
@@ -49,6 +54,7 @@ impl PlaybackSpeed {
     /// Based on the label (e.g., "5 min/s" = 300 seconds per real second).
     pub fn timeline_seconds_per_real_second(&self) -> f64 {
         match self {
+            PlaybackSpeed::Realtime => 1.0,     // 1:1 real-time
             PlaybackSpeed::Quarter => 60.0,     // 1 min/s
             PlaybackSpeed::Half => 120.0,       // 2 min/s
             PlaybackSpeed::Normal => 300.0,     // 5 min/s
