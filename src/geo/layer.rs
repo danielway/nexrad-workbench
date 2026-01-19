@@ -66,12 +66,19 @@ pub enum GeoFeature {
     LineString(Vec<Coord<f64>>),
     /// Multiple line strings (for complex boundaries)
     MultiLineString(Vec<Vec<Coord<f64>>>),
-    /// A closed polygon (for lakes, filled regions)
-    Polygon(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>), // exterior, holes
-    /// Multiple polygons
-    MultiPolygon(Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)>),
+    /// A closed polygon with optional label
+    Polygon {
+        exterior: Vec<Coord<f64>>,
+        holes: Vec<Vec<Coord<f64>>>,
+        label: Option<String>,
+    },
+    /// Multiple polygons with optional label
+    MultiPolygon {
+        polygons: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)>,
+        label: Option<String>,
+    },
     /// A single point (for cities, landmarks)
-    Point(Coord<f64>, Option<String>), // coordinate, optional label
+    Point(Coord<f64>, Option<String>),
 }
 
 /// A geographic layer containing multiple features.
@@ -207,7 +214,7 @@ impl GeoLayer {
                 // Simple case: treat first ring as exterior, rest as holes
                 let exterior = rings[0].clone();
                 let holes: Vec<Vec<Coord<f64>>> = rings[1..].to_vec();
-                Some(GeoFeature::Polygon(exterior, holes))
+                Some(GeoFeature::Polygon { exterior, holes, label })
             }
             shapefile::Shape::NullShape => None,
             _ => None,
@@ -309,10 +316,10 @@ impl GeoLayer {
                     .iter()
                     .map(|ring| ring.iter().map(|c| Coord { x: c[0], y: c[1] }).collect())
                     .collect();
-                Some(GeoFeature::Polygon(exterior, holes))
+                Some(GeoFeature::Polygon { exterior, holes, label })
             }
             Value::MultiPolygon(polygons) => {
-                let multi: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)> = polygons
+                let polygons: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)> = polygons
                     .iter()
                     .filter_map(|rings| {
                         if rings.is_empty() {
@@ -329,7 +336,7 @@ impl GeoLayer {
                         Some((exterior, holes))
                     })
                     .collect();
-                Some(GeoFeature::MultiPolygon(multi))
+                Some(GeoFeature::MultiPolygon { polygons, label })
             }
             Value::GeometryCollection(geometries) => {
                 // For geometry collections, just take the first convertible geometry

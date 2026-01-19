@@ -32,6 +32,8 @@ pub struct GeoLayerVisibility {
     pub states: bool,
     /// Show county boundaries (auto-hidden at low zoom)
     pub counties: bool,
+    /// Show labels for geographic features
+    pub labels: bool,
 }
 
 impl Default for GeoLayerVisibility {
@@ -39,6 +41,7 @@ impl Default for GeoLayerVisibility {
         Self {
             states: true,
             counties: false,
+            labels: false,
         }
     }
 }

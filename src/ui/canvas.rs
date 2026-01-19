@@ -29,7 +29,13 @@ pub fn render_canvas_with_geo(
         if let Some(layers) = geo_layers {
             // Create a filtered layer set based on visibility settings
             let filtered = filter_geo_layers(layers, &state.layer_state.geo);
-            crate::geo::render_geo_layers(&painter, &filtered, &projection, state.viz_state.zoom);
+            crate::geo::render_geo_layers(
+                &painter,
+                &filtered,
+                &projection,
+                state.viz_state.zoom,
+                state.layer_state.geo.labels,
+            );
         }
 
         // Draw the radar texture if available

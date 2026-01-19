@@ -86,6 +86,7 @@ fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
             ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
+            ui.checkbox(&mut state.layer_state.geo.labels, "Labels");
         });
 }
 

@@ -12,23 +12,30 @@ pub fn render_geo_layers(
     layers: &GeoLayerSet,
     projection: &MapProjection,
     zoom: f32,
+    show_labels: bool,
 ) {
     // Render layers in order (back to front)
     for layer in layers.iter() {
         if layer.visible && zoom >= layer.layer_type.min_zoom() {
-            render_layer(painter, layer, projection);
+            render_layer(painter, layer, projection, show_labels, zoom);
         }
     }
 }
 
 /// Renders a single geographic layer.
-fn render_layer(painter: &Painter, layer: &GeoLayer, projection: &MapProjection) {
+fn render_layer(
+    painter: &Painter,
+    layer: &GeoLayer,
+    projection: &MapProjection,
+    show_labels: bool,
+    zoom: f32,
+) {
     let color = layer.effective_color();
     let line_width = layer.effective_line_width();
     let stroke = Stroke::new(line_width, color);
 
     for feature in &layer.features {
-        render_feature(painter, feature, projection, stroke, color);
+        render_feature(painter, feature, projection, stroke, color, show_labels, zoom, layer.layer_type);
     }
 }
 
@@ -39,6 +46,9 @@ fn render_feature(
     projection: &MapProjection,
     stroke: Stroke,
     color: Color32,
+    show_labels: bool,
+    zoom: f32,
+    layer_type: super::GeoLayerType,
 ) {
     match feature {
         GeoFeature::Point(coord, label) => {
@@ -52,17 +62,77 @@ fn render_feature(
                 render_line_string(painter, coords, projection, stroke);
             }
         }
-        GeoFeature::Polygon(exterior, _holes) => {
-            // For now, just render the exterior ring as a line
-            // Full polygon filling would require tessellation
+        GeoFeature::Polygon { exterior, holes: _, label } => {
             render_line_string(painter, exterior, projection, stroke);
+            // Draw label at centroid if enabled
+            if show_labels {
+                if let Some(text) = label {
+                    render_polygon_label(painter, exterior, projection, text, zoom, layer_type);
+                }
+            }
         }
-        GeoFeature::MultiPolygon(polygons) => {
+        GeoFeature::MultiPolygon { polygons, label } => {
             for (exterior, _holes) in polygons {
                 render_line_string(painter, exterior, projection, stroke);
             }
+            // Draw label at centroid of first polygon if enabled
+            if show_labels {
+                if let Some(text) = label {
+                    if let Some((exterior, _)) = polygons.first() {
+                        render_polygon_label(painter, exterior, projection, text, zoom, layer_type);
+                    }
+                }
+            }
         }
     }
+}
+
+/// Renders a label at the centroid of a polygon.
+fn render_polygon_label(
+    painter: &Painter,
+    coords: &[Coord<f64>],
+    projection: &MapProjection,
+    text: &str,
+    zoom: f32,
+    layer_type: super::GeoLayerType,
+) {
+    use super::GeoLayerType;
+
+    if coords.is_empty() {
+        return;
+    }
+
+    // Compute centroid (simple average of coordinates)
+    let (sum_x, sum_y) = coords.iter().fold((0.0, 0.0), |(sx, sy), c| (sx + c.x, sy + c.y));
+    let centroid = Coord {
+        x: sum_x / coords.len() as f64,
+        y: sum_y / coords.len() as f64,
+    };
+
+    // Skip if centroid is outside visible bounds
+    if !projection.is_visible(centroid, 0.5) {
+        return;
+    }
+
+    let pos = projection.geo_to_screen(centroid);
+
+    // Style based on layer type
+    let (base_size, color) = match layer_type {
+        GeoLayerType::States => (12.0, Color32::from_rgb(220, 220, 240)), // Larger, brighter
+        GeoLayerType::Counties => (8.0, Color32::from_rgb(140, 140, 160)), // Smaller, dimmer
+        _ => (10.0, Color32::from_rgb(180, 180, 200)),
+    };
+
+    // Scale font size with zoom, clamped to reasonable range
+    let font_size = (base_size * zoom).clamp(base_size * 0.7, base_size * 1.5);
+
+    painter.text(
+        pos,
+        eframe::egui::Align2::CENTER_CENTER,
+        text,
+        FontId::proportional(font_size),
+        color,
+    );
 }
 
 /// Renders a point feature (city marker, etc.).
