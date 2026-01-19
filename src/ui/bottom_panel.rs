@@ -5,6 +5,21 @@ use crate::state::{AppState, LiveExitReason, LivePhase, PlaybackSpeed, SessionSt
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
+/// Get current Unix timestamp in seconds (works on both native and WASM)
+fn current_timestamp_secs() -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        js_sys::Date::now() / 1000.0
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
+    }
+}
+
 /// Muted gray for stat labels.
 const LABEL_COLOR: Color32 = Color32::from_rgb(100, 100, 100);
 /// Slightly brighter for stat values.
@@ -582,10 +597,9 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
             .on_hover_text("Start live streaming")
             .clicked()
         {
-            let now = state
-                .playback_state
-                .selected_timestamp
-                .unwrap_or(1714564800.0);
+            // Snap to actual current time when entering live mode
+            let now = current_timestamp_secs();
+            state.playback_state.selected_timestamp = Some(now);
             state.live_mode_state.start(now);
             state.playback_state.playing = true;
             state.playback_state.speed = PlaybackSpeed::Realtime;
