@@ -1,9 +1,16 @@
-//! Bottom panel UI: playback controls and timeline.
+//! Bottom panel UI: playback controls, timeline, and session statistics.
 
 use crate::state::radar_data::RadarTimeline;
-use crate::state::{AppState, PlaybackSpeed};
+use crate::state::{AppState, PlaybackSpeed, SessionStats};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
+
+/// Muted gray for stat labels.
+const LABEL_COLOR: Color32 = Color32::from_rgb(100, 100, 100);
+/// Slightly brighter for stat values.
+const VALUE_COLOR: Color32 = Color32::from_rgb(160, 160, 160);
+/// Emphasized color for active requests.
+const ACTIVE_COLOR: Color32 = Color32::from_rgb(100, 180, 255);
 
 /// Level of detail for radar data rendering
 #[derive(Clone, Copy, PartialEq)]
@@ -524,4 +531,58 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.selectable_value(&mut state.playback_state.speed, *speed, speed.label());
             }
         });
+
+    // Push session stats to the right
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        render_session_stats(ui, &state.session_stats);
+    });
+}
+
+/// Render session statistics (right-aligned in the bottom bar).
+fn render_session_stats(ui: &mut egui::Ui, stats: &SessionStats) {
+    // Latency stats (rightmost)
+    ui.label(
+        RichText::new(stats.format_latency_stats())
+            .size(11.0)
+            .color(VALUE_COLOR),
+    );
+    ui.label(RichText::new("median:").size(11.0).color(LABEL_COLOR));
+
+    ui.separator();
+
+    // Cache size
+    ui.label(
+        RichText::new(stats.format_cache_size())
+            .size(11.0)
+            .color(VALUE_COLOR),
+    );
+    ui.label(RichText::new("cache:").size(11.0).color(LABEL_COLOR));
+
+    ui.separator();
+
+    // Transferred data
+    ui.label(
+        RichText::new(stats.format_transferred())
+            .size(11.0)
+            .color(VALUE_COLOR),
+    );
+    ui.label(RichText::new("transferred:").size(11.0).color(LABEL_COLOR));
+
+    ui.separator();
+
+    // Request count with active indicator
+    if stats.active_request_count > 0 {
+        ui.label(
+            RichText::new(format!("({} active)", stats.active_request_count))
+                .size(11.0)
+                .italics()
+                .color(ACTIVE_COLOR),
+        );
+    }
+    ui.label(
+        RichText::new(format!("{}", stats.session_request_count))
+            .size(11.0)
+            .color(VALUE_COLOR),
+    );
+    ui.label(RichText::new("requests:").size(11.0).color(LABEL_COLOR));
 }

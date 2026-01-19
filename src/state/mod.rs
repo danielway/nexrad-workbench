@@ -9,6 +9,7 @@ mod layer;
 mod playback;
 mod processing;
 pub mod radar_data;
+mod stats;
 pub mod vcp;
 mod viz;
 
@@ -17,6 +18,7 @@ pub use layer::{GeoLayerVisibility, LayerState};
 pub use playback::{PlaybackSpeed, PlaybackState};
 pub use processing::ProcessingState;
 pub use radar_data::RadarTimeline;
+pub use stats::SessionStats;
 pub use vcp::get_vcp_definition;
 pub use viz::{ColorPalette, RadarProduct, VizState};
 
@@ -43,6 +45,9 @@ pub struct AppState {
 
     /// Application status message displayed in top bar
     pub status_message: String,
+
+    /// Session and performance statistics
+    pub session_stats: SessionStats,
 }
 
 impl AppState {
@@ -66,6 +71,7 @@ impl AppState {
             playback_state,
             radar_timeline,
             status_message: "Ready".to_string(),
+            session_stats: SessionStats::with_dummy_data(),
             ..Default::default()
         }
     }
