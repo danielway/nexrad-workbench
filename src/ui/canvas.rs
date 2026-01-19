@@ -67,8 +67,8 @@ pub fn render_canvas_with_geo(
         // Draw overlay info in top-left corner
         draw_overlay_info(ui, &rect, state);
 
-        // Handle zoom/pan interactions (store state but don't fully implement)
-        handle_canvas_interaction(&response, state);
+        // Handle zoom/pan interactions
+        handle_canvas_interaction(&response, &rect, state);
     });
 }
 
@@ -120,18 +120,29 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
     });
 }
 
-fn handle_canvas_interaction(response: &egui::Response, state: &mut AppState) {
+fn handle_canvas_interaction(response: &egui::Response, rect: &Rect, state: &mut AppState) {
     // Handle dragging for panning
     if response.dragged() {
         state.viz_state.pan_offset += response.drag_delta();
     }
 
-    // Handle scroll for zooming (placeholder - stores state)
+    // Handle scroll for zooming relative to cursor position
     if response.hovered() {
         let scroll_delta = response.ctx.input(|i| i.raw_scroll_delta);
         if scroll_delta.y != 0.0 {
             let zoom_factor = 1.0 + scroll_delta.y * 0.001;
-            state.viz_state.zoom = (state.viz_state.zoom * zoom_factor).clamp(0.1, 10.0);
+            let old_zoom = state.viz_state.zoom;
+            let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 10.0);
+
+            // Adjust pan offset to keep the point under cursor stationary
+            if let Some(cursor_pos) = response.hover_pos() {
+                let cursor_rel = cursor_pos - rect.center();
+                let ratio = new_zoom / old_zoom;
+                state.viz_state.pan_offset =
+                    cursor_rel * (1.0 - ratio) + state.viz_state.pan_offset * ratio;
+            }
+
+            state.viz_state.zoom = new_zoom;
         }
     }
 
