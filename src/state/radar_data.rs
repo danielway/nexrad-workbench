@@ -31,6 +31,20 @@ impl Sweep {
     pub fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }
+
+    /// Interpolate azimuth for a timestamp within this sweep (smooth animation)
+    /// Assumes the sweep rotates 360 degrees from start to end
+    pub fn interpolate_azimuth(&self, ts: f64) -> Option<f32> {
+        if ts < self.start_time || ts > self.end_time {
+            return None;
+        }
+        let duration = self.end_time - self.start_time;
+        if duration <= 0.0 {
+            return Some(0.0);
+        }
+        let progress = (ts - self.start_time) / duration;
+        Some((progress * 360.0) as f32)
+    }
 }
 
 /// A complete volume scan (multiple sweeps at different elevations)
@@ -52,6 +66,26 @@ impl Scan {
     pub fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }
+
+    /// Find the sweep containing the given timestamp
+    pub fn find_sweep_at_timestamp(&self, ts: f64) -> Option<(usize, &Sweep)> {
+        self.sweeps
+            .iter()
+            .enumerate()
+            .find(|(_, sweep)| ts >= sweep.start_time && ts <= sweep.end_time)
+    }
+
+    /// Calculate scan progress as a percentage (0.0 to 1.0)
+    pub fn progress_at_timestamp(&self, ts: f64) -> Option<f32> {
+        if ts < self.start_time || ts > self.end_time {
+            return None;
+        }
+        let duration = self.end_time - self.start_time;
+        if duration <= 0.0 {
+            return Some(0.0);
+        }
+        Some(((ts - self.start_time) / duration) as f32)
+    }
 }
 
 /// Collection of radar data for timeline display
@@ -70,6 +104,13 @@ impl RadarTimeline {
         let start = self.scans.first().unwrap().start_time;
         let end = self.scans.last().unwrap().end_time;
         Some((start, end))
+    }
+
+    /// Find the scan containing the given timestamp
+    pub fn find_scan_at_timestamp(&self, ts: f64) -> Option<&Scan> {
+        self.scans
+            .iter()
+            .find(|scan| ts >= scan.start_time && ts <= scan.end_time)
     }
 
     /// Generate sample data for testing/demo purposes
