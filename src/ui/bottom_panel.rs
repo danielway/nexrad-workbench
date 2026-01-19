@@ -1,8 +1,118 @@
 //! Bottom panel UI: playback controls and timeline.
 
+use crate::state::radar_data::RadarTimeline;
 use crate::state::{AppState, PlaybackMode, PlaybackSpeed};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
-use eframe::egui::{self, Color32, Pos2, RichText, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
+
+/// Level of detail for radar data rendering
+#[derive(Clone, Copy, PartialEq)]
+enum DetailLevel {
+    /// Just show solid color where data exists
+    Solid,
+    /// Show individual scan blocks
+    Scans,
+    /// Show sweep blocks within scans
+    Sweeps,
+}
+
+/// Render radar data on the timeline at the appropriate detail level
+fn render_radar_data(
+    painter: &Painter,
+    rect: &Rect,
+    timeline: &RadarTimeline,
+    view_start: f64,
+    view_end: f64,
+    zoom: f64,
+    detail_level: DetailLevel,
+) {
+    // Helper to convert timestamp to x position
+    let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
+
+    // Colors for different elements
+    let scan_color = Color32::from_rgb(60, 120, 80);
+    let scan_border = Color32::from_rgb(80, 160, 100);
+    let sweep_colors: [Color32; 4] = [
+        Color32::from_rgb(50, 100, 70),
+        Color32::from_rgb(60, 120, 80),
+        Color32::from_rgb(70, 140, 90),
+        Color32::from_rgb(55, 110, 75),
+    ];
+
+    match detail_level {
+        DetailLevel::Solid => {
+            // Just draw a solid region covering all data
+            if let Some((data_start, data_end)) = timeline.time_range() {
+                let x_start = ts_to_x(data_start).max(rect.left());
+                let x_end = ts_to_x(data_end).min(rect.right());
+
+                if x_end > x_start {
+                    painter.rect_filled(
+                        Rect::from_min_max(
+                            Pos2::new(x_start, rect.top() + 2.0),
+                            Pos2::new(x_end, rect.bottom() - 2.0),
+                        ),
+                        2.0,
+                        Color32::from_rgba_unmultiplied(60, 120, 80, 180),
+                    );
+                }
+            }
+        }
+        DetailLevel::Scans => {
+            // Draw individual scan blocks
+            for scan in timeline.scans_in_range(view_start, view_end) {
+                let x_start = ts_to_x(scan.start_time).max(rect.left());
+                let x_end = ts_to_x(scan.end_time).min(rect.right());
+
+                if x_end > x_start && (x_end - x_start) > 1.0 {
+                    let scan_rect = Rect::from_min_max(
+                        Pos2::new(x_start, rect.top() + 3.0),
+                        Pos2::new(x_end, rect.bottom() - 3.0),
+                    );
+
+                    painter.rect_filled(scan_rect, 2.0, scan_color);
+                    painter.rect_stroke(
+                        scan_rect,
+                        2.0,
+                        Stroke::new(1.0, scan_border),
+                        StrokeKind::Inside,
+                    );
+                }
+            }
+        }
+        DetailLevel::Sweeps => {
+            // Draw sweep blocks within scans
+            for scan in timeline.scans_in_range(view_start, view_end) {
+                for (i, sweep) in scan.sweeps.iter().enumerate() {
+                    let x_start = ts_to_x(sweep.start_time).max(rect.left());
+                    let x_end = ts_to_x(sweep.end_time).min(rect.right());
+
+                    if x_end > x_start && (x_end - x_start) > 0.5 {
+                        // Alternate colors for visual distinction
+                        let color = sweep_colors[i % sweep_colors.len()];
+
+                        let sweep_rect = Rect::from_min_max(
+                            Pos2::new(x_start, rect.top() + 3.0),
+                            Pos2::new(x_end, rect.bottom() - 3.0),
+                        );
+
+                        painter.rect_filled(sweep_rect, 1.0, color);
+
+                        // Draw border between sweeps if there's enough space
+                        if (x_end - x_start) > 3.0 {
+                            painter.rect_stroke(
+                                sweep_rect,
+                                1.0,
+                                Stroke::new(0.5, Color32::from_rgb(40, 80, 55)),
+                                StrokeKind::Inside,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     egui::TopBottomPanel::bottom("bottom_panel")
@@ -188,25 +298,27 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     // Helper to convert timestamp to x position
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    // Draw loaded data range highlight (if any data is loaded)
-    if let (Some(data_start), Some(data_end)) = (
-        state.playback_state.data_start_timestamp,
-        state.playback_state.data_end_timestamp,
-    ) {
-        let data_x_start = ts_to_x(data_start as f64).max(rect.left());
-        let data_x_end = ts_to_x(data_end as f64).min(rect.right());
+    // Draw radar data based on zoom level
+    // - Zoomed out (< 0.2 px/sec): solid fill where we have data
+    // - Medium zoom (0.2 - 1.0 px/sec): show individual scan blocks
+    // - Zoomed in (> 1.0 px/sec): show sweep blocks within scans
+    let detail_level = if zoom < 0.2 {
+        DetailLevel::Solid
+    } else if zoom < 1.0 {
+        DetailLevel::Scans
+    } else {
+        DetailLevel::Sweeps
+    };
 
-        if data_x_end > data_x_start {
-            painter.rect_filled(
-                egui::Rect::from_min_max(
-                    Pos2::new(data_x_start, rect.top()),
-                    Pos2::new(data_x_end, rect.bottom()),
-                ),
-                0.0,
-                Color32::from_rgba_unmultiplied(60, 100, 60, 40),
-            );
-        }
-    }
+    render_radar_data(
+        &painter,
+        &rect,
+        &state.radar_timeline,
+        view_start,
+        view_end,
+        zoom,
+        detail_level,
+    );
 
     // Select appropriate tick configuration
     let tick_config = select_tick_config(zoom);

@@ -102,14 +102,19 @@ pub struct PlaybackState {
 
 impl PlaybackState {
     pub fn new() -> Self {
-        // Start view at current time (roughly - using a recent date for demo)
-        let now = 1714521600.0_f64; // 2024-05-01 00:00:00 UTC
+        Self::new_at_time(1714521600.0) // 2024-05-01 00:00:00 UTC
+    }
+
+    pub fn new_at_time(now: f64) -> Self {
+        // Start zoomed to show about 1 hour, centered on "now"
+        let zoom = 0.15; // ~0.15 px/sec means ~1.8 hours visible in 1000px
+        let view_width_secs = 1000.0 / zoom; // Approximate visible width
 
         Self {
-            total_frames: 0,                                 // No data loaded initially
-            timeline_zoom: 0.0001,                           // Start very zoomed out to see months
-            timeline_view_start: now - 15.0 * 24.0 * 3600.0, // Center view around "now"
-            selected_timestamp: None,
+            total_frames: 0,
+            timeline_zoom: zoom,
+            timeline_view_start: now - view_width_secs / 2.0, // Center on "now"
+            selected_timestamp: Some(now),                    // Start with "now" selected
             data_start_timestamp: None,
             data_end_timestamp: None,
             ..Default::default()
