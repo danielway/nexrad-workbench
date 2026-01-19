@@ -75,16 +75,35 @@ fn render_feature(
             for (exterior, _holes) in polygons {
                 render_line_string(painter, exterior, projection, stroke);
             }
-            // Draw label at centroid of first polygon if enabled
+            // Draw label at centroid of largest polygon if enabled
             if show_labels {
                 if let Some(text) = label {
-                    if let Some((exterior, _)) = polygons.first() {
-                        render_polygon_label(painter, exterior, projection, text, zoom, layer_type);
+                    // Find the largest polygon by bounding box area
+                    if let Some((largest_exterior, _)) = polygons.iter().max_by(|(a, _), (b, _)| {
+                        let area_a = polygon_bbox_area(a);
+                        let area_b = polygon_bbox_area(b);
+                        area_a.partial_cmp(&area_b).unwrap_or(std::cmp::Ordering::Equal)
+                    }) {
+                        render_polygon_label(painter, largest_exterior, projection, text, zoom, layer_type);
                     }
                 }
             }
         }
     }
+}
+
+/// Computes the bounding box area of a polygon (for finding largest polygon).
+fn polygon_bbox_area(coords: &[Coord<f64>]) -> f64 {
+    if coords.is_empty() {
+        return 0.0;
+    }
+    let (min_x, max_x, min_y, max_y) = coords.iter().fold(
+        (f64::MAX, f64::MIN, f64::MAX, f64::MIN),
+        |(min_x, max_x, min_y, max_y), c| {
+            (min_x.min(c.x), max_x.max(c.x), min_y.min(c.y), max_y.max(c.y))
+        },
+    );
+    (max_x - min_x) * (max_y - min_y)
 }
 
 /// Renders a label at the centroid of a polygon.

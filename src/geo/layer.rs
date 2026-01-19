@@ -195,26 +195,50 @@ impl GeoLayer {
                 }
             }
             shapefile::Shape::Polygon(poly) => {
-                // Shapefile polygons: outer rings are clockwise, holes are counter-clockwise
-                let rings: Vec<Vec<Coord<f64>>> = poly
-                    .rings()
-                    .iter()
-                    .map(|ring| {
-                        ring.points()
-                            .iter()
-                            .map(|p| Coord { x: p.x, y: p.y })
-                            .collect()
-                    })
-                    .collect();
+                // Shapefile polygons can have multiple outer rings (disconnected parts)
+                // and inner rings (holes). We need to separate them properly.
+                use shapefile::PolygonRing;
 
-                if rings.is_empty() {
+                let mut outer_rings: Vec<Vec<Coord<f64>>> = Vec::new();
+                let mut current_holes: Vec<Vec<Coord<f64>>> = Vec::new();
+
+                for ring in poly.rings() {
+                    let coords: Vec<Coord<f64>> = ring
+                        .points()
+                        .iter()
+                        .map(|p| Coord { x: p.x, y: p.y })
+                        .collect();
+
+                    match ring {
+                        PolygonRing::Outer(_) => {
+                            outer_rings.push(coords);
+                        }
+                        PolygonRing::Inner(_) => {
+                            current_holes.push(coords);
+                        }
+                    }
+                }
+
+                if outer_rings.is_empty() {
                     return None;
                 }
 
-                // Simple case: treat first ring as exterior, rest as holes
-                let exterior = rings[0].clone();
-                let holes: Vec<Vec<Coord<f64>>> = rings[1..].to_vec();
-                Some(GeoFeature::Polygon { exterior, holes, label })
+                // If single outer ring, return Polygon; otherwise MultiPolygon
+                if outer_rings.len() == 1 {
+                    Some(GeoFeature::Polygon {
+                        exterior: outer_rings.remove(0),
+                        holes: current_holes,
+                        label,
+                    })
+                } else {
+                    // Multiple outer rings = MultiPolygon
+                    // Note: This simplified approach doesn't associate holes with their outer rings
+                    let polygons: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)> = outer_rings
+                        .into_iter()
+                        .map(|ext| (ext, Vec::new()))
+                        .collect();
+                    Some(GeoFeature::MultiPolygon { polygons, label })
+                }
             }
             shapefile::Shape::NullShape => None,
             _ => None,
