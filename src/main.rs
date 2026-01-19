@@ -107,10 +107,14 @@ pub struct WorkbenchApp {
 }
 
 // Embed shapefile data at compile time
-static STATES_SHP: &[u8] = include_bytes!("../assets/vectors/cb_2023_us_state_20m/cb_2023_us_state_20m.shp");
-static STATES_DBF: &[u8] = include_bytes!("../assets/vectors/cb_2023_us_state_20m/cb_2023_us_state_20m.dbf");
-static COUNTIES_SHP: &[u8] = include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.shp");
-static COUNTIES_DBF: &[u8] = include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.dbf");
+static STATES_SHP: &[u8] =
+    include_bytes!("../assets/vectors/cb_2023_us_state_20m/cb_2023_us_state_20m.shp");
+static STATES_DBF: &[u8] =
+    include_bytes!("../assets/vectors/cb_2023_us_state_20m/cb_2023_us_state_20m.dbf");
+static COUNTIES_SHP: &[u8] =
+    include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.shp");
+static COUNTIES_DBF: &[u8] =
+    include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.dbf");
 
 impl WorkbenchApp {
     /// Creates a new WorkbenchApp instance.
@@ -136,8 +140,16 @@ impl WorkbenchApp {
 
         log::info!(
             "Loaded geo layers: {} states, {} counties",
-            geo_layers.states.as_ref().map(|l| l.features.len()).unwrap_or(0),
-            geo_layers.counties.as_ref().map(|l| l.features.len()).unwrap_or(0),
+            geo_layers
+                .states
+                .as_ref()
+                .map(|l| l.features.len())
+                .unwrap_or(0),
+            geo_layers
+                .counties
+                .as_ref()
+                .map(|l| l.features.len())
+                .unwrap_or(0),
         );
 
         Self {
@@ -178,10 +190,8 @@ impl eframe::App for WorkbenchApp {
                     #[cfg(target_arch = "wasm32")]
                     {
                         use storage::KeyValueStore;
-                        let cached = CachedFile::new(
-                            file_result.file_name.clone(),
-                            &file_result.file_data,
-                        );
+                        let cached =
+                            CachedFile::new(file_result.file_name.clone(), &file_result.file_data);
                         let cache = self.file_cache.clone();
                         let file_name = file_result.file_name.clone();
                         wasm_bindgen_futures::spawn_local(async move {

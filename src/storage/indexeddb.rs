@@ -69,11 +69,7 @@ impl IndexedDbStore {
 }
 
 impl KeyValueStore for IndexedDbStore {
-    async fn put<T: Serialize + 'static>(
-        &self,
-        key: &str,
-        value: &T,
-    ) -> Result<(), StorageError> {
+    async fn put<T: Serialize + 'static>(&self, key: &str, value: &T) -> Result<(), StorageError> {
         let db = self.get_db().await?;
         let store = self.get_object_store(&db, IdbTransactionMode::Readwrite)?;
 
@@ -209,9 +205,9 @@ async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageErr
     // Wait for the database to open
     let db_result = wait_for_request(&open_request).await?;
 
-    let db: IdbDatabase = db_result
-        .dyn_into()
-        .map_err(|_| StorageError::DatabaseOpenFailed("Failed to cast to IdbDatabase".to_string()))?;
+    let db: IdbDatabase = db_result.dyn_into().map_err(|_| {
+        StorageError::DatabaseOpenFailed("Failed to cast to IdbDatabase".to_string())
+    })?;
 
     log::info!(
         "Opened IndexedDB database: {} v{}",

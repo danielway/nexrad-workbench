@@ -35,7 +35,16 @@ fn render_layer(
     let stroke = Stroke::new(line_width, color);
 
     for feature in &layer.features {
-        render_feature(painter, feature, projection, stroke, color, show_labels, zoom, layer.layer_type);
+        render_feature(
+            painter,
+            feature,
+            projection,
+            stroke,
+            color,
+            show_labels,
+            zoom,
+            layer.layer_type,
+        );
     }
 }
 
@@ -62,7 +71,11 @@ fn render_feature(
                 render_line_string(painter, coords, projection, stroke);
             }
         }
-        GeoFeature::Polygon { exterior, holes: _, label } => {
+        GeoFeature::Polygon {
+            exterior,
+            holes: _,
+            label,
+        } => {
             render_line_string(painter, exterior, projection, stroke);
             // Draw label at centroid if enabled
             if show_labels {
@@ -82,9 +95,18 @@ fn render_feature(
                     if let Some((largest_exterior, _)) = polygons.iter().max_by(|(a, _), (b, _)| {
                         let area_a = polygon_bbox_area(a);
                         let area_b = polygon_bbox_area(b);
-                        area_a.partial_cmp(&area_b).unwrap_or(std::cmp::Ordering::Equal)
+                        area_a
+                            .partial_cmp(&area_b)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     }) {
-                        render_polygon_label(painter, largest_exterior, projection, text, zoom, layer_type);
+                        render_polygon_label(
+                            painter,
+                            largest_exterior,
+                            projection,
+                            text,
+                            zoom,
+                            layer_type,
+                        );
                     }
                 }
             }
@@ -100,7 +122,9 @@ fn compute_polygon_centroid(coords: &[Coord<f64>]) -> Coord<f64> {
     }
     if coords.len() < 3 {
         // For degenerate cases, fall back to simple average
-        let (sum_x, sum_y) = coords.iter().fold((0.0, 0.0), |(sx, sy), c| (sx + c.x, sy + c.y));
+        let (sum_x, sum_y) = coords
+            .iter()
+            .fold((0.0, 0.0), |(sx, sy), c| (sx + c.x, sy + c.y));
         return Coord {
             x: sum_x / coords.len() as f64,
             y: sum_y / coords.len() as f64,
@@ -123,7 +147,9 @@ fn compute_polygon_centroid(coords: &[Coord<f64>]) -> Coord<f64> {
 
     // Avoid division by zero for degenerate polygons
     if signed_area.abs() < 1e-10 {
-        let (sum_x, sum_y) = coords.iter().fold((0.0, 0.0), |(sx, sy), c| (sx + c.x, sy + c.y));
+        let (sum_x, sum_y) = coords
+            .iter()
+            .fold((0.0, 0.0), |(sx, sy), c| (sx + c.x, sy + c.y));
         return Coord {
             x: sum_x / coords.len() as f64,
             y: sum_y / coords.len() as f64,
@@ -144,7 +170,12 @@ fn polygon_bbox_area(coords: &[Coord<f64>]) -> f64 {
     let (min_x, max_x, min_y, max_y) = coords.iter().fold(
         (f64::MAX, f64::MIN, f64::MAX, f64::MIN),
         |(min_x, max_x, min_y, max_y), c| {
-            (min_x.min(c.x), max_x.max(c.x), min_y.min(c.y), max_y.max(c.y))
+            (
+                min_x.min(c.x),
+                max_x.max(c.x),
+                min_y.min(c.y),
+                max_y.max(c.y),
+            )
         },
     );
     (max_x - min_x) * (max_y - min_y)

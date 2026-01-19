@@ -110,7 +110,8 @@ impl GeoLayer {
 
     /// Returns the effective color for this layer.
     pub fn effective_color(&self) -> Color32 {
-        self.color.unwrap_or_else(|| self.layer_type.default_color())
+        self.color
+            .unwrap_or_else(|| self.layer_type.default_color())
     }
 
     /// Returns the effective line width for this layer.
@@ -141,21 +142,24 @@ impl GeoLayer {
         });
 
         for (idx, result) in shape_reader.iter_shapes().enumerate() {
-            let shape: shapefile::Shape = result.map_err(|e| format!("Failed to read shape: {}", e))?;
+            let shape: shapefile::Shape =
+                result.map_err(|e| format!("Failed to read shape: {}", e))?;
 
             // Try to get a name from the dbf record
             let label = dbf_records.as_ref().and_then(|records| {
-                records.get(idx).and_then(|record: &shapefile::dbase::Record| {
-                    // Try common name fields
-                    for field_name in &["NAME", "name", "Name", "NAMELSAD", "FULLNAME"] {
-                        if let Some(value) = record.get(*field_name) {
-                            if let FieldValue::Character(Some(s)) = value {
-                                return Some(s.trim().to_string());
+                records
+                    .get(idx)
+                    .and_then(|record: &shapefile::dbase::Record| {
+                        // Try common name fields
+                        for field_name in &["NAME", "name", "Name", "NAMELSAD", "FULLNAME"] {
+                            if let Some(value) = record.get(*field_name) {
+                                if let FieldValue::Character(Some(s)) = value {
+                                    return Some(s.trim().to_string());
+                                }
                             }
                         }
-                    }
-                    None
-                })
+                        None
+                    })
             });
 
             if let Some(feature) = self.convert_shapefile_shape(&shape, label) {
@@ -179,10 +183,8 @@ impl GeoLayer {
             shapefile::Shape::Polyline(pl) => {
                 let parts = pl.parts();
                 if parts.len() == 1 {
-                    let coords: Vec<Coord<f64>> = parts[0]
-                        .iter()
-                        .map(|p| Coord { x: p.x, y: p.y })
-                        .collect();
+                    let coords: Vec<Coord<f64>> =
+                        parts[0].iter().map(|p| Coord { x: p.x, y: p.y }).collect();
                     Some(GeoFeature::LineString(coords))
                 } else {
                     let lines: Vec<Vec<Coord<f64>>> = parts
@@ -315,10 +317,8 @@ impl GeoLayer {
                 }
             }
             Value::LineString(coords) => {
-                let line: Vec<Coord<f64>> = coords
-                    .iter()
-                    .map(|c| Coord { x: c[0], y: c[1] })
-                    .collect();
+                let line: Vec<Coord<f64>> =
+                    coords.iter().map(|c| Coord { x: c[0], y: c[1] }).collect();
                 Some(GeoFeature::LineString(line))
             }
             Value::MultiLineString(lines) => {
@@ -340,7 +340,11 @@ impl GeoLayer {
                     .iter()
                     .map(|ring| ring.iter().map(|c| Coord { x: c[0], y: c[1] }).collect())
                     .collect();
-                Some(GeoFeature::Polygon { exterior, holes, label })
+                Some(GeoFeature::Polygon {
+                    exterior,
+                    holes,
+                    label,
+                })
             }
             Value::MultiPolygon(polygons) => {
                 let polygons: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)> = polygons

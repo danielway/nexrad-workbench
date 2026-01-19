@@ -192,7 +192,7 @@ pub const NEXRAD_SITES: &[(&str, f64, f64)] = &[
     ("KTBW", 27.7056, -82.4017),  // Tampa Bay, FL
     ("KAMX", 25.6111, -80.4128),  // Miami, FL
     ("KBYX", 24.5975, -81.7031),  // Key West, FL
-    // Add more sites as needed...
+                                  // Add more sites as needed...
 ];
 
 /// Looks up radar site coordinates by ID.

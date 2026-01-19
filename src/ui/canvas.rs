@@ -22,7 +22,8 @@ pub fn render_canvas_with_geo(
         painter.rect_filled(rect, 0.0, Color32::from_rgb(20, 20, 35));
 
         // Create projection for geo layers
-        let mut projection = MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
+        let mut projection =
+            MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
         projection.update(state.viz_state.zoom, state.viz_state.pan_offset, rect);
 
         // Draw geographic layers BEFORE radar (so radar appears on top)
@@ -52,15 +53,6 @@ pub fn render_canvas_with_geo(
                 tex_rect,
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 Color32::WHITE,
-            );
-        } else {
-            // Draw placeholder text when no texture
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "No radar data loaded",
-                egui::FontId::proportional(20.0),
-                Color32::from_rgb(100, 100, 120),
             );
         }
 

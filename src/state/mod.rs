@@ -10,7 +10,7 @@ mod playback;
 mod processing;
 mod viz;
 
-pub use data_source::{ArchiveState, DataSourceMode, RealtimeState, UploadState};
+pub use data_source::UploadState;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use playback::{PlaybackMode, PlaybackSpeed, PlaybackState};
 pub use processing::ProcessingState;
@@ -19,17 +19,8 @@ pub use viz::{ColorPalette, RadarProduct, VizState};
 /// Root application state containing all sub-states.
 #[derive(Default)]
 pub struct AppState {
-    /// Current data source mode (determines left panel content)
-    pub data_source_mode: DataSourceMode,
-
-    /// State for file upload mode
+    /// State for file upload
     pub upload_state: UploadState,
-
-    /// State for archive browser mode
-    pub archive_state: ArchiveState,
-
-    /// State for realtime stream mode
-    pub realtime_state: RealtimeState,
 
     /// Playback controls state
     pub playback_state: PlaybackState,
@@ -50,7 +41,8 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         Self {
-            status_message: "No data loaded".to_string(),
+            playback_state: PlaybackState::new(),
+            status_message: "Ready".to_string(),
             ..Default::default()
         }
     }

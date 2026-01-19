@@ -82,12 +82,19 @@ pub struct PlaybackState {
 
     /// Current playback mode
     pub mode: PlaybackMode,
+
+    /// Timeline zoom level (pixels per frame)
+    pub timeline_zoom: f32,
+
+    /// Timeline pan offset (in frames from start)
+    pub timeline_pan: f32,
 }
 
 impl PlaybackState {
     pub fn new() -> Self {
         Self {
-            total_frames: 100, // Placeholder for UI demonstration
+            total_frames: 100,  // Placeholder for UI demonstration
+            timeline_zoom: 5.0, // Default: 5 pixels per frame
             ..Default::default()
         }
     }
