@@ -74,6 +74,7 @@ fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         .default_open(true)
         .show(ui, |ui| {
             ui.checkbox(&mut state.layer_state.nws_alerts, "NWS Alerts");
+            ui.checkbox(&mut state.layer_state.geo.nexrad_sites, "NEXRAD Sites");
             ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
             ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
             ui.checkbox(&mut state.layer_state.geo.labels, "Labels");

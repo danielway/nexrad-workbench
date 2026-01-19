@@ -1,5 +1,6 @@
 //! Left panel UI: file upload controls and radar operations visualization.
 
+use crate::data::{all_sites_sorted, get_site};
 use crate::file_ops::FilePickerChannel;
 use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
@@ -94,40 +95,40 @@ fn render_load_data_section(
 }
 
 fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
-    // Header with site name and edit button
+    // Header
+    ui.label(RichText::new("Radar Operations").strong().size(14.0));
+
+    ui.add_space(4.0);
+
+    // Site selector dropdown
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new(format!("{} Radar Operations", state.viz_state.site_id))
-                .strong()
-                .size(14.0),
-        );
+        ui.label("Site:");
 
-        // Right-align the edit button
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Edit icon button - gear icon
-            let edit_btn = ui.button(RichText::new("\u{2699}").size(14.0));
+        // Get display text for current selection
+        let current_display = get_site(&state.viz_state.site_id)
+            .map(|s| s.display_label())
+            .unwrap_or_else(|| state.viz_state.site_id.clone());
 
-            // Popup for editing site
-            egui::Popup::from_toggle_button_response(&edit_btn)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show(|ui| {
-                    ui.set_min_width(150.0);
-                    ui.label(RichText::new("Radar Site").strong());
-                    ui.add_space(4.0);
-
-                    let response = ui.add(
-                        egui::TextEdit::singleline(&mut state.viz_state.site_id)
-                            .desired_width(80.0)
-                            .font(egui::FontId::monospace(14.0))
-                            .hint_text("KDMX"),
-                    );
-
-                    // Convert to uppercase as user types
-                    if response.changed() {
-                        state.viz_state.site_id = state.viz_state.site_id.to_uppercase();
+        egui::ComboBox::from_id_salt("site_selector")
+            .selected_text(current_display)
+            .width(180.0)
+            .height(300.0)
+            .show_ui(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                for site in all_sites_sorted() {
+                    let is_selected = site.id == state.viz_state.site_id;
+                    if ui
+                        .selectable_label(is_selected, site.display_label())
+                        .clicked()
+                    {
+                        state.viz_state.site_id = site.id.to_string();
+                        state.viz_state.center_lat = site.lat;
+                        state.viz_state.center_lon = site.lon;
+                        // Reset pan when changing sites
+                        state.viz_state.pan_offset = Vec2::ZERO;
                     }
-                });
-        });
+                }
+            });
     });
 
     ui.add_space(5.0);

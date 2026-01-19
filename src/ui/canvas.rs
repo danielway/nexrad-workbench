@@ -1,7 +1,8 @@
 //! Central canvas UI: radar visualization area.
 
+use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::{GeoLayerSet, MapProjection};
-use crate::state::{AlertsState, AppState, NwsAlert};
+use crate::state::{AlertsState, AppState, GeoLayerVisibility, NwsAlert};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use geo_types::Coord;
 use std::f32::consts::PI;
@@ -40,6 +41,14 @@ pub fn render_canvas_with_geo(
                 state.layer_state.geo.labels,
             );
         }
+
+        // Draw NEXRAD sites layer (always show current site, optionally show all)
+        render_nexrad_sites(
+            &painter,
+            &projection,
+            &state.viz_state.site_id,
+            &state.layer_state.geo,
+        );
 
         // Draw NWS alerts layer if enabled
         if state.layer_state.nws_alerts {
@@ -353,4 +362,93 @@ fn polygon_centroid(points: &[Pos2]) -> Option<Pos2> {
         sum.x / points.len() as f32,
         sum.y / points.len() as f32,
     ))
+}
+
+/// Render NEXRAD radar site markers on the map.
+/// Always shows the current site; optionally shows all other sites.
+fn render_nexrad_sites(
+    painter: &Painter,
+    projection: &MapProjection,
+    current_site_id: &str,
+    visibility: &GeoLayerVisibility,
+) {
+    let current_site_id_upper = current_site_id.to_uppercase();
+
+    // Colors for sites
+    let other_site_color = Color32::from_rgb(255, 180, 80); // Orange for other sites
+    let current_site_color = Color32::from_rgb(50, 200, 255); // Cyan for current site
+    let label_color = Color32::from_rgb(220, 220, 240);
+    let current_label_color = Color32::from_rgb(50, 200, 255);
+
+    // Get visible bounds to cull off-screen sites (min_lon, min_lat, max_lon, max_lat)
+    let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
+
+    // Render other sites if the layer is enabled
+    if visibility.nexrad_sites {
+        for site in NEXRAD_SITES.iter() {
+            // Skip current site (we'll draw it on top)
+            if site.id == current_site_id_upper {
+                continue;
+            }
+
+            // Cull sites outside visible bounds (with some padding)
+            let padding = 2.0; // degrees
+            if site.lat < min_lat - padding
+                || site.lat > max_lat + padding
+                || site.lon < min_lon - padding
+                || site.lon > max_lon + padding
+            {
+                continue;
+            }
+
+            let screen_pos = projection.geo_to_screen(Coord {
+                x: site.lon,
+                y: site.lat,
+            });
+
+            // Draw site marker (small circle)
+            painter.circle_filled(screen_pos, 4.0, other_site_color);
+            painter.circle_stroke(
+                screen_pos,
+                4.0,
+                Stroke::new(1.0, Color32::from_rgb(180, 120, 40)),
+            );
+
+            // Draw label if labels are enabled
+            if visibility.labels {
+                painter.text(
+                    screen_pos + Vec2::new(6.0, -2.0),
+                    egui::Align2::LEFT_CENTER,
+                    site.id,
+                    egui::FontId::proportional(10.0),
+                    label_color,
+                );
+            }
+        }
+    }
+
+    // Always render the current site (on top of others)
+    if let Some(site) = get_site(&current_site_id_upper) {
+        let screen_pos = projection.geo_to_screen(Coord {
+            x: site.lon,
+            y: site.lat,
+        });
+
+        // Draw larger marker for current site
+        painter.circle_filled(screen_pos, 6.0, current_site_color);
+        painter.circle_stroke(
+            screen_pos,
+            6.0,
+            Stroke::new(1.5, Color32::from_rgb(30, 150, 200)),
+        );
+
+        // Always show label for current site
+        painter.text(
+            screen_pos + Vec2::new(8.0, -2.0),
+            egui::Align2::LEFT_CENTER,
+            site.id,
+            egui::FontId::proportional(11.0),
+            current_label_color,
+        );
+    }
 }

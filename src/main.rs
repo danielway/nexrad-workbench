@@ -6,6 +6,7 @@
 //! NEXRAD weather radar data. It supports local file upload, AWS archive browsing,
 //! and realtime streaming (when implemented).
 
+mod data;
 mod file_ops;
 mod geo;
 mod state;

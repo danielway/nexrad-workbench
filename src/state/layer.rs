@@ -36,6 +36,8 @@ pub struct GeoLayerVisibility {
     pub counties: bool,
     /// Show labels for geographic features
     pub labels: bool,
+    /// Show NEXRAD radar sites (other sites, not current)
+    pub nexrad_sites: bool,
 }
 
 impl Default for LayerState {
@@ -58,6 +60,7 @@ impl Default for GeoLayerVisibility {
             states: true,
             counties: true,
             labels: true,
+            nexrad_sites: false,
         }
     }
 }
