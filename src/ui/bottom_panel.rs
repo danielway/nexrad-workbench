@@ -367,58 +367,31 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         tick += minor_interval;
     }
 
-    // Draw playhead at current frame position (if data is loaded)
-    if let Some(current_ts) = state.playback_state.current_timestamp() {
-        let playhead_x = ts_to_x(current_ts as f64);
-
-        if playhead_x >= rect.left() && playhead_x <= rect.right() {
-            // Playhead line
-            painter.line_segment(
-                [
-                    Pos2::new(playhead_x, rect.top()),
-                    Pos2::new(playhead_x, rect.bottom()),
-                ],
-                Stroke::new(2.0, Color32::from_rgb(255, 100, 100)),
-            );
-
-            // Playhead triangle
-            let triangle = vec![
-                Pos2::new(playhead_x - 5.0, rect.top()),
-                Pos2::new(playhead_x + 5.0, rect.top()),
-                Pos2::new(playhead_x, rect.top() + 8.0),
-            ];
-            painter.add(egui::Shape::convex_polygon(
-                triangle,
-                Color32::from_rgb(255, 100, 100),
-                Stroke::NONE,
-            ));
-        }
-    }
-
     // Draw selection marker (if user has selected a time)
     if let Some(selected_ts) = state.playback_state.selected_timestamp {
         let sel_x = ts_to_x(selected_ts);
 
         if sel_x >= rect.left() && sel_x <= rect.right() {
-            // Selection line (different color from playhead)
+            let marker_color = Color32::from_rgb(255, 100, 100);
+
+            // Selection line
             painter.line_segment(
                 [
                     Pos2::new(sel_x, rect.top()),
                     Pos2::new(sel_x, rect.bottom()),
                 ],
-                Stroke::new(2.0, Color32::from_rgb(100, 150, 255)),
+                Stroke::new(2.0, marker_color),
             );
 
-            // Selection diamond
-            let diamond = vec![
-                Pos2::new(sel_x, rect.top()),
-                Pos2::new(sel_x + 5.0, rect.top() + 5.0),
-                Pos2::new(sel_x, rect.top() + 10.0),
-                Pos2::new(sel_x - 5.0, rect.top() + 5.0),
+            // Selection triangle
+            let triangle = vec![
+                Pos2::new(sel_x - 5.0, rect.top()),
+                Pos2::new(sel_x + 5.0, rect.top()),
+                Pos2::new(sel_x, rect.top() + 8.0),
             ];
             painter.add(egui::Shape::convex_polygon(
-                diamond,
-                Color32::from_rgb(100, 150, 255),
+                triangle,
+                marker_color,
                 Stroke::NONE,
             ));
         }
