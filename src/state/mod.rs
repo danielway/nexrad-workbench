@@ -62,24 +62,28 @@ pub struct AppState {
 
     /// Whether an archive download is in progress
     pub download_in_progress: bool,
+
+    /// Flag to signal that the timeline needs to be refreshed from cache.
+    /// Set to true when the site changes or after a download completes.
+    pub timeline_needs_refresh: bool,
 }
 
 impl AppState {
     pub fn new() -> Self {
-        // Use a fixed "now" for demo (2024-05-01 12:00:00 UTC)
-        let now = 1714564800.0_f64;
+        // Use current time for initialization
+        #[cfg(target_arch = "wasm32")]
+        let now = js_sys::Date::now() / 1000.0;
+        #[cfg(not(target_arch = "wasm32"))]
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
 
-        // Generate sample radar data for the last 3 hours
-        let radar_timeline = RadarTimeline::generate_sample_data(now, 3.0);
+        // Start with empty timeline - will be populated from cache
+        let radar_timeline = RadarTimeline::default();
 
         // Set up playback state centered on "now"
-        let mut playback_state = PlaybackState::new_at_time(now);
-
-        // Update data range from the generated timeline
-        if let Some((start, end)) = radar_timeline.time_range() {
-            playback_state.data_start_timestamp = Some(start as i64);
-            playback_state.data_end_timestamp = Some(end as i64);
-        }
+        let playback_state = PlaybackState::new_at_time(now);
 
         Self {
             playback_state,
@@ -87,6 +91,8 @@ impl AppState {
             status_message: "Ready".to_string(),
             session_stats: SessionStats::with_dummy_data(),
             alerts_state: AlertsState::with_dummy_data(),
+            // Request timeline refresh on startup to load from cache
+            timeline_needs_refresh: true,
             ..Default::default()
         }
     }

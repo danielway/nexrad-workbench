@@ -97,6 +97,56 @@ mod base64_bytes {
     }
 }
 
+/// Lightweight metadata for timeline display (avoids loading full scan data).
+///
+/// This struct contains only the essential information needed to display
+/// scans in the timeline UI, without the heavy scan data payload (~1-5MB).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanMetadata {
+    /// Storage key identifying this scan
+    pub key: ScanKey,
+    /// Original file name from AWS
+    pub file_name: String,
+    /// File size in bytes
+    pub file_size: u64,
+    /// End timestamp of the scan (populated when scan is decoded)
+    pub end_timestamp: Option<i64>,
+    /// Volume Coverage Pattern identifier
+    pub vcp: Option<u16>,
+}
+
+impl ScanMetadata {
+    /// Creates metadata from a cached scan.
+    ///
+    /// Note: end_timestamp and vcp are set to None here since they require
+    /// decoding the scan data. They should be updated when the scan is decoded.
+    pub fn from_cached_scan(scan: &CachedScan) -> Self {
+        Self {
+            key: scan.key.clone(),
+            file_name: scan.file_name.clone(),
+            file_size: scan.file_size,
+            end_timestamp: None,
+            vcp: None,
+        }
+    }
+
+    /// Creates metadata with decoded information.
+    #[allow(dead_code)] // API method for future use when decoding is implemented
+    pub fn from_cached_scan_with_info(
+        scan: &CachedScan,
+        end_timestamp: Option<i64>,
+        vcp: Option<u16>,
+    ) -> Self {
+        Self {
+            key: scan.key.clone(),
+            file_name: scan.file_name.clone(),
+            file_size: scan.file_size,
+            end_timestamp,
+            vcp,
+        }
+    }
+}
+
 /// Result of a download operation.
 #[derive(Debug, Clone)]
 pub enum DownloadResult {

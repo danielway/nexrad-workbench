@@ -123,6 +123,9 @@ pub struct StorageConfig {
     /// Name of the object store within the database.
     pub store_name: String,
     /// Database version (incrementing triggers upgrade).
+    /// Note: On WASM, this is overridden by DATABASE_VERSION in indexeddb.rs
+    /// to ensure all stores use the same version.
+    #[allow(dead_code)] // Used for documentation; actual version from DATABASE_VERSION
     pub version: u32,
 }
 
@@ -131,7 +134,7 @@ impl Default for StorageConfig {
         Self {
             database_name: "nexrad-workbench".to_string(),
             store_name: "cache".to_string(),
-            version: 2, // Bumped to support nexrad-scans object store
+            version: 3, // Schema v3: nexrad-scans, scan-metadata, file-cache
         }
     }
 }
@@ -142,7 +145,7 @@ impl StorageConfig {
         Self {
             database_name: database_name.into(),
             store_name: store_name.into(),
-            version: 2, // Bumped to support nexrad-scans object store
+            version: 3, // Schema v3: nexrad-scans, scan-metadata, file-cache
         }
     }
 }

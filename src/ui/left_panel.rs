@@ -217,6 +217,8 @@ fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
                         state.viz_state.center_lon = site.lon;
                         // Reset pan when changing sites
                         state.viz_state.pan_offset = Vec2::ZERO;
+                        // Refresh timeline for new site
+                        state.timeline_needs_refresh = true;
                     }
                 }
             });

@@ -111,6 +111,9 @@ pub struct WorkbenchApp {
     /// Channel for async NEXRAD download operations
     download_channel: nexrad::DownloadChannel,
 
+    /// Channel for async cache metadata loading
+    cache_load_channel: nexrad::CacheLoadChannel,
+
     /// Currently loaded NEXRAD scan
     current_scan: Option<nexrad::CachedScan>,
 
@@ -133,7 +136,7 @@ static COUNTIES_DBF: &[u8] =
 
 impl WorkbenchApp {
     /// Creates a new WorkbenchApp instance.
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut geo_layers = geo::GeoLayerSet::new();
 
         // Load embedded geographic data
@@ -167,14 +170,22 @@ impl WorkbenchApp {
                 .unwrap_or(0),
         );
 
+        let state = AppState::new();
+        let nexrad_cache = nexrad::NexradCache::new();
+        let cache_load_channel = nexrad::CacheLoadChannel::new();
+
+        // Run migration to create metadata for any existing cached scans
+        cache_load_channel.run_migration(cc.egui_ctx.clone(), nexrad_cache.clone());
+
         Self {
-            state: AppState::new(),
+            state,
             file_picker: FilePickerChannel::new(),
             #[cfg(target_arch = "wasm32")]
             file_cache: IndexedDbStore::new(StorageConfig::new("nexrad-workbench", "file-cache")),
             geo_layers,
-            nexrad_cache: nexrad::NexradCache::new(),
+            nexrad_cache,
             download_channel: nexrad::DownloadChannel::new(),
+            cache_load_channel,
             current_scan: None,
             decoded_volume: None,
             radar_texture_cache: nexrad::RadarTextureCache::new(),
@@ -194,6 +205,51 @@ impl WorkbenchApp {
 
 impl eframe::App for WorkbenchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check if timeline needs to be refreshed from cache
+        if self.state.timeline_needs_refresh && !self.cache_load_channel.is_loading() {
+            self.state.timeline_needs_refresh = false;
+            self.cache_load_channel.load_site_timeline(
+                ctx.clone(),
+                self.nexrad_cache.clone(),
+                self.state.viz_state.site_id.clone(),
+            );
+        }
+
+        // Check for completed cache load operations
+        if let Some(result) = self.cache_load_channel.try_recv() {
+            match result {
+                nexrad::CacheLoadResult::Success { site_id, metadata } => {
+                    log::info!(
+                        "Timeline loaded from cache: {} scan(s) for site {}",
+                        metadata.len(),
+                        site_id
+                    );
+
+                    // Build timeline from metadata
+                    self.state.radar_timeline = state::RadarTimeline::from_metadata(metadata);
+
+                    // Update playback time range if we have data
+                    if let Some((start, end)) = self.state.radar_timeline.time_range() {
+                        self.state.playback_state.data_start_timestamp = Some(start as i64);
+                        self.state.playback_state.data_end_timestamp = Some(end as i64);
+
+                        // If playback is outside the data range, move it to the end
+                        if let Some(ts) = self.state.playback_state.selected_timestamp {
+                            if ts < start || ts > end {
+                                self.state.playback_state.selected_timestamp = Some(end);
+                            }
+                        } else {
+                            // No timestamp selected, start at the most recent scan
+                            self.state.playback_state.selected_timestamp = Some(end);
+                        }
+                    }
+                }
+                nexrad::CacheLoadResult::Error(msg) => {
+                    log::error!("Cache load failed: {}", msg);
+                }
+            }
+        }
+
         // Check for completed file pick operations
         if let Some(result) = self.file_picker.try_recv() {
             self.state.upload_state.loading = false;
@@ -255,6 +311,9 @@ impl eframe::App for WorkbenchApp {
                     }
 
                     self.current_scan = Some(scan.clone());
+
+                    // Refresh timeline to show the new/loaded scan
+                    self.state.timeline_needs_refresh = true;
                 }
                 nexrad::DownloadResult::Error(msg) => {
                     self.state.status_message = format!("Download failed: {}", msg);

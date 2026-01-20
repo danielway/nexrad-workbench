@@ -11,6 +11,13 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use web_sys::{IdbDatabase, IdbObjectStore, IdbRequest, IdbTransactionMode};
 
+/// All object stores that should exist in the nexrad-workbench database.
+/// These are created during database upgrade.
+const REQUIRED_STORES: &[&str] = &["nexrad-scans", "scan-metadata", "file-cache"];
+
+/// Current database schema version. Increment when adding new stores.
+pub const DATABASE_VERSION: u32 = 3;
+
 /// IndexedDB-based key-value store.
 ///
 /// This store persists data in the browser's IndexedDB, which can handle
@@ -165,6 +172,10 @@ impl KeyValueStore for IndexedDbStore {
 }
 
 /// Opens an IndexedDB database with the given configuration.
+///
+/// During database upgrade, ALL required object stores are created to ensure
+/// the database schema is complete. This allows multiple IndexedDbStore instances
+/// to share the same database with different object stores.
 async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageError> {
     let window = web_sys::window()
         .ok_or_else(|| StorageError::DatabaseOpenFailed("No window object".to_string()))?;
@@ -174,12 +185,14 @@ async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageErr
         .map_err(|e| StorageError::DatabaseOpenFailed(format!("{:?}", e)))?
         .ok_or_else(|| StorageError::DatabaseOpenFailed("IndexedDB not available".to_string()))?;
 
+    // Use the constant DATABASE_VERSION to ensure all stores open with the same version
+    let version = DATABASE_VERSION;
+
     let open_request = idb_factory
-        .open_with_u32(&config.database_name, config.version)
+        .open_with_u32(&config.database_name, version)
         .map_err(|e| StorageError::DatabaseOpenFailed(format!("{:?}", e)))?;
 
-    // Set up upgrade handler to create object store if needed
-    let store_name = config.store_name.clone();
+    // Set up upgrade handler to create ALL required object stores
     let onupgradeneeded = Closure::wrap(Box::new(move |event: web_sys::IdbVersionChangeEvent| {
         let request: IdbRequest = event
             .target()
@@ -189,13 +202,15 @@ async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageErr
 
         let db: IdbDatabase = request.result().unwrap().dyn_into().unwrap();
 
-        // Create object store if it doesn't exist
-        if !db.object_store_names().contains(&store_name) {
-            let params = web_sys::IdbObjectStoreParameters::new();
-            // We're using explicit keys, so no keyPath needed
-            db.create_object_store_with_optional_parameters(&store_name, &params)
-                .expect("Failed to create object store");
-            log::info!("Created IndexedDB object store: {}", store_name);
+        // Create all required object stores if they don't exist
+        for store_name in REQUIRED_STORES {
+            if !db.object_store_names().contains(store_name) {
+                let params = web_sys::IdbObjectStoreParameters::new();
+                // We're using explicit keys, so no keyPath needed
+                db.create_object_store_with_optional_parameters(store_name, &params)
+                    .expect("Failed to create object store");
+                log::info!("Created IndexedDB object store: {}", store_name);
+            }
         }
     }) as Box<dyn FnMut(_)>);
 
@@ -212,7 +227,7 @@ async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageErr
     log::info!(
         "Opened IndexedDB database: {} v{}",
         config.database_name,
-        config.version
+        version
     );
 
     Ok(db)

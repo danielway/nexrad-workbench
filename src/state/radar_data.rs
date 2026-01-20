@@ -1,5 +1,7 @@
 //! Radar data structures for timeline representation.
 
+use crate::nexrad::ScanMetadata;
+
 /// A single radial (one azimuth direction at one elevation)
 #[derive(Clone, Debug)]
 #[allow(dead_code)] // Fields are part of data model, used in generate_sample_data
@@ -115,6 +117,7 @@ impl RadarTimeline {
 
     /// Generate sample data for testing/demo purposes
     /// Creates scans for the specified duration ending at `end_time`
+    #[allow(dead_code)] // Kept for testing/demo purposes
     pub fn generate_sample_data(end_time: f64, duration_hours: f64) -> Self {
         let mut scans = Vec::new();
         let start_time = end_time - duration_hours * 3600.0;
@@ -182,5 +185,35 @@ impl RadarTimeline {
         self.scans
             .iter()
             .filter(move |scan| scan.end_time >= start && scan.start_time <= end)
+    }
+
+    /// Builds a timeline from cached scan metadata.
+    ///
+    /// This is the fast path for loading the timeline from IndexedDB -
+    /// it only uses lightweight metadata, not full scan data.
+    /// Sweeps are left empty and loaded on-demand when a scan is selected.
+    pub fn from_metadata(metadata_list: Vec<ScanMetadata>) -> Self {
+        // Default scan duration estimate (5 minutes) when end_timestamp is unknown
+        const DEFAULT_SCAN_DURATION_SECS: i64 = 300;
+
+        let scans = metadata_list
+            .into_iter()
+            .map(|meta| {
+                let start_time = meta.key.timestamp as f64;
+                let end_time = meta
+                    .end_timestamp
+                    .unwrap_or(meta.key.timestamp + DEFAULT_SCAN_DURATION_SECS)
+                    as f64;
+
+                Scan {
+                    start_time,
+                    end_time,
+                    vcp: meta.vcp.unwrap_or(0),
+                    sweeps: Vec::new(), // Loaded on-demand when scan is selected
+                }
+            })
+            .collect();
+
+        Self { scans }
     }
 }
