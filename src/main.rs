@@ -309,12 +309,19 @@ impl eframe::App for WorkbenchApp {
         // Check for completed cache load operations
         if let Some(result) = self.cache_load_channel.try_recv() {
             match result {
-                nexrad::CacheLoadResult::Success { site_id, metadata } => {
+                nexrad::CacheLoadResult::Success {
+                    site_id,
+                    metadata,
+                    total_cache_size,
+                } => {
                     log::info!(
                         "Timeline loaded from cache: {} scan(s) for site {}",
                         metadata.len(),
                         site_id
                     );
+
+                    // Update cache size in session stats
+                    self.state.session_stats.cache_size_bytes = total_cache_size;
 
                     // Build timeline from metadata
                     self.state.radar_timeline = state::RadarTimeline::from_metadata(metadata);

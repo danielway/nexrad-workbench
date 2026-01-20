@@ -17,6 +17,8 @@ pub enum CacheLoadResult {
     Success {
         site_id: String,
         metadata: Vec<ScanMetadata>,
+        /// Total cache size across all sites (in bytes)
+        total_cache_size: u64,
     },
     /// Cache load failed with an error
     Error(String),
@@ -74,7 +76,16 @@ impl CacheLoadChannel {
                         metadata.len(),
                         site_id
                     );
-                    CacheLoadResult::Success { site_id, metadata }
+
+                    // Also calculate total cache size across all sites
+                    let total_cache_size = cache.total_cache_size().await.unwrap_or(0);
+                    log::info!("Total cache size: {} bytes", total_cache_size);
+
+                    CacheLoadResult::Success {
+                        site_id,
+                        metadata,
+                        total_cache_size,
+                    }
                 }
                 Err(e) => {
                     log::error!("Failed to load cache metadata: {}", e);

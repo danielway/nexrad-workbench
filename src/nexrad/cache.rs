@@ -121,6 +121,23 @@ impl NexradCache {
         Ok(metadata_list)
     }
 
+    /// Calculates the total cache size across all sites.
+    ///
+    /// Returns the sum of all file_size values from metadata.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn total_cache_size(&self) -> Result<u64, StorageError> {
+        let all_keys = self.metadata_store.get_all_keys().await?;
+        let mut total: u64 = 0;
+
+        for key in &all_keys {
+            if let Some(metadata) = self.metadata_store.get::<ScanMetadata>(key).await? {
+                total += metadata.file_size;
+            }
+        }
+
+        Ok(total)
+    }
+
     /// Lists all cached scan keys for a given site.
     #[cfg(target_arch = "wasm32")]
     #[allow(dead_code)]
@@ -216,6 +233,11 @@ impl NexradCache {
         _site_id: &str,
     ) -> Result<Vec<ScanMetadata>, StorageError> {
         Ok(Vec::new())
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn total_cache_size(&self) -> Result<u64, StorageError> {
+        Ok(0)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
