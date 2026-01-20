@@ -695,6 +695,28 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
             }
         });
 
+    ui.separator();
+
+    // Auto-download toggle
+    let auto_label = if state.playback_state.auto_download {
+        RichText::new("Auto DL")
+            .size(11.0)
+            .color(Color32::from_rgb(100, 200, 100))
+    } else {
+        RichText::new("Auto DL").size(11.0).color(Color32::GRAY)
+    };
+    if ui
+        .checkbox(&mut state.playback_state.auto_download, auto_label)
+        .on_hover_text("Automatically download scans at playback position")
+        .changed()
+    {
+        if state.playback_state.auto_download {
+            log::info!("Auto-download enabled");
+        } else {
+            log::info!("Auto-download disabled");
+        }
+    }
+
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         render_session_stats(ui, &state.session_stats);

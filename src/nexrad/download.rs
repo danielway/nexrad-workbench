@@ -3,10 +3,28 @@
 //! Uses channel-based communication to bridge async downloads
 //! with egui's synchronous update loop.
 
+use super::archive_index::{current_timestamp_secs, ArchiveFileMeta, ArchiveListing};
 use super::cache::NexradCache;
 use super::types::{CachedScan, DownloadResult, ScanKey};
+use chrono::NaiveDate;
 use eframe::egui;
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
+
+/// Result of an archive listing request.
+#[derive(Debug, Clone)]
+pub enum ListingResult {
+    /// Successfully fetched listing
+    Success {
+        site_id: String,
+        date: NaiveDate,
+        listing: ArchiveListing,
+    },
+    /// Listing request failed
+    Error(String),
+}
 
 /// Channel-based downloader for async NEXRAD data retrieval.
 ///
@@ -16,6 +34,14 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 pub struct DownloadChannel {
     sender: Sender<DownloadResult>,
     receiver: Receiver<DownloadResult>,
+    /// Sender for listing results
+    listing_sender: Sender<ListingResult>,
+    /// Receiver for listing results
+    listing_receiver: Receiver<ListingResult>,
+    /// Track pending downloads to avoid duplicates (by storage key)
+    pending_downloads: Rc<RefCell<HashSet<String>>>,
+    /// Track pending listing requests to avoid duplicates
+    pending_listings: Rc<RefCell<HashSet<String>>>,
 }
 
 impl Default for DownloadChannel {
@@ -27,7 +53,15 @@ impl Default for DownloadChannel {
 impl DownloadChannel {
     pub fn new() -> Self {
         let (sender, receiver) = channel();
-        Self { sender, receiver }
+        let (listing_sender, listing_receiver) = channel();
+        Self {
+            sender,
+            receiver,
+            listing_sender,
+            listing_receiver,
+            pending_downloads: Rc::new(RefCell::new(HashSet::new())),
+            pending_listings: Rc::new(RefCell::new(HashSet::new())),
+        }
     }
 
     /// Spawns an async download task for NEXRAD data.
@@ -72,6 +106,112 @@ impl DownloadChannel {
         });
     }
 
+    /// Download a specific file from the archive by name.
+    ///
+    /// Returns false if the download is already pending.
+    #[cfg(target_arch = "wasm32")]
+    pub fn download_file(
+        &self,
+        ctx: egui::Context,
+        site_id: String,
+        date: NaiveDate,
+        file_name: String,
+        timestamp: i64,
+        cache: NexradCache,
+    ) -> bool {
+        let storage_key = format!("{}_{}", site_id, timestamp);
+
+        // Check if already pending
+        if !self
+            .pending_downloads
+            .borrow_mut()
+            .insert(storage_key.clone())
+        {
+            log::debug!("Download already pending: {}", file_name);
+            return false;
+        }
+
+        let sender = self.sender.clone();
+        let pending = self.pending_downloads.clone();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = download_specific_file(&site_id, date, &file_name, timestamp, cache).await;
+
+            // Remove from pending set
+            pending.borrow_mut().remove(&storage_key);
+
+            let _ = sender.send(result);
+            ctx.request_repaint();
+        });
+
+        true
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn download_file(
+        &self,
+        _ctx: egui::Context,
+        _site_id: String,
+        _date: NaiveDate,
+        _file_name: String,
+        _timestamp: i64,
+        _cache: NexradCache,
+    ) -> bool {
+        // Not implemented for native
+        false
+    }
+
+    /// Check if a download is pending for the given storage key.
+    pub fn is_download_pending(&self, site_id: &str, timestamp: i64) -> bool {
+        let storage_key = format!("{}_{}", site_id, timestamp);
+        self.pending_downloads.borrow().contains(&storage_key)
+    }
+
+    /// Fetch archive listing for a site/date.
+    ///
+    /// Returns false if the request is already pending.
+    #[cfg(target_arch = "wasm32")]
+    pub fn fetch_listing(&self, ctx: egui::Context, site_id: String, date: NaiveDate) -> bool {
+        let listing_key = format!("{}_{}", site_id, date);
+
+        // Check if already pending
+        if !self
+            .pending_listings
+            .borrow_mut()
+            .insert(listing_key.clone())
+        {
+            log::debug!("Listing already pending: {}", listing_key);
+            return false;
+        }
+
+        let sender = self.listing_sender.clone();
+        let pending = self.pending_listings.clone();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = fetch_archive_listing(&site_id, date).await;
+
+            // Remove from pending set
+            pending.borrow_mut().remove(&listing_key);
+
+            let _ = sender.send(result);
+            ctx.request_repaint();
+        });
+
+        true
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn fetch_listing(&self, _ctx: egui::Context, _site_id: String, _date: NaiveDate) -> bool {
+        // Not implemented for native
+        false
+    }
+
+    /// Check if a listing request is pending.
+    pub fn is_listing_pending(&self, site_id: &str, date: &NaiveDate) -> bool {
+        let listing_key = format!("{}_{}", site_id, date);
+        self.pending_listings.borrow().contains(&listing_key)
+    }
+
     /// Non-blocking check for a completed download.
     ///
     /// Returns Some(result) if a download completed,
@@ -79,6 +219,124 @@ impl DownloadChannel {
     pub fn try_recv(&self) -> Option<DownloadResult> {
         self.receiver.try_recv().ok()
     }
+
+    /// Non-blocking check for a completed listing request.
+    pub fn try_recv_listing(&self) -> Option<ListingResult> {
+        self.listing_receiver.try_recv().ok()
+    }
+}
+
+/// Fetches the archive listing for a site/date.
+#[cfg(target_arch = "wasm32")]
+async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult {
+    use nexrad::data::aws::archive;
+
+    log::info!("Fetching archive listing for {}/{}", site_id, date);
+
+    let files = match archive::list_files(site_id, &date).await {
+        Ok(files) => files,
+        Err(e) => {
+            return ListingResult::Error(format!("Failed to list files: {}", e));
+        }
+    };
+
+    let mut file_metas: Vec<ArchiveFileMeta> = files
+        .iter()
+        .filter_map(|f| {
+            let name = f.name().to_string();
+            let timestamp = ArchiveFileMeta::parse_timestamp_from_name(&name, &date)?;
+            Some(ArchiveFileMeta {
+                name,
+                size: 0, // Size not available from listing API
+                timestamp,
+            })
+        })
+        .collect();
+
+    // Sort by timestamp
+    file_metas.sort_by_key(|f| f.timestamp);
+
+    log::info!(
+        "Archive listing for {}/{}: {} files",
+        site_id,
+        date,
+        file_metas.len()
+    );
+
+    ListingResult::Success {
+        site_id: site_id.to_string(),
+        date,
+        listing: ArchiveListing {
+            files: file_metas,
+            fetched_at: current_timestamp_secs(),
+        },
+    }
+}
+
+/// Downloads a specific file from the archive.
+#[cfg(target_arch = "wasm32")]
+async fn download_specific_file(
+    site_id: &str,
+    date: NaiveDate,
+    file_name: &str,
+    timestamp: i64,
+    cache: NexradCache,
+) -> DownloadResult {
+    use nexrad::data::aws::archive;
+
+    let key = ScanKey::new(site_id, timestamp);
+
+    // Check cache first
+    match cache.get(&key).await {
+        Ok(Some(cached)) => {
+            log::info!("Cache hit for {}", key.to_storage_key());
+            return DownloadResult::CacheHit(cached);
+        }
+        Ok(None) => {
+            log::info!("Cache miss for {}", key.to_storage_key());
+        }
+        Err(e) => {
+            log::warn!("Cache lookup failed: {}", e);
+        }
+    }
+
+    // List files to find the one we want
+    let files = match archive::list_files(site_id, &date).await {
+        Ok(files) => files,
+        Err(e) => {
+            return DownloadResult::Error(format!("Failed to list files: {}", e));
+        }
+    };
+
+    // Find the specific file
+    let file_meta = match files.iter().find(|f| f.name() == file_name) {
+        Some(f) => f.clone(),
+        None => {
+            return DownloadResult::Error(format!("File not found: {}", file_name));
+        }
+    };
+
+    log::info!("Downloading: {}", file_name);
+
+    // Download the file
+    let file = match archive::download_file(file_meta).await {
+        Ok(file) => file,
+        Err(e) => {
+            return DownloadResult::Error(format!("Download failed: {}", e));
+        }
+    };
+
+    let data = file.data().to_vec();
+    log::info!("Downloaded {} bytes", data.len());
+
+    let cached = CachedScan::new(key, file_name.to_string(), data);
+
+    // Store in cache
+    if let Err(e) = cache.put(&cached).await {
+        log::warn!("Failed to cache scan: {}", e);
+    }
+
+    DownloadResult::Success(cached)
 }
 
 /// Performs the actual NEXRAD download using nexrad-data crate.

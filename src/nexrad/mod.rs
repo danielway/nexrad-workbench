@@ -5,6 +5,7 @@
 //! - Caching downloaded data in IndexedDB (with separate metadata store for fast queries)
 //! - High-performance radar rendering via nexrad-render with texture caching
 
+mod archive_index;
 mod cache;
 mod cache_channel;
 mod download;
@@ -12,9 +13,10 @@ mod texture_cache;
 mod texture_render;
 mod types;
 
+pub use archive_index::ArchiveIndex;
 pub use cache::NexradCache;
 pub use cache_channel::{CacheLoadChannel, CacheLoadResult};
-pub use download::DownloadChannel;
+pub use download::{DownloadChannel, ListingResult};
 pub use texture_cache::{RadarCacheKey, RadarTextureCache};
 pub use texture_render::{radar_coverage_range_km, render_sweep_to_image};
 pub use types::{CachedScan, DownloadResult, ScanMetadata};

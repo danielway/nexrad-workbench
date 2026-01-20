@@ -114,6 +114,9 @@ pub struct WorkbenchApp {
     /// Channel for async cache metadata loading
     cache_load_channel: nexrad::CacheLoadChannel,
 
+    /// Cache for archive file listings (by site/date)
+    archive_index: nexrad::ArchiveIndex,
+
     /// Currently loaded NEXRAD scan
     current_scan: Option<nexrad::CachedScan>,
 
@@ -186,6 +189,7 @@ impl WorkbenchApp {
             nexrad_cache,
             download_channel: nexrad::DownloadChannel::new(),
             cache_load_channel,
+            archive_index: nexrad::ArchiveIndex::new(),
             current_scan: None,
             decoded_volume: None,
             radar_texture_cache: nexrad::RadarTextureCache::new(),
@@ -200,6 +204,93 @@ impl WorkbenchApp {
         geojson_str: &str,
     ) -> Result<(), String> {
         self.geo_layers.load_layer(layer_type, geojson_str)
+    }
+
+    /// Process auto-download: download scans at playback position and next scan.
+    fn process_auto_download(&mut self, ctx: &egui::Context) {
+        let Some(playback_ts) = self.state.playback_state.selected_timestamp else {
+            return;
+        };
+
+        let site_id = &self.state.viz_state.site_id;
+        let playback_ts_i64 = playback_ts as i64;
+
+        // Convert timestamp to date
+        let date = match chrono::DateTime::from_timestamp(playback_ts_i64, 0) {
+            Some(dt) => dt.date_naive(),
+            None => return,
+        };
+
+        // Check if we have the archive listing for this date
+        let listing = match self.archive_index.get(site_id, &date) {
+            Some(listing) => listing.clone(),
+            None => {
+                // Need to fetch the listing first
+                if !self.download_channel.is_listing_pending(site_id, &date) {
+                    log::debug!("Auto-download: fetching listing for {}/{}", site_id, date);
+                    self.download_channel
+                        .fetch_listing(ctx.clone(), site_id.clone(), date);
+                }
+                return;
+            }
+        };
+
+        // Find the scan at the current position
+        if let Some(current_file) = listing.find_file_at_timestamp(playback_ts_i64) {
+            // Check if this scan is already in cache (check timeline)
+            let is_cached = self
+                .state
+                .radar_timeline
+                .scans
+                .iter()
+                .any(|s| (s.start_time as i64 - current_file.timestamp).abs() < 60);
+
+            if !is_cached
+                && !self
+                    .download_channel
+                    .is_download_pending(site_id, current_file.timestamp)
+            {
+                log::info!(
+                    "Auto-download: downloading current scan {}",
+                    current_file.name
+                );
+                self.download_channel.download_file(
+                    ctx.clone(),
+                    site_id.clone(),
+                    date,
+                    current_file.name.clone(),
+                    current_file.timestamp,
+                    self.nexrad_cache.clone(),
+                );
+            }
+        }
+
+        // Find the next scan after the current position
+        if let Some(next_file) = listing.find_next_file_after(playback_ts_i64) {
+            // Check if this scan is already in cache
+            let is_cached = self
+                .state
+                .radar_timeline
+                .scans
+                .iter()
+                .any(|s| (s.start_time as i64 - next_file.timestamp).abs() < 60);
+
+            if !is_cached
+                && !self
+                    .download_channel
+                    .is_download_pending(site_id, next_file.timestamp)
+            {
+                log::info!("Auto-download: downloading next scan {}", next_file.name);
+                self.download_channel.download_file(
+                    ctx.clone(),
+                    site_id.clone(),
+                    date,
+                    next_file.name.clone(),
+                    next_file.timestamp,
+                    self.nexrad_cache.clone(),
+                );
+            }
+        }
     }
 }
 
@@ -252,10 +343,7 @@ impl eframe::App for WorkbenchApp {
                             self.state.playback_state.selected_timestamp = Some(most_recent_end);
                         }
 
-                        log::info!(
-                            "Timeline has {} contiguous range(s)",
-                            ranges.len()
-                        );
+                        log::info!("Timeline has {} contiguous range(s)", ranges.len());
                     }
                 }
                 nexrad::CacheLoadResult::Error(msg) => {
@@ -338,6 +426,33 @@ impl eframe::App for WorkbenchApp {
                         format!("Downloading: {} / {} bytes", current, total);
                 }
             }
+        }
+
+        // Check for completed archive listing operations
+        if let Some(result) = self.download_channel.try_recv_listing() {
+            match result {
+                nexrad::ListingResult::Success {
+                    site_id,
+                    date,
+                    listing,
+                } => {
+                    log::info!(
+                        "Archive listing received: {} files for {}/{}",
+                        listing.files.len(),
+                        site_id,
+                        date
+                    );
+                    self.archive_index.insert(&site_id, date, listing);
+                }
+                nexrad::ListingResult::Error(msg) => {
+                    log::error!("Listing request failed: {}", msg);
+                }
+            }
+        }
+
+        // Auto-download logic: download scans at playback position and next scan
+        if self.state.playback_state.auto_download {
+            self.process_auto_download(ctx);
         }
 
         // Render UI panels in the correct order for egui layout

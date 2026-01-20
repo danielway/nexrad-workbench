@@ -118,6 +118,9 @@ pub struct PlaybackState {
 
     /// End timestamp of loaded data (Unix seconds), if any
     pub data_end_timestamp: Option<i64>,
+
+    /// When enabled, automatically download scans at playback position and next scan
+    pub auto_download: bool,
 }
 
 impl PlaybackState {
