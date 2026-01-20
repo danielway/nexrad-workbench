@@ -56,10 +56,10 @@ fn render_radar_data(
 
     match detail_level {
         DetailLevel::Solid => {
-            // Just draw a solid region covering all data
-            if let Some((data_start, data_end)) = timeline.time_range() {
-                let x_start = ts_to_x(data_start).max(rect.left());
-                let x_end = ts_to_x(data_end).min(rect.right());
+            // Draw solid regions for each contiguous time range
+            for range in timeline.time_ranges() {
+                let x_start = ts_to_x(range.start).max(rect.left());
+                let x_end = ts_to_x(range.end).min(rect.right());
 
                 if x_end > x_start {
                     painter.rect_filled(

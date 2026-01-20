@@ -228,20 +228,34 @@ impl eframe::App for WorkbenchApp {
                     // Build timeline from metadata
                     self.state.radar_timeline = state::RadarTimeline::from_metadata(metadata);
 
-                    // Update playback time range if we have data
-                    if let Some((start, end)) = self.state.radar_timeline.time_range() {
+                    // Get time ranges (may be non-contiguous)
+                    let ranges = self.state.radar_timeline.time_ranges();
+                    if !ranges.is_empty() {
+                        // Set overall bounds from first to last
+                        let start = ranges.first().unwrap().start;
+                        let end = ranges.last().unwrap().end;
                         self.state.playback_state.data_start_timestamp = Some(start as i64);
                         self.state.playback_state.data_end_timestamp = Some(end as i64);
 
-                        // If playback is outside the data range, move it to the end
+                        // Position playback at the end of the most recent range
+                        let most_recent_end = ranges.last().unwrap().end;
+
                         if let Some(ts) = self.state.playback_state.selected_timestamp {
-                            if ts < start || ts > end {
-                                self.state.playback_state.selected_timestamp = Some(end);
+                            // If current position is not within any range, move to most recent
+                            let in_any_range = ranges.iter().any(|r| r.contains(ts));
+                            if !in_any_range {
+                                self.state.playback_state.selected_timestamp =
+                                    Some(most_recent_end);
                             }
                         } else {
                             // No timestamp selected, start at the most recent scan
-                            self.state.playback_state.selected_timestamp = Some(end);
+                            self.state.playback_state.selected_timestamp = Some(most_recent_end);
                         }
+
+                        log::info!(
+                            "Timeline has {} contiguous range(s)",
+                            ranges.len()
+                        );
                     }
                 }
                 nexrad::CacheLoadResult::Error(msg) => {

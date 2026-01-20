@@ -2,6 +2,33 @@
 
 use crate::nexrad::ScanMetadata;
 
+/// A contiguous time range of radar data.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimeRange {
+    /// Start timestamp (Unix seconds)
+    pub start: f64,
+    /// End timestamp (Unix seconds)
+    pub end: f64,
+}
+
+impl TimeRange {
+    /// Creates a new time range.
+    pub fn new(start: f64, end: f64) -> Self {
+        Self { start, end }
+    }
+
+    /// Returns the duration of this range in seconds.
+    #[allow(dead_code)] // Part of TimeRange API
+    pub fn duration(&self) -> f64 {
+        self.end - self.start
+    }
+
+    /// Returns true if the given timestamp is within this range.
+    pub fn contains(&self, ts: f64) -> bool {
+        ts >= self.start && ts <= self.end
+    }
+}
+
 /// A single radial (one azimuth direction at one elevation)
 #[derive(Clone, Debug)]
 #[allow(dead_code)] // Fields are part of data model, used in generate_sample_data
@@ -97,9 +124,50 @@ pub struct RadarTimeline {
     pub scans: Vec<Scan>,
 }
 
+/// Maximum gap (in seconds) between consecutive scans to consider them part of
+/// the same contiguous time range. Gaps larger than this create a new range.
+/// Default: 15 minutes (scans are typically 5 minutes apart)
+const MAX_CONTIGUOUS_GAP_SECS: f64 = 15.0 * 60.0;
+
 impl RadarTimeline {
-    /// Get the time range covered by this data
-    pub fn time_range(&self) -> Option<(f64, f64)> {
+    /// Get contiguous time ranges covered by this data.
+    ///
+    /// Returns multiple ranges when there are large gaps between scans
+    /// (e.g., data from different days or sessions). Consecutive scans
+    /// within ~15 minutes of each other are grouped into the same range.
+    pub fn time_ranges(&self) -> Vec<TimeRange> {
+        if self.scans.is_empty() {
+            return Vec::new();
+        }
+
+        let mut ranges = Vec::new();
+        let mut range_start = self.scans[0].start_time;
+        let mut range_end = self.scans[0].end_time;
+
+        for scan in self.scans.iter().skip(1) {
+            let gap = scan.start_time - range_end;
+
+            if gap > MAX_CONTIGUOUS_GAP_SECS {
+                // Gap too large - save current range and start a new one
+                ranges.push(TimeRange::new(range_start, range_end));
+                range_start = scan.start_time;
+            }
+
+            range_end = scan.end_time;
+        }
+
+        // Don't forget the last range
+        ranges.push(TimeRange::new(range_start, range_end));
+
+        ranges
+    }
+
+    /// Get the overall time range covered by this data (min start to max end).
+    ///
+    /// This is a convenience method that returns the bounding box of all ranges.
+    /// For checking if data exists in a specific period, use `time_ranges()` instead.
+    #[allow(dead_code)]
+    pub fn overall_time_range(&self) -> Option<(f64, f64)> {
         if self.scans.is_empty() {
             return None;
         }
