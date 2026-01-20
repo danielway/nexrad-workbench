@@ -16,6 +16,8 @@ mod ui;
 
 use eframe::egui;
 use file_ops::FilePickerChannel;
+// Use explicit crate path to avoid conflict with local nexrad module
+use ::nexrad::prelude::{load, Volume};
 use state::AppState;
 use storage::{CachedFile, StorageConfig};
 
@@ -112,11 +114,11 @@ pub struct WorkbenchApp {
     /// Currently loaded NEXRAD scan
     current_scan: Option<nexrad::CachedScan>,
 
-    /// Decoded sweep data ready for rendering
-    decoded_sweep: Option<nexrad::DecodedSweep>,
+    /// Full decoded volume for texture-based rendering
+    decoded_volume: Option<Volume>,
 
-    /// Reflectivity color palette
-    reflectivity_palette: nexrad::ReflectivityPalette,
+    /// Texture cache for rendered radar imagery
+    radar_texture_cache: nexrad::RadarTextureCache,
 }
 
 // Embed shapefile data at compile time
@@ -174,8 +176,8 @@ impl WorkbenchApp {
             nexrad_cache: nexrad::NexradCache::new(),
             download_channel: nexrad::DownloadChannel::new(),
             current_scan: None,
-            decoded_sweep: None,
-            reflectivity_palette: nexrad::ReflectivityPalette::default(),
+            decoded_volume: None,
+            radar_texture_cache: nexrad::RadarTextureCache::new(),
         }
     }
 
@@ -237,19 +239,18 @@ impl eframe::App for WorkbenchApp {
                         format!("Downloaded: {}", scan.file_name)
                     };
 
-                    // Decode the sweep for rendering
-                    match nexrad::decode_sweep_from_data(&scan.data) {
-                        Ok(sweep) => {
-                            log::info!(
-                                "Decoded sweep with {} radials at {:.1}° elevation",
-                                sweep.radials.len(),
-                                sweep.elevation
-                            );
-                            self.decoded_sweep = Some(sweep);
+                    // Load the volume for texture-based rendering
+                    match load(&scan.data) {
+                        Ok(volume) => {
+                            let sweep_count = volume.sweeps().len();
+                            log::info!("Loaded volume with {} sweeps", sweep_count);
+                            self.decoded_volume = Some(volume);
+                            // Invalidate texture cache to trigger re-render
+                            self.radar_texture_cache.invalidate();
                         }
                         Err(e) => {
-                            log::error!("Failed to decode sweep: {}", e);
-                            self.state.status_message = format!("Decode error: {}", e);
+                            log::error!("Failed to load NEXRAD volume: {}", e);
+                            self.state.status_message = format!("Load error: {}", e);
                         }
                     }
 
@@ -278,12 +279,14 @@ impl eframe::App for WorkbenchApp {
             &self.nexrad_cache,
         );
         ui::render_right_panel(ctx, &mut self.state);
+
+        // Render canvas with texture-based radar rendering
         ui::render_canvas_with_geo(
             ctx,
             &mut self.state,
             Some(&self.geo_layers),
-            self.decoded_sweep.as_ref(),
-            &self.reflectivity_palette,
+            self.decoded_volume.as_ref(),
+            &mut self.radar_texture_cache,
         );
     }
 }

@@ -3,19 +3,25 @@
 use super::colors::{canvas as canvas_colors, radar, sites as site_colors};
 use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::{GeoLayerSet, MapProjection};
-use crate::nexrad::{render_sweep, DecodedSweep, ReflectivityPalette};
+use crate::nexrad::{
+    radar_coverage_range_km, render_sweep_to_image, RadarCacheKey, RadarTextureCache,
+};
 use crate::state::{AlertsState, AppState, GeoLayerVisibility, NwsAlert};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use geo_types::Coord;
+use nexrad::prelude::Volume;
 use std::f32::consts::PI;
 
 /// Render canvas with optional geographic layers and NEXRAD data.
+///
+/// Radar data is rendered using the `nexrad-render` crate which produces
+/// images that are cached as textures for efficient display.
 pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
     geo_layers: Option<&GeoLayerSet>,
-    decoded_sweep: Option<&DecodedSweep>,
-    palette: &ReflectivityPalette,
+    decoded_volume: Option<&Volume>,
+    texture_cache: &mut RadarTextureCache,
 ) {
     egui::CentralPanel::default().show(ctx, |ui| {
         let available_size = ui.available_size();
@@ -54,16 +60,17 @@ pub fn render_canvas_with_geo(
             &state.layer_state.geo,
         );
 
-        // Draw NEXRAD radar data if available
-        if let Some(sweep) = decoded_sweep {
-            render_sweep(
+        // Draw NEXRAD radar data if available (texture-based rendering)
+        if let Some(volume) = decoded_volume {
+            render_radar_texture(
+                ctx,
                 &painter,
                 &projection,
-                sweep,
+                volume,
+                texture_cache,
+                &rect,
                 state.viz_state.center_lat,
                 state.viz_state.center_lon,
-                palette,
-                300.0, // Max range in km
             );
         }
 
@@ -101,6 +108,95 @@ pub fn render_canvas_with_geo(
         // Handle zoom/pan interactions
         handle_canvas_interaction(&response, &rect, state);
     });
+}
+
+/// Render radar data as a cached texture.
+///
+/// This function:
+/// 1. Checks if the cached texture is still valid for the current data
+/// 2. If not, renders the radar data to an image using nexrad-render
+/// 3. Uploads the image as an egui texture
+/// 4. Draws the texture as an image overlay on the map
+#[allow(clippy::too_many_arguments)]
+fn render_radar_texture(
+    ctx: &egui::Context,
+    painter: &Painter,
+    projection: &MapProjection,
+    volume: &Volume,
+    cache: &mut RadarTextureCache,
+    rect: &Rect,
+    radar_lat: f64,
+    radar_lon: f64,
+) {
+    // Build cache key - use a simple identifier based on volume coverage pattern
+    let data_id = format!("vcp_{}", volume.coverage_pattern_number());
+
+    // Use a fixed render size for the texture
+    let render_size: (usize, usize) = (800, 800);
+    let cache_key = RadarCacheKey::new(data_id, 0, render_size);
+
+    // Check if we need to re-render
+    if !cache.is_valid(&cache_key) {
+        log::info!("Rendering radar texture...");
+        match render_sweep_to_image(volume, 0, render_size) {
+            Ok(image) => {
+                cache.update(ctx, cache_key, image);
+                log::info!("Radar texture updated successfully");
+            }
+            Err(e) => {
+                log::error!("Failed to render radar texture: {}", e);
+                return;
+            }
+        }
+    }
+
+    // Draw the cached texture
+    if let Some(texture) = cache.texture() {
+        // Get the radar coverage range
+        let range_km = radar_coverage_range_km();
+
+        // Convert geographic bounds to screen coordinates
+        // Radar coverage is a circle of `range_km` radius centered on the radar site
+        let km_to_deg = 1.0 / 111.0;
+        let lat_correction = radar_lat.to_radians().cos();
+
+        // Calculate the bounding box in geographic coordinates
+        let lat_range = range_km * km_to_deg;
+        let lon_range = range_km * km_to_deg / lat_correction;
+
+        let top_left = projection.geo_to_screen(Coord {
+            x: radar_lon - lon_range,
+            y: radar_lat + lat_range,
+        });
+        let bottom_right = projection.geo_to_screen(Coord {
+            x: radar_lon + lon_range,
+            y: radar_lat - lat_range,
+        });
+
+        // Create the screen rect for the texture
+        let texture_rect = Rect::from_min_max(top_left, bottom_right);
+
+        // Clip to canvas bounds
+        let clipped_rect = texture_rect.intersect(*rect);
+
+        if clipped_rect.width() > 0.0 && clipped_rect.height() > 0.0 {
+            // Calculate UV coordinates for the clipped portion
+            let full_width = texture_rect.width();
+            let full_height = texture_rect.height();
+
+            let uv_min_x = (clipped_rect.min.x - texture_rect.min.x) / full_width;
+            let uv_min_y = (clipped_rect.min.y - texture_rect.min.y) / full_height;
+            let uv_max_x = (clipped_rect.max.x - texture_rect.min.x) / full_width;
+            let uv_max_y = (clipped_rect.max.y - texture_rect.min.y) / full_height;
+
+            let clipped_uv = egui::Rect::from_min_max(
+                egui::pos2(uv_min_x, uv_min_y),
+                egui::pos2(uv_max_x, uv_max_y),
+            );
+
+            painter.image(texture.id(), clipped_rect, clipped_uv, Color32::WHITE);
+        }
+    }
 }
 
 /// Filter geo layers based on visibility settings.

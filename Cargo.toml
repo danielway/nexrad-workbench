@@ -20,13 +20,13 @@ geojson = "0.24"
 geo-types = "0.7"
 shapefile = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["std", "wasmbind"] }
-nexrad = { version = "1.0.0-rc.2", default-features = false, features = ["model", "decode", "data", "serde"] }
+nexrad = { version = "1.0.0-rc.2", default-features = false, features = ["model", "decode", "data", "serde", "render"] }
+piet-common = "0.8"
 
 # Native-specific dependencies
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 env_logger = "0.11"
 pollster = "0.4"  # Lightweight async executor for native
-nexrad = { version = "1.0.0-rc.2", features = ["full"] }
 
 # Web-specific dependencies
 [target.'cfg(target_arch = "wasm32")'.dependencies]
