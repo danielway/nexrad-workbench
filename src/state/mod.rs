@@ -70,6 +70,13 @@ pub struct AppState {
     /// Flag to signal that the cache should be cleared.
     /// Set by UI, handled in main update loop.
     pub clear_cache_requested: bool,
+
+    /// Flag to signal that scans in the selected range should be downloaded.
+    /// Set by UI, handled in main update loop.
+    pub download_selection_requested: bool,
+
+    /// Whether a selection download is currently in progress.
+    pub download_selection_in_progress: bool,
 }
 
 impl AppState {

@@ -489,6 +489,49 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         tick += minor_interval;
     }
 
+    // Draw selection range (if user has selected a range via shift+drag)
+    if let Some((range_start, range_end)) = state.playback_state.selection_range() {
+        let start_x = ts_to_x(range_start);
+        let end_x = ts_to_x(range_end);
+
+        // Only draw if visible
+        if end_x >= rect.left() && start_x <= rect.right() {
+            let visible_start = start_x.max(rect.left());
+            let visible_end = end_x.min(rect.right());
+
+            // Selection range highlight
+            let range_rect = Rect::from_min_max(
+                Pos2::new(visible_start, rect.top()),
+                Pos2::new(visible_end, rect.bottom()),
+            );
+            painter.rect_filled(
+                range_rect,
+                0.0,
+                Color32::from_rgba_unmultiplied(100, 150, 255, 60),
+            );
+
+            // Range boundaries
+            if start_x >= rect.left() && start_x <= rect.right() {
+                painter.line_segment(
+                    [
+                        Pos2::new(start_x, rect.top()),
+                        Pos2::new(start_x, rect.bottom()),
+                    ],
+                    Stroke::new(1.5, Color32::from_rgb(100, 150, 255)),
+                );
+            }
+            if end_x >= rect.left() && end_x <= rect.right() {
+                painter.line_segment(
+                    [
+                        Pos2::new(end_x, rect.top()),
+                        Pos2::new(end_x, rect.bottom()),
+                    ],
+                    Stroke::new(1.5, Color32::from_rgb(100, 150, 255)),
+                );
+            }
+        }
+    }
+
     // Draw selection marker (if user has selected a time)
     if let Some(selected_ts) = state.playback_state.selected_timestamp {
         let sel_x = ts_to_x(selected_ts);
@@ -519,8 +562,37 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
 
-    // Handle click to select time
-    if response.clicked() {
+    // Check if shift is held
+    let shift_held = ui.input(|i| i.modifiers.shift);
+
+    // Handle shift+drag to select a range
+    if shift_held && response.drag_started() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let drag_start_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
+            state.playback_state.selection_start = Some(drag_start_ts);
+            state.playback_state.selection_end = Some(drag_start_ts);
+            state.playback_state.selection_in_progress = true;
+        }
+    }
+
+    if shift_held && response.dragged() && state.playback_state.selection_in_progress {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let current_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
+            state.playback_state.selection_end = Some(current_ts);
+        }
+    }
+
+    if response.drag_stopped() && state.playback_state.selection_in_progress {
+        state.playback_state.selection_in_progress = false;
+        // Log the selection range
+        if let Some((start, end)) = state.playback_state.selection_range() {
+            let duration_mins = (end - start) / 60.0;
+            log::info!("Selected time range: {:.0} minutes", duration_mins);
+        }
+    }
+
+    // Handle click to select time (when not shift-dragging)
+    if response.clicked() && !shift_held {
         if let Some(pos) = response.interact_pointer_pos() {
             // Exit live mode when user clicks timeline
             if state.live_mode_state.is_active() {
@@ -535,6 +607,10 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             let clicked_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
             state.playback_state.selected_timestamp = Some(clicked_ts);
 
+            // Clear any selection range on regular click
+            state.playback_state.selection_start = None;
+            state.playback_state.selection_end = None;
+
             // If clicked within loaded data range, also seek to that frame
             if let Some(frame) = state.playback_state.timestamp_to_frame(clicked_ts as i64) {
                 state.playback_state.current_frame = frame;
@@ -543,7 +619,8 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     }
 
     // Handle drag to pan - NO CLAMPING, free scrolling anywhere in time
-    if response.dragged() {
+    // Only pan when not shift-dragging (selection mode)
+    if response.dragged() && !shift_held && !state.playback_state.selection_in_progress {
         let delta_secs = -response.drag_delta().x as f64 / zoom;
         state.playback_state.timeline_view_start += delta_secs;
     }
@@ -697,24 +774,33 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.separator();
 
-    // Auto-download toggle
-    let auto_label = if state.playback_state.auto_download {
-        RichText::new("Auto DL")
-            .size(11.0)
-            .color(Color32::from_rgb(100, 200, 100))
-    } else {
-        RichText::new("Auto DL").size(11.0).color(Color32::GRAY)
-    };
-    if ui
-        .checkbox(&mut state.playback_state.auto_download, auto_label)
-        .on_hover_text("Automatically download scans at playback position")
-        .changed()
-    {
-        if state.playback_state.auto_download {
-            log::info!("Auto-download enabled");
-        } else {
-            log::info!("Auto-download disabled");
+    // Download selection button (enabled when a range is selected)
+    let has_selection = state.playback_state.selection_range().is_some();
+    let download_in_progress = state.download_selection_in_progress;
+
+    if download_in_progress {
+        ui.add_enabled(
+            false,
+            egui::Button::new(RichText::new("Downloading...").size(11.0)),
+        );
+    } else if has_selection {
+        if ui
+            .button(RichText::new("Download Selection").size(11.0))
+            .on_hover_text("Download all scans in the selected time range")
+            .clicked()
+        {
+            state.download_selection_requested = true;
         }
+    } else {
+        ui.add_enabled(
+            false,
+            egui::Button::new(
+                RichText::new("Download Selection")
+                    .size(11.0)
+                    .color(Color32::GRAY),
+            ),
+        )
+        .on_hover_text("Drag on timeline to select a range to download");
     }
 
     // Push session stats to the right
@@ -813,11 +899,7 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     ui.separator();
 
     // Cache size with clear button
-    if ui
-        .small_button("x")
-        .on_hover_text("Clear cache")
-        .clicked()
-    {
+    if ui.small_button("x").on_hover_text("Clear cache").clicked() {
         state.clear_cache_requested = true;
     }
     ui.label(

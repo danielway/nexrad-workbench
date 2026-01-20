@@ -119,8 +119,15 @@ pub struct PlaybackState {
     /// End timestamp of loaded data (Unix seconds), if any
     pub data_end_timestamp: Option<i64>,
 
-    /// When enabled, automatically download scans at playback position and next scan
-    pub auto_download: bool,
+    /// Start of user's timeline selection (Unix seconds), if selecting
+    pub selection_start: Option<f64>,
+
+    /// End of user's timeline selection (Unix seconds), if selecting
+    pub selection_end: Option<f64>,
+
+    /// Whether a drag selection is currently in progress
+    #[allow(dead_code)] // Used by timeline drag selection
+    pub selection_in_progress: bool,
 }
 
 impl PlaybackState {
@@ -194,5 +201,30 @@ impl PlaybackState {
                 .round()
                 .clamp(0.0, (self.total_frames - 1) as f64) as usize,
         )
+    }
+
+    /// Get the normalized selection range (start <= end), if any.
+    pub fn selection_range(&self) -> Option<(f64, f64)> {
+        match (self.selection_start, self.selection_end) {
+            (Some(a), Some(b)) => {
+                let start = a.min(b);
+                let end = a.max(b);
+                // Only return if selection has meaningful width
+                if (end - start).abs() > 1.0 {
+                    Some((start, end))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Clear the current selection.
+    #[allow(dead_code)] // Utility method for future use
+    pub fn clear_selection(&mut self) {
+        self.selection_start = None;
+        self.selection_end = None;
+        self.selection_in_progress = false;
     }
 }

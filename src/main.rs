@@ -125,6 +125,10 @@ pub struct WorkbenchApp {
 
     /// Texture cache for rendered radar imagery
     radar_texture_cache: nexrad::RadarTextureCache,
+
+    /// Queue of files to download for selection download feature.
+    /// Each entry is (date, file_name, timestamp).
+    selection_download_queue: Vec<(chrono::NaiveDate, String, i64)>,
 }
 
 // Embed shapefile data at compile time
@@ -193,6 +197,7 @@ impl WorkbenchApp {
             current_scan: None,
             decoded_volume: None,
             radar_texture_cache: nexrad::RadarTextureCache::new(),
+            selection_download_queue: Vec::new(),
         }
     }
 
@@ -206,91 +211,163 @@ impl WorkbenchApp {
         self.geo_layers.load_layer(layer_type, geojson_str)
     }
 
-    /// Process auto-download: download scans at playback position and next scan.
-    fn process_auto_download(&mut self, ctx: &egui::Context) {
-        let Some(playback_ts) = self.state.playback_state.selected_timestamp else {
+    /// Process selection download: download scans in the selected time range serially.
+    fn process_selection_download(&mut self, ctx: &egui::Context) {
+        let site_id = self.state.viz_state.site_id.clone();
+
+        // If we have items in the queue, try to download the next one
+        if !self.selection_download_queue.is_empty() {
+            // Check if current download is still in progress
+            let (_, _, timestamp) = &self.selection_download_queue[0];
+            if self
+                .download_channel
+                .is_download_pending(&site_id, *timestamp)
+            {
+                // Still downloading, wait
+                return;
+            }
+
+            // Previous download finished, remove it from queue
+            let _ = self.selection_download_queue.remove(0);
+
+            // Start the next download if there are more items
+            if !self.selection_download_queue.is_empty() {
+                let (next_date, next_name, next_ts) = &self.selection_download_queue[0];
+                self.state.status_message = format!(
+                    "Downloading {} ({} remaining)",
+                    next_name,
+                    self.selection_download_queue.len()
+                );
+                self.download_channel.download_file(
+                    ctx.clone(),
+                    site_id.clone(),
+                    *next_date,
+                    next_name.clone(),
+                    *next_ts,
+                    self.nexrad_cache.clone(),
+                );
+            } else {
+                // All done
+                self.state.download_selection_in_progress = false;
+                self.state.status_message = "Selection download complete".to_string();
+                log::info!("Selection download complete");
+            }
+            return;
+        }
+
+        // No queue - check if we should build one
+        if !self.state.download_selection_requested {
+            return;
+        }
+        self.state.download_selection_requested = false;
+
+        // Get the selection range
+        let Some((sel_start, sel_end)) = self.state.playback_state.selection_range() else {
+            log::warn!("Download selection requested but no valid selection");
             return;
         };
 
-        let site_id = &self.state.viz_state.site_id;
-        let playback_ts_i64 = playback_ts as i64;
+        let sel_start_i64 = sel_start as i64;
+        let sel_end_i64 = sel_end as i64;
 
-        // Convert timestamp to date
-        let date = match chrono::DateTime::from_timestamp(playback_ts_i64, 0) {
+        // Determine the date range
+        let start_date = match chrono::DateTime::from_timestamp(sel_start_i64, 0) {
+            Some(dt) => dt.date_naive(),
+            None => return,
+        };
+        let end_date = match chrono::DateTime::from_timestamp(sel_end_i64, 0) {
             Some(dt) => dt.date_naive(),
             None => return,
         };
 
-        // Check if we have the archive listing for this date
-        let listing = match self.archive_index.get(site_id, &date) {
-            Some(listing) => listing.clone(),
-            None => {
-                // Need to fetch the listing first
-                if !self.download_channel.is_listing_pending(site_id, &date) {
-                    log::debug!("Auto-download: fetching listing for {}/{}", site_id, date);
-                    self.download_channel
-                        .fetch_listing(ctx.clone(), site_id.clone(), date);
+        log::info!(
+            "Building download queue for selection: {} to {} ({} to {})",
+            sel_start_i64,
+            sel_end_i64,
+            start_date,
+            end_date
+        );
+
+        // Collect all files in the range from cached listings
+        let mut files_to_download = Vec::new();
+        let mut current_date = start_date;
+
+        while current_date <= end_date {
+            // Check if we have the listing for this date
+            if let Some(listing) = self.archive_index.get(&site_id, &current_date) {
+                // Find all files in the selection range
+                for file in &listing.files {
+                    if file.timestamp >= sel_start_i64 && file.timestamp <= sel_end_i64 {
+                        // Check if already cached
+                        let is_cached = self
+                            .state
+                            .radar_timeline
+                            .scans
+                            .iter()
+                            .any(|s| (s.start_time as i64 - file.timestamp).abs() < 60);
+
+                        if !is_cached {
+                            files_to_download.push((
+                                current_date,
+                                file.name.clone(),
+                                file.timestamp,
+                            ));
+                        }
+                    }
                 }
+            } else {
+                // Need to fetch the listing first
+                if !self
+                    .download_channel
+                    .is_listing_pending(&site_id, &current_date)
+                {
+                    log::info!("Fetching listing for {}/{}", site_id, current_date);
+                    self.download_channel
+                        .fetch_listing(ctx.clone(), site_id.clone(), current_date);
+                }
+                // Re-trigger download selection once listing arrives
+                self.state.download_selection_requested = true;
+                self.state.status_message =
+                    format!("Fetching archive listing for {}...", current_date);
                 return;
             }
-        };
 
-        // Find the scan at the current position
-        if let Some(current_file) = listing.find_file_at_timestamp(playback_ts_i64) {
-            // Check if this scan is already in cache (check timeline)
-            let is_cached = self
-                .state
-                .radar_timeline
-                .scans
-                .iter()
-                .any(|s| (s.start_time as i64 - current_file.timestamp).abs() < 60);
-
-            if !is_cached
-                && !self
-                    .download_channel
-                    .is_download_pending(site_id, current_file.timestamp)
-            {
-                log::info!(
-                    "Auto-download: downloading current scan {}",
-                    current_file.name
-                );
-                self.download_channel.download_file(
-                    ctx.clone(),
-                    site_id.clone(),
-                    date,
-                    current_file.name.clone(),
-                    current_file.timestamp,
-                    self.nexrad_cache.clone(),
-                );
-            }
+            current_date += chrono::Duration::days(1);
         }
 
-        // Find the next scan after the current position
-        if let Some(next_file) = listing.find_next_file_after(playback_ts_i64) {
-            // Check if this scan is already in cache
-            let is_cached = self
-                .state
-                .radar_timeline
-                .scans
-                .iter()
-                .any(|s| (s.start_time as i64 - next_file.timestamp).abs() < 60);
-
-            if !is_cached
-                && !self
-                    .download_channel
-                    .is_download_pending(site_id, next_file.timestamp)
-            {
-                log::info!("Auto-download: downloading next scan {}", next_file.name);
-                self.download_channel.download_file(
-                    ctx.clone(),
-                    site_id.clone(),
-                    date,
-                    next_file.name.clone(),
-                    next_file.timestamp,
-                    self.nexrad_cache.clone(),
-                );
-            }
+        if files_to_download.is_empty() {
+            self.state.status_message = "No new scans to download in selection".to_string();
+            log::info!("No new scans to download in selection");
+            return;
         }
+
+        // Sort by timestamp
+        files_to_download.sort_by_key(|(_, _, ts)| *ts);
+
+        log::info!(
+            "Queued {} files for download in selection",
+            files_to_download.len()
+        );
+
+        // Start downloading
+        self.state.download_selection_in_progress = true;
+        self.selection_download_queue = files_to_download;
+
+        // Kick off first download
+        let (date, file_name, timestamp) = &self.selection_download_queue[0];
+        self.state.status_message = format!(
+            "Downloading {} ({} total)",
+            file_name,
+            self.selection_download_queue.len()
+        );
+        self.download_channel.download_file(
+            ctx.clone(),
+            site_id,
+            *date,
+            file_name.clone(),
+            *timestamp,
+            self.nexrad_cache.clone(),
+        );
     }
 }
 
@@ -464,9 +541,9 @@ impl eframe::App for WorkbenchApp {
             }
         }
 
-        // Auto-download logic: download scans at playback position and next scan
-        if self.state.playback_state.auto_download {
-            self.process_auto_download(ctx);
+        // Process selection download queue
+        if self.state.download_selection_requested || !self.selection_download_queue.is_empty() {
+            self.process_selection_download(ctx);
         }
 
         // Update session stats from live network statistics

@@ -66,6 +66,7 @@ pub struct ArchiveListing {
 
 impl ArchiveListing {
     /// Find the file containing or closest to the given timestamp.
+    #[allow(dead_code)] // Utility method for future use
     pub fn find_file_at_timestamp(&self, timestamp: i64) -> Option<&ArchiveFileMeta> {
         if self.files.is_empty() {
             return None;
@@ -95,6 +96,7 @@ impl ArchiveListing {
     }
 
     /// Find the file after the given timestamp.
+    #[allow(dead_code)] // Utility method for future use
     pub fn find_next_file_after(&self, timestamp: i64) -> Option<&ArchiveFileMeta> {
         self.files.iter().find(|f| f.timestamp > timestamp)
     }
