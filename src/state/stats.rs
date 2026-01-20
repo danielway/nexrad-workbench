@@ -1,5 +1,7 @@
 //! Session and performance statistics for the top bar.
 
+use crate::nexrad::NetworkStats;
+
 /// Statistics displayed in the top bar.
 #[derive(Default, Clone)]
 pub struct SessionStats {
@@ -26,7 +28,13 @@ pub struct SessionStats {
 }
 
 impl SessionStats {
+    /// Create stats with initial (zero) values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Create stats with dummy data for UI testing.
+    #[allow(dead_code)]
     pub fn with_dummy_data() -> Self {
         Self {
             cache_size_bytes: 156_842_496, // ~150 MB
@@ -37,6 +45,13 @@ impl SessionStats {
             median_decompression_time_ms: Some(8.3),
             median_decode_time_ms: Some(23.7),
         }
+    }
+
+    /// Update stats from live network statistics.
+    pub fn update_from_network_stats(&mut self, network_stats: &NetworkStats) {
+        self.session_request_count = network_stats.total_count();
+        self.session_transferred_bytes = network_stats.bytes_transferred();
+        self.active_request_count = network_stats.active_count();
     }
 
     /// Format cache size for display (e.g., "150.2 MB").

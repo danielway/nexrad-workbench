@@ -89,7 +89,7 @@ impl AppState {
             playback_state,
             radar_timeline,
             status_message: "Ready".to_string(),
-            session_stats: SessionStats::with_dummy_data(),
+            session_stats: SessionStats::new(),
             alerts_state: AlertsState::with_dummy_data(),
             // Request timeline refresh on startup to load from cache
             timeline_needs_refresh: true,

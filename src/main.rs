@@ -455,6 +455,12 @@ impl eframe::App for WorkbenchApp {
             self.process_auto_download(ctx);
         }
 
+        // Update session stats from live network statistics
+        let network_stats = self.download_channel.stats();
+        self.state
+            .session_stats
+            .update_from_network_stats(&network_stats);
+
         // Render UI panels in the correct order for egui layout
         // Side and top/bottom panels must be rendered before CentralPanel
         ui::render_top_bar(ctx, &mut self.state);

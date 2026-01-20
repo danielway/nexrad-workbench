@@ -26,6 +26,53 @@ pub enum ListingResult {
     Error(String),
 }
 
+/// Shared network statistics for live tracking.
+#[derive(Clone, Default)]
+pub struct NetworkStats {
+    /// Number of currently active (in-flight) network requests
+    pub active_requests: Rc<RefCell<u32>>,
+    /// Total number of network requests made this session
+    pub total_requests: Rc<RefCell<u32>>,
+    /// Total bytes transferred (downloaded) this session
+    pub total_bytes: Rc<RefCell<u64>>,
+}
+
+impl NetworkStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get current active request count.
+    pub fn active_count(&self) -> u32 {
+        *self.active_requests.borrow()
+    }
+
+    /// Get total request count.
+    pub fn total_count(&self) -> u32 {
+        *self.total_requests.borrow()
+    }
+
+    /// Get total bytes transferred.
+    pub fn bytes_transferred(&self) -> u64 {
+        *self.total_bytes.borrow()
+    }
+
+    /// Record start of a network request.
+    fn request_started(&self) {
+        *self.active_requests.borrow_mut() += 1;
+        *self.total_requests.borrow_mut() += 1;
+    }
+
+    /// Record completion of a network request.
+    fn request_completed(&self, bytes: u64) {
+        let mut active = self.active_requests.borrow_mut();
+        if *active > 0 {
+            *active -= 1;
+        }
+        *self.total_bytes.borrow_mut() += bytes;
+    }
+}
+
 /// Channel-based downloader for async NEXRAD data retrieval.
 ///
 /// Downloads are async but egui's update() is synchronous.
@@ -42,6 +89,8 @@ pub struct DownloadChannel {
     pending_downloads: Rc<RefCell<HashSet<String>>>,
     /// Track pending listing requests to avoid duplicates
     pending_listings: Rc<RefCell<HashSet<String>>>,
+    /// Live network statistics
+    stats: NetworkStats,
 }
 
 impl Default for DownloadChannel {
@@ -61,7 +110,13 @@ impl DownloadChannel {
             listing_receiver,
             pending_downloads: Rc::new(RefCell::new(HashSet::new())),
             pending_listings: Rc::new(RefCell::new(HashSet::new())),
+            stats: NetworkStats::new(),
         }
+    }
+
+    /// Get a clone of the network stats for UI display.
+    pub fn stats(&self) -> NetworkStats {
+        self.stats.clone()
     }
 
     /// Spawns an async download task for NEXRAD data.
@@ -80,9 +135,10 @@ impl DownloadChannel {
         cache: NexradCache,
     ) {
         let sender = self.sender.clone();
+        let stats = self.stats.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            let result = download_nexrad_data(&site_id, date, cache).await;
+            let result = download_nexrad_data(&site_id, date, cache, stats).await;
             let _ = sender.send(result);
             ctx.request_repaint();
         });
@@ -133,9 +189,11 @@ impl DownloadChannel {
 
         let sender = self.sender.clone();
         let pending = self.pending_downloads.clone();
+        let stats = self.stats.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            let result = download_specific_file(&site_id, date, &file_name, timestamp, cache).await;
+            let result =
+                download_specific_file(&site_id, date, &file_name, timestamp, cache, stats).await;
 
             // Remove from pending set
             pending.borrow_mut().remove(&storage_key);
@@ -186,12 +244,19 @@ impl DownloadChannel {
 
         let sender = self.listing_sender.clone();
         let pending = self.pending_listings.clone();
+        let stats = self.stats.clone();
+
+        // Track request start
+        stats.request_started();
 
         wasm_bindgen_futures::spawn_local(async move {
             let result = fetch_archive_listing(&site_id, date).await;
 
             // Remove from pending set
             pending.borrow_mut().remove(&listing_key);
+
+            // Listing requests don't transfer much data, count as 0 bytes
+            stats.request_completed(0);
 
             let _ = sender.send(result);
             ctx.request_repaint();
@@ -281,12 +346,13 @@ async fn download_specific_file(
     file_name: &str,
     timestamp: i64,
     cache: NexradCache,
+    stats: NetworkStats,
 ) -> DownloadResult {
     use nexrad::data::aws::archive;
 
     let key = ScanKey::new(site_id, timestamp);
 
-    // Check cache first
+    // Check cache first (no network call)
     match cache.get(&key).await {
         Ok(Some(cached)) => {
             log::info!("Cache hit for {}", key.to_storage_key());
@@ -300,10 +366,14 @@ async fn download_specific_file(
         }
     }
 
+    // Cache miss - now we'll make network calls, so start tracking
+    stats.request_started();
+
     // List files to find the one we want
     let files = match archive::list_files(site_id, &date).await {
         Ok(files) => files,
         Err(e) => {
+            stats.request_completed(0);
             return DownloadResult::Error(format!("Failed to list files: {}", e));
         }
     };
@@ -312,6 +382,7 @@ async fn download_specific_file(
     let file_meta = match files.iter().find(|f| f.name() == file_name) {
         Some(f) => f.clone(),
         None => {
+            stats.request_completed(0);
             return DownloadResult::Error(format!("File not found: {}", file_name));
         }
     };
@@ -322,12 +393,14 @@ async fn download_specific_file(
     let file = match archive::download_file(file_meta).await {
         Ok(file) => file,
         Err(e) => {
+            stats.request_completed(0);
             return DownloadResult::Error(format!("Download failed: {}", e));
         }
     };
 
     let data = file.data().to_vec();
-    log::info!("Downloaded {} bytes", data.len());
+    let bytes_downloaded = data.len() as u64;
+    log::info!("Downloaded {} bytes", bytes_downloaded);
 
     let cached = CachedScan::new(key, file_name.to_string(), data);
 
@@ -336,6 +409,7 @@ async fn download_specific_file(
         log::warn!("Failed to cache scan: {}", e);
     }
 
+    stats.request_completed(bytes_downloaded);
     DownloadResult::Success(cached)
 }
 
@@ -345,6 +419,7 @@ async fn download_nexrad_data(
     site_id: &str,
     date: chrono::NaiveDate,
     cache: NexradCache,
+    stats: NetworkStats,
 ) -> DownloadResult {
     use nexrad::data::aws::archive;
 
@@ -356,7 +431,7 @@ async fn download_nexrad_data(
 
     let key = ScanKey::new(site_id, timestamp);
 
-    // Check cache first
+    // Check cache first (no network call)
     match cache.get(&key).await {
         Ok(Some(cached)) => {
             log::info!("Cache hit for {}", key.to_storage_key());
@@ -370,15 +445,20 @@ async fn download_nexrad_data(
         }
     }
 
+    // Cache miss - now we'll make network calls, so start tracking
+    stats.request_started();
+
     // List available files for this site/date
     let files = match archive::list_files(site_id, &date).await {
         Ok(files) => files,
         Err(e) => {
+            stats.request_completed(0);
             return DownloadResult::Error(format!("Failed to list files: {}", e));
         }
     };
 
     if files.is_empty() {
+        stats.request_completed(0);
         return DownloadResult::Error(format!("No files available for {} on {}", site_id, date));
     }
 
@@ -391,13 +471,15 @@ async fn download_nexrad_data(
     let file = match archive::download_file(file_meta).await {
         Ok(file) => file,
         Err(e) => {
+            stats.request_completed(0);
             return DownloadResult::Error(format!("Download failed: {}", e));
         }
     };
 
     // Get the raw compressed data from the file
     let data = file.data().to_vec();
-    log::info!("Downloaded {} bytes", data.len());
+    let bytes_downloaded = data.len() as u64;
+    log::info!("Downloaded {} bytes", bytes_downloaded);
 
     // Create cached scan with raw data
     let cached = CachedScan::new(key, file_name, data);
@@ -407,6 +489,7 @@ async fn download_nexrad_data(
         log::warn!("Failed to cache scan: {}", e);
     }
 
+    stats.request_completed(bytes_downloaded);
     DownloadResult::Success(cached)
 }
 
