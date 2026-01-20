@@ -77,6 +77,60 @@ pub struct AppState {
 
     /// Whether a selection download is currently in progress.
     pub download_selection_in_progress: bool,
+
+    /// State for the datetime picker popup.
+    pub datetime_picker: DateTimePickerState,
+}
+
+/// State for the datetime jump picker popup.
+#[derive(Default)]
+pub struct DateTimePickerState {
+    /// Whether the picker popup is currently open.
+    pub open: bool,
+    /// Input values for the picker (as strings for text editing).
+    pub year: String,
+    pub month: String,
+    pub day: String,
+    pub hour: String,
+    pub minute: String,
+    pub second: String,
+}
+
+impl DateTimePickerState {
+    /// Initialize the picker with a timestamp.
+    pub fn init_from_timestamp(&mut self, ts: f64) {
+        use chrono::{TimeZone, Utc};
+        let dt = Utc.timestamp_opt(ts as i64, 0).unwrap();
+        self.year = dt.format("%Y").to_string();
+        self.month = dt.format("%m").to_string();
+        self.day = dt.format("%d").to_string();
+        self.hour = dt.format("%H").to_string();
+        self.minute = dt.format("%M").to_string();
+        self.second = dt.format("%S").to_string();
+        self.open = true;
+    }
+
+    /// Try to parse the current input values into a timestamp.
+    pub fn to_timestamp(&self) -> Option<f64> {
+        let year: i32 = self.year.parse().ok()?;
+        let month: u32 = self.month.parse().ok()?;
+        let day: u32 = self.day.parse().ok()?;
+        let hour: u32 = self.hour.parse().ok()?;
+        let minute: u32 = self.minute.parse().ok()?;
+        let second: u32 = self.second.parse().ok()?;
+
+        use chrono::{TimeZone, Utc};
+        let dt = Utc.with_ymd_and_hms(year, month, day, hour, minute, second);
+        match dt {
+            chrono::LocalResult::Single(dt) => Some(dt.timestamp() as f64),
+            _ => None,
+        }
+    }
+
+    /// Close the picker and reset state.
+    pub fn close(&mut self) {
+        self.open = false;
+    }
 }
 
 impl AppState {

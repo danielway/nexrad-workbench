@@ -654,17 +654,150 @@ fn format_timestamp_full(ts: f64) -> String {
     format!("{}.{:03}", dt.format("%Y-%m-%d %H:%M:%S"), millis)
 }
 
+/// Render the datetime picker popup for jumping to a specific time.
+fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
+    if !state.datetime_picker.open {
+        return;
+    }
+
+    let popup_id = ui.make_persistent_id("datetime_picker_popup");
+
+    egui::Area::new(popup_id)
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.set_min_width(280.0);
+
+                ui.vertical(|ui| {
+                    ui.heading("Jump to Date/Time (UTC)");
+                    ui.add_space(8.0);
+
+                    // Date row
+                    ui.horizontal(|ui| {
+                        ui.label("Date:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.datetime_picker.year)
+                                .desired_width(45.0)
+                                .hint_text("YYYY"),
+                        );
+                        ui.label("-");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.datetime_picker.month)
+                                .desired_width(25.0)
+                                .hint_text("MM"),
+                        );
+                        ui.label("-");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.datetime_picker.day)
+                                .desired_width(25.0)
+                                .hint_text("DD"),
+                        );
+                    });
+
+                    ui.add_space(4.0);
+
+                    // Time row
+                    ui.horizontal(|ui| {
+                        ui.label("Time:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.datetime_picker.hour)
+                                .desired_width(25.0)
+                                .hint_text("HH"),
+                        );
+                        ui.label(":");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.datetime_picker.minute)
+                                .desired_width(25.0)
+                                .hint_text("MM"),
+                        );
+                        ui.label(":");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.datetime_picker.second)
+                                .desired_width(25.0)
+                                .hint_text("SS"),
+                        );
+                        ui.label("UTC");
+                    });
+
+                    ui.add_space(12.0);
+
+                    // Validation feedback
+                    let valid_ts = state.datetime_picker.to_timestamp();
+                    if valid_ts.is_none() {
+                        ui.colored_label(Color32::from_rgb(255, 100, 100), "Invalid date/time");
+                    }
+
+                    ui.add_space(8.0);
+
+                    // Buttons
+                    ui.horizontal(|ui| {
+                        if ui.button("Cancel").clicked() {
+                            state.datetime_picker.close();
+                        }
+
+                        ui.add_enabled_ui(valid_ts.is_some(), |ui| {
+                            if ui.button("Jump").clicked() {
+                                if let Some(ts) = valid_ts {
+                                    // Update playback position
+                                    state.playback_state.selected_timestamp = Some(ts);
+
+                                    // Center timeline view on new position
+                                    let view_width_secs = ui.available_width() as f64
+                                        / state.playback_state.timeline_zoom;
+                                    state.playback_state.timeline_view_start =
+                                        ts - view_width_secs / 2.0;
+
+                                    // Exit live mode if active
+                                    if state.live_mode_state.is_active() {
+                                        state.live_mode_state.stop(LiveExitReason::UserSeeked);
+                                    }
+
+                                    state.datetime_picker.close();
+                                    log::info!("Jumped to timestamp: {}", ts);
+                                }
+                            }
+                        });
+                    });
+                });
+            });
+        });
+
+    // Close on click outside (check if clicked but not on the popup)
+    if ui.input(|i| i.pointer.any_click()) {
+        // We'll let the popup stay open as long as user is interacting with it
+        // Close only via Cancel button or Jump button for now
+    }
+}
+
 fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
-    // Current position timestamp display
+    // Current position timestamp display (clickable to open datetime picker)
     if let Some(selected_ts) = state.playback_state.selected_timestamp {
-        ui.label(
-            RichText::new(format_timestamp_full(selected_ts))
-                .monospace()
-                .size(13.0)
-                .color(tl_colors::SELECTION),
+        let timestamp_btn = ui.add(
+            egui::Button::new(
+                RichText::new(format_timestamp_full(selected_ts))
+                    .monospace()
+                    .size(13.0)
+                    .color(tl_colors::SELECTION),
+            )
+            .frame(false),
         );
+
+        if timestamp_btn.clicked() {
+            state.datetime_picker.init_from_timestamp(selected_ts);
+        }
+
+        if timestamp_btn.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        timestamp_btn.on_hover_text("Click to jump to a specific date/time");
+
         ui.separator();
     }
+
+    // Datetime picker popup
+    render_datetime_picker_popup(ui, state);
 
     // Live mode indicator badge (when active)
     if state.live_mode_state.is_active() {
