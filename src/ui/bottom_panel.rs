@@ -96,31 +96,53 @@ fn render_radar_data(
             }
         }
         DetailLevel::Sweeps => {
-            // Draw sweep blocks within scans
+            // Draw sweep blocks within scans (or fall back to scan blocks if sweeps not loaded)
             for scan in timeline.scans_in_range(view_start, view_end) {
-                for (i, sweep) in scan.sweeps.iter().enumerate() {
-                    let x_start = ts_to_x(sweep.start_time).max(rect.left());
-                    let x_end = ts_to_x(sweep.end_time).min(rect.right());
+                if scan.sweeps.is_empty() {
+                    // Sweeps not populated (metadata-only scan) - draw scan block instead
+                    let x_start = ts_to_x(scan.start_time).max(rect.left());
+                    let x_end = ts_to_x(scan.end_time).min(rect.right());
 
-                    if x_end > x_start && (x_end - x_start) > 0.5 {
-                        // Alternate colors for visual distinction
-                        let color = sweep_colors[i % sweep_colors.len()];
-
-                        let sweep_rect = Rect::from_min_max(
+                    if x_end > x_start && (x_end - x_start) > 1.0 {
+                        let scan_rect = Rect::from_min_max(
                             Pos2::new(x_start, rect.top() + 3.0),
                             Pos2::new(x_end, rect.bottom() - 3.0),
                         );
 
-                        painter.rect_filled(sweep_rect, 1.0, color);
+                        painter.rect_filled(scan_rect, 2.0, scan_color);
+                        painter.rect_stroke(
+                            scan_rect,
+                            2.0,
+                            Stroke::new(1.0, scan_border),
+                            StrokeKind::Inside,
+                        );
+                    }
+                } else {
+                    // Draw individual sweep blocks
+                    for (i, sweep) in scan.sweeps.iter().enumerate() {
+                        let x_start = ts_to_x(sweep.start_time).max(rect.left());
+                        let x_end = ts_to_x(sweep.end_time).min(rect.right());
 
-                        // Draw border between sweeps if there's enough space
-                        if (x_end - x_start) > 3.0 {
-                            painter.rect_stroke(
-                                sweep_rect,
-                                1.0,
-                                Stroke::new(0.5, Color32::from_rgb(40, 80, 55)),
-                                StrokeKind::Inside,
+                        if x_end > x_start && (x_end - x_start) > 0.5 {
+                            // Alternate colors for visual distinction
+                            let color = sweep_colors[i % sweep_colors.len()];
+
+                            let sweep_rect = Rect::from_min_max(
+                                Pos2::new(x_start, rect.top() + 3.0),
+                                Pos2::new(x_end, rect.bottom() - 3.0),
                             );
+
+                            painter.rect_filled(sweep_rect, 1.0, color);
+
+                            // Draw border between sweeps if there's enough space
+                            if (x_end - x_start) > 3.0 {
+                                painter.rect_stroke(
+                                    sweep_rect,
+                                    1.0,
+                                    Stroke::new(0.5, Color32::from_rgb(40, 80, 55)),
+                                    StrokeKind::Inside,
+                                );
+                            }
                         }
                     }
                 }
