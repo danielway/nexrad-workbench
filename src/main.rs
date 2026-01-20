@@ -296,6 +296,13 @@ impl WorkbenchApp {
 
 impl eframe::App for WorkbenchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Handle cache clear request
+        if self.state.clear_cache_requested && !self.cache_load_channel.is_loading() {
+            self.state.clear_cache_requested = false;
+            self.cache_load_channel
+                .clear_cache(ctx.clone(), self.nexrad_cache.clone());
+        }
+
         // Check if timeline needs to be refreshed from cache
         if self.state.timeline_needs_refresh && !self.cache_load_channel.is_loading() {
             self.state.timeline_needs_refresh = false;

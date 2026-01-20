@@ -2,7 +2,7 @@
 
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use crate::state::radar_data::RadarTimeline;
-use crate::state::{AppState, LiveExitReason, LivePhase, PlaybackSpeed, SessionStats};
+use crate::state::{AppState, LiveExitReason, LivePhase, PlaybackSpeed};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
@@ -719,7 +719,7 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
 
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        render_session_stats(ui, &state.session_stats);
+        render_session_stats(ui, state);
     });
 }
 
@@ -799,7 +799,9 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
 }
 
 /// Render session statistics (right-aligned in the bottom bar).
-fn render_session_stats(ui: &mut egui::Ui, stats: &SessionStats) {
+fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
+    let stats = &state.session_stats;
+
     // Latency stats (rightmost)
     ui.label(
         RichText::new(stats.format_latency_stats())
@@ -810,7 +812,14 @@ fn render_session_stats(ui: &mut egui::Ui, stats: &SessionStats) {
 
     ui.separator();
 
-    // Cache size
+    // Cache size with clear button
+    if ui
+        .small_button("x")
+        .on_hover_text("Clear cache")
+        .clicked()
+    {
+        state.clear_cache_requested = true;
+    }
     ui.label(
         RichText::new(stats.format_cache_size())
             .size(11.0)

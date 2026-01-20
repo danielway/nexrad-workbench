@@ -66,6 +66,10 @@ pub struct AppState {
     /// Flag to signal that the timeline needs to be refreshed from cache.
     /// Set to true when the site changes or after a download completes.
     pub timeline_needs_refresh: bool,
+
+    /// Flag to signal that the cache should be cleared.
+    /// Set by UI, handled in main update loop.
+    pub clear_cache_requested: bool,
 }
 
 impl AppState {

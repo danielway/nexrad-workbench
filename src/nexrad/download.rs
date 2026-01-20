@@ -366,12 +366,13 @@ async fn download_specific_file(
         }
     }
 
-    // Cache miss - now we'll make network calls, so start tracking
+    // Request 1: List files to find the one we want
     stats.request_started();
-
-    // List files to find the one we want
     let files = match archive::list_files(site_id, &date).await {
-        Ok(files) => files,
+        Ok(files) => {
+            stats.request_completed(0); // Listing doesn't count toward bytes transferred
+            files
+        }
         Err(e) => {
             stats.request_completed(0);
             return DownloadResult::Error(format!("Failed to list files: {}", e));
@@ -382,14 +383,14 @@ async fn download_specific_file(
     let file_meta = match files.iter().find(|f| f.name() == file_name) {
         Some(f) => f.clone(),
         None => {
-            stats.request_completed(0);
             return DownloadResult::Error(format!("File not found: {}", file_name));
         }
     };
 
     log::info!("Downloading: {}", file_name);
 
-    // Download the file
+    // Request 2: Download the file
+    stats.request_started();
     let file = match archive::download_file(file_meta).await {
         Ok(file) => file,
         Err(e) => {
@@ -445,12 +446,13 @@ async fn download_nexrad_data(
         }
     }
 
-    // Cache miss - now we'll make network calls, so start tracking
+    // Request 1: List available files for this site/date
     stats.request_started();
-
-    // List available files for this site/date
     let files = match archive::list_files(site_id, &date).await {
-        Ok(files) => files,
+        Ok(files) => {
+            stats.request_completed(0); // Listing doesn't count toward bytes transferred
+            files
+        }
         Err(e) => {
             stats.request_completed(0);
             return DownloadResult::Error(format!("Failed to list files: {}", e));
@@ -458,7 +460,6 @@ async fn download_nexrad_data(
     };
 
     if files.is_empty() {
-        stats.request_completed(0);
         return DownloadResult::Error(format!("No files available for {} on {}", site_id, date));
     }
 
@@ -467,7 +468,8 @@ async fn download_nexrad_data(
     let file_name = file_meta.name().to_string();
     log::info!("Downloading: {}", file_name);
 
-    // Download the file
+    // Request 2: Download the file
+    stats.request_started();
     let file = match archive::download_file(file_meta).await {
         Ok(file) => file,
         Err(e) => {

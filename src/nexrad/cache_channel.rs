@@ -133,6 +133,46 @@ impl CacheLoadChannel {
         });
     }
 
+    /// Clears all cached data.
+    ///
+    /// After clearing, the cache size will be 0 and timeline will be empty.
+    #[cfg(target_arch = "wasm32")]
+    pub fn clear_cache(&self, ctx: Context, cache: NexradCache) {
+        // Don't start if a load is in progress
+        if *self.loading.borrow() {
+            log::debug!("Cache operation in progress, ignoring clear request");
+            return;
+        }
+
+        *self.loading.borrow_mut() = true;
+        let receiver = self.receiver.clone();
+        let loading = self.loading.clone();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            log::info!("Clearing cache...");
+
+            let result = match cache.clear().await {
+                Ok(()) => {
+                    log::info!("Cache cleared successfully");
+                    CacheLoadResult::Success {
+                        site_id: String::new(),
+                        metadata: Vec::new(),
+                        total_cache_size: 0,
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to clear cache: {}", e);
+                    CacheLoadResult::Error(e.to_string())
+                }
+            };
+
+            *receiver.borrow_mut() = Some(result);
+            *loading.borrow_mut() = false;
+
+            ctx.request_repaint();
+        });
+    }
+
     // Native stubs
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_site_timeline(&self, _ctx: Context, _cache: NexradCache, _site_id: String) {
@@ -141,6 +181,11 @@ impl CacheLoadChannel {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn run_migration(&self, _ctx: Context, _cache: NexradCache) {
+        // No-op on native
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn clear_cache(&self, _ctx: Context, _cache: NexradCache) {
         // No-op on native
     }
 }
