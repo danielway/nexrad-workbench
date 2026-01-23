@@ -6,13 +6,46 @@ use crate::nexrad::{DownloadChannel, NexradCache};
 use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
 use chrono::Datelike;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
+use nexrad::prelude::Volume;
 use std::f32::consts::PI;
+
+/// Radar position data from the most recent radial in the decoded volume
+pub struct RadarPosition {
+    /// Azimuth angle in degrees (0-360)
+    pub azimuth: f32,
+    /// Elevation angle in degrees
+    pub elevation: f32,
+}
+
+/// Find the most recent radial in the volume and return its position.
+///
+/// This iterates through all sweeps and radials to find the one with
+/// the highest collection timestamp, returning its actual azimuth and elevation.
+pub fn find_most_recent_radial_position(volume: &Volume) -> Option<RadarPosition> {
+    let mut most_recent: Option<(i64, f32, f32)> = None; // (timestamp, azimuth, elevation)
+
+    for sweep in volume.sweeps() {
+        for radial in sweep.radials() {
+            let ts = radial.collection_timestamp();
+            let dominated = most_recent.map(|(best_ts, _, _)| ts <= best_ts).unwrap_or(false);
+            if !dominated {
+                most_recent = Some((
+                    ts,
+                    radial.azimuth_angle_degrees(),
+                    radial.elevation_angle_degrees(),
+                ));
+            }
+        }
+    }
+
+    most_recent.map(|(_, azimuth, elevation)| RadarPosition { azimuth, elevation })
+}
 
 /// State queried from the radar timeline at the current timestamp
 struct RadarStateAtTimestamp<'a> {
-    /// Current azimuth angle in degrees (0-360)
+    /// Current azimuth angle in degrees (0-360), from actual radial data
     azimuth: Option<f32>,
-    /// Current elevation angle in degrees
+    /// Current elevation angle in degrees, from actual radial data
     elevation: Option<f32>,
     /// Current VCP number
     vcp: Option<u16>,
@@ -30,6 +63,7 @@ pub fn render_left_panel(
     file_picker: &FilePickerChannel,
     download_channel: &DownloadChannel,
     nexrad_cache: &NexradCache,
+    decoded_volume: Option<&Volume>,
 ) {
     egui::SidePanel::left("left_panel")
         .resizable(true)
@@ -38,7 +72,7 @@ pub fn render_left_panel(
         .max_width(400.0)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                render_radar_operations_section(ui, state);
+                render_radar_operations_section(ui, state, decoded_volume);
                 ui.add_space(15.0);
                 ui.separator();
                 ui.add_space(10.0);
@@ -185,7 +219,11 @@ fn render_load_data_section(
     }
 }
 
-fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_radar_operations_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    decoded_volume: Option<&Volume>,
+) {
     // Header
     ui.label(RichText::new("Radar Operations").strong().size(14.0));
 
@@ -226,7 +264,10 @@ fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.add_space(5.0);
 
-    let radar_state = query_radar_state_at_timestamp(state);
+    // Get radar position from actual radial data (only when volume is loaded)
+    let radar_position = decoded_volume.and_then(find_most_recent_radial_position);
+
+    let radar_state = query_radar_state_at_timestamp(state, &radar_position);
 
     // Top-down and side views side-by-side
     ui.horizontal(|ui| {
@@ -247,7 +288,10 @@ fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
     render_vcp_breakdown(ui, &radar_state);
 }
 
-fn query_radar_state_at_timestamp(state: &AppState) -> RadarStateAtTimestamp<'_> {
+fn query_radar_state_at_timestamp<'a>(
+    state: &'a AppState,
+    radar_position: &Option<RadarPosition>,
+) -> RadarStateAtTimestamp<'a> {
     let ts = match state.playback_state.selected_timestamp {
         Some(ts) => ts,
         None => {
@@ -265,18 +309,17 @@ fn query_radar_state_at_timestamp(state: &AppState) -> RadarStateAtTimestamp<'_>
     // Find the scan at the current timestamp
     let scan = state.radar_timeline.find_scan_at_timestamp(ts);
 
+    // Use actual radial position if available (from decoded volume)
+    let (azimuth, elevation) = match radar_position {
+        Some(pos) => (Some(pos.azimuth), Some(pos.elevation)),
+        None => (None, None),
+    };
+
     match scan {
         Some(scan) => {
             let scan_progress = scan.progress_at_timestamp(ts);
             let sweep_data = scan.find_sweep_at_timestamp(ts);
-
-            let (sweep_index, azimuth, elevation) = match sweep_data {
-                Some((idx, sweep)) => {
-                    let az = sweep.interpolate_azimuth(ts);
-                    (Some(idx), az, Some(sweep.elevation))
-                }
-                None => (None, None, None),
-            };
+            let sweep_index = sweep_data.map(|(idx, _)| idx);
 
             RadarStateAtTimestamp {
                 azimuth,
@@ -288,8 +331,8 @@ fn query_radar_state_at_timestamp(state: &AppState) -> RadarStateAtTimestamp<'_>
             }
         }
         None => RadarStateAtTimestamp {
-            azimuth: None,
-            elevation: None,
+            azimuth,
+            elevation,
             vcp: None,
             sweep_index: None,
             scan_progress: None,

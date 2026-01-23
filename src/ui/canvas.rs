@@ -1,6 +1,7 @@
 //! Central canvas UI: radar visualization area.
 
 use super::colors::{canvas as canvas_colors, radar, sites as site_colors};
+use super::left_panel::find_most_recent_radial_position;
 use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::{
@@ -83,18 +84,11 @@ pub fn render_canvas_with_geo(
             render_nws_alerts(&painter, &projection, &state.alerts_state, current_time);
         }
 
-        // Query current azimuth from radar timeline (only show sweep line in real-time mode)
+        // Get azimuth from actual radial data (only show sweep line in real-time mode with volume loaded)
         let azimuth = if state.playback_state.speed == crate::state::PlaybackSpeed::Realtime {
-            state
-                .playback_state
-                .selected_timestamp
-                .and_then(|ts| state.radar_timeline.find_scan_at_timestamp(ts))
-                .and_then(|scan| {
-                    scan.find_sweep_at_timestamp(state.playback_state.selected_timestamp.unwrap())
-                })
-                .and_then(|(_, sweep)| {
-                    sweep.interpolate_azimuth(state.playback_state.selected_timestamp.unwrap())
-                })
+            decoded_volume
+                .and_then(find_most_recent_radial_position)
+                .map(|pos| pos.azimuth)
         } else {
             None
         };

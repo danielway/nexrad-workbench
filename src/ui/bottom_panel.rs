@@ -48,12 +48,18 @@ fn render_radar_data(
 
     let scan_color = tl_colors::SCAN_FILL;
     let scan_border = tl_colors::SCAN_BORDER;
-    let sweep_colors: [Color32; 4] = [
-        Color32::from_rgb(50, 100, 70),
-        Color32::from_rgb(60, 120, 80),
-        Color32::from_rgb(70, 140, 90),
-        Color32::from_rgb(55, 110, 75),
-    ];
+
+    // Color function based on elevation angle (0-20 degrees typical range)
+    // Lower elevations are darker/more blue, higher elevations are lighter/more cyan
+    let elevation_to_color = |elevation: f32| -> Color32 {
+        // Normalize elevation to 0-1 range (clamp to 0-20 degrees)
+        let t = (elevation / 20.0).clamp(0.0, 1.0);
+        // Interpolate from dark blue-green to bright cyan-green
+        let r = (40.0 + t * 40.0) as u8; // 40-80
+        let g = (80.0 + t * 80.0) as u8; // 80-160
+        let b = (60.0 + t * 60.0) as u8; // 60-120
+        Color32::from_rgb(r, g, b)
+    };
 
     match detail_level {
         DetailLevel::Solid => {
@@ -97,52 +103,53 @@ fn render_radar_data(
             }
         }
         DetailLevel::Sweeps => {
-            // Draw sweep blocks within scans (or fall back to scan blocks if sweeps not loaded)
+            // Draw scan blocks as background, with sweep blocks inside
             for scan in timeline.scans_in_range(view_start, view_end) {
-                if scan.sweeps.is_empty() {
-                    // Sweeps not populated (metadata-only scan) - draw scan block instead
-                    let x_start = ts_to_x(scan.start_time).max(rect.left());
-                    let x_end = ts_to_x(scan.end_time).min(rect.right());
+                let scan_x_start = ts_to_x(scan.start_time).max(rect.left());
+                let scan_x_end = ts_to_x(scan.end_time).min(rect.right());
 
-                    if x_end > x_start && (x_end - x_start) > 1.0 {
-                        let scan_rect = Rect::from_min_max(
-                            Pos2::new(x_start, rect.top() + 3.0),
-                            Pos2::new(x_end, rect.bottom() - 3.0),
-                        );
+                if scan_x_end > scan_x_start && (scan_x_end - scan_x_start) > 1.0 {
+                    // Always draw the scan block as background
+                    let scan_rect = Rect::from_min_max(
+                        Pos2::new(scan_x_start, rect.top() + 3.0),
+                        Pos2::new(scan_x_end, rect.bottom() - 3.0),
+                    );
 
-                        painter.rect_filled(scan_rect, 2.0, scan_color);
-                        painter.rect_stroke(
-                            scan_rect,
-                            2.0,
-                            Stroke::new(1.0, scan_border),
-                            StrokeKind::Inside,
-                        );
-                    }
-                } else {
-                    // Draw individual sweep blocks
-                    for (i, sweep) in scan.sweeps.iter().enumerate() {
-                        let x_start = ts_to_x(sweep.start_time).max(rect.left());
-                        let x_end = ts_to_x(sweep.end_time).min(rect.right());
+                    painter.rect_filled(scan_rect, 2.0, scan_color);
+                    painter.rect_stroke(
+                        scan_rect,
+                        2.0,
+                        Stroke::new(1.0, scan_border),
+                        StrokeKind::Inside,
+                    );
 
-                        if x_end > x_start && (x_end - x_start) > 0.5 {
-                            // Alternate colors for visual distinction
-                            let color = sweep_colors[i % sweep_colors.len()];
+                    // Draw individual sweep blocks inside the scan (if loaded)
+                    if !scan.sweeps.is_empty() {
+                        for sweep in scan.sweeps.iter() {
+                            let x_start = ts_to_x(sweep.start_time).max(rect.left());
+                            let x_end = ts_to_x(sweep.end_time).min(rect.right());
 
-                            let sweep_rect = Rect::from_min_max(
-                                Pos2::new(x_start, rect.top() + 3.0),
-                                Pos2::new(x_end, rect.bottom() - 3.0),
-                            );
+                            if x_end > x_start && (x_end - x_start) > 0.5 {
+                                // Color based on elevation for visual distinction
+                                let color = elevation_to_color(sweep.elevation);
 
-                            painter.rect_filled(sweep_rect, 1.0, color);
-
-                            // Draw border between sweeps if there's enough space
-                            if (x_end - x_start) > 3.0 {
-                                painter.rect_stroke(
-                                    sweep_rect,
-                                    1.0,
-                                    Stroke::new(0.5, Color32::from_rgb(40, 80, 55)),
-                                    StrokeKind::Inside,
+                                // Sweeps are narrower (more inset) than the scan block
+                                let sweep_rect = Rect::from_min_max(
+                                    Pos2::new(x_start, rect.top() + 6.0),
+                                    Pos2::new(x_end, rect.bottom() - 6.0),
                                 );
+
+                                painter.rect_filled(sweep_rect, 1.0, color);
+
+                                // Draw border between sweeps if there's enough space
+                                if (x_end - x_start) > 3.0 {
+                                    painter.rect_stroke(
+                                        sweep_rect,
+                                        1.0,
+                                        Stroke::new(0.5, Color32::from_rgb(40, 80, 55)),
+                                        StrokeKind::Inside,
+                                    );
+                                }
                             }
                         }
                     }

@@ -60,20 +60,6 @@ impl Sweep {
     pub fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }
-
-    /// Interpolate azimuth for a timestamp within this sweep (smooth animation)
-    /// Assumes the sweep rotates 360 degrees from start to end
-    pub fn interpolate_azimuth(&self, ts: f64) -> Option<f32> {
-        if ts < self.start_time || ts > self.end_time {
-            return None;
-        }
-        let duration = self.end_time - self.start_time;
-        if duration <= 0.0 {
-            return Some(0.0);
-        }
-        let progress = (ts - self.start_time) / duration;
-        Some((progress * 360.0) as f32)
-    }
 }
 
 /// A complete volume scan (multiple sweeps at different elevations)
@@ -204,6 +190,38 @@ impl RadarTimeline {
             Some(most_recent)
         } else {
             None
+        }
+    }
+
+    /// Update the sweeps for a scan identified by its start timestamp.
+    /// Also updates the scan's time bounds to encompass the actual sweep data.
+    /// Returns true if the scan was found and updated.
+    pub fn update_scan_sweeps(&mut self, scan_timestamp: i64, sweeps: Vec<Sweep>) -> bool {
+        if let Some(scan) = self
+            .scans
+            .iter_mut()
+            .find(|s| (s.start_time as i64) == scan_timestamp)
+        {
+            // Update scan time bounds to match actual sweep data
+            if !sweeps.is_empty() {
+                let sweep_start = sweeps
+                    .iter()
+                    .map(|s| s.start_time)
+                    .fold(f64::INFINITY, f64::min);
+                let sweep_end = sweeps
+                    .iter()
+                    .map(|s| s.end_time)
+                    .fold(f64::NEG_INFINITY, f64::max);
+
+                // Expand scan bounds to encompass all sweeps
+                scan.start_time = scan.start_time.min(sweep_start);
+                scan.end_time = scan.end_time.max(sweep_end);
+            }
+
+            scan.sweeps = sweeps;
+            true
+        } else {
+            false
         }
     }
 

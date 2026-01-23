@@ -18,6 +18,7 @@ use eframe::egui;
 use file_ops::FilePickerChannel;
 // Use explicit crate path to avoid conflict with local nexrad module
 use ::nexrad::prelude::{load, Volume};
+use state::radar_data::Sweep as TimelineSweep;
 use state::AppState;
 use storage::{CachedFile, StorageConfig};
 
@@ -149,6 +150,38 @@ static COUNTIES_SHP: &[u8] =
     include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.shp");
 static COUNTIES_DBF: &[u8] =
     include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.dbf");
+
+/// Extract sweep timing information from a decoded volume for timeline display.
+///
+/// Each sweep's start/end times are derived from the first/last radial's
+/// collection timestamps, and elevation is taken from the first radial.
+fn extract_sweep_timing(volume: &Volume) -> Vec<TimelineSweep> {
+    volume
+        .sweeps()
+        .iter()
+        .filter_map(|sweep| {
+            let radials = sweep.radials();
+            if radials.is_empty() {
+                return None;
+            }
+
+            // Get timing from first and last radial (timestamps are in milliseconds)
+            let first_radial = radials.first()?;
+            let last_radial = radials.last()?;
+
+            let start_time = first_radial.collection_timestamp() as f64 / 1000.0;
+            let end_time = last_radial.collection_timestamp() as f64 / 1000.0;
+            let elevation = first_radial.elevation_angle_degrees();
+
+            Some(TimelineSweep {
+                start_time,
+                end_time,
+                elevation,
+                radials: Vec::new(), // We don't need radial data for timeline display
+            })
+        })
+        .collect()
+}
 
 impl WorkbenchApp {
     /// Creates a new WorkbenchApp instance.
@@ -473,6 +506,20 @@ impl WorkbenchApp {
                     Ok(volume) => {
                         let sweep_count = volume.sweeps().len();
                         log::info!("Decoded live volume with {} sweeps", sweep_count);
+
+                        // Extract sweep timing for timeline display
+                        let sweep_timing = extract_sweep_timing(&volume);
+                        if self
+                            .state
+                            .radar_timeline
+                            .update_scan_sweeps(timestamp, sweep_timing)
+                        {
+                            log::debug!(
+                                "Live: updated timeline with {} sweeps",
+                                sweep_count
+                            );
+                        }
+
                         self.decoded_volume = Some(volume);
                         self.displayed_scan_timestamp = Some(timestamp);
                         self.radar_texture_cache.invalidate();
@@ -635,6 +682,21 @@ impl eframe::App for WorkbenchApp {
                         Ok(volume) => {
                             let sweep_count = volume.sweeps().len();
                             log::info!("Loaded volume with {} sweeps", sweep_count);
+
+                            // Extract sweep timing for timeline display
+                            let sweep_timing = extract_sweep_timing(&volume);
+                            if self
+                                .state
+                                .radar_timeline
+                                .update_scan_sweeps(scan.key.timestamp, sweep_timing)
+                            {
+                                log::debug!(
+                                    "Updated timeline with {} sweeps for scan {}",
+                                    sweep_count,
+                                    scan.key.timestamp
+                                );
+                            }
+
                             self.decoded_volume = Some(volume);
                             // Invalidate texture cache to trigger re-render
                             self.radar_texture_cache.invalidate();
@@ -696,6 +758,21 @@ impl eframe::App for WorkbenchApp {
                     match load(&data) {
                         Ok(volume) => {
                             log::debug!("Scrub load: decoded volume for {}", timestamp);
+
+                            // Extract sweep timing for timeline display
+                            let sweep_timing = extract_sweep_timing(&volume);
+                            let sweep_count = sweep_timing.len();
+                            if self
+                                .state
+                                .radar_timeline
+                                .update_scan_sweeps(timestamp, sweep_timing)
+                            {
+                                log::debug!(
+                                    "Scrub load: updated timeline with {} sweeps",
+                                    sweep_count
+                                );
+                            }
+
                             self.decoded_volume = Some(volume);
                             self.displayed_scan_timestamp = Some(timestamp);
                             self.radar_texture_cache.invalidate();
@@ -798,6 +875,7 @@ impl eframe::App for WorkbenchApp {
             &self.file_picker,
             &self.download_channel,
             &self.nexrad_cache,
+            self.decoded_volume.as_ref(),
         );
         ui::render_right_panel(ctx, &mut self.state);
 
