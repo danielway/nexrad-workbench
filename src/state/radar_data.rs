@@ -183,6 +183,37 @@ impl RadarTimeline {
             .find(|scan| ts >= scan.start_time && ts <= scan.end_time)
     }
 
+    /// Find the most recent scan at or before the given timestamp, within a time window.
+    ///
+    /// Returns the scan whose start_time is closest to (but not after) the timestamp,
+    /// as long as it's within `max_age_secs` of the timestamp.
+    pub fn find_recent_scan(&self, ts: f64, max_age_secs: f64) -> Option<&Scan> {
+        // Find all scans that start at or before the timestamp
+        let candidates: Vec<_> = self
+            .scans
+            .iter()
+            .filter(|scan| scan.start_time <= ts)
+            .collect();
+
+        // Get the most recent one (last in the sorted list)
+        let most_recent = candidates.last()?;
+
+        // Check if it's within the time window
+        let age = ts - most_recent.start_time;
+        if age <= max_age_secs {
+            Some(most_recent)
+        } else {
+            None
+        }
+    }
+
+    /// Get the timestamp of a scan for identification purposes.
+    /// Used to check if we need to load a different scan.
+    #[allow(dead_code)] // Utility method
+    pub fn scan_timestamp(scan: &Scan) -> i64 {
+        scan.start_time as i64
+    }
+
     /// Generate sample data for testing/demo purposes
     /// Creates scans for the specified duration ending at `end_time`
     #[allow(dead_code)] // Kept for testing/demo purposes

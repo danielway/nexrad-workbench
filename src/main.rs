@@ -129,6 +129,15 @@ pub struct WorkbenchApp {
     /// Queue of files to download for selection download feature.
     /// Each entry is (date, file_name, timestamp).
     selection_download_queue: Vec<(chrono::NaiveDate, String, i64)>,
+
+    /// Timestamp of the currently displayed scan (for detecting when to load a new scan)
+    displayed_scan_timestamp: Option<i64>,
+
+    /// Channel for loading scans from cache on-demand (for scrubbing)
+    scrub_load_channel: nexrad::ScrubLoadChannel,
+
+    /// Channel for real-time streaming
+    realtime_channel: nexrad::RealtimeChannel,
 }
 
 // Embed shapefile data at compile time
@@ -184,6 +193,9 @@ impl WorkbenchApp {
         // Run migration to create metadata for any existing cached scans
         cache_load_channel.run_migration(cc.egui_ctx.clone(), nexrad_cache.clone());
 
+        let download_channel = nexrad::DownloadChannel::new();
+        let realtime_channel = nexrad::RealtimeChannel::with_stats(download_channel.stats());
+
         Self {
             state,
             file_picker: FilePickerChannel::new(),
@@ -191,13 +203,16 @@ impl WorkbenchApp {
             file_cache: IndexedDbStore::new(StorageConfig::new("nexrad-workbench", "file-cache")),
             geo_layers,
             nexrad_cache,
-            download_channel: nexrad::DownloadChannel::new(),
+            download_channel,
             cache_load_channel,
             archive_index: nexrad::ArchiveIndex::new(),
             current_scan: None,
             decoded_volume: None,
             radar_texture_cache: nexrad::RadarTextureCache::new(),
             selection_download_queue: Vec::new(),
+            displayed_scan_timestamp: None,
+            scrub_load_channel: nexrad::ScrubLoadChannel::new(),
+            realtime_channel,
         }
     }
 
@@ -368,6 +383,133 @@ impl WorkbenchApp {
             *timestamp,
             self.nexrad_cache.clone(),
         );
+    }
+
+    /// Start live mode streaming for the current site.
+    fn start_live_mode(&mut self, ctx: &egui::Context) {
+        let site_id = self.state.viz_state.site_id.clone();
+        log::info!("Starting live mode for site: {}", site_id);
+
+        // Get current time
+        #[cfg(target_arch = "wasm32")]
+        let now = js_sys::Date::now() / 1000.0;
+        #[cfg(not(target_arch = "wasm32"))]
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+
+        // Initialize live mode state
+        self.state.live_mode_state.start(now);
+        self.state.playback_state.selected_timestamp = Some(now);
+        self.state.playback_state.playing = true;
+        self.state.status_message = "Connecting to live stream...".to_string();
+
+        // Start the realtime channel
+        self.realtime_channel.start(ctx.clone(), site_id);
+    }
+
+    /// Stop live mode streaming.
+    #[allow(dead_code)] // Called from UI when user stops live mode
+    fn stop_live_mode(&mut self, reason: state::LiveExitReason) {
+        log::info!("Stopping live mode: {:?}", reason);
+
+        self.state.live_mode_state.stop(reason);
+        self.realtime_channel.stop();
+
+        self.state.status_message = self
+            .state
+            .live_mode_state
+            .last_exit_reason
+            .map(|r| r.message().to_string())
+            .unwrap_or_default();
+    }
+
+    /// Handle a realtime streaming result.
+    fn handle_realtime_result(&mut self, result: nexrad::RealtimeResult, ctx: &egui::Context) {
+        // Get current time
+        #[cfg(target_arch = "wasm32")]
+        let now = js_sys::Date::now() / 1000.0;
+        #[cfg(not(target_arch = "wasm32"))]
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+
+        match result {
+            nexrad::RealtimeResult::Started { site_id } => {
+                log::info!("Realtime streaming started for site: {}", site_id);
+                self.state.live_mode_state.handle_streaming_started(now);
+                self.state.status_message = format!("Live: connected to {}", site_id);
+            }
+            nexrad::RealtimeResult::ChunkReceived {
+                chunks_in_volume,
+                time_until_next,
+                is_volume_end,
+            } => {
+                log::debug!(
+                    "Chunk received: {} in volume, is_end={}",
+                    chunks_in_volume,
+                    is_volume_end
+                );
+                self.state.live_mode_state.handle_realtime_chunk(
+                    chunks_in_volume,
+                    time_until_next,
+                    is_volume_end,
+                    now,
+                );
+            }
+            nexrad::RealtimeResult::VolumeComplete { data, timestamp } => {
+                log::info!(
+                    "Volume complete: {} bytes, timestamp={}",
+                    data.len(),
+                    timestamp
+                );
+                self.state.live_mode_state.handle_volume_complete(now);
+                self.state.status_message = format!("Live: received volume ({} bytes)", data.len());
+
+                // Decode and display the volume
+                match load(&data) {
+                    Ok(volume) => {
+                        let sweep_count = volume.sweeps().len();
+                        log::info!("Decoded live volume with {} sweeps", sweep_count);
+                        self.decoded_volume = Some(volume);
+                        self.displayed_scan_timestamp = Some(timestamp);
+                        self.radar_texture_cache.invalidate();
+
+                        // Cache the volume for later playback
+                        let site_id = self.state.viz_state.site_id.clone();
+                        let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
+                        let key = nexrad::ScanKey::new(&site_id, timestamp);
+                        let cached = nexrad::CachedScan::new(key, file_name, data.clone());
+
+                        let cache = self.nexrad_cache.clone();
+                        let ctx_clone = ctx.clone();
+                        #[cfg(target_arch = "wasm32")]
+                        wasm_bindgen_futures::spawn_local(async move {
+                            if let Err(e) = cache.put(&cached).await {
+                                log::warn!("Failed to cache live volume: {}", e);
+                            } else {
+                                log::debug!("Cached live volume at timestamp {}", timestamp);
+                            }
+                            ctx_clone.request_repaint();
+                        });
+
+                        // Refresh timeline to show the new scan
+                        self.state.timeline_needs_refresh = true;
+                    }
+                    Err(e) => {
+                        log::error!("Failed to decode live volume: {}", e);
+                        self.state.status_message = format!("Live: decode error: {}", e);
+                    }
+                }
+            }
+            nexrad::RealtimeResult::Error(msg) => {
+                log::error!("Realtime streaming error: {}", msg);
+                self.state.live_mode_state.set_error(msg.clone());
+                self.state.status_message = format!("Live error: {}", msg);
+            }
+        }
     }
 }
 
@@ -544,6 +686,100 @@ impl eframe::App for WorkbenchApp {
         // Process selection download queue
         if self.state.download_selection_requested || !self.selection_download_queue.is_empty() {
             self.process_selection_download(ctx);
+        }
+
+        // Check for completed scrub load operations
+        if let Some(result) = self.scrub_load_channel.try_recv() {
+            match result {
+                nexrad::ScrubLoadResult::Success { timestamp, data } => {
+                    // Decode the volume
+                    match load(&data) {
+                        Ok(volume) => {
+                            log::debug!("Scrub load: decoded volume for {}", timestamp);
+                            self.decoded_volume = Some(volume);
+                            self.displayed_scan_timestamp = Some(timestamp);
+                            self.radar_texture_cache.invalidate();
+                        }
+                        Err(e) => {
+                            log::error!("Scrub load: failed to decode volume: {}", e);
+                        }
+                    }
+                }
+                nexrad::ScrubLoadResult::NotFound { timestamp } => {
+                    log::debug!("Scrub load: scan {} not in cache", timestamp);
+                }
+                nexrad::ScrubLoadResult::Error(msg) => {
+                    log::error!("Scrub load error: {}", msg);
+                }
+            }
+        }
+
+        // Handle realtime streaming results
+        while let Some(result) = self.realtime_channel.try_recv() {
+            self.handle_realtime_result(result, ctx);
+        }
+
+        // Stop realtime channel if live mode was stopped by UI
+        if !self.state.live_mode_state.is_active() && self.realtime_channel.is_active() {
+            log::info!("Stopping realtime channel (live mode ended)");
+            self.realtime_channel.stop();
+        }
+
+        // Update live mode countdown from realtime channel
+        if self.state.live_mode_state.is_active() {
+            if let Some(duration) = self.realtime_channel.time_until_next() {
+                #[cfg(target_arch = "wasm32")]
+                let now = js_sys::Date::now() / 1000.0;
+                #[cfg(not(target_arch = "wasm32"))]
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+
+                self.state.live_mode_state.next_chunk_expected_at =
+                    Some(now + duration.as_secs_f64());
+            }
+        }
+
+        // Handle start live mode request from UI
+        if self.state.start_live_requested {
+            self.state.start_live_requested = false;
+            self.start_live_mode(ctx);
+        }
+
+        // Auto-load scan when scrubbing: find the most recent scan within 15 minutes
+        const MAX_SCAN_AGE_SECS: f64 = 15.0 * 60.0;
+        if let Some(playback_ts) = self.state.playback_state.selected_timestamp {
+            if let Some(scan) = self
+                .state
+                .radar_timeline
+                .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
+            {
+                let scan_ts = scan.start_time as i64;
+
+                // Check if we need to load a different scan
+                let needs_load = match self.displayed_scan_timestamp {
+                    Some(displayed) => displayed != scan_ts,
+                    None => true,
+                };
+
+                // Also check we're not already loading this scan
+                let already_loading = self.scrub_load_channel.pending_timestamp() == Some(scan_ts);
+
+                if needs_load && !already_loading && !self.scrub_load_channel.is_loading() {
+                    log::debug!(
+                        "Scrubbing: loading scan at {} (playback at {})",
+                        scan_ts,
+                        playback_ts as i64
+                    );
+                    self.scrub_load_channel.load_scan(
+                        ctx.clone(),
+                        self.nexrad_cache.clone(),
+                        self.state.viz_state.site_id.clone(),
+                        scan_ts,
+                    );
+                }
+            }
         }
 
         // Update session stats from live network statistics

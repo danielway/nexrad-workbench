@@ -7,6 +7,7 @@ use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
 /// Get current Unix timestamp in seconds (works on both native and WASM)
+#[allow(dead_code)] // Utility function for UI timing
 fn current_timestamp_secs() -> f64 {
     #[cfg(target_arch = "wasm32")]
     {
@@ -158,40 +159,13 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     state.live_mode_state.update_pulse(dt);
 
     // Get current "now" time for live mode (use selected_timestamp as base, advancing in real-time)
-    let now = state
+    let _now = state
         .playback_state
         .selected_timestamp
         .unwrap_or(1714564800.0);
 
-    // Live mode state machine - automatic transitions for testing/demo
+    // When live mode is active, playback position tracks real time exactly (1:1)
     if state.live_mode_state.is_active() {
-        let elapsed = state.live_mode_state.phase_elapsed_secs(now);
-
-        match state.live_mode_state.phase {
-            LivePhase::AcquiringLock => {
-                // After 5 seconds, transition to Streaming
-                if elapsed >= 5.0 {
-                    state.live_mode_state.start_streaming(now);
-                }
-            }
-            LivePhase::Streaming => {
-                // After 3 seconds of streaming, transition to WaitingForChunk
-                if elapsed >= 3.0 {
-                    state.live_mode_state.wait_for_next_chunk(now);
-                }
-            }
-            LivePhase::WaitingForChunk => {
-                // When countdown expires, transition back to Streaming
-                if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now) {
-                    if remaining <= 0.0 {
-                        state.live_mode_state.start_streaming(now);
-                    }
-                }
-            }
-            _ => {}
-        }
-
-        // When live, playback position tracks real time exactly (1:1)
         // Advance by real dt, not playback speed
         if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
             *ts += dt as f64;
@@ -817,13 +791,9 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
             .on_hover_text("Start live streaming")
             .clicked()
         {
-            // Snap to actual current time when entering live mode
-            let now = current_timestamp_secs();
-            state.playback_state.selected_timestamp = Some(now);
-            state.live_mode_state.start(now);
-            state.playback_state.playing = true;
+            // Signal main loop to start live mode
+            state.start_live_requested = true;
             state.playback_state.speed = PlaybackSpeed::Realtime;
-            state.status_message = "Live mode started".to_string();
         }
     }
 

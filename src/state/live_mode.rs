@@ -3,6 +3,8 @@
 //! This module handles the state machine for real-time streaming mode,
 //! including phase tracking, animation state, and exit conditions.
 
+use std::time::Duration;
+
 /// Live mode phase - current state in the streaming state machine.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LivePhase {
@@ -190,6 +192,7 @@ impl LiveModeState {
     }
 
     /// Transition to WaitingForChunk phase with expected next chunk time.
+    #[allow(dead_code)] // Used by realtime streaming integration
     pub fn wait_for_next_chunk(&mut self, now: f64) {
         self.phase = LivePhase::WaitingForChunk;
         self.phase_started_at = Some(now);
@@ -263,5 +266,48 @@ impl LiveModeState {
                 .clone()
                 .unwrap_or_else(|| "Unknown error".to_string()),
         }
+    }
+
+    /// Handle a realtime streaming result and update state accordingly.
+    ///
+    /// This is the main integration point between the RealtimeChannel and
+    /// the live mode state machine.
+    pub fn handle_realtime_chunk(
+        &mut self,
+        chunks_in_volume: u32,
+        time_until_next: Option<Duration>,
+        is_volume_end: bool,
+        now: f64,
+    ) {
+        self.chunks_received = chunks_in_volume;
+
+        if is_volume_end {
+            // Volume complete - transition to Streaming briefly
+            self.phase = LivePhase::Streaming;
+            self.phase_started_at = Some(now);
+        } else if let Some(duration) = time_until_next {
+            // Waiting for next chunk
+            self.phase = LivePhase::WaitingForChunk;
+            self.phase_started_at = Some(now);
+            self.next_chunk_expected_at = Some(now + duration.as_secs_f64());
+            self.chunk_interval_secs = duration.as_secs_f64();
+        } else {
+            // Actively receiving
+            self.phase = LivePhase::Streaming;
+            self.phase_started_at = Some(now);
+        }
+    }
+
+    /// Handle streaming started event.
+    pub fn handle_streaming_started(&mut self, now: f64) {
+        if self.phase == LivePhase::AcquiringLock {
+            self.start_streaming(now);
+        }
+    }
+
+    /// Handle volume complete event.
+    pub fn handle_volume_complete(&mut self, now: f64) {
+        self.phase = LivePhase::Streaming;
+        self.phase_started_at = Some(now);
     }
 }

@@ -58,13 +58,13 @@ impl NetworkStats {
     }
 
     /// Record start of a network request.
-    fn request_started(&self) {
+    pub fn request_started(&self) {
         *self.active_requests.borrow_mut() += 1;
         *self.total_requests.borrow_mut() += 1;
     }
 
     /// Record completion of a network request.
-    fn request_completed(&self, bytes: u64) {
+    pub fn request_completed(&self, bytes: u64) {
         let mut active = self.active_requests.borrow_mut();
         if *active > 0 {
             *active -= 1;

@@ -20,7 +20,8 @@ geojson = "0.24"
 geo-types = "0.7"
 shapefile = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["std", "wasmbind"] }
-nexrad = { version = "1.0.0-rc.2", default-features = false, features = ["model", "decode", "data", "serde", "render"] }
+nexrad = { version = "1.0.0-rc.3", default-features = false, features = ["model", "decode", "data", "serde", "render", "wasm"] }
+nexrad-data = "1.0.0-rc.4"  # Direct dependency for latest ChunkIterator fixes
 piet-common = "0.8"
 
 # Native-specific dependencies

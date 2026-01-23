@@ -80,6 +80,10 @@ pub struct AppState {
 
     /// State for the datetime picker popup.
     pub datetime_picker: DateTimePickerState,
+
+    /// Flag to signal that live mode should be started.
+    /// Set by UI, handled in main update loop.
+    pub start_live_requested: bool,
 }
 
 /// State for the datetime jump picker popup.

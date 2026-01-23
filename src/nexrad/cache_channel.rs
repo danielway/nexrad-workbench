@@ -195,3 +195,118 @@ impl Default for CacheLoadChannel {
         Self::new()
     }
 }
+
+/// Result of loading a single scan from cache (for scrubbing).
+#[derive(Debug, Clone)]
+pub enum ScrubLoadResult {
+    /// Successfully loaded scan data
+    Success { timestamp: i64, data: Vec<u8> },
+    /// Scan not found in cache
+    NotFound { timestamp: i64 },
+    /// Load failed with an error
+    Error(String),
+}
+
+/// Channel for loading individual scans from cache on-demand (for scrubbing).
+///
+/// This is separate from CacheLoadChannel to allow concurrent scrubbing
+/// while timeline metadata is being loaded.
+pub struct ScrubLoadChannel {
+    /// Receiver for completed scan loads
+    receiver: Rc<RefCell<Option<ScrubLoadResult>>>,
+    /// Flag indicating a load is in progress
+    loading: Rc<RefCell<bool>>,
+    /// Timestamp of the scan currently being loaded (to avoid duplicate requests)
+    pending_timestamp: Rc<RefCell<Option<i64>>>,
+}
+
+impl ScrubLoadChannel {
+    /// Creates a new scrub load channel.
+    pub fn new() -> Self {
+        Self {
+            receiver: Rc::new(RefCell::new(None)),
+            loading: Rc::new(RefCell::new(false)),
+            pending_timestamp: Rc::new(RefCell::new(None)),
+        }
+    }
+
+    /// Returns true if a load is currently in progress.
+    pub fn is_loading(&self) -> bool {
+        *self.loading.borrow()
+    }
+
+    /// Returns the timestamp of the scan being loaded, if any.
+    pub fn pending_timestamp(&self) -> Option<i64> {
+        *self.pending_timestamp.borrow()
+    }
+
+    /// Load a scan from cache by site ID and timestamp.
+    #[cfg(target_arch = "wasm32")]
+    pub fn load_scan(&self, ctx: Context, cache: NexradCache, site_id: String, timestamp: i64) {
+        // Don't start if already loading this timestamp
+        if let Some(pending) = *self.pending_timestamp.borrow() {
+            if pending == timestamp {
+                return;
+            }
+        }
+
+        // Don't start if another load is in progress (wait for it to complete)
+        if *self.loading.borrow() {
+            return;
+        }
+
+        *self.loading.borrow_mut() = true;
+        *self.pending_timestamp.borrow_mut() = Some(timestamp);
+
+        let receiver = self.receiver.clone();
+        let loading = self.loading.clone();
+        let pending = self.pending_timestamp.clone();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            use super::types::ScanKey;
+
+            let key = ScanKey::new(&site_id, timestamp);
+
+            let result = match cache.get(&key).await {
+                Ok(Some(cached)) => {
+                    log::debug!("Scrub load: cache hit for {}", timestamp);
+                    ScrubLoadResult::Success {
+                        timestamp,
+                        data: cached.data,
+                    }
+                }
+                Ok(None) => {
+                    log::debug!("Scrub load: cache miss for {}", timestamp);
+                    ScrubLoadResult::NotFound { timestamp }
+                }
+                Err(e) => {
+                    log::error!("Scrub load failed: {}", e);
+                    ScrubLoadResult::Error(e.to_string())
+                }
+            };
+
+            *receiver.borrow_mut() = Some(result);
+            *loading.borrow_mut() = false;
+            *pending.borrow_mut() = None;
+
+            ctx.request_repaint();
+        });
+    }
+
+    /// Non-blocking receive for scan load results.
+    pub fn try_recv(&self) -> Option<ScrubLoadResult> {
+        self.receiver.borrow_mut().take()
+    }
+
+    // Native stubs
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn load_scan(&self, _ctx: Context, _cache: NexradCache, _site_id: String, _timestamp: i64) {
+        // No-op on native
+    }
+}
+
+impl Default for ScrubLoadChannel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
