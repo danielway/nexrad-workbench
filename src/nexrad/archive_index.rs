@@ -110,7 +110,8 @@ impl ArchiveListing {
 
 /// In-memory cache for archive listings.
 ///
-/// Does NOT cache listings for today's date since archives may still be updating.
+/// Caches all listings for the current session. Today's listings are stored
+/// in memory but may become stale as new files are added to the archive.
 #[derive(Default)]
 pub struct ArchiveIndex {
     listings: HashMap<ArchiveIndexKey, ArchiveListing>,
@@ -129,22 +130,25 @@ impl ArchiveIndex {
 
     /// Store a listing in the cache.
     ///
-    /// Will NOT cache if the date is today (archives still updating).
+    /// Today's listings are cached in memory for the current session.
+    /// They may become stale as new files are added, but avoid repeated
+    /// API calls during the same download operation.
     pub fn insert(&mut self, site_id: &str, date: NaiveDate, listing: ArchiveListing) {
-        // Don't cache today's listings
         let today = chrono::Utc::now().date_naive();
-        if date == today {
-            log::debug!(
-                "Not caching archive listing for today's date: {}/{}",
-                site_id,
-                date
-            );
-            return;
-        }
+        let is_today = date == today;
 
         let key = ArchiveIndexKey::new(site_id, date);
         self.listings.insert(key, listing);
-        log::debug!("Cached archive listing for {}/{}", site_id, date);
+
+        if is_today {
+            log::debug!(
+                "Cached archive listing for today's date: {}/{} (may become stale)",
+                site_id,
+                date
+            );
+        } else {
+            log::debug!("Cached archive listing for {}/{}", site_id, date);
+        }
     }
 
     /// Check if a listing is cached (and valid) for this site/date.
