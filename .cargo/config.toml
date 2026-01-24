@@ -1,0 +1,4 @@
+# Default to wasm32 target for IDE analysis and builds.
+# This ensures rust-analyzer analyzes for wasm32, making web code visible.
+[build]
+target = "wasm32-unknown-unknown"

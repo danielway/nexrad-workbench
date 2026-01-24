@@ -171,11 +171,24 @@ impl KeyValueStore for IndexedDbStore {
     }
 }
 
+/// Deletes the database if it exists.
+async fn delete_database(
+    idb_factory: &web_sys::IdbFactory,
+    name: &str,
+) -> Result<(), StorageError> {
+    let delete_request = idb_factory
+        .delete_database(name)
+        .map_err(|e| StorageError::DatabaseOpenFailed(format!("{:?}", e)))?;
+
+    wait_for_request(&delete_request).await?;
+    log::info!("Deleted old database: {}", name);
+    Ok(())
+}
+
 /// Opens an IndexedDB database with the given configuration.
 ///
-/// During database upgrade, ALL required object stores are created to ensure
-/// the database schema is complete. This allows multiple IndexedDbStore instances
-/// to share the same database with different object stores.
+/// If the database exists with an older version, it is deleted entirely
+/// and recreated fresh. This simplifies the code by avoiding migrations.
 async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageError> {
     let window = web_sys::window()
         .ok_or_else(|| StorageError::DatabaseOpenFailed("No window object".to_string()))?;
@@ -185,11 +198,33 @@ async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageErr
         .map_err(|e| StorageError::DatabaseOpenFailed(format!("{:?}", e)))?
         .ok_or_else(|| StorageError::DatabaseOpenFailed("IndexedDB not available".to_string()))?;
 
-    // Use the constant DATABASE_VERSION to ensure all stores open with the same version
-    let version = DATABASE_VERSION;
+    // First, check if the database exists and what version it is.
+    // Open without specifying a version to get the current version.
+    let probe_request = idb_factory
+        .open(&config.database_name)
+        .map_err(|e| StorageError::DatabaseOpenFailed(format!("{:?}", e)))?;
 
+    let probe_result = wait_for_request(&probe_request).await?;
+    let probe_db: IdbDatabase = probe_result.dyn_into().map_err(|_| {
+        StorageError::DatabaseOpenFailed("Failed to cast to IdbDatabase".to_string())
+    })?;
+
+    let existing_version = probe_db.version() as u32;
+    probe_db.close();
+
+    // If the existing database is older than our current version, delete it entirely
+    if existing_version > 0 && existing_version < DATABASE_VERSION {
+        log::warn!(
+            "Database version {} is older than current version {}, deleting and starting fresh",
+            existing_version,
+            DATABASE_VERSION
+        );
+        delete_database(&idb_factory, &config.database_name).await?;
+    }
+
+    // Now open with the correct version
     let open_request = idb_factory
-        .open_with_u32(&config.database_name, version)
+        .open_with_u32(&config.database_name, DATABASE_VERSION)
         .map_err(|e| StorageError::DatabaseOpenFailed(format!("{:?}", e)))?;
 
     // Set up upgrade handler to create ALL required object stores
@@ -202,11 +237,10 @@ async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageErr
 
         let db: IdbDatabase = request.result().unwrap().dyn_into().unwrap();
 
-        // Create all required object stores if they don't exist
+        // Create all required object stores
         for store_name in REQUIRED_STORES {
             if !db.object_store_names().contains(store_name) {
                 let params = web_sys::IdbObjectStoreParameters::new();
-                // We're using explicit keys, so no keyPath needed
                 db.create_object_store_with_optional_parameters(store_name, &params)
                     .expect("Failed to create object store");
                 log::info!("Created IndexedDB object store: {}", store_name);
@@ -215,9 +249,8 @@ async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageErr
     }) as Box<dyn FnMut(_)>);
 
     open_request.set_onupgradeneeded(Some(onupgradeneeded.as_ref().unchecked_ref()));
-    onupgradeneeded.forget(); // Prevent closure from being dropped
+    onupgradeneeded.forget();
 
-    // Wait for the database to open
     let db_result = wait_for_request(&open_request).await?;
 
     let db: IdbDatabase = db_result.dyn_into().map_err(|_| {
@@ -227,7 +260,7 @@ async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageErr
     log::info!(
         "Opened IndexedDB database: {} v{}",
         config.database_name,
-        version
+        DATABASE_VERSION
     );
 
     Ok(db)

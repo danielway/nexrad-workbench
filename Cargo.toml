@@ -31,7 +31,7 @@ web-time = "1.1"  # Cross-platform timing (works on WASM and native)
 env_logger = "0.11"
 pollster = "0.4"  # Lightweight async executor for native
 
-# Web-specific dependencies
+# Web-specific dependencies (only on wasm32 target)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

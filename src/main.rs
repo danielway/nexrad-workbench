@@ -188,7 +188,7 @@ fn extract_sweep_timing(volume: &Volume) -> Vec<TimelineSweep> {
 
 impl WorkbenchApp {
     /// Creates a new WorkbenchApp instance.
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let mut geo_layers = geo::GeoLayerSet::new();
 
         // Load embedded geographic data
@@ -226,10 +226,6 @@ impl WorkbenchApp {
         let initial_site_id = state.viz_state.site_id.clone();
         let nexrad_cache = nexrad::NexradCache::new();
         let cache_load_channel = nexrad::CacheLoadChannel::new();
-
-        // Run migration to create metadata for any existing cached scans
-        cache_load_channel.run_migration(cc.egui_ctx.clone(), nexrad_cache.clone());
-
         let download_channel = nexrad::DownloadChannel::new();
         let realtime_channel = nexrad::RealtimeChannel::with_stats(download_channel.stats());
 

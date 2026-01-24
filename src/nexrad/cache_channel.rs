@@ -108,31 +108,6 @@ impl CacheLoadChannel {
         self.receiver.borrow_mut().take()
     }
 
-    /// Initiates migration of existing scans to the metadata store.
-    ///
-    /// Call this once on app startup to ensure metadata exists for all cached scans.
-    #[cfg(target_arch = "wasm32")]
-    pub fn run_migration(&self, ctx: Context, cache: NexradCache) {
-        let loading = self.loading.clone();
-
-        // Don't block on migration, just run it in background
-        wasm_bindgen_futures::spawn_local(async move {
-            match cache.migrate_existing_scans().await {
-                Ok(count) => {
-                    if count > 0 {
-                        log::info!("Migration complete: {} scans migrated", count);
-                        ctx.request_repaint();
-                    }
-                }
-                Err(e) => {
-                    log::error!("Migration failed: {}", e);
-                }
-            }
-            // Note: We don't set loading = false here since migration runs independently
-            drop(loading);
-        });
-    }
-
     /// Clears all cached data.
     ///
     /// After clearing, the cache size will be 0 and timeline will be empty.
@@ -176,11 +151,6 @@ impl CacheLoadChannel {
     // Native stubs
     #[cfg(not(target_arch = "wasm32"))]
     pub fn load_site_timeline(&self, _ctx: Context, _cache: NexradCache, _site_id: String) {
-        // No-op on native
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn run_migration(&self, _ctx: Context, _cache: NexradCache) {
         // No-op on native
     }
 

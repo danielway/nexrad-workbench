@@ -164,46 +164,10 @@ impl NexradCache {
 
     /// Clears all cached scans and metadata.
     #[cfg(target_arch = "wasm32")]
-    #[allow(dead_code)]
     pub async fn clear(&self) -> Result<(), StorageError> {
         self.scan_store.clear().await?;
         self.metadata_store.clear().await?;
         Ok(())
-    }
-
-    /// Migrates existing scans that don't have metadata entries.
-    ///
-    /// Call this on startup to backfill metadata for scans cached before
-    /// the metadata store was added.
-    #[cfg(target_arch = "wasm32")]
-    pub async fn migrate_existing_scans(&self) -> Result<usize, StorageError> {
-        use std::collections::HashSet;
-
-        let scan_keys: HashSet<String> =
-            self.scan_store.get_all_keys().await?.into_iter().collect();
-        let metadata_keys: HashSet<String> = self
-            .metadata_store
-            .get_all_keys()
-            .await?
-            .into_iter()
-            .collect();
-
-        let missing_keys: Vec<_> = scan_keys.difference(&metadata_keys).collect();
-        let count = missing_keys.len();
-
-        for key in missing_keys {
-            if let Some(scan) = self.scan_store.get::<CachedScan>(key).await? {
-                let metadata = ScanMetadata::from_cached_scan(&scan);
-                self.metadata_store.put(key, &metadata).await?;
-                log::info!("Migrated metadata for scan: {}", key);
-            }
-        }
-
-        if count > 0 {
-            log::info!("Migrated {} scan(s) to metadata store", count);
-        }
-
-        Ok(count)
     }
 
     // Native stubs - these do nothing on native builds
@@ -253,11 +217,6 @@ impl NexradCache {
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn clear(&self) -> Result<(), StorageError> {
         Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn migrate_existing_scans(&self) -> Result<usize, StorageError> {
-        Ok(0)
     }
 }
 
