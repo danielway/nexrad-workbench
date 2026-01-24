@@ -1,13 +1,11 @@
 //! NEXRAD rendering using the nexrad-render crate.
 //!
 //! This module provides high-performance radar rendering using the nexrad-render
-//! crate with piet-common backend. On native builds this uses Cairo, on WASM it
-//! uses piet-web. The rendered image is cached as a texture for efficient display.
+//! crate. The rendered image is cached as a texture for efficient display.
 
 use eframe::egui::ColorImage;
 use nexrad::prelude::{Radial, Volume};
-use nexrad::render::{get_nws_reflectivity_scale, render_radials, Product};
-use piet_common::Device;
+use nexrad_render::{get_nws_reflectivity_scale, render_radials, Product, RenderOptions};
 
 /// Renders a sweep from a NEXRAD volume to an egui ColorImage.
 ///
@@ -43,41 +41,32 @@ pub fn render_sweep_to_image(
         return Err("No radials in sweep".to_string());
     }
 
-    // Create piet device for rendering
-    let mut device = Device::new().map_err(|e| format!("Failed to create render device: {}", e))?;
-
     // Render using nexrad-render
-    let mut target = render_radials(
-        &mut device,
+    let options = RenderOptions::new(dimensions.0, dimensions.1).transparent();
+    let image = render_radials(
         radials,
         Product::Reflectivity,
         &get_nws_reflectivity_scale(),
-        dimensions,
+        &options,
     )
     .map_err(|e| format!("Failed to render radials: {}", e))?;
 
-    // Extract pixel data from the render target
-    let (width, height) = dimensions;
-    let buffer_size = width * height * 4; // RGBA = 4 bytes per pixel
-    let mut buffer = vec![0u8; buffer_size];
+    // Convert RgbaImage to egui ColorImage
+    let (width, height) = image.dimensions();
+    let pixels = image.into_raw();
 
-    target
-        .copy_raw_pixels(piet_common::ImageFormat::RgbaPremul, &mut buffer)
-        .map_err(|e| format!("Failed to copy pixel data: {}", e))?;
+    Ok(ColorImage::from_rgba_unmultiplied(
+        [width as usize, height as usize],
+        &pixels,
+    ))
+}
 
-    // Convert from premultiplied alpha to straight alpha for egui
-    // egui expects non-premultiplied RGBA
-    for pixel in buffer.chunks_exact_mut(4) {
-        let a = pixel[3] as f32 / 255.0;
-        if a > 0.0 {
-            pixel[0] = (pixel[0] as f32 / a).min(255.0) as u8;
-            pixel[1] = (pixel[1] as f32 / a).min(255.0) as u8;
-            pixel[2] = (pixel[2] as f32 / a).min(255.0) as u8;
-        }
-    }
-
-    // Create egui ColorImage from the RGBA buffer
-    Ok(ColorImage::from_rgba_unmultiplied([width, height], &buffer))
+/// Result of rendering radials, including timing information.
+pub struct RenderResult {
+    /// The rendered image
+    pub image: ColorImage,
+    /// Time taken to render in milliseconds
+    pub render_time_ms: f64,
 }
 
 /// Renders a collection of radials to an egui ColorImage.
@@ -95,11 +84,13 @@ pub fn render_sweep_to_image(
 /// * `dimensions` - Output image dimensions (width, height)
 ///
 /// # Returns
-/// A `ColorImage` ready to be loaded as an egui texture, or an error message.
+/// A `RenderResult` containing the image and timing info, or an error message.
 pub fn render_radials_to_image(
     radials: &[&Radial],
     dimensions: (usize, usize),
-) -> Result<ColorImage, String> {
+) -> Result<RenderResult, String> {
+    let start = web_time::Instant::now();
+
     if radials.is_empty() {
         return Err("No radials to render".to_string());
     }
@@ -107,41 +98,27 @@ pub fn render_radials_to_image(
     // Clone radials into a contiguous Vec (required by render_radials)
     let owned_radials: Vec<Radial> = radials.iter().map(|r| (*r).clone()).collect();
 
-    // Create piet device for rendering
-    let mut device = Device::new().map_err(|e| format!("Failed to create render device: {}", e))?;
-
     // Render using nexrad-render
-    let mut target = render_radials(
-        &mut device,
+    let options = RenderOptions::new(dimensions.0, dimensions.1).transparent();
+    let image = render_radials(
         &owned_radials,
         Product::Reflectivity,
         &get_nws_reflectivity_scale(),
-        dimensions,
+        &options,
     )
     .map_err(|e| format!("Failed to render radials: {}", e))?;
 
-    // Extract pixel data from the render target
-    let (width, height) = dimensions;
-    let buffer_size = width * height * 4; // RGBA = 4 bytes per pixel
-    let mut buffer = vec![0u8; buffer_size];
+    // Convert RgbaImage to egui ColorImage
+    let (width, height) = image.dimensions();
+    let pixels = image.into_raw();
+    let egui_image = ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &pixels);
 
-    target
-        .copy_raw_pixels(piet_common::ImageFormat::RgbaPremul, &mut buffer)
-        .map_err(|e| format!("Failed to copy pixel data: {}", e))?;
+    let render_time_ms = start.elapsed().as_secs_f64() * 1000.0;
 
-    // Convert from premultiplied alpha to straight alpha for egui
-    // egui expects non-premultiplied RGBA
-    for pixel in buffer.chunks_exact_mut(4) {
-        let a = pixel[3] as f32 / 255.0;
-        if a > 0.0 {
-            pixel[0] = (pixel[0] as f32 / a).min(255.0) as u8;
-            pixel[1] = (pixel[1] as f32 / a).min(255.0) as u8;
-            pixel[2] = (pixel[2] as f32 / a).min(255.0) as u8;
-        }
-    }
-
-    // Create egui ColorImage from the RGBA buffer
-    Ok(ColorImage::from_rgba_unmultiplied([width, height], &buffer))
+    Ok(RenderResult {
+        image: egui_image,
+        render_time_ms,
+    })
 }
 
 /// Returns the standard NEXRAD coverage range in km.

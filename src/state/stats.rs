@@ -25,6 +25,10 @@ pub struct SessionStats {
 
     /// Median decoding time in milliseconds.
     pub median_decode_time_ms: Option<f64>,
+
+    /// Running average of radar render time in milliseconds.
+    /// Uses exponential moving average for smooth updates.
+    pub avg_render_time_ms: Option<f64>,
 }
 
 impl SessionStats {
@@ -44,6 +48,7 @@ impl SessionStats {
             median_chunk_latency_ms: Some(142.5),
             median_decompression_time_ms: Some(8.3),
             median_decode_time_ms: Some(23.7),
+            avg_render_time_ms: Some(45.0),
         }
     }
 
@@ -52,6 +57,16 @@ impl SessionStats {
         self.session_request_count = network_stats.total_count();
         self.session_transferred_bytes = network_stats.bytes_transferred();
         self.active_request_count = network_stats.active_count();
+    }
+
+    /// Record a render time sample, updating the running average.
+    /// Uses exponential moving average with alpha=0.2 for smooth updates.
+    pub fn record_render_time(&mut self, time_ms: f64) {
+        const ALPHA: f64 = 0.2;
+        self.avg_render_time_ms = Some(match self.avg_render_time_ms {
+            Some(avg) => avg * (1.0 - ALPHA) + time_ms * ALPHA,
+            None => time_ms,
+        });
     }
 
     /// Format cache size for display (e.g., "150.2 MB").
@@ -76,6 +91,9 @@ impl SessionStats {
         }
         if let Some(decode) = self.median_decode_time_ms {
             parts.push(format!("decode: {:.1}ms", decode));
+        }
+        if let Some(render) = self.avg_render_time_ms {
+            parts.push(format!("render: {:.0}ms", render));
         }
 
         if parts.is_empty() {

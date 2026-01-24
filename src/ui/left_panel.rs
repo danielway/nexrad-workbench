@@ -34,10 +34,12 @@ fn find_radar_position_at_timestamp(
     let render_sweep =
         RenderSweep::from_volume_ring(volume_ring, DEFAULT_TARGET_ELEVATION, playback_timestamp_ms);
 
-    render_sweep.most_recent_radial().map(|radial| RadarPosition {
-        azimuth: radial.azimuth_angle_degrees(),
-        elevation: radial.elevation_angle_degrees(),
-    })
+    render_sweep
+        .most_recent_radial()
+        .map(|radial| RadarPosition {
+            azimuth: radial.azimuth_angle_degrees(),
+            elevation: radial.elevation_angle_degrees(),
+        })
 }
 
 /// State queried from the radar timeline at the current timestamp

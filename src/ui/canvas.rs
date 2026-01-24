@@ -78,12 +78,15 @@ pub fn render_canvas_with_geo(
                 .unwrap_or(i64::MAX);
 
             // Build the dynamic sweep from all volumes in the ring
-            let render_sweep =
-                RenderSweep::from_volume_ring(volume_ring, DEFAULT_TARGET_ELEVATION, playback_ts_ms);
+            let render_sweep = RenderSweep::from_volume_ring(
+                volume_ring,
+                DEFAULT_TARGET_ELEVATION,
+                playback_ts_ms,
+            );
 
             // Render if we have radials
             if !render_sweep.is_empty() {
-                render_dynamic_sweep(
+                if let Some(render_time_ms) = render_dynamic_sweep(
                     ctx,
                     &painter,
                     &projection,
@@ -92,14 +95,19 @@ pub fn render_canvas_with_geo(
                     &rect,
                     state.viz_state.center_lat,
                     state.viz_state.center_lon,
-                );
+                ) {
+                    // Record render time in session stats
+                    state.session_stats.record_render_time(render_time_ms);
+                }
             }
 
             // Get radar position from most recent radial in the sweep
-            render_sweep.most_recent_radial().map(|radial| RadarPosition {
-                azimuth: radial.azimuth_angle_degrees(),
-                elevation: radial.elevation_angle_degrees(),
-            })
+            render_sweep
+                .most_recent_radial()
+                .map(|radial| RadarPosition {
+                    azimuth: radial.azimuth_angle_degrees(),
+                    elevation: radial.elevation_angle_degrees(),
+                })
         } else {
             None
         };
@@ -138,6 +146,8 @@ pub fn render_canvas_with_geo(
 /// 2. If not, renders the radials to an image using render_radials_to_image
 /// 3. Uploads the image as an egui texture
 /// 4. Draws the texture as an image overlay on the map
+///
+/// Returns the render time in milliseconds if a render occurred, None if cache was used.
 #[allow(clippy::too_many_arguments)]
 fn render_dynamic_sweep(
     ctx: &egui::Context,
@@ -148,7 +158,7 @@ fn render_dynamic_sweep(
     rect: &Rect,
     radar_lat: f64,
     radar_lon: f64,
-) {
+) -> Option<f64> {
     // Use a fixed render size for the texture
     let render_size: (usize, usize) = (800, 800);
 
@@ -157,25 +167,22 @@ fn render_dynamic_sweep(
     let cache_key = RadarCacheKey::for_dynamic_sweep(content_signature, 0, render_size);
 
     // Check if we need to re-render
-    if !cache.is_valid(&cache_key) {
+    let render_time_ms = if !cache.is_valid(&cache_key) {
         let radials = render_sweep.radials();
-        log::debug!(
-            "Rendering dynamic sweep with {} radials (signature: {})",
-            radials.len(),
-            content_signature
-        );
 
         match render_radials_to_image(&radials, render_size) {
-            Ok(image) => {
-                cache.update(ctx, cache_key, image);
-                log::debug!("Dynamic sweep texture updated successfully");
+            Ok(result) => {
+                cache.update(ctx, cache_key, result.image);
+                Some(result.render_time_ms)
             }
             Err(e) => {
                 log::error!("Failed to render dynamic sweep: {}", e);
-                return;
+                return None;
             }
         }
-    }
+    } else {
+        None
+    };
 
     // Draw the cached texture
     if let Some(texture) = cache.texture() {
@@ -224,6 +231,8 @@ fn render_dynamic_sweep(
             painter.image(texture.id(), clipped_rect, clipped_uv, Color32::WHITE);
         }
     }
+
+    render_time_ms
 }
 
 /// Filter geo layers based on visibility settings.

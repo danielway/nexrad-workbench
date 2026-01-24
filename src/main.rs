@@ -519,10 +519,7 @@ impl WorkbenchApp {
                             .radar_timeline
                             .update_scan_sweeps(timestamp, sweep_timing)
                         {
-                            log::debug!(
-                                "Live: updated timeline with {} sweeps",
-                                sweep_count
-                            );
+                            log::debug!("Live: updated timeline with {} sweeps", sweep_count);
                         }
 
                         self.volume_ring.insert(timestamp * 1000, volume);

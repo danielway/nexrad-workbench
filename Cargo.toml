@@ -22,7 +22,9 @@ shapefile = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["std", "wasmbind"] }
 nexrad = { version = "1.0.0-rc.3", default-features = false, features = ["model", "decode", "data", "serde", "render", "wasm"] }
 nexrad-data = "1.0.0-rc.4"  # Direct dependency for latest ChunkIterator fixes
+nexrad-render = "1.0.0-rc.2"  # Direct dependency for faster render_radials API
 piet-common = "0.8"
+web-time = "1.1"  # Cross-platform timing (works on WASM and native)
 
 # Native-specific dependencies
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
