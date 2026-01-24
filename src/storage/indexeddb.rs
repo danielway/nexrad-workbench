@@ -13,9 +13,11 @@ use web_sys::{IdbDatabase, IdbObjectStore, IdbRequest, IdbTransactionMode};
 
 /// All object stores that should exist in the nexrad-workbench database.
 /// These are created during database upgrade.
-const REQUIRED_STORES: &[&str] = &["nexrad-scans", "scan-metadata", "file-cache"];
+/// Note: v3 stores (nexrad-scans, scan-metadata) have been removed in favor of v4 record-based storage.
+const REQUIRED_STORES: &[&str] = &["file-cache"];
 
 /// Current database schema version. Increment when adding new stores.
+/// v4 stores are managed by data/indexeddb_v4.rs with its own version tracking.
 pub const DATABASE_VERSION: u32 = 3;
 
 /// IndexedDB-based key-value store.

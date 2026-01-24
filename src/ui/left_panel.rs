@@ -1,8 +1,8 @@
 //! Left panel UI: file upload controls and radar operations visualization.
 
-use crate::data::{all_sites_sorted, get_site};
+use crate::data::{all_sites_sorted, get_site, DataFacade};
 use crate::file_ops::FilePickerChannel;
-use crate::nexrad::{DownloadChannel, NexradCache, RenderSweep, VolumeRing};
+use crate::nexrad::{DownloadChannel, RenderSweep, VolumeRing};
 use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
 use chrono::Datelike;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
@@ -63,7 +63,7 @@ pub fn render_left_panel(
     state: &mut AppState,
     file_picker: &FilePickerChannel,
     download_channel: &DownloadChannel,
-    nexrad_cache: &NexradCache,
+    data_facade: &DataFacade,
     volume_ring: &VolumeRing,
 ) {
     egui::SidePanel::left("left_panel")
@@ -77,7 +77,7 @@ pub fn render_left_panel(
                 ui.add_space(15.0);
                 ui.separator();
                 ui.add_space(10.0);
-                render_aws_archive_section(ui, ctx, state, download_channel, nexrad_cache);
+                render_aws_archive_section(ui, ctx, state, download_channel, data_facade);
                 ui.add_space(15.0);
                 ui.separator();
                 ui.add_space(10.0);
@@ -91,7 +91,7 @@ fn render_aws_archive_section(
     ctx: &egui::Context,
     state: &mut AppState,
     download_channel: &DownloadChannel,
-    nexrad_cache: &NexradCache,
+    data_facade: &DataFacade,
 ) {
     ui.heading("AWS Archive");
     ui.separator();
@@ -148,7 +148,7 @@ fn render_aws_archive_section(
                 ctx.clone(),
                 state.viz_state.site_id.clone(),
                 date,
-                nexrad_cache.clone(),
+                data_facade.clone(),
             );
         }
     });

@@ -2,12 +2,11 @@
 //!
 //! This module provides functionality for:
 //! - Downloading archival NEXRAD data from AWS
-//! - Caching downloaded data in IndexedDB (with separate metadata store for fast queries)
+//! - Caching downloaded data in IndexedDB via v4 record-based storage
 //! - High-performance radar rendering via nexrad-render with texture caching
 //! - Dynamic sweep rendering across multiple volumes
 
 mod archive_index;
-mod cache;
 mod cache_channel;
 mod download;
 mod realtime;
@@ -18,7 +17,6 @@ mod types;
 mod volume_ring;
 
 pub use archive_index::ArchiveIndex;
-pub use cache::NexradCache;
 pub use cache_channel::{CacheLoadChannel, CacheLoadResult, ScrubLoadChannel, ScrubLoadResult};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use realtime::{RealtimeChannel, RealtimeResult};

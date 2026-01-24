@@ -107,9 +107,6 @@ pub struct WorkbenchApp {
     /// Geographic layer data for map overlays
     geo_layers: geo::GeoLayerSet,
 
-    /// NEXRAD scan cache for AWS downloads (legacy v3)
-    nexrad_cache: nexrad::NexradCache,
-
     /// Record-based data facade (v4 cache)
     data_facade: DataFacade,
 
@@ -228,7 +225,6 @@ impl WorkbenchApp {
 
         let state = AppState::new();
         let initial_site_id = state.viz_state.site_id.clone();
-        let nexrad_cache = nexrad::NexradCache::new();
         let data_facade = DataFacade::new();
         let cache_load_channel = nexrad::CacheLoadChannel::new();
         let download_channel = nexrad::DownloadChannel::new();
@@ -253,7 +249,6 @@ impl WorkbenchApp {
             #[cfg(target_arch = "wasm32")]
             file_cache: IndexedDbStore::new(StorageConfig::new("nexrad-workbench", "file-cache")),
             geo_layers,
-            nexrad_cache,
             data_facade,
             download_channel,
             cache_load_channel,
@@ -312,7 +307,6 @@ impl WorkbenchApp {
                     *next_date,
                     next_name.clone(),
                     *next_ts,
-                    self.nexrad_cache.clone(),
                     self.data_facade.clone(),
                 );
             } else {
@@ -435,7 +429,6 @@ impl WorkbenchApp {
             *date,
             file_name.clone(),
             *timestamp,
-            self.nexrad_cache.clone(),
             self.data_facade.clone(),
         );
     }
@@ -543,30 +536,17 @@ impl WorkbenchApp {
                         self.displayed_scan_timestamp = Some(timestamp);
                         self.radar_texture_cache.invalidate();
 
-                        // Cache the volume for later playback
+                        // Cache the volume for later playback (v4 only)
                         let site_id = self.state.viz_state.site_id.clone();
-                        let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
-                        let key = nexrad::ScanKey::new(&site_id, timestamp);
-                        let cached = nexrad::CachedScan::new(key, file_name, data.clone());
-
-                        let cache = self.nexrad_cache.clone();
                         let facade = self.data_facade.clone();
-                        let site_id_clone = site_id.clone();
                         let ctx_clone = ctx.clone();
                         #[cfg(target_arch = "wasm32")]
                         wasm_bindgen_futures::spawn_local(async move {
-                            // Store in legacy v3 cache
-                            if let Err(e) = cache.put(&cached).await {
-                                log::warn!("Failed to cache live volume: {}", e);
-                            } else {
-                                log::debug!("Cached live volume at timestamp {}", timestamp);
-                            }
-
-                            // Also store as records in v4 cache
-                            let file_name = format!("live_{}_{}.nexrad", site_id_clone, timestamp);
+                            // Store as records in v4 cache
+                            let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                             match data::process_archive_download(
                                 &facade,
-                                &site_id_clone,
+                                &site_id,
                                 &file_name,
                                 timestamp,
                                 &data,
@@ -625,7 +605,7 @@ impl eframe::App for WorkbenchApp {
         if self.state.clear_cache_requested && !self.cache_load_channel.is_loading() {
             self.state.clear_cache_requested = false;
             self.cache_load_channel
-                .clear_cache(ctx.clone(), self.nexrad_cache.clone());
+                .clear_cache(ctx.clone(), self.data_facade.clone());
         }
 
         // Check if timeline needs to be refreshed from cache
@@ -633,7 +613,7 @@ impl eframe::App for WorkbenchApp {
             self.state.timeline_needs_refresh = false;
             self.cache_load_channel.load_site_timeline(
                 ctx.clone(),
-                self.nexrad_cache.clone(),
+                self.data_facade.clone(),
                 self.state.viz_state.site_id.clone(),
             );
         }
@@ -912,7 +892,7 @@ impl eframe::App for WorkbenchApp {
                     );
                     self.scrub_load_channel.load_scan(
                         ctx.clone(),
-                        self.nexrad_cache.clone(),
+                        self.data_facade.clone(),
                         self.state.viz_state.site_id.clone(),
                         scan_ts,
                     );
@@ -935,7 +915,7 @@ impl eframe::App for WorkbenchApp {
             &mut self.state,
             &self.file_picker,
             &self.download_channel,
-            &self.nexrad_cache,
+            &self.data_facade,
             &self.volume_ring,
         );
         ui::render_right_panel(ctx, &mut self.state);

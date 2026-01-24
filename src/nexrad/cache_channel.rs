@@ -4,8 +4,8 @@
 //! from IndexedDB asynchronously. The UI can request a cache load and poll
 //! for results each frame.
 
-use super::cache::NexradCache;
 use super::types::ScanMetadata;
+use crate::data::{DataFacade, SiteId, UnixMillis};
 use eframe::egui::Context;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -55,7 +55,7 @@ impl CacheLoadChannel {
     /// If a load is already in progress, this call is ignored.
     /// Results can be retrieved via `try_recv()`.
     #[cfg(target_arch = "wasm32")]
-    pub fn load_site_timeline(&self, ctx: Context, cache: NexradCache, site_id: String) {
+    pub fn load_site_timeline(&self, ctx: Context, facade: DataFacade, site_id: String) {
         // Don't start a new load if one is in progress
         if *self.loading.borrow() {
             log::debug!("Cache load already in progress, ignoring request");
@@ -69,16 +69,39 @@ impl CacheLoadChannel {
         wasm_bindgen_futures::spawn_local(async move {
             log::info!("Loading cache metadata for site: {}", site_id);
 
-            let result = match cache.list_metadata_for_site(&site_id).await {
-                Ok(metadata) => {
+            // Query v4 scan index
+            let site = SiteId::new(&site_id);
+            let start = UnixMillis(0);
+            let end = UnixMillis::now();
+
+            let result = match facade.list_scans(&site, start, end).await {
+                Ok(scan_entries) => {
+                    // Convert ScanIndexEntry to ScanMetadata for UI compatibility
+                    let metadata: Vec<ScanMetadata> = scan_entries
+                        .iter()
+                        .map(|entry| {
+                            use super::types::ScanKey;
+                            ScanMetadata {
+                                key: ScanKey::new(
+                                    &entry.scan.site.0,
+                                    entry.scan.scan_start.as_secs(),
+                                ),
+                                file_name: entry.file_name.clone().unwrap_or_default(),
+                                file_size: entry.total_size_bytes,
+                                end_timestamp: None,
+                                vcp: None,
+                            }
+                        })
+                        .collect();
+
                     log::info!(
-                        "Loaded {} cached scan(s) for site {}",
+                        "Loaded {} cached scan(s) for site {} from v4 cache",
                         metadata.len(),
                         site_id
                     );
 
                     // Also calculate total cache size across all sites
-                    let total_cache_size = cache.total_cache_size().await.unwrap_or(0);
+                    let total_cache_size = facade.total_cache_size().await.unwrap_or(0);
                     log::info!("Total cache size: {} bytes", total_cache_size);
 
                     CacheLoadResult::Success {
@@ -89,7 +112,7 @@ impl CacheLoadChannel {
                 }
                 Err(e) => {
                     log::error!("Failed to load cache metadata: {}", e);
-                    CacheLoadResult::Error(e.to_string())
+                    CacheLoadResult::Error(e)
                 }
             };
 
@@ -112,7 +135,7 @@ impl CacheLoadChannel {
     ///
     /// After clearing, the cache size will be 0 and timeline will be empty.
     #[cfg(target_arch = "wasm32")]
-    pub fn clear_cache(&self, ctx: Context, cache: NexradCache) {
+    pub fn clear_cache(&self, ctx: Context, facade: DataFacade) {
         // Don't start if a load is in progress
         if *self.loading.borrow() {
             log::debug!("Cache operation in progress, ignoring clear request");
@@ -124,11 +147,11 @@ impl CacheLoadChannel {
         let loading = self.loading.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            log::info!("Clearing cache...");
+            log::info!("Clearing v4 cache...");
 
-            let result = match cache.clear().await {
+            let result = match facade.clear_all().await {
                 Ok(()) => {
-                    log::info!("Cache cleared successfully");
+                    log::info!("V4 cache cleared successfully");
                     CacheLoadResult::Success {
                         site_id: String::new(),
                         metadata: Vec::new(),
@@ -137,7 +160,7 @@ impl CacheLoadChannel {
                 }
                 Err(e) => {
                     log::error!("Failed to clear cache: {}", e);
-                    CacheLoadResult::Error(e.to_string())
+                    CacheLoadResult::Error(e)
                 }
             };
 
@@ -150,12 +173,12 @@ impl CacheLoadChannel {
 
     // Native stubs
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn load_site_timeline(&self, _ctx: Context, _cache: NexradCache, _site_id: String) {
+    pub fn load_site_timeline(&self, _ctx: Context, _facade: DataFacade, _site_id: String) {
         // No-op on native
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn clear_cache(&self, _ctx: Context, _cache: NexradCache) {
+    pub fn clear_cache(&self, _ctx: Context, _facade: DataFacade) {
         // No-op on native
     }
 }
@@ -212,7 +235,9 @@ impl ScrubLoadChannel {
 
     /// Load a scan from cache by site ID and timestamp.
     #[cfg(target_arch = "wasm32")]
-    pub fn load_scan(&self, ctx: Context, cache: NexradCache, site_id: String, timestamp: i64) {
+    pub fn load_scan(&self, ctx: Context, facade: DataFacade, site_id: String, timestamp: i64) {
+        use crate::data::{reassemble_records, ScanKey as DataScanKey};
+
         // Don't start if already loading this timestamp
         if let Some(pending) = *self.pending_timestamp.borrow() {
             if pending == timestamp {
@@ -233,25 +258,56 @@ impl ScrubLoadChannel {
         let pending = self.pending_timestamp.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            use super::types::ScanKey;
+            // Convert to v4 key format
+            let scan_key = DataScanKey::from_legacy(&site_id, timestamp);
 
-            let key = ScanKey::new(&site_id, timestamp);
+            // List all records for this scan
+            let result = match facade.cache().list_records_for_scan(&scan_key).await {
+                Ok(record_keys) => {
+                    if record_keys.is_empty() {
+                        log::debug!("Scrub load: cache miss for {} (no records)", timestamp);
+                        ScrubLoadResult::NotFound { timestamp }
+                    } else {
+                        // Fetch all records
+                        let mut records = Vec::with_capacity(record_keys.len());
+                        let mut fetch_error = None;
 
-            let result = match cache.get(&key).await {
-                Ok(Some(cached)) => {
-                    log::debug!("Scrub load: cache hit for {}", timestamp);
-                    ScrubLoadResult::Success {
-                        timestamp,
-                        data: cached.data,
+                        for key in record_keys {
+                            match facade.get_record(&key).await {
+                                Ok(Some(record)) => records.push(record),
+                                Ok(None) => {
+                                    log::warn!("Record {} not found during fetch", key);
+                                }
+                                Err(e) => {
+                                    fetch_error = Some(e);
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let Some(e) = fetch_error {
+                            log::error!("Scrub load failed: {}", e);
+                            ScrubLoadResult::Error(e)
+                        } else if records.is_empty() {
+                            log::debug!("Scrub load: all records missing for {}", timestamp);
+                            ScrubLoadResult::NotFound { timestamp }
+                        } else {
+                            // Sort by record_id and reassemble
+                            records.sort_by_key(|r| r.key.record_id);
+                            let data = reassemble_records(&records);
+                            log::debug!(
+                                "Scrub load: cache hit for {} ({} records, {} bytes)",
+                                timestamp,
+                                records.len(),
+                                data.len()
+                            );
+                            ScrubLoadResult::Success { timestamp, data }
+                        }
                     }
-                }
-                Ok(None) => {
-                    log::debug!("Scrub load: cache miss for {}", timestamp);
-                    ScrubLoadResult::NotFound { timestamp }
                 }
                 Err(e) => {
                     log::error!("Scrub load failed: {}", e);
-                    ScrubLoadResult::Error(e.to_string())
+                    ScrubLoadResult::Error(e)
                 }
             };
 
@@ -270,7 +326,7 @@ impl ScrubLoadChannel {
 
     // Native stubs
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn load_scan(&self, _ctx: Context, _cache: NexradCache, _site_id: String, _timestamp: i64) {
+    pub fn load_scan(&self, _ctx: Context, _facade: DataFacade, _site_id: String, _timestamp: i64) {
         // No-op on native
     }
 }
