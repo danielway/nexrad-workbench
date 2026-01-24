@@ -5,7 +5,7 @@
 //! uses piet-web. The rendered image is cached as a texture for efficient display.
 
 use eframe::egui::ColorImage;
-use nexrad::prelude::Volume;
+use nexrad::prelude::{Radial, Volume};
 use nexrad::render::{get_nws_reflectivity_scale, render_radials, Product};
 use piet_common::Device;
 
@@ -21,6 +21,7 @@ use piet_common::Device;
 ///
 /// # Returns
 /// A `ColorImage` ready to be loaded as an egui texture, or an error message.
+#[allow(dead_code)]
 pub fn render_sweep_to_image(
     volume: &Volume,
     sweep_index: usize,
@@ -49,6 +50,70 @@ pub fn render_sweep_to_image(
     let mut target = render_radials(
         &mut device,
         radials,
+        Product::Reflectivity,
+        &get_nws_reflectivity_scale(),
+        dimensions,
+    )
+    .map_err(|e| format!("Failed to render radials: {}", e))?;
+
+    // Extract pixel data from the render target
+    let (width, height) = dimensions;
+    let buffer_size = width * height * 4; // RGBA = 4 bytes per pixel
+    let mut buffer = vec![0u8; buffer_size];
+
+    target
+        .copy_raw_pixels(piet_common::ImageFormat::RgbaPremul, &mut buffer)
+        .map_err(|e| format!("Failed to copy pixel data: {}", e))?;
+
+    // Convert from premultiplied alpha to straight alpha for egui
+    // egui expects non-premultiplied RGBA
+    for pixel in buffer.chunks_exact_mut(4) {
+        let a = pixel[3] as f32 / 255.0;
+        if a > 0.0 {
+            pixel[0] = (pixel[0] as f32 / a).min(255.0) as u8;
+            pixel[1] = (pixel[1] as f32 / a).min(255.0) as u8;
+            pixel[2] = (pixel[2] as f32 / a).min(255.0) as u8;
+        }
+    }
+
+    // Create egui ColorImage from the RGBA buffer
+    Ok(ColorImage::from_rgba_unmultiplied([width, height], &buffer))
+}
+
+/// Renders a collection of radials to an egui ColorImage.
+///
+/// This function is used for dynamic sweep rendering where radials may come
+/// from multiple volumes. Unlike `render_sweep_to_image`, this takes a pre-built
+/// collection of radial references rather than extracting them from a volume.
+///
+/// Note: This function clones radials into a contiguous buffer because the
+/// nexrad-render crate requires `&[Radial]`. This is necessary when radials
+/// come from different volumes in memory.
+///
+/// # Arguments
+/// * `radials` - Slice of radial references to render (should be sorted by azimuth)
+/// * `dimensions` - Output image dimensions (width, height)
+///
+/// # Returns
+/// A `ColorImage` ready to be loaded as an egui texture, or an error message.
+pub fn render_radials_to_image(
+    radials: &[&Radial],
+    dimensions: (usize, usize),
+) -> Result<ColorImage, String> {
+    if radials.is_empty() {
+        return Err("No radials to render".to_string());
+    }
+
+    // Clone radials into a contiguous Vec (required by render_radials)
+    let owned_radials: Vec<Radial> = radials.iter().map(|r| (*r).clone()).collect();
+
+    // Create piet device for rendering
+    let mut device = Device::new().map_err(|e| format!("Failed to create render device: {}", e))?;
+
+    // Render using nexrad-render
+    let mut target = render_radials(
+        &mut device,
+        &owned_radials,
         Product::Reflectivity,
         &get_nws_reflectivity_scale(),
         dimensions,

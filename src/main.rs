@@ -121,8 +121,8 @@ pub struct WorkbenchApp {
     /// Currently loaded NEXRAD scan
     current_scan: Option<nexrad::CachedScan>,
 
-    /// Full decoded volume for texture-based rendering
-    decoded_volume: Option<Volume>,
+    /// Ring buffer of decoded volumes for dynamic sweep rendering
+    volume_ring: nexrad::VolumeRing,
 
     /// Texture cache for rendered radar imagery
     radar_texture_cache: nexrad::RadarTextureCache,
@@ -133,6 +133,9 @@ pub struct WorkbenchApp {
 
     /// Timestamp of the currently displayed scan (for detecting when to load a new scan)
     displayed_scan_timestamp: Option<i64>,
+
+    /// Previous site ID to detect site changes (for clearing volume ring)
+    previous_site_id: String,
 
     /// Channel for loading scans from cache on-demand (for scrubbing)
     scrub_load_channel: nexrad::ScrubLoadChannel,
@@ -220,6 +223,7 @@ impl WorkbenchApp {
         );
 
         let state = AppState::new();
+        let initial_site_id = state.viz_state.site_id.clone();
         let nexrad_cache = nexrad::NexradCache::new();
         let cache_load_channel = nexrad::CacheLoadChannel::new();
 
@@ -240,10 +244,11 @@ impl WorkbenchApp {
             cache_load_channel,
             archive_index: nexrad::ArchiveIndex::new(),
             current_scan: None,
-            decoded_volume: None,
+            volume_ring: nexrad::VolumeRing::new(),
             radar_texture_cache: nexrad::RadarTextureCache::new(),
             selection_download_queue: Vec::new(),
             displayed_scan_timestamp: None,
+            previous_site_id: initial_site_id,
             scrub_load_channel: nexrad::ScrubLoadChannel::new(),
             realtime_channel,
         }
@@ -520,7 +525,7 @@ impl WorkbenchApp {
                             );
                         }
 
-                        self.decoded_volume = Some(volume);
+                        self.volume_ring.insert(timestamp * 1000, volume);
                         self.displayed_scan_timestamp = Some(timestamp);
                         self.radar_texture_cache.invalidate();
 
@@ -562,6 +567,19 @@ impl WorkbenchApp {
 
 impl eframe::App for WorkbenchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Detect site changes and clear volume ring
+        if self.state.viz_state.site_id != self.previous_site_id {
+            log::info!(
+                "Site changed from {} to {}, clearing volume ring",
+                self.previous_site_id,
+                self.state.viz_state.site_id
+            );
+            self.volume_ring.clear();
+            self.radar_texture_cache.invalidate();
+            self.displayed_scan_timestamp = None;
+            self.previous_site_id = self.state.viz_state.site_id.clone();
+        }
+
         // Handle cache clear request
         if self.state.clear_cache_requested && !self.cache_load_channel.is_loading() {
             self.state.clear_cache_requested = false;
@@ -697,7 +715,8 @@ impl eframe::App for WorkbenchApp {
                                 );
                             }
 
-                            self.decoded_volume = Some(volume);
+                            // Insert into volume ring (timestamp in ms)
+                            self.volume_ring.insert(scan.key.timestamp * 1000, volume);
                             // Invalidate texture cache to trigger re-render
                             self.radar_texture_cache.invalidate();
                         }
@@ -773,7 +792,8 @@ impl eframe::App for WorkbenchApp {
                                 );
                             }
 
-                            self.decoded_volume = Some(volume);
+                            // Insert into volume ring (timestamp in ms)
+                            self.volume_ring.insert(timestamp * 1000, volume);
                             self.displayed_scan_timestamp = Some(timestamp);
                             self.radar_texture_cache.invalidate();
                         }
@@ -875,7 +895,7 @@ impl eframe::App for WorkbenchApp {
             &self.file_picker,
             &self.download_channel,
             &self.nexrad_cache,
-            self.decoded_volume.as_ref(),
+            &self.volume_ring,
         );
         ui::render_right_panel(ctx, &mut self.state);
 
@@ -884,7 +904,7 @@ impl eframe::App for WorkbenchApp {
             ctx,
             &mut self.state,
             Some(&self.geo_layers),
-            self.decoded_volume.as_ref(),
+            &self.volume_ring,
             &mut self.radar_texture_cache,
         );
     }

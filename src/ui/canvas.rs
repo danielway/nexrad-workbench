@@ -1,27 +1,34 @@
 //! Central canvas UI: radar visualization area.
 
 use super::colors::{canvas as canvas_colors, radar, sites as site_colors};
-use super::left_panel::find_most_recent_radial_position;
+use super::left_panel::RadarPosition;
 use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::{
-    radar_coverage_range_km, render_sweep_to_image, RadarCacheKey, RadarTextureCache,
+    radar_coverage_range_km, render_radials_to_image, RadarCacheKey, RadarTextureCache,
+    RenderSweep, VolumeRing,
 };
 use crate::state::{AlertsState, AppState, GeoLayerVisibility, NwsAlert};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use geo_types::Coord;
-use nexrad::prelude::Volume;
 use std::f32::consts::PI;
+
+/// Default target elevation for rendering (degrees).
+const DEFAULT_TARGET_ELEVATION: f32 = 0.5;
 
 /// Render canvas with optional geographic layers and NEXRAD data.
 ///
 /// Radar data is rendered using the `nexrad-render` crate which produces
 /// images that are cached as textures for efficient display.
+///
+/// When a VolumeRing is provided, this function builds a dynamic RenderSweep
+/// based on the current playback timestamp, selecting the best radial at each
+/// azimuth position from all available volumes.
 pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
     geo_layers: Option<&GeoLayerSet>,
-    decoded_volume: Option<&Volume>,
+    volume_ring: &VolumeRing,
     texture_cache: &mut RadarTextureCache,
 ) {
     egui::CentralPanel::default().show(ctx, |ui| {
@@ -61,19 +68,41 @@ pub fn render_canvas_with_geo(
             &state.layer_state.geo,
         );
 
-        // Draw NEXRAD radar data if available (texture-based rendering)
-        if let Some(volume) = decoded_volume {
-            render_radar_texture(
-                ctx,
-                &painter,
-                &projection,
-                volume,
-                texture_cache,
-                &rect,
-                state.viz_state.center_lat,
-                state.viz_state.center_lon,
-            );
-        }
+        // Build dynamic render sweep and render radar data
+        let radar_position = if !volume_ring.is_empty() {
+            // Get playback timestamp in milliseconds
+            let playback_ts_ms = state
+                .playback_state
+                .selected_timestamp
+                .map(|ts| (ts * 1000.0) as i64)
+                .unwrap_or(i64::MAX);
+
+            // Build the dynamic sweep from all volumes in the ring
+            let render_sweep =
+                RenderSweep::from_volume_ring(volume_ring, DEFAULT_TARGET_ELEVATION, playback_ts_ms);
+
+            // Render if we have radials
+            if !render_sweep.is_empty() {
+                render_dynamic_sweep(
+                    ctx,
+                    &painter,
+                    &projection,
+                    &render_sweep,
+                    texture_cache,
+                    &rect,
+                    state.viz_state.center_lat,
+                    state.viz_state.center_lon,
+                );
+            }
+
+            // Get radar position from most recent radial in the sweep
+            render_sweep.most_recent_radial().map(|radial| RadarPosition {
+                azimuth: radial.azimuth_angle_degrees(),
+                elevation: radial.elevation_angle_degrees(),
+            })
+        } else {
+            None
+        };
 
         // Draw NWS alerts layer if enabled
         if state.layer_state.nws_alerts {
@@ -84,11 +113,9 @@ pub fn render_canvas_with_geo(
             render_nws_alerts(&painter, &projection, &state.alerts_state, current_time);
         }
 
-        // Get azimuth from actual radial data (only show sweep line in real-time mode with volume loaded)
+        // Get azimuth from actual radial data (only show sweep line in real-time mode)
         let azimuth = if state.playback_state.speed == crate::state::PlaybackSpeed::Realtime {
-            decoded_volume
-                .and_then(find_most_recent_radial_position)
-                .map(|pos| pos.azimuth)
+            radar_position.as_ref().map(|pos| pos.azimuth)
         } else {
             None
         };
@@ -104,41 +131,47 @@ pub fn render_canvas_with_geo(
     });
 }
 
-/// Render radar data as a cached texture.
+/// Render a dynamic sweep as a cached texture.
 ///
 /// This function:
-/// 1. Checks if the cached texture is still valid for the current data
-/// 2. If not, renders the radar data to an image using nexrad-render
+/// 1. Checks if the cached texture is still valid based on content signature
+/// 2. If not, renders the radials to an image using render_radials_to_image
 /// 3. Uploads the image as an egui texture
 /// 4. Draws the texture as an image overlay on the map
 #[allow(clippy::too_many_arguments)]
-fn render_radar_texture(
+fn render_dynamic_sweep(
     ctx: &egui::Context,
     painter: &Painter,
     projection: &MapProjection,
-    volume: &Volume,
+    render_sweep: &RenderSweep,
     cache: &mut RadarTextureCache,
     rect: &Rect,
     radar_lat: f64,
     radar_lon: f64,
 ) {
-    // Build cache key - use a simple identifier based on volume coverage pattern
-    let data_id = format!("vcp_{}", volume.coverage_pattern_number());
-
     // Use a fixed render size for the texture
     let render_size: (usize, usize) = (800, 800);
-    let cache_key = RadarCacheKey::new(data_id, 0, render_size);
+
+    // Build cache key using content signature
+    let content_signature = render_sweep.cache_signature();
+    let cache_key = RadarCacheKey::for_dynamic_sweep(content_signature, 0, render_size);
 
     // Check if we need to re-render
     if !cache.is_valid(&cache_key) {
-        log::info!("Rendering radar texture...");
-        match render_sweep_to_image(volume, 0, render_size) {
+        let radials = render_sweep.radials();
+        log::debug!(
+            "Rendering dynamic sweep with {} radials (signature: {})",
+            radials.len(),
+            content_signature
+        );
+
+        match render_radials_to_image(&radials, render_size) {
             Ok(image) => {
                 cache.update(ctx, cache_key, image);
-                log::info!("Radar texture updated successfully");
+                log::debug!("Dynamic sweep texture updated successfully");
             }
             Err(e) => {
-                log::error!("Failed to render radar texture: {}", e);
+                log::error!("Failed to render dynamic sweep: {}", e);
                 return;
             }
         }

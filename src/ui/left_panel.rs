@@ -2,14 +2,16 @@
 
 use crate::data::{all_sites_sorted, get_site};
 use crate::file_ops::FilePickerChannel;
-use crate::nexrad::{DownloadChannel, NexradCache};
+use crate::nexrad::{DownloadChannel, NexradCache, RenderSweep, VolumeRing};
 use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
 use chrono::Datelike;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
-use nexrad::prelude::Volume;
 use std::f32::consts::PI;
 
-/// Radar position data from the most recent radial in the decoded volume
+/// Default target elevation for rendering (degrees).
+const DEFAULT_TARGET_ELEVATION: f32 = 0.5;
+
+/// Radar position data from the most recent radial in the render sweep
 pub struct RadarPosition {
     /// Azimuth angle in degrees (0-360)
     pub azimuth: f32,
@@ -17,28 +19,25 @@ pub struct RadarPosition {
     pub elevation: f32,
 }
 
-/// Find the most recent radial in the volume and return its position.
+/// Find the radar position from a VolumeRing at the given playback timestamp.
 ///
-/// This iterates through all sweeps and radials to find the one with
-/// the highest collection timestamp, returning its actual azimuth and elevation.
-pub fn find_most_recent_radial_position(volume: &Volume) -> Option<RadarPosition> {
-    let mut most_recent: Option<(i64, f32, f32)> = None; // (timestamp, azimuth, elevation)
-
-    for sweep in volume.sweeps() {
-        for radial in sweep.radials() {
-            let ts = radial.collection_timestamp();
-            let dominated = most_recent.map(|(best_ts, _, _)| ts <= best_ts).unwrap_or(false);
-            if !dominated {
-                most_recent = Some((
-                    ts,
-                    radial.azimuth_angle_degrees(),
-                    radial.elevation_angle_degrees(),
-                ));
-            }
-        }
+/// Builds a RenderSweep at the target elevation and returns the position
+/// of the most recent radial included in that sweep.
+fn find_radar_position_at_timestamp(
+    volume_ring: &VolumeRing,
+    playback_timestamp_ms: i64,
+) -> Option<RadarPosition> {
+    if volume_ring.is_empty() {
+        return None;
     }
 
-    most_recent.map(|(_, azimuth, elevation)| RadarPosition { azimuth, elevation })
+    let render_sweep =
+        RenderSweep::from_volume_ring(volume_ring, DEFAULT_TARGET_ELEVATION, playback_timestamp_ms);
+
+    render_sweep.most_recent_radial().map(|radial| RadarPosition {
+        azimuth: radial.azimuth_angle_degrees(),
+        elevation: radial.elevation_angle_degrees(),
+    })
 }
 
 /// State queried from the radar timeline at the current timestamp
@@ -63,7 +62,7 @@ pub fn render_left_panel(
     file_picker: &FilePickerChannel,
     download_channel: &DownloadChannel,
     nexrad_cache: &NexradCache,
-    decoded_volume: Option<&Volume>,
+    volume_ring: &VolumeRing,
 ) {
     egui::SidePanel::left("left_panel")
         .resizable(true)
@@ -72,7 +71,7 @@ pub fn render_left_panel(
         .max_width(400.0)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                render_radar_operations_section(ui, state, decoded_volume);
+                render_radar_operations_section(ui, state, volume_ring);
                 ui.add_space(15.0);
                 ui.separator();
                 ui.add_space(10.0);
@@ -222,7 +221,7 @@ fn render_load_data_section(
 fn render_radar_operations_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    decoded_volume: Option<&Volume>,
+    volume_ring: &VolumeRing,
 ) {
     // Header
     ui.label(RichText::new("Radar Operations").strong().size(14.0));
@@ -264,8 +263,14 @@ fn render_radar_operations_section(
 
     ui.add_space(5.0);
 
-    // Get radar position from actual radial data (only when volume is loaded)
-    let radar_position = decoded_volume.and_then(find_most_recent_radial_position);
+    // Get radar position from volume ring at current playback timestamp
+    let playback_ts_ms = state
+        .playback_state
+        .selected_timestamp
+        .map(|ts| (ts * 1000.0) as i64)
+        .unwrap_or(i64::MAX);
+
+    let radar_position = find_radar_position_at_timestamp(volume_ring, playback_ts_ms);
 
     let radar_state = query_radar_state_at_timestamp(state, &radar_position);
 
