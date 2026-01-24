@@ -18,6 +18,7 @@ use eframe::egui;
 use file_ops::FilePickerChannel;
 // Use explicit crate path to avoid conflict with local nexrad module
 use ::nexrad::prelude::{load, Volume};
+use data::DataFacade;
 use state::radar_data::Sweep as TimelineSweep;
 use state::AppState;
 use storage::{CachedFile, StorageConfig};
@@ -106,8 +107,11 @@ pub struct WorkbenchApp {
     /// Geographic layer data for map overlays
     geo_layers: geo::GeoLayerSet,
 
-    /// NEXRAD scan cache for AWS downloads
+    /// NEXRAD scan cache for AWS downloads (legacy v3)
     nexrad_cache: nexrad::NexradCache,
+
+    /// Record-based data facade (v4 cache)
+    data_facade: DataFacade,
 
     /// Channel for async NEXRAD download operations
     download_channel: nexrad::DownloadChannel,
@@ -225,9 +229,23 @@ impl WorkbenchApp {
         let state = AppState::new();
         let initial_site_id = state.viz_state.site_id.clone();
         let nexrad_cache = nexrad::NexradCache::new();
+        let data_facade = DataFacade::new();
         let cache_load_channel = nexrad::CacheLoadChannel::new();
         let download_channel = nexrad::DownloadChannel::new();
         let realtime_channel = nexrad::RealtimeChannel::with_stats(download_channel.stats());
+
+        // Open the v4 record cache database
+        #[cfg(target_arch = "wasm32")]
+        {
+            let facade = data_facade.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Err(e) = facade.open().await {
+                    log::error!("Failed to open v4 record cache: {}", e);
+                } else {
+                    log::info!("Opened v4 record cache database");
+                }
+            });
+        }
 
         Self {
             state,
@@ -236,6 +254,7 @@ impl WorkbenchApp {
             file_cache: IndexedDbStore::new(StorageConfig::new("nexrad-workbench", "file-cache")),
             geo_layers,
             nexrad_cache,
+            data_facade,
             download_channel,
             cache_load_channel,
             archive_index: nexrad::ArchiveIndex::new(),
@@ -294,6 +313,7 @@ impl WorkbenchApp {
                     next_name.clone(),
                     *next_ts,
                     self.nexrad_cache.clone(),
+                    self.data_facade.clone(),
                 );
             } else {
                 // All done
@@ -416,6 +436,7 @@ impl WorkbenchApp {
             file_name.clone(),
             *timestamp,
             self.nexrad_cache.clone(),
+            self.data_facade.clone(),
         );
     }
 
@@ -529,14 +550,41 @@ impl WorkbenchApp {
                         let cached = nexrad::CachedScan::new(key, file_name, data.clone());
 
                         let cache = self.nexrad_cache.clone();
+                        let facade = self.data_facade.clone();
+                        let site_id_clone = site_id.clone();
                         let ctx_clone = ctx.clone();
                         #[cfg(target_arch = "wasm32")]
                         wasm_bindgen_futures::spawn_local(async move {
+                            // Store in legacy v3 cache
                             if let Err(e) = cache.put(&cached).await {
                                 log::warn!("Failed to cache live volume: {}", e);
                             } else {
                                 log::debug!("Cached live volume at timestamp {}", timestamp);
                             }
+
+                            // Also store as records in v4 cache
+                            let file_name = format!("live_{}_{}.nexrad", site_id_clone, timestamp);
+                            match data::process_archive_download(
+                                &facade,
+                                &site_id_clone,
+                                &file_name,
+                                timestamp,
+                                &data,
+                            )
+                            .await
+                            {
+                                Ok((scan_key, records_stored)) => {
+                                    log::debug!(
+                                        "Stored {} records for live scan {} in v4 cache",
+                                        records_stored,
+                                        scan_key
+                                    );
+                                }
+                                Err(e) => {
+                                    log::warn!("Failed to store live records in v4 cache: {}", e);
+                                }
+                            }
+
                             ctx_clone.request_repaint();
                         });
 

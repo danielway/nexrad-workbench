@@ -106,11 +106,55 @@ if let Some(result) = channel.try_recv() {
 
 ## Caching Strategy
 
+### Record-Based Storage (v4 Schema)
+
+The new storage architecture stores individual compressed **records** rather than
+full scans, enabling efficient partial storage, time-based queries, and deduplication.
+
+#### IndexedDB Schema (v4)
+
+```
+nexrad-workbench (v4)
+├── records_v4       - Raw bzip2-compressed record blobs
+│   Key: "SITE|SCAN_START_MS|RECORD_ID"
+│   Value: ArrayBuffer (raw bytes)
+│
+├── record_index_v4  - Per-record metadata
+│   Key: "SITE|SCAN_START_MS|RECORD_ID"
+│   Value: { key, record_time, size_bytes, has_vcp, stored_at }
+│
+└── scan_index_v4    - Per-scan metadata
+    Key: "SITE|SCAN_START_MS"
+    Value: { scan, has_vcp, expected_records, present_records, ... }
+```
+
+#### Key Types
+
+| Type | Format | Example |
+|------|--------|---------|
+| `ScanKey` | `SITE\|SCAN_START_MS` | `KDMX\|1700000000000` |
+| `RecordKey` | `SITE\|SCAN_START_MS\|RECORD_ID` | `KDMX\|1700000000000\|12` |
+
+#### Scan Completeness States
+
+| State | Description |
+|-------|-------------|
+| `Missing` | No records present |
+| `PartialNoVcp` | Some records, no VCP metadata |
+| `PartialWithVcp` | Some records with VCP (can determine expected count) |
+| `Complete` | All expected records present |
+
+#### Record Splitting
+
+Archive2 files contain concatenated bzip2 blocks. Each block is stored as a separate
+record, identified by sequence number (0-based). Record 0 typically contains VCP/LDM
+metadata needed to interpret the scan structure.
+
 ### Three-Layer Cache
 
 1. **IndexedDB** (persistent, WASM only)
-   - `nexrad-scans`: Full scan data (1-5 MB each)
-   - `scan-metadata`: Lightweight metadata for timeline
+   - v4: Record-based storage (see above)
+   - Legacy v3: `nexrad-scans`, `scan-metadata` (lazy migration)
    - `file-cache`: Uploaded files
 
 2. **VolumeRing** (memory)
@@ -122,11 +166,21 @@ if let Some(result) = channel.try_recv() {
    - egui TextureHandle storage
    - Content-signature-based invalidation
 
-### Cache Key Format
-```
-{site_id}_{unix_timestamp}
-Example: KDMX_1704067200
-```
+### Current Integration (Dual-Write)
+
+Downloads and live streams write to both caches:
+1. **v3 (legacy)**: Full scan blobs for immediate compatibility
+2. **v4 (records)**: Split into bzip2 records via `split_archive2_into_records()`
+
+Timeline/scrub still uses v3 cache (`CacheLoadChannel`, `ScrubLoadChannel`).
+
+### Future Migration
+
+Full migration to v4-only requires:
+1. Update `CacheLoadChannel` to query `scan_index_v4`
+2. Update `ScrubLoadChannel` to reassemble from `records_v4`
+3. Remove v3 writes from download pipeline
+4. Add lazy migration for existing v3 data
 
 ## State Management
 

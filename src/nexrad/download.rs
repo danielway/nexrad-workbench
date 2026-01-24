@@ -6,6 +6,7 @@
 use super::archive_index::{current_timestamp_secs, ArchiveFileMeta, ArchiveListing};
 use super::cache::NexradCache;
 use super::types::{CachedScan, DownloadResult, ScanKey};
+use crate::data::{DataFacade, process_archive_download};
 use chrono::NaiveDate;
 use eframe::egui;
 use std::cell::RefCell;
@@ -174,6 +175,7 @@ impl DownloadChannel {
         file_name: String,
         timestamp: i64,
         cache: NexradCache,
+        facade: DataFacade,
     ) -> bool {
         let storage_key = format!("{}_{}", site_id, timestamp);
 
@@ -193,7 +195,7 @@ impl DownloadChannel {
 
         wasm_bindgen_futures::spawn_local(async move {
             let result =
-                download_specific_file(&site_id, date, &file_name, timestamp, cache, stats).await;
+                download_specific_file(&site_id, date, &file_name, timestamp, cache, facade, stats).await;
 
             // Remove from pending set
             pending.borrow_mut().remove(&storage_key);
@@ -214,6 +216,7 @@ impl DownloadChannel {
         _file_name: String,
         _timestamp: i64,
         _cache: NexradCache,
+        _facade: DataFacade,
     ) -> bool {
         // Not implemented for native
         false
@@ -346,6 +349,7 @@ async fn download_specific_file(
     file_name: &str,
     timestamp: i64,
     cache: NexradCache,
+    facade: DataFacade,
     stats: NetworkStats,
 ) -> DownloadResult {
     use nexrad::data::aws::archive;
@@ -403,11 +407,25 @@ async fn download_specific_file(
     let bytes_downloaded = data.len() as u64;
     log::info!("Downloaded {} bytes", bytes_downloaded);
 
-    let cached = CachedScan::new(key, file_name.to_string(), data);
+    let cached = CachedScan::new(key, file_name.to_string(), data.clone());
 
-    // Store in cache
+    // Store in legacy cache (v3)
     if let Err(e) = cache.put(&cached).await {
         log::warn!("Failed to cache scan: {}", e);
+    }
+
+    // Also store as records in v4 cache
+    match process_archive_download(&facade, site_id, file_name, timestamp, &data).await {
+        Ok((scan_key, records_stored)) => {
+            log::info!(
+                "Stored {} records for scan {} in v4 cache",
+                records_stored,
+                scan_key
+            );
+        }
+        Err(e) => {
+            log::warn!("Failed to store records in v4 cache: {}", e);
+        }
     }
 
     stats.request_completed(bytes_downloaded);
