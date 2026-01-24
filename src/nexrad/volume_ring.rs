@@ -85,6 +85,43 @@ impl VolumeRing {
         );
     }
 
+    /// Insert or update a volume, replacing only if the new volume has more sweeps.
+    ///
+    /// This is useful for incremental rendering where partial volumes are
+    /// updated as more data becomes available.
+    ///
+    /// Returns `true` if the volume was inserted or updated, `false` if kept existing.
+    pub fn insert_or_update(&mut self, timestamp_ms: i64, volume: Volume) -> bool {
+        // Check for existing volume at this timestamp
+        if let Some(pos) = self.volumes.iter().position(|(ts, _)| *ts == timestamp_ms) {
+            let existing_sweeps = self.volumes[pos].1.sweeps().len();
+            let new_sweeps = volume.sweeps().len();
+
+            if new_sweeps > existing_sweeps {
+                log::debug!(
+                    "VolumeRing: updating volume at {} ({} -> {} sweeps)",
+                    timestamp_ms,
+                    existing_sweeps,
+                    new_sweeps
+                );
+                self.volumes[pos] = (timestamp_ms, volume);
+                return true;
+            } else {
+                log::debug!(
+                    "VolumeRing: keeping existing volume at {} ({} sweeps >= {} new)",
+                    timestamp_ms,
+                    existing_sweeps,
+                    new_sweeps
+                );
+                return false;
+            }
+        }
+
+        // No existing volume - do normal insert
+        self.insert(timestamp_ms, volume);
+        true
+    }
+
     /// Get the volume at the specified timestamp, if it exists.
     #[allow(dead_code)]
     pub fn get(&self, timestamp_ms: i64) -> Option<&Volume> {

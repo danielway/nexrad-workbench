@@ -11,6 +11,9 @@ use std::time::Duration;
 #[cfg(target_arch = "wasm32")]
 use eframe::egui;
 
+use crate::data::facade::{process_realtime_chunk, DataFacade};
+use crate::data::keys::ScanKey;
+
 /// Result type for realtime streaming events.
 #[derive(Clone, Debug)]
 pub enum RealtimeResult {
@@ -21,6 +24,18 @@ pub enum RealtimeResult {
         chunks_in_volume: u32,
         time_until_next: Option<Duration>,
         is_volume_end: bool,
+    },
+    /// Record stored in cache (emitted for each chunk)
+    RecordStored {
+        scan_key: ScanKey,
+        record_id: u32,
+        records_available: u32,
+    },
+    /// Partial volume successfully decoded (some sweeps available)
+    PartialVolumeReady {
+        scan_key: ScanKey,
+        sweep_count: usize,
+        timestamp_ms: i64,
     },
     /// Volume complete (all chunks received and assembled)
     VolumeComplete { data: Vec<u8>, timestamp: i64 },
@@ -83,7 +98,7 @@ impl RealtimeChannel {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub fn start(&self, ctx: egui::Context, site_id: String) {
+    pub fn start(&self, ctx: egui::Context, site_id: String, facade: DataFacade) {
         {
             let mut state = self.state.borrow_mut();
             state.active = true;
@@ -96,12 +111,12 @@ impl RealtimeChannel {
         let stats = self.stats.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            streaming_loop(ctx, site_id, state, stats).await;
+            streaming_loop(ctx, site_id, state, stats, facade).await;
         });
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn start(&self, _ctx: egui::Context, site_id: String) {
+    pub fn start(&self, _ctx: egui::Context, site_id: String, _facade: DataFacade) {
         let mut state = self.state.borrow_mut();
         state.results.push(RealtimeResult::Error(format!(
             "Realtime streaming not implemented for native platform (site: {})",
@@ -131,6 +146,7 @@ async fn streaming_loop(
     site_id: String,
     state: Rc<RefCell<RealtimeState>>,
     stats: NetworkStats,
+    facade: DataFacade,
 ) {
     use nexrad_data::aws::realtime::{ChunkIterator, ChunkType};
 
@@ -164,12 +180,16 @@ async fn streaming_loop(
     // Send Started event
     {
         let mut s = state.borrow_mut();
-        s.results.push(RealtimeResult::Started { site_id });
+        s.results
+            .push(RealtimeResult::Started { site_id: site_id.clone() });
     }
     ctx.request_repaint();
 
     let mut volume_data: Vec<u8> = Vec::new();
     let mut chunks_in_volume: u32 = 0;
+    // Track current scan for record storage
+    let mut current_scan_start_secs: i64 = current_timestamp();
+    let mut record_seq: u32 = 0;
 
     loop {
         // Check stop signal
@@ -204,6 +224,8 @@ async fn streaming_loop(
                 if is_start {
                     volume_data.clear();
                     chunks_in_volume = 0;
+                    current_scan_start_secs = current_timestamp();
+                    record_seq = 0;
                 }
 
                 chunks_in_volume += 1;
@@ -220,13 +242,66 @@ async fn streaming_loop(
                     });
                 }
 
+                // Store record immediately in cache
+                let is_first_chunk = record_seq == 0;
+                match process_realtime_chunk(
+                    &facade,
+                    &site_id,
+                    current_scan_start_secs,
+                    record_seq,
+                    chunk_data,
+                    is_first_chunk,
+                )
+                .await
+                {
+                    Ok(record_key) => {
+                        record_seq += 1;
+                        let scan_key = record_key.scan.clone();
+
+                        // Emit RecordStored event
+                        {
+                            let mut s = state.borrow_mut();
+                            s.results.push(RealtimeResult::RecordStored {
+                                scan_key: scan_key.clone(),
+                                record_id: record_key.record_id,
+                                records_available: record_seq,
+                            });
+                        }
+
+                        // Attempt incremental decode every few records (to avoid overhead)
+                        // Decode after every 3rd record, or on volume end
+                        if record_seq >= 3 && (record_seq % 3 == 0 || is_end) {
+                            if let Ok(volume) = facade.decode_available_records(&scan_key).await {
+                                let sweep_count = volume.sweeps().len();
+                                let timestamp_ms =
+                                    scan_key.scan_start.as_millis();
+                                log::debug!(
+                                    "Partial decode succeeded: {} sweeps at {}",
+                                    sweep_count,
+                                    timestamp_ms
+                                );
+                                let mut s = state.borrow_mut();
+                                s.results.push(RealtimeResult::PartialVolumeReady {
+                                    scan_key,
+                                    sweep_count,
+                                    timestamp_ms,
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to store realtime chunk: {}", e);
+                        // Continue anyway - don't break the stream
+                    }
+                }
+
                 if is_end {
                     let volume_size = volume_data.len();
                     {
                         let mut s = state.borrow_mut();
                         s.results.push(RealtimeResult::VolumeComplete {
                             data: std::mem::take(&mut volume_data),
-                            timestamp: current_timestamp(),
+                            timestamp: current_scan_start_secs,
                         });
                     }
                     log::info!("Volume complete: {} bytes", volume_size);

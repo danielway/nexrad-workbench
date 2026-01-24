@@ -27,6 +27,7 @@
 
 use crate::data::keys::*;
 use crate::data::record_cache::*;
+use ::nexrad::prelude::{load, Volume};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -42,6 +43,20 @@ pub enum AccessPolicy {
     NetworkOnly,
     /// Only use cache, never fetch from network.
     CacheOnly,
+}
+
+/// Result of attempting to decode available records.
+#[derive(Debug)]
+pub enum DecodeStatus {
+    /// Successfully decoded a volume.
+    Success(Volume),
+    /// Not enough records to decode (have, estimated need).
+    Incomplete {
+        records_have: u32,
+        estimated_need: Option<u32>,
+    },
+    /// Decode failed with error.
+    Error(String),
 }
 
 /// Result of a data fetch operation.
@@ -207,6 +222,77 @@ impl DataFacade {
         // Sort by record_id and reassemble
         records.sort_by_key(|r| r.key.record_id);
         Ok(reassemble_records(&records))
+    }
+
+    /// Attempts to decode all available records for a scan.
+    ///
+    /// This method fetches all cached records, reassembles them, and attempts
+    /// to decode the volume. It may succeed with partial data if enough sweeps
+    /// are present.
+    ///
+    /// Returns `Ok(volume)` on successful decode, or `Err(DecodeStatus)` if
+    /// incomplete or failed.
+    pub async fn decode_available_records(&self, scan: &ScanKey) -> Result<Volume, DecodeStatus> {
+        // List all available records for this scan
+        let record_keys = match self.cache.list_records_for_scan(scan).await {
+            Ok(keys) => keys,
+            Err(e) => return Err(DecodeStatus::Error(e)),
+        };
+
+        if record_keys.is_empty() {
+            return Err(DecodeStatus::Incomplete {
+                records_have: 0,
+                estimated_need: None,
+            });
+        }
+
+        // Fetch all record blobs
+        let mut records = Vec::with_capacity(record_keys.len());
+        for key in &record_keys {
+            match self.cache.get_record(key).await {
+                Ok(Some(blob)) => records.push(blob),
+                Ok(None) => {
+                    log::warn!("Record {} listed but not found", key);
+                }
+                Err(e) => {
+                    log::warn!("Failed to fetch record {}: {}", key, e);
+                }
+            }
+        }
+
+        if records.is_empty() {
+            return Err(DecodeStatus::Incomplete {
+                records_have: 0,
+                estimated_need: None,
+            });
+        }
+
+        // Sort by record_id and reassemble
+        records.sort_by_key(|r| r.key.record_id);
+        let data = reassemble_records(&records);
+
+        // Attempt decode
+        match load(&data) {
+            Ok(volume) => {
+                log::debug!(
+                    "decode_available_records: success with {} records, {} sweeps",
+                    records.len(),
+                    volume.sweeps().len()
+                );
+                Ok(volume)
+            }
+            Err(e) => {
+                log::debug!(
+                    "decode_available_records: failed with {} records: {}",
+                    records.len(),
+                    e
+                );
+                Err(DecodeStatus::Incomplete {
+                    records_have: records.len() as u32,
+                    estimated_need: None,
+                })
+            }
+        }
     }
 
     // ========================================================================

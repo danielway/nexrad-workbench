@@ -143,6 +143,11 @@ pub struct WorkbenchApp {
 
     /// Channel for real-time streaming
     realtime_channel: nexrad::RealtimeChannel,
+
+    /// Shared results from partial volume decode tasks.
+    /// Populated by async decode tasks, consumed by update loop.
+    #[cfg(target_arch = "wasm32")]
+    partial_volume_results: std::rc::Rc<std::cell::RefCell<Vec<(i64, Volume)>>>,
 }
 
 // Embed shapefile data at compile time
@@ -261,6 +266,8 @@ impl WorkbenchApp {
             previous_site_id: initial_site_id,
             scrub_load_channel: nexrad::ScrubLoadChannel::new(),
             realtime_channel,
+            #[cfg(target_arch = "wasm32")]
+            partial_volume_results: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
         }
     }
 
@@ -453,8 +460,9 @@ impl WorkbenchApp {
         self.state.playback_state.playing = true;
         self.state.status_message = "Connecting to live stream...".to_string();
 
-        // Start the realtime channel
-        self.realtime_channel.start(ctx.clone(), site_id);
+        // Start the realtime channel with DataFacade for record storage
+        self.realtime_channel
+            .start(ctx.clone(), site_id, self.data_facade.clone());
     }
 
     /// Stop live mode streaming.
@@ -506,6 +514,37 @@ impl WorkbenchApp {
                     is_volume_end,
                     now,
                 );
+            }
+            nexrad::RealtimeResult::RecordStored {
+                scan_key,
+                record_id,
+                records_available,
+            } => {
+                log::debug!(
+                    "Record stored: {} record {} ({} available)",
+                    scan_key,
+                    record_id,
+                    records_available
+                );
+                // Records are now cached incrementally - timeline refresh will pick them up
+                self.state.timeline_needs_refresh = true;
+            }
+            nexrad::RealtimeResult::PartialVolumeReady {
+                scan_key,
+                sweep_count,
+                timestamp_ms,
+            } => {
+                log::info!(
+                    "Partial volume ready: {} with {} sweeps at {}",
+                    scan_key,
+                    sweep_count,
+                    timestamp_ms
+                );
+
+                // Store the pending decode request - will be processed in update loop
+                self.state.pending_partial_decode = Some((timestamp_ms, scan_key.clone()));
+
+                self.state.status_message = format!("Live: partial volume {} sweeps", sweep_count);
             }
             nexrad::RealtimeResult::VolumeComplete { data, timestamp } => {
                 log::info!(
@@ -835,6 +874,41 @@ impl eframe::App for WorkbenchApp {
         // Handle realtime streaming results
         while let Some(result) = self.realtime_channel.try_recv() {
             self.handle_realtime_result(result, ctx);
+        }
+
+        // Handle pending partial volume decode
+        // Note: This spawns an async decode task. The result will be inserted into
+        // the partial_volume_results channel and processed on the next frame.
+        if let Some((timestamp_ms, scan_key)) = self.state.pending_partial_decode.take() {
+            let facade = self.data_facade.clone();
+            let ctx_clone = ctx.clone();
+            let results = self.partial_volume_results.clone();
+
+            #[cfg(target_arch = "wasm32")]
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Ok(volume) = facade.decode_available_records(&scan_key).await {
+                    log::debug!(
+                        "Partial decode completed: {} sweeps at {}",
+                        volume.sweeps().len(),
+                        timestamp_ms
+                    );
+                    results.borrow_mut().push((timestamp_ms, volume));
+                    ctx_clone.request_repaint();
+                }
+            });
+        }
+
+        // Process any completed partial volume decodes
+        #[cfg(target_arch = "wasm32")]
+        {
+            let completed: Vec<_> = self.partial_volume_results.borrow_mut().drain(..).collect();
+            for (timestamp_ms, volume) in completed {
+                if self.volume_ring.insert_or_update(timestamp_ms, volume) {
+                    self.displayed_scan_timestamp = Some(timestamp_ms / 1000);
+                    self.radar_texture_cache.invalidate();
+                    log::debug!("Inserted partial volume at {}", timestamp_ms);
+                }
+            }
         }
 
         // Stop realtime channel if live mode was stopped by UI

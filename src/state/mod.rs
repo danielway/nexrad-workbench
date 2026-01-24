@@ -4,6 +4,8 @@
 //! State is organized into logical groupings that correspond to different
 //! areas of functionality.
 
+use crate::data::keys::ScanKey;
+
 mod alerts;
 mod data_source;
 mod layer;
@@ -84,6 +86,10 @@ pub struct AppState {
     /// Flag to signal that live mode should be started.
     /// Set by UI, handled in main update loop.
     pub start_live_requested: bool,
+
+    /// Pending partial volume decode request (timestamp_ms, scan_key).
+    /// Set when a PartialVolumeReady event is received, processed in update loop.
+    pub pending_partial_decode: Option<(i64, ScanKey)>,
 }
 
 /// State for the datetime jump picker popup.
