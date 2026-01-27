@@ -134,32 +134,6 @@ pub fn render_canvas_with_geo(
             None
         };
 
-        // Draw dark arc overlay to mask "future" portion during animated playback
-        if state.playback_state.playing && state.animation_state.is_valid {
-            let anim_az = state.animation_state.azimuth;
-            let center = rect.center() + state.viz_state.pan_offset;
-            let base_radius = rect.width().min(rect.height()) * 0.4;
-            let radius = base_radius * state.viz_state.zoom;
-            let mask_color = Color32::from_rgba_unmultiplied(0, 0, 0, 140);
-
-            // Build a fan of triangles from anim_az clockwise back to anim_az (the "future" arc)
-            let num_segments = 60;
-            let arc_span = 360.0 - 1.0; // degrees of "future" to mask
-            for i in 0..num_segments {
-                let frac0 = i as f32 / num_segments as f32;
-                let frac1 = (i + 1) as f32 / num_segments as f32;
-                let a0 = (anim_az + 1.0 + frac0 * arc_span - 90.0) * PI / 180.0;
-                let a1 = (anim_az + 1.0 + frac1 * arc_span - 90.0) * PI / 180.0;
-                let p0 = Pos2::new(center.x + radius * a0.cos(), center.y + radius * a0.sin());
-                let p1 = Pos2::new(center.x + radius * a1.cos(), center.y + radius * a1.sin());
-                painter.add(egui::Shape::convex_polygon(
-                    vec![center, p0, p1],
-                    mask_color,
-                    Stroke::NONE,
-                ));
-            }
-        }
-
         // Draw the radar sweep visualization
         render_radar_sweep(&painter, &rect, state, azimuth);
 
@@ -445,52 +419,13 @@ fn render_radar_sweep(painter: &Painter, rect: &Rect, state: &AppState, azimuth:
 
     // Draw the sweep line if we have azimuth data
     if let Some(az) = azimuth {
-        // Draw a fading "trail" behind the sweep line to show recent coverage
-        let trail_length = 30.0; // degrees of trail
-        let num_trail_segments = 15;
-        for i in 0..num_trail_segments {
-            let trail_az = az - (i as f32) * (trail_length / num_trail_segments as f32);
-            let alpha = ((num_trail_segments - i) as f32 / num_trail_segments as f32 * 60.0) as u8;
-            let trail_color = Color32::from_rgba_unmultiplied(
-                radar::SWEEP_LINE.r(),
-                radar::SWEEP_LINE.g(),
-                radar::SWEEP_LINE.b(),
-                alpha,
-            );
-
-            let angle_rad = (trail_az - 90.0) * PI / 180.0;
-            let end_x = center.x + radius * angle_rad.cos();
-            let end_y = center.y + radius * angle_rad.sin();
-
-            painter.line_segment(
-                [center, Pos2::new(end_x, end_y)],
-                Stroke::new(2.0, trail_color),
-            );
-        }
-
-        // Draw the main sweep line
         let angle_rad = (az - 90.0) * PI / 180.0;
         let end_x = center.x + radius * angle_rad.cos();
         let end_y = center.y + radius * angle_rad.sin();
 
-        // Bright sweep line
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
             Stroke::new(3.0, radar::SWEEP_LINE),
-        );
-
-        // Glow effect
-        painter.line_segment(
-            [center, Pos2::new(end_x, end_y)],
-            Stroke::new(
-                6.0,
-                Color32::from_rgba_unmultiplied(
-                    radar::SWEEP_LINE.r(),
-                    radar::SWEEP_LINE.g(),
-                    radar::SWEEP_LINE.b(),
-                    40,
-                ),
-            ),
         );
     }
 }
