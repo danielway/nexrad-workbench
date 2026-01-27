@@ -90,6 +90,9 @@ impl CacheLoadChannel {
                                 file_size: entry.total_size_bytes,
                                 end_timestamp: None,
                                 vcp: None,
+                                completeness: Some(entry.completeness()),
+                                present_records: Some(entry.present_records),
+                                expected_records: entry.expected_records,
                             }
                         })
                         .collect();

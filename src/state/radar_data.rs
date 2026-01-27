@@ -1,5 +1,6 @@
 //! Radar data structures for timeline representation.
 
+use crate::data::ScanCompleteness;
 use crate::nexrad::ScanMetadata;
 
 /// A contiguous time range of radar data.
@@ -74,6 +75,12 @@ pub struct Scan {
     pub vcp: u16,
     /// Sweeps in this scan, ordered by elevation
     pub sweeps: Vec<Sweep>,
+    /// Completeness state for this scan (from cache metadata).
+    pub completeness: Option<ScanCompleteness>,
+    /// Number of records present (from cache metadata).
+    pub present_records: Option<u32>,
+    /// Expected number of records (from cache metadata).
+    pub expected_records: Option<u32>,
 }
 
 impl Scan {
@@ -288,6 +295,9 @@ impl RadarTimeline {
                 end_time: scan_end,
                 vcp: 215,
                 sweeps,
+                completeness: Some(ScanCompleteness::Complete),
+                present_records: None,
+                expected_records: None,
             });
 
             // Next scan starts after the interval
@@ -327,6 +337,9 @@ impl RadarTimeline {
                     end_time,
                     vcp: meta.vcp.unwrap_or(0),
                     sweeps: Vec::new(), // Loaded on-demand when scan is selected
+                    completeness: meta.completeness,
+                    present_records: meta.present_records,
+                    expected_records: meta.expected_records,
                 }
             })
             .collect();

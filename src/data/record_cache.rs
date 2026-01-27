@@ -183,6 +183,22 @@ impl WasmRecordCache {
     pub async fn clear_all(&self) -> CacheResult<()> {
         self.store.clear_all().await
     }
+
+    /// Gets scans sorted by last_accessed_at (oldest first) for LRU eviction.
+    pub async fn get_lru_scans(&self, limit: u32) -> CacheResult<Vec<ScanIndexEntry>> {
+        self.store.get_lru_scans(limit).await
+    }
+
+    /// Deletes a scan and all its records. Returns bytes freed.
+    pub async fn delete_scan(&self, scan: &ScanKey) -> CacheResult<u64> {
+        self.store.delete_scan(scan).await
+    }
+
+    /// Evicts scans until total cache size is below target_bytes.
+    /// Returns the number of scans evicted.
+    pub async fn evict_to_size(&self, target_bytes: u64) -> CacheResult<u32> {
+        self.store.evict_to_size(target_bytes).await
+    }
 }
 
 /// Native stub implementation (no-op).
@@ -273,6 +289,18 @@ impl WasmRecordCache {
 
     pub async fn clear_all(&self) -> CacheResult<()> {
         Ok(())
+    }
+
+    pub async fn get_lru_scans(&self, _limit: u32) -> CacheResult<Vec<ScanIndexEntry>> {
+        Ok(Vec::new())
+    }
+
+    pub async fn delete_scan(&self, _scan: &ScanKey) -> CacheResult<u64> {
+        Ok(0)
+    }
+
+    pub async fn evict_to_size(&self, _target_bytes: u64) -> CacheResult<u32> {
+        Ok(0)
     }
 }
 

@@ -44,6 +44,19 @@ impl ScanKey {
             timestamp,
         })
     }
+
+    /// Convert to v4 ScanKey format (data::keys::ScanKey).
+    pub fn to_v4_key(&self) -> crate::data::ScanKey {
+        crate::data::ScanKey::from_legacy(&self.site_id, self.timestamp)
+    }
+
+    /// Convert from v4 ScanKey format (data::keys::ScanKey).
+    pub fn from_v4_key(key: &crate::data::ScanKey) -> Self {
+        Self {
+            site_id: key.site.0.clone(),
+            timestamp: key.scan_start.as_secs(),
+        }
+    }
 }
 
 /// A cached NEXRAD scan with metadata.
@@ -113,6 +126,12 @@ pub struct ScanMetadata {
     pub end_timestamp: Option<i64>,
     /// Volume Coverage Pattern identifier
     pub vcp: Option<u16>,
+    /// Completeness state for this scan.
+    pub completeness: Option<crate::data::ScanCompleteness>,
+    /// Number of records currently present.
+    pub present_records: Option<u32>,
+    /// Expected number of records (from VCP).
+    pub expected_records: Option<u32>,
 }
 
 impl ScanMetadata {
@@ -127,6 +146,9 @@ impl ScanMetadata {
             file_size: scan.file_size,
             end_timestamp: None,
             vcp: None,
+            completeness: None,
+            present_records: None,
+            expected_records: None,
         }
     }
 
@@ -143,6 +165,9 @@ impl ScanMetadata {
             file_size: scan.file_size,
             end_timestamp,
             vcp,
+            completeness: None,
+            present_records: None,
+            expected_records: None,
         }
     }
 }

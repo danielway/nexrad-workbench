@@ -381,6 +381,41 @@ impl DataFacade {
     pub async fn clear_all(&self) -> CacheResult<()> {
         self.cache.clear_all().await
     }
+
+    /// Gets scans sorted by LRU (oldest first) for eviction.
+    pub async fn get_lru_scans(&self, limit: u32) -> CacheResult<Vec<ScanIndexEntry>> {
+        self.cache.get_lru_scans(limit).await
+    }
+
+    /// Deletes a scan and all its records. Returns bytes freed.
+    pub async fn delete_scan(&self, scan: &ScanKey) -> CacheResult<u64> {
+        self.cache.delete_scan(scan).await
+    }
+
+    /// Evicts scans until total cache size is below target_bytes.
+    /// Returns the number of scans evicted.
+    pub async fn evict_to_size(&self, target_bytes: u64) -> CacheResult<u32> {
+        self.cache.evict_to_size(target_bytes).await
+    }
+
+    /// Checks if eviction is needed and performs it.
+    /// Returns (should_evict, scans_evicted) tuple.
+    pub async fn check_and_evict(&self, quota_bytes: u64, target_bytes: u64) -> CacheResult<(bool, u32)> {
+        let current_size = self.cache.total_cache_size().await?;
+
+        if current_size > quota_bytes {
+            log::info!(
+                "Cache size {} exceeds quota {}, starting eviction to {}",
+                current_size,
+                quota_bytes,
+                target_bytes
+            );
+            let evicted = self.cache.evict_to_size(target_bytes).await?;
+            Ok((true, evicted))
+        } else {
+            Ok((false, 0))
+        }
+    }
 }
 
 /// Helper to process an archive download and store records.

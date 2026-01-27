@@ -136,6 +136,24 @@ impl ScanKey {
             scan_start: UnixMillis::from_secs(timestamp_secs),
         }
     }
+
+    /// Parse from legacy storage key string: "KDMX_1700000000" (underscore, seconds).
+    pub fn from_legacy_storage_key(key: &str) -> Option<Self> {
+        let parts: Vec<&str> = key.splitn(2, '_').collect();
+        if parts.len() != 2 {
+            return None;
+        }
+        let timestamp_secs = parts[1].parse::<i64>().ok()?;
+        Some(Self {
+            site: SiteId(parts[0].to_string()),
+            scan_start: UnixMillis::from_secs(timestamp_secs),
+        })
+    }
+
+    /// Convert to legacy storage key string: "KDMX_1700000000" (underscore, seconds).
+    pub fn to_legacy_storage_key(&self) -> String {
+        format!("{}_{}", self.site.0, self.scan_start.as_secs())
+    }
 }
 
 impl fmt::Display for ScanKey {
@@ -261,10 +279,14 @@ pub struct ScanIndexEntry {
     pub total_size_bytes: u64,
     /// When this entry was last updated.
     pub updated_at: UnixMillis,
+    /// When this entry was last accessed (for LRU eviction).
+    #[serde(default = "UnixMillis::now")]
+    pub last_accessed_at: UnixMillis,
 }
 
 impl ScanIndexEntry {
     pub fn new(scan: ScanKey) -> Self {
+        let now = UnixMillis::now();
         Self {
             scan,
             has_vcp: false,
@@ -272,7 +294,8 @@ impl ScanIndexEntry {
             present_records: 0,
             file_name: None,
             total_size_bytes: 0,
-            updated_at: UnixMillis::now(),
+            updated_at: now,
+            last_accessed_at: now,
         }
     }
 
@@ -394,6 +417,32 @@ mod tests {
 
         let parsed = ScanKey::from_storage_key("KDMX|1700000000000").unwrap();
         assert_eq!(parsed, key);
+    }
+
+    #[test]
+    fn test_scan_key_legacy_format() {
+        // Legacy format uses underscore and seconds
+        let key = ScanKey::from_legacy("KDMX", 1700000000);
+        assert_eq!(key.to_legacy_storage_key(), "KDMX_1700000000");
+
+        let parsed = ScanKey::from_legacy_storage_key("KDMX_1700000000").unwrap();
+        assert_eq!(parsed.site.0, "KDMX");
+        assert_eq!(parsed.scan_start.as_secs(), 1700000000);
+    }
+
+    #[test]
+    fn test_scan_key_format_conversion() {
+        // Create from legacy format (seconds)
+        let key = ScanKey::from_legacy("KDMX", 1700000000);
+
+        // Verify it converts to milliseconds internally
+        assert_eq!(key.scan_start.as_millis(), 1700000000000);
+
+        // Verify v4 storage format (milliseconds)
+        assert_eq!(key.to_storage_key(), "KDMX|1700000000000");
+
+        // Verify legacy storage format (seconds)
+        assert_eq!(key.to_legacy_storage_key(), "KDMX_1700000000");
     }
 
     #[test]

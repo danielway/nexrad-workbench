@@ -12,6 +12,7 @@ mod layer;
 mod live_mode;
 mod playback;
 pub mod radar_data;
+mod settings;
 mod stats;
 pub mod vcp;
 mod viz;
@@ -22,6 +23,7 @@ pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use playback::{PlaybackSpeed, PlaybackState};
 pub use radar_data::RadarTimeline;
+pub use settings::{format_bytes, StorageSettings};
 pub use stats::SessionStats;
 pub use vcp::get_vcp_definition;
 pub use viz::{ColorPalette, ProcessingState, RadarProduct, VizState};
@@ -90,6 +92,13 @@ pub struct AppState {
     /// Pending partial volume decode request (timestamp_ms, scan_key).
     /// Set when a PartialVolumeReady event is received, processed in update loop.
     pub pending_partial_decode: Option<(i64, ScanKey)>,
+
+    /// Storage settings (quota, eviction targets).
+    pub storage_settings: StorageSettings,
+
+    /// Flag to signal that eviction should be checked after storage.
+    /// Set after downloads complete, handled in main update loop.
+    pub check_eviction_requested: bool,
 }
 
 /// State for the datetime jump picker popup.
@@ -160,12 +169,16 @@ impl AppState {
         // Set up playback state centered on "now"
         let playback_state = PlaybackState::new_at_time(now);
 
+        // Load storage settings from localStorage
+        let storage_settings = StorageSettings::load();
+
         Self {
             playback_state,
             radar_timeline,
             status_message: "Ready".to_string(),
             session_stats: SessionStats::new(),
             alerts_state: AlertsState::with_dummy_data(),
+            storage_settings,
             // Request timeline refresh on startup to load from cache
             timeline_needs_refresh: true,
             ..Default::default()

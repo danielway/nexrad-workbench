@@ -743,6 +743,30 @@ impl eframe::App for WorkbenchApp {
             }
         }
 
+        // Handle eviction check request (after storage operations)
+        if self.state.check_eviction_requested {
+            self.state.check_eviction_requested = false;
+            let facade = self.data_facade.clone();
+            let quota = self.state.storage_settings.quota_bytes;
+            let target = self.state.storage_settings.eviction_target_bytes;
+            let ctx_clone = ctx.clone();
+
+            #[cfg(target_arch = "wasm32")]
+            wasm_bindgen_futures::spawn_local(async move {
+                match facade.check_and_evict(quota, target).await {
+                    Ok((evicted, count)) => {
+                        if evicted {
+                            log::info!("Eviction complete: removed {} scans", count);
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Eviction check failed: {}", e);
+                    }
+                }
+                ctx_clone.request_repaint();
+            });
+        }
+
         // Check for completed NEXRAD download operations
         if let Some(result) = self.download_channel.try_recv() {
             self.state.download_in_progress = false;
@@ -754,6 +778,11 @@ impl eframe::App for WorkbenchApp {
                     } else {
                         format!("Downloaded: {}", scan.file_name)
                     };
+
+                    // Request eviction check after successful download
+                    if !is_cache_hit {
+                        self.state.check_eviction_requested = true;
+                    }
 
                     // Load the volume for texture-based rendering
                     match load(&scan.data) {

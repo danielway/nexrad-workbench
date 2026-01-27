@@ -242,6 +242,9 @@ impl IndexedDbRecordStore {
         let array = Uint8Array::new(&buffer);
         let data = array.to_vec();
 
+        // Touch the scan for LRU tracking (fire and forget)
+        let _ = self.touch_scan(&key.scan).await;
+
         Ok(Some(RecordBlob::new(key.clone(), data)))
     }
 
@@ -305,6 +308,12 @@ impl IndexedDbRecordStore {
         }
 
         keys.sort_by_key(|k| k.record_id);
+
+        // Touch the scan for LRU tracking if we found records
+        if !keys.is_empty() {
+            let _ = self.touch_scan(scan).await;
+        }
+
         Ok(keys)
     }
 
@@ -597,6 +606,183 @@ impl IndexedDbRecordStore {
         }
 
         Ok(total)
+    }
+
+    /// Updates the last_accessed_at timestamp for a scan (LRU tracking).
+    pub async fn touch_scan(&self, scan: &ScanKey) -> Result<(), String> {
+        self.ensure_open().await?;
+        let db = self.get_db()?;
+
+        let storage_key = scan.to_storage_key();
+
+        let tx = db
+            .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readwrite)
+            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
+
+        let store = tx
+            .object_store(STORE_SCAN_INDEX)
+            .map_err(|e| format!("Failed to get store: {:?}", e))?;
+
+        let get_req = store
+            .get(&JsValue::from_str(&storage_key))
+            .map_err(|e| format!("Failed to get: {:?}", e))?;
+        let existing_result = wait_for_request(&get_req).await?;
+
+        if let Some(mut entry) = deserialize_js_value::<ScanIndexEntry>(&existing_result) {
+            entry.last_accessed_at = UnixMillis::now();
+
+            let json = serde_json::to_string(&entry)
+                .map_err(|e| format!("Serialization error: {}", e))?;
+            let js = js_sys::JSON::parse(&json)
+                .map_err(|e| format!("JSON parse error: {:?}", e))?;
+
+            store
+                .put_with_key(&js, &JsValue::from_str(&storage_key))
+                .map_err(|e| format!("Failed to put: {:?}", e))?;
+
+            wait_for_transaction(&tx).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Gets scans sorted by last_accessed_at (oldest first) for LRU eviction.
+    pub async fn get_lru_scans(&self, limit: u32) -> Result<Vec<ScanIndexEntry>, String> {
+        self.ensure_open().await?;
+        let db = self.get_db()?;
+
+        let tx = db
+            .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readonly)
+            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
+
+        let store = tx
+            .object_store(STORE_SCAN_INDEX)
+            .map_err(|e| format!("Failed to get store: {:?}", e))?;
+
+        let request = store
+            .get_all()
+            .map_err(|e| format!("Failed to get all: {:?}", e))?;
+
+        let result = wait_for_request(&request).await?;
+        let array = Array::from(&result);
+
+        let mut scans: Vec<ScanIndexEntry> = Vec::new();
+        for i in 0..array.length() {
+            let value = array.get(i);
+            if let Ok(json_str) = js_sys::JSON::stringify(&value) {
+                if let Some(s) = json_str.as_string() {
+                    if let Ok(entry) = serde_json::from_str::<ScanIndexEntry>(&s) {
+                        scans.push(entry);
+                    }
+                }
+            }
+        }
+
+        // Sort by last_accessed_at ascending (oldest first)
+        scans.sort_by_key(|s| s.last_accessed_at.0);
+
+        // Return only the requested limit
+        scans.truncate(limit as usize);
+        Ok(scans)
+    }
+
+    /// Deletes a scan and all its records.
+    /// Returns the number of bytes freed.
+    pub async fn delete_scan(&self, scan: &ScanKey) -> Result<u64, String> {
+        self.ensure_open().await?;
+        let db = self.get_db()?;
+
+        let scan_storage_key = scan.to_storage_key();
+
+        // First, get the scan entry to know its size
+        let scan_entry = self.scan_availability(scan).await?;
+        let bytes_freed = scan_entry.as_ref().map(|e| e.total_size_bytes).unwrap_or(0);
+
+        // Get all record keys for this scan
+        let record_keys = self.list_records_for_scan(scan).await?;
+
+        // Delete all records and indexes in a transaction
+        let store_names = Array::new();
+        store_names.push(&JsValue::from_str(STORE_RECORDS));
+        store_names.push(&JsValue::from_str(STORE_RECORD_INDEX));
+        store_names.push(&JsValue::from_str(STORE_SCAN_INDEX));
+
+        let tx = db
+            .transaction_with_str_sequence_and_mode(&store_names, IdbTransactionMode::Readwrite)
+            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
+
+        let records_store = tx
+            .object_store(STORE_RECORDS)
+            .map_err(|e| format!("Failed to get records store: {:?}", e))?;
+
+        let index_store = tx
+            .object_store(STORE_RECORD_INDEX)
+            .map_err(|e| format!("Failed to get record_index store: {:?}", e))?;
+
+        let scan_store = tx
+            .object_store(STORE_SCAN_INDEX)
+            .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
+
+        // Delete all records and record index entries
+        for key in record_keys {
+            let record_storage_key = key.to_storage_key();
+            records_store
+                .delete(&JsValue::from_str(&record_storage_key))
+                .map_err(|e| format!("Failed to delete record: {:?}", e))?;
+            index_store
+                .delete(&JsValue::from_str(&record_storage_key))
+                .map_err(|e| format!("Failed to delete record index: {:?}", e))?;
+        }
+
+        // Delete scan index entry
+        scan_store
+            .delete(&JsValue::from_str(&scan_storage_key))
+            .map_err(|e| format!("Failed to delete scan index: {:?}", e))?;
+
+        wait_for_transaction(&tx).await?;
+
+        log::info!("Deleted scan {} ({} bytes freed)", scan, bytes_freed);
+        Ok(bytes_freed)
+    }
+
+    /// Evicts scans until total cache size is below target_bytes.
+    /// Returns the number of scans evicted.
+    pub async fn evict_to_size(&self, target_bytes: u64) -> Result<u32, String> {
+        let mut current_size = self.total_cache_size().await?;
+        let mut evicted_count = 0u32;
+
+        while current_size > target_bytes {
+            // Get the oldest scan
+            let lru_scans = self.get_lru_scans(1).await?;
+
+            if lru_scans.is_empty() {
+                // No more scans to evict
+                break;
+            }
+
+            let oldest = &lru_scans[0];
+            let bytes_freed = self.delete_scan(&oldest.scan).await?;
+
+            current_size = current_size.saturating_sub(bytes_freed);
+            evicted_count += 1;
+
+            log::info!(
+                "Evicted scan {} (freed {} bytes, {} remaining)",
+                oldest.scan,
+                bytes_freed,
+                current_size
+            );
+        }
+
+        if evicted_count > 0 {
+            log::info!(
+                "LRU eviction complete: evicted {} scans, cache now {} bytes",
+                evicted_count,
+                current_size
+            );
+        }
+
+        Ok(evicted_count)
     }
 
     /// Clears all data from v4 stores.

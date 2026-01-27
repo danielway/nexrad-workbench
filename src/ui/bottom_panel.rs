@@ -1,6 +1,7 @@
 //! Bottom panel UI: playback controls, timeline, and session statistics.
 
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
+use crate::data::ScanCompleteness;
 use crate::state::radar_data::RadarTimeline;
 use crate::state::{AppState, LiveExitReason, LivePhase, PlaybackSpeed};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
@@ -46,8 +47,32 @@ fn render_radar_data(
     // Helper to convert timestamp to x position
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    let scan_color = tl_colors::SCAN_FILL;
-    let scan_border = tl_colors::SCAN_BORDER;
+    // Color function based on completeness
+    // Complete = solid green, PartialWithVcp = muted green, PartialNoVcp = amber
+    let completeness_to_color = |completeness: Option<ScanCompleteness>| -> (Color32, Color32) {
+        match completeness {
+            Some(ScanCompleteness::Complete) => (
+                tl_colors::SCAN_FILL,     // Normal green fill
+                tl_colors::SCAN_BORDER,   // Normal border
+            ),
+            Some(ScanCompleteness::PartialWithVcp) => (
+                Color32::from_rgb(60, 100, 70),   // Muted green fill
+                Color32::from_rgb(40, 80, 50),    // Muted border
+            ),
+            Some(ScanCompleteness::PartialNoVcp) => (
+                Color32::from_rgb(180, 140, 60),  // Amber fill
+                Color32::from_rgb(140, 100, 40),  // Amber border
+            ),
+            Some(ScanCompleteness::Missing) => (
+                Color32::from_rgb(80, 80, 80),    // Gray fill
+                Color32::from_rgb(60, 60, 60),    // Gray border
+            ),
+            None => (
+                tl_colors::SCAN_FILL,     // Default to green
+                tl_colors::SCAN_BORDER,
+            ),
+        }
+    };
 
     // Color function based on elevation angle (0-20 degrees typical range)
     // Lower elevations are darker/more blue, higher elevations are lighter/more cyan
@@ -92,11 +117,12 @@ fn render_radar_data(
                         Pos2::new(x_end, rect.bottom() - 3.0),
                     );
 
-                    painter.rect_filled(scan_rect, 2.0, scan_color);
+                    let (scan_fill, scan_stroke) = completeness_to_color(scan.completeness);
+                    painter.rect_filled(scan_rect, 2.0, scan_fill);
                     painter.rect_stroke(
                         scan_rect,
                         2.0,
-                        Stroke::new(1.0, scan_border),
+                        Stroke::new(1.0, scan_stroke),
                         StrokeKind::Inside,
                     );
                 }
@@ -115,11 +141,12 @@ fn render_radar_data(
                         Pos2::new(scan_x_end, rect.bottom() - 3.0),
                     );
 
-                    painter.rect_filled(scan_rect, 2.0, scan_color);
+                    let (scan_fill, scan_stroke) = completeness_to_color(scan.completeness);
+                    painter.rect_filled(scan_rect, 2.0, scan_fill);
                     painter.rect_stroke(
                         scan_rect,
                         2.0,
-                        Stroke::new(1.0, scan_border),
+                        Stroke::new(1.0, scan_stroke),
                         StrokeKind::Inside,
                     );
 
