@@ -254,6 +254,15 @@ impl WorkbenchApp {
         }
         if let Some(time) = url_params.time {
             state.playback_state.set_playback_position(time);
+            // Center the timeline view on the restored playback position
+            let half_view = (1000.0 / state.playback_state.timeline_zoom) / 2.0;
+            state.playback_state.timeline_view_start = time - half_view;
+        }
+        if let Some(mz) = url_params.view.mz {
+            state.viz_state.zoom = mz;
+        }
+        if let Some(tz) = url_params.view.tz {
+            state.playback_state.timeline_zoom = tz;
         }
 
         let initial_site_id = state.viz_state.site_id.clone();
@@ -1061,11 +1070,16 @@ impl eframe::App for WorkbenchApp {
             let now = web_time::Instant::now();
             if now.duration_since(self.last_url_push).as_secs_f64() >= 1.0 {
                 self.last_url_push = now;
+                let view = state::url_state::ViewState {
+                    mz: Some(self.state.viz_state.zoom),
+                    tz: Some(self.state.playback_state.timeline_zoom),
+                };
                 state::url_state::push_to_url(
                     &self.state.viz_state.site_id,
                     self.state.playback_state.playback_position(),
                     self.state.viz_state.center_lat,
                     self.state.viz_state.center_lon,
+                    &view,
                 );
             }
         }
