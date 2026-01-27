@@ -79,6 +79,33 @@ impl SessionStats {
         format_bytes(self.session_transferred_bytes)
     }
 
+    /// Record a fetch latency sample, updating the running average.
+    pub fn record_fetch_latency(&mut self, ms: f64) {
+        const ALPHA: f64 = 0.2;
+        self.median_chunk_latency_ms = Some(match self.median_chunk_latency_ms {
+            Some(avg) => avg * (1.0 - ALPHA) + ms * ALPHA,
+            None => ms,
+        });
+    }
+
+    /// Record a decompression time sample, updating the running average.
+    pub fn record_decompression_time(&mut self, ms: f64) {
+        const ALPHA: f64 = 0.2;
+        self.median_decompression_time_ms = Some(match self.median_decompression_time_ms {
+            Some(avg) => avg * (1.0 - ALPHA) + ms * ALPHA,
+            None => ms,
+        });
+    }
+
+    /// Record a decode time sample, updating the running average.
+    pub fn record_decode_time(&mut self, ms: f64) {
+        const ALPHA: f64 = 0.2;
+        self.median_decode_time_ms = Some(match self.median_decode_time_ms {
+            Some(avg) => avg * (1.0 - ALPHA) + ms * ALPHA,
+            None => ms,
+        });
+    }
+
     /// Format latency statistics for display.
     pub fn format_latency_stats(&self) -> String {
         let mut parts = Vec::new();

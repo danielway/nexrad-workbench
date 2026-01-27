@@ -175,8 +175,12 @@ impl ScanMetadata {
 /// Result of a download operation.
 #[derive(Debug, Clone)]
 pub enum DownloadResult {
-    /// Download completed successfully
-    Success(CachedScan),
+    /// Download completed successfully, with timing info
+    Success {
+        scan: CachedScan,
+        fetch_latency_ms: f64,
+        decode_latency_ms: f64,
+    },
     /// Download failed with an error message
     Error(String),
     /// Download progress update (current bytes, total bytes)

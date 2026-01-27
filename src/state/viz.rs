@@ -199,6 +199,9 @@ pub struct VizState {
 
     /// Geographic center longitude (radar site location)
     pub center_lon: f64,
+
+    /// Staleness of the currently displayed data in seconds (for fixed-tilt mode).
+    pub data_staleness_secs: Option<f64>,
 }
 
 impl Default for VizState {
@@ -217,6 +220,7 @@ impl Default for VizState {
             // Default to KDMX - Des Moines, Iowa
             center_lat: 41.7312,
             center_lon: -93.7229,
+            data_staleness_secs: None,
         }
     }
 }

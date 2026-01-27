@@ -24,6 +24,7 @@ pub enum RealtimeResult {
         chunks_in_volume: u32,
         time_until_next: Option<Duration>,
         is_volume_end: bool,
+        fetch_latency_ms: f64,
     },
     /// Record stored in cache (emitted for each chunk)
     RecordStored {
@@ -210,9 +211,11 @@ async fn streaming_loop(
             }
         }
 
-        // Fetch next chunk
+        // Fetch next chunk (with timing)
+        let chunk_fetch_start = web_time::Instant::now();
         match iter.try_next().await {
             Ok(Some(chunk)) => {
+                let chunk_fetch_ms = chunk_fetch_start.elapsed().as_secs_f64() * 1000.0;
                 stats_tracker.update(&stats, &iter);
 
                 let chunk_data = chunk.chunk.data();
@@ -239,6 +242,7 @@ async fn streaming_loop(
                         chunks_in_volume,
                         time_until_next,
                         is_volume_end: is_end,
+                        fetch_latency_ms: chunk_fetch_ms,
                     });
                 }
 

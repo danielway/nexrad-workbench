@@ -405,8 +405,9 @@ async fn download_specific_file(
 
     log::info!("Downloading: {}", file_name);
 
-    // Request 2: Download the file
+    // Request 2: Download the file (with timing)
     stats.request_started();
+    let fetch_start = web_time::Instant::now();
     let file = match archive::download_file(file_meta).await {
         Ok(file) => file,
         Err(e) => {
@@ -414,14 +415,16 @@ async fn download_specific_file(
             return DownloadResult::Error(format!("Download failed: {}", e));
         }
     };
+    let fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0;
 
     let data = file.data().to_vec();
     let bytes_downloaded = data.len() as u64;
-    log::info!("Downloaded {} bytes", bytes_downloaded);
+    log::info!("Downloaded {} bytes in {:.0}ms", bytes_downloaded, fetch_ms);
 
     let cached = CachedScan::new(key, file_name.to_string(), data.clone());
 
-    // Store as records in v4 cache only
+    // Store as records in v4 cache only (with timing)
+    let decode_start = web_time::Instant::now();
     match process_archive_download(&facade, site_id, file_name, timestamp, &data).await {
         Ok((scan_key, records_stored)) => {
             log::info!(
@@ -434,9 +437,14 @@ async fn download_specific_file(
             log::warn!("Failed to store records in v4 cache: {}", e);
         }
     }
+    let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
 
     stats.request_completed(bytes_downloaded);
-    DownloadResult::Success(cached)
+    DownloadResult::Success {
+        scan: cached,
+        fetch_latency_ms: fetch_ms,
+        decode_latency_ms: decode_ms,
+    }
 }
 
 /// Performs the actual NEXRAD download using nexrad-data crate.
@@ -512,6 +520,7 @@ async fn download_nexrad_data(
 
     // Request 2: Download the file
     stats.request_started();
+    let fetch_start = web_time::Instant::now();
     let file = match archive::download_file(file_meta).await {
         Ok(file) => file,
         Err(e) => {
@@ -519,16 +528,18 @@ async fn download_nexrad_data(
             return DownloadResult::Error(format!("Download failed: {}", e));
         }
     };
+    let fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0;
 
     // Get the raw compressed data from the file
     let data = file.data().to_vec();
     let bytes_downloaded = data.len() as u64;
-    log::info!("Downloaded {} bytes", bytes_downloaded);
+    log::info!("Downloaded {} bytes in {:.0}ms", bytes_downloaded, fetch_ms);
 
     // Create cached scan with raw data
     let cached = CachedScan::new(key.clone(), file_name.clone(), data.clone());
 
     // Store in v4 cache only
+    let decode_start = web_time::Instant::now();
     match process_archive_download(&facade, site_id, &file_name, timestamp, &data).await {
         Ok((scan_key, records_stored)) => {
             log::info!(
@@ -541,9 +552,14 @@ async fn download_nexrad_data(
             log::warn!("Failed to store records in v4 cache: {}", e);
         }
     }
+    let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
 
     stats.request_completed(bytes_downloaded);
-    DownloadResult::Success(cached)
+    DownloadResult::Success {
+        scan: cached,
+        fetch_latency_ms: fetch_ms,
+        decode_latency_ms: decode_ms,
+    }
 }
 
 /// Native download implementation using nexrad's built-in support.
@@ -588,5 +604,9 @@ async fn download_nexrad_data_native(site_id: &str, date: chrono::NaiveDate) -> 
     let key = ScanKey::new(site_id, timestamp);
     let cached = CachedScan::new(key, file_name, data);
 
-    DownloadResult::Success(cached)
+    DownloadResult::Success {
+        scan: cached,
+        fetch_latency_ms: 0.0,
+        decode_latency_ms: 0.0,
+    }
 }

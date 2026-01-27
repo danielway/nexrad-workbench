@@ -99,6 +99,9 @@ pub struct AppState {
     /// Flag to signal that eviction should be checked after storage.
     /// Set after downloads complete, handled in main update loop.
     pub check_eviction_requested: bool,
+
+    /// Current sweep animation state (updated each frame).
+    pub animation_state: crate::nexrad::AnimationState,
 }
 
 /// State for the datetime jump picker popup.

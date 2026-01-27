@@ -148,6 +148,9 @@ pub struct WorkbenchApp {
     /// Populated by async decode tasks, consumed by update loop.
     #[cfg(target_arch = "wasm32")]
     partial_volume_results: std::rc::Rc<std::cell::RefCell<Vec<(i64, Volume)>>>,
+
+    /// Sweep animator for radial-accurate playback animation.
+    sweep_animator: nexrad::SweepAnimator,
 }
 
 // Embed shapefile data at compile time
@@ -268,6 +271,7 @@ impl WorkbenchApp {
             realtime_channel,
             #[cfg(target_arch = "wasm32")]
             partial_volume_results: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            sweep_animator: nexrad::SweepAnimator::new(),
         }
     }
 
@@ -503,7 +507,9 @@ impl WorkbenchApp {
                 chunks_in_volume,
                 time_until_next,
                 is_volume_end,
+                fetch_latency_ms,
             } => {
+                self.state.session_stats.record_fetch_latency(fetch_latency_ms);
                 log::debug!(
                     "Chunk received: {} in volume, is_end={}",
                     chunks_in_volume,
@@ -766,9 +772,18 @@ impl eframe::App for WorkbenchApp {
         // Check for completed NEXRAD download operations
         if let Some(result) = self.download_channel.try_recv() {
             self.state.download_in_progress = false;
-            match &result {
-                nexrad::DownloadResult::Success(scan) | nexrad::DownloadResult::CacheHit(scan) => {
-                    let is_cache_hit = matches!(result, nexrad::DownloadResult::CacheHit(_));
+            // Extract scan and timing info from result
+            let (scan_opt, is_cache_hit) = match &result {
+                nexrad::DownloadResult::Success { scan, fetch_latency_ms, decode_latency_ms } => {
+                    self.state.session_stats.record_fetch_latency(*fetch_latency_ms);
+                    self.state.session_stats.record_decode_time(*decode_latency_ms);
+                    (Some(scan), false)
+                }
+                nexrad::DownloadResult::CacheHit(scan) => (Some(scan), true),
+                _ => (None, false),
+            };
+
+            if let Some(scan) = scan_opt {
                     self.state.status_message = if is_cache_hit {
                         format!("Loaded from cache: {}", scan.file_name)
                     } else {
@@ -815,7 +830,9 @@ impl eframe::App for WorkbenchApp {
 
                     // Refresh timeline to show the new/loaded scan
                     self.state.timeline_needs_refresh = true;
-                }
+            }
+
+            match &result {
                 nexrad::DownloadResult::Error(msg) => {
                     self.state.status_message = format!("Download failed: {}", msg);
                     log::error!("Download failed: {}", msg);
@@ -824,6 +841,7 @@ impl eframe::App for WorkbenchApp {
                     self.state.status_message =
                         format!("Downloading: {} / {} bytes", current, total);
                 }
+                _ => {}
             }
         }
 
@@ -1005,6 +1023,13 @@ impl eframe::App for WorkbenchApp {
         self.state
             .session_stats
             .update_from_network_stats(&network_stats);
+
+        // Update sweep animator
+        {
+            let playback_pos = self.state.playback_state.playback_position();
+            let scan = self.state.radar_timeline.find_scan_at_timestamp(playback_pos);
+            self.state.animation_state = self.sweep_animator.update(playback_pos, scan);
+        }
 
         // Render UI panels in the correct order for egui layout
         // Side and top/bottom panels must be rendered before CentralPanel

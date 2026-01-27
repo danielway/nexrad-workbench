@@ -78,6 +78,19 @@ pub fn render_canvas_with_geo(
                 playback_ts_ms,
             );
 
+            // Compute staleness for fixed-tilt mode
+            {
+                #[cfg(target_arch = "wasm32")]
+                let now_ms = js_sys::Date::now() as i64;
+                #[cfg(not(target_arch = "wasm32"))]
+                let now_ms = (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0)
+                    * 1000.0) as i64;
+                state.viz_state.data_staleness_secs = render_sweep.staleness_seconds(now_ms);
+            }
+
             // Render if we have radials
             if !render_sweep.is_empty() {
                 if let Some(render_time_ms) = render_dynamic_sweep(
@@ -112,12 +125,40 @@ pub fn render_canvas_with_geo(
             render_nws_alerts(&painter, &projection, &state.alerts_state, current_time);
         }
 
-        // Get azimuth from actual radial data (only show sweep line in real-time mode)
-        let azimuth = if state.playback_state.speed == crate::state::PlaybackSpeed::Realtime {
+        // Get azimuth: show sweep line when playing with valid animation, or in realtime mode
+        let azimuth = if state.playback_state.playing && state.animation_state.is_valid {
+            Some(state.animation_state.azimuth)
+        } else if state.playback_state.speed == crate::state::PlaybackSpeed::Realtime {
             radar_position.as_ref().map(|pos| pos.azimuth)
         } else {
             None
         };
+
+        // Draw dark arc overlay to mask "future" portion during animated playback
+        if state.playback_state.playing && state.animation_state.is_valid {
+            let anim_az = state.animation_state.azimuth;
+            let center = rect.center() + state.viz_state.pan_offset;
+            let base_radius = rect.width().min(rect.height()) * 0.4;
+            let radius = base_radius * state.viz_state.zoom;
+            let mask_color = Color32::from_rgba_unmultiplied(0, 0, 0, 140);
+
+            // Build a fan of triangles from anim_az clockwise back to anim_az (the "future" arc)
+            let num_segments = 60;
+            let arc_span = 360.0 - 1.0; // degrees of "future" to mask
+            for i in 0..num_segments {
+                let frac0 = i as f32 / num_segments as f32;
+                let frac1 = (i + 1) as f32 / num_segments as f32;
+                let a0 = (anim_az + 1.0 + frac0 * arc_span - 90.0) * PI / 180.0;
+                let a1 = (anim_az + 1.0 + frac1 * arc_span - 90.0) * PI / 180.0;
+                let p0 = Pos2::new(center.x + radius * a0.cos(), center.y + radius * a0.sin());
+                let p1 = Pos2::new(center.x + radius * a1.cos(), center.y + radius * a1.sin());
+                painter.add(egui::Shape::convex_polygon(
+                    vec![center, p0, p1],
+                    mask_color,
+                    Stroke::NONE,
+                ));
+            }
+        }
 
         // Draw the radar sweep visualization
         render_radar_sweep(&painter, &rect, state, azimuth);
@@ -270,6 +311,25 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
                     .size(12.0)
                     .color(Color32::from_rgb(200, 200, 220)),
             );
+            if state.viz_state.render_mode == crate::state::RenderMode::FixedTilt {
+                if let Some(secs) = state.viz_state.data_staleness_secs {
+                    let m = (secs / 60.0) as u32;
+                    let s = (secs % 60.0) as u32;
+                    let color = if secs > 300.0 {
+                        Color32::from_rgb(255, 80, 80)
+                    } else if secs > 60.0 {
+                        Color32::from_rgb(255, 200, 60)
+                    } else {
+                        Color32::from_rgb(80, 220, 100)
+                    };
+                    ui.label(
+                        RichText::new(format!("Age: {}m {}s", m, s))
+                            .monospace()
+                            .size(12.0)
+                            .color(color),
+                    );
+                }
+            }
         });
     });
 }

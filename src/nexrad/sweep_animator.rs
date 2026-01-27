@@ -78,7 +78,6 @@ impl SweepAnimator {
     /// When enabled, the animator calculates azimuth ranges for partial sweep
     /// display based on playback position. When disabled (default), complete
     /// sweeps are always rendered.
-    #[allow(dead_code)]
     pub fn set_partial_sweep_enabled(&mut self, enabled: bool) {
         self.partial_sweep_enabled = enabled;
     }

@@ -93,6 +93,14 @@ fn render_radar_data(
                 let x_start = ts_to_x(range.start).max(rect.left());
                 let x_end = ts_to_x(range.end).min(rect.right());
 
+                // Enforce minimum visual width for sub-pixel data regions
+                let visual_width = x_end - x_start;
+                let x_end = if visual_width > 0.0 && visual_width < 8.0 {
+                    (x_start + 8.0).min(rect.right())
+                } else {
+                    x_end
+                };
+
                 if x_end > x_start {
                     painter.rect_filled(
                         Rect::from_min_max(
