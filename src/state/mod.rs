@@ -21,12 +21,12 @@ pub use alerts::{AlertSummary, AlertsState, NwsAlert};
 pub use data_source::UploadState;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
-pub use playback::{PlaybackSpeed, PlaybackState};
+pub use playback::{LoopMode, PlaybackDirection, PlaybackSpeed, PlaybackState, TimelineBounds, TimeModel};
 pub use radar_data::RadarTimeline;
 pub use settings::{format_bytes, StorageSettings};
 pub use stats::SessionStats;
 pub use vcp::get_vcp_definition;
-pub use viz::{ColorPalette, ProcessingState, RadarProduct, VizState};
+pub use viz::{BlendStrategy, ColorPalette, ProcessingState, RadarProduct, RenderMode, VizState};
 
 /// Root application state containing all sub-states.
 #[derive(Default)]

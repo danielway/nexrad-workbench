@@ -70,6 +70,68 @@ impl RadarProduct {
     }
 }
 
+// ============================================================================
+// Render Mode System
+// ============================================================================
+
+/// Radar rendering mode per PRODUCT.md specification.
+///
+/// Determines how radar data is selected and displayed on the canvas.
+#[derive(Default, Clone, Copy, PartialEq)]
+pub enum RenderMode {
+    /// Fixed elevation - shows complete sweep at a specific tilt.
+    /// Data may become stale as radar continues scanning other elevations.
+    #[default]
+    FixedTilt,
+
+    /// Most recent data - blends data from multiple sweeps to show
+    /// the most temporally immediate data at each azimuth.
+    MostRecent,
+}
+
+impl RenderMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            RenderMode::FixedTilt => "Fixed Tilt",
+            RenderMode::MostRecent => "Most Recent",
+        }
+    }
+
+    pub fn description(&self) -> &'static str {
+        match self {
+            RenderMode::FixedTilt => "Shows complete sweep at selected elevation",
+            RenderMode::MostRecent => "Shows most recent data across all tilts",
+        }
+    }
+
+    pub fn all() -> &'static [RenderMode] {
+        &[RenderMode::FixedTilt, RenderMode::MostRecent]
+    }
+}
+
+/// Strategy for handling sweep transitions in MostRecent mode.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub enum BlendStrategy {
+    /// Continuously wipe older data as sweep progresses
+    #[default]
+    ContinuousWipe,
+    /// Clear display at sweep end, start fresh
+    ClearOnSweepEnd,
+}
+
+impl BlendStrategy {
+    pub fn label(&self) -> &'static str {
+        match self {
+            BlendStrategy::ContinuousWipe => "Continuous Wipe",
+            BlendStrategy::ClearOnSweepEnd => "Clear on Sweep End",
+        }
+    }
+}
+
+// ============================================================================
+// Color Palettes
+// ============================================================================
+
 /// Available color palettes for rendering.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum ColorPalette {
@@ -114,6 +176,15 @@ pub struct VizState {
     /// Selected color palette
     pub palette: ColorPalette,
 
+    /// Render mode (fixed-tilt vs most-recent)
+    pub render_mode: RenderMode,
+
+    /// Target elevation for fixed-tilt mode (degrees)
+    pub target_elevation: f32,
+
+    /// Blend strategy for most-recent mode
+    pub blend_strategy: BlendStrategy,
+
     /// Overlay info: radar site ID
     pub site_id: String,
 
@@ -137,6 +208,9 @@ impl Default for VizState {
             pan_offset: Vec2::ZERO,
             product: RadarProduct::default(),
             palette: ColorPalette::default(),
+            render_mode: RenderMode::default(),
+            target_elevation: 0.5, // Default lowest tilt
+            blend_strategy: BlendStrategy::default(),
             site_id: "KDMX".to_string(),
             timestamp: "--:--:-- UTC".to_string(),
             elevation: "-- deg".to_string(),

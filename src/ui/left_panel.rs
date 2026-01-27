@@ -8,9 +8,6 @@ use chrono::Datelike;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
 
-/// Default target elevation for rendering (degrees).
-const DEFAULT_TARGET_ELEVATION: f32 = 0.5;
-
 /// Radar position data from the most recent radial in the render sweep
 pub struct RadarPosition {
     /// Azimuth angle in degrees (0-360)
@@ -25,6 +22,7 @@ pub struct RadarPosition {
 /// of the most recent radial included in that sweep.
 fn find_radar_position_at_timestamp(
     volume_ring: &VolumeRing,
+    target_elevation: f32,
     playback_timestamp_ms: i64,
 ) -> Option<RadarPosition> {
     if volume_ring.is_empty() {
@@ -32,7 +30,7 @@ fn find_radar_position_at_timestamp(
     }
 
     let render_sweep =
-        RenderSweep::from_volume_ring(volume_ring, DEFAULT_TARGET_ELEVATION, playback_timestamp_ms);
+        RenderSweep::from_volume_ring(volume_ring, target_elevation, playback_timestamp_ms);
 
     render_sweep
         .most_recent_radial()
@@ -266,21 +264,22 @@ fn render_radar_operations_section(
     ui.add_space(5.0);
 
     // Get radar position from volume ring at current playback timestamp
-    let playback_ts_ms = state
-        .playback_state
-        .selected_timestamp
-        .map(|ts| (ts * 1000.0) as i64)
-        .unwrap_or(i64::MAX);
+    let playback_ts_ms = (state.playback_state.playback_position() * 1000.0) as i64;
 
-    let radar_position = find_radar_position_at_timestamp(volume_ring, playback_ts_ms);
+    let radar_position = find_radar_position_at_timestamp(
+        volume_ring,
+        state.viz_state.target_elevation,
+        playback_ts_ms,
+    );
 
     let radar_state = query_radar_state_at_timestamp(state, &radar_position);
 
     // Top-down and side views side-by-side
+    let is_live = state.live_mode_state.is_active();
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(RichText::new("Azimuth").small());
-            render_top_down_view(ui, radar_state.azimuth);
+            render_top_down_view(ui, radar_state.azimuth, is_live);
         });
         ui.add_space(5.0);
         ui.vertical(|ui| {
@@ -299,19 +298,7 @@ fn query_radar_state_at_timestamp<'a>(
     state: &'a AppState,
     radar_position: &Option<RadarPosition>,
 ) -> RadarStateAtTimestamp<'a> {
-    let ts = match state.playback_state.selected_timestamp {
-        Some(ts) => ts,
-        None => {
-            return RadarStateAtTimestamp {
-                azimuth: None,
-                elevation: None,
-                vcp: None,
-                sweep_index: None,
-                scan_progress: None,
-                scan: None,
-            }
-        }
-    };
+    let ts = state.playback_state.playback_position();
 
     // Find the scan at the current timestamp
     let scan = state.radar_timeline.find_scan_at_timestamp(ts);
@@ -348,7 +335,7 @@ fn query_radar_state_at_timestamp<'a>(
     }
 }
 
-fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>) {
+fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) {
     let size = Vec2::new(100.0, 100.0);
     let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
     let rect = response.rect;
@@ -358,6 +345,49 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>) {
 
     // Dark background
     painter.rect_filled(rect, 4.0, Color32::from_rgb(30, 30, 40));
+
+    // In live mode, draw shaded "future" region (expected upcoming data)
+    if is_live {
+        if let Some(az) = azimuth {
+            // Show a ~90 degree shaded sector ahead of current azimuth
+            // This represents ~15 seconds of expected data at typical rotation speed
+            let future_extent = 90.0_f32; // degrees
+
+            // Draw shaded arc using multiple line segments
+            let start_angle = az;
+            let end_angle = az + future_extent;
+            let num_segments = 20;
+
+            for i in 0..num_segments {
+                let t = i as f32 / num_segments as f32;
+                let angle1 = start_angle + t * future_extent;
+                let angle2 = start_angle + (t + 1.0 / num_segments as f32) * future_extent;
+
+                // Convert to radians (0 = North, clockwise, screen coords)
+                let rad1 = (angle1 - 90.0) * PI / 180.0;
+                let rad2 = (angle2 - 90.0) * PI / 180.0;
+
+                // Create a wedge segment
+                let inner_radius = 0.0;
+                let p0 = center;
+                let p1 = Pos2::new(
+                    center.x + radius * rad1.cos(),
+                    center.y + radius * rad1.sin(),
+                );
+                let p2 = Pos2::new(
+                    center.x + radius * rad2.cos(),
+                    center.y + radius * rad2.sin(),
+                );
+
+                // Draw filled triangle for this segment
+                painter.add(egui::Shape::convex_polygon(
+                    vec![p0, p1, p2],
+                    Color32::from_rgba_unmultiplied(80, 80, 120, 50),
+                    Stroke::NONE,
+                ));
+            }
+        }
+    }
 
     // Concentric range rings
     let ring_color = Color32::from_rgb(60, 60, 80);

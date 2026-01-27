@@ -13,9 +13,6 @@ use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, 
 use geo_types::Coord;
 use std::f32::consts::PI;
 
-/// Default target elevation for rendering (degrees).
-const DEFAULT_TARGET_ELEVATION: f32 = 0.5;
-
 /// Render canvas with optional geographic layers and NEXRAD data.
 ///
 /// Radar data is rendered using the `nexrad-render` crate which produces
@@ -71,16 +68,13 @@ pub fn render_canvas_with_geo(
         // Build dynamic render sweep and render radar data
         let radar_position = if !volume_ring.is_empty() {
             // Get playback timestamp in milliseconds
-            let playback_ts_ms = state
-                .playback_state
-                .selected_timestamp
-                .map(|ts| (ts * 1000.0) as i64)
-                .unwrap_or(i64::MAX);
+            let playback_ts_ms = (state.playback_state.playback_position() * 1000.0) as i64;
 
             // Build the dynamic sweep from all volumes in the ring
+            // Use target elevation from viz state (user-configurable)
             let render_sweep = RenderSweep::from_volume_ring(
                 volume_ring,
-                DEFAULT_TARGET_ELEVATION,
+                state.viz_state.target_elevation,
                 playback_ts_ms,
             );
 
@@ -114,10 +108,7 @@ pub fn render_canvas_with_geo(
 
         // Draw NWS alerts layer if enabled
         if state.layer_state.nws_alerts {
-            let current_time = state
-                .playback_state
-                .selected_timestamp
-                .unwrap_or(1714564800.0);
+            let current_time = state.playback_state.playback_position();
             render_nws_alerts(&painter, &projection, &state.alerts_state, current_time);
         }
 

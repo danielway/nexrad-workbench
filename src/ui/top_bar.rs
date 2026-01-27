@@ -33,10 +33,7 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
 
                 // Push alert summary to the right
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let current_time = state
-                        .playback_state
-                        .selected_timestamp
-                        .unwrap_or(1714564800.0);
+                    let current_time = state.playback_state.playback_position();
                     let summary = state.alerts_state.count_by_severity(current_time);
                     render_alert_summary(ui, &summary);
                 });
@@ -50,10 +47,7 @@ fn render_live_status(ui: &mut egui::Ui, state: &AppState) {
     let pulse_alpha = state.live_mode_state.pulse_alpha();
 
     // Get current time for status text
-    let now = state
-        .playback_state
-        .selected_timestamp
-        .unwrap_or(1714564800.0);
+    let now = state.playback_state.playback_position();
 
     match phase {
         LivePhase::AcquiringLock => {

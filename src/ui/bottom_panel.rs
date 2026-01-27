@@ -3,7 +3,7 @@
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use crate::data::ScanCompleteness;
 use crate::state::radar_data::RadarTimeline;
-use crate::state::{AppState, LiveExitReason, LivePhase, PlaybackSpeed};
+use crate::state::{AppState, LiveExitReason, LivePhase, LoopMode, PlaybackSpeed};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
@@ -192,23 +192,6 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     // Update live mode pulse animation
     state.live_mode_state.update_pulse(dt);
 
-    // Get current "now" time for live mode (use selected_timestamp as base, advancing in real-time)
-    let _now = state
-        .playback_state
-        .selected_timestamp
-        .unwrap_or(1714564800.0);
-
-    // When live mode is active, playback position tracks real time exactly (1:1)
-    if state.live_mode_state.is_active() {
-        // Advance by real dt, not playback speed
-        if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
-            *ts += dt as f64;
-        }
-
-        // Request continuous repaint for live mode
-        ctx.request_repaint();
-    }
-
     // Handle spacebar to toggle playback (only when no text input is focused)
     let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space) && !i.modifiers.any());
     let has_focus = ctx.memory(|m| m.focused().is_some());
@@ -217,6 +200,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
             // Stop - also exits live mode if active
             if state.live_mode_state.is_active() {
                 state.live_mode_state.stop(LiveExitReason::UserStopped);
+                state.playback_state.time_model.disable_realtime_lock();
                 state.status_message = state
                     .live_mode_state
                     .last_exit_reason
@@ -225,21 +209,17 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
             }
             state.playback_state.playing = false;
         } else {
-            state.playback_state.playing = true;
+            // Only allow playback if zoom permits
+            if state.playback_state.is_playback_allowed() {
+                state.playback_state.playing = true;
+            }
         }
     }
 
-    // Advance playback position when playing (but not in live mode - handled above)
-    if state.playback_state.playing && !state.live_mode_state.is_active() {
-        let advance = dt as f64
-            * state
-                .playback_state
-                .speed
-                .timeline_seconds_per_real_second();
-
-        if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
-            *ts += advance;
-        }
+    // Advance playback position when playing
+    // The time_model handles real-time lock mode internally
+    if state.playback_state.playing {
+        state.playback_state.advance(dt as f64);
 
         // Request continuous repaint while playing
         ctx.request_repaint();
@@ -540,8 +520,9 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
 
-    // Draw selection marker (if user has selected a time)
-    if let Some(selected_ts) = state.playback_state.selected_timestamp {
+    // Draw selection marker (playback position indicator)
+    {
+        let selected_ts = state.playback_state.playback_position();
         let sel_x = ts_to_x(selected_ts);
 
         if sel_x >= rect.left() && sel_x <= rect.right() {
@@ -592,10 +573,11 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
     if response.drag_stopped() && state.playback_state.selection_in_progress {
         state.playback_state.selection_in_progress = false;
-        // Log the selection range
+        // Apply selection as playback bounds for loop/ping-pong behavior
         if let Some((start, end)) = state.playback_state.selection_range() {
             let duration_mins = (end - start) / 60.0;
             log::info!("Selected time range: {:.0} minutes", duration_mins);
+            state.playback_state.apply_selection_as_bounds();
         }
     }
 
@@ -613,11 +595,10 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             }
 
             let clicked_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
-            state.playback_state.selected_timestamp = Some(clicked_ts);
+            state.playback_state.set_playback_position(clicked_ts);
 
             // Clear any selection range on regular click
-            state.playback_state.selection_start = None;
-            state.playback_state.selection_end = None;
+            state.playback_state.clear_selection();
 
             // If clicked within loaded data range, also seek to that frame
             if let Some(frame) = state.playback_state.timestamp_to_frame(clicked_ts as i64) {
@@ -748,7 +729,7 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
                             if ui.button("Jump").clicked() {
                                 if let Some(ts) = valid_ts {
                                     // Update playback position
-                                    state.playback_state.selected_timestamp = Some(ts);
+                                    state.playback_state.set_playback_position(ts);
 
                                     // Center timeline view on new position
                                     let view_width_secs = ui.available_width() as f64
@@ -759,6 +740,7 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
                                     // Exit live mode if active
                                     if state.live_mode_state.is_active() {
                                         state.live_mode_state.stop(LiveExitReason::UserSeeked);
+                                        state.playback_state.time_model.disable_realtime_lock();
                                     }
 
                                     state.datetime_picker.close();
@@ -780,7 +762,8 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
     // Current position timestamp display (clickable to open datetime picker)
-    if let Some(selected_ts) = state.playback_state.selected_timestamp {
+    {
+        let selected_ts = state.playback_state.playback_position();
         let timestamp_btn = ui.add(
             egui::Button::new(
                 RichText::new(format_timestamp_full(selected_ts))
@@ -868,15 +851,15 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
         // Exit live mode when jogging
         if state.live_mode_state.is_active() {
             state.live_mode_state.stop(LiveExitReason::UserJogged);
+            state.playback_state.time_model.disable_realtime_lock();
             state.status_message = state
                 .live_mode_state
                 .last_exit_reason
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
         }
-        if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
-            *ts -= jog_amount;
-        }
+        let new_pos = state.playback_state.playback_position() - jog_amount;
+        state.playback_state.set_playback_position(new_pos);
     }
 
     // Step forward
@@ -885,15 +868,15 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
         // Exit live mode when jogging
         if state.live_mode_state.is_active() {
             state.live_mode_state.stop(LiveExitReason::UserJogged);
+            state.playback_state.time_model.disable_realtime_lock();
             state.status_message = state
                 .live_mode_state
                 .last_exit_reason
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
         }
-        if let Some(ts) = state.playback_state.selected_timestamp.as_mut() {
-            *ts += jog_amount;
-        }
+        let new_pos = state.playback_state.playback_position() + jog_amount;
+        state.playback_state.set_playback_position(new_pos);
     }
 
     ui.separator();
@@ -908,6 +891,33 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.selectable_value(&mut state.playback_state.speed, *speed, speed.label());
             }
         });
+
+    // Loop mode selector (only show when playback bounds are set)
+    if state.playback_state.time_model.playback_bounds.is_some() {
+        ui.separator();
+        ui.label(RichText::new("Loop:").size(11.0));
+        egui::ComboBox::from_id_salt("loop_mode_selector")
+            .selected_text(state.playback_state.time_model.loop_mode.label())
+            .width(70.0)
+            .show_ui(ui, |ui| {
+                for mode in LoopMode::all() {
+                    ui.selectable_value(
+                        &mut state.playback_state.time_model.loop_mode,
+                        *mode,
+                        mode.label(),
+                    );
+                }
+            });
+
+        // Clear selection button
+        if ui
+            .small_button("\u{2715}") // ×
+            .on_hover_text("Clear selection and playback bounds")
+            .clicked()
+        {
+            state.playback_state.clear_selection();
+        }
+    }
 
     ui.separator();
 
@@ -952,10 +962,7 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
     let pulse_alpha = state.live_mode_state.pulse_alpha();
 
     // Get current time for status text
-    let now = state
-        .playback_state
-        .selected_timestamp
-        .unwrap_or(1714564800.0);
+    let now = state.playback_state.playback_position();
 
     match phase {
         LivePhase::AcquiringLock => {

@@ -456,7 +456,8 @@ impl WorkbenchApp {
 
         // Initialize live mode state
         self.state.live_mode_state.start(now);
-        self.state.playback_state.selected_timestamp = Some(now);
+        self.state.playback_state.set_playback_position(now);
+        self.state.playback_state.time_model.enable_realtime_lock();
         self.state.playback_state.playing = true;
         self.state.status_message = "Connecting to live stream...".to_string();
 
@@ -689,16 +690,11 @@ impl eframe::App for WorkbenchApp {
                         // Position playback at the end of the most recent range
                         let most_recent_end = ranges.last().unwrap().end;
 
-                        if let Some(ts) = self.state.playback_state.selected_timestamp {
-                            // If current position is not within any range, move to most recent
-                            let in_any_range = ranges.iter().any(|r| r.contains(ts));
-                            if !in_any_range {
-                                self.state.playback_state.selected_timestamp =
-                                    Some(most_recent_end);
-                            }
-                        } else {
-                            // No timestamp selected, start at the most recent scan
-                            self.state.playback_state.selected_timestamp = Some(most_recent_end);
+                        // If current position is not within any range, move to most recent
+                        let ts = self.state.playback_state.playback_position();
+                        let in_any_range = ranges.iter().any(|r| r.contains(ts));
+                        if !in_any_range {
+                            self.state.playback_state.set_playback_position(most_recent_end);
                         }
 
                         log::info!("Timeline has {} contiguous range(s)", ranges.len());
@@ -970,7 +966,8 @@ impl eframe::App for WorkbenchApp {
 
         // Auto-load scan when scrubbing: find the most recent scan within 15 minutes
         const MAX_SCAN_AGE_SECS: f64 = 15.0 * 60.0;
-        if let Some(playback_ts) = self.state.playback_state.selected_timestamp {
+        {
+            let playback_ts = self.state.playback_state.playback_position();
             if let Some(scan) = self
                 .state
                 .radar_timeline
