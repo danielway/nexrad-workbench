@@ -252,17 +252,20 @@ impl WorkbenchApp {
         if let Some(lon) = url_params.lon {
             state.viz_state.center_lon = lon;
         }
-        if let Some(time) = url_params.time {
-            state.playback_state.set_playback_position(time);
-            // Center the timeline view on the restored playback position
-            let half_view = (1000.0 / state.playback_state.timeline_zoom) / 2.0;
-            state.playback_state.timeline_view_start = time - half_view;
-        }
+        // Apply view state (zoom levels) before centering so the zoom is correct
         if let Some(mz) = url_params.view.mz {
             state.viz_state.zoom = mz;
         }
         if let Some(tz) = url_params.view.tz {
             state.playback_state.timeline_zoom = tz;
+        }
+        if let Some(time) = url_params.time {
+            state.playback_state.set_playback_position(time);
+            // Center the timeline view on the restored playback position.
+            // We don't know the actual panel pixel width yet, so use the same
+            // assumed width (1000px) that PlaybackState constructors use.
+            let view_width_secs = 1000.0 / state.playback_state.timeline_zoom;
+            state.playback_state.timeline_view_start = time - view_width_secs / 2.0;
         }
 
         let initial_site_id = state.viz_state.site_id.clone();
