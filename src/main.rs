@@ -151,6 +151,9 @@ pub struct WorkbenchApp {
 
     /// Sweep animator for radial-accurate playback animation.
     sweep_animator: nexrad::SweepAnimator,
+
+    /// Monotonic instant of last URL push (for throttling to ~1/sec).
+    last_url_push: web_time::Instant,
 }
 
 // Embed shapefile data at compile time
@@ -231,7 +234,28 @@ impl WorkbenchApp {
                 .unwrap_or(0),
         );
 
-        let state = AppState::new();
+        let mut state = AppState::new();
+
+        // Apply URL parameters (site, time, lat/lon)
+        let url_params = state::url_state::parse_from_url();
+        if let Some(ref site) = url_params.site {
+            state.viz_state.site_id = site.to_uppercase();
+            if let Some(site_info) = data::sites::get_site(site) {
+                state.viz_state.center_lat = site_info.lat;
+                state.viz_state.center_lon = site_info.lon;
+            }
+            state.timeline_needs_refresh = true;
+        }
+        if let Some(lat) = url_params.lat {
+            state.viz_state.center_lat = lat;
+        }
+        if let Some(lon) = url_params.lon {
+            state.viz_state.center_lon = lon;
+        }
+        if let Some(time) = url_params.time {
+            state.playback_state.set_playback_position(time);
+        }
+
         let initial_site_id = state.viz_state.site_id.clone();
         let data_facade = DataFacade::new();
         let cache_load_channel = nexrad::CacheLoadChannel::new();
@@ -272,6 +296,7 @@ impl WorkbenchApp {
             #[cfg(target_arch = "wasm32")]
             partial_volume_results: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             sweep_animator: nexrad::SweepAnimator::new(),
+            last_url_push: web_time::Instant::now(),
         }
     }
 
@@ -1029,6 +1054,20 @@ impl eframe::App for WorkbenchApp {
             let playback_pos = self.state.playback_state.playback_position();
             let scan = self.state.radar_timeline.find_scan_at_timestamp(playback_pos);
             self.state.animation_state = self.sweep_animator.update(playback_pos, scan);
+        }
+
+        // Push current state to URL (throttled to once per second)
+        {
+            let now = web_time::Instant::now();
+            if now.duration_since(self.last_url_push).as_secs_f64() >= 1.0 {
+                self.last_url_push = now;
+                state::url_state::push_to_url(
+                    &self.state.viz_state.site_id,
+                    self.state.playback_state.playback_position(),
+                    self.state.viz_state.center_lat,
+                    self.state.viz_state.center_lon,
+                );
+            }
         }
 
         // Render UI panels in the correct order for egui layout

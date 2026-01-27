@@ -15,6 +15,7 @@ pub mod radar_data;
 mod settings;
 mod stats;
 pub mod vcp;
+pub mod url_state;
 mod viz;
 
 pub use alerts::{AlertSummary, AlertsState, NwsAlert};

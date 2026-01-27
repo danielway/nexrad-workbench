@@ -53,6 +53,8 @@ web-sys = { version = "0.3", features = [
     "DomException",
     "DomStringList",
     "Response",
+    "Location",
+    "History",
 ] }
 js-sys = "0.3"
 
