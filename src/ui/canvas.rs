@@ -125,10 +125,8 @@ pub fn render_canvas_with_geo(
             render_nws_alerts(&painter, &projection, &state.alerts_state, current_time);
         }
 
-        // Get azimuth: show sweep line when playing with valid animation, or in realtime mode
-        let azimuth = if state.playback_state.playing && state.animation_state.is_valid {
-            Some(state.animation_state.azimuth)
-        } else if state.playback_state.speed == crate::state::PlaybackSpeed::Realtime {
+        // Show sweep line only in real-time playback mode
+        let azimuth = if state.playback_state.speed == crate::state::PlaybackSpeed::Realtime {
             radar_position.as_ref().map(|pos| pos.azimuth)
         } else {
             None
