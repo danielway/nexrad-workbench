@@ -332,11 +332,24 @@ impl RadarTimeline {
                     .unwrap_or(meta.key.timestamp + DEFAULT_SCAN_DURATION_SECS)
                     as f64;
 
+                // Convert persisted sweep metadata to timeline Sweep structs
+                let sweeps = meta
+                    .sweeps
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|sm| Sweep {
+                        start_time: sm.start,
+                        end_time: sm.end,
+                        elevation: sm.elevation,
+                        radials: Vec::new(),
+                    })
+                    .collect();
+
                 Scan {
                     start_time,
                     end_time,
                     vcp: meta.vcp.unwrap_or(0),
-                    sweeps: Vec::new(), // Loaded on-demand when scan is selected
+                    sweeps,
                     completeness: meta.completeness,
                     present_records: meta.present_records,
                     expected_records: meta.expected_records,

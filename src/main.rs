@@ -198,6 +198,41 @@ fn extract_sweep_timing(volume: &Volume) -> Vec<TimelineSweep> {
         .collect()
 }
 
+/// Persist sweep metadata to the scan index so future timeline loads
+/// have accurate scan duration and sweep detail without decoding.
+#[cfg(target_arch = "wasm32")]
+fn persist_sweep_meta(
+    facade: &DataFacade,
+    site_id: &str,
+    scan_timestamp_secs: i64,
+    sweeps: &[TimelineSweep],
+) {
+    use data::SweepMeta;
+
+    let sweep_metas: Vec<SweepMeta> = sweeps
+        .iter()
+        .map(|s| SweepMeta {
+            start: s.start_time,
+            end: s.end_time,
+            elevation: s.elevation,
+        })
+        .collect();
+
+    let end_secs = sweeps
+        .iter()
+        .map(|s| s.end_time as i64)
+        .max()
+        .unwrap_or(scan_timestamp_secs);
+
+    let scan_key = data::ScanKey::new(site_id, data::UnixMillis::from_secs(scan_timestamp_secs));
+    let facade = facade.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        if let Err(e) = facade.update_scan_sweep_meta(&scan_key, end_secs, sweep_metas).await {
+            log::warn!("Failed to persist sweep metadata: {}", e);
+        }
+    });
+}
+
 impl WorkbenchApp {
     /// Creates a new WorkbenchApp instance.
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
@@ -607,6 +642,13 @@ impl WorkbenchApp {
 
                         // Extract sweep timing for timeline display
                         let sweep_timing = extract_sweep_timing(&volume);
+                        #[cfg(target_arch = "wasm32")]
+                        persist_sweep_meta(
+                            &self.data_facade,
+                            &self.state.viz_state.site_id,
+                            timestamp,
+                            &sweep_timing,
+                        );
                         if self
                             .state
                             .radar_timeline
@@ -840,6 +882,13 @@ impl eframe::App for WorkbenchApp {
 
                             // Extract sweep timing for timeline display
                             let sweep_timing = extract_sweep_timing(&volume);
+                            #[cfg(target_arch = "wasm32")]
+                            persist_sweep_meta(
+                                &self.data_facade,
+                                &self.state.viz_state.site_id,
+                                scan.key.timestamp,
+                                &sweep_timing,
+                            );
                             if self
                                 .state
                                 .radar_timeline
@@ -921,6 +970,13 @@ impl eframe::App for WorkbenchApp {
                             // Extract sweep timing for timeline display
                             let sweep_timing = extract_sweep_timing(&volume);
                             let sweep_count = sweep_timing.len();
+                            #[cfg(target_arch = "wasm32")]
+                            persist_sweep_meta(
+                                &self.data_facade,
+                                &self.state.viz_state.site_id,
+                                timestamp,
+                                &sweep_timing,
+                            );
                             if self
                                 .state
                                 .radar_timeline

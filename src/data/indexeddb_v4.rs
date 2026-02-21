@@ -210,6 +210,56 @@ impl IndexedDbRecordStore {
         })
     }
 
+    /// Updates sweep metadata on an existing scan index entry.
+    ///
+    /// Called after a volume is decoded to persist the actual end timestamp
+    /// and per-sweep timing so subsequent timeline loads don't need to decode.
+    pub async fn update_scan_sweep_meta(
+        &self,
+        scan: &ScanKey,
+        end_timestamp_secs: i64,
+        sweeps: Vec<SweepMeta>,
+    ) -> Result<bool, String> {
+        self.ensure_open().await?;
+        let db = self.get_db()?;
+
+        let scan_key = scan.to_storage_key();
+
+        let tx = db
+            .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readwrite)
+            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
+
+        let store = tx
+            .object_store(STORE_SCAN_INDEX)
+            .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
+
+        let get_req = store
+            .get(&JsValue::from_str(&scan_key))
+            .map_err(|e| format!("Failed to get scan: {:?}", e))?;
+        let existing_result = wait_for_request(&get_req).await?;
+        let existing: Option<ScanIndexEntry> = deserialize_js_value(&existing_result);
+
+        let Some(mut entry) = existing else {
+            return Ok(false);
+        };
+
+        entry.end_timestamp_secs = Some(end_timestamp_secs);
+        entry.sweeps = Some(sweeps);
+        entry.updated_at = UnixMillis::now();
+
+        let json = serde_json::to_string(&entry)
+            .map_err(|e| format!("Serialization error: {}", e))?;
+        let js = js_sys::JSON::parse(&json)
+            .map_err(|e| format!("JSON parse error: {:?}", e))?;
+
+        store
+            .put_with_key(&js, &JsValue::from_str(&scan_key))
+            .map_err(|e| format!("Failed to put scan index: {:?}", e))?;
+
+        wait_for_transaction(&tx).await?;
+        Ok(true)
+    }
+
     /// Gets a record blob by key.
     pub async fn get_record(&self, key: &RecordKey) -> Result<Option<RecordBlob>, String> {
         self.ensure_open().await?;

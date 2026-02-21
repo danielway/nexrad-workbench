@@ -132,6 +132,8 @@ pub struct ScanMetadata {
     pub present_records: Option<u32>,
     /// Expected number of records (from VCP).
     pub expected_records: Option<u32>,
+    /// Sweep metadata from a previous decode, if available.
+    pub sweeps: Option<Vec<crate::data::SweepMeta>>,
 }
 
 impl ScanMetadata {
@@ -149,6 +151,7 @@ impl ScanMetadata {
             completeness: None,
             present_records: None,
             expected_records: None,
+            sweeps: None,
         }
     }
 
@@ -168,6 +171,7 @@ impl ScanMetadata {
             completeness: None,
             present_records: None,
             expected_records: None,
+            sweeps: None,
         }
     }
 }

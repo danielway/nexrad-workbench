@@ -263,6 +263,17 @@ impl ScanCompleteness {
     }
 }
 
+/// Lightweight sweep metadata persisted in the scan index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SweepMeta {
+    /// Start timestamp (Unix seconds with sub-second precision).
+    pub start: f64,
+    /// End timestamp (Unix seconds with sub-second precision).
+    pub end: f64,
+    /// Elevation angle in degrees.
+    pub elevation: f32,
+}
+
 /// Metadata for a scan stored in the scan index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanIndexEntry {
@@ -282,6 +293,12 @@ pub struct ScanIndexEntry {
     /// When this entry was last accessed (for LRU eviction).
     #[serde(default = "UnixMillis::now")]
     pub last_accessed_at: UnixMillis,
+    /// Actual scan end timestamp (Unix seconds), populated after decode.
+    #[serde(default)]
+    pub end_timestamp_secs: Option<i64>,
+    /// Sweep metadata, populated after decode.
+    #[serde(default)]
+    pub sweeps: Option<Vec<SweepMeta>>,
 }
 
 impl ScanIndexEntry {
@@ -296,6 +313,8 @@ impl ScanIndexEntry {
             total_size_bytes: 0,
             updated_at: now,
             last_accessed_at: now,
+            end_timestamp_secs: None,
+            sweeps: None,
         }
     }
 

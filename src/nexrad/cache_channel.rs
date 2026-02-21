@@ -88,11 +88,12 @@ impl CacheLoadChannel {
                                 ),
                                 file_name: entry.file_name.clone().unwrap_or_default(),
                                 file_size: entry.total_size_bytes,
-                                end_timestamp: None,
+                                end_timestamp: entry.end_timestamp_secs,
                                 vcp: None,
                                 completeness: Some(entry.completeness()),
                                 present_records: Some(entry.present_records),
                                 expected_records: entry.expected_records,
+                                sweeps: entry.sweeps.clone(),
                             }
                         })
                         .collect();

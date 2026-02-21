@@ -330,6 +330,16 @@ impl DataFacade {
         self.cache.get_record(key).await
     }
 
+    /// Updates sweep metadata on a scan index entry after decode.
+    pub async fn update_scan_sweep_meta(
+        &self,
+        scan: &ScanKey,
+        end_timestamp_secs: i64,
+        sweeps: Vec<SweepMeta>,
+    ) -> CacheResult<bool> {
+        self.cache.update_scan_sweep_meta(scan, end_timestamp_secs, sweeps).await
+    }
+
     // ========================================================================
     // Query operations
     // ========================================================================

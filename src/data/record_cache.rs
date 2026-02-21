@@ -112,6 +112,16 @@ impl WasmRecordCache {
         self.store.has_record(key).await
     }
 
+    /// Updates sweep metadata on a scan index entry after decode.
+    pub async fn update_scan_sweep_meta(
+        &self,
+        scan: &ScanKey,
+        end_timestamp_secs: i64,
+        sweeps: Vec<SweepMeta>,
+    ) -> CacheResult<bool> {
+        self.store.update_scan_sweep_meta(scan, end_timestamp_secs, sweeps).await
+    }
+
     /// Lists all record keys for a scan.
     pub async fn list_records_for_scan(&self, scan: &ScanKey) -> CacheResult<Vec<RecordKey>> {
         self.store.list_records_for_scan(scan).await
@@ -277,6 +287,15 @@ impl WasmRecordCache {
         _end: UnixMillis,
     ) -> CacheResult<Vec<ScanIndexEntry>> {
         Ok(Vec::new())
+    }
+
+    pub async fn update_scan_sweep_meta(
+        &self,
+        _scan: &ScanKey,
+        _end_timestamp_secs: i64,
+        _sweeps: Vec<SweepMeta>,
+    ) -> CacheResult<bool> {
+        Ok(false)
     }
 
     pub async fn set_expected_records(&self, _scan: &ScanKey, _expected: u32) -> CacheResult<()> {
