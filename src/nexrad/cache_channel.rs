@@ -172,7 +172,6 @@ impl CacheLoadChannel {
             ctx.request_repaint();
         });
     }
-
 }
 
 impl Default for CacheLoadChannel {
@@ -313,7 +312,6 @@ impl ScrubLoadChannel {
     pub fn try_recv(&self) -> Option<ScrubLoadResult> {
         self.receiver.borrow_mut().take()
     }
-
 }
 
 impl Default for ScrubLoadChannel {

@@ -24,10 +24,10 @@
 //! └── scan_index   - Per-scan metadata with completeness tracking
 //! ```
 
-pub mod sites;
+pub mod facade;
 pub mod keys;
 pub mod record_cache;
-pub mod facade;
+pub mod sites;
 
 pub mod indexeddb;
 
@@ -35,6 +35,6 @@ pub mod indexeddb;
 pub use sites::{all_sites_sorted, get_site, NEXRAD_SITES};
 
 // Re-export record cache types
+pub use facade::*;
 pub use keys::*;
 pub use record_cache::*;
-pub use facade::*;

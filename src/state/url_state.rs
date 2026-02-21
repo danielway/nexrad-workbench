@@ -40,11 +40,7 @@ pub fn parse_from_url() -> UrlParams {
         view: ViewState::default(),
     };
 
-    let Ok(search) = web_sys::window()
-        .expect("no window")
-        .location()
-        .search()
-    else {
+    let Ok(search) = web_sys::window().expect("no window").location().search() else {
         return params;
     };
 
@@ -88,9 +84,5 @@ pub fn push_to_url(site: &str, time: f64, lat: f64, lon: f64, view: &ViewState) 
 
     let window = web_sys::window().expect("no window");
     let history = window.history().expect("no history");
-    let _ = history.replace_state_with_url(
-        &wasm_bindgen::JsValue::NULL,
-        "",
-        Some(&query),
-    );
+    let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&query));
 }

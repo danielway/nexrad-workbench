@@ -139,8 +139,8 @@ impl IndexedDbRecordStore {
 
         let meta_json =
             serde_json::to_string(&meta).map_err(|e| format!("Serialization error: {}", e))?;
-        let meta_js = js_sys::JSON::parse(&meta_json)
-            .map_err(|e| format!("JSON parse error: {:?}", e))?;
+        let meta_js =
+            js_sys::JSON::parse(&meta_json).map_err(|e| format!("JSON parse error: {:?}", e))?;
 
         index_store
             .put_with_key(&meta_js, &JsValue::from_str(&record_key))
@@ -159,7 +159,8 @@ impl IndexedDbRecordStore {
         let existing_result = wait_for_request(&get_req).await?;
         let existing_scan: Option<ScanIndexEntry> = deserialize_js_value(&existing_result);
 
-        let mut scan_entry = existing_scan.unwrap_or_else(|| ScanIndexEntry::new(record.key.scan.clone()));
+        let mut scan_entry =
+            existing_scan.unwrap_or_else(|| ScanIndexEntry::new(record.key.scan.clone()));
 
         // Update scan entry
         if !exists {
@@ -226,10 +227,9 @@ impl IndexedDbRecordStore {
         entry.sweeps = Some(sweeps);
         entry.updated_at = UnixMillis::now();
 
-        let json = serde_json::to_string(&entry)
-            .map_err(|e| format!("Serialization error: {}", e))?;
-        let js = js_sys::JSON::parse(&json)
-            .map_err(|e| format!("JSON parse error: {:?}", e))?;
+        let json =
+            serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
+        let js = js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
 
         store
             .put_with_key(&js, &JsValue::from_str(&scan_key))
@@ -416,7 +416,9 @@ impl IndexedDbRecordStore {
         limit: u32,
         include_bytes: bool,
     ) -> Result<Vec<(RecordKey, Option<RecordBlob>)>, String> {
-        let keys = self.query_record_keys_by_time(site, start, end, limit).await?;
+        let keys = self
+            .query_record_keys_by_time(site, start, end, limit)
+            .await?;
 
         if !include_bytes {
             return Ok(keys.into_iter().map(|k| (k, None)).collect());
@@ -436,7 +438,10 @@ impl IndexedDbRecordStore {
     // ========================================================================
 
     /// Gets scan availability information.
-    pub async fn scan_availability(&self, scan: &ScanKey) -> Result<Option<ScanIndexEntry>, String> {
+    pub async fn scan_availability(
+        &self,
+        scan: &ScanKey,
+    ) -> Result<Option<ScanIndexEntry>, String> {
         self.ensure_open().await?;
         let db = self.get_db()?;
 
@@ -561,11 +566,7 @@ impl IndexedDbRecordStore {
     }
 
     /// Updates scan index with expected record count (from VCP).
-    pub async fn set_expected_records(
-        &self,
-        scan: &ScanKey,
-        expected: u32,
-    ) -> Result<(), String> {
+    pub async fn set_expected_records(&self, scan: &ScanKey, expected: u32) -> Result<(), String> {
         self.ensure_open().await?;
         let db = self.get_db()?;
 
@@ -589,10 +590,9 @@ impl IndexedDbRecordStore {
         entry.expected_records = Some(expected);
         entry.updated_at = UnixMillis::now();
 
-        let json = serde_json::to_string(&entry)
-            .map_err(|e| format!("Serialization error: {}", e))?;
-        let js = js_sys::JSON::parse(&json)
-            .map_err(|e| format!("JSON parse error: {:?}", e))?;
+        let json =
+            serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
+        let js = js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
 
         store
             .put_with_key(&js, &JsValue::from_str(&storage_key))
@@ -660,10 +660,10 @@ impl IndexedDbRecordStore {
         if let Some(mut entry) = deserialize_js_value::<ScanIndexEntry>(&existing_result) {
             entry.last_accessed_at = UnixMillis::now();
 
-            let json = serde_json::to_string(&entry)
-                .map_err(|e| format!("Serialization error: {}", e))?;
-            let js = js_sys::JSON::parse(&json)
-                .map_err(|e| format!("JSON parse error: {:?}", e))?;
+            let json =
+                serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
+            let js =
+                js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
 
             store
                 .put_with_key(&js, &JsValue::from_str(&storage_key))
@@ -848,8 +848,7 @@ impl IndexedDbRecordStore {
 
 /// Opens the database, creating schema as needed.
 async fn open_database() -> Result<IdbDatabase, String> {
-    let window =
-        web_sys::window().ok_or_else(|| "No window object".to_string())?;
+    let window = web_sys::window().ok_or_else(|| "No window object".to_string())?;
 
     let idb_factory = window
         .indexed_db()

@@ -113,7 +113,9 @@ impl WasmRecordCache {
         end_timestamp_secs: i64,
         sweeps: Vec<SweepMeta>,
     ) -> CacheResult<bool> {
-        self.store.update_scan_sweep_meta(scan, end_timestamp_secs, sweeps).await
+        self.store
+            .update_scan_sweep_meta(scan, end_timestamp_secs, sweeps)
+            .await
     }
 
     /// Lists all record keys for a scan.
@@ -230,7 +232,7 @@ pub fn split_archive2_into_records(data: &[u8]) -> Vec<(u32, Vec<u8>)> {
                 // Verify it's a valid compression level
                 if data.len() > i + 3 {
                     let level = data[i + 3];
-                    if level >= b'1' && level <= b'9' {
+                    if (b'1'..=b'9').contains(&level) {
                         end = i;
                         break;
                     }
@@ -274,7 +276,7 @@ mod tests {
         // Block 1
         data.extend_from_slice(b"BZh9");
         data.extend_from_slice(&[0u8; 100]); // Fake compressed data
-        // Block 2
+                                             // Block 2
         data.extend_from_slice(b"BZh9");
         data.extend_from_slice(&[1u8; 50]); // Fake compressed data
 

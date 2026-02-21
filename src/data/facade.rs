@@ -337,7 +337,9 @@ impl DataFacade {
         end_timestamp_secs: i64,
         sweeps: Vec<SweepMeta>,
     ) -> CacheResult<bool> {
-        self.cache.update_scan_sweep_meta(scan, end_timestamp_secs, sweeps).await
+        self.cache
+            .update_scan_sweep_meta(scan, end_timestamp_secs, sweeps)
+            .await
     }
 
     // ========================================================================
@@ -410,7 +412,11 @@ impl DataFacade {
 
     /// Checks if eviction is needed and performs it.
     /// Returns (should_evict, scans_evicted) tuple.
-    pub async fn check_and_evict(&self, quota_bytes: u64, target_bytes: u64) -> CacheResult<(bool, u32)> {
+    pub async fn check_and_evict(
+        &self,
+        quota_bytes: u64,
+        target_bytes: u64,
+    ) -> CacheResult<(bool, u32)> {
         let current_size = self.cache.total_cache_size().await?;
 
         if current_size > quota_bytes {
@@ -461,8 +467,7 @@ pub async fn process_archive_download(
         // First record typically contains VCP metadata
         let has_vcp = record_id == 0;
 
-        let meta = RecordIndexEntry::new(record_key, record_data.len() as u32)
-            .with_vcp(has_vcp);
+        let meta = RecordIndexEntry::new(record_key, record_data.len() as u32).with_vcp(has_vcp);
 
         if facade.store_record(&record, meta).await? {
             stored += 1;

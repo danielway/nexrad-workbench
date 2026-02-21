@@ -5,7 +5,10 @@
 
 use super::archive_index::{current_timestamp_secs, ArchiveFileMeta, ArchiveListing};
 use super::types::{CachedScan, DownloadResult, ScanKey};
-use crate::data::{DataFacade, ScanCompleteness, ScanKey as DataScanKey, process_archive_download, reassemble_records};
+use crate::data::{
+    process_archive_download, reassemble_records, DataFacade, ScanCompleteness,
+    ScanKey as DataScanKey,
+};
 use chrono::NaiveDate;
 use eframe::egui;
 use std::cell::RefCell;
@@ -325,7 +328,11 @@ async fn download_specific_file(
                     if !records.is_empty() {
                         records.sort_by_key(|r| r.key.record_id);
                         let data = reassemble_records(&records);
-                        log::info!("Cache hit for {} ({} bytes)", key.to_storage_key(), data.len());
+                        log::info!(
+                            "Cache hit for {} ({} bytes)",
+                            key.to_storage_key(),
+                            data.len()
+                        );
                         let cached = CachedScan::new(key, file_name.to_string(), data);
                         return DownloadResult::CacheHit(cached);
                     }
@@ -437,7 +444,11 @@ async fn download_nexrad_data(
                     if !records.is_empty() {
                         records.sort_by_key(|r| r.key.record_id);
                         let data = reassemble_records(&records);
-                        log::info!("Cache hit for {} ({} bytes)", key.to_storage_key(), data.len());
+                        log::info!(
+                            "Cache hit for {} ({} bytes)",
+                            key.to_storage_key(),
+                            data.len()
+                        );
                         let file_name = entry.file_name.unwrap_or_default();
                         let cached = CachedScan::new(key, file_name, data);
                         return DownloadResult::CacheHit(cached);

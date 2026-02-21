@@ -1,6 +1,9 @@
 //! Right panel UI: layers, visualization, and processing controls.
 
-use crate::state::{format_bytes, get_vcp_definition, AppState, ColorPalette, RadarProduct, RenderMode, StorageSettings};
+use crate::state::{
+    format_bytes, get_vcp_definition, AppState, ColorPalette, RadarProduct, RenderMode,
+    StorageSettings,
+};
 use eframe::egui::{self, RichText, ScrollArea};
 
 pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
@@ -62,11 +65,7 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .width(150.0)
                 .show_ui(ui, |ui| {
                     for mode in RenderMode::all() {
-                        ui.selectable_value(
-                            &mut state.viz_state.render_mode,
-                            *mode,
-                            mode.label(),
-                        );
+                        ui.selectable_value(&mut state.viz_state.render_mode, *mode, mode.label());
                     }
                 });
 
@@ -96,7 +95,10 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                                     let is_selected =
                                         (state.viz_state.target_elevation - elev.angle).abs() < 0.1;
                                     if ui
-                                        .selectable_label(is_selected, format!("{:.1}°", elev.angle))
+                                        .selectable_label(
+                                            is_selected,
+                                            format!("{:.1}°", elev.angle),
+                                        )
                                         .clicked()
                                     {
                                         state.viz_state.target_elevation = elev.angle;
@@ -231,10 +233,8 @@ fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             // Usage bar
             let bar_width = ui.available_width();
-            let (response, painter) = ui.allocate_painter(
-                egui::Vec2::new(bar_width, 8.0),
-                egui::Sense::hover(),
-            );
+            let (response, painter) =
+                ui.allocate_painter(egui::Vec2::new(bar_width, 8.0), egui::Sense::hover());
             let rect = response.rect;
 
             // Background
@@ -249,7 +249,8 @@ fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
             } else {
                 egui::Color32::from_rgb(80, 160, 80) // Green otherwise
             };
-            let fill_rect = egui::Rect::from_min_size(rect.min, egui::Vec2::new(fill_width, rect.height()));
+            let fill_rect =
+                egui::Rect::from_min_size(rect.min, egui::Vec2::new(fill_width, rect.height()));
             painter.rect_filled(fill_rect, 2.0, fill_color);
 
             ui.add_space(8.0);
@@ -266,7 +267,9 @@ fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .clamp_to_range(true);
 
             if ui.add(slider).changed() {
-                state.storage_settings.set_quota((quota_mb as u64) * 1024 * 1024);
+                state
+                    .storage_settings
+                    .set_quota((quota_mb as u64) * 1024 * 1024);
                 state.storage_settings.save();
             }
 

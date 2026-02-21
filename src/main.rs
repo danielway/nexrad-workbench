@@ -206,7 +206,10 @@ fn persist_sweep_meta(
     let scan_key = data::ScanKey::new(site_id, data::UnixMillis::from_secs(scan_timestamp_secs));
     let facade = facade.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) = facade.update_scan_sweep_meta(&scan_key, end_secs, sweep_metas).await {
+        if let Err(e) = facade
+            .update_scan_sweep_meta(&scan_key, end_secs, sweep_metas)
+            .await
+        {
             log::warn!("Failed to persist sweep metadata: {}", e);
         }
     });
@@ -545,7 +548,9 @@ impl WorkbenchApp {
                 is_volume_end,
                 fetch_latency_ms,
             } => {
-                self.state.session_stats.record_fetch_latency(fetch_latency_ms);
+                self.state
+                    .session_stats
+                    .record_fetch_latency(fetch_latency_ms);
                 log::debug!(
                     "Chunk received: {} in volume, is_end={}",
                     chunks_in_volume,
@@ -631,11 +636,7 @@ impl WorkbenchApp {
                         wasm_bindgen_futures::spawn_local(async move {
                             let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                             match data::process_archive_download(
-                                &facade,
-                                &site_id,
-                                &file_name,
-                                timestamp,
-                                &data,
+                                &facade, &site_id, &file_name, timestamp, &data,
                             )
                             .await
                             {
@@ -740,7 +741,9 @@ impl eframe::App for WorkbenchApp {
                         let ts = self.state.playback_state.playback_position();
                         let in_any_range = ranges.iter().any(|r| r.contains(ts));
                         if !in_any_range {
-                            self.state.playback_state.set_playback_position(most_recent_end);
+                            self.state
+                                .playback_state
+                                .set_playback_position(most_recent_end);
                         }
 
                         log::info!("Timeline has {} contiguous range(s)", ranges.len());
@@ -812,9 +815,17 @@ impl eframe::App for WorkbenchApp {
             self.state.download_in_progress = false;
             // Extract scan and timing info from result
             let (scan_opt, is_cache_hit) = match &result {
-                nexrad::DownloadResult::Success { scan, fetch_latency_ms, decode_latency_ms } => {
-                    self.state.session_stats.record_fetch_latency(*fetch_latency_ms);
-                    self.state.session_stats.record_decode_time(*decode_latency_ms);
+                nexrad::DownloadResult::Success {
+                    scan,
+                    fetch_latency_ms,
+                    decode_latency_ms,
+                } => {
+                    self.state
+                        .session_stats
+                        .record_fetch_latency(*fetch_latency_ms);
+                    self.state
+                        .session_stats
+                        .record_decode_time(*decode_latency_ms);
                     (Some(scan), false)
                 }
                 nexrad::DownloadResult::CacheHit(scan) => (Some(scan), true),
@@ -822,58 +833,58 @@ impl eframe::App for WorkbenchApp {
             };
 
             if let Some(scan) = scan_opt {
-                    self.state.status_message = if is_cache_hit {
-                        format!("Loaded from cache: {}", scan.file_name)
-                    } else {
-                        format!("Downloaded: {}", scan.file_name)
-                    };
+                self.state.status_message = if is_cache_hit {
+                    format!("Loaded from cache: {}", scan.file_name)
+                } else {
+                    format!("Downloaded: {}", scan.file_name)
+                };
 
-                    // Request eviction check after successful download
-                    if !is_cache_hit {
-                        self.state.check_eviction_requested = true;
-                    }
+                // Request eviction check after successful download
+                if !is_cache_hit {
+                    self.state.check_eviction_requested = true;
+                }
 
-                    // Load the volume for texture-based rendering
-                    match load(&scan.data) {
-                        Ok(volume) => {
-                            let sweep_count = volume.sweeps().len();
-                            log::info!("Loaded volume with {} sweeps", sweep_count);
+                // Load the volume for texture-based rendering
+                match load(&scan.data) {
+                    Ok(volume) => {
+                        let sweep_count = volume.sweeps().len();
+                        log::info!("Loaded volume with {} sweeps", sweep_count);
 
-                            // Extract sweep timing for timeline display
-                            let sweep_timing = extract_sweep_timing(&volume);
-                            persist_sweep_meta(
-                                &self.data_facade,
-                                &self.state.viz_state.site_id,
-                                scan.key.timestamp,
-                                &sweep_timing,
+                        // Extract sweep timing for timeline display
+                        let sweep_timing = extract_sweep_timing(&volume);
+                        persist_sweep_meta(
+                            &self.data_facade,
+                            &self.state.viz_state.site_id,
+                            scan.key.timestamp,
+                            &sweep_timing,
+                        );
+                        if self
+                            .state
+                            .radar_timeline
+                            .update_scan_sweeps(scan.key.timestamp, sweep_timing)
+                        {
+                            log::debug!(
+                                "Updated timeline with {} sweeps for scan {}",
+                                sweep_count,
+                                scan.key.timestamp
                             );
-                            if self
-                                .state
-                                .radar_timeline
-                                .update_scan_sweeps(scan.key.timestamp, sweep_timing)
-                            {
-                                log::debug!(
-                                    "Updated timeline with {} sweeps for scan {}",
-                                    sweep_count,
-                                    scan.key.timestamp
-                                );
-                            }
+                        }
 
-                            // Insert into volume ring (timestamp in ms)
-                            self.volume_ring.insert(scan.key.timestamp * 1000, volume);
-                            // Invalidate texture cache to trigger re-render
-                            self.radar_texture_cache.invalidate();
-                        }
-                        Err(e) => {
-                            log::error!("Failed to load NEXRAD volume: {}", e);
-                            self.state.status_message = format!("Load error: {}", e);
-                        }
+                        // Insert into volume ring (timestamp in ms)
+                        self.volume_ring.insert(scan.key.timestamp * 1000, volume);
+                        // Invalidate texture cache to trigger re-render
+                        self.radar_texture_cache.invalidate();
                     }
+                    Err(e) => {
+                        log::error!("Failed to load NEXRAD volume: {}", e);
+                        self.state.status_message = format!("Load error: {}", e);
+                    }
+                }
 
-                    self.current_scan = Some(scan.clone());
+                self.current_scan = Some(scan.clone());
 
-                    // Refresh timeline to show the new/loaded scan
-                    self.state.timeline_needs_refresh = true;
+                // Refresh timeline to show the new/loaded scan
+                self.state.timeline_needs_refresh = true;
             }
 
             match &result {
@@ -1069,7 +1080,10 @@ impl eframe::App for WorkbenchApp {
         // Update sweep animator
         {
             let playback_pos = self.state.playback_state.playback_position();
-            let scan = self.state.radar_timeline.find_scan_at_timestamp(playback_pos);
+            let scan = self
+                .state
+                .radar_timeline
+                .find_scan_at_timestamp(playback_pos);
             self.state.animation_state = self.sweep_animator.update(playback_pos, scan);
         }
 

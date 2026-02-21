@@ -42,23 +42,23 @@ fn render_radar_data(
     let completeness_to_color = |completeness: Option<ScanCompleteness>| -> (Color32, Color32) {
         match completeness {
             Some(ScanCompleteness::Complete) => (
-                tl_colors::SCAN_FILL,     // Normal green fill
-                tl_colors::SCAN_BORDER,   // Normal border
+                tl_colors::SCAN_FILL,   // Normal green fill
+                tl_colors::SCAN_BORDER, // Normal border
             ),
             Some(ScanCompleteness::PartialWithVcp) => (
-                Color32::from_rgb(60, 100, 70),   // Muted green fill
-                Color32::from_rgb(40, 80, 50),    // Muted border
+                Color32::from_rgb(60, 100, 70), // Muted green fill
+                Color32::from_rgb(40, 80, 50),  // Muted border
             ),
             Some(ScanCompleteness::PartialNoVcp) => (
-                Color32::from_rgb(180, 140, 60),  // Amber fill
-                Color32::from_rgb(140, 100, 40),  // Amber border
+                Color32::from_rgb(180, 140, 60), // Amber fill
+                Color32::from_rgb(140, 100, 40), // Amber border
             ),
             Some(ScanCompleteness::Missing) => (
-                Color32::from_rgb(80, 80, 80),    // Gray fill
-                Color32::from_rgb(60, 60, 60),    // Gray border
+                Color32::from_rgb(80, 80, 80), // Gray fill
+                Color32::from_rgb(60, 60, 60), // Gray border
             ),
             None => (
-                tl_colors::SCAN_FILL,     // Default to green
+                tl_colors::SCAN_FILL, // Default to green
                 tl_colors::SCAN_BORDER,
             ),
         }

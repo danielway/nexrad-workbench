@@ -83,7 +83,8 @@ impl<'a> RenderSweep<'a> {
         playback_timestamp_ms: i64,
         azimuth_range: Option<(f32, f32)>,
     ) -> Self {
-        let mut sweep = Self::new_with_range(target_elevation, playback_timestamp_ms, azimuth_range);
+        let mut sweep =
+            Self::new_with_range(target_elevation, playback_timestamp_ms, azimuth_range);
 
         // Process volumes from oldest to newest so newer radials replace older ones
         for (_volume_ts, volume) in ring.volumes() {

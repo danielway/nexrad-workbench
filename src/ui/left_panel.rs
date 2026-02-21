@@ -355,7 +355,7 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
 
             // Draw shaded arc using multiple line segments
             let start_angle = az;
-            let end_angle = az + future_extent;
+            let _end_angle = az + future_extent;
             let num_segments = 20;
 
             for i in 0..num_segments {
@@ -368,7 +368,7 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
                 let rad2 = (angle2 - 90.0) * PI / 180.0;
 
                 // Create a wedge segment
-                let inner_radius = 0.0;
+                let _inner_radius = 0.0;
                 let p0 = center;
                 let p1 = Pos2::new(
                     center.x + radius * rad1.cos(),

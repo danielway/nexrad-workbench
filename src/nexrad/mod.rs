@@ -25,5 +25,5 @@ pub use render_sweep::RenderSweep;
 pub use sweep_animator::{AnimationState, SweepAnimator};
 pub use texture_cache::{RadarCacheKey, RadarTextureCache};
 pub use texture_render::{radar_coverage_range_km, render_radials_to_image};
-pub use types::{CachedScan, DownloadResult, ScanKey, ScanMetadata};
+pub use types::{CachedScan, DownloadResult, ScanMetadata};
 pub use volume_ring::VolumeRing;

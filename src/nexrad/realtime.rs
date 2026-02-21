@@ -44,6 +44,7 @@ pub enum RealtimeResult {
 }
 
 /// Internal state for the realtime streaming channel.
+#[derive(Default)]
 struct RealtimeState {
     results: Vec<RealtimeResult>,
     active: bool,
@@ -51,16 +52,6 @@ struct RealtimeState {
     stop_requested: bool,
 }
 
-impl Default for RealtimeState {
-    fn default() -> Self {
-        Self {
-            results: Vec::new(),
-            active: false,
-            time_until_next: None,
-            stop_requested: false,
-        }
-    }
-}
 
 /// Channel for real-time NEXRAD streaming.
 pub struct RealtimeChannel {
@@ -169,8 +160,9 @@ async fn streaming_loop(
     // Send Started event
     {
         let mut s = state.borrow_mut();
-        s.results
-            .push(RealtimeResult::Started { site_id: site_id.clone() });
+        s.results.push(RealtimeResult::Started {
+            site_id: site_id.clone(),
+        });
     }
     ctx.request_repaint();
 
@@ -262,11 +254,10 @@ async fn streaming_loop(
 
                         // Attempt incremental decode every few records (to avoid overhead)
                         // Decode after every 3rd record, or on volume end
-                        if record_seq >= 3 && (record_seq % 3 == 0 || is_end) {
+                        if record_seq >= 3 && (record_seq.is_multiple_of(3) || is_end) {
                             if let Ok(volume) = facade.decode_available_records(&scan_key).await {
                                 let sweep_count = volume.sweeps().len();
-                                let timestamp_ms =
-                                    scan_key.scan_start.as_millis();
+                                let timestamp_ms = scan_key.scan_start.as_millis();
                                 log::debug!(
                                     "Partial decode succeeded: {} sweeps at {}",
                                     sweep_count,

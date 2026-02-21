@@ -474,13 +474,18 @@ impl PlaybackState {
     /// Get the visible time range at current zoom.
     pub fn visible_time_range(&self, view_width_pixels: f64) -> (f64, f64) {
         let duration = view_width_pixels / self.timeline_zoom;
-        (self.timeline_view_start, self.timeline_view_start + duration)
+        (
+            self.timeline_view_start,
+            self.timeline_view_start + duration,
+        )
     }
 
     /// Clamp view to bounds after pan/zoom.
     pub fn clamp_view_to_bounds(&mut self, view_width_pixels: f64) {
         let duration = view_width_pixels / self.timeline_zoom;
-        self.timeline_view_start = self.bounds.clamp_view_start(self.timeline_view_start, duration);
+        self.timeline_view_start = self
+            .bounds
+            .clamp_view_start(self.timeline_view_start, duration);
     }
 
     /// Get data duration in seconds.
