@@ -174,8 +174,6 @@ impl VolumeRing {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // Note: These tests would require mock Volume objects
     // For now, the implementation is tested through integration
 }

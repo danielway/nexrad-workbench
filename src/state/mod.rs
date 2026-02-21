@@ -10,21 +10,23 @@ mod alerts;
 mod data_source;
 mod layer;
 mod live_mode;
+#[allow(dead_code)]
 mod playback;
 pub mod radar_data;
+#[allow(dead_code)]
 mod settings;
+#[allow(dead_code)]
 mod stats;
 pub mod url_state;
 pub mod vcp;
+#[allow(dead_code)]
 mod viz;
 
 pub use alerts::{AlertSummary, AlertsState, NwsAlert};
 pub use data_source::UploadState;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
-pub use playback::{
-    LoopMode, PlaybackSpeed, PlaybackState,
-};
+pub use playback::{LoopMode, PlaybackSpeed, PlaybackState};
 pub use radar_data::RadarTimeline;
 pub use settings::{format_bytes, StorageSettings};
 pub use stats::SessionStats;

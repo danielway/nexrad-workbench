@@ -264,7 +264,7 @@ fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
             let slider = egui::Slider::new(&mut quota_mb, min_quota_mb..=max_quota_mb)
                 .suffix(" MB")
                 .logarithmic(true)
-                .clamp_to_range(true);
+                .clamping(egui::SliderClamping::Always);
 
             if ui.add(slider).changed() {
                 state

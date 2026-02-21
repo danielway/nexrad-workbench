@@ -24,11 +24,15 @@
 //! └── scan_index   - Per-scan metadata with completeness tracking
 //! ```
 
+#[allow(dead_code)]
 pub mod facade;
+#[allow(dead_code)]
 pub mod keys;
+#[allow(dead_code)]
 pub mod record_cache;
 pub mod sites;
 
+#[allow(dead_code)]
 pub mod indexeddb;
 
 // Re-export static site data

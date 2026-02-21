@@ -52,7 +52,6 @@ struct RealtimeState {
     stop_requested: bool,
 }
 
-
 /// Channel for real-time NEXRAD streaming.
 pub struct RealtimeChannel {
     state: Rc<RefCell<RealtimeState>>,

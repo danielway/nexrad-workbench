@@ -10,10 +10,13 @@ mod archive_index;
 mod cache_channel;
 mod download;
 mod realtime;
+#[allow(dead_code)]
 mod render_sweep;
+#[allow(dead_code)]
 mod sweep_animator;
 mod texture_cache;
 mod texture_render;
+#[allow(dead_code)]
 mod types;
 mod volume_ring;
 
