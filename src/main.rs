@@ -107,7 +107,7 @@ pub struct WorkbenchApp {
     /// Geographic layer data for map overlays
     geo_layers: geo::GeoLayerSet,
 
-    /// Record-based data facade (v4 cache)
+    /// Record-based data facade
     data_facade: DataFacade,
 
     /// Channel for async NEXRAD download operations
@@ -309,15 +309,15 @@ impl WorkbenchApp {
         let download_channel = nexrad::DownloadChannel::new();
         let realtime_channel = nexrad::RealtimeChannel::with_stats(download_channel.stats());
 
-        // Open the v4 record cache database
+        // Open the record cache database
         #[cfg(target_arch = "wasm32")]
         {
             let facade = data_facade.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 if let Err(e) = facade.open().await {
-                    log::error!("Failed to open v4 record cache: {}", e);
+                    log::error!("Failed to open record cache: {}", e);
                 } else {
-                    log::info!("Opened v4 record cache database");
+                    log::info!("Opened record cache database");
                 }
             });
         }
@@ -661,13 +661,12 @@ impl WorkbenchApp {
                         self.displayed_scan_timestamp = Some(timestamp);
                         self.radar_texture_cache.invalidate();
 
-                        // Cache the volume for later playback (v4 only)
+                        // Cache the volume for later playback
                         let site_id = self.state.viz_state.site_id.clone();
                         let facade = self.data_facade.clone();
                         let ctx_clone = ctx.clone();
                         #[cfg(target_arch = "wasm32")]
                         wasm_bindgen_futures::spawn_local(async move {
-                            // Store as records in v4 cache
                             let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                             match data::process_archive_download(
                                 &facade,
@@ -680,13 +679,13 @@ impl WorkbenchApp {
                             {
                                 Ok((scan_key, records_stored)) => {
                                     log::debug!(
-                                        "Stored {} records for live scan {} in v4 cache",
+                                        "Stored {} records for live scan {} in cache",
                                         records_stored,
                                         scan_key
                                     );
                                 }
                                 Err(e) => {
-                                    log::warn!("Failed to store live records in v4 cache: {}", e);
+                                    log::warn!("Failed to store live records in cache: {}", e);
                                 }
                             }
 

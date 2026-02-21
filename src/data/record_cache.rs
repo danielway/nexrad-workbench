@@ -6,7 +6,7 @@
 use crate::data::keys::*;
 
 #[cfg(target_arch = "wasm32")]
-use crate::data::indexeddb_v4::IndexedDbRecordStore;
+use crate::data::indexeddb::IndexedDbRecordStore;
 
 /// Result type for cache operations.
 pub type CacheResult<T> = Result<T, String>;

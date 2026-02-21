@@ -2,7 +2,7 @@
 //!
 //! This module provides functionality for:
 //! - Downloading archival NEXRAD data from AWS
-//! - Caching downloaded data in IndexedDB via v4 record-based storage
+//! - Caching downloaded data in IndexedDB via record-based storage
 //! - High-performance radar rendering via nexrad-render with texture caching
 //! - Dynamic sweep rendering across multiple volumes
 

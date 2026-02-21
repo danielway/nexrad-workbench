@@ -129,30 +129,12 @@ impl ScanKey {
         })
     }
 
-    /// Convert from legacy ScanKey format (site_id + timestamp in seconds).
-    pub fn from_legacy(site_id: &str, timestamp_secs: i64) -> Self {
+    /// Creates a ScanKey from a site ID and timestamp in seconds.
+    pub fn from_secs(site_id: &str, timestamp_secs: i64) -> Self {
         Self {
             site: SiteId(site_id.to_string()),
             scan_start: UnixMillis::from_secs(timestamp_secs),
         }
-    }
-
-    /// Parse from legacy storage key string: "KDMX_1700000000" (underscore, seconds).
-    pub fn from_legacy_storage_key(key: &str) -> Option<Self> {
-        let parts: Vec<&str> = key.splitn(2, '_').collect();
-        if parts.len() != 2 {
-            return None;
-        }
-        let timestamp_secs = parts[1].parse::<i64>().ok()?;
-        Some(Self {
-            site: SiteId(parts[0].to_string()),
-            scan_start: UnixMillis::from_secs(timestamp_secs),
-        })
-    }
-
-    /// Convert to legacy storage key string: "KDMX_1700000000" (underscore, seconds).
-    pub fn to_legacy_storage_key(&self) -> String {
-        format!("{}_{}", self.site.0, self.scan_start.as_secs())
     }
 }
 
@@ -439,29 +421,10 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_key_legacy_format() {
-        // Legacy format uses underscore and seconds
-        let key = ScanKey::from_legacy("KDMX", 1700000000);
-        assert_eq!(key.to_legacy_storage_key(), "KDMX_1700000000");
-
-        let parsed = ScanKey::from_legacy_storage_key("KDMX_1700000000").unwrap();
-        assert_eq!(parsed.site.0, "KDMX");
-        assert_eq!(parsed.scan_start.as_secs(), 1700000000);
-    }
-
-    #[test]
-    fn test_scan_key_format_conversion() {
-        // Create from legacy format (seconds)
-        let key = ScanKey::from_legacy("KDMX", 1700000000);
-
-        // Verify it converts to milliseconds internally
+    fn test_scan_key_from_secs() {
+        let key = ScanKey::from_secs("KDMX", 1700000000);
         assert_eq!(key.scan_start.as_millis(), 1700000000000);
-
-        // Verify v4 storage format (milliseconds)
         assert_eq!(key.to_storage_key(), "KDMX|1700000000000");
-
-        // Verify legacy storage format (seconds)
-        assert_eq!(key.to_legacy_storage_key(), "KDMX_1700000000");
     }
 
     #[test]

@@ -122,9 +122,9 @@ impl DownloadChannel {
     /// Spawns an async download task for NEXRAD data.
     ///
     /// The download pipeline:
-    /// 1. Check v4 cache for existing data
+    /// 1. Check cache for existing data
     /// 2. If not cached, download from AWS S3 using nexrad-data
-    /// 3. Cache the result in v4 format
+    /// 3. Cache the result
     /// 4. Send through channel
     #[cfg(target_arch = "wasm32")]
     pub fn download(
@@ -352,11 +352,11 @@ async fn download_specific_file(
 
     let key = ScanKey::new(site_id, timestamp);
 
-    // Check v4 cache first (no network call)
-    let scan_key = DataScanKey::from_legacy(site_id, timestamp);
+    // Check cache first (no network call)
+    let scan_key = DataScanKey::from_secs(site_id, timestamp);
     if let Ok(Some(entry)) = facade.cache().scan_availability(&scan_key).await {
         if entry.completeness() == ScanCompleteness::Complete {
-            // Reassemble from v4 cache
+            // Reassemble from cache
             match facade.cache().list_records_for_scan(&scan_key).await {
                 Ok(record_keys) => {
                     let mut records = Vec::with_capacity(record_keys.len());
@@ -368,13 +368,13 @@ async fn download_specific_file(
                     if !records.is_empty() {
                         records.sort_by_key(|r| r.key.record_id);
                         let data = reassemble_records(&records);
-                        log::info!("V4 cache hit for {} ({} bytes)", key.to_storage_key(), data.len());
+                        log::info!("Cache hit for {} ({} bytes)", key.to_storage_key(), data.len());
                         let cached = CachedScan::new(key, file_name.to_string(), data);
                         return DownloadResult::CacheHit(cached);
                     }
                 }
                 Err(e) => {
-                    log::warn!("V4 cache lookup failed: {}", e);
+                    log::warn!("Cache lookup failed: {}", e);
                 }
             }
         }
@@ -423,18 +423,18 @@ async fn download_specific_file(
 
     let cached = CachedScan::new(key, file_name.to_string(), data.clone());
 
-    // Store as records in v4 cache only (with timing)
+    // Store as records in cache only (with timing)
     let decode_start = web_time::Instant::now();
     match process_archive_download(&facade, site_id, file_name, timestamp, &data).await {
         Ok((scan_key, records_stored)) => {
             log::info!(
-                "Stored {} records for scan {} in v4 cache",
+                "Stored {} records for scan {} in cache",
                 records_stored,
                 scan_key
             );
         }
         Err(e) => {
-            log::warn!("Failed to store records in v4 cache: {}", e);
+            log::warn!("Failed to store records in cache: {}", e);
         }
     }
     let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
@@ -465,11 +465,11 @@ async fn download_nexrad_data(
 
     let key = ScanKey::new(site_id, timestamp);
 
-    // Check v4 cache first (no network call)
-    let scan_key = DataScanKey::from_legacy(site_id, timestamp);
+    // Check cache first (no network call)
+    let scan_key = DataScanKey::from_secs(site_id, timestamp);
     if let Ok(Some(entry)) = facade.cache().scan_availability(&scan_key).await {
         if entry.completeness() == ScanCompleteness::Complete {
-            // Reassemble from v4 cache
+            // Reassemble from cache
             match facade.cache().list_records_for_scan(&scan_key).await {
                 Ok(record_keys) => {
                     let mut records = Vec::with_capacity(record_keys.len());
@@ -481,14 +481,14 @@ async fn download_nexrad_data(
                     if !records.is_empty() {
                         records.sort_by_key(|r| r.key.record_id);
                         let data = reassemble_records(&records);
-                        log::info!("V4 cache hit for {} ({} bytes)", key.to_storage_key(), data.len());
+                        log::info!("Cache hit for {} ({} bytes)", key.to_storage_key(), data.len());
                         let file_name = entry.file_name.unwrap_or_default();
                         let cached = CachedScan::new(key, file_name, data);
                         return DownloadResult::CacheHit(cached);
                     }
                 }
                 Err(e) => {
-                    log::warn!("V4 cache lookup failed: {}", e);
+                    log::warn!("Cache lookup failed: {}", e);
                 }
             }
         }
@@ -538,18 +538,18 @@ async fn download_nexrad_data(
     // Create cached scan with raw data
     let cached = CachedScan::new(key.clone(), file_name.clone(), data.clone());
 
-    // Store in v4 cache only
+    // Store in cache only
     let decode_start = web_time::Instant::now();
     match process_archive_download(&facade, site_id, &file_name, timestamp, &data).await {
         Ok((scan_key, records_stored)) => {
             log::info!(
-                "Stored {} records for scan {} in v4 cache",
+                "Stored {} records for scan {} in cache",
                 records_stored,
                 scan_key
             );
         }
         Err(e) => {
-            log::warn!("Failed to store records in v4 cache: {}", e);
+            log::warn!("Failed to store records in cache: {}", e);
         }
     }
     let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;

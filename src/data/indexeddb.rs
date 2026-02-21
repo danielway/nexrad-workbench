@@ -1,32 +1,15 @@
-//! IndexedDB v4 schema implementation for record-based storage.
+//! IndexedDB storage implementation for record-based radar data.
 //!
 //! ## Object Stores
 //!
-//! 1. `records` - Stores raw bzip2-compressed record blobs
+//! 1. `records` - Raw bzip2-compressed record blobs (ArrayBuffer)
 //!    - Key: "SITE|SCAN_START_MS|RECORD_ID" (e.g., "KDMX|1700000000000|12")
-//!    - Value: ArrayBuffer (raw bytes, NOT JSON)
 //!
-//! 2. `record_index` - Stores per-record metadata for fast queries
+//! 2. `record_index` - Per-record metadata (JSON)
 //!    - Key: Same as records
-//!    - Value: RecordIndexEntry (JSON)
-//!    - Indexes:
-//!      - `by_scan`: [site, scan_start] for fetching all records in a scan
-//!      - `by_time`: [site, effective_time] for time-range queries
 //!
-//! 3. `scan_index` - Stores per-scan metadata for timeline
+//! 3. `scan_index` - Per-scan metadata for timeline (JSON)
 //!    - Key: "SITE|SCAN_START_MS"
-//!    - Value: ScanIndexEntry (JSON)
-//!    - Indexes:
-//!      - `by_site_time`: [site, scan_start] for timeline queries
-//!
-//! ## Migration from v3
-//!
-//! On upgrade from v3, existing stores are preserved:
-//! - `nexrad-scans`: Lazily migrated when accessed
-//! - `scan-metadata`: Used to populate scan_index on first access
-//! - `file-cache`: Unchanged
-//!
-//! The `_legacy_migrated` store tracks which old entries have been migrated.
 
 use crate::data::keys::*;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
@@ -38,19 +21,15 @@ use wasm_bindgen::JsCast;
 use web_sys::{IdbDatabase, IdbRequest, IdbTransaction, IdbTransactionMode};
 
 /// Current database schema version.
-pub const DATABASE_VERSION: u32 = 4;
+const DATABASE_VERSION: u32 = 1;
 
 /// Database name.
-pub const DATABASE_NAME: &str = "nexrad-workbench";
+const DATABASE_NAME: &str = "nexrad-workbench";
 
 /// Object store names.
-pub const STORE_RECORDS: &str = "records_v4";
-pub const STORE_RECORD_INDEX: &str = "record_index_v4";
-pub const STORE_SCAN_INDEX: &str = "scan_index_v4";
-
-// Legacy stores (v3)
-pub const LEGACY_STORE_SCANS: &str = "nexrad-scans";
-pub const LEGACY_STORE_METADATA: &str = "scan-metadata";
+const STORE_RECORDS: &str = "records";
+const STORE_RECORD_INDEX: &str = "record_index";
+const STORE_SCAN_INDEX: &str = "scan_index";
 
 /// Result of a put operation.
 #[derive(Debug, Clone)]
@@ -61,7 +40,7 @@ pub struct PutOutcome {
     pub updated_scan_index: bool,
 }
 
-/// IndexedDB v4 record store.
+/// IndexedDB record store.
 #[derive(Clone)]
 pub struct IndexedDbRecordStore {
     db: Rc<RefCell<Option<IdbDatabase>>>,
@@ -86,7 +65,7 @@ impl IndexedDbRecordStore {
             return Ok(());
         }
 
-        let db = open_database_v4().await?;
+        let db = open_database().await?;
         *self.db.borrow_mut() = Some(db);
         Ok(())
     }
@@ -835,7 +814,7 @@ impl IndexedDbRecordStore {
         Ok(evicted_count)
     }
 
-    /// Clears all data from v4 stores.
+    /// Clears all data from all stores.
     pub async fn clear_all(&self) -> Result<(), String> {
         self.ensure_open().await?;
         let db = self.get_db()?;
@@ -867,8 +846,8 @@ impl IndexedDbRecordStore {
 // Helper functions
 // ============================================================================
 
-/// Opens the v4 database, creating/upgrading schema as needed.
-async fn open_database_v4() -> Result<IdbDatabase, String> {
+/// Opens the database, creating schema as needed.
+async fn open_database() -> Result<IdbDatabase, String> {
     let window =
         web_sys::window().ok_or_else(|| "No window object".to_string())?;
 
@@ -883,7 +862,6 @@ async fn open_database_v4() -> Result<IdbDatabase, String> {
 
     // Set up upgrade handler
     let onupgradeneeded = Closure::wrap(Box::new(move |event: web_sys::IdbVersionChangeEvent| {
-        let old_version = event.old_version() as u32;
         let request: IdbRequest = event
             .target()
             .unwrap()
@@ -891,33 +869,13 @@ async fn open_database_v4() -> Result<IdbDatabase, String> {
             .expect("Expected IdbRequest");
         let db: IdbDatabase = request.result().unwrap().dyn_into().unwrap();
 
-        log::info!(
-            "Upgrading IndexedDB from v{} to v{}",
-            old_version,
-            DATABASE_VERSION
-        );
-
-        // Create v4 stores if they don't exist
-        if !db.object_store_names().contains(STORE_RECORDS) {
-            db.create_object_store(STORE_RECORDS)
-                .expect("Failed to create records store");
-            log::info!("Created {} store", STORE_RECORDS);
+        for store_name in [STORE_RECORDS, STORE_RECORD_INDEX, STORE_SCAN_INDEX] {
+            if !db.object_store_names().contains(store_name) {
+                db.create_object_store(store_name)
+                    .expect("Failed to create object store");
+                log::info!("Created IndexedDB store: {}", store_name);
+            }
         }
-
-        if !db.object_store_names().contains(STORE_RECORD_INDEX) {
-            db.create_object_store(STORE_RECORD_INDEX)
-                .expect("Failed to create record_index store");
-            log::info!("Created {} store", STORE_RECORD_INDEX);
-        }
-
-        if !db.object_store_names().contains(STORE_SCAN_INDEX) {
-            db.create_object_store(STORE_SCAN_INDEX)
-                .expect("Failed to create scan_index store");
-            log::info!("Created {} store", STORE_SCAN_INDEX);
-        }
-
-        // Keep legacy stores for migration (don't delete them)
-        // They will be lazily migrated when accessed
     }) as Box<dyn FnMut(_)>);
 
     open_request.set_onupgradeneeded(Some(onupgradeneeded.as_ref().unchecked_ref()));

@@ -12,13 +12,10 @@ use wasm_bindgen::prelude::*;
 use web_sys::{IdbDatabase, IdbObjectStore, IdbRequest, IdbTransactionMode};
 
 /// All object stores that should exist in the nexrad-workbench database.
-/// These are created during database upgrade.
-/// Note: v3 stores (nexrad-scans, scan-metadata) have been removed in favor of v4 record-based storage.
 const REQUIRED_STORES: &[&str] = &["file-cache"];
 
-/// Current database schema version. Increment when adding new stores.
-/// v4 stores are managed by data/indexeddb_v4.rs with its own version tracking.
-pub const DATABASE_VERSION: u32 = 3;
+/// Current database schema version.
+pub const DATABASE_VERSION: u32 = 1;
 
 /// IndexedDB-based key-value store.
 ///
@@ -173,24 +170,7 @@ impl KeyValueStore for IndexedDbStore {
     }
 }
 
-/// Deletes the database if it exists.
-async fn delete_database(
-    idb_factory: &web_sys::IdbFactory,
-    name: &str,
-) -> Result<(), StorageError> {
-    let delete_request = idb_factory
-        .delete_database(name)
-        .map_err(|e| StorageError::DatabaseOpenFailed(format!("{:?}", e)))?;
-
-    wait_for_request(&delete_request).await?;
-    log::info!("Deleted old database: {}", name);
-    Ok(())
-}
-
 /// Opens an IndexedDB database with the given configuration.
-///
-/// If the database exists with an older version, it is deleted entirely
-/// and recreated fresh. This simplifies the code by avoiding migrations.
 async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageError> {
     let window = web_sys::window()
         .ok_or_else(|| StorageError::DatabaseOpenFailed("No window object".to_string()))?;
@@ -200,31 +180,6 @@ async fn open_database(config: &StorageConfig) -> Result<IdbDatabase, StorageErr
         .map_err(|e| StorageError::DatabaseOpenFailed(format!("{:?}", e)))?
         .ok_or_else(|| StorageError::DatabaseOpenFailed("IndexedDB not available".to_string()))?;
 
-    // First, check if the database exists and what version it is.
-    // Open without specifying a version to get the current version.
-    let probe_request = idb_factory
-        .open(&config.database_name)
-        .map_err(|e| StorageError::DatabaseOpenFailed(format!("{:?}", e)))?;
-
-    let probe_result = wait_for_request(&probe_request).await?;
-    let probe_db: IdbDatabase = probe_result.dyn_into().map_err(|_| {
-        StorageError::DatabaseOpenFailed("Failed to cast to IdbDatabase".to_string())
-    })?;
-
-    let existing_version = probe_db.version() as u32;
-    probe_db.close();
-
-    // If the existing database is older than our current version, delete it entirely
-    if existing_version > 0 && existing_version < DATABASE_VERSION {
-        log::warn!(
-            "Database version {} is older than current version {}, deleting and starting fresh",
-            existing_version,
-            DATABASE_VERSION
-        );
-        delete_database(&idb_factory, &config.database_name).await?;
-    }
-
-    // Now open with the correct version
     let open_request = idb_factory
         .open_with_u32(&config.database_name, DATABASE_VERSION)
         .map_err(|e| StorageError::DatabaseOpenFailed(format!("{:?}", e)))?;

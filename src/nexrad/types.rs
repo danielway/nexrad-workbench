@@ -45,13 +45,13 @@ impl ScanKey {
         })
     }
 
-    /// Convert to v4 ScanKey format (data::keys::ScanKey).
-    pub fn to_v4_key(&self) -> crate::data::ScanKey {
-        crate::data::ScanKey::from_legacy(&self.site_id, self.timestamp)
+    /// Convert to data::keys::ScanKey format.
+    pub fn to_data_key(&self) -> crate::data::ScanKey {
+        crate::data::ScanKey::from_secs(&self.site_id, self.timestamp)
     }
 
-    /// Convert from v4 ScanKey format (data::keys::ScanKey).
-    pub fn from_v4_key(key: &crate::data::ScanKey) -> Self {
+    /// Convert from data::keys::ScanKey format.
+    pub fn from_data_key(key: &crate::data::ScanKey) -> Self {
         Self {
             site_id: key.site.0.clone(),
             timestamp: key.scan_start.as_secs(),

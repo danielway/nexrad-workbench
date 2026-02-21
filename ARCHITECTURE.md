@@ -106,24 +106,24 @@ if let Some(result) = channel.try_recv() {
 
 ## Caching Strategy
 
-### Record-Based Storage (v4 Schema)
+### Record-Based Storage
 
-The new storage architecture stores individual compressed **records** rather than
+The storage architecture stores individual compressed **records** rather than
 full scans, enabling efficient partial storage, time-based queries, and deduplication.
 
-#### IndexedDB Schema (v4)
+#### IndexedDB Schema
 
 ```
-nexrad-workbench (v4)
-├── records_v4       - Raw bzip2-compressed record blobs
+nexrad-workbench
+├── records      - Raw bzip2-compressed record blobs
 │   Key: "SITE|SCAN_START_MS|RECORD_ID"
 │   Value: ArrayBuffer (raw bytes)
 │
-├── record_index_v4  - Per-record metadata
+├── record_index - Per-record metadata
 │   Key: "SITE|SCAN_START_MS|RECORD_ID"
 │   Value: { key, record_time, size_bytes, has_vcp, stored_at }
 │
-└── scan_index_v4    - Per-scan metadata
+└── scan_index   - Per-scan metadata
     Key: "SITE|SCAN_START_MS"
     Value: { scan, has_vcp, expected_records, present_records, ... }
 ```
@@ -153,8 +153,7 @@ metadata needed to interpret the scan structure.
 ### Three-Layer Cache
 
 1. **IndexedDB** (persistent, WASM only)
-   - v4: Record-based storage (see above)
-   - Legacy v3: `nexrad-scans`, `scan-metadata` (lazy migration)
+   - Record-based storage (see above)
    - `file-cache`: Uploaded files
 
 2. **VolumeRing** (memory)
@@ -165,22 +164,6 @@ metadata needed to interpret the scan structure.
 3. **RadarTextureCache** (GPU)
    - egui TextureHandle storage
    - Content-signature-based invalidation
-
-### Current Integration (Dual-Write)
-
-Downloads and live streams write to both caches:
-1. **v3 (legacy)**: Full scan blobs for immediate compatibility
-2. **v4 (records)**: Split into bzip2 records via `split_archive2_into_records()`
-
-Timeline/scrub still uses v3 cache (`CacheLoadChannel`, `ScrubLoadChannel`).
-
-### Future Migration
-
-Full migration to v4-only requires:
-1. Update `CacheLoadChannel` to query `scan_index_v4`
-2. Update `ScrubLoadChannel` to reassemble from `records_v4`
-3. Remove v3 writes from download pipeline
-4. Add lazy migration for existing v3 data
 
 ## State Management
 

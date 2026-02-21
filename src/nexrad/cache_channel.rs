@@ -69,7 +69,7 @@ impl CacheLoadChannel {
         wasm_bindgen_futures::spawn_local(async move {
             log::info!("Loading cache metadata for site: {}", site_id);
 
-            // Query v4 scan index
+            // Query scan index
             let site = SiteId::new(&site_id);
             let start = UnixMillis(0);
             let end = UnixMillis::now();
@@ -99,7 +99,7 @@ impl CacheLoadChannel {
                         .collect();
 
                     log::info!(
-                        "Loaded {} cached scan(s) for site {} from v4 cache",
+                        "Loaded {} cached scan(s) for site {}",
                         metadata.len(),
                         site_id
                     );
@@ -151,11 +151,11 @@ impl CacheLoadChannel {
         let loading = self.loading.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            log::info!("Clearing v4 cache...");
+            log::info!("Clearing cache...");
 
             let result = match facade.clear_all().await {
                 Ok(()) => {
-                    log::info!("V4 cache cleared successfully");
+                    log::info!("Cache cleared successfully");
                     CacheLoadResult::Success {
                         site_id: String::new(),
                         metadata: Vec::new(),
@@ -262,8 +262,7 @@ impl ScrubLoadChannel {
         let pending = self.pending_timestamp.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            // Convert to v4 key format
-            let scan_key = DataScanKey::from_legacy(&site_id, timestamp);
+            let scan_key = DataScanKey::from_secs(&site_id, timestamp);
 
             // List all records for this scan
             let result = match facade.cache().list_records_for_scan(&scan_key).await {
