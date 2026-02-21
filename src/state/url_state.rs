@@ -31,7 +31,6 @@ pub struct UrlParams {
 }
 
 /// Parse URL query parameters from the current browser URL.
-#[cfg(target_arch = "wasm32")]
 pub fn parse_from_url() -> UrlParams {
     let mut params = UrlParams {
         site: None,
@@ -77,20 +76,7 @@ pub fn parse_from_url() -> UrlParams {
     params
 }
 
-/// No-op stub for native builds.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn parse_from_url() -> UrlParams {
-    UrlParams {
-        site: None,
-        time: None,
-        lat: None,
-        lon: None,
-        view: ViewState::default(),
-    }
-}
-
 /// Push current state to the URL query string using `replaceState`.
-#[cfg(target_arch = "wasm32")]
 pub fn push_to_url(site: &str, time: f64, lat: f64, lon: f64, view: &ViewState) {
     let v_json = serde_json::to_vec(view).unwrap_or_default();
     let v_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&v_json);
@@ -108,7 +94,3 @@ pub fn push_to_url(site: &str, time: f64, lat: f64, lon: f64, view: &ViewState) 
         Some(&query),
     );
 }
-
-/// No-op stub for native builds.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn push_to_url(_site: &str, _time: f64, _lat: f64, _lon: f64, _view: &ViewState) {}

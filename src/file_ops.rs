@@ -38,31 +38,16 @@ impl FilePickerChannel {
 
     /// Spawns an async file picker dialog.
     ///
-    /// On native: spawns a new thread using pollster to block on the async dialog.
-    /// On WASM: uses wasm_bindgen_futures::spawn_local.
-    ///
     /// When the dialog completes (or is cancelled), the result is sent through
     /// the channel and ctx.request_repaint() is called to trigger a UI update.
     pub fn pick_file(&self, ctx: egui::Context) {
         let sender = self.sender.clone();
 
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            std::thread::spawn(move || {
-                let result = pollster::block_on(async_pick_file());
-                let _ = sender.send(result);
-                ctx.request_repaint();
-            });
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            wasm_bindgen_futures::spawn_local(async move {
-                let result = async_pick_file().await;
-                let _ = sender.send(result);
-                ctx.request_repaint();
-            });
-        }
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = async_pick_file().await;
+            let _ = sender.send(result);
+            ctx.request_repaint();
+        });
     }
 
     /// Non-blocking check for a completed file pick.

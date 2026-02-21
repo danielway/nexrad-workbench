@@ -159,13 +159,7 @@ impl DateTimePickerState {
 impl AppState {
     pub fn new() -> Self {
         // Use current time for initialization
-        #[cfg(target_arch = "wasm32")]
         let now = js_sys::Date::now() / 1000.0;
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
 
         // Start with empty timeline - will be populated from cache
         let radar_timeline = RadarTimeline::default();

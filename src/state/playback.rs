@@ -131,17 +131,8 @@ impl Default for TimeModel {
 
 impl TimeModel {
     /// Get current wall-clock time as Unix seconds.
-    #[cfg(target_arch = "wasm32")]
     pub fn wall_clock_time() -> f64 {
         js_sys::Date::now() / 1000.0
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn wall_clock_time() -> f64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0)
     }
 
     /// Create a new time model at the given position.

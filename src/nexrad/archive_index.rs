@@ -166,15 +166,5 @@ impl ArchiveIndex {
 
 /// Get current timestamp in seconds.
 pub fn current_timestamp_secs() -> f64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_sys::Date::now() / 1000.0
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0)
-    }
+    js_sys::Date::now() / 1000.0
 }

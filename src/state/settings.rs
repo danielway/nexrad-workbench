@@ -38,7 +38,6 @@ impl StorageSettings {
     }
 
     /// Load settings from localStorage.
-    #[cfg(target_arch = "wasm32")]
     pub fn load() -> Self {
         let window = match web_sys::window() {
             Some(w) => w,
@@ -67,14 +66,7 @@ impl StorageSettings {
         }
     }
 
-    /// Load settings (native stub).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn load() -> Self {
-        Self::default()
-    }
-
     /// Save settings to localStorage.
-    #[cfg(target_arch = "wasm32")]
     pub fn save(&self) {
         let window = match web_sys::window() {
             Some(w) => w,
@@ -99,12 +91,6 @@ impl StorageSettings {
         } else {
             log::info!("Saved storage settings to localStorage");
         }
-    }
-
-    /// Save settings (native stub).
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn save(&self) {
-        // No-op on native
     }
 
     /// Format quota as human-readable string.

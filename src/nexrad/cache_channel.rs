@@ -54,7 +54,6 @@ impl CacheLoadChannel {
     ///
     /// If a load is already in progress, this call is ignored.
     /// Results can be retrieved via `try_recv()`.
-    #[cfg(target_arch = "wasm32")]
     pub fn load_site_timeline(&self, ctx: Context, facade: DataFacade, site_id: String) {
         // Don't start a new load if one is in progress
         if *self.loading.borrow() {
@@ -138,7 +137,6 @@ impl CacheLoadChannel {
     /// Clears all cached data.
     ///
     /// After clearing, the cache size will be 0 and timeline will be empty.
-    #[cfg(target_arch = "wasm32")]
     pub fn clear_cache(&self, ctx: Context, facade: DataFacade) {
         // Don't start if a load is in progress
         if *self.loading.borrow() {
@@ -175,16 +173,6 @@ impl CacheLoadChannel {
         });
     }
 
-    // Native stubs
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn load_site_timeline(&self, _ctx: Context, _facade: DataFacade, _site_id: String) {
-        // No-op on native
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn clear_cache(&self, _ctx: Context, _facade: DataFacade) {
-        // No-op on native
-    }
 }
 
 impl Default for CacheLoadChannel {
@@ -238,7 +226,6 @@ impl ScrubLoadChannel {
     }
 
     /// Load a scan from cache by site ID and timestamp.
-    #[cfg(target_arch = "wasm32")]
     pub fn load_scan(&self, ctx: Context, facade: DataFacade, site_id: String, timestamp: i64) {
         use crate::data::{reassemble_records, ScanKey as DataScanKey};
 
@@ -327,11 +314,6 @@ impl ScrubLoadChannel {
         self.receiver.borrow_mut().take()
     }
 
-    // Native stubs
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn load_scan(&self, _ctx: Context, _facade: DataFacade, _site_id: String, _timestamp: i64) {
-        // No-op on native
-    }
 }
 
 impl Default for ScrubLoadChannel {

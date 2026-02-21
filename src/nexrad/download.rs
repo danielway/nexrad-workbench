@@ -126,7 +126,6 @@ impl DownloadChannel {
     /// 2. If not cached, download from AWS S3 using nexrad-data
     /// 3. Cache the result
     /// 4. Send through channel
-    #[cfg(target_arch = "wasm32")]
     pub fn download(
         &self,
         ctx: egui::Context,
@@ -144,28 +143,9 @@ impl DownloadChannel {
         });
     }
 
-    /// Native download using nexrad's built-in AWS support.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn download(
-        &self,
-        ctx: egui::Context,
-        site_id: String,
-        date: chrono::NaiveDate,
-        _facade: DataFacade,
-    ) {
-        let sender = self.sender.clone();
-
-        std::thread::spawn(move || {
-            let result = pollster::block_on(download_nexrad_data_native(&site_id, date));
-            let _ = sender.send(result);
-            ctx.request_repaint();
-        });
-    }
-
     /// Download a specific file from the archive by name.
     ///
     /// Returns false if the download is already pending.
-    #[cfg(target_arch = "wasm32")]
     pub fn download_file(
         &self,
         ctx: egui::Context,
@@ -205,20 +185,6 @@ impl DownloadChannel {
         true
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn download_file(
-        &self,
-        _ctx: egui::Context,
-        _site_id: String,
-        _date: NaiveDate,
-        _file_name: String,
-        _timestamp: i64,
-        _facade: DataFacade,
-    ) -> bool {
-        // Not implemented for native
-        false
-    }
-
     /// Check if a download is pending for the given storage key.
     pub fn is_download_pending(&self, site_id: &str, timestamp: i64) -> bool {
         let storage_key = format!("{}_{}", site_id, timestamp);
@@ -228,7 +194,6 @@ impl DownloadChannel {
     /// Fetch archive listing for a site/date.
     ///
     /// Returns false if the request is already pending.
-    #[cfg(target_arch = "wasm32")]
     pub fn fetch_listing(&self, ctx: egui::Context, site_id: String, date: NaiveDate) -> bool {
         let listing_key = format!("{}_{}", site_id, date);
 
@@ -265,12 +230,6 @@ impl DownloadChannel {
         true
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn fetch_listing(&self, _ctx: egui::Context, _site_id: String, _date: NaiveDate) -> bool {
-        // Not implemented for native
-        false
-    }
-
     /// Check if a listing request is pending.
     pub fn is_listing_pending(&self, site_id: &str, date: &NaiveDate) -> bool {
         let listing_key = format!("{}_{}", site_id, date);
@@ -292,7 +251,6 @@ impl DownloadChannel {
 }
 
 /// Fetches the archive listing for a site/date.
-#[cfg(target_arch = "wasm32")]
 async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult {
     use nexrad::data::aws::archive;
 
@@ -339,7 +297,6 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
 }
 
 /// Downloads a specific file from the archive.
-#[cfg(target_arch = "wasm32")]
 async fn download_specific_file(
     site_id: &str,
     date: NaiveDate,
@@ -448,7 +405,6 @@ async fn download_specific_file(
 }
 
 /// Performs the actual NEXRAD download using nexrad-data crate.
-#[cfg(target_arch = "wasm32")]
 async fn download_nexrad_data(
     site_id: &str,
     date: chrono::NaiveDate,
@@ -559,54 +515,5 @@ async fn download_nexrad_data(
         scan: cached,
         fetch_latency_ms: fetch_ms,
         decode_latency_ms: decode_ms,
-    }
-}
-
-/// Native download implementation using nexrad's built-in support.
-#[cfg(not(target_arch = "wasm32"))]
-async fn download_nexrad_data_native(site_id: &str, date: chrono::NaiveDate) -> DownloadResult {
-    use nexrad::data::aws::archive;
-
-    // List available files
-    let files = match archive::list_files(site_id, &date).await {
-        Ok(files) => files,
-        Err(e) => {
-            return DownloadResult::Error(format!("Failed to list files: {}", e));
-        }
-    };
-
-    if files.is_empty() {
-        return DownloadResult::Error(format!("No files available for {} on {}", site_id, date));
-    }
-
-    let file_meta = files[0].clone();
-    let file_name = file_meta.name().to_string();
-    log::info!("Downloading: {}", file_name);
-
-    // Download the file
-    let file = match archive::download_file(file_meta).await {
-        Ok(file) => file,
-        Err(e) => {
-            return DownloadResult::Error(format!("Download failed: {}", e));
-        }
-    };
-
-    // Get the raw compressed data from the file
-    let data = file.data().to_vec();
-    log::info!("Downloaded {} bytes", data.len());
-
-    // Create scan key from date
-    let timestamp = date
-        .and_hms_opt(0, 0, 0)
-        .map(|dt| dt.and_utc().timestamp())
-        .unwrap_or(0);
-
-    let key = ScanKey::new(site_id, timestamp);
-    let cached = CachedScan::new(key, file_name, data);
-
-    DownloadResult::Success {
-        scan: cached,
-        fetch_latency_ms: 0.0,
-        decode_latency_ms: 0.0,
     }
 }

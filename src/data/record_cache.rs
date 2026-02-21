@@ -1,20 +1,16 @@
 //! Record cache abstraction layer.
 //!
 //! Provides a high-level interface for storing and querying radar records.
-//! The actual storage is implemented by `IndexedDbRecordStore` for WASM targets.
+//! The actual storage is implemented by `IndexedDbRecordStore` backed by IndexedDB.
 
 use crate::data::keys::*;
 
-#[cfg(target_arch = "wasm32")]
 use crate::data::indexeddb::IndexedDbRecordStore;
 
 /// Result type for cache operations.
 pub type CacheResult<T> = Result<T, String>;
 
 /// Record cache interface.
-///
-/// This trait abstracts the storage layer, allowing different implementations
-/// for WASM (IndexedDB) and native (in-memory or filesystem) targets.
 pub trait RecordCache {
     /// Stores a record blob and updates indexes.
     ///
@@ -67,14 +63,12 @@ pub trait RecordCache {
     ) -> impl std::future::Future<Output = CacheResult<Vec<TimeRange>>> + Send;
 }
 
-/// WASM implementation using IndexedDB.
-#[cfg(target_arch = "wasm32")]
+/// Record cache implementation using IndexedDB.
 #[derive(Clone, Default)]
 pub struct WasmRecordCache {
     store: IndexedDbRecordStore,
 }
 
-#[cfg(target_arch = "wasm32")]
 impl WasmRecordCache {
     pub fn new() -> Self {
         Self {
@@ -208,118 +202,6 @@ impl WasmRecordCache {
     /// Returns the number of scans evicted.
     pub async fn evict_to_size(&self, target_bytes: u64) -> CacheResult<u32> {
         self.store.evict_to_size(target_bytes).await
-    }
-}
-
-/// Native stub implementation (no-op).
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Clone, Default)]
-pub struct WasmRecordCache;
-
-#[cfg(not(target_arch = "wasm32"))]
-impl WasmRecordCache {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub async fn open(&self) -> CacheResult<()> {
-        Ok(())
-    }
-
-    pub async fn put_record(
-        &self,
-        _record: &RecordBlob,
-        _meta: RecordIndexEntry,
-    ) -> CacheResult<bool> {
-        Ok(false)
-    }
-
-    pub async fn get_record(&self, _key: &RecordKey) -> CacheResult<Option<RecordBlob>> {
-        Ok(None)
-    }
-
-    pub async fn has_record(&self, _key: &RecordKey) -> CacheResult<bool> {
-        Ok(false)
-    }
-
-    pub async fn list_records_for_scan(&self, _scan: &ScanKey) -> CacheResult<Vec<RecordKey>> {
-        Ok(Vec::new())
-    }
-
-    pub async fn query_record_keys_by_time(
-        &self,
-        _site: &SiteId,
-        _start: UnixMillis,
-        _end: UnixMillis,
-        _limit: u32,
-    ) -> CacheResult<Vec<RecordKey>> {
-        Ok(Vec::new())
-    }
-
-    pub async fn query_records_by_time(
-        &self,
-        _site: &SiteId,
-        _start: UnixMillis,
-        _end: UnixMillis,
-        _limit: u32,
-        _include_bytes: bool,
-    ) -> CacheResult<Vec<(RecordKey, Option<RecordBlob>)>> {
-        Ok(Vec::new())
-    }
-
-    pub async fn scan_availability(&self, _scan: &ScanKey) -> CacheResult<Option<ScanIndexEntry>> {
-        Ok(None)
-    }
-
-    pub async fn availability_ranges(
-        &self,
-        _site: &SiteId,
-        _start: UnixMillis,
-        _end: UnixMillis,
-    ) -> CacheResult<Vec<TimeRange>> {
-        Ok(Vec::new())
-    }
-
-    pub async fn list_scans(
-        &self,
-        _site: &SiteId,
-        _start: UnixMillis,
-        _end: UnixMillis,
-    ) -> CacheResult<Vec<ScanIndexEntry>> {
-        Ok(Vec::new())
-    }
-
-    pub async fn update_scan_sweep_meta(
-        &self,
-        _scan: &ScanKey,
-        _end_timestamp_secs: i64,
-        _sweeps: Vec<SweepMeta>,
-    ) -> CacheResult<bool> {
-        Ok(false)
-    }
-
-    pub async fn set_expected_records(&self, _scan: &ScanKey, _expected: u32) -> CacheResult<()> {
-        Ok(())
-    }
-
-    pub async fn total_cache_size(&self) -> CacheResult<u64> {
-        Ok(0)
-    }
-
-    pub async fn clear_all(&self) -> CacheResult<()> {
-        Ok(())
-    }
-
-    pub async fn get_lru_scans(&self, _limit: u32) -> CacheResult<Vec<ScanIndexEntry>> {
-        Ok(Vec::new())
-    }
-
-    pub async fn delete_scan(&self, _scan: &ScanKey) -> CacheResult<u64> {
-        Ok(0)
-    }
-
-    pub async fn evict_to_size(&self, _target_bytes: u64) -> CacheResult<u32> {
-        Ok(0)
     }
 }
 

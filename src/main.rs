@@ -23,29 +23,11 @@ use state::radar_data::Sweep as TimelineSweep;
 use state::AppState;
 use storage::{CachedFile, StorageConfig};
 
-#[cfg(target_arch = "wasm32")]
 use storage::IndexedDbStore;
 
-// Native entry point
-#[cfg(not(target_arch = "wasm32"))]
-fn main() -> eframe::Result<()> {
-    env_logger::init();
-
-    let native_options = eframe::NativeOptions::default();
-
-    eframe::run_native(
-        "NEXRAD Workbench",
-        native_options,
-        Box::new(|cc| Ok(Box::new(WorkbenchApp::new(cc)))),
-    )
-}
-
-// WASM entry point - main is not called on wasm32
-#[cfg(target_arch = "wasm32")]
 fn main() {}
 
 /// Entry point for the WASM application.
-#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
 pub async fn start() {
     use eframe::wasm_bindgen::JsCast as _;
@@ -100,8 +82,7 @@ pub struct WorkbenchApp {
     /// Channel for async file picker operations
     file_picker: FilePickerChannel,
 
-    /// File cache storage (IndexedDB on WASM)
-    #[cfg(target_arch = "wasm32")]
+    /// File cache storage (IndexedDB)
     file_cache: IndexedDbStore,
 
     /// Geographic layer data for map overlays
@@ -146,7 +127,6 @@ pub struct WorkbenchApp {
 
     /// Shared results from partial volume decode tasks.
     /// Populated by async decode tasks, consumed by update loop.
-    #[cfg(target_arch = "wasm32")]
     partial_volume_results: std::rc::Rc<std::cell::RefCell<Vec<(i64, Volume)>>>,
 
     /// Sweep animator for radial-accurate playback animation.
@@ -200,7 +180,6 @@ fn extract_sweep_timing(volume: &Volume) -> Vec<TimelineSweep> {
 
 /// Persist sweep metadata to the scan index so future timeline loads
 /// have accurate scan duration and sweep detail without decoding.
-#[cfg(target_arch = "wasm32")]
 fn persist_sweep_meta(
     facade: &DataFacade,
     site_id: &str,
@@ -310,7 +289,6 @@ impl WorkbenchApp {
         let realtime_channel = nexrad::RealtimeChannel::with_stats(download_channel.stats());
 
         // Open the record cache database
-        #[cfg(target_arch = "wasm32")]
         {
             let facade = data_facade.clone();
             wasm_bindgen_futures::spawn_local(async move {
@@ -325,7 +303,6 @@ impl WorkbenchApp {
         Self {
             state,
             file_picker: FilePickerChannel::new(),
-            #[cfg(target_arch = "wasm32")]
             file_cache: IndexedDbStore::new(StorageConfig::new("nexrad-workbench", "file-cache")),
             geo_layers,
             data_facade,
@@ -340,7 +317,6 @@ impl WorkbenchApp {
             previous_site_id: initial_site_id,
             scrub_load_channel: nexrad::ScrubLoadChannel::new(),
             realtime_channel,
-            #[cfg(target_arch = "wasm32")]
             partial_volume_results: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             sweep_animator: nexrad::SweepAnimator::new(),
             last_url_push: web_time::Instant::now(),
@@ -522,13 +498,7 @@ impl WorkbenchApp {
         log::info!("Starting live mode for site: {}", site_id);
 
         // Get current time
-        #[cfg(target_arch = "wasm32")]
         let now = js_sys::Date::now() / 1000.0;
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
 
         // Initialize live mode state
         self.state.live_mode_state.start(now);
@@ -561,13 +531,7 @@ impl WorkbenchApp {
     /// Handle a realtime streaming result.
     fn handle_realtime_result(&mut self, result: nexrad::RealtimeResult, ctx: &egui::Context) {
         // Get current time
-        #[cfg(target_arch = "wasm32")]
         let now = js_sys::Date::now() / 1000.0;
-        #[cfg(not(target_arch = "wasm32"))]
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
 
         match result {
             nexrad::RealtimeResult::Started { site_id } => {
@@ -642,7 +606,6 @@ impl WorkbenchApp {
 
                         // Extract sweep timing for timeline display
                         let sweep_timing = extract_sweep_timing(&volume);
-                        #[cfg(target_arch = "wasm32")]
                         persist_sweep_meta(
                             &self.data_facade,
                             &self.state.viz_state.site_id,
@@ -665,7 +628,6 @@ impl WorkbenchApp {
                         let site_id = self.state.viz_state.site_id.clone();
                         let facade = self.data_facade.clone();
                         let ctx_clone = ctx.clone();
-                        #[cfg(target_arch = "wasm32")]
                         wasm_bindgen_futures::spawn_local(async move {
                             let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                             match data::process_archive_download(
@@ -795,8 +757,7 @@ impl eframe::App for WorkbenchApp {
             self.state.upload_state.loading = false;
             match result {
                 Some(file_result) => {
-                    // Cache the file to IndexedDB (WASM only)
-                    #[cfg(target_arch = "wasm32")]
+                    // Cache the file to IndexedDB
                     {
                         use storage::KeyValueStore;
                         let cached =
@@ -831,7 +792,6 @@ impl eframe::App for WorkbenchApp {
             let target = self.state.storage_settings.eviction_target_bytes;
             let ctx_clone = ctx.clone();
 
-            #[cfg(target_arch = "wasm32")]
             wasm_bindgen_futures::spawn_local(async move {
                 match facade.check_and_evict(quota, target).await {
                     Ok((evicted, count)) => {
@@ -881,7 +841,6 @@ impl eframe::App for WorkbenchApp {
 
                             // Extract sweep timing for timeline display
                             let sweep_timing = extract_sweep_timing(&volume);
-                            #[cfg(target_arch = "wasm32")]
                             persist_sweep_meta(
                                 &self.data_facade,
                                 &self.state.viz_state.site_id,
@@ -969,7 +928,6 @@ impl eframe::App for WorkbenchApp {
                             // Extract sweep timing for timeline display
                             let sweep_timing = extract_sweep_timing(&volume);
                             let sweep_count = sweep_timing.len();
-                            #[cfg(target_arch = "wasm32")]
                             persist_sweep_meta(
                                 &self.data_facade,
                                 &self.state.viz_state.site_id,
@@ -1019,7 +977,6 @@ impl eframe::App for WorkbenchApp {
             let ctx_clone = ctx.clone();
             let results = self.partial_volume_results.clone();
 
-            #[cfg(target_arch = "wasm32")]
             wasm_bindgen_futures::spawn_local(async move {
                 if let Ok(volume) = facade.decode_available_records(&scan_key).await {
                     log::debug!(
@@ -1034,7 +991,6 @@ impl eframe::App for WorkbenchApp {
         }
 
         // Process any completed partial volume decodes
-        #[cfg(target_arch = "wasm32")]
         {
             let completed: Vec<_> = self.partial_volume_results.borrow_mut().drain(..).collect();
             for (timestamp_ms, volume) in completed {
@@ -1055,13 +1011,7 @@ impl eframe::App for WorkbenchApp {
         // Update live mode countdown from realtime channel
         if self.state.live_mode_state.is_active() {
             if let Some(duration) = self.realtime_channel.time_until_next() {
-                #[cfg(target_arch = "wasm32")]
                 let now = js_sys::Date::now() / 1000.0;
-                #[cfg(not(target_arch = "wasm32"))]
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs_f64())
-                    .unwrap_or(0.0);
 
                 self.state.live_mode_state.next_chunk_expected_at =
                     Some(now + duration.as_secs_f64());

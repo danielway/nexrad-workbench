@@ -59,18 +59,7 @@ pub struct UnixMillis(pub i64);
 
 impl UnixMillis {
     pub fn now() -> Self {
-        #[cfg(target_arch = "wasm32")]
-        {
-            Self(js_sys::Date::now() as i64)
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let duration = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default();
-            Self(duration.as_millis() as i64)
-        }
+        Self(js_sys::Date::now() as i64)
     }
 
     pub fn from_secs(secs: i64) -> Self {

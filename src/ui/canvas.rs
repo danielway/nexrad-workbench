@@ -80,14 +80,7 @@ pub fn render_canvas_with_geo(
 
             // Compute staleness for fixed-tilt mode
             {
-                #[cfg(target_arch = "wasm32")]
                 let now_ms = js_sys::Date::now() as i64;
-                #[cfg(not(target_arch = "wasm32"))]
-                let now_ms = (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs_f64())
-                    .unwrap_or(0.0)
-                    * 1000.0) as i64;
                 state.viz_state.data_staleness_secs = render_sweep.staleness_seconds(now_ms);
             }
 

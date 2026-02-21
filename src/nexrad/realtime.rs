@@ -8,7 +8,6 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-#[cfg(target_arch = "wasm32")]
 use eframe::egui;
 
 use crate::data::facade::{process_realtime_chunk, DataFacade};
@@ -98,7 +97,6 @@ impl RealtimeChannel {
         self.state.borrow().time_until_next
     }
 
-    #[cfg(target_arch = "wasm32")]
     pub fn start(&self, ctx: egui::Context, site_id: String, facade: DataFacade) {
         {
             let mut state = self.state.borrow_mut();
@@ -114,15 +112,6 @@ impl RealtimeChannel {
         wasm_bindgen_futures::spawn_local(async move {
             streaming_loop(ctx, site_id, state, stats, facade).await;
         });
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn start(&self, _ctx: egui::Context, site_id: String, _facade: DataFacade) {
-        let mut state = self.state.borrow_mut();
-        state.results.push(RealtimeResult::Error(format!(
-            "Realtime streaming not implemented for native platform (site: {})",
-            site_id
-        )));
     }
 
     pub fn stop(&self) {
@@ -141,7 +130,6 @@ impl RealtimeChannel {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
 async fn streaming_loop(
     ctx: egui::Context,
     site_id: String,
@@ -333,7 +321,6 @@ async fn streaming_loop(
 
 /// Sleep in increments, updating countdown UI and checking stop flag.
 /// Returns false if stop requested.
-#[cfg(target_arch = "wasm32")]
 async fn interruptible_sleep(
     state: &Rc<RefCell<RealtimeState>>,
     ctx: &egui::Context,
@@ -362,13 +349,11 @@ async fn interruptible_sleep(
     !state.borrow().stop_requested
 }
 
-#[cfg(target_arch = "wasm32")]
 struct StatsTracker {
     last_requests: usize,
     last_bytes: u64,
 }
 
-#[cfg(target_arch = "wasm32")]
 impl StatsTracker {
     fn new(iter: &nexrad_data::aws::realtime::ChunkIterator) -> Self {
         Self {
@@ -395,20 +380,9 @@ impl StatsTracker {
 }
 
 fn current_timestamp() -> i64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        (js_sys::Date::now() / 1000.0) as i64
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0)
-    }
+    (js_sys::Date::now() / 1000.0) as i64
 }
 
-#[cfg(target_arch = "wasm32")]
 async fn sleep_ms(ms: u32) {
     use wasm_bindgen::prelude::*;
 

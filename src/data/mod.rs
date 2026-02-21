@@ -29,7 +29,6 @@ pub mod keys;
 pub mod record_cache;
 pub mod facade;
 
-#[cfg(target_arch = "wasm32")]
 pub mod indexeddb;
 
 // Re-export static site data

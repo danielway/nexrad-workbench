@@ -7,20 +7,10 @@ use crate::state::{AppState, LiveExitReason, LivePhase, LoopMode, PlaybackSpeed}
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
-/// Get current Unix timestamp in seconds (works on both native and WASM)
+/// Get current Unix timestamp in seconds.
 #[allow(dead_code)] // Utility function for UI timing
 fn current_timestamp_secs() -> f64 {
-    #[cfg(target_arch = "wasm32")]
-    {
-        js_sys::Date::now() / 1000.0
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0)
-    }
+    js_sys::Date::now() / 1000.0
 }
 
 /// Level of detail for radar data rendering
