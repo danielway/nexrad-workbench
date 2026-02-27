@@ -101,7 +101,7 @@ The primary view is a map canvas displaying radar data overlaid on geographic co
 
 ### Sweep Playback and Animation
 
-During playback, the viewer animates the radar sweep second-by-second, rendering data spatially as if the radar were operating in real time. The visual sweep animation is synchronized with the sweep's azimuthal progression and the temporal playback position.
+In continuous and sweep-isolated accumulation strategies (see Rendering Model), the viewer animates the radar sweep progressively, rendering radials as the playback position advances through a sweep's collection time. The visual sweep animation is synchronized with the sweep's azimuthal progression and the temporal playback position. In complete sweeps mode, there is no progressive animation; the display updates discretely when each sweep completes.
 
 ### Radar Operations Panel
 
@@ -121,13 +121,37 @@ Product selection controls are located in the right sidebar. A single scan may i
 
 These selections directly influence rendering behavior and data freshness semantics.
 
-### Fixed-Tilt Rendering
+### Rendering Model
 
-When the user selects a specific product and elevation, the viewer renders the complete sweep at that tilt. Subsequent radar operation may not immediately collect data at that elevation, so the displayed data may become stale over time. The UI clearly indicates the sweep being shown, its elevation and product, the collection timestamp, and how out-of-date the data is relative to "now".
+The rendering model defines how the playback position, data availability, and user selections combine to determine what appears on the canvas.
 
-### Most-Recent Rendering
+#### Core Invariants
 
-In "most recent" mode, the viewer may blend data from multiple sweeps and elevations to emphasize temporal immediacy over sweep purity. Rendering strategies include continuously wiping older data as the sweep progresses or clearing the display at the end of a sweep and starting fresh.
+1. **The playback position is a hard temporal boundary.** Only data collected at or before the playback position is eligible for rendering. The canvas never displays data from the future relative to the playback position, even if that data exists in the cache.
+2. **Product and elevation selection is a hard eligibility filter.** When the user selects a specific product and elevation (e.g. 0.5° REF), only radials matching both criteria are eligible. When no filter is applied ("most recent" mode), all products and elevations are eligible.
+3. **At each spatial position, the most recent eligible value is rendered.** Each point on the canvas corresponds to a specific azimuth and range. The rendered value is the most recent eligible gate value at or before the playback position.
+
+#### Accumulation Strategies
+
+The user selects an accumulation strategy that governs how data builds up and persists on the canvas. This is the primary control over the balance between spatial completeness and temporal purity.
+
+**Continuous (wiper).** The default strategy. At each azimuth/range, the most recent eligible value is shown. As the radar sweeps, new data progressively overwrites older data at each azimuth. The canvas always shows maximum spatial coverage — a full 360° once initially populated. Data from different times coexists on the canvas simultaneously. Lookback is bounded to a reasonable horizon to prevent rendering arbitrarily old data without clear indication of its age.
+
+**Sweep-isolated.** When a new sweep begins for the active product/elevation filter, the canvas clears entirely. Data paints in fresh from the sweep's starting azimuth. Only data from the current sweep is ever visible — a growing wedge until the sweep completes, then a full circle until the next matching sweep clears it. This guarantees temporal purity: all visible data comes from a single sweep. This strategy also inherently prevents mixing data from different elevations.
+
+**Complete sweeps.** The canvas displays only fully completed sweeps. There is no progressive sweep animation; the display updates discretely when a sweep's collection end time falls behind the playback position. At that moment, the most recent complete sweep matching the active filter is rendered as a full 360°. This is the required strategy for playback speeds above near-real-time, where progressive animation would be meaningless. At high playback speeds where the playback position advances past multiple sweeps between rendered frames, the renderer shows the most recent complete eligible sweep rather than flashing through every intermediate sweep.
+
+#### Data Age Visualization
+
+The age of rendered data relative to the playback position must always be clearly communicated to the user. There is no hard staleness cutoff that hides old data; instead, age is made visually unambiguous so the user can judge data relevance themselves.
+
+**Sweep boundary lines** (always on): Thin radial lines on the canvas at azimuths where data from different sweeps meets. These make the temporal structure of the rendered data visible — where one sweep's data ends and another's begins. Always present when data from multiple sweeps is on the canvas.
+
+**Age labels at sweep boundaries** (always on): At each sweep boundary line, the age of the data on each side is annotated (e.g. "3m12s"). These provide precise temporal context at the transitions between sweeps.
+
+**Periodic timestamp markers** (always on): Placed at fixed angular intervals (e.g. every 90°) around the render, these label the absolute timestamp or relative age of the data at that azimuth. This ensures the user always has a time reference nearby regardless of where they are looking, even within a single sweep.
+
+**Age attenuation** (optional): A configurable visual effect where older data is progressively dimmed, desaturated, or otherwise attenuated relative to the newest data. When enabled, this provides an at-a-glance sense of data freshness across the entire canvas without reading labels. Configurable in the rendering parameters sidebar.
 
 ### Real-Time Locked Visualization
 
@@ -187,7 +211,7 @@ The timeline always has a playback position representing the moment whose data i
 - Pause and resume
 - Variable playback speed, ranging from real-time (1:1) to accelerated rates (e.g. 1 second of data per minute of wall-clock time, or faster)
 
-Certain playback speeds may be disallowed in specific modes to avoid acquisition or processing overload.
+At playback speeds above near-real-time, the complete sweeps accumulation strategy is required (see §4 Rendering Model). Certain playback speeds may be further restricted in specific modes to avoid acquisition or processing overload.
 
 ### Time Range Selection
 
@@ -251,7 +275,7 @@ Data is persisted in browser storage (IndexedDB) in two logical categories:
 
 **Payload storage** holds the actual radar data as individual records in their native Bzip2-compressed form. This format is space-efficient and preserves original data boundaries. Records are the atomic unit of storage and retrieval, fetched in batches when fulfilling playback time ranges or archive downloads.
 
-**Index storage** is a lightweight index tracking what data exists in storage. The index enables fast timeline construction and efficient planning of batch record loads. It tracks which scans are present, whether each scan is complete or partial, temporal bounds, and data availability within scans.
+**Index storage** is a lightweight index tracking what data exists in storage. The index enables fast timeline construction and efficient planning of batch record loads. It tracks which scans are present, whether each scan is complete or partial, temporal bounds, and data availability within scans. The index must also include metadata about which products and elevations are present in each scan, enabling efficient lookback queries when the rendering model needs to find the most recent eligible data matching the active product/elevation filter without decompressing records.
 
 ### Cache Behavior
 
