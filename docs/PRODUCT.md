@@ -67,9 +67,9 @@ The layout consists of five regions:
 
 ### Site Context Bar
 
-The top bar displays the active radar site and serves as the entry point for site selection. It establishes the "where" context that scopes all data acquisition, rendering, and radar operations.
+The top bar displays the active radar site(s) and serves as the entry point for site selection. It establishes the "where" context that scopes all data acquisition, rendering, and radar operations. Each active site has a corresponding timeline track in the bottom dock.
 
-In future multi-site operation, this area extends to show multiple active sites and manage which sites contribute to a composited mosaic view.
+In multi-site operation, this area shows all active sites and manages which sites contribute to the composited mosaic view.
 
 ### Left Sidebar: Radar Operations
 
@@ -85,7 +85,7 @@ The bottom dock is the primary interaction surface, organized in three layers:
 
 **Mode and acquisition status bar.** Displays the current timeline interaction mode (see §5 Timeline Modes) and a compact summary of acquisition activity (e.g. active download count and progress). An expand toggle opens the full acquisition queue and history as a drawer expanding upward, showing individual requests with their status, progress, and controls to pause or cancel. The drawer provides the detailed acquisition transparency described in §6.
 
-**Timeline track.** The zoomable temporal axis displaying data availability, the playback position indicator, and any active range selection. This is the primary interaction surface; click and drag behavior depends on the active timeline mode. Scroll-to-zoom changes temporal scale.
+**Timeline track.** The zoomable temporal axis displaying data availability, the playback position indicator, and any active range selection. This is the primary interaction surface; click and drag behavior depends on the active timeline mode. Scroll-to-zoom changes temporal scale. When multiple sites are active, each site has its own track stacked vertically, sharing the temporal axis and playback position (see §5 Multi-Site Timelines).
 
 **Transport bar.** Playback controls: play/pause, step forward/back, speed selector, current playback position readout, loop mode toggle, and a compact summary of the currently displayed data (product, elevation, sweep position, data staleness).
 
@@ -234,13 +234,15 @@ The data manager and timeline must jointly model and expose archive completeness
 
 ### Data Availability Visualization
 
-At coarse zoom levels, the timeline does not display individual scans or gaps. Instead, it renders solid filled segments indicating contiguous regions where data exists. The representation answers only: "Is there any data here?" Individual scans and inter-scan gaps are not discerned.
+The timeline's visual representation changes with zoom level, progressively revealing more structural detail. At all zoom levels, data availability segments are color-coded by the active Volume Coverage Pattern, making VCP transitions visible even at the broadest scales.
+
+At coarse zoom levels, the timeline renders solid filled segments indicating contiguous regions where data exists. The representation answers only: "Is there any data here?" Individual scans and inter-scan gaps are not discerned. VCP color-coding is the primary structural information at this scale — the user can see at a glance when a site transitioned between clear-air and precipitation modes.
 
 When zoomed out so far that a data region would be visually negligible (e.g. viewing months of time with only one hour of data), the timeline may artificially expand the visual width of that segment. This is a purely visual affordance for discoverability and does not imply actual temporal extent.
 
-Once the user zooms in sufficiently, solid segments decompose into individual scans rendered discretely. At this level, visual indicators may communicate whether a scan is complete (fully downloaded) or partial (constructed from streamed data).
+Once the user zooms in sufficiently, solid segments decompose into individual scans rendered discretely. At this level, visual indicators communicate whether a scan is complete (fully downloaded) or partial (constructed from streamed data). Each scan is identifiable by its VCP, and VCP transition points — where the radar switches from one coverage pattern to another — are marked as distinct boundaries.
 
-Zooming in further decomposes scans into constituent sweeps. Visual encodings may indicate sweep parameters (e.g. elevation angle) at a glance. For incomplete scans, the timeline shows the expected temporal extent; sweeps that occurred before streaming began appear as gaps, while cached sweeps appear in their correct positions.
+Zooming in further decomposes scans into constituent sweeps. The sweep structure directly reflects the active VCP: sweep count, elevation angles, and timing are all VCP-determined. Visual encodings indicate sweep parameters (e.g. elevation angle) at a glance. For incomplete scans, the timeline shows the expected temporal extent; sweeps that occurred before streaming began appear as gaps, while cached sweeps appear in their correct positions.
 
 ### Playback While Streaming
 
@@ -250,6 +252,19 @@ In real-time streaming mode, the user may play back data from a bounded window p
 - **Playback lock mode**: optionally locking playback to the latest moment ("now")
 
 While streaming, the timeline prevents playback position and time-range selection from extending beyond the allowed historical window. This constraint applies whether or not playback is locked to "now".
+
+### Multi-Site Timelines
+
+When multiple radar sites are active, each site receives its own timeline track, stacked vertically within the bottom dock. All tracks share the same temporal axis — pan and zoom are synchronized — and a single playback position line spans all tracks.
+
+Each track independently displays:
+
+- Data availability segments for that site
+- VCP color-coding and transition markers for that site
+- Scan and sweep decomposition at close zoom levels
+- Acquisition progress (cached, downloading, or missing scans)
+
+The shared playback position means all sites render data at the same moment. Some sites may have data at the playback position while others do not; per-track data availability makes this clear without requiring any special handling.
 
 ## 6. Data Acquisition and Caching
 
