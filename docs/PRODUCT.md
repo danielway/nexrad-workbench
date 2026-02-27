@@ -80,11 +80,11 @@ On first launch with no prior state, the site selection modal opens automaticall
 
 ### Left Sidebar: Radar Operations
 
-The left sidebar presents radar operations state derived from the current playback position. This panel is read-only — it reflects what the radar was doing at the displayed moment. Contents include antenna position, volume coverage pattern plan and position, site location and metadata, and technical radar status. The sidebar is collapsible to maximize map canvas area.
+Read-only panel displaying radar operations state derived from the current playback position (see §4 Radar Operations Panel). Collapsible.
 
 ### Right Sidebar: Rendering Parameters
 
-The right sidebar contains user-controlled settings governing how data is displayed: product selection and elevation filtering, processing options (filtering, smoothing, thresholding), and rendering options (color table, opacity, interpolation). This sidebar is also collapsible. Both sidebars can be toggled independently via keyboard shortcuts.
+User-controlled settings for product selection, processing, and rendering options (see §4 Product Selection and Rendering Model). Collapsible. Both sidebars can be toggled independently via keyboard shortcuts.
 
 ### Bottom Dock: Timeline Complex
 
@@ -92,7 +92,7 @@ The bottom dock is the primary interaction surface, organized in three layers:
 
 **Mode and acquisition status bar.** Displays the current timeline interaction mode (see §5 Timeline Modes) and a compact summary of acquisition activity (e.g. active download count and progress). An expand toggle opens the full acquisition queue and history as a drawer expanding upward, showing individual requests with their status, progress, and controls to pause or cancel. The drawer provides the detailed acquisition transparency described in §6.
 
-**Timeline track.** The zoomable temporal axis displaying data availability, the playback position indicator, and any active range selection. This is the primary interaction surface; click and drag behavior depends on the active timeline mode. Scroll-to-zoom changes temporal scale. When multiple sites are active, each site has its own track stacked vertically, sharing the temporal axis and playback position (see §5 Multi-Site Timelines).
+**Timeline track.** The zoomable temporal axis displaying data availability, the playback position indicator, and any active range selection. Click and drag behavior depends on the active timeline mode. Scroll-to-zoom changes temporal scale. When multiple sites are active, each site has its own track stacked vertically, sharing the temporal axis and playback position (see §5 Multi-Site Timelines).
 
 **Transport bar.** Playback controls: play/pause, step forward/back, speed selector, current playback position readout, loop mode toggle, and a compact summary of the currently displayed data (product, elevation, sweep position, data staleness).
 
@@ -111,10 +111,6 @@ The binary structure viewer (see §7) is not a persistent panel in the default l
 The primary view is a map canvas displaying radar data overlaid on geographic context. Radar data is rendered in polar coordinates centered on the radar site and projected onto the map. The canvas supports standard map interactions: pan, zoom, and rotation.
 
 The geographic base layer includes state boundaries and labels at all zoom levels. County boundaries and labels appear when zoomed sufficiently close. These geographic layers are optional and can be toggled by the user. The application supports dark and light map themes, matching the active appearance mode.
-
-### Sweep Playback and Animation
-
-In continuous and sweep-isolated accumulation strategies (see Rendering Model), the viewer animates the radar sweep progressively, rendering radials as the playback position advances through a sweep's collection time. The visual sweep animation is synchronized with the sweep's azimuthal progression and the temporal playback position. In complete sweeps mode, there is no progressive animation; the display updates discretely when each sweep completes.
 
 ### Radar Operations Panel
 
@@ -146,7 +142,7 @@ The rendering model defines how the playback position, data availability, and us
 
 #### Accumulation Strategies
 
-The user selects an accumulation strategy that governs how data builds up and persists on the canvas. This is the primary control over the balance between spatial completeness and temporal purity.
+The user selects an accumulation strategy that governs how data builds up and persists on the canvas. This is the primary control over the balance between spatial completeness and temporal purity. In continuous and sweep-isolated modes, the viewer animates the sweep progressively, rendering radials as the playback position advances. The animation is synchronized with the sweep's azimuthal progression.
 
 **Continuous (wiper).** The default strategy. At each azimuth/range, the most recent eligible value is shown. As the radar sweeps, new data progressively overwrites older data at each azimuth. The canvas always shows maximum spatial coverage — a full 360° once initially populated. Data from different times coexists on the canvas simultaneously. Lookback is bounded to a reasonable horizon to prevent rendering arbitrarily old data without clear indication of its age.
 
@@ -178,16 +174,6 @@ When streaming real-time data with playback locked to real time, the viewer:
 
 When streaming but not locked to real time, visualization behavior is identical to archive playback.
 
-### Latency Metrics
-
-For each chunk, the system may surface latency measurements:
-
-- Latency since the first radial in the chunk was collected
-- Latency since the last radial in the chunk was collected
-- Latency between chunk availability in the S3 bucket and download completion
-
-These metrics provide insight into radar collection delay, distribution latency, and client-side acquisition performance.
-
 ## 5. Timeline and Playback Behavior
 
 ### Timeline Bounds
@@ -207,64 +193,30 @@ Zoom may be locked depending on application mode.
 
 The timeline operates in distinct interaction modes that determine how user gestures are interpreted and what data acquisition behavior results:
 
-- **Navigate mode** (default): Click sets the playback position. Drag scrubs through time. Data for the targeted moment is acquired on demand if not already cached.
-- **Range mode**: Click-drag or shift-click defines a time range. The selected range becomes both the playback loop boundary and the acquisition target — archive downloads begin for all scans within the range.
-- **Real-time mode**: The timeline locks to "now" and continuously advances. The application streams incoming chunks as the radar produces them, and playback position tracks wall-clock time.
+- **Navigate mode** (default): Click sets the playback position. Drag scrubs through time. Data for the targeted moment is acquired on demand if not already cached. When a time range is selected (shift-click-drag or shift-click to set range endpoints), the range becomes the playback loop boundary and archive downloads begin for all scans within it. Playback within a range loops or ping-pongs depending on configuration.
+- **Real-time mode**: The timeline locks to "now" and continuously advances. The right edge is snapped to wall-clock time; the left edge is constrained to a fixed historical window (e.g. ~1 hour). The application streams incoming chunks as the radar produces them. Zoom and timeline bounds may be implicitly locked. The user may scrub backward within the historical window while streaming continues in the background — data acquisition and playback position are independent.
 
-Modes are indicated in the timeline dock's status bar and can be switched via controls or keyboard shortcuts. Some transitions are implicit: selecting a time range enters range mode; enabling streaming enters real-time mode.
+Modes are indicated in the timeline dock's status bar and can be switched via controls or keyboard shortcuts. Enabling streaming implicitly enters real-time mode.
 
-### Real-Time Mode
-
-In real-time mode, the right edge of the timeline is snapped to "now" and continuously held there. The left edge is constrained to a fixed window into the past (e.g. ~1 hour) to prevent unbounded historical buffering. Real-time mode may implicitly lock zoom and timeline bounds.
+Regardless of mode, when streaming begins mid-volume, the system always fetches record 1 (the header) of the current archive, which contains the VCP and other metadata required to interpret subsequent records.
 
 ### Playback Controls
 
 The timeline always has a playback position representing the moment whose data is displayed. Playback supports:
 
 - Pause and resume
-- Variable playback speed, ranging from real-time (1:1) to accelerated rates (e.g. 1 second of data per minute of wall-clock time, or faster)
-
-At playback speeds above near-real-time, the complete sweeps accumulation strategy is required (see §4 Rendering Model). Certain playback speeds may be further restricted in specific modes to avoid acquisition or processing overload.
-
-### Time Range Selection
-
-Users can define a time range selection via shift-click-drag or by clicking to set an anchor and shift-clicking to set the range end. A selected time range becomes the playback range:
-
-- Playback position is constrained within the range
-- Playback proceeds forward and either loops or rocks back and forth (ping-pong), depending on configuration
-
-### Archive Playback
-
-When viewing archive data, the application downloads full Archive II volume files. If the user selects a playback time range, all required archive data for that range is fetched to ensure complete, gap-free playback.
-
-### Real-Time Streaming
-
-When streaming real-time data, the user may begin playback mid-archive and initially receive only a subset of chunks for the current volume. Regardless of start time, the system always fetches chunk 1 (record 1) of the archive, which contains critical metadata (Volume Coverage Pattern / VCP) required to interpret subsequent records.
-
-### Completeness Visibility
-
-The data manager and timeline must jointly model and expose archive completeness: whether a full archive is cached or only partial. For partial archives, the system tracks whether the VCP (chunk 1) is available and which chunks are present or missing. This state is communicated to the user so expectations around playback completeness are clear.
+- Variable playback speed, from real-time (1:1) to accelerated rates
+- At speeds above near-real-time, the complete sweeps accumulation strategy is required (see §4 Rendering Model)
 
 ### Data Availability Visualization
 
-The timeline's visual representation changes with zoom level, progressively revealing more structural detail. At all zoom levels, data availability segments are color-coded by the active Volume Coverage Pattern, making VCP transitions visible even at the broadest scales.
+The timeline's visual representation changes with zoom level, progressively revealing more structural detail. At all zoom levels, data availability segments are color-coded by Volume Coverage Pattern, making VCP transitions visible even at the broadest scales.
 
-At coarse zoom levels, the timeline renders solid filled segments indicating contiguous regions where data exists. The representation answers only: "Is there any data here?" Individual scans and inter-scan gaps are not discerned. VCP color-coding is the primary structural information at this scale — the user can see at a glance when a site transitioned between clear-air and precipitation modes.
+At coarse zoom levels, the timeline renders solid filled segments indicating contiguous regions where data exists, answering only: "Is there any data here?" VCP color-coding is the primary structural information — the user can see at a glance when a site transitioned between clear-air and precipitation modes. Segments that would be visually negligible at the current scale (e.g. one hour of data within a months-wide view) may be artificially expanded as a discoverability affordance.
 
-When zoomed out so far that a data region would be visually negligible (e.g. viewing months of time with only one hour of data), the timeline may artificially expand the visual width of that segment. This is a purely visual affordance for discoverability and does not imply actual temporal extent.
+At closer zoom, segments decompose into individual scans. Visual indicators communicate completeness (fully downloaded vs. partial), VCP identity, and VCP transition boundaries. The system tracks which scans are cached, whether each is complete or partial, and whether the VCP header record is present.
 
-Once the user zooms in sufficiently, solid segments decompose into individual scans rendered discretely. At this level, visual indicators communicate whether a scan is complete (fully downloaded) or partial (constructed from streamed data). Each scan is identifiable by its VCP, and VCP transition points — where the radar switches from one coverage pattern to another — are marked as distinct boundaries.
-
-Zooming in further decomposes scans into constituent sweeps. The sweep structure directly reflects the active VCP: sweep count, elevation angles, and timing are all VCP-determined. Visual encodings indicate sweep parameters (e.g. elevation angle) at a glance. For incomplete scans, the timeline shows the expected temporal extent; sweeps that occurred before streaming began appear as gaps, while cached sweeps appear in their correct positions.
-
-### Playback While Streaming
-
-In real-time streaming mode, the user may play back data from a bounded window preceding "now" (e.g. ~1 hour), enabling review of recent data while new chunks continue to arrive. Two orthogonal behaviors coexist:
-
-- **Data acquisition mode**: streaming chunks in real time as they become available
-- **Playback lock mode**: optionally locking playback to the latest moment ("now")
-
-While streaming, the timeline prevents playback position and time-range selection from extending beyond the allowed historical window. This constraint applies whether or not playback is locked to "now".
+At sweep-level zoom, scans decompose into constituent sweeps reflecting the active VCP structure. Visual encodings indicate sweep parameters (elevation angle) at a glance. For incomplete scans, the timeline shows expected temporal extent with gaps for missing sweeps.
 
 ### Multi-Site Timelines
 
@@ -281,13 +233,9 @@ The shared playback position means all sites render data at the same moment. Som
 
 ## 6. Data Acquisition and Caching
 
-### Automatic Archive Download
-
-An optional automatic download mode performs proactive acquisition of archive data based on the current playback position or selected time range. When a time range is selected, archive downloads begin immediately for the scans required to fulfill that range. If the user changes the selection, in-progress downloads may be canceled or deprioritized.
-
 ### Data Acquisition Queue
 
-Archive downloads are managed via a data acquisition queue. If multiple scans are required (e.g. five scans for a selected range), they are enumerated explicitly. The queue reflects pending, active, and completed downloads. Users can pause downloads, cancel downloads, or modify the queue by adjusting selections.
+Data acquisition is managed via an explicit queue. When a time range is selected or the playback position targets uncached data, the required scans are enumerated and enqueued for download. The queue reflects pending, active, and completed downloads. Users can pause, cancel, or reprioritize items. If the user changes their selection, in-progress downloads may be canceled or deprioritized.
 
 ### Network Activity Visibility
 
@@ -297,11 +245,13 @@ For streaming, distinct phases are visible: acquisition/polling phase and chunk 
 
 For archive downloads, queued, active, and completed downloads are individually enumerable. Each download shows its target (site, scan, record), status, progress, and timing. Users can pause, cancel, or reprioritize queued downloads directly from the acquisition drawer.
 
+### Latency Metrics
+
+For each chunk, the system surfaces latency measurements: time since the first and last radial in the chunk were collected, and latency between chunk availability in S3 and download completion. These metrics provide insight into radar collection delay, distribution latency, and client-side acquisition performance.
+
 ### Error Handling and Recovery
 
 When a download or streaming request fails, the error is displayed in the acquisition drawer with diagnostic information available on click or hover. A failure pauses the entire acquisition queue — both archive downloads and active streaming — to prevent cascading failures and give the user a clear moment to assess the situation. The user can retry the failed request, skip it, or resume the queue to continue with remaining items.
-
-This approach reflects a broader design principle: the application does not attempt complex automatic recovery sequences. Instead, it stops, clearly communicates what happened, and gives the user simple controls to decide what to do next.
 
 ### Storage Model
 
@@ -338,11 +288,7 @@ Users can trace the relationship between raw binary data and rendered imagery. S
 
 This bidirectional mapping supports verification that the workbench is correctly interpreting the data format and helps users understand how radar data is structured.
 
-## 8. Constraints and Intentional Limitations
-
-### Web Application
-
-The application is a web application: hosted and distributed as static assets, operating entirely in the browser. There is no desktop variant; the browser is the target runtime. There are no proprietary backend services. All data acquisition uses publicly available sources.
+## 8. Constraints
 
 ### Browser Execution Model
 
@@ -355,22 +301,10 @@ This architecture creates inherent constraints:
 - Storage is constrained by IndexedDB quotas
 - Network requests are subject to browser connection limits and CORS policies
 
-### Performance-Driven Restrictions
-
-Certain operations are restricted to maintain responsiveness:
-
-- Playback is disabled at coarse zoom levels to avoid overwhelming data acquisition and processing
-- Real-time streaming constrains the historical window to prevent unbounded buffering
-- Certain playback speeds may be disallowed in specific modes
-
 ### Intentional Limitations
 
-The following behaviors are intentionally not supported:
-
-- **Server-side processing**: All computation occurs client-side; there is no server to offload work to
 - **Proprietary data sources**: Only publicly available NEXRAD data sources are supported
 - **Offline-first operation**: Network access is assumed for data acquisition; the application caches data but does not function as a fully offline tool
-- **Multi-site compositing**: Initial implementation focuses on single-site visualization; multi-site mosaics with simultaneous streaming are a planned future capability
 - **Derived products**: The workbench displays base radar moments; derived products (storm tracking, precipitation estimates) are out of scope
 
 ## 9. Application Configuration
