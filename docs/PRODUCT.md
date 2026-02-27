@@ -6,6 +6,8 @@ NEXRAD Workbench is a browser-based technical workbench for viewing and analyzin
 
 The product prioritizes transparency, inspectability, and correctness over abstraction. Users should be able to see exactly what the radar data contains and how it maps to the rendered visualization. Performance and responsiveness are first-order concerns.
 
+The application avoids brittle, multi-step workflows that can fail partway through and require custom recovery UI. User actions should do simple, consistent things regardless of the current application state: enqueue archives, toggle streaming, change the playback position. Complexity is managed by the system, not imposed on the user.
+
 ## 2. Core Concepts and Terminology
 
 ### Spatial Hierarchy
@@ -57,19 +59,24 @@ The application uses a panel-based layout centered on the map canvas. The concep
 
 The **timeline is the central control surface**: it simultaneously presents temporal context, drives data acquisition, and governs the playback position from which all other UI state derives.
 
-The layout consists of five regions:
+The layout consists of six regions:
 
 - **Top bar**: Site context and global state
 - **Left sidebar**: Radar operations (read-only state driven by playback position)
 - **Center**: Map canvas (primary visualization output)
 - **Right sidebar**: Rendering parameters (user-controlled display settings)
 - **Bottom dock**: Timeline complex (temporal navigation, data acquisition, playback)
+- **Status bar**: Session statistics and performance metrics (bottom edge)
 
 ### Site Context Bar
 
-The top bar displays the active radar site(s) and serves as the entry point for site selection. It establishes the "where" context that scopes all data acquisition, rendering, and radar operations. Each active site has a corresponding timeline track in the bottom dock.
+The top bar prominently displays the active radar site(s). A button opens the site selection modal, which presents all NEXRAD sites with checkboxes for multi-selection. The number of simultaneously active sites is limited (initially ~3) to manage resource consumption. Each active site has a corresponding timeline track in the bottom dock.
 
-In multi-site operation, this area shows all active sites and manages which sites contribute to the composited mosaic view.
+In multi-site operation, all active sites are listed in the top bar. Site management (adding, removing, reordering) is handled through the selection modal.
+
+### First-Run Experience
+
+On first launch with no prior state, the site selection modal opens automatically. Once the user selects a site, the application enters real-time mode and acquires the most recent complete sweep for immediate display. This may require crawling through recent real-time chunks until a complete sweep is assembled, since individual chunks may not contain a full sweep.
 
 ### Left Sidebar: Radar Operations
 
@@ -89,6 +96,10 @@ The bottom dock is the primary interaction surface, organized in three layers:
 
 **Transport bar.** Playback controls: play/pause, step forward/back, speed selector, current playback position readout, loop mode toggle, and a compact summary of the currently displayed data (product, elevation, sweep position, data staleness).
 
+### Status Bar
+
+A thin status bar at the bottom edge of the application displays session statistics and performance metrics: active and total network requests, volume of data downloaded in the current session, number of cached scans and records, total volume of cached data, rendering performance (FPS), decompression time, processing time, rendering time, and the number of active background workers. This bar is always visible and provides continuous insight into application health and resource usage.
+
 ### Binary Inspector
 
 The binary structure viewer (see §7) is not a persistent panel in the default layout. It activates as a dedicated mode or overlay when the user inspects raw data structure, and may replace or overlay a sidebar or expand as a supplementary panel.
@@ -98,6 +109,8 @@ The binary structure viewer (see §7) is not a persistent panel in the default l
 ### Map Canvas
 
 The primary view is a map canvas displaying radar data overlaid on geographic context. Radar data is rendered in polar coordinates centered on the radar site and projected onto the map. The canvas supports standard map interactions: pan, zoom, and rotation.
+
+The geographic base layer includes state boundaries and labels at all zoom levels. County boundaries and labels appear when zoomed sufficiently close. These geographic layers are optional and can be toggled by the user. The application supports dark and light map themes, matching the active appearance mode.
 
 ### Sweep Playback and Animation
 
@@ -284,6 +297,12 @@ For streaming, distinct phases are visible: acquisition/polling phase and chunk 
 
 For archive downloads, queued, active, and completed downloads are individually enumerable. Each download shows its target (site, scan, record), status, progress, and timing. Users can pause, cancel, or reprioritize queued downloads directly from the acquisition drawer.
 
+### Error Handling and Recovery
+
+When a download or streaming request fails, the error is displayed in the acquisition drawer with diagnostic information available on click or hover. A failure pauses the entire acquisition queue — both archive downloads and active streaming — to prevent cascading failures and give the user a clear moment to assess the situation. The user can retry the failed request, skip it, or resume the queue to continue with remaining items.
+
+This approach reflects a broader design principle: the application does not attempt complex automatic recovery sequences. Instead, it stops, clearly communicates what happened, and gives the user simple controls to decide what to do next.
+
 ### Storage Model
 
 Data is persisted in browser storage (IndexedDB) in two logical categories:
@@ -321,9 +340,9 @@ This bidirectional mapping supports verification that the workbench is correctly
 
 ## 8. Constraints and Intentional Limitations
 
-### Front-End-Only Architecture
+### Web Application
 
-The application is a front-end-only system: hosted and distributed as static assets, operating entirely in the browser (with a potential desktop variant), with no proprietary backend services. All data acquisition uses publicly available sources.
+The application is a web application: hosted and distributed as static assets, operating entirely in the browser. There is no desktop variant; the browser is the target runtime. There are no proprietary backend services. All data acquisition uses publicly available sources.
 
 ### Browser Execution Model
 
@@ -353,3 +372,27 @@ The following behaviors are intentionally not supported:
 - **Offline-first operation**: Network access is assumed for data acquisition; the application caches data but does not function as a fully offline tool
 - **Multi-site compositing**: Initial implementation focuses on single-site visualization; multi-site mosaics with simultaneous streaming are a planned future capability
 - **Derived products**: The workbench displays base radar moments; derived products (storm tracking, precipitation estimates) are out of scope
+
+## 9. Application Configuration
+
+### URL and Deep Linking
+
+The application state is encoded in the URL to support deep linking and sharing. URL parameters fall into two categories:
+
+**Transparent parameters** are human-readable and can be constructed programmatically: site ID, playback time, and product selection. A URL like `?site=KDMX&time=2024-05-20T03:35Z&product=REF` opens the application at a predictable state.
+
+**Opaque parameters** encode remaining view state (map zoom, pan position, sidebar visibility, accumulation strategy, and other UI options) as a single base64-encoded parameter. This preserves the exact view on reload or when sharing, without requiring a large number of individual query parameters.
+
+The URL updates as the user navigates, enabling browser back/forward navigation and bookmarking.
+
+### User Preferences
+
+User preferences are persisted in browser local storage. Preferences include default accumulation strategy, preferred color tables, map layer visibility, playback speed defaults, age attenuation settings, and other rendering parameters. Preferences apply across sessions and are independent of URL state — the URL captures the current view, while preferences capture the user's defaults.
+
+### Appearance
+
+The application supports dark and light appearance modes, defaulting to the operating system's preference. Map base layers, UI chrome, and all interface elements adapt to the active mode. The user may override the OS default via application settings.
+
+### Keyboard Shortcuts
+
+The application provides keyboard shortcuts for power users. The specific shortcut model is to be determined, but shortcuts should cover at a minimum: playback controls (play/pause, step, speed adjustment), timeline mode switching, sidebar toggling, product/elevation cycling, and site switching. Shortcuts should be discoverable through a help overlay or cheat sheet.
