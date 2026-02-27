@@ -72,7 +72,7 @@ The layout consists of six regions:
 
 The top bar prominently displays the active radar site(s). A button opens the site selection modal, which presents all NEXRAD sites with checkboxes for multi-selection. The number of simultaneously active sites is limited (initially ~3) to manage resource consumption. Each active site has a corresponding timeline track in the bottom dock.
 
-In multi-site operation, all active sites are listed in the top bar. Site management (adding, removing, reordering) is handled through the selection modal.
+In multi-site operation, all active sites are listed in the top bar. Site management (adding, removing, reordering) is handled through the selection modal. Multiple sites render as overlapping polar projections on a single shared canvas; a mosaic algorithm governs how overlapping regions are composited.
 
 ### First-Run Experience
 
@@ -128,7 +128,7 @@ Product selection controls are located in the right sidebar. A single scan may i
 - Focus on a specific elevation (e.g. 0.5° tilt)
 - Show "most recent" data regardless of product or elevation
 
-These selections directly influence rendering behavior and data freshness semantics.
+These selections directly influence rendering behavior and data freshness semantics. Each product has a default color table informed by NWS standards. Color tables are user-configurable.
 
 ### Rendering Model
 
@@ -263,7 +263,7 @@ Data is persisted in browser storage (IndexedDB) in two logical categories:
 
 ### Cache Behavior
 
-Downloaded data is cached and reused when the user navigates to previously-viewed time ranges. Cache persists across sessions. When storage limits are reached, older data is evicted according to a least-recently-used policy.
+Downloaded data is cached and reused when the user navigates to previously-viewed time ranges. Cache persists across sessions. When storage limits are reached, older data is evicted according to a least-recently-used policy. Users can manually clear the cache via a button in the status bar (with confirmation). Timeline-based cache management is also available: "clear data in selection" and "clear everything except selection" allow targeted cleanup based on the current time range selection.
 
 ## 7. Inspection and Technical Transparency
 
