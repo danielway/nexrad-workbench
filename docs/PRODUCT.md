@@ -44,7 +44,56 @@ The **header record** (the first record in every scan) contains radar operationa
 
 The distinction between archive and real-time data is intentionally blurred at the data level. Both are composed of chunks; archive files are simply the accumulated result of chunk delivery. Each Archive II volume file contains exactly one volume scan.
 
-## 3. Visualization and Interaction
+## 3. Application Layout
+
+### Overview
+
+The application uses a panel-based layout centered on the map canvas. The conceptual interaction flow is:
+
+1. **Site selection** establishes "where" — which radar site(s) to work with.
+2. **Timeline interaction** establishes "when" and "what to acquire" — users express their intent (view a moment, download a range, stream real-time) through the timeline, governed by the active mode.
+3. **Acquisition executes visibly** — every request, queue state, and transfer is observable.
+4. **Playback position drives the UI** — the current moment in the timeline determines what the map renders, what the radar operations panel displays, and what data is relevant.
+
+The **timeline is the central control surface**: it simultaneously presents temporal context, drives data acquisition, and governs the playback position from which all other UI state derives.
+
+The layout consists of five regions:
+
+- **Top bar**: Site context and global state
+- **Left sidebar**: Radar operations (read-only state driven by playback position)
+- **Center**: Map canvas (primary visualization output)
+- **Right sidebar**: Rendering parameters (user-controlled display settings)
+- **Bottom dock**: Timeline complex (temporal navigation, data acquisition, playback)
+
+### Site Context Bar
+
+The top bar displays the active radar site and serves as the entry point for site selection. It establishes the "where" context that scopes all data acquisition, rendering, and radar operations.
+
+In future multi-site operation, this area extends to show multiple active sites and manage which sites contribute to a composited mosaic view.
+
+### Left Sidebar: Radar Operations
+
+The left sidebar presents radar operations state derived from the current playback position. This panel is read-only — it reflects what the radar was doing at the displayed moment. Contents include antenna position, volume coverage pattern plan and position, site location and metadata, and technical radar status. The sidebar is collapsible to maximize map canvas area.
+
+### Right Sidebar: Rendering Parameters
+
+The right sidebar contains user-controlled settings governing how data is displayed: product selection and elevation filtering, processing options (filtering, smoothing, thresholding), and rendering options (color table, opacity, interpolation). This sidebar is also collapsible. Both sidebars can be toggled independently via keyboard shortcuts.
+
+### Bottom Dock: Timeline Complex
+
+The bottom dock is the primary interaction surface, organized in three layers:
+
+**Mode and acquisition status bar.** Displays the current timeline interaction mode (see §5 Timeline Modes) and a compact summary of acquisition activity (e.g. active download count and progress). An expand toggle opens the full acquisition queue and history as a drawer expanding upward, showing individual requests with their status, progress, and controls to pause or cancel. The drawer provides the detailed acquisition transparency described in §6.
+
+**Timeline track.** The zoomable temporal axis displaying data availability, the playback position indicator, and any active range selection. This is the primary interaction surface; click and drag behavior depends on the active timeline mode. Scroll-to-zoom changes temporal scale.
+
+**Transport bar.** Playback controls: play/pause, step forward/back, speed selector, current playback position readout, loop mode toggle, and a compact summary of the currently displayed data (product, elevation, sweep position, data staleness).
+
+### Binary Inspector
+
+The binary structure viewer (see §7) is not a persistent panel in the default layout. It activates as a dedicated mode or overlay when the user inspects raw data structure, and may replace or overlay a sidebar or expand as a supplementary panel.
+
+## 4. Visualization and Interaction
 
 ### Map Canvas
 
@@ -56,7 +105,7 @@ During playback, the viewer animates the radar sweep second-by-second, rendering
 
 ### Radar Operations Panel
 
-The application provides a dedicated radar operations panel with multiple coordinated views:
+The left sidebar hosts the radar operations panel, providing multiple coordinated views driven by the current playback position:
 
 - **Azimuth view**: A top-down view displaying a rotating sweep line and an icon at the radar location.
 - **Elevation view**: A side-profile view displaying the elevation angle of the current sweep.
@@ -64,7 +113,7 @@ The application provides a dedicated radar operations panel with multiple coordi
 
 ### Product Selection
 
-A single scan may include multiple radar products (reflectivity, velocity, spectrum width, differential reflectivity, correlation coefficient, and others), collected at different elevations and possibly repeated within a scan. The viewer allows users to control what is rendered:
+Product selection controls are located in the right sidebar. A single scan may include multiple radar products (reflectivity, velocity, spectrum width, differential reflectivity, correlation coefficient, and others), collected at different elevations and possibly repeated within a scan. The viewer allows users to control what is rendered:
 
 - Focus on a specific product (e.g. reflectivity only)
 - Focus on a specific elevation (e.g. 0.5° tilt)
@@ -102,7 +151,7 @@ For each chunk, the system may surface latency measurements:
 
 These metrics provide insight into radar collection delay, distribution latency, and client-side acquisition performance.
 
-## 4. Timeline and Playback Behavior
+## 5. Timeline and Playback Behavior
 
 ### Timeline Bounds
 
@@ -116,6 +165,16 @@ The timeline supports zooming to change temporal scale. Zoom level governs which
 - When zoomed sufficiently far in, real-time mode becomes available.
 
 Zoom may be locked depending on application mode.
+
+### Timeline Modes
+
+The timeline operates in distinct interaction modes that determine how user gestures are interpreted and what data acquisition behavior results:
+
+- **Navigate mode** (default): Click sets the playback position. Drag scrubs through time. Data for the targeted moment is acquired on demand if not already cached.
+- **Range mode**: Click-drag or shift-click defines a time range. The selected range becomes both the playback loop boundary and the acquisition target — archive downloads begin for all scans within the range.
+- **Real-time mode**: The timeline locks to "now" and continuously advances. The application streams incoming chunks as the radar produces them, and playback position tracks wall-clock time.
+
+Modes are indicated in the timeline dock's status bar and can be switched via controls or keyboard shortcuts. Some transitions are implicit: selecting a time range enters range mode; enabling streaming enters real-time mode.
 
 ### Real-Time Mode
 
@@ -168,7 +227,7 @@ In real-time streaming mode, the user may play back data from a bounded window p
 
 While streaming, the timeline prevents playback position and time-range selection from extending beyond the allowed historical window. This constraint applies whether or not playback is locked to "now".
 
-## 5. Data Acquisition and Caching
+## 6. Data Acquisition and Caching
 
 ### Automatic Archive Download
 
@@ -180,11 +239,11 @@ Archive downloads are managed via a data acquisition queue. If multiple scans ar
 
 ### Network Activity Visibility
 
-The application provides clear, continuous feedback about network activity for both real-time streaming and archive downloads.
+Data acquisition transparency is a core requirement. Users must be able to see the state of every request: what is being fetched, what is queued, what has completed, and what has failed. The acquisition status bar and its expandable drawer in the bottom dock (see §3) provide this visibility.
 
 For streaming, distinct phases are visible: acquisition/polling phase and chunk download phase. Expected delays between chunks are apparent, and retry attempts are observable.
 
-For archive downloads, queued, active, and completed downloads are clearly distinguishable.
+For archive downloads, queued, active, and completed downloads are individually enumerable. Each download shows its target (site, scan, record), status, progress, and timing. Users can pause, cancel, or reprioritize queued downloads directly from the acquisition drawer.
 
 ### Storage Model
 
@@ -198,7 +257,7 @@ Data is persisted in browser storage (IndexedDB) in two logical categories:
 
 Downloaded data is cached and reused when the user navigates to previously-viewed time ranges. Cache persists across sessions. When storage limits are reached, older data is evicted according to a least-recently-used policy.
 
-## 6. Inspection and Technical Transparency
+## 7. Inspection and Technical Transparency
 
 The workbench serves as both a visualization tool and a learning/verification tool for understanding NEXRAD data formats.
 
@@ -221,7 +280,7 @@ Users can trace the relationship between raw binary data and rendered imagery. S
 
 This bidirectional mapping supports verification that the workbench is correctly interpreting the data format and helps users understand how radar data is structured.
 
-## 7. Constraints and Intentional Limitations
+## 8. Constraints and Intentional Limitations
 
 ### Front-End-Only Architecture
 
@@ -253,5 +312,5 @@ The following behaviors are intentionally not supported:
 - **Server-side processing**: All computation occurs client-side; there is no server to offload work to
 - **Proprietary data sources**: Only publicly available NEXRAD data sources are supported
 - **Offline-first operation**: Network access is assumed for data acquisition; the application caches data but does not function as a fully offline tool
-- **Multi-site compositing**: The current design focuses on single-site visualization; radar mosaics combining multiple sites are not yet supported
+- **Multi-site compositing**: Initial implementation focuses on single-site visualization; multi-site mosaics with simultaneous streaming are a planned future capability
 - **Derived products**: The workbench displays base radar moments; derived products (storm tracking, precipitation estimates) are out of scope
