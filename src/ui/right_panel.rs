@@ -356,5 +356,15 @@ fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
             {
                 state.clear_cache_requested = true;
             }
+
+            ui.add_space(4.0);
+
+            if ui
+                .button("Reset App")
+                .on_hover_text("Wipe all data and settings, then reload")
+                .clicked()
+            {
+                state.wipe_modal_open = true;
+            }
         });
 }

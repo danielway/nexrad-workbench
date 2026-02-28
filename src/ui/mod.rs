@@ -15,6 +15,7 @@ mod right_panel;
 mod shortcuts;
 mod site_modal;
 mod top_bar;
+mod wipe_modal;
 
 pub use bottom_panel::render_bottom_panel;
 pub use canvas::render_canvas_with_geo;
@@ -23,3 +24,4 @@ pub use right_panel::render_right_panel;
 pub use shortcuts::{handle_shortcuts, render_shortcuts_help};
 pub use site_modal::{render_site_modal, SiteModalState};
 pub use top_bar::render_top_bar;
+pub use wipe_modal::render_wipe_modal;

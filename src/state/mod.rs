@@ -114,6 +114,13 @@ pub struct AppState {
     /// Whether the keyboard shortcut help overlay is visible.
     pub shortcuts_help_visible: bool,
 
+    /// Whether the "wipe all data" confirmation modal is open.
+    pub wipe_modal_open: bool,
+
+    /// Flag to signal that all data should be wiped (IDB + localStorage + reload).
+    /// Set by the wipe modal, handled in main update loop.
+    pub wipe_all_requested: bool,
+
     /// Theme mode selection (System, Dark, Light).
     pub theme_mode: ThemeMode,
 

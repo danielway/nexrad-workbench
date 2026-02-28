@@ -718,6 +718,25 @@ impl eframe::App for WorkbenchApp {
                 .clear_cache(ctx.clone(), self.data_facade.clone());
         }
 
+        // Handle wipe-all request: clear IndexedDB + localStorage, then reload
+        if self.state.wipe_all_requested {
+            self.state.wipe_all_requested = false;
+            let facade = self.data_facade.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                // Clear all IndexedDB stores
+                if let Err(e) = facade.clear_all().await {
+                    log::error!("Failed to clear IndexedDB: {}", e);
+                }
+                // Clear localStorage and reload
+                if let Some(window) = web_sys::window() {
+                    if let Ok(Some(storage)) = window.local_storage() {
+                        let _ = storage.clear();
+                    }
+                    let _ = window.location().reload();
+                }
+            });
+        }
+
         // Check if timeline needs to be refreshed from cache
         if self.state.timeline_needs_refresh && !self.cache_load_channel.is_loading() {
             self.state.timeline_needs_refresh = false;
@@ -1169,5 +1188,6 @@ impl eframe::App for WorkbenchApp {
         // Render overlays (on top of everything)
         ui::render_site_modal(ctx, &mut self.state, &mut self.site_modal_state);
         ui::render_shortcuts_help(ctx, &mut self.state);
+        ui::render_wipe_modal(ctx, &mut self.state);
     }
 }
