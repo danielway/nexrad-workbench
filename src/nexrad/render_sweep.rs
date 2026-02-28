@@ -238,4 +238,42 @@ impl<'a> RenderSweep<'a> {
     pub fn playback_timestamp_ms(&self) -> i64 {
         self.playback_timestamp_ms
     }
+
+    /// Get the collection timestamp (in milliseconds) of the radial closest to the
+    /// given azimuth angle (in degrees). Used for data age markers on the canvas.
+    pub fn radial_time_at_azimuth(&self, target_azimuth: f32) -> Option<i64> {
+        // Find the radial closest to the target azimuth
+        let target_key = (target_azimuth * 10.0).round() as u16;
+
+        // Try exact match first
+        if let Some(entry) = self.radials.get(&target_key) {
+            return Some(entry.timestamp_ms);
+        }
+
+        // Otherwise find the closest one within 5 degrees
+        let tolerance_keys = 50u16; // 5.0 degrees * 10
+        let mut best: Option<(u16, i64)> = None;
+
+        for (&key, entry) in &self.radials {
+            let diff = if key > target_key {
+                (key - target_key).min(3600 - key + target_key)
+            } else {
+                (target_key - key).min(3600 - target_key + key)
+            };
+
+            if diff <= tolerance_keys {
+                match best {
+                    Some((best_diff, _)) if diff < best_diff => {
+                        best = Some((diff, entry.timestamp_ms));
+                    }
+                    None => {
+                        best = Some((diff, entry.timestamp_ms));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        best.map(|(_, ts)| ts)
+    }
 }

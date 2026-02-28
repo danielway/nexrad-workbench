@@ -480,8 +480,8 @@ async fn download_nexrad_data(
         return DownloadResult::Error(format!("No files available for {} on {}", site_id, date));
     }
 
-    // Get the first file (typically the first volume scan of the day)
-    let file_meta = files[0].clone();
+    // Get the most recent file (last volume scan available for this date)
+    let file_meta = files.last().unwrap().clone();
     let file_name = file_meta.name().to_string();
     log::info!("Downloading: {}", file_name);
 

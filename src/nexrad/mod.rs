@@ -12,8 +12,6 @@ mod download;
 mod realtime;
 #[allow(dead_code)]
 mod render_sweep;
-#[allow(dead_code)]
-mod sweep_animator;
 mod texture_cache;
 mod texture_render;
 #[allow(dead_code)]
@@ -25,7 +23,6 @@ pub use cache_channel::{CacheLoadChannel, CacheLoadResult, ScrubLoadChannel, Scr
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use realtime::{RealtimeChannel, RealtimeResult};
 pub use render_sweep::RenderSweep;
-pub use sweep_animator::{AnimationState, SweepAnimator};
 pub use texture_cache::{RadarCacheKey, RadarTextureCache};
 pub use texture_render::{radar_coverage_range_km, render_radials_to_image};
 pub use types::{CachedScan, DownloadResult, ScanMetadata};

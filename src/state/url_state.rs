@@ -1,6 +1,6 @@
 //! URL state encoding/decoding for shareable URLs.
 //!
-//! Encodes site, playback time, and map center in the URL query string
+//! Encodes site, playback time, product, and map center in the URL query string
 //! so reloading restores the view and URLs can be shared.
 //!
 //! The `v` parameter is an opaque base64-encoded JSON blob carrying
@@ -25,6 +25,7 @@ pub struct ViewState {
 pub struct UrlParams {
     pub site: Option<String>,
     pub time: Option<f64>,
+    pub product: Option<String>,
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub view: ViewState,
@@ -35,6 +36,7 @@ pub fn parse_from_url() -> UrlParams {
     let mut params = UrlParams {
         site: None,
         time: None,
+        product: None,
         lat: None,
         lon: None,
         view: ViewState::default(),
@@ -56,6 +58,7 @@ pub fn parse_from_url() -> UrlParams {
         match key {
             "site" => params.site = Some(value.to_string()),
             "t" => params.time = value.parse().ok(),
+            "product" => params.product = Some(value.to_string()),
             "lat" => params.lat = value.parse().ok(),
             "lon" => params.lon = value.parse().ok(),
             "v" => {
@@ -73,13 +76,13 @@ pub fn parse_from_url() -> UrlParams {
 }
 
 /// Push current state to the URL query string using `replaceState`.
-pub fn push_to_url(site: &str, time: f64, lat: f64, lon: f64, view: &ViewState) {
+pub fn push_to_url(site: &str, time: f64, product: &str, lat: f64, lon: f64, view: &ViewState) {
     let v_json = serde_json::to_vec(view).unwrap_or_default();
     let v_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&v_json);
 
     let query = format!(
-        "?site={}&t={:.0}&lat={:.4}&lon={:.4}&v={}",
-        site, time, lat, lon, v_b64
+        "?site={}&t={:.0}&product={}&lat={:.4}&lon={:.4}&v={}",
+        site, time, product, lat, lon, v_b64
     );
 
     let window = web_sys::window().expect("no window");

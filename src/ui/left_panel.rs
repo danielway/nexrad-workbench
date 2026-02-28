@@ -1,6 +1,6 @@
 //! Left panel UI: file upload controls and radar operations visualization.
 
-use crate::data::{all_sites_sorted, get_site, DataFacade};
+use crate::data::DataFacade;
 use crate::file_ops::FilePickerChannel;
 use crate::nexrad::{DownloadChannel, RenderSweep, VolumeRing};
 use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
@@ -64,6 +64,10 @@ pub fn render_left_panel(
     data_facade: &DataFacade,
     volume_ring: &VolumeRing,
 ) {
+    if !state.left_sidebar_visible {
+        return;
+    }
+
     egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(235.0)
@@ -228,41 +232,6 @@ fn render_radar_operations_section(
 
     ui.add_space(4.0);
 
-    // Site selector dropdown
-    ui.horizontal(|ui| {
-        ui.label("Site:");
-
-        // Get display text for current selection
-        let current_display = get_site(&state.viz_state.site_id)
-            .map(|s| s.display_label())
-            .unwrap_or_else(|| state.viz_state.site_id.clone());
-
-        egui::ComboBox::from_id_salt("site_selector")
-            .selected_text(current_display)
-            .width(180.0)
-            .height(300.0)
-            .show_ui(ui, |ui| {
-                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                for site in all_sites_sorted() {
-                    let is_selected = site.id == state.viz_state.site_id;
-                    if ui
-                        .selectable_label(is_selected, site.display_label())
-                        .clicked()
-                    {
-                        state.viz_state.site_id = site.id.to_string();
-                        state.viz_state.center_lat = site.lat;
-                        state.viz_state.center_lon = site.lon;
-                        // Reset pan when changing sites
-                        state.viz_state.pan_offset = Vec2::ZERO;
-                        // Refresh timeline for new site
-                        state.timeline_needs_refresh = true;
-                    }
-                }
-            });
-    });
-
-    ui.add_space(5.0);
-
     // Get radar position from volume ring at current playback timestamp
     let playback_ts_ms = (state.playback_state.playback_position() * 1000.0) as i64;
 
@@ -340,11 +309,13 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
     let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
     let rect = response.rect;
     let center = rect.center();
+    let dark = ui.visuals().dark_mode;
     // Leave more room for cardinal labels (12px margin instead of 8)
     let radius = (rect.width().min(rect.height()) / 2.0) - 12.0;
 
-    // Dark background
-    painter.rect_filled(rect, 4.0, Color32::from_rgb(30, 30, 40));
+    // Background
+    let bg = if dark { Color32::from_rgb(30, 30, 40) } else { Color32::from_rgb(225, 225, 230) };
+    painter.rect_filled(rect, 4.0, bg);
 
     // In live mode, draw shaded "future" region (expected upcoming data)
     if is_live {
@@ -390,13 +361,13 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
     }
 
     // Concentric range rings
-    let ring_color = Color32::from_rgb(60, 60, 80);
+    let ring_color = if dark { Color32::from_rgb(60, 60, 80) } else { Color32::from_rgb(170, 170, 190) };
     for factor in [0.33, 0.66, 1.0] {
         painter.circle_stroke(center, radius * factor, Stroke::new(1.0, ring_color));
     }
 
     // Cardinal direction labels (inside the radar circle for cleaner look)
-    let label_color = Color32::from_rgb(100, 100, 120);
+    let label_color = if dark { Color32::from_rgb(100, 100, 120) } else { Color32::from_rgb(80, 80, 100) };
     let label_offset = radius - 6.0;
     let font_id = egui::FontId::proportional(8.0);
 
@@ -455,13 +426,15 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     let size = Vec2::new(120.0, 100.0);
     let (response, painter) = ui.allocate_painter(size, egui::Sense::hover());
     let rect = response.rect;
+    let dark = ui.visuals().dark_mode;
 
-    // Dark background
-    painter.rect_filled(rect, 4.0, Color32::from_rgb(30, 30, 40));
+    // Background
+    let bg = if dark { Color32::from_rgb(30, 30, 40) } else { Color32::from_rgb(225, 225, 230) };
+    painter.rect_filled(rect, 4.0, bg);
 
     // Ground line at bottom
     let ground_y = rect.bottom() - 8.0;
-    let ground_color = Color32::from_rgb(80, 60, 40);
+    let ground_color = if dark { Color32::from_rgb(80, 60, 40) } else { Color32::from_rgb(140, 110, 80) };
     painter.line_segment(
         [
             Pos2::new(rect.left() + 5.0, ground_y),
@@ -476,26 +449,28 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     let tower_top = tower_bottom - 20.0;
 
     // Tower base
+    let tower_color = if dark { Color32::from_rgb(150, 150, 150) } else { Color32::from_rgb(100, 100, 100) };
     painter.line_segment(
         [
             Pos2::new(tower_x, tower_bottom),
             Pos2::new(tower_x, tower_top),
         ],
-        Stroke::new(3.0, Color32::from_rgb(150, 150, 150)),
+        Stroke::new(3.0, tower_color),
     );
 
     // Dish (small circle at top of tower)
+    let dish_color = if dark { Color32::from_rgb(200, 200, 200) } else { Color32::from_rgb(80, 80, 80) };
     painter.circle_filled(
         Pos2::new(tower_x, tower_top),
         4.0,
-        Color32::from_rgb(200, 200, 200),
+        dish_color,
     );
 
     // Reference angle lines (0°, 10°, 20°)
     let beam_origin = Pos2::new(tower_x, tower_top);
     let beam_length = rect.width() - 30.0;
-    let ref_line_color = Color32::from_rgb(60, 60, 80);
-    let label_color = Color32::from_rgb(100, 100, 120);
+    let ref_line_color = if dark { Color32::from_rgb(60, 60, 80) } else { Color32::from_rgb(170, 170, 190) };
+    let label_color = if dark { Color32::from_rgb(100, 100, 120) } else { Color32::from_rgb(80, 80, 100) };
     let font_id = egui::FontId::proportional(8.0);
 
     for angle in [0.0_f32, 10.0, 20.0] {

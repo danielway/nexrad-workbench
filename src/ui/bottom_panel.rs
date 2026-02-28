@@ -37,31 +37,41 @@ fn render_radar_data(
     // Helper to convert timestamp to x position
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    // Color function based on completeness
-    // Complete = solid green, PartialWithVcp = muted green, PartialNoVcp = amber
-    let completeness_to_color = |completeness: Option<ScanCompleteness>| -> (Color32, Color32) {
-        match completeness {
-            Some(ScanCompleteness::Complete) => (
-                tl_colors::SCAN_FILL,   // Normal green fill
-                tl_colors::SCAN_BORDER, // Normal border
-            ),
-            Some(ScanCompleteness::PartialWithVcp) => (
-                Color32::from_rgb(60, 100, 70), // Muted green fill
-                Color32::from_rgb(40, 80, 50),  // Muted border
-            ),
-            Some(ScanCompleteness::PartialNoVcp) => (
-                Color32::from_rgb(180, 140, 60), // Amber fill
-                Color32::from_rgb(140, 100, 40), // Amber border
-            ),
-            Some(ScanCompleteness::Missing) => (
-                Color32::from_rgb(80, 80, 80), // Gray fill
-                Color32::from_rgb(60, 60, 60), // Gray border
-            ),
-            None => (
-                tl_colors::SCAN_FILL, // Default to green
-                tl_colors::SCAN_BORDER,
-            ),
-        }
+    // Color function based on VCP number with completeness as opacity modifier.
+    // Different VCPs get distinct hues; incomplete scans get reduced opacity.
+    let vcp_to_color = |vcp: u16, completeness: Option<ScanCompleteness>| -> (Color32, Color32) {
+        // Base color by VCP category
+        let (r, g, b) = match vcp {
+            // Precipitation modes (VCP 21x) — green family
+            215 => (50, 140, 80),
+            212 => (60, 130, 90),
+            // Clear air modes (VCP 3x) — blue family
+            31 | 32 | 35 => (50, 100, 160),
+            // Severe weather modes — orange/red family
+            12 | 121 => (180, 100, 50),
+            // Other known VCPs — teal
+            _ if vcp > 0 => (60, 120, 120),
+            // Unknown (vcp == 0) — gray
+            _ => (80, 80, 80),
+        };
+
+        // Opacity based on completeness
+        let alpha = match completeness {
+            Some(ScanCompleteness::Complete) | None => 255u8,
+            Some(ScanCompleteness::PartialWithVcp) => 200,
+            Some(ScanCompleteness::PartialNoVcp) => 150,
+            Some(ScanCompleteness::Missing) => 80,
+        };
+
+        let fill = Color32::from_rgba_unmultiplied(r, g, b, alpha);
+        let border_alpha = (alpha as u16 * 7 / 10) as u8;
+        let border = Color32::from_rgba_unmultiplied(
+            (r as u16 * 7 / 10) as u8,
+            (g as u16 * 7 / 10) as u8,
+            (b as u16 * 7 / 10) as u8,
+            border_alpha,
+        );
+        (fill, border)
     };
 
     // Color function based on elevation angle (0-20 degrees typical range)
@@ -115,7 +125,7 @@ fn render_radar_data(
                         Pos2::new(x_end, rect.bottom() - 3.0),
                     );
 
-                    let (scan_fill, scan_stroke) = completeness_to_color(scan.completeness);
+                    let (scan_fill, scan_stroke) = vcp_to_color(scan.vcp, scan.completeness);
                     painter.rect_filled(scan_rect, 2.0, scan_fill);
                     painter.rect_stroke(
                         scan_rect,
@@ -139,7 +149,7 @@ fn render_radar_data(
                         Pos2::new(scan_x_end, rect.bottom() - 3.0),
                     );
 
-                    let (scan_fill, scan_stroke) = completeness_to_color(scan.completeness);
+                    let (scan_fill, scan_stroke) = vcp_to_color(scan.vcp, scan.completeness);
                     painter.rect_filled(scan_rect, 2.0, scan_fill);
                     painter.rect_stroke(
                         scan_rect,
@@ -224,14 +234,62 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     }
 
     egui::TopBottomPanel::bottom("bottom_panel")
-        .exact_height(70.0)
+        .exact_height(82.0)
         .show(ctx, |ui| {
             ui.vertical(|ui| {
+                // Mode and acquisition status bar
+                ui.horizontal(|ui| {
+                    let mode_label = if state.live_mode_state.is_active() {
+                        "REAL-TIME"
+                    } else {
+                        "NAVIGATE"
+                    };
+                    let mode_color = if state.live_mode_state.is_active() {
+                        live::STREAMING
+                    } else {
+                        ui_colors::label(state.is_dark)
+                    };
+                    ui.label(RichText::new(mode_label).size(10.0).strong().color(mode_color));
+
+                    // Show current product and elevation compactly
+                    ui.separator();
+                    ui.label(
+                        RichText::new(state.viz_state.product.label())
+                            .size(10.0)
+                            .color(ui_colors::value(state.is_dark)),
+                    );
+                    ui.label(
+                        RichText::new(format!("{:.1}\u{00B0}", state.viz_state.target_elevation))
+                            .size(10.0)
+                            .color(ui_colors::value(state.is_dark)),
+                    );
+
+                    // Show data staleness if available
+                    if let Some(staleness) = state.viz_state.data_staleness_secs {
+                        ui.separator();
+                        let age_text = if staleness < 60.0 {
+                            format!("{:.0}s old", staleness)
+                        } else if staleness < 3600.0 {
+                            format!("{:.0}m old", staleness / 60.0)
+                        } else {
+                            format!("{:.1}h old", staleness / 3600.0)
+                        };
+                        let age_color = if staleness < 60.0 {
+                            ui_colors::SUCCESS
+                        } else if staleness < 300.0 {
+                            ui_colors::ACTIVE
+                        } else {
+                            Color32::from_rgb(220, 80, 80)
+                        };
+                        ui.label(RichText::new(age_text).size(10.0).color(age_color));
+                    }
+                });
+
                 // Timeline row
-                ui.add_space(4.0);
+                ui.add_space(2.0);
                 render_timeline(ui, state);
 
-                ui.add_space(4.0);
+                ui.add_space(2.0);
 
                 // Playback controls row
                 ui.horizontal(|ui| {
@@ -383,12 +441,14 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     );
     let rect = response.rect;
 
+    let dark = state.is_dark;
+
     // Background
-    painter.rect_filled(rect, 2.0, tl_colors::BACKGROUND);
+    painter.rect_filled(rect, 2.0, tl_colors::background(dark));
     painter.rect_stroke(
         rect,
         2.0,
-        Stroke::new(1.0, tl_colors::BORDER),
+        Stroke::new(1.0, tl_colors::border(dark)),
         StrokeKind::Outside,
     );
 
@@ -446,9 +506,9 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             let is_major = tick % major_interval == 0;
             let tick_height = if is_major { 12.0 } else { 6.0 };
             let tick_color = if is_major {
-                tl_colors::TICK_MAJOR
+                tl_colors::tick_major(dark)
             } else {
-                tl_colors::TICK_MINOR
+                tl_colors::tick_minor(dark)
             };
 
             painter.line_segment(
@@ -467,7 +527,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
                     egui::Align2::CENTER_CENTER,
                     label,
                     egui::FontId::monospace(9.0),
-                    tl_colors::TICK_LABEL,
+                    tl_colors::tick_label(dark),
                 );
             }
         }
@@ -1002,7 +1062,7 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
                 ui.label(
                     RichText::new(format!("({})", state.live_mode_state.chunks_received))
                         .size(10.0)
-                        .color(ui_colors::VALUE),
+                        .color(ui_colors::value(state.is_dark)),
                 );
             }
 
@@ -1034,9 +1094,9 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     ui.label(
         RichText::new(stats.format_latency_stats())
             .size(11.0)
-            .color(ui_colors::VALUE),
+            .color(ui_colors::value(state.is_dark)),
     );
-    ui.label(RichText::new("median:").size(11.0).color(ui_colors::LABEL));
+    ui.label(RichText::new("median:").size(11.0).color(ui_colors::label(state.is_dark)));
 
     ui.separator();
 
@@ -1047,9 +1107,9 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     ui.label(
         RichText::new(stats.format_cache_size())
             .size(11.0)
-            .color(ui_colors::VALUE),
+            .color(ui_colors::value(state.is_dark)),
     );
-    ui.label(RichText::new("cache:").size(11.0).color(ui_colors::LABEL));
+    ui.label(RichText::new("cache:").size(11.0).color(ui_colors::label(state.is_dark)));
 
     ui.separator();
 
@@ -1057,12 +1117,12 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     ui.label(
         RichText::new(stats.format_transferred())
             .size(11.0)
-            .color(ui_colors::VALUE),
+            .color(ui_colors::value(state.is_dark)),
     );
     ui.label(
         RichText::new("transferred:")
             .size(11.0)
-            .color(ui_colors::LABEL),
+            .color(ui_colors::label(state.is_dark)),
     );
 
     ui.separator();
@@ -1079,11 +1139,11 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     ui.label(
         RichText::new(format!("{}", stats.session_request_count))
             .size(11.0)
-            .color(ui_colors::VALUE),
+            .color(ui_colors::value(state.is_dark)),
     );
     ui.label(
         RichText::new("requests:")
             .size(11.0)
-            .color(ui_colors::LABEL),
+            .color(ui_colors::label(state.is_dark)),
     );
 }

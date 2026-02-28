@@ -6,7 +6,6 @@
 
 use crate::data::keys::ScanKey;
 
-mod alerts;
 mod data_source;
 mod layer;
 mod live_mode;
@@ -17,12 +16,12 @@ pub mod radar_data;
 mod settings;
 #[allow(dead_code)]
 mod stats;
+pub mod theme;
 pub mod url_state;
 pub mod vcp;
 #[allow(dead_code)]
 mod viz;
 
-pub use alerts::{AlertSummary, AlertsState, NwsAlert};
 pub use data_source::UploadState;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
@@ -30,8 +29,9 @@ pub use playback::{LoopMode, PlaybackSpeed, PlaybackState};
 pub use radar_data::RadarTimeline;
 pub use settings::{format_bytes, StorageSettings};
 pub use stats::SessionStats;
+pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
-pub use viz::{ColorPalette, ProcessingState, RadarProduct, RenderMode, VizState};
+pub use viz::{ColorPalette, RadarProduct, RenderMode, VizState};
 
 /// Root application state containing all sub-states.
 #[derive(Default)]
@@ -51,17 +51,11 @@ pub struct AppState {
     /// Layer visibility toggles
     pub layer_state: LayerState,
 
-    /// Processing options
-    pub processing_state: ProcessingState,
-
     /// Application status message displayed in top bar
     pub status_message: String,
 
     /// Session and performance statistics
     pub session_stats: SessionStats,
-
-    /// NWS weather alerts
-    pub alerts_state: AlertsState,
 
     /// Live streaming mode state
     pub live_mode_state: LiveModeState,
@@ -105,8 +99,23 @@ pub struct AppState {
     /// Set after downloads complete, handled in main update loop.
     pub check_eviction_requested: bool,
 
-    /// Current sweep animation state (updated each frame).
-    pub animation_state: crate::nexrad::AnimationState,
+    /// Whether the site selection modal is open.
+    pub site_modal_open: bool,
+
+    /// Whether the left sidebar is visible.
+    pub left_sidebar_visible: bool,
+
+    /// Whether the right sidebar is visible.
+    pub right_sidebar_visible: bool,
+
+    /// Whether the keyboard shortcut help overlay is visible.
+    pub shortcuts_help_visible: bool,
+
+    /// Theme mode selection (System, Dark, Light).
+    pub theme_mode: ThemeMode,
+
+    /// Resolved dark mode flag for the current frame.
+    pub is_dark: bool,
 }
 
 /// State for the datetime jump picker popup.
@@ -174,13 +183,20 @@ impl AppState {
         // Load storage settings from localStorage
         let storage_settings = StorageSettings::load();
 
+        // Load theme preference
+        let theme_mode = theme::load_theme_mode();
+        let is_dark = theme_mode.is_dark();
+
         Self {
             playback_state,
             radar_timeline,
             status_message: "Ready".to_string(),
             session_stats: SessionStats::new(),
-            alerts_state: AlertsState::with_dummy_data(),
             storage_settings,
+            left_sidebar_visible: true,
+            right_sidebar_visible: true,
+            theme_mode,
+            is_dark,
             // Request timeline refresh on startup to load from cache
             timeline_needs_refresh: true,
             ..Default::default()

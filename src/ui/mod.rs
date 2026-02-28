@@ -1,21 +1,25 @@
 //! UI modules for the NEXRAD Workbench application.
 //!
 //! The UI is split into distinct panels:
-//! - Top bar: Title, status, and data source mode selector
-//! - Left panel: Data source controls (varies by mode)
+//! - Top bar: Site context, status, and mode indicators
+//! - Left panel: Radar operations (read-only state)
 //! - Central canvas: Radar visualization
-//! - Bottom panel: Playback controls
-//! - Right panel: Layer and processing controls
+//! - Bottom panel: Timeline, playback controls, and session stats
+//! - Right panel: Product selection, layers, and rendering controls
 
 mod bottom_panel;
 mod canvas;
 pub mod colors;
 mod left_panel;
 mod right_panel;
+mod shortcuts;
+mod site_modal;
 mod top_bar;
 
 pub use bottom_panel::render_bottom_panel;
 pub use canvas::render_canvas_with_geo;
 pub use left_panel::render_left_panel;
 pub use right_panel::render_right_panel;
+pub use shortcuts::{handle_shortcuts, render_shortcuts_help};
+pub use site_modal::{render_site_modal, SiteModalState};
 pub use top_bar::render_top_bar;

@@ -8,7 +8,7 @@ On first launch with no prior state, the site selection modal opens automaticall
 
 ## Map Canvas
 
-The primary view is a map canvas displaying radar data overlaid on geographic context. Radar data is rendered in polar coordinates centered on the radar site and projected onto the map. The canvas supports standard map interactions: pan, zoom, and rotation.
+The primary view is a map canvas displaying radar data overlaid on geographic context. Radar data is rendered in polar coordinates centered on the radar site and projected onto the map. The canvas supports standard map interactions: pan and zoom.
 
 The geographic base layer includes state boundaries and labels at all zoom levels. County boundaries and labels appear when zoomed sufficiently close. These geographic layers are optional and can be toggled by the user. The application supports dark and light map themes, matching the active appearance mode.
 

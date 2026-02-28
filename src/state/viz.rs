@@ -1,34 +1,6 @@
-//! Visualization state (canvas, zoom/pan, product/palette selection, processing options).
+//! Visualization state (canvas, zoom/pan, product/palette selection).
 
 use eframe::egui::Vec2;
-
-// ============================================================================
-// Processing Options
-// ============================================================================
-
-/// State for radar data processing options.
-#[derive(Default)]
-pub struct ProcessingState {
-    /// Enable spatial smoothing.
-    pub smoothing_enabled: bool,
-    /// Smoothing strength (0.0 - 1.0).
-    pub smoothing_strength: f32,
-    /// Enable velocity dealiasing.
-    pub dealiasing_enabled: bool,
-    /// Dealiasing aggressiveness (0.0 - 1.0).
-    pub dealiasing_strength: f32,
-}
-
-impl ProcessingState {
-    #[allow(dead_code)] // Convenience constructor with non-default values
-    pub fn new() -> Self {
-        Self {
-            smoothing_strength: 0.5,
-            dealiasing_strength: 0.5,
-            ..Default::default()
-        }
-    }
-}
 
 // ============================================================================
 // Product and Palette Selection
@@ -58,6 +30,31 @@ impl RadarProduct {
         }
     }
 
+    /// Short code for URL parameters.
+    pub fn short_code(&self) -> &'static str {
+        match self {
+            RadarProduct::Reflectivity => "REF",
+            RadarProduct::Velocity => "VEL",
+            RadarProduct::SpectrumWidth => "SW",
+            RadarProduct::DifferentialReflectivity => "ZDR",
+            RadarProduct::CorrelationCoefficient => "CC",
+            RadarProduct::DifferentialPhase => "KDP",
+        }
+    }
+
+    /// Parse from a short code string.
+    pub fn from_short_code(code: &str) -> Option<Self> {
+        match code {
+            "REF" => Some(RadarProduct::Reflectivity),
+            "VEL" => Some(RadarProduct::Velocity),
+            "SW" => Some(RadarProduct::SpectrumWidth),
+            "ZDR" => Some(RadarProduct::DifferentialReflectivity),
+            "CC" => Some(RadarProduct::CorrelationCoefficient),
+            "KDP" => Some(RadarProduct::DifferentialPhase),
+            _ => None,
+        }
+    }
+
     pub fn all() -> &'static [RadarProduct] {
         &[
             RadarProduct::Reflectivity,
@@ -80,12 +77,11 @@ impl RadarProduct {
 #[derive(Default, Clone, Copy, PartialEq)]
 pub enum RenderMode {
     /// Fixed elevation - shows complete sweep at a specific tilt.
-    /// Data may become stale as radar continues scanning other elevations.
     #[default]
     FixedTilt,
 
-    /// Most recent data - blends data from multiple sweeps to show
-    /// the most temporally immediate data at each azimuth.
+    /// Most recent data - shows the most recent eligible value at each
+    /// azimuth/range regardless of elevation.
     MostRecent,
 }
 
@@ -106,25 +102,6 @@ impl RenderMode {
 
     pub fn all() -> &'static [RenderMode] {
         &[RenderMode::FixedTilt, RenderMode::MostRecent]
-    }
-}
-
-/// Strategy for handling sweep transitions in MostRecent mode.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub enum BlendStrategy {
-    /// Continuously wipe older data as sweep progresses
-    #[default]
-    ContinuousWipe,
-    /// Clear display at sweep end, start fresh
-    ClearOnSweepEnd,
-}
-
-impl BlendStrategy {
-    pub fn label(&self) -> &'static str {
-        match self {
-            BlendStrategy::ContinuousWipe => "Continuous Wipe",
-            BlendStrategy::ClearOnSweepEnd => "Clear on Sweep End",
-        }
     }
 }
 
@@ -182,9 +159,6 @@ pub struct VizState {
     /// Target elevation for fixed-tilt mode (degrees)
     pub target_elevation: f32,
 
-    /// Blend strategy for most-recent mode
-    pub blend_strategy: BlendStrategy,
-
     /// Overlay info: radar site ID
     pub site_id: String,
 
@@ -212,12 +186,10 @@ impl Default for VizState {
             product: RadarProduct::default(),
             palette: ColorPalette::default(),
             render_mode: RenderMode::default(),
-            target_elevation: 0.5, // Default lowest tilt
-            blend_strategy: BlendStrategy::default(),
+            target_elevation: 0.5,
             site_id: "KDMX".to_string(),
             timestamp: "--:--:-- UTC".to_string(),
             elevation: "-- deg".to_string(),
-            // Default to KDMX - Des Moines, Iowa
             center_lat: 41.7312,
             center_lon: -93.7229,
             data_staleness_secs: None,

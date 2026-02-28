@@ -129,11 +129,11 @@ pub struct WorkbenchApp {
     /// Populated by async decode tasks, consumed by update loop.
     partial_volume_results: std::rc::Rc<std::cell::RefCell<Vec<(i64, Volume)>>>,
 
-    /// Sweep animator for radial-accurate playback animation.
-    sweep_animator: nexrad::SweepAnimator,
-
     /// Monotonic instant of last URL push (for throttling to ~1/sec).
     last_url_push: web_time::Instant,
+
+    /// Transient state for the site selection modal.
+    site_modal_state: ui::SiteModalState,
 }
 
 // Embed shapefile data at compile time
@@ -276,6 +276,11 @@ impl WorkbenchApp {
         if let Some(tz) = url_params.view.tz {
             state.playback_state.timeline_zoom = tz;
         }
+        if let Some(ref product_code) = url_params.product {
+            if let Some(product) = state::RadarProduct::from_short_code(product_code) {
+                state.viz_state.product = product;
+            }
+        }
         if let Some(time) = url_params.time {
             state.playback_state.set_playback_position(time);
             // Center the timeline view on the restored playback position.
@@ -283,6 +288,11 @@ impl WorkbenchApp {
             // assumed width (1000px) that PlaybackState constructors use.
             let view_width_secs = 1000.0 / state.playback_state.timeline_zoom;
             state.playback_state.timeline_view_start = time - view_width_secs / 2.0;
+        }
+
+        // First-launch detection: open site selection modal if no site in URL
+        if url_params.site.is_none() {
+            state.site_modal_open = true;
         }
 
         let initial_site_id = state.viz_state.site_id.clone();
@@ -321,8 +331,8 @@ impl WorkbenchApp {
             scrub_load_channel: nexrad::ScrubLoadChannel::new(),
             realtime_channel,
             partial_volume_results: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
-            sweep_animator: nexrad::SweepAnimator::new(),
             last_url_push: web_time::Instant::now(),
+            site_modal_state: ui::SiteModalState::default(),
         }
     }
 
@@ -675,6 +685,14 @@ impl WorkbenchApp {
 
 impl eframe::App for WorkbenchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Resolve theme and apply egui visuals
+        self.state.is_dark = self.state.theme_mode.is_dark();
+        if self.state.is_dark {
+            ctx.set_visuals(egui::Visuals::dark());
+        } else {
+            ctx.set_visuals(egui::Visuals::light());
+        }
+
         // Detect site changes and clear volume ring
         if self.state.viz_state.site_id != self.previous_site_id {
             log::info!(
@@ -1077,16 +1095,6 @@ impl eframe::App for WorkbenchApp {
             .session_stats
             .update_from_network_stats(&network_stats);
 
-        // Update sweep animator
-        {
-            let playback_pos = self.state.playback_state.playback_position();
-            let scan = self
-                .state
-                .radar_timeline
-                .find_scan_at_timestamp(playback_pos);
-            self.state.animation_state = self.sweep_animator.update(playback_pos, scan);
-        }
-
         // Push current state to URL (throttled to once per second)
         {
             let now = web_time::Instant::now();
@@ -1099,6 +1107,7 @@ impl eframe::App for WorkbenchApp {
                 state::url_state::push_to_url(
                     &self.state.viz_state.site_id,
                     self.state.playback_state.playback_position(),
+                    self.state.viz_state.product.short_code(),
                     self.state.viz_state.center_lat,
                     self.state.viz_state.center_lon,
                     &view,
@@ -1128,5 +1137,12 @@ impl eframe::App for WorkbenchApp {
             &self.volume_ring,
             &mut self.radar_texture_cache,
         );
+
+        // Process keyboard shortcuts
+        ui::handle_shortcuts(ctx, &mut self.state);
+
+        // Render overlays (on top of everything)
+        ui::render_site_modal(ctx, &mut self.state, &mut self.site_modal_state);
+        ui::render_shortcuts_help(ctx, &mut self.state);
     }
 }
