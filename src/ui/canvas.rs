@@ -422,7 +422,7 @@ fn handle_canvas_interaction(response: &egui::Response, rect: &Rect, state: &mut
         if scroll_delta.y != 0.0 {
             let zoom_factor = 1.0 + scroll_delta.y * 0.001;
             let old_zoom = state.viz_state.zoom;
-            let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 10.0);
+            let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 25.0);
 
             if let Some(cursor_pos) = response.hover_pos() {
                 let cursor_rel = cursor_pos - rect.center();
