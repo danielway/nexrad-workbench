@@ -756,12 +756,19 @@ impl eframe::App for WorkbenchApp {
                         let most_recent_end = ranges.last().unwrap().end;
 
                         // If current position is not within any range, move to most recent
+                        // and center the timeline view on the data
                         let ts = self.state.playback_state.playback_position();
                         let in_any_range = ranges.iter().any(|r| r.contains(ts));
                         if !in_any_range {
                             self.state
                                 .playback_state
                                 .set_playback_position(most_recent_end);
+
+                            // Center the timeline view on the data so it's visible
+                            let view_width_secs =
+                                1000.0 / self.state.playback_state.timeline_zoom;
+                            self.state.playback_state.timeline_view_start =
+                                most_recent_end - view_width_secs / 2.0;
                         }
 
                         log::info!("Timeline has {} contiguous range(s)", ranges.len());
@@ -854,7 +861,11 @@ impl eframe::App for WorkbenchApp {
                 self.state.status_message = if is_cache_hit {
                     format!("Loaded from cache: {}", scan.file_name)
                 } else {
-                    format!("Downloaded: {}", scan.file_name)
+                    format!(
+                        "Downloaded and cached: {} ({} bytes)",
+                        scan.file_name,
+                        scan.data.len()
+                    )
                 };
 
                 // Request eviction check after successful download
@@ -890,6 +901,11 @@ impl eframe::App for WorkbenchApp {
 
                         // Insert into volume ring (timestamp in ms)
                         self.volume_ring.insert(scan.key.timestamp * 1000, volume);
+                        self.displayed_scan_timestamp = Some(scan.key.timestamp);
+                        // Move playback position to the downloaded scan
+                        self.state
+                            .playback_state
+                            .set_playback_position(scan.key.timestamp as f64);
                         // Invalidate texture cache to trigger re-render
                         self.radar_texture_cache.invalidate();
                     }
@@ -981,14 +997,19 @@ impl eframe::App for WorkbenchApp {
                         }
                         Err(e) => {
                             log::error!("Scrub load: failed to decode volume: {}", e);
+                            // Mark as displayed to prevent retry loop on corrupt data
+                            self.displayed_scan_timestamp = Some(timestamp);
                         }
                     }
                 }
                 nexrad::ScrubLoadResult::NotFound { timestamp } => {
                     log::debug!("Scrub load: scan {} not in cache", timestamp);
+                    // Mark as displayed to prevent retry loop
+                    self.displayed_scan_timestamp = Some(timestamp);
                 }
-                nexrad::ScrubLoadResult::Error(msg) => {
-                    log::error!("Scrub load error: {}", msg);
+                nexrad::ScrubLoadResult::Error { timestamp, message } => {
+                    log::error!("Scrub load error: {}", message);
+                    self.displayed_scan_timestamp = Some(timestamp);
                 }
             }
         }

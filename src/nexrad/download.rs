@@ -420,11 +420,35 @@ async fn download_nexrad_data(
 ) -> DownloadResult {
     use nexrad::data::aws::archive;
 
-    // Generate a timestamp for the scan key (use start of day)
-    let timestamp = date
-        .and_hms_opt(0, 0, 0)
-        .map(|dt| dt.and_utc().timestamp())
-        .unwrap_or(0);
+    // Request 1: List available files for this site/date
+    stats.request_started();
+    let files = match archive::list_files(site_id, &date).await {
+        Ok(files) => {
+            stats.request_completed(0); // Listing doesn't count toward bytes transferred
+            files
+        }
+        Err(e) => {
+            stats.request_completed(0);
+            return DownloadResult::Error(format!("Failed to list files: {}", e));
+        }
+    };
+
+    if files.is_empty() {
+        return DownloadResult::Error(format!("No files available for {} on {}", site_id, date));
+    }
+
+    // Get the most recent file (last volume scan available for this date)
+    let file_meta = files.last().unwrap().clone();
+    let file_name = file_meta.name().to_string();
+
+    // Parse the actual timestamp from the filename (e.g., KDMX20260228_034158_V06)
+    let timestamp = ArchiveFileMeta::parse_timestamp_from_name(&file_name, &date)
+        .unwrap_or_else(|| {
+            log::warn!("Could not parse timestamp from filename: {}", file_name);
+            date.and_hms_opt(0, 0, 0)
+                .map(|dt| dt.and_utc().timestamp())
+                .unwrap_or(0)
+        });
 
     let key = ScanKey::new(site_id, timestamp);
 
@@ -462,27 +486,6 @@ async fn download_nexrad_data(
     }
 
     log::info!("Cache miss for {}", key.to_storage_key());
-
-    // Request 1: List available files for this site/date
-    stats.request_started();
-    let files = match archive::list_files(site_id, &date).await {
-        Ok(files) => {
-            stats.request_completed(0); // Listing doesn't count toward bytes transferred
-            files
-        }
-        Err(e) => {
-            stats.request_completed(0);
-            return DownloadResult::Error(format!("Failed to list files: {}", e));
-        }
-    };
-
-    if files.is_empty() {
-        return DownloadResult::Error(format!("No files available for {} on {}", site_id, date));
-    }
-
-    // Get the most recent file (last volume scan available for this date)
-    let file_meta = files.last().unwrap().clone();
-    let file_name = file_meta.name().to_string();
     log::info!("Downloading: {}", file_name);
 
     // Request 2: Download the file

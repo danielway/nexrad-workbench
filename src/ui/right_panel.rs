@@ -171,7 +171,7 @@ fn render_appearance_section(ui: &mut egui::Ui, state: &mut AppState) {
 
 fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CollapsingHeader::new(RichText::new("Storage").strong())
-        .default_open(false)
+        .default_open(true)
         .show(ui, |ui| {
             let cache_size = state.session_stats.cache_size_bytes;
             let quota = state.storage_settings.quota_bytes;

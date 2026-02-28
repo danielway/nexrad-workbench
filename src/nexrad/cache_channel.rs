@@ -188,7 +188,7 @@ pub enum ScrubLoadResult {
     /// Scan not found in cache
     NotFound { timestamp: i64 },
     /// Load failed with an error
-    Error(String),
+    Error { timestamp: i64, message: String },
 }
 
 /// Channel for loading individual scans from cache on-demand (for scrubbing).
@@ -276,7 +276,7 @@ impl ScrubLoadChannel {
 
                         if let Some(e) = fetch_error {
                             log::error!("Scrub load failed: {}", e);
-                            ScrubLoadResult::Error(e)
+                            ScrubLoadResult::Error { timestamp, message: e }
                         } else if records.is_empty() {
                             log::debug!("Scrub load: all records missing for {}", timestamp);
                             ScrubLoadResult::NotFound { timestamp }
@@ -296,7 +296,7 @@ impl ScrubLoadChannel {
                 }
                 Err(e) => {
                     log::error!("Scrub load failed: {}", e);
-                    ScrubLoadResult::Error(e)
+                    ScrubLoadResult::Error { timestamp, message: e }
                 }
             };
 

@@ -99,15 +99,19 @@ impl IndexedDbRecordStore {
         meta: RecordIndexEntry,
     ) -> Result<PutOutcome, String> {
         self.ensure_open().await?;
-        let db = self.get_db()?;
 
         let record_key = record.key.to_storage_key();
         let scan_key = record.key.scan.to_storage_key();
 
-        // Check if record already exists
+        // Read existing state in separate readonly transactions BEFORE the
+        // write transaction. Awaiting inside a readwrite transaction causes
+        // it to auto-commit in IndexedDB, so all reads must happen first.
         let exists = self.has_record(&record.key).await?;
+        let existing_scan = self.scan_availability(&record.key.scan).await?;
 
-        // Start transaction with all stores we need
+        // Now do all writes synchronously in a single transaction (no awaits
+        // between request creation and wait_for_transaction).
+        let db = self.get_db()?;
         let store_names = Array::new();
         store_names.push(&JsValue::from_str(STORE_RECORDS));
         store_names.push(&JsValue::from_str(STORE_RECORD_INDEX));
@@ -123,7 +127,6 @@ impl IndexedDbRecordStore {
                 .object_store(STORE_RECORDS)
                 .map_err(|e| format!("Failed to get records store: {:?}", e))?;
 
-            // Store as ArrayBuffer directly
             let array = Uint8Array::from(record.data.as_slice());
             let buffer = array.buffer();
 
@@ -146,23 +149,14 @@ impl IndexedDbRecordStore {
             .put_with_key(&meta_js, &JsValue::from_str(&record_key))
             .map_err(|e| format!("Failed to put record index: {:?}", e))?;
 
-        // Update scan index
+        // Update scan index using pre-read data (no await needed)
         let scan_store = tx
             .object_store(STORE_SCAN_INDEX)
             .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
 
-        // Get existing scan entry or create new one
-        // We do a synchronous get within the transaction
-        let get_req = scan_store
-            .get(&JsValue::from_str(&scan_key))
-            .map_err(|e| format!("Failed to get scan: {:?}", e))?;
-        let existing_result = wait_for_request(&get_req).await?;
-        let existing_scan: Option<ScanIndexEntry> = deserialize_js_value(&existing_result);
-
         let mut scan_entry =
             existing_scan.unwrap_or_else(|| ScanIndexEntry::new(record.key.scan.clone()));
 
-        // Update scan entry
         if !exists {
             scan_entry.present_records += 1;
             scan_entry.total_size_bytes += record.data.len() as u64;
@@ -201,8 +195,20 @@ impl IndexedDbRecordStore {
         sweeps: Vec<SweepMeta>,
     ) -> Result<bool, String> {
         self.ensure_open().await?;
-        let db = self.get_db()?;
 
+        // Read existing entry in a separate readonly transaction first.
+        let existing = self.scan_availability(scan).await?;
+
+        let Some(mut entry) = existing else {
+            return Ok(false);
+        };
+
+        entry.end_timestamp_secs = Some(end_timestamp_secs);
+        entry.sweeps = Some(sweeps);
+        entry.updated_at = UnixMillis::now();
+
+        // Write in a separate readwrite transaction (no awaits between ops).
+        let db = self.get_db()?;
         let scan_key = scan.to_storage_key();
 
         let tx = db
@@ -212,20 +218,6 @@ impl IndexedDbRecordStore {
         let store = tx
             .object_store(STORE_SCAN_INDEX)
             .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
-
-        let get_req = store
-            .get(&JsValue::from_str(&scan_key))
-            .map_err(|e| format!("Failed to get scan: {:?}", e))?;
-        let existing_result = wait_for_request(&get_req).await?;
-        let existing: Option<ScanIndexEntry> = deserialize_js_value(&existing_result);
-
-        let Some(mut entry) = existing else {
-            return Ok(false);
-        };
-
-        entry.end_timestamp_secs = Some(end_timestamp_secs);
-        entry.sweeps = Some(sweeps);
-        entry.updated_at = UnixMillis::now();
 
         let json =
             serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
@@ -568,8 +560,16 @@ impl IndexedDbRecordStore {
     /// Updates scan index with expected record count (from VCP).
     pub async fn set_expected_records(&self, scan: &ScanKey, expected: u32) -> Result<(), String> {
         self.ensure_open().await?;
-        let db = self.get_db()?;
 
+        // Read existing entry in a separate readonly transaction first.
+        let existing = self.scan_availability(scan).await?;
+        let mut entry = existing.unwrap_or_else(|| ScanIndexEntry::new(scan.clone()));
+
+        entry.expected_records = Some(expected);
+        entry.updated_at = UnixMillis::now();
+
+        // Write in a separate readwrite transaction (no awaits between ops).
+        let db = self.get_db()?;
         let storage_key = scan.to_storage_key();
 
         let tx = db
@@ -579,16 +579,6 @@ impl IndexedDbRecordStore {
         let store = tx
             .object_store(STORE_SCAN_INDEX)
             .map_err(|e| format!("Failed to get store: {:?}", e))?;
-
-        let get_req = store
-            .get(&JsValue::from_str(&storage_key))
-            .map_err(|e| format!("Failed to get: {:?}", e))?;
-        let existing_result = wait_for_request(&get_req).await?;
-        let existing: Option<ScanIndexEntry> = deserialize_js_value(&existing_result);
-        let mut entry = existing.unwrap_or_else(|| ScanIndexEntry::new(scan.clone()));
-
-        entry.expected_records = Some(expected);
-        entry.updated_at = UnixMillis::now();
 
         let json =
             serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
@@ -640,8 +630,18 @@ impl IndexedDbRecordStore {
     /// Updates the last_accessed_at timestamp for a scan (LRU tracking).
     pub async fn touch_scan(&self, scan: &ScanKey) -> Result<(), String> {
         self.ensure_open().await?;
-        let db = self.get_db()?;
 
+        // Read existing entry in a separate readonly transaction first.
+        let existing = self.scan_availability(scan).await?;
+
+        let Some(mut entry) = existing else {
+            return Ok(());
+        };
+
+        entry.last_accessed_at = UnixMillis::now();
+
+        // Write in a separate readwrite transaction (no awaits between ops).
+        let db = self.get_db()?;
         let storage_key = scan.to_storage_key();
 
         let tx = db
@@ -652,26 +652,16 @@ impl IndexedDbRecordStore {
             .object_store(STORE_SCAN_INDEX)
             .map_err(|e| format!("Failed to get store: {:?}", e))?;
 
-        let get_req = store
-            .get(&JsValue::from_str(&storage_key))
-            .map_err(|e| format!("Failed to get: {:?}", e))?;
-        let existing_result = wait_for_request(&get_req).await?;
+        let json =
+            serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
+        let js =
+            js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
 
-        if let Some(mut entry) = deserialize_js_value::<ScanIndexEntry>(&existing_result) {
-            entry.last_accessed_at = UnixMillis::now();
+        store
+            .put_with_key(&js, &JsValue::from_str(&storage_key))
+            .map_err(|e| format!("Failed to put: {:?}", e))?;
 
-            let json =
-                serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
-            let js =
-                js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
-
-            store
-                .put_with_key(&js, &JsValue::from_str(&storage_key))
-                .map_err(|e| format!("Failed to put: {:?}", e))?;
-
-            wait_for_transaction(&tx).await?;
-        }
-
+        wait_for_transaction(&tx).await?;
         Ok(())
     }
 
