@@ -5,8 +5,8 @@ use super::left_panel::RadarPosition;
 use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::{
-    radar_coverage_range_km, render_radials_to_image, render_sweep_field_to_image, RadarCacheKey,
-    RadarTextureCache, RenderSweep, VolumeRing,
+    radar_coverage_range_km, render_sweep_field_to_image, RadarCacheKey, RadarTextureCache,
+    RenderSweep, VolumeRing,
 };
 use crate::state::{AppState, GeoLayerVisibility, SmoothingMode};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -143,23 +143,36 @@ fn render_dynamic_sweep(
     interpolation: nexrad_render::Interpolation,
     processing: crate::state::ProcessingConfig,
 ) -> Option<f64> {
-    let render_size: (usize, usize) = (800, 800);
-
     let content_signature = render_sweep.cache_signature();
-    let cache_key = RadarCacheKey::for_dynamic_sweep(content_signature, 0, render_size)
+    // Dimensions are (0, 0) because we always render at native resolution
+    // (determined by gate_count). The content_signature, product, interpolation,
+    // and processing fields uniquely identify the render.
+    let cache_key = RadarCacheKey::for_dynamic_sweep(content_signature, 0, (0, 0))
         .with_product(product as u8)
         .with_interpolation(interpolation as u8)
         .with_processing(processing.cache_hash());
 
     let render_time_ms = if !cache.is_valid(&cache_key) {
         let radials = render_sweep.radials();
+        let owned_radials: Vec<::nexrad::model::data::Radial> =
+            radials.iter().map(|r| (*r).clone()).collect();
+
+        let field = match ::nexrad::model::data::SweepField::from_radials(&owned_radials, product)
+        {
+            Some(f) => f,
+            None => {
+                log::error!("Failed to build SweepField from radials");
+                return None;
+            }
+        };
 
         let render_result = if processing.enabled {
-            // Processing path: build SweepField, apply pipeline, render via render_sweep
-            render_with_processing(&radials, product, interpolation, render_size, processing)
+            match apply_processing_pipeline(field, processing) {
+                Ok(processed) => render_sweep_field_to_image(&processed, product, interpolation),
+                Err(e) => Err(e),
+            }
         } else {
-            // Direct path: render radials without processing
-            render_radials_to_image(&radials, product, interpolation, render_size)
+            render_sweep_field_to_image(&field, product, interpolation)
         };
 
         match render_result {
@@ -219,30 +232,16 @@ fn render_dynamic_sweep(
     render_time_ms
 }
 
-/// Apply processing pipeline to radials and render via SweepField.
-fn render_with_processing(
-    radials: &[&::nexrad::model::data::Radial],
-    product: nexrad_render::Product,
-    interpolation: nexrad_render::Interpolation,
-    dimensions: (usize, usize),
+/// Apply processing pipeline (threshold, smoothing) to a SweepField.
+fn apply_processing_pipeline(
+    field: ::nexrad::model::data::SweepField,
     processing: crate::state::ProcessingConfig,
-) -> Result<crate::nexrad::RenderResult, String> {
-    use ::nexrad::model::data::SweepField;
+) -> Result<::nexrad::model::data::SweepField, String> {
     use nexrad_process::filter::{GaussianSmooth, MedianFilter, ThresholdFilter};
     use nexrad_process::SweepPipeline;
 
-    // Clone radials into owned Vec for SweepField construction
-    let owned_radials: Vec<::nexrad::model::data::Radial> =
-        radials.iter().map(|r| (*r).clone()).collect();
-
-    // Build SweepField from radials
-    let field = SweepField::from_radials(&owned_radials, product)
-        .ok_or_else(|| "Failed to build SweepField from radials".to_string())?;
-
-    // Build and apply processing pipeline
     let mut pipeline = SweepPipeline::new();
 
-    // Threshold filter
     if processing.threshold_min.is_some() || processing.threshold_max.is_some() {
         pipeline = pipeline.then(ThresholdFilter {
             min: processing.threshold_min,
@@ -250,11 +249,9 @@ fn render_with_processing(
         });
     }
 
-    // Smoothing
     match processing.smoothing {
         SmoothingMode::Median => {
             let kernel = processing.smoothing_strength as usize;
-            // Ensure odd kernel size
             let kernel = if kernel.is_multiple_of(2) {
                 kernel + 1
             } else {
@@ -276,13 +273,9 @@ fn render_with_processing(
         SmoothingMode::None => {}
     }
 
-    // Execute pipeline
-    let processed = pipeline
+    pipeline
         .execute(&field)
-        .map_err(|e| format!("Processing pipeline failed: {}", e))?;
-
-    // Render the processed field
-    render_sweep_field_to_image(&processed, product, interpolation, dimensions)
+        .map_err(|e| format!("Processing pipeline failed: {}", e))
 }
 
 /// Render data age timestamp markers at cardinal azimuth positions (N, E, S, W).
