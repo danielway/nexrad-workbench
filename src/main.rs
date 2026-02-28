@@ -121,6 +121,9 @@ pub struct WorkbenchApp {
     /// Monotonic instant of last URL push (for throttling to ~1/sec).
     last_url_push: web_time::Instant,
 
+    /// Last-saved user preferences snapshot (for change detection).
+    last_saved_preferences: state::UserPreferences,
+
     /// Transient state for the site selection modal.
     site_modal_state: ui::SiteModalState,
 }
@@ -302,6 +305,8 @@ impl WorkbenchApp {
             });
         }
 
+        let initial_prefs = state::UserPreferences::from_app_state(&state);
+
         Self {
             state,
             geo_layers,
@@ -319,6 +324,7 @@ impl WorkbenchApp {
             realtime_channel,
             partial_volume_results: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             last_url_push: web_time::Instant::now(),
+            last_saved_preferences: initial_prefs,
             site_modal_state: ui::SiteModalState::default(),
         }
     }
@@ -1110,6 +1116,13 @@ impl eframe::App for WorkbenchApp {
                     self.state.viz_state.center_lon,
                     &view,
                 );
+
+                // Save user preferences if changed (piggyback on URL throttle)
+                let current_prefs = state::UserPreferences::from_app_state(&self.state);
+                if current_prefs != self.last_saved_preferences {
+                    current_prefs.save();
+                    self.last_saved_preferences = current_prefs;
+                }
             }
         }
 

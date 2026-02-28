@@ -4,7 +4,7 @@
 //! with timeline bounds enforcement and zoom-based feature restrictions.
 
 /// Playback speed multiplier options.
-#[derive(Default, Clone, Copy, PartialEq)]
+#[derive(Default, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PlaybackSpeed {
     /// Real-time: 1 second of timeline = 1 second of real time
     Realtime,

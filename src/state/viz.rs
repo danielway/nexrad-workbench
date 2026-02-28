@@ -93,7 +93,7 @@ impl RadarProduct {
 /// Radar rendering mode per PRODUCT.md specification.
 ///
 /// Determines how radar data is selected and displayed on the canvas.
-#[derive(Default, Clone, Copy, PartialEq)]
+#[derive(Default, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RenderMode {
     /// Fixed elevation - shows complete sweep at a specific tilt.
     #[default]
@@ -129,7 +129,7 @@ impl RenderMode {
 // ============================================================================
 
 /// Available color palettes for rendering.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ColorPalette {
     #[default]
     Standard,
@@ -163,7 +163,7 @@ impl ColorPalette {
 // ============================================================================
 
 /// Smoothing algorithm selection.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum SmoothingMode {
     /// No smoothing applied
     #[default]
@@ -241,7 +241,7 @@ impl ProcessingConfig {
 // ============================================================================
 
 /// Available interpolation modes for radar rendering.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InterpolationMode {
     /// Nearest-neighbor sampling (fastest, produces blocky output)
     #[default]

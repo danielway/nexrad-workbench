@@ -10,6 +10,7 @@ mod layer;
 mod live_mode;
 #[allow(dead_code)]
 mod playback;
+mod preferences;
 pub mod radar_data;
 #[allow(dead_code)]
 mod settings;
@@ -22,6 +23,7 @@ pub mod vcp;
 mod viz;
 
 pub use layer::{GeoLayerVisibility, LayerState};
+pub use preferences::UserPreferences;
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use playback::{LoopMode, PlaybackSpeed, PlaybackState};
 pub use radar_data::RadarTimeline;
@@ -192,7 +194,7 @@ impl AppState {
         let theme_mode = theme::load_theme_mode();
         let is_dark = theme_mode.is_dark();
 
-        Self {
+        let mut state = Self {
             playback_state,
             radar_timeline,
             status_message: "Ready".to_string(),
@@ -205,6 +207,12 @@ impl AppState {
             // Request timeline refresh on startup to load from cache
             timeline_needs_refresh: true,
             ..Default::default()
-        }
+        };
+
+        // Apply persisted user preferences (speed, palette, layers, etc.)
+        let prefs = UserPreferences::load();
+        prefs.apply_to(&mut state);
+
+        state
     }
 }
