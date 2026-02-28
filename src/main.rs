@@ -17,7 +17,8 @@ mod ui;
 use eframe::egui;
 use file_ops::FilePickerChannel;
 // Use explicit crate path to avoid conflict with local nexrad module
-use ::nexrad::prelude::{load, Volume};
+use ::nexrad::load;
+use ::nexrad::model::data::Scan;
 use data::DataFacade;
 use state::radar_data::Sweep as TimelineSweep;
 use state::AppState;
@@ -127,7 +128,7 @@ pub struct WorkbenchApp {
 
     /// Shared results from partial volume decode tasks.
     /// Populated by async decode tasks, consumed by update loop.
-    partial_volume_results: std::rc::Rc<std::cell::RefCell<Vec<(i64, Volume)>>>,
+    partial_volume_results: std::rc::Rc<std::cell::RefCell<Vec<(i64, Scan)>>>,
 
     /// Monotonic instant of last URL push (for throttling to ~1/sec).
     last_url_push: web_time::Instant,
@@ -150,7 +151,7 @@ static COUNTIES_DBF: &[u8] =
 ///
 /// Each sweep's start/end times are derived from the first/last radial's
 /// collection timestamps, and elevation is taken from the first radial.
-fn extract_sweep_timing(volume: &Volume) -> Vec<TimelineSweep> {
+fn extract_sweep_timing(volume: &Scan) -> Vec<TimelineSweep> {
     volume
         .sweeps()
         .iter()
@@ -769,8 +770,7 @@ impl eframe::App for WorkbenchApp {
                                 .set_playback_position(most_recent_end);
 
                             // Center the timeline view on the data so it's visible
-                            let view_width_secs =
-                                1000.0 / self.state.playback_state.timeline_zoom;
+                            let view_width_secs = 1000.0 / self.state.playback_state.timeline_zoom;
                             self.state.playback_state.timeline_view_start =
                                 most_recent_end - view_width_secs / 2.0;
                         }

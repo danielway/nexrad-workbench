@@ -3,7 +3,7 @@
 //! Keeps 2-3 decoded volumes in memory for dynamic sweep rendering
 //! across scan boundaries.
 
-use ::nexrad::prelude::Volume;
+use ::nexrad::model::data::Scan;
 use std::collections::VecDeque;
 
 /// Default capacity for the volume ring buffer.
@@ -11,11 +11,11 @@ const DEFAULT_CAPACITY: usize = 3;
 
 /// Circular buffer keeping decoded volumes in memory.
 ///
-/// Volumes are stored with their timestamps and kept in chronological order.
+/// Scans are stored with their timestamps and kept in chronological order.
 /// When the buffer is full, the oldest volume is evicted on insert.
 pub struct VolumeRing {
-    /// (timestamp_ms, Volume) pairs ordered by timestamp
-    volumes: VecDeque<(i64, Volume)>,
+    /// (timestamp_ms, Scan) pairs ordered by timestamp
+    volumes: VecDeque<(i64, Scan)>,
     /// Maximum number of volumes to keep
     capacity: usize,
 }
@@ -44,7 +44,7 @@ impl VolumeRing {
     ///
     /// Maintains chronological order and evicts oldest if at capacity.
     /// If a volume with the same timestamp already exists, it is replaced.
-    pub fn insert(&mut self, timestamp_ms: i64, volume: Volume) {
+    pub fn insert(&mut self, timestamp_ms: i64, volume: Scan) {
         // Check for existing volume at this timestamp
         if let Some(pos) = self.volumes.iter().position(|(ts, _)| *ts == timestamp_ms) {
             self.volumes[pos] = (timestamp_ms, volume);
@@ -91,7 +91,7 @@ impl VolumeRing {
     /// updated as more data becomes available.
     ///
     /// Returns `true` if the volume was inserted or updated, `false` if kept existing.
-    pub fn insert_or_update(&mut self, timestamp_ms: i64, volume: Volume) -> bool {
+    pub fn insert_or_update(&mut self, timestamp_ms: i64, volume: Scan) -> bool {
         // Check for existing volume at this timestamp
         if let Some(pos) = self.volumes.iter().position(|(ts, _)| *ts == timestamp_ms) {
             let existing_sweeps = self.volumes[pos].1.sweeps().len();
@@ -124,7 +124,7 @@ impl VolumeRing {
 
     /// Get the volume at the specified timestamp, if it exists.
     #[allow(dead_code)]
-    pub fn get(&self, timestamp_ms: i64) -> Option<&Volume> {
+    pub fn get(&self, timestamp_ms: i64) -> Option<&Scan> {
         self.volumes
             .iter()
             .find(|(ts, _)| *ts == timestamp_ms)
@@ -133,7 +133,7 @@ impl VolumeRing {
 
     /// Get the most recent volume (highest timestamp).
     #[allow(dead_code)]
-    pub fn most_recent(&self) -> Option<&Volume> {
+    pub fn most_recent(&self) -> Option<&Scan> {
         self.volumes.back().map(|(_, v)| v)
     }
 
@@ -144,7 +144,7 @@ impl VolumeRing {
     }
 
     /// Returns an iterator over all volumes in chronological order (oldest first).
-    pub fn volumes(&self) -> impl Iterator<Item = (i64, &Volume)> {
+    pub fn volumes(&self) -> impl Iterator<Item = (i64, &Scan)> {
         self.volumes.iter().map(|(ts, v)| (*ts, v))
     }
 
@@ -174,6 +174,6 @@ impl VolumeRing {
 
 #[cfg(test)]
 mod tests {
-    // Note: These tests would require mock Volume objects
+    // Note: These tests would require mock Scan objects
     // For now, the implementation is tested through integration
 }

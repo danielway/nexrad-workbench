@@ -1,6 +1,7 @@
 //! Layer visibility state.
 
 /// State for toggling various overlay layers.
+#[derive(Default)]
 pub struct LayerState {
     /// Geographic layer visibility settings
     pub geo: GeoLayerVisibility,
@@ -17,14 +18,6 @@ pub struct GeoLayerVisibility {
     pub labels: bool,
     /// Show NEXRAD radar sites (other sites, not current)
     pub nexrad_sites: bool,
-}
-
-impl Default for LayerState {
-    fn default() -> Self {
-        Self {
-            geo: GeoLayerVisibility::default(),
-        }
-    }
 }
 
 impl Default for GeoLayerVisibility {

@@ -249,7 +249,12 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
                     } else {
                         ui_colors::label(state.is_dark)
                     };
-                    ui.label(RichText::new(mode_label).size(10.0).strong().color(mode_color));
+                    ui.label(
+                        RichText::new(mode_label)
+                            .size(10.0)
+                            .strong()
+                            .color(mode_color),
+                    );
 
                     // Show current product and elevation compactly
                     ui.separator();
@@ -1106,7 +1111,11 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
             .size(11.0)
             .color(ui_colors::value(state.is_dark)),
     );
-    ui.label(RichText::new("median:").size(11.0).color(ui_colors::label(state.is_dark)));
+    ui.label(
+        RichText::new("median:")
+            .size(11.0)
+            .color(ui_colors::label(state.is_dark)),
+    );
 
     ui.separator();
 
@@ -1119,7 +1128,11 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
             .size(11.0)
             .color(ui_colors::value(state.is_dark)),
     );
-    ui.label(RichText::new("cache:").size(11.0).color(ui_colors::label(state.is_dark)));
+    ui.label(
+        RichText::new("cache:")
+            .size(11.0)
+            .color(ui_colors::label(state.is_dark)),
+    );
 
     ui.separator();
 

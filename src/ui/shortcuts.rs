@@ -206,14 +206,11 @@ pub fn render_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
 
                     ui.horizontal(|ui| {
                         ui.heading("Keyboard Shortcuts");
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if ui.small_button("\u{2715}").clicked() {
-                                    state.shortcuts_help_visible = false;
-                                }
-                            },
-                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("\u{2715}").clicked() {
+                                state.shortcuts_help_visible = false;
+                            }
+                        });
                     });
 
                     ui.separator();
@@ -223,9 +220,7 @@ pub fn render_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
                         .spacing([20.0, 6.0])
                         .show(ui, |ui| {
                             for shortcut in SHORTCUTS {
-                                ui.label(
-                                    RichText::new(shortcut.key).monospace().strong(),
-                                );
+                                ui.label(RichText::new(shortcut.key).monospace().strong());
                                 ui.label(shortcut.description);
                                 ui.end_row();
                             }

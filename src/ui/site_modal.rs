@@ -34,8 +34,7 @@ pub fn render_site_modal(
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             let screen_rect = ctx.input(|i| i.viewport_rect());
-            let (response, painter) =
-                ui.allocate_painter(screen_rect.size(), egui::Sense::click());
+            let (response, painter) = ui.allocate_painter(screen_rect.size(), egui::Sense::click());
             painter.rect_filled(
                 screen_rect,
                 0.0,
@@ -120,11 +119,7 @@ pub fn render_site_modal(
                             RichText::new(label)
                         };
 
-                        if ui
-                            .selectable_label(is_current, text)
-                            .clicked()
-                            && !is_current
-                        {
+                        if ui.selectable_label(is_current, text).clicked() && !is_current {
                             state.viz_state.site_id = site.id.to_string();
                             state.viz_state.center_lat = site.lat;
                             state.viz_state.center_lon = site.lon;

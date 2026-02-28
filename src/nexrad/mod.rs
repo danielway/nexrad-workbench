@@ -24,6 +24,8 @@ pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use realtime::{RealtimeChannel, RealtimeResult};
 pub use render_sweep::RenderSweep;
 pub use texture_cache::{RadarCacheKey, RadarTextureCache};
-pub use texture_render::{radar_coverage_range_km, render_radials_to_image};
+pub use texture_render::{
+    radar_coverage_range_km, render_radials_to_image, render_sweep_field_to_image, RenderResult,
+};
 pub use types::{CachedScan, DownloadResult, ScanMetadata};
 pub use volume_ring::VolumeRing;

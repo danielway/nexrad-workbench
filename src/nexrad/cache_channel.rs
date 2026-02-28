@@ -276,7 +276,10 @@ impl ScrubLoadChannel {
 
                         if let Some(e) = fetch_error {
                             log::error!("Scrub load failed: {}", e);
-                            ScrubLoadResult::Error { timestamp, message: e }
+                            ScrubLoadResult::Error {
+                                timestamp,
+                                message: e,
+                            }
                         } else if records.is_empty() {
                             log::debug!("Scrub load: all records missing for {}", timestamp);
                             ScrubLoadResult::NotFound { timestamp }
@@ -296,7 +299,10 @@ impl ScrubLoadChannel {
                 }
                 Err(e) => {
                     log::error!("Scrub load failed: {}", e);
-                    ScrubLoadResult::Error { timestamp, message: e }
+                    ScrubLoadResult::Error {
+                        timestamp,
+                        message: e,
+                    }
                 }
             };
 

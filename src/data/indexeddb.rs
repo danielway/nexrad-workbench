@@ -654,8 +654,7 @@ impl IndexedDbRecordStore {
 
         let json =
             serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
-        let js =
-            js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
+        let js = js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
 
         store
             .put_with_key(&js, &JsValue::from_str(&storage_key))

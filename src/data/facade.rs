@@ -27,7 +27,8 @@
 
 use crate::data::keys::*;
 use crate::data::record_cache::*;
-use ::nexrad::prelude::{load, Volume};
+use ::nexrad::load;
+use ::nexrad::model::data::Scan;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -49,7 +50,7 @@ pub enum AccessPolicy {
 #[derive(Debug)]
 pub enum DecodeStatus {
     /// Successfully decoded a volume.
-    Success(Volume),
+    Success(Scan),
     /// Not enough records to decode (have, estimated need).
     Incomplete {
         records_have: u32,
@@ -232,7 +233,7 @@ impl DataFacade {
     ///
     /// Returns `Ok(volume)` on successful decode, or `Err(DecodeStatus)` if
     /// incomplete or failed.
-    pub async fn decode_available_records(&self, scan: &ScanKey) -> Result<Volume, DecodeStatus> {
+    pub async fn decode_available_records(&self, scan: &ScanKey) -> Result<Scan, DecodeStatus> {
         // List all available records for this scan
         let record_keys = match self.cache.list_records_for_scan(scan).await {
             Ok(keys) => keys,

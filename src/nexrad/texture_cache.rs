@@ -20,31 +20,23 @@ pub struct RadarCacheKey {
     pub elevation_index: usize,
     /// Rendered image dimensions
     pub dimensions: (usize, usize),
+    /// Product discriminant (index into Product enum variants)
+    pub product_index: u8,
+    /// Interpolation mode (0=Nearest, 1=Bilinear)
+    pub interpolation_mode: u8,
+    /// Processing config hash (0 = no processing)
+    pub processing_hash: u64,
 }
 
 impl RadarCacheKey {
     /// Create a cache key from a data ID string (for static rendering).
     ///
     /// This maintains backward compatibility with the original API.
-    #[allow(dead_code)]
-    pub fn new(data_id: String, sweep_index: usize, dimensions: (usize, usize)) -> Self {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-
-        let mut hasher = DefaultHasher::new();
-        data_id.hash(&mut hasher);
-        let content_signature = hasher.finish();
-
-        Self {
-            content_signature,
-            elevation_index: sweep_index,
-            dimensions,
-        }
-    }
-
     /// Create a cache key for a dynamic sweep render.
     ///
     /// Uses a pre-computed content signature from RenderSweep::cache_signature().
+    /// Includes product and interpolation mode so the texture is re-rendered
+    /// when these settings change.
     pub fn for_dynamic_sweep(
         content_signature: u64,
         elevation_index: usize,
@@ -54,7 +46,28 @@ impl RadarCacheKey {
             content_signature,
             elevation_index,
             dimensions,
+            product_index: 0,
+            interpolation_mode: 0,
+            processing_hash: 0,
         }
+    }
+
+    /// Set the product index on this cache key (builder pattern).
+    pub fn with_product(mut self, product_index: u8) -> Self {
+        self.product_index = product_index;
+        self
+    }
+
+    /// Set the interpolation mode on this cache key (builder pattern).
+    pub fn with_interpolation(mut self, interpolation_mode: u8) -> Self {
+        self.interpolation_mode = interpolation_mode;
+        self
+    }
+
+    /// Set the processing config hash on this cache key (builder pattern).
+    pub fn with_processing(mut self, processing_hash: u64) -> Self {
+        self.processing_hash = processing_hash;
+        self
     }
 }
 

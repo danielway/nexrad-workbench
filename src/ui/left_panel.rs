@@ -314,7 +314,11 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
     let radius = (rect.width().min(rect.height()) / 2.0) - 12.0;
 
     // Background
-    let bg = if dark { Color32::from_rgb(30, 30, 40) } else { Color32::from_rgb(225, 225, 230) };
+    let bg = if dark {
+        Color32::from_rgb(30, 30, 40)
+    } else {
+        Color32::from_rgb(225, 225, 230)
+    };
     painter.rect_filled(rect, 4.0, bg);
 
     // In live mode, draw shaded "future" region (expected upcoming data)
@@ -361,13 +365,21 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
     }
 
     // Concentric range rings
-    let ring_color = if dark { Color32::from_rgb(60, 60, 80) } else { Color32::from_rgb(170, 170, 190) };
+    let ring_color = if dark {
+        Color32::from_rgb(60, 60, 80)
+    } else {
+        Color32::from_rgb(170, 170, 190)
+    };
     for factor in [0.33, 0.66, 1.0] {
         painter.circle_stroke(center, radius * factor, Stroke::new(1.0, ring_color));
     }
 
     // Cardinal direction labels (inside the radar circle for cleaner look)
-    let label_color = if dark { Color32::from_rgb(100, 100, 120) } else { Color32::from_rgb(80, 80, 100) };
+    let label_color = if dark {
+        Color32::from_rgb(100, 100, 120)
+    } else {
+        Color32::from_rgb(80, 80, 100)
+    };
     let label_offset = radius - 6.0;
     let font_id = egui::FontId::proportional(8.0);
 
@@ -429,12 +441,20 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     let dark = ui.visuals().dark_mode;
 
     // Background
-    let bg = if dark { Color32::from_rgb(30, 30, 40) } else { Color32::from_rgb(225, 225, 230) };
+    let bg = if dark {
+        Color32::from_rgb(30, 30, 40)
+    } else {
+        Color32::from_rgb(225, 225, 230)
+    };
     painter.rect_filled(rect, 4.0, bg);
 
     // Ground line at bottom
     let ground_y = rect.bottom() - 8.0;
-    let ground_color = if dark { Color32::from_rgb(80, 60, 40) } else { Color32::from_rgb(140, 110, 80) };
+    let ground_color = if dark {
+        Color32::from_rgb(80, 60, 40)
+    } else {
+        Color32::from_rgb(140, 110, 80)
+    };
     painter.line_segment(
         [
             Pos2::new(rect.left() + 5.0, ground_y),
@@ -449,7 +469,11 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     let tower_top = tower_bottom - 20.0;
 
     // Tower base
-    let tower_color = if dark { Color32::from_rgb(150, 150, 150) } else { Color32::from_rgb(100, 100, 100) };
+    let tower_color = if dark {
+        Color32::from_rgb(150, 150, 150)
+    } else {
+        Color32::from_rgb(100, 100, 100)
+    };
     painter.line_segment(
         [
             Pos2::new(tower_x, tower_bottom),
@@ -459,18 +483,26 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
     );
 
     // Dish (small circle at top of tower)
-    let dish_color = if dark { Color32::from_rgb(200, 200, 200) } else { Color32::from_rgb(80, 80, 80) };
-    painter.circle_filled(
-        Pos2::new(tower_x, tower_top),
-        4.0,
-        dish_color,
-    );
+    let dish_color = if dark {
+        Color32::from_rgb(200, 200, 200)
+    } else {
+        Color32::from_rgb(80, 80, 80)
+    };
+    painter.circle_filled(Pos2::new(tower_x, tower_top), 4.0, dish_color);
 
     // Reference angle lines (0°, 10°, 20°)
     let beam_origin = Pos2::new(tower_x, tower_top);
     let beam_length = rect.width() - 30.0;
-    let ref_line_color = if dark { Color32::from_rgb(60, 60, 80) } else { Color32::from_rgb(170, 170, 190) };
-    let label_color = if dark { Color32::from_rgb(100, 100, 120) } else { Color32::from_rgb(80, 80, 100) };
+    let ref_line_color = if dark {
+        Color32::from_rgb(60, 60, 80)
+    } else {
+        Color32::from_rgb(170, 170, 190)
+    };
+    let label_color = if dark {
+        Color32::from_rgb(100, 100, 120)
+    } else {
+        Color32::from_rgb(80, 80, 100)
+    };
     let font_id = egui::FontId::proportional(8.0);
 
     for angle in [0.0_f32, 10.0, 20.0] {

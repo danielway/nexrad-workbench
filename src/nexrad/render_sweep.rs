@@ -4,7 +4,7 @@
 //! position based on playback timestamp and target elevation.
 
 use super::VolumeRing;
-use ::nexrad::prelude::{Radial, Volume};
+use ::nexrad::model::data::{Radial, Scan};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -95,7 +95,7 @@ impl<'a> RenderSweep<'a> {
     }
 
     /// Consider all radials in a volume for inclusion in the sweep.
-    pub fn consider_volume(&mut self, volume: &'a Volume) {
+    pub fn consider_volume(&mut self, volume: &'a Scan) {
         for sweep in volume.sweeps() {
             // Check if this sweep's elevation matches our target
             let sweep_elevation = sweep

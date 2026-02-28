@@ -442,8 +442,8 @@ async fn download_nexrad_data(
     let file_name = file_meta.name().to_string();
 
     // Parse the actual timestamp from the filename (e.g., KDMX20260228_034158_V06)
-    let timestamp = ArchiveFileMeta::parse_timestamp_from_name(&file_name, &date)
-        .unwrap_or_else(|| {
+    let timestamp =
+        ArchiveFileMeta::parse_timestamp_from_name(&file_name, &date).unwrap_or_else(|| {
             log::warn!("Could not parse timestamp from filename: {}", file_name);
             date.and_hms_opt(0, 0, 0)
                 .map(|dt| dt.and_utc().timestamp())
