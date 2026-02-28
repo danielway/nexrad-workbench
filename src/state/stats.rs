@@ -29,6 +29,10 @@ pub struct SessionStats {
     /// Running average of radar render time in milliseconds.
     /// Uses exponential moving average for smooth updates.
     pub avg_render_time_ms: Option<f64>,
+
+    /// Running average of frames per second.
+    /// Uses exponential moving average for smooth updates.
+    pub avg_fps: Option<f64>,
 }
 
 impl SessionStats {
@@ -49,6 +53,7 @@ impl SessionStats {
             median_decompression_time_ms: Some(8.3),
             median_decode_time_ms: Some(23.7),
             avg_render_time_ms: Some(45.0),
+            avg_fps: Some(60.0),
         }
     }
 
@@ -57,6 +62,19 @@ impl SessionStats {
         self.session_request_count = network_stats.total_count();
         self.session_transferred_bytes = network_stats.bytes_transferred();
         self.active_request_count = network_stats.active_count();
+    }
+
+    /// Record a frame time sample from `stable_dt`, updating the FPS average.
+    /// Uses exponential moving average with alpha=0.05 for a smooth readout.
+    pub fn record_frame_time(&mut self, dt: f32) {
+        if dt > 0.0 {
+            let fps = 1.0 / dt as f64;
+            const ALPHA: f64 = 0.05;
+            self.avg_fps = Some(match self.avg_fps {
+                Some(avg) => avg * (1.0 - ALPHA) + fps * ALPHA,
+                None => fps,
+            });
+        }
     }
 
     /// Record a render time sample, updating the running average.

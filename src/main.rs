@@ -685,6 +685,10 @@ impl WorkbenchApp {
 
 impl eframe::App for WorkbenchApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Record frame time for FPS meter
+        let dt = ctx.input(|i| i.stable_dt);
+        self.state.session_stats.record_frame_time(dt);
+
         // Resolve theme and apply egui visuals
         self.state.is_dark = self.state.theme_mode.is_dark();
         if self.state.is_dark {

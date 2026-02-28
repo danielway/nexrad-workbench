@@ -1090,7 +1090,17 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
 fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     let stats = &state.session_stats;
 
-    // Latency stats (rightmost)
+    // FPS (rightmost)
+    if let Some(fps) = stats.avg_fps {
+        ui.label(
+            RichText::new(format!("{:.0} fps", fps))
+                .size(11.0)
+                .color(ui_colors::value(state.is_dark)),
+        );
+        ui.separator();
+    }
+
+    // Latency stats
     ui.label(
         RichText::new(stats.format_latency_stats())
             .size(11.0)
