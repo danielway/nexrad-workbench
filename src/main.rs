@@ -3,28 +3,22 @@
 //! NEXRAD Workbench - A web-based radar data visualization tool.
 //!
 //! This application provides an interface for loading, viewing, and analyzing
-//! NEXRAD weather radar data. It supports local file upload, AWS archive browsing,
-//! and realtime streaming (when implemented).
+//! NEXRAD weather radar data. It supports AWS archive browsing and realtime
+//! streaming (when implemented).
 
 mod data;
-mod file_ops;
 mod geo;
 mod nexrad;
 mod state;
-mod storage;
 mod ui;
 
 use eframe::egui;
-use file_ops::FilePickerChannel;
 // Use explicit crate path to avoid conflict with local nexrad module
 use ::nexrad::load;
 use ::nexrad::model::data::Scan;
 use data::DataFacade;
 use state::radar_data::Sweep as TimelineSweep;
 use state::AppState;
-use storage::{CachedFile, StorageConfig};
-
-use storage::IndexedDbStore;
 
 fn main() {}
 
@@ -79,12 +73,6 @@ pub async fn start() {
 pub struct WorkbenchApp {
     /// Application state containing all sub-states
     state: AppState,
-
-    /// Channel for async file picker operations
-    file_picker: FilePickerChannel,
-
-    /// File cache storage (IndexedDB)
-    file_cache: IndexedDbStore,
 
     /// Geographic layer data for map overlays
     geo_layers: geo::GeoLayerSet,
@@ -316,8 +304,6 @@ impl WorkbenchApp {
 
         Self {
             state,
-            file_picker: FilePickerChannel::new(),
-            file_cache: IndexedDbStore::new(StorageConfig::new("nexrad-workbench", "file-cache")),
             geo_layers,
             data_facade,
             download_channel,
@@ -803,38 +789,6 @@ impl eframe::App for WorkbenchApp {
             }
         }
 
-        // Check for completed file pick operations
-        if let Some(result) = self.file_picker.try_recv() {
-            self.state.upload_state.loading = false;
-            match result {
-                Some(file_result) => {
-                    // Cache the file to IndexedDB
-                    {
-                        use storage::KeyValueStore;
-                        let cached =
-                            CachedFile::new(file_result.file_name.clone(), &file_result.file_data);
-                        let cache = self.file_cache.clone();
-                        let file_name = file_result.file_name.clone();
-                        wasm_bindgen_futures::spawn_local(async move {
-                            match cache.put(&file_name, &cached).await {
-                                Ok(()) => log::info!("Cached file: {}", file_name),
-                                Err(e) => log::error!("Failed to cache file: {}", e),
-                            }
-                        });
-                    }
-
-                    self.state.upload_state.file_name = Some(file_result.file_name.clone());
-                    self.state.upload_state.file_size = Some(file_result.file_size);
-                    self.state.upload_state.file_data = Some(file_result.file_data);
-                    self.state.status_message = format!("Loaded file: {}", file_result.file_name);
-                }
-                None => {
-                    // User cancelled the file dialog
-                    self.state.status_message = "File selection cancelled".to_string();
-                }
-            }
-        }
-
         // Handle eviction check request (after storage operations)
         if self.state.check_eviction_requested {
             self.state.check_eviction_requested = false;
@@ -1166,7 +1120,6 @@ impl eframe::App for WorkbenchApp {
         ui::render_left_panel(
             ctx,
             &mut self.state,
-            &self.file_picker,
             &self.download_channel,
             &self.data_facade,
             &self.volume_ring,

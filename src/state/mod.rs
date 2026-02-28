@@ -6,7 +6,6 @@
 
 use crate::data::keys::ScanKey;
 
-mod data_source;
 mod layer;
 mod live_mode;
 #[allow(dead_code)]
@@ -22,7 +21,6 @@ pub mod vcp;
 #[allow(dead_code)]
 mod viz;
 
-pub use data_source::UploadState;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use playback::{LoopMode, PlaybackSpeed, PlaybackState};
@@ -39,9 +37,6 @@ pub use viz::{
 /// Root application state containing all sub-states.
 #[derive(Default)]
 pub struct AppState {
-    /// State for file upload
-    pub upload_state: UploadState,
-
     /// Playback controls state
     pub playback_state: PlaybackState,
 
