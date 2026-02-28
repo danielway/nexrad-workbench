@@ -14,7 +14,7 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                     RichText::new("NEXRAD Workbench")
                         .strong()
                         .size(16.0)
-                        .color(Color32::WHITE),
+                        .color(ui.visuals().strong_text_color()),
                 );
 
                 ui.separator();
