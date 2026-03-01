@@ -72,6 +72,19 @@ impl RadarProduct {
         ]
     }
 
+    /// String identifier used by the worker render protocol.
+    pub fn to_worker_string(&self) -> &'static str {
+        match self {
+            RadarProduct::Reflectivity => "reflectivity",
+            RadarProduct::Velocity => "velocity",
+            RadarProduct::SpectrumWidth => "spectrum_width",
+            RadarProduct::DifferentialReflectivity => "differential_reflectivity",
+            RadarProduct::CorrelationCoefficient => "correlation_coefficient",
+            RadarProduct::DifferentialPhase => "differential_phase",
+            RadarProduct::ClutterFilterPower => "reflectivity", // fallback
+        }
+    }
+
     /// Convert to the nexrad-render Product type.
     pub fn to_render_product(self) -> Product {
         match self {
@@ -260,6 +273,14 @@ impl InterpolationMode {
 
     pub fn all() -> &'static [InterpolationMode] {
         &[InterpolationMode::Nearest, InterpolationMode::Bilinear]
+    }
+
+    /// String identifier used by the worker render protocol.
+    pub fn to_worker_string(&self) -> &'static str {
+        match self {
+            InterpolationMode::Nearest => "nearest",
+            InterpolationMode::Bilinear => "bilinear",
+        }
     }
 
     /// Convert to the nexrad-render Interpolation type.

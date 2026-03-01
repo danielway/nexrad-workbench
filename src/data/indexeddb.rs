@@ -350,6 +350,67 @@ impl IndexedDbRecordStore {
         Ok(keys)
     }
 
+    /// Lists all record index entries (full metadata) for a scan.
+    ///
+    /// Unlike `list_records_for_scan` which returns only keys, this returns
+    /// the full `RecordIndexEntry` with elevation metadata for filtering.
+    pub async fn list_record_entries_for_scan(
+        &self,
+        scan: &ScanKey,
+    ) -> Result<Vec<RecordIndexEntry>, String> {
+        let t = web_time::Instant::now();
+        self.ensure_open().await?;
+        let db = self.get_db()?;
+
+        let tx = db
+            .transaction_with_str_and_mode(STORE_RECORD_INDEX, IdbTransactionMode::Readonly)
+            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
+
+        let store = tx
+            .object_store(STORE_RECORD_INDEX)
+            .map_err(|e| format!("Failed to get store: {:?}", e))?;
+
+        let prefix = format!("{}|{}|", scan.site.0, scan.scan_start.0);
+
+        // Get all keys first, then fetch matching entries
+        let request = store
+            .get_all_keys()
+            .map_err(|e| format!("Failed to get keys: {:?}", e))?;
+
+        let result = wait_for_request(&request).await?;
+        let array = Array::from(&result);
+
+        let mut entries = Vec::new();
+        for i in 0..array.length() {
+            if let Some(key_str) = array.get(i).as_string() {
+                if key_str.starts_with(&prefix) {
+                    // Fetch the full entry
+                    let get_request = store
+                        .get(&wasm_bindgen::JsValue::from_str(&key_str))
+                        .map_err(|e| format!("Failed to get entry: {:?}", e))?;
+
+                    let value = wait_for_request(&get_request).await?;
+                    if !value.is_undefined() && !value.is_null() {
+                        if let Some(entry) = deserialize_js_value::<RecordIndexEntry>(&value) {
+                            entries.push(entry);
+                        }
+                    }
+                }
+            }
+        }
+
+        entries.sort_by_key(|e| e.key.record_id);
+
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        log::debug!(
+            "IDB list_record_entries_for_scan: {:.1}ms ({} entries)",
+            ms,
+            entries.len()
+        );
+
+        Ok(entries)
+    }
+
     // ========================================================================
     // Time-based queries
     // ========================================================================
@@ -852,14 +913,21 @@ impl IndexedDbRecordStore {
 // Helper functions
 // ============================================================================
 
+/// Gets the IdbFactory from the current global scope (works in both Window and Worker).
+fn get_idb_factory() -> Result<web_sys::IdbFactory, String> {
+    let global = js_sys::global();
+    let idb = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("indexedDB"))
+        .map_err(|e| format!("Failed to access indexedDB: {:?}", e))?;
+    if idb.is_undefined() || idb.is_null() {
+        return Err("IndexedDB not available in this context".to_string());
+    }
+    idb.dyn_into::<web_sys::IdbFactory>()
+        .map_err(|_| "indexedDB is not an IdbFactory".to_string())
+}
+
 /// Opens the database, creating schema as needed.
 async fn open_database() -> Result<IdbDatabase, String> {
-    let window = web_sys::window().ok_or_else(|| "No window object".to_string())?;
-
-    let idb_factory = window
-        .indexed_db()
-        .map_err(|e| format!("IndexedDB error: {:?}", e))?
-        .ok_or_else(|| "IndexedDB not available".to_string())?;
+    let idb_factory = get_idb_factory()?;
 
     let open_request = idb_factory
         .open_with_u32(DATABASE_NAME, DATABASE_VERSION)

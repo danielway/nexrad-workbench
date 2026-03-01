@@ -186,7 +186,11 @@ impl Default for CacheLoadChannel {
 }
 
 /// Result of loading a single scan from cache (for scrubbing).
+///
+/// Note: In the worker architecture, scrubbing uses `worker.render()` directly.
+/// This is kept for potential fallback use.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ScrubLoadResult {
     /// Successfully loaded scan data
     Success { timestamp: i64, data: Vec<u8> },
@@ -198,8 +202,9 @@ pub enum ScrubLoadResult {
 
 /// Channel for loading individual scans from cache on-demand (for scrubbing).
 ///
-/// This is separate from CacheLoadChannel to allow concurrent scrubbing
-/// while timeline metadata is being loaded.
+/// Note: In the worker architecture, scrubbing uses `worker.render()` directly
+/// so this channel is mostly unused. Kept for fallback.
+#[allow(dead_code)]
 pub struct ScrubLoadChannel {
     /// Receiver for completed scan loads
     receiver: Rc<RefCell<Option<ScrubLoadResult>>>,
@@ -209,6 +214,7 @@ pub struct ScrubLoadChannel {
     pending_timestamp: Rc<RefCell<Option<i64>>>,
 }
 
+#[allow(dead_code)]
 impl ScrubLoadChannel {
     /// Creates a new scrub load channel.
     pub fn new() -> Self {

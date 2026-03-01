@@ -52,6 +52,8 @@ pub struct Sweep {
     pub end_time: f64,
     /// Elevation angle in degrees
     pub elevation: f32,
+    /// Elevation number (index into the VCP elevation list)
+    pub elevation_number: u8,
     /// Individual radials in this sweep
     pub radials: Vec<Radial>,
 }
@@ -259,7 +261,7 @@ impl RadarTimeline {
             let mut sweeps = Vec::new();
             let mut sweep_time = scan_start;
 
-            for &elevation in elevations {
+            for (elev_idx, &elevation) in elevations.iter().enumerate() {
                 let sweep_start = sweep_time;
                 // Sweep duration varies slightly by elevation (higher = faster)
                 let sweep_duration = 10.0 + (15.0 - elevation as f64).max(0.0) * 0.5;
@@ -283,6 +285,7 @@ impl RadarTimeline {
                     start_time: sweep_start,
                     end_time: sweep_end,
                     elevation,
+                    elevation_number: (elev_idx + 1) as u8,
                     radials,
                 });
 
@@ -341,6 +344,7 @@ impl RadarTimeline {
                         start_time: sm.start,
                         end_time: sm.end,
                         elevation: sm.elevation,
+                        elevation_number: sm.elevation_number,
                         radials: Vec::new(),
                     })
                     .collect();

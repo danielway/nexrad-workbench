@@ -21,6 +21,7 @@ type RequestId = u64;
 
 /// Context describing what triggered a decode request, so the result handler
 /// in the main update loop knows which state updates to apply.
+#[allow(dead_code)]
 pub enum DecodeContext {
     /// Decode triggered by archive download completion.
     Download {
@@ -66,19 +67,93 @@ pub enum DecodeOutcome {
     Error(DecodeErrorResult),
 }
 
-/// Manages a dedicated Web Worker for NEXRAD decode operations.
+/// Context for an ingest request.
+pub struct IngestContext {
+    pub timestamp_secs: i64,
+    #[allow(dead_code)]
+    pub file_name: String,
+    pub fetch_latency_ms: f64,
+}
+
+/// Successful ingest result from the worker.
+pub struct IngestResult {
+    pub context: IngestContext,
+    /// Scan storage key (e.g., "KDMX|1700000000000")
+    pub scan_key: String,
+    /// Number of records stored in IDB.
+    pub records_stored: u32,
+    /// Unique elevation numbers found across all records.
+    pub elevation_numbers: Vec<u8>,
+    /// Total time in worker (ms).
+    pub total_ms: f64,
+}
+
+/// Context for a render request.
+pub struct RenderContext {
+    /// Scan storage key.
+    #[allow(dead_code)]
+    pub scan_key: String,
+    /// Elevation number being rendered.
+    pub elevation_number: u8,
+}
+
+/// Successful render result from the worker.
+pub struct RenderResult {
+    pub context: RenderContext,
+    /// RGBA pixel data.
+    pub image_data: Vec<u8>,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+    /// Total render time (ms).
+    pub render_time_ms: f64,
+    /// Number of radials rendered.
+    pub radial_count: u32,
+    /// Time spent fetching from IDB (ms).
+    pub fetch_ms: f64,
+}
+
+/// Outcome of any worker operation.
+pub enum WorkerOutcome {
+    /// Legacy full-scan decode result.
+    Decode(DecodeOutcome),
+    /// Archive ingest completed.
+    Ingested(IngestResult),
+    /// Render completed.
+    Rendered(RenderResult),
+    /// Error from any operation.
+    WorkerError { id: u64, message: String },
+}
+
+/// Manages a dedicated Web Worker for NEXRAD data operations.
 ///
 /// Created once at app startup and kept alive for the entire session.
-/// Requests are submitted via `decode()` and results polled via `try_recv()`
-/// each frame, following the same pattern as other channels in the app.
+/// Supports three command types:
+/// - `decode`: Legacy full-scan decode (kept for backward compat)
+/// - `ingest`: Split, probe, and store archive records in IDB
+/// - `render`: Selectively decode + render a single elevation
+///
+/// Results are polled via `try_recv()` each frame.
 pub struct DecodeWorker {
     worker: Worker,
     next_id: u64,
     ready: Rc<RefCell<bool>>,
-    pending: Rc<RefCell<HashMap<RequestId, DecodeContext>>>,
-    results: Rc<RefCell<Vec<DecodeOutcome>>>,
+    #[allow(dead_code)]
+    pending_decode: Rc<RefCell<HashMap<RequestId, DecodeContext>>>,
+    pending_ingest: Rc<RefCell<HashMap<RequestId, IngestContext>>>,
+    pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    results: Rc<RefCell<Vec<WorkerOutcome>>>,
     /// Requests queued before the worker was ready.
-    queue: Vec<(RequestId, Vec<u8>)>,
+    queue: Vec<QueuedRequest>,
+}
+
+/// A request queued before the worker was ready.
+enum QueuedRequest {
+    #[allow(dead_code)]
+    Decode(RequestId, Vec<u8>),
+    Ingest(RequestId, Vec<u8>, String, i64, String),
+    Render(RequestId, String, u8, String, String),
 }
 
 impl DecodeWorker {
@@ -108,14 +183,20 @@ impl DecodeWorker {
             .map_err(|e| format!("Failed to create Worker: {:?}", e))?;
 
         let ready = Rc::new(RefCell::new(false));
-        let pending: Rc<RefCell<HashMap<RequestId, DecodeContext>>> =
+        let pending_decode: Rc<RefCell<HashMap<RequestId, DecodeContext>>> =
             Rc::new(RefCell::new(HashMap::new()));
-        let results: Rc<RefCell<Vec<DecodeOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+        let pending_ingest: Rc<RefCell<HashMap<RequestId, IngestContext>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+        let pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+        let results: Rc<RefCell<Vec<WorkerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
 
         // Set up the onmessage handler
         {
             let ready_c = ready.clone();
-            let pending_c = pending.clone();
+            let pending_decode_c = pending_decode.clone();
+            let pending_ingest_c = pending_ingest.clone();
+            let pending_render_c = pending_render.clone();
             let results_c = results.clone();
             let ctx_c = ctx.clone();
 
@@ -131,11 +212,19 @@ impl DecodeWorker {
                         log::info!("Decode worker ready");
                     }
                     Some("decoded") => {
-                        handle_decoded_message(&data, &pending_c, &results_c);
+                        handle_decoded_message(&data, &pending_decode_c, &results_c);
+                        ctx_c.request_repaint();
+                    }
+                    Some("ingested") => {
+                        handle_ingested_message(&data, &pending_ingest_c, &results_c);
+                        ctx_c.request_repaint();
+                    }
+                    Some("rendered") => {
+                        handle_rendered_message(&data, &pending_render_c, &results_c);
                         ctx_c.request_repaint();
                     }
                     Some("error") => {
-                        handle_error_message(&data, &pending_c, &results_c);
+                        handle_error_message(&data, &pending_decode_c, &results_c);
                         ctx_c.request_repaint();
                     }
                     other => {
@@ -179,44 +268,132 @@ impl DecodeWorker {
             worker,
             next_id: 1,
             ready,
-            pending,
+            pending_decode,
+            pending_ingest,
+            pending_render,
             results,
             queue: Vec::new(),
         })
     }
 
-    /// Submit raw NEXRAD archive bytes for decoding in the worker.
-    ///
-    /// The data is transferred (zero-copy) to the worker. If the worker is not
-    /// yet ready, the request is queued and flushed automatically.
-    pub fn decode(&mut self, data: Vec<u8>, context: DecodeContext) {
+    fn next_request_id(&mut self) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
+        id
+    }
 
-        self.pending.borrow_mut().insert(id, context);
+    /// Submit raw NEXRAD archive bytes for full-scan decoding (legacy path).
+    #[allow(dead_code)]
+    pub fn decode(&mut self, data: Vec<u8>, context: DecodeContext) {
+        let id = self.next_request_id();
+        self.pending_decode.borrow_mut().insert(id, context);
 
         if *self.ready.borrow() {
             send_decode_request(&self.worker, id, &data);
         } else {
-            log::debug!("Worker not ready, queuing decode request {}", id);
-            self.queue.push((id, data));
+            self.queue.push(QueuedRequest::Decode(id, data));
+        }
+    }
+
+    /// Submit an archive for ingestion: split, probe elevations, store in IDB.
+    pub fn ingest(
+        &mut self,
+        data: Vec<u8>,
+        site_id: String,
+        timestamp_secs: i64,
+        file_name: String,
+        fetch_latency_ms: f64,
+    ) {
+        let id = self.next_request_id();
+        self.pending_ingest.borrow_mut().insert(
+            id,
+            IngestContext {
+                timestamp_secs,
+                file_name: file_name.clone(),
+                fetch_latency_ms,
+            },
+        );
+
+        if *self.ready.borrow() {
+            send_ingest_request(&self.worker, id, &data, &site_id, timestamp_secs, &file_name);
+        } else {
+            self.queue.push(QueuedRequest::Ingest(
+                id,
+                data,
+                site_id,
+                timestamp_secs,
+                file_name,
+            ));
+        }
+    }
+
+    /// Submit a render request: fetch records from IDB, decode target elevation, render.
+    pub fn render(
+        &mut self,
+        scan_key: String,
+        elevation_number: u8,
+        product: String,
+        interpolation: String,
+    ) {
+        let id = self.next_request_id();
+        self.pending_render.borrow_mut().insert(
+            id,
+            RenderContext {
+                scan_key: scan_key.clone(),
+                elevation_number,
+            },
+        );
+
+        if *self.ready.borrow() {
+            send_render_request(
+                &self.worker,
+                id,
+                &scan_key,
+                elevation_number,
+                &product,
+                &interpolation,
+            );
+        } else {
+            self.queue.push(QueuedRequest::Render(
+                id,
+                scan_key,
+                elevation_number,
+                product,
+                interpolation,
+            ));
         }
     }
 
     /// Flush any queued requests if the worker has become ready.
-    /// Call this each frame before polling results.
     pub fn flush_queue(&mut self) {
         if *self.ready.borrow() && !self.queue.is_empty() {
             let queued: Vec<_> = self.queue.drain(..).collect();
-            log::info!("Flushing {} queued decode requests", queued.len());
-            for (id, data) in queued {
-                send_decode_request(&self.worker, id, &data);
+            log::info!("Flushing {} queued worker requests", queued.len());
+            for request in queued {
+                match request {
+                    QueuedRequest::Decode(id, data) => {
+                        send_decode_request(&self.worker, id, &data);
+                    }
+                    QueuedRequest::Ingest(id, data, site_id, ts, file_name) => {
+                        send_ingest_request(&self.worker, id, &data, &site_id, ts, &file_name);
+                    }
+                    QueuedRequest::Render(id, scan_key, elev, product, interp) => {
+                        send_render_request(
+                            &self.worker,
+                            id,
+                            &scan_key,
+                            elev,
+                            &product,
+                            &interp,
+                        );
+                    }
+                }
             }
         }
     }
 
-    /// Poll for completed decode results. Call this each frame in the update loop.
-    pub fn try_recv(&mut self) -> Vec<DecodeOutcome> {
+    /// Poll for completed worker results. Call this each frame in the update loop.
+    pub fn try_recv(&mut self) -> Vec<WorkerOutcome> {
         self.flush_queue();
         self.results.borrow_mut().drain(..).collect()
     }
@@ -228,11 +405,11 @@ impl DecodeWorker {
     }
 }
 
-/// Handle a "decoded" message from the worker.
+/// Handle a "decoded" message from the worker (legacy full-scan decode).
 fn handle_decoded_message(
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, DecodeContext>>>,
-    results: &Rc<RefCell<Vec<DecodeOutcome>>>,
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
     let id = js_sys::Reflect::get(data, &"id".into())
         .ok()
@@ -256,10 +433,12 @@ fn handle_decoded_message(
     let scan_buffer = match js_sys::Reflect::get(data, &"data".into()) {
         Ok(val) => val,
         Err(_) => {
-            results.borrow_mut().push(DecodeOutcome::Error(DecodeErrorResult {
-                context,
-                message: "Missing data field in decoded message".to_string(),
-            }));
+            results.borrow_mut().push(WorkerOutcome::Decode(
+                DecodeOutcome::Error(DecodeErrorResult {
+                    context,
+                    message: "Missing data field in decoded message".to_string(),
+                }),
+            ));
             return;
         }
     };
@@ -277,32 +456,183 @@ fn handle_decoded_message(
                 deserialize_ms as u32,
                 scan.sweeps().len()
             );
-            results
-                .borrow_mut()
-                .push(DecodeOutcome::Success(DecodeResult {
+            results.borrow_mut().push(WorkerOutcome::Decode(
+                DecodeOutcome::Success(DecodeResult {
                     context,
                     scan,
                     worker_decode_ms,
                     deserialize_ms,
-                }));
+                }),
+            ));
         }
         Err(e) => {
             log::error!("Failed to deserialize Scan from worker: {}", e);
-            results
-                .borrow_mut()
-                .push(DecodeOutcome::Error(DecodeErrorResult {
+            results.borrow_mut().push(WorkerOutcome::Decode(
+                DecodeOutcome::Error(DecodeErrorResult {
                     context,
                     message: format!("Deserialization failed: {}", e),
-                }));
+                }),
+            ));
         }
     }
+}
+
+/// Handle an "ingested" message from the worker.
+fn handle_ingested_message(
+    data: &JsValue,
+    pending: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
+) {
+    let id = js_sys::Reflect::get(data, &"id".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u64;
+
+    let context = match pending.borrow_mut().remove(&id) {
+        Some(ctx) => ctx,
+        None => {
+            log::warn!("Received ingested message for unknown request {}", id);
+            return;
+        }
+    };
+
+    let result_obj = js_sys::Reflect::get(data, &"result".into()).unwrap_or(JsValue::NULL);
+
+    let scan_key = js_sys::Reflect::get(&result_obj, &"scanKey".into())
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+
+    let records_stored = js_sys::Reflect::get(&result_obj, &"recordsStored".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
+
+    let total_ms = js_sys::Reflect::get(&result_obj, &"totalMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    // Extract unique elevation numbers from the elevationMap
+    let mut elevation_numbers: Vec<u8> = Vec::new();
+    if let Ok(elev_map) = js_sys::Reflect::get(&result_obj, &"elevationMap".into()) {
+        if !elev_map.is_undefined() && !elev_map.is_null() {
+            let elev_obj: js_sys::Object = elev_map.unchecked_into();
+            let keys = js_sys::Object::keys(&elev_obj);
+            for i in 0..keys.length() {
+                if let Some(key_str) = keys.get(i).as_string() {
+                    if let Ok(arr) =
+                        js_sys::Reflect::get(&elev_obj, &JsValue::from_str(&key_str))
+                    {
+                        let arr: js_sys::Array = arr.unchecked_into();
+                        for j in 0..arr.length() {
+                            if let Some(n) = arr.get(j).as_f64() {
+                                let n = n as u8;
+                                if !elevation_numbers.contains(&n) {
+                                    elevation_numbers.push(n);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    elevation_numbers.sort_unstable();
+
+    log::info!(
+        "Worker ingest complete: {} ({} records, {} elevations, {:.0}ms)",
+        scan_key,
+        records_stored,
+        elevation_numbers.len(),
+        total_ms,
+    );
+
+    results
+        .borrow_mut()
+        .push(WorkerOutcome::Ingested(IngestResult {
+            context,
+            scan_key,
+            records_stored,
+            elevation_numbers,
+            total_ms,
+        }));
+}
+
+/// Handle a "rendered" message from the worker.
+fn handle_rendered_message(
+    data: &JsValue,
+    pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
+) {
+    let id = js_sys::Reflect::get(data, &"id".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u64;
+
+    let context = match pending.borrow_mut().remove(&id) {
+        Some(ctx) => ctx,
+        None => {
+            log::warn!("Received rendered message for unknown request {}", id);
+            return;
+        }
+    };
+
+    let image_buffer = js_sys::Reflect::get(data, &"imageData".into()).unwrap_or(JsValue::NULL);
+    let image_data = js_sys::Uint8Array::new(&image_buffer).to_vec();
+
+    let width = js_sys::Reflect::get(data, &"width".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
+
+    let height = js_sys::Reflect::get(data, &"height".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
+
+    let render_time_ms = js_sys::Reflect::get(data, &"renderTimeMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let radial_count = js_sys::Reflect::get(data, &"radialCount".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
+
+    let fetch_ms = js_sys::Reflect::get(data, &"fetchMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    log::info!(
+        "Worker render complete: {}x{}, {} radials, {:.0}ms (fetch: {:.0}ms)",
+        width,
+        height,
+        radial_count,
+        render_time_ms,
+        fetch_ms,
+    );
+
+    results
+        .borrow_mut()
+        .push(WorkerOutcome::Rendered(RenderResult {
+            context,
+            image_data,
+            width,
+            height,
+            render_time_ms,
+            radial_count,
+            fetch_ms,
+        }));
 }
 
 /// Handle an "error" message from the worker.
 fn handle_error_message(
     data: &JsValue,
-    pending: &Rc<RefCell<HashMap<RequestId, DecodeContext>>>,
-    results: &Rc<RefCell<Vec<DecodeOutcome>>>,
+    pending_decode: &Rc<RefCell<HashMap<RequestId, DecodeContext>>>,
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
     let id = js_sys::Reflect::get(data, &"id".into())
         .ok()
@@ -314,14 +644,23 @@ fn handle_error_message(
         .and_then(|v| v.as_string())
         .unwrap_or_else(|| "Unknown worker error".to_string());
 
-    log::error!("Worker decode error (request {}): {}", id, message);
+    log::error!("Worker error (request {}): {}", id, message);
 
-    if let Some(context) = pending.borrow_mut().remove(&id) {
+    // Try to match against pending decode requests (legacy path)
+    if let Some(context) = pending_decode.borrow_mut().remove(&id) {
+        results.borrow_mut().push(WorkerOutcome::Decode(
+            DecodeOutcome::Error(DecodeErrorResult { context, message }),
+        ));
+    } else {
         results
             .borrow_mut()
-            .push(DecodeOutcome::Error(DecodeErrorResult { context, message }));
+            .push(WorkerOutcome::WorkerError { id, message });
     }
 }
+
+// ============================================================================
+// Send helpers
+// ============================================================================
 
 /// Send a decode request to the worker, transferring the data buffer.
 fn send_decode_request(worker: &Worker, id: u64, data: &[u8]) {
@@ -338,6 +677,71 @@ fn send_decode_request(worker: &Worker, id: u64, data: &[u8]) {
 
     if let Err(e) = worker.post_message_with_transfer(&msg, &transfer) {
         log::error!("Failed to send decode request {}: {:?}", id, e);
+    }
+}
+
+/// Send an ingest request to the worker.
+fn send_ingest_request(
+    worker: &Worker,
+    id: u64,
+    data: &[u8],
+    site_id: &str,
+    timestamp_secs: i64,
+    file_name: &str,
+) {
+    let array = js_sys::Uint8Array::from(data);
+    let buffer = array.buffer();
+
+    let msg = js_sys::Object::new();
+    js_sys::Reflect::set(&msg, &"type".into(), &"ingest".into()).ok();
+    js_sys::Reflect::set(&msg, &"id".into(), &JsValue::from(id as f64)).ok();
+    js_sys::Reflect::set(&msg, &"data".into(), &buffer).ok();
+    js_sys::Reflect::set(&msg, &"siteId".into(), &JsValue::from_str(site_id)).ok();
+    js_sys::Reflect::set(
+        &msg,
+        &"timestampSecs".into(),
+        &JsValue::from(timestamp_secs as f64),
+    )
+    .ok();
+    js_sys::Reflect::set(&msg, &"fileName".into(), &JsValue::from_str(file_name)).ok();
+
+    let transfer = js_sys::Array::new();
+    transfer.push(&buffer);
+
+    if let Err(e) = worker.post_message_with_transfer(&msg, &transfer) {
+        log::error!("Failed to send ingest request {}: {:?}", id, e);
+    }
+}
+
+/// Send a render request to the worker.
+fn send_render_request(
+    worker: &Worker,
+    id: u64,
+    scan_key: &str,
+    elevation_number: u8,
+    product: &str,
+    interpolation: &str,
+) {
+    let msg = js_sys::Object::new();
+    js_sys::Reflect::set(&msg, &"type".into(), &"render".into()).ok();
+    js_sys::Reflect::set(&msg, &"id".into(), &JsValue::from(id as f64)).ok();
+    js_sys::Reflect::set(&msg, &"scanKey".into(), &JsValue::from_str(scan_key)).ok();
+    js_sys::Reflect::set(
+        &msg,
+        &"elevationNumber".into(),
+        &JsValue::from(elevation_number),
+    )
+    .ok();
+    js_sys::Reflect::set(&msg, &"product".into(), &JsValue::from_str(product)).ok();
+    js_sys::Reflect::set(
+        &msg,
+        &"interpolation".into(),
+        &JsValue::from_str(interpolation),
+    )
+    .ok();
+
+    if let Err(e) = worker.post_message(&msg) {
+        log::error!("Failed to send render request {}: {:?}", id, e);
     }
 }
 

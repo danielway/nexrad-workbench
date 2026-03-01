@@ -58,8 +58,22 @@ pub fn render_canvas_with_geo(
             &state.layer_state.geo,
         );
 
-        // Build dynamic render sweep and render radar data
-        let radar_position = if !volume_ring.is_empty() {
+        // Render radar data.
+        // Primary path: draw from worker-rendered texture cache.
+        // Legacy fallback: build dynamic sweep from VolumeRing.
+        let radar_position = if texture_cache.texture().is_some() && volume_ring.is_empty() {
+            // Worker-rendered texture: draw it directly (no VolumeRing needed)
+            draw_cached_texture(
+                &painter,
+                &projection,
+                texture_cache,
+                &rect,
+                state.viz_state.center_lat,
+                state.viz_state.center_lon,
+            );
+            None
+        } else if !volume_ring.is_empty() {
+            // Legacy VolumeRing path (kept for backward compat during transition)
             let playback_ts_ms = (state.playback_state.playback_position() * 1000.0) as i64;
 
             let render_sweep = RenderSweep::from_volume_ring(
@@ -126,6 +140,58 @@ pub fn render_canvas_with_geo(
         // Handle zoom/pan interactions
         handle_canvas_interaction(&response, &rect, state);
     });
+}
+
+/// Draw a pre-rendered texture from the cache onto the canvas.
+///
+/// This is the worker-render path: the texture was rendered by the worker
+/// and uploaded via `cache.update()`. We just draw it at the correct geographic position.
+fn draw_cached_texture(
+    painter: &Painter,
+    projection: &MapProjection,
+    cache: &RadarTextureCache,
+    rect: &Rect,
+    radar_lat: f64,
+    radar_lon: f64,
+) {
+    if let Some(texture) = cache.texture() {
+        let range_km = radar_coverage_range_km();
+
+        let km_to_deg = 1.0 / 111.0;
+        let lat_correction = radar_lat.to_radians().cos();
+
+        let lat_range = range_km * km_to_deg;
+        let lon_range = range_km * km_to_deg / lat_correction;
+
+        let top_left = projection.geo_to_screen(Coord {
+            x: radar_lon - lon_range,
+            y: radar_lat + lat_range,
+        });
+        let bottom_right = projection.geo_to_screen(Coord {
+            x: radar_lon + lon_range,
+            y: radar_lat - lat_range,
+        });
+
+        let texture_rect = Rect::from_min_max(top_left, bottom_right);
+        let clipped_rect = texture_rect.intersect(*rect);
+
+        if clipped_rect.width() > 0.0 && clipped_rect.height() > 0.0 {
+            let full_width = texture_rect.width();
+            let full_height = texture_rect.height();
+
+            let uv_min_x = (clipped_rect.min.x - texture_rect.min.x) / full_width;
+            let uv_min_y = (clipped_rect.min.y - texture_rect.min.y) / full_height;
+            let uv_max_x = (clipped_rect.max.x - texture_rect.min.x) / full_width;
+            let uv_max_y = (clipped_rect.max.y - texture_rect.min.y) / full_height;
+
+            let clipped_uv = egui::Rect::from_min_max(
+                egui::pos2(uv_min_x, uv_min_y),
+                egui::pos2(uv_max_x, uv_max_y),
+            );
+
+            painter.image(texture.id(), clipped_rect, clipped_uv, Color32::WHITE);
+        }
+    }
 }
 
 /// Render a dynamic sweep as a cached texture.

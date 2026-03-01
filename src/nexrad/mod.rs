@@ -9,6 +9,7 @@
 mod archive_index;
 mod cache_channel;
 mod decode_worker;
+mod record_decode;
 mod download;
 mod realtime;
 #[allow(dead_code)]
@@ -21,7 +22,10 @@ mod volume_ring;
 
 pub use archive_index::ArchiveIndex;
 pub use cache_channel::{CacheLoadChannel, CacheLoadResult, ScrubLoadChannel, ScrubLoadResult};
-pub use decode_worker::{DecodeContext, DecodeOutcome, DecodeWorker};
+pub use decode_worker::{
+    DecodeContext, DecodeOutcome, DecodeWorker, WorkerOutcome,
+};
+pub use record_decode::{decode_record_to_radials, probe_record_elevations};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use realtime::{RealtimeChannel, RealtimeResult};
 pub use render_sweep::RenderSweep;

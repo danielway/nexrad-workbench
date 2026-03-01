@@ -6,7 +6,7 @@
 use super::archive_index::{current_timestamp_secs, ArchiveFileMeta, ArchiveListing};
 use super::types::{CachedScan, DownloadResult, ScanKey};
 use crate::data::{
-    process_archive_download, reassemble_records, DataFacade, ScanCompleteness,
+    DataFacade, ScanCompleteness,
     ScanKey as DataScanKey,
 };
 use chrono::NaiveDate;
@@ -312,35 +312,16 @@ async fn download_specific_file(
 
     let key = ScanKey::new(site_id, timestamp);
 
-    // Check cache first (no network call)
+    // Check cache first (no network call).
+    // In the worker architecture, we only need to know the scan exists in IDB.
+    // The worker will read records directly when it renders.
     let scan_key = DataScanKey::from_secs(site_id, timestamp);
     if let Ok(Some(entry)) = facade.cache().scan_availability(&scan_key).await {
         if entry.completeness() == ScanCompleteness::Complete {
-            // Reassemble from cache
-            match facade.cache().list_records_for_scan(&scan_key).await {
-                Ok(record_keys) => {
-                    let mut records = Vec::with_capacity(record_keys.len());
-                    for rkey in record_keys {
-                        if let Ok(Some(record)) = facade.get_record(&rkey).await {
-                            records.push(record);
-                        }
-                    }
-                    if !records.is_empty() {
-                        records.sort_by_key(|r| r.key.record_id);
-                        let data = reassemble_records(&records);
-                        log::info!(
-                            "Cache hit for {} ({} bytes)",
-                            key.to_storage_key(),
-                            data.len()
-                        );
-                        let cached = CachedScan::new(key, file_name.to_string(), data);
-                        return DownloadResult::CacheHit(cached);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Cache lookup failed: {}", e);
-                }
-            }
+            log::info!("Cache hit for {}", key.to_storage_key());
+            // Return cache hit with empty data — the worker reads from IDB directly.
+            let cached = CachedScan::new(key, file_name.to_string(), vec![]);
+            return DownloadResult::CacheHit(cached);
         }
     }
 
@@ -385,29 +366,14 @@ async fn download_specific_file(
     let bytes_downloaded = data.len() as u64;
     log::info!("Downloaded {} bytes in {:.0}ms", bytes_downloaded, fetch_ms);
 
-    let cached = CachedScan::new(key, file_name.to_string(), data.clone());
-
-    // Store as records in cache only (with timing)
-    let decode_start = web_time::Instant::now();
-    match process_archive_download(&facade, site_id, file_name, timestamp, &data).await {
-        Ok((scan_key, records_stored)) => {
-            log::info!(
-                "Stored {} records for scan {} in cache",
-                records_stored,
-                scan_key
-            );
-        }
-        Err(e) => {
-            log::warn!("Failed to store records in cache: {}", e);
-        }
-    }
-    let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
+    // Return raw bytes — the worker will split, probe, and store in IDB.
+    let cached = CachedScan::new(key, file_name.to_string(), data);
 
     stats.request_completed(bytes_downloaded);
     DownloadResult::Success {
         scan: cached,
         fetch_latency_ms: fetch_ms,
-        decode_latency_ms: decode_ms,
+        decode_latency_ms: 0.0,
     }
 }
 
@@ -452,36 +418,14 @@ async fn download_nexrad_data(
 
     let key = ScanKey::new(site_id, timestamp);
 
-    // Check cache first (no network call)
+    // Check cache first (no network call).
     let scan_key = DataScanKey::from_secs(site_id, timestamp);
     if let Ok(Some(entry)) = facade.cache().scan_availability(&scan_key).await {
         if entry.completeness() == ScanCompleteness::Complete {
-            // Reassemble from cache
-            match facade.cache().list_records_for_scan(&scan_key).await {
-                Ok(record_keys) => {
-                    let mut records = Vec::with_capacity(record_keys.len());
-                    for rkey in record_keys {
-                        if let Ok(Some(record)) = facade.get_record(&rkey).await {
-                            records.push(record);
-                        }
-                    }
-                    if !records.is_empty() {
-                        records.sort_by_key(|r| r.key.record_id);
-                        let data = reassemble_records(&records);
-                        log::info!(
-                            "Cache hit for {} ({} bytes)",
-                            key.to_storage_key(),
-                            data.len()
-                        );
-                        let file_name = entry.file_name.unwrap_or_default();
-                        let cached = CachedScan::new(key, file_name, data);
-                        return DownloadResult::CacheHit(cached);
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Cache lookup failed: {}", e);
-                }
-            }
+            log::info!("Cache hit for {}", key.to_storage_key());
+            let file_name = entry.file_name.unwrap_or_default();
+            let cached = CachedScan::new(key, file_name, vec![]);
+            return DownloadResult::CacheHit(cached);
         }
     }
 
@@ -505,29 +449,13 @@ async fn download_nexrad_data(
     let bytes_downloaded = data.len() as u64;
     log::info!("Downloaded {} bytes in {:.0}ms", bytes_downloaded, fetch_ms);
 
-    // Create cached scan with raw data
-    let cached = CachedScan::new(key.clone(), file_name.clone(), data.clone());
-
-    // Store in cache only
-    let decode_start = web_time::Instant::now();
-    match process_archive_download(&facade, site_id, &file_name, timestamp, &data).await {
-        Ok((scan_key, records_stored)) => {
-            log::info!(
-                "Stored {} records for scan {} in cache",
-                records_stored,
-                scan_key
-            );
-        }
-        Err(e) => {
-            log::warn!("Failed to store records in cache: {}", e);
-        }
-    }
-    let decode_ms = decode_start.elapsed().as_secs_f64() * 1000.0;
+    // Return raw bytes — the worker will split, probe, and store in IDB.
+    let cached = CachedScan::new(key, file_name, data);
 
     stats.request_completed(bytes_downloaded);
     DownloadResult::Success {
         scan: cached,
         fetch_latency_ms: fetch_ms,
-        decode_latency_ms: decode_ms,
+        decode_latency_ms: 0.0,
     }
 }

@@ -493,10 +493,9 @@ impl DataFacade {
 /// Helper to process an archive download and store records.
 ///
 /// This function:
-/// 1. Splits the archive file into individual records
-/// 2. Computes record keys and metadata
-/// 3. Stores each record in the cache
-/// 4. Returns the scan key and number of records stored
+/// 1. Splits the archive file into individual LDM records using nexrad-data
+/// 2. Stores each record (with LDM prefix, compressed) in the cache
+/// 3. Returns the scan key and number of records stored
 pub async fn process_archive_download(
     facade: &DataFacade,
     site_id: &str,
@@ -508,28 +507,35 @@ pub async fn process_archive_download(
     let scan_start = UnixMillis::from_secs(timestamp_secs);
     let scan_key = ScanKey::new(site_id, scan_start);
 
-    // Split into records
+    // Split into LDM records using nexrad-data's proper size-prefix parsing.
+    // Each record includes the 4-byte LDM prefix + bzip2 payload.
     let t_split = web_time::Instant::now();
-    let record_parts = split_archive2_into_records(data);
+    let file = nexrad_data::volume::File::new(data.to_vec());
+    let records = file
+        .records()
+        .map_err(|e| format!("Failed to split archive into records: {}", e))?;
     let split_ms = t_split.elapsed().as_secs_f64() * 1000.0;
 
-    if record_parts.is_empty() {
+    if records.is_empty() {
         return Err("No records found in archive file".to_string());
     }
 
     // Store each record
     let t_store = web_time::Instant::now();
     let mut stored = 0;
-    for (record_id, record_data) in &record_parts {
-        let record_key = RecordKey::new(scan_key.clone(), *record_id);
-        let record = RecordBlob::new(record_key.clone(), record_data.clone());
+    for (record_id, record) in records.iter().enumerate() {
+        let record_id = record_id as u32;
+        let record_key = RecordKey::new(scan_key.clone(), record_id);
+        let record_data = record.data();
+        let blob = RecordBlob::new(record_key.clone(), record_data.to_vec());
 
         // First record typically contains VCP metadata
-        let has_vcp = *record_id == 0;
+        let has_vcp = record_id == 0;
 
-        let meta = RecordIndexEntry::new(record_key, record_data.len() as u32).with_vcp(has_vcp);
+        let meta =
+            RecordIndexEntry::new(record_key, record_data.len() as u32).with_vcp(has_vcp);
 
-        if facade.store_record(&record, meta).await? {
+        if facade.store_record(&blob, meta).await? {
             stored += 1;
         }
     }

@@ -13,8 +13,8 @@ mod state;
 mod ui;
 
 use eframe::egui;
-// Use explicit crate path to avoid conflict with local nexrad module
-use ::nexrad::load;
+// Used by legacy decode path (worker_decode, apply_decoded_volume)
+#[allow(unused_imports)]
 use ::nexrad::model::data::Scan;
 use data::DataFacade;
 use state::radar_data::Sweep as TimelineSweep;
@@ -30,6 +30,336 @@ pub fn worker_decode(data: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("{}", e)))?;
     bincode::serialize(&scan)
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("{}", e)))
+}
+
+/// Ingest a raw NEXRAD archive file: split into LDM records, probe for elevation
+/// metadata, store in IndexedDB, and return metadata.
+///
+/// Called from the Web Worker. Returns a Promise that resolves to a JS object with:
+///   { recordsStored, scanKey, elevationMap: { recordId: [elevNums] } }
+///
+/// Parameters are passed as a JS object:
+///   { data: ArrayBuffer, siteId: string, timestampSecs: number, fileName: string }
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
+    wasm_bindgen_futures::future_to_promise(async move {
+        use crate::data::indexeddb::IndexedDbRecordStore;
+        use crate::data::keys::*;
+        use crate::nexrad::probe_record_elevations;
+
+        let t_total = web_time::Instant::now();
+
+        // Extract parameters from JS object
+        let data_val = js_sys::Reflect::get(&params, &"data".into())
+            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Missing data: {:?}", e)))?;
+        let data_array = js_sys::Uint8Array::new(&data_val);
+        let data = data_array.to_vec();
+
+        let site_id = js_sys::Reflect::get(&params, &"siteId".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Missing siteId"))?;
+
+        let timestamp_secs = js_sys::Reflect::get(&params, &"timestampSecs".into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Missing timestampSecs"))?
+            as i64;
+
+        let file_name = js_sys::Reflect::get(&params, &"fileName".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+
+        // Split into LDM records
+        let t_split = web_time::Instant::now();
+        let file = nexrad_data::volume::File::new(data);
+        let records = file.records().map_err(|e| {
+            wasm_bindgen::JsValue::from_str(&format!("Failed to split archive: {}", e))
+        })?;
+        let split_ms = t_split.elapsed().as_secs_f64() * 1000.0;
+
+        if records.is_empty() {
+            return Err(wasm_bindgen::JsValue::from_str("No records found"));
+        }
+
+        // Open IDB from worker context
+        let store = IndexedDbRecordStore::new();
+        store.open().await.map_err(|e| {
+            wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e))
+        })?;
+
+        let scan_start = UnixMillis::from_secs(timestamp_secs);
+        let scan_key = ScanKey::new(site_id.as_str(), scan_start);
+
+        // Store each record, probing for elevation metadata
+        let t_store = web_time::Instant::now();
+        let mut stored = 0u32;
+        let elevation_map = js_sys::Object::new();
+
+        for (record_id, record) in records.iter().enumerate() {
+            let record_id = record_id as u32;
+            let record_key = RecordKey::new(scan_key.clone(), record_id);
+            let record_data = record.data();
+            let blob = RecordBlob::new(record_key.clone(), record_data.to_vec());
+
+            // Probe for elevation numbers
+            let elevation_numbers = probe_record_elevations(record_data).ok();
+
+            // First record typically contains VCP metadata
+            let has_vcp = record_id == 0;
+
+            let meta = RecordIndexEntry::new(record_key, record_data.len() as u32)
+                .with_vcp(has_vcp)
+                .with_elevations(elevation_numbers.clone());
+
+            let outcome = store.put_record(&blob, meta).await.map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!("Failed to store record: {}", e))
+            })?;
+
+            if outcome.inserted {
+                stored += 1;
+            }
+
+            // Add to elevation map for the response
+            if let Some(ref elevs) = elevation_numbers {
+                let arr = js_sys::Array::new();
+                for &e in elevs {
+                    arr.push(&wasm_bindgen::JsValue::from(e));
+                }
+                js_sys::Reflect::set(
+                    &elevation_map,
+                    &wasm_bindgen::JsValue::from(record_id),
+                    &arr,
+                )
+                .ok();
+            }
+        }
+        let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+
+        log::info!(
+            "worker_ingest: {} ({} records) in {:.0}ms (split: {:.0}ms, store: {:.0}ms)",
+            file_name,
+            stored,
+            total_ms,
+            split_ms,
+            store_ms,
+        );
+
+        // Build response object
+        let result = js_sys::Object::new();
+        js_sys::Reflect::set(
+            &result,
+            &"recordsStored".into(),
+            &wasm_bindgen::JsValue::from(stored),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"scanKey".into(),
+            &wasm_bindgen::JsValue::from_str(&scan_key.to_storage_key()),
+        )
+        .ok();
+        js_sys::Reflect::set(&result, &"elevationMap".into(), &elevation_map).ok();
+        js_sys::Reflect::set(
+            &result,
+            &"totalMs".into(),
+            &wasm_bindgen::JsValue::from(total_ms),
+        )
+        .ok();
+
+        Ok(result.into())
+    })
+}
+
+/// Render a specific elevation from a scan stored in IndexedDB.
+///
+/// Called from the Web Worker. Returns a Promise that resolves to a JS object with:
+///   { imageData: ArrayBuffer, width, height, renderTimeMs, radialCount }
+///
+/// Parameters are passed as a JS object:
+///   { scanKey: string, elevationNumber: number, product: string, interpolation: string }
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
+    wasm_bindgen_futures::future_to_promise(async move {
+        use crate::data::indexeddb::IndexedDbRecordStore;
+        use crate::data::keys::*;
+        use crate::nexrad::decode_record_to_radials;
+        use nexrad_render::{default_color_scale, render_sweep, Interpolation, Product, RenderOptions};
+
+        let t_total = web_time::Instant::now();
+
+        // Extract parameters
+        let scan_key_str = js_sys::Reflect::get(&params, &"scanKey".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Missing scanKey"))?;
+
+        let elevation_number = js_sys::Reflect::get(&params, &"elevationNumber".into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Missing elevationNumber"))?
+            as u8;
+
+        let product_str = js_sys::Reflect::get(&params, &"product".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "reflectivity".to_string());
+
+        let interpolation_str = js_sys::Reflect::get(&params, &"interpolation".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "nearest".to_string());
+
+        let scan_key = ScanKey::from_storage_key(&scan_key_str)
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Invalid scanKey format"))?;
+
+        let product = match product_str.as_str() {
+            "reflectivity" => Product::Reflectivity,
+            "velocity" => Product::Velocity,
+            "spectrum_width" => Product::SpectrumWidth,
+            "differential_reflectivity" => Product::DifferentialReflectivity,
+            "differential_phase" => Product::DifferentialPhase,
+            "correlation_coefficient" => Product::CorrelationCoefficient,
+            _ => Product::Reflectivity,
+        };
+
+        let interpolation = match interpolation_str.as_str() {
+            "bilinear" => Interpolation::Bilinear,
+            _ => Interpolation::Nearest,
+        };
+
+        // Open IDB and fetch record entries
+        let store = IndexedDbRecordStore::new();
+        store.open().await.map_err(|e| {
+            wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e))
+        })?;
+
+        let t_fetch = web_time::Instant::now();
+        let entries = store
+            .list_record_entries_for_scan(&scan_key)
+            .await
+            .map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!("Failed to list records: {}", e))
+            })?;
+
+        // Filter to records matching the target elevation
+        let matching_keys: Vec<RecordKey> = entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .elevation_numbers
+                    .as_ref()
+                    .map(|nums| nums.contains(&elevation_number))
+                    .unwrap_or(true) // Include records without metadata (fallback)
+            })
+            .map(|entry| entry.key.clone())
+            .collect();
+
+        if matching_keys.is_empty() {
+            return Err(wasm_bindgen::JsValue::from_str(
+                "No records found for target elevation",
+            ));
+        }
+
+        // Fetch matching record blobs
+        let mut all_radials = Vec::new();
+        for key in &matching_keys {
+            if let Ok(Some(blob)) = store.get_record(key).await {
+                match decode_record_to_radials(&blob.data) {
+                    Ok(radials) => all_radials.extend(radials),
+                    Err(e) => log::warn!("Failed to decode record {}: {}", key, e),
+                }
+            }
+        }
+        let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
+
+        // Filter radials to target elevation (in case records contain multiple elevations)
+        let target_radials: Vec<_> = all_radials
+            .into_iter()
+            .filter(|r| r.elevation_number() == elevation_number)
+            .collect();
+
+        let radial_count = target_radials.len();
+
+        if target_radials.is_empty() {
+            return Err(wasm_bindgen::JsValue::from_str(
+                "No radials found for target elevation",
+            ));
+        }
+
+        // Build SweepField and render
+        let t_render = web_time::Instant::now();
+        let field = ::nexrad::model::data::SweepField::from_radials_owned(target_radials, product)
+            .ok_or_else(|| {
+                wasm_bindgen::JsValue::from_str("Failed to build SweepField from radials")
+            })?;
+
+        let color_scale = default_color_scale(product);
+        let options = RenderOptions::native_for(&field)
+            .transparent()
+            .with_interpolation(interpolation);
+
+        let render_result = render_sweep(&field, &color_scale, &options).map_err(|e| {
+            wasm_bindgen::JsValue::from_str(&format!("Render failed: {}", e))
+        })?;
+
+        let image = render_result.into_image();
+        let (width, height) = image.dimensions();
+        let pixels = image.into_raw();
+        let render_ms = t_render.elapsed().as_secs_f64() * 1000.0;
+
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+        log::info!(
+            "worker_render: {} radials, {}x{} in {:.0}ms (fetch: {:.0}ms, render: {:.0}ms)",
+            radial_count,
+            width,
+            height,
+            total_ms,
+            fetch_ms,
+            render_ms,
+        );
+
+        // Transfer pixel buffer back to main thread
+        let pixel_array = js_sys::Uint8Array::from(pixels.as_slice());
+        let buffer = pixel_array.buffer();
+
+        let result = js_sys::Object::new();
+        js_sys::Reflect::set(&result, &"imageData".into(), &buffer).ok();
+        js_sys::Reflect::set(
+            &result,
+            &"width".into(),
+            &wasm_bindgen::JsValue::from(width),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"height".into(),
+            &wasm_bindgen::JsValue::from(height),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"renderTimeMs".into(),
+            &wasm_bindgen::JsValue::from(total_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"radialCount".into(),
+            &wasm_bindgen::JsValue::from(radial_count as u32),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"fetchMs".into(),
+            &wasm_bindgen::JsValue::from(fetch_ms),
+        )
+        .ok();
+
+        Ok(result.into())
+    })
 }
 
 /// Entry point for the WASM application.
@@ -129,18 +459,28 @@ pub struct WorkbenchApp {
     /// Channel for real-time streaming
     realtime_channel: nexrad::RealtimeChannel,
 
-    /// Shared results from partial volume decode tasks.
-    /// Populated by async decode tasks, consumed by update loop.
+    /// Shared results from partial volume decode tasks (legacy fallback path).
+    #[allow(dead_code)]
     partial_volume_results: std::rc::Rc<std::cell::RefCell<Vec<(i64, Scan)>>>,
 
     /// Web Worker for offloading expensive nexrad::load() calls.
     /// None if the worker failed to initialize (falls back to main-thread decode).
     decode_worker: Option<nexrad::DecodeWorker>,
 
-    /// Assembled scan data awaiting worker decode (for partial decode path).
-    /// Populated by async IndexedDB reads, consumed by update loop to submit to worker.
-    #[allow(clippy::type_complexity)]
+    /// Assembled scan data awaiting worker decode (legacy fallback path).
+    #[allow(dead_code, clippy::type_complexity)]
     pending_decode_data: std::rc::Rc<std::cell::RefCell<Vec<(i64, Vec<u8>)>>>,
+
+    /// Scan key of the currently displayed scan (data storage format "SITE|TIMESTAMP_MS").
+    /// Used to send render requests to the worker.
+    current_render_scan_key: Option<String>,
+
+    /// Available elevation numbers for the current scan (from ingest).
+    available_elevation_numbers: Vec<u8>,
+
+    /// Previous render parameters for change detection (scan_key, elev_num, product, interp).
+    /// When any of these change, a new worker.render() is sent.
+    last_render_params: Option<(String, u8, String, String)>,
 
     /// Monotonic instant of last URL push (for throttling to ~1/sec).
     last_url_push: web_time::Instant,
@@ -183,11 +523,13 @@ fn extract_sweep_timing(volume: &Scan) -> Vec<TimelineSweep> {
             let start_time = first_radial.collection_timestamp() as f64 / 1000.0;
             let end_time = last_radial.collection_timestamp() as f64 / 1000.0;
             let elevation = first_radial.elevation_angle_degrees();
+            let elevation_number = sweep.elevation_number();
 
             Some(TimelineSweep {
                 start_time,
                 end_time,
                 elevation,
+                elevation_number,
                 radials: Vec::new(), // We don't need radial data for timeline display
             })
         })
@@ -210,6 +552,7 @@ fn persist_sweep_meta(
             start: s.start_time,
             end: s.end_time,
             elevation: s.elevation,
+            elevation_number: s.elevation_number,
         })
         .collect();
 
@@ -361,6 +704,9 @@ impl WorkbenchApp {
             partial_volume_results: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             decode_worker,
             pending_decode_data: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            current_render_scan_key: None,
+            available_elevation_numbers: Vec::new(),
+            last_render_params: None,
             last_url_push: web_time::Instant::now(),
             last_saved_preferences: initial_prefs,
             site_modal_state: ui::SiteModalState::default(),
@@ -601,6 +947,88 @@ impl WorkbenchApp {
         log::info!("apply_decoded_volume: {} sweeps in {:.1}ms", sweep_count, ms);
     }
 
+    /// Find the best elevation number for the current target_elevation.
+    ///
+    /// If sweep metadata with angles is available, picks the number whose angle
+    /// is closest to target_elevation. Otherwise falls back to the lowest available number.
+    fn best_elevation_number(&self) -> u8 {
+        // First try to match by angle using timeline sweep metadata
+        let target = self.state.viz_state.target_elevation;
+        if let Some(scan) = self
+            .state
+            .radar_timeline
+            .find_recent_scan(self.state.playback_state.playback_position(), 15.0 * 60.0)
+        {
+            if !scan.sweeps.is_empty() {
+                // Find sweep whose angle is closest to target
+                if let Some(best) = scan
+                    .sweeps
+                    .iter()
+                    .min_by(|a, b| {
+                        (a.elevation - target)
+                            .abs()
+                            .partial_cmp(&(b.elevation - target).abs())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                {
+                    return best.elevation_number;
+                }
+            }
+        }
+
+        // Fallback: use lowest available elevation number
+        self.available_elevation_numbers
+            .first()
+            .copied()
+            .unwrap_or(1)
+    }
+
+    /// Send a render request to the worker for the current scan + settings.
+    fn request_worker_render(&mut self) {
+        let Some(ref scan_key) = self.current_render_scan_key else {
+            return;
+        };
+        if self.decode_worker.is_none() {
+            return;
+        }
+
+        let elevation_number = self.best_elevation_number();
+        let product = self.state.viz_state.product.to_worker_string().to_string();
+        let interpolation = self
+            .state
+            .viz_state
+            .interpolation
+            .to_worker_string()
+            .to_string();
+
+        let params = (
+            scan_key.clone(),
+            elevation_number,
+            product.clone(),
+            interpolation.clone(),
+        );
+
+        // Skip if same as last request
+        if self.last_render_params.as_ref() == Some(&params) {
+            return;
+        }
+
+        log::info!(
+            "Requesting worker render: {} elev={} product={} interp={}",
+            scan_key,
+            elevation_number,
+            product,
+            interpolation
+        );
+
+        let scan_key = scan_key.clone();
+        self.last_render_params = Some(params);
+        self.decode_worker
+            .as_mut()
+            .unwrap()
+            .render(scan_key, elevation_number, product, interpolation);
+    }
+
     /// Stop live mode streaming.
     #[allow(dead_code)] // Called from UI when user stops live mode
     fn stop_live_mode(&mut self, reason: state::LiveExitReason) {
@@ -618,7 +1046,7 @@ impl WorkbenchApp {
     }
 
     /// Handle a realtime streaming result.
-    fn handle_realtime_result(&mut self, result: nexrad::RealtimeResult, ctx: &egui::Context) {
+    fn handle_realtime_result(&mut self, result: nexrad::RealtimeResult, _ctx: &egui::Context) {
         // Get current time
         let now = js_sys::Date::now() / 1000.0;
 
@@ -689,55 +1117,13 @@ impl WorkbenchApp {
                 self.state.live_mode_state.handle_volume_complete(now);
                 self.state.status_message = format!("Live: received volume ({} bytes)", data.len());
 
-                // Cache the raw volume data for later playback (independent of decode)
-                {
-                    let site_id = self.state.viz_state.site_id.clone();
-                    let facade = self.data_facade.clone();
-                    let ctx_clone = ctx.clone();
-                    let data_for_cache = data.clone();
-                    wasm_bindgen_futures::spawn_local(async move {
-                        let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
-                        match data::process_archive_download(
-                            &facade, &site_id, &file_name, timestamp, &data_for_cache,
-                        )
-                        .await
-                        {
-                            Ok((scan_key, records_stored)) => {
-                                log::debug!(
-                                    "Stored {} records for live scan {} in cache",
-                                    records_stored,
-                                    scan_key
-                                );
-                            }
-                            Err(e) => {
-                                log::warn!("Failed to store live records in cache: {}", e);
-                            }
-                        }
-
-                        ctx_clone.request_repaint();
-                    });
-                }
-
-                // Decode the volume — offload to Web Worker if available
+                // Send raw bytes to worker for ingest (split + store + probe).
+                // The worker stores records in IDB and returns metadata.
+                // The Ingested handler then triggers a render request.
+                let site_id = self.state.viz_state.site_id.clone();
+                let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                 if let Some(ref mut worker) = self.decode_worker {
-                    worker.decode(
-                        data,
-                        nexrad::DecodeContext::Realtime { timestamp },
-                    );
-                } else {
-                    // Fallback: synchronous decode on main thread
-                    let t = web_time::Instant::now();
-                    match load(&data) {
-                        Ok(volume) => {
-                            let ms = t.elapsed().as_secs_f64() * 1000.0;
-                            log::warn!("MAIN-THREAD decode (live): {:.0}ms", ms);
-                            self.apply_decoded_volume(volume, timestamp, true);
-                        }
-                        Err(e) => {
-                            log::error!("Failed to decode live volume: {}", e);
-                            self.state.status_message = format!("Live: decode error: {}", e);
-                        }
-                    }
+                    worker.ingest(data, site_id, timestamp, file_name, 0.0);
                 }
             }
             nexrad::RealtimeResult::Error(msg) => {
@@ -891,62 +1277,138 @@ impl eframe::App for WorkbenchApp {
             });
         }
 
-        // Check for completed Web Worker decode operations
+        // Check for completed Web Worker operations
         if let Some(ref mut worker) = self.decode_worker {
             for outcome in worker.try_recv() {
                 match outcome {
-                    nexrad::DecodeOutcome::Success(decoded) => {
-                        match decoded.context {
-                            nexrad::DecodeContext::Download {
-                                timestamp,
-                                fetch_latency_ms,
-                                ..
-                            } => {
-                                self.state
-                                    .session_stats
-                                    .record_decode_time(decoded.worker_decode_ms);
-                                let _ = fetch_latency_ms; // already recorded above
-                                self.apply_decoded_volume(decoded.scan, timestamp, true);
-                            }
-                            nexrad::DecodeContext::Scrub { timestamp } => {
-                                self.apply_decoded_volume(decoded.scan, timestamp, false);
-                            }
-                            nexrad::DecodeContext::Realtime { timestamp } => {
-                                self.apply_decoded_volume(decoded.scan, timestamp, false);
-                            }
-                            nexrad::DecodeContext::PartialDecode { timestamp_ms } => {
-                                if self
-                                    .volume_ring
-                                    .insert_or_update(timestamp_ms, decoded.scan)
-                                {
-                                    self.displayed_scan_timestamp = Some(timestamp_ms / 1000);
-                                    self.radar_texture_cache.invalidate();
-                                    log::debug!(
-                                        "Worker: inserted partial volume at {}",
-                                        timestamp_ms
-                                    );
+                    nexrad::WorkerOutcome::Decode(decode_outcome) => match decode_outcome {
+                        nexrad::DecodeOutcome::Success(decoded) => {
+                            match decoded.context {
+                                nexrad::DecodeContext::Download {
+                                    timestamp,
+                                    fetch_latency_ms,
+                                    ..
+                                } => {
+                                    self.state
+                                        .session_stats
+                                        .record_decode_time(decoded.worker_decode_ms);
+                                    let _ = fetch_latency_ms;
+                                    self.apply_decoded_volume(decoded.scan, timestamp, true);
+                                }
+                                nexrad::DecodeContext::Scrub { timestamp } => {
+                                    self.apply_decoded_volume(decoded.scan, timestamp, false);
+                                }
+                                nexrad::DecodeContext::Realtime { timestamp } => {
+                                    self.apply_decoded_volume(decoded.scan, timestamp, false);
+                                }
+                                nexrad::DecodeContext::PartialDecode { timestamp_ms } => {
+                                    if self
+                                        .volume_ring
+                                        .insert_or_update(timestamp_ms, decoded.scan)
+                                    {
+                                        self.displayed_scan_timestamp =
+                                            Some(timestamp_ms / 1000);
+                                        self.radar_texture_cache.invalidate();
+                                        log::debug!(
+                                            "Worker: inserted partial volume at {}",
+                                            timestamp_ms
+                                        );
+                                    }
                                 }
                             }
                         }
-                    }
-                    nexrad::DecodeOutcome::Error(err) => {
-                        log::error!("Worker decode failed: {}", err.message);
-                        match err.context {
-                            nexrad::DecodeContext::Download { .. } => {
-                                self.state.status_message =
-                                    format!("Decode error: {}", err.message);
-                            }
-                            nexrad::DecodeContext::Scrub { timestamp } => {
-                                self.displayed_scan_timestamp = Some(timestamp);
-                            }
-                            nexrad::DecodeContext::Realtime { .. } => {
-                                self.state.status_message =
-                                    format!("Live: decode error: {}", err.message);
-                            }
-                            nexrad::DecodeContext::PartialDecode { .. } => {
-                                // Partial decodes can fail normally during incremental data
+                        nexrad::DecodeOutcome::Error(err) => {
+                            log::error!("Worker decode failed: {}", err.message);
+                            match err.context {
+                                nexrad::DecodeContext::Download { .. } => {
+                                    self.state.status_message =
+                                        format!("Decode error: {}", err.message);
+                                }
+                                nexrad::DecodeContext::Scrub { timestamp } => {
+                                    self.displayed_scan_timestamp = Some(timestamp);
+                                }
+                                nexrad::DecodeContext::Realtime { .. } => {
+                                    self.state.status_message =
+                                        format!("Live: decode error: {}", err.message);
+                                }
+                                nexrad::DecodeContext::PartialDecode { .. } => {
+                                    // Partial decodes can fail normally
+                                }
                             }
                         }
+                    },
+                    nexrad::WorkerOutcome::Ingested(result) => {
+                        log::info!(
+                            "Ingest complete: {} ({} records, {} elevations, {:.0}ms, fetch: {:.0}ms)",
+                            result.scan_key,
+                            result.records_stored,
+                            result.elevation_numbers.len(),
+                            result.total_ms,
+                            result.context.fetch_latency_ms,
+                        );
+
+                        self.state
+                            .session_stats
+                            .record_fetch_latency(result.context.fetch_latency_ms);
+                        self.state
+                            .session_stats
+                            .record_store_time(result.total_ms);
+
+                        // Track the scan for render requests
+                        self.current_render_scan_key = Some(result.scan_key.clone());
+                        self.available_elevation_numbers = result.elevation_numbers;
+                        self.displayed_scan_timestamp =
+                            Some(result.context.timestamp_secs);
+                        self.state
+                            .playback_state
+                            .set_playback_position(result.context.timestamp_secs as f64);
+
+                        // Refresh timeline to include the new scan
+                        self.state.timeline_needs_refresh = true;
+
+                        // Request eviction check
+                        self.state.check_eviction_requested = true;
+
+                        // Clear last render params to force a fresh render
+                        self.last_render_params = None;
+
+                        // Trigger render for the ingested scan
+                        self.request_worker_render();
+                    }
+                    nexrad::WorkerOutcome::Rendered(result) => {
+                        log::info!(
+                            "Render complete: {}x{}, {} radials, {:.0}ms (fetch: {:.0}ms)",
+                            result.width,
+                            result.height,
+                            result.radial_count,
+                            result.render_time_ms,
+                            result.fetch_ms,
+                        );
+
+                        self.state
+                            .session_stats
+                            .record_render_time(result.render_time_ms);
+
+                        // Upload pixel data as GPU texture
+                        if result.width > 0 && result.height > 0 && !result.image_data.is_empty() {
+                            let image = egui::ColorImage::from_rgba_unmultiplied(
+                                [result.width as usize, result.height as usize],
+                                &result.image_data,
+                            );
+
+                            // Build a cache key for the rendered result
+                            let cache_key = nexrad::RadarCacheKey::for_dynamic_sweep(
+                                0, // content signature (not used for worker-rendered textures)
+                                result.context.elevation_number as usize,
+                                (0, 0),
+                            );
+
+                            self.radar_texture_cache.update(ctx, cache_key, image);
+                        }
+                    }
+                    nexrad::WorkerOutcome::WorkerError { id, message } => {
+                        log::error!("Worker error (request {}): {}", id, message);
+                        self.state.status_message = format!("Worker error: {}", message);
                     }
                 }
             }
@@ -975,49 +1437,45 @@ impl eframe::App for WorkbenchApp {
             };
 
             if let Some(scan) = scan_opt {
-                self.state.status_message = if is_cache_hit {
-                    format!("Loaded from cache: {}", scan.file_name)
-                } else {
-                    format!(
-                        "Downloaded and cached: {} ({} bytes)",
-                        scan.file_name,
-                        scan.data.len()
-                    )
-                };
-
-                // Request eviction check after successful download
-                if !is_cache_hit {
-                    self.state.check_eviction_requested = true;
-                }
-
-                // Decode the volume — offload to Web Worker if available
                 let fetch_latency = match &result {
                     nexrad::DownloadResult::Success { fetch_latency_ms, .. } => *fetch_latency_ms,
                     _ => 0.0,
                 };
-                if let Some(ref mut worker) = self.decode_worker {
-                    worker.decode(
-                        scan.data.clone(),
-                        nexrad::DecodeContext::Download {
-                            timestamp: scan.key.timestamp,
-                            file_name: scan.file_name.clone(),
-                            is_cache_hit,
-                            fetch_latency_ms: fetch_latency,
-                        },
+
+                if is_cache_hit {
+                    self.state.status_message =
+                        format!("Loaded from cache: {}", scan.file_name);
+
+                    // Cache hit: records already in IDB. Send render request directly.
+                    let scan_key = data::ScanKey::from_secs(
+                        &scan.key.site_id,
+                        scan.key.timestamp,
                     );
+                    self.current_render_scan_key = Some(scan_key.to_storage_key());
+                    self.displayed_scan_timestamp = Some(scan.key.timestamp);
+                    self.state
+                        .playback_state
+                        .set_playback_position(scan.key.timestamp as f64);
+                    self.last_render_params = None; // Force fresh render
+                    self.request_worker_render();
                 } else {
-                    // Fallback: synchronous decode on main thread
-                    let t = web_time::Instant::now();
-                    match load(&scan.data) {
-                        Ok(volume) => {
-                            let ms = t.elapsed().as_secs_f64() * 1000.0;
-                            log::warn!("MAIN-THREAD decode (download): {:.0}ms", ms);
-                            self.apply_decoded_volume(volume, scan.key.timestamp, true);
-                        }
-                        Err(e) => {
-                            log::error!("Failed to load NEXRAD volume: {}", e);
-                            self.state.status_message = format!("Load error: {}", e);
-                        }
+                    self.state.status_message = format!(
+                        "Downloaded: {} ({} bytes)",
+                        scan.file_name,
+                        scan.data.len()
+                    );
+
+                    // Fresh download: send raw bytes to worker for ingest.
+                    // Worker splits records, probes elevations, stores in IDB,
+                    // then returns metadata. We render on the Ingested callback.
+                    if let Some(ref mut worker) = self.decode_worker {
+                        worker.ingest(
+                            scan.data.clone(),
+                            scan.key.site_id.clone(),
+                            scan.key.timestamp,
+                            scan.file_name.clone(),
+                            fetch_latency,
+                        );
                     }
                 }
 
@@ -1067,43 +1525,14 @@ impl eframe::App for WorkbenchApp {
             self.process_selection_download(ctx);
         }
 
-        // Check for completed scrub load operations
+        // Check for completed scrub load operations (legacy path, kept for fallback)
         if let Some(result) = self.scrub_load_channel.try_recv() {
             match result {
-                nexrad::ScrubLoadResult::Success { timestamp, data } => {
-                    // Decode the volume — offload to Web Worker if available.
-                    // Set displayed_scan_timestamp immediately so the auto-scrub
-                    // guard doesn't re-submit the same scan every frame while the
-                    // worker is still decoding.
-                    self.displayed_scan_timestamp = Some(timestamp);
-                    if let Some(ref mut worker) = self.decode_worker {
-                        worker.decode(
-                            data,
-                            nexrad::DecodeContext::Scrub { timestamp },
-                        );
-                    } else {
-                        // Fallback: synchronous decode on main thread
-                        let t = web_time::Instant::now();
-                        match load(&data) {
-                            Ok(volume) => {
-                                let ms = t.elapsed().as_secs_f64() * 1000.0;
-                                log::warn!("MAIN-THREAD decode (scrub): {:.0}ms", ms);
-                                self.apply_decoded_volume(volume, timestamp, false);
-                            }
-                            Err(e) => {
-                                log::error!("Scrub load: failed to decode volume: {}", e);
-                                self.displayed_scan_timestamp = Some(timestamp);
-                            }
-                        }
-                    }
-                }
-                nexrad::ScrubLoadResult::NotFound { timestamp } => {
-                    log::debug!("Scrub load: scan {} not in cache", timestamp);
-                    // Mark as displayed to prevent retry loop
-                    self.displayed_scan_timestamp = Some(timestamp);
-                }
-                nexrad::ScrubLoadResult::Error { timestamp, message } => {
-                    log::error!("Scrub load error: {}", message);
+                nexrad::ScrubLoadResult::Success { timestamp, .. } |
+                nexrad::ScrubLoadResult::NotFound { timestamp } |
+                nexrad::ScrubLoadResult::Error { timestamp, .. } => {
+                    // In the new architecture, scrub uses worker.render() directly.
+                    // This handler just marks the timestamp to prevent retry loops.
                     self.displayed_scan_timestamp = Some(timestamp);
                 }
             }
@@ -1114,67 +1543,19 @@ impl eframe::App for WorkbenchApp {
             self.handle_realtime_result(result, ctx);
         }
 
-        // Handle pending partial volume decode
-        // Phase 1: Assemble raw bytes from IndexedDB (async), write to pending_decode_data.
-        // Phase 2: Submit assembled bytes to worker (or decode synchronously).
-        if let Some((timestamp_ms, scan_key)) = self.state.pending_partial_decode.take() {
-            if self.decode_worker.is_some() {
-                // Worker path: async assemble, then submit to worker from update loop
-                let facade = self.data_facade.clone();
-                let ctx_clone = ctx.clone();
-                let pending_data = self.pending_decode_data.clone();
-
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(data) = facade.assemble_scan_data(&scan_key).await {
-                        log::debug!(
-                            "Partial scan assembled: {} bytes at {}",
-                            data.len(),
-                            timestamp_ms
-                        );
-                        pending_data.borrow_mut().push((timestamp_ms, data));
-                        ctx_clone.request_repaint();
-                    }
-                });
-            } else {
-                // Fallback: async decode on main thread (original path)
-                let facade = self.data_facade.clone();
-                let ctx_clone = ctx.clone();
-                let results = self.partial_volume_results.clone();
-
-                wasm_bindgen_futures::spawn_local(async move {
-                    if let Ok(volume) = facade.decode_available_records(&scan_key).await {
-                        log::debug!(
-                            "Partial decode completed: {} sweeps at {}",
-                            volume.sweeps().len(),
-                            timestamp_ms
-                        );
-                        results.borrow_mut().push((timestamp_ms, volume));
-                        ctx_clone.request_repaint();
-                    }
-                });
-            }
-        }
-
-        // Submit assembled partial decode data to worker
-        {
-            let assembled: Vec<_> = self.pending_decode_data.borrow_mut().drain(..).collect();
-            for (timestamp_ms, data) in assembled {
-                if let Some(ref mut worker) = self.decode_worker {
-                    worker.decode(data, nexrad::DecodeContext::PartialDecode { timestamp_ms });
-                }
-            }
-        }
-
-        // Process any completed partial volume decodes (fallback path only)
-        {
-            let completed: Vec<_> = self.partial_volume_results.borrow_mut().drain(..).collect();
-            for (timestamp_ms, volume) in completed {
-                if self.volume_ring.insert_or_update(timestamp_ms, volume) {
-                    self.displayed_scan_timestamp = Some(timestamp_ms / 1000);
-                    self.radar_texture_cache.invalidate();
-                    log::debug!("Inserted partial volume at {}", timestamp_ms);
-                }
-            }
+        // Handle pending partial volume decode — in the worker architecture,
+        // partial volumes are already stored in IDB by the realtime ingest path.
+        // We just need to send a render request.
+        if let Some((timestamp_ms, _scan_key)) = self.state.pending_partial_decode.take() {
+            let scan_ts_secs = timestamp_ms / 1000;
+            let scan_key = data::ScanKey::from_secs(
+                &self.state.viz_state.site_id,
+                scan_ts_secs,
+            );
+            self.current_render_scan_key = Some(scan_key.to_storage_key());
+            self.displayed_scan_timestamp = Some(scan_ts_secs);
+            self.last_render_params = None;
+            self.request_worker_render();
         }
 
         // Stop realtime channel if live mode was stopped by UI
@@ -1199,7 +1580,9 @@ impl eframe::App for WorkbenchApp {
             self.start_live_mode(ctx);
         }
 
-        // Auto-load scan when scrubbing: find the most recent scan within 15 minutes
+        // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
+        // In the worker architecture, this sends a render request directly —
+        // the worker reads records from IDB, decodes the target elevation, and renders.
         const MAX_SCAN_AGE_SECS: f64 = 15.0 * 60.0;
         {
             let playback_ts = self.state.playback_state.playback_position();
@@ -1216,23 +1599,31 @@ impl eframe::App for WorkbenchApp {
                     None => true,
                 };
 
-                // Also check we're not already loading this scan
-                let already_loading = self.scrub_load_channel.pending_timestamp() == Some(scan_ts);
-
-                if needs_load && !already_loading && !self.scrub_load_channel.is_loading() {
+                if needs_load && self.decode_worker.is_some() {
                     log::debug!(
-                        "Scrubbing: loading scan at {} (playback at {})",
+                        "Scrubbing: render scan at {} (playback at {})",
                         scan_ts,
                         playback_ts as i64
                     );
-                    self.scrub_load_channel.load_scan(
-                        ctx.clone(),
-                        self.data_facade.clone(),
-                        self.state.viz_state.site_id.clone(),
+
+                    // Build scan key in data storage format: "SITE|TIMESTAMP_MS"
+                    let scan_key = data::ScanKey::from_secs(
+                        &self.state.viz_state.site_id,
                         scan_ts,
                     );
+                    self.current_render_scan_key = Some(scan_key.to_storage_key());
+                    self.displayed_scan_timestamp = Some(scan_ts);
+                    self.last_render_params = None; // Force fresh render
+                    self.request_worker_render();
                 }
             }
+        }
+
+        // Detect elevation/product/interpolation changes and trigger worker re-render.
+        // If the user changes these settings and we have a current scan, we need
+        // a new render from the worker.
+        if self.current_render_scan_key.is_some() && self.decode_worker.is_some() {
+            self.request_worker_render();
         }
 
         // Update session stats from live network statistics

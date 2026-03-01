@@ -243,6 +243,8 @@ pub struct SweepMeta {
     pub end: f64,
     /// Elevation angle in degrees.
     pub elevation: f32,
+    /// Elevation number (index used for selective record querying).
+    pub elevation_number: u8,
 }
 
 /// Metadata for a scan stored in the scan index.
@@ -312,6 +314,9 @@ pub struct RecordIndexEntry {
     pub has_vcp: bool,
     /// When this record was stored.
     pub stored_at: UnixMillis,
+    /// Elevation numbers contained in this record.
+    /// Populated at ingest by probing the record content.
+    pub elevation_numbers: Option<Vec<u8>>,
 }
 
 impl RecordIndexEntry {
@@ -322,6 +327,7 @@ impl RecordIndexEntry {
             size_bytes,
             has_vcp: false,
             stored_at: UnixMillis::now(),
+            elevation_numbers: None,
         }
     }
 
@@ -332,6 +338,11 @@ impl RecordIndexEntry {
 
     pub fn with_vcp(mut self, has_vcp: bool) -> Self {
         self.has_vcp = has_vcp;
+        self
+    }
+
+    pub fn with_elevations(mut self, elevation_numbers: Option<Vec<u8>>) -> Self {
+        self.elevation_numbers = elevation_numbers;
         self
     }
 
