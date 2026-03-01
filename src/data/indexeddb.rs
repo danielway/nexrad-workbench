@@ -345,7 +345,12 @@ impl IndexedDbRecordStore {
         }
 
         let ms = t.elapsed().as_secs_f64() * 1000.0;
-        log::debug!("IDB list_records_for_scan: {:.1}ms ({} keys from {} total)", ms, keys.len(), array.length());
+        log::debug!(
+            "IDB list_records_for_scan: {:.1}ms ({} keys from {} total)",
+            ms,
+            keys.len(),
+            array.length()
+        );
 
         Ok(keys)
     }
@@ -630,7 +635,12 @@ impl IndexedDbRecordStore {
         scans.sort_by_key(|s| s.scan.scan_start.0);
 
         let ms = t.elapsed().as_secs_f64() * 1000.0;
-        log::debug!("IDB list_scans: {:.1}ms ({} matched from {} total)", ms, scans.len(), array.length());
+        log::debug!(
+            "IDB list_scans: {:.1}ms ({} matched from {} total)",
+            ms,
+            scans.len(),
+            array.length()
+        );
 
         Ok(scans)
     }

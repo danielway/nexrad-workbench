@@ -268,7 +268,11 @@ impl ScrubLoadChannel {
                 Ok(record_keys) => {
                     let list_ms = t_list.elapsed().as_secs_f64() * 1000.0;
                     if record_keys.is_empty() {
-                        log::debug!("Scrub load: cache miss for {} (no records, list: {:.0}ms)", timestamp, list_ms);
+                        log::debug!(
+                            "Scrub load: cache miss for {} (no records, list: {:.0}ms)",
+                            timestamp,
+                            list_ms
+                        );
                         ScrubLoadResult::NotFound { timestamp }
                     } else {
                         // Fetch all records

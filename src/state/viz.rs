@@ -73,7 +73,7 @@ impl RadarProduct {
     }
 
     /// String identifier used by the worker render protocol.
-    pub fn to_worker_string(&self) -> &'static str {
+    pub fn to_worker_string(self) -> &'static str {
         match self {
             RadarProduct::Reflectivity => "reflectivity",
             RadarProduct::Velocity => "velocity",
@@ -276,7 +276,7 @@ impl InterpolationMode {
     }
 
     /// String identifier used by the worker render protocol.
-    pub fn to_worker_string(&self) -> &'static str {
+    pub fn to_worker_string(self) -> &'static str {
         match self {
             InterpolationMode::Nearest => "nearest",
             InterpolationMode::Bilinear => "bilinear",

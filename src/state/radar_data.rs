@@ -202,38 +202,6 @@ impl RadarTimeline {
         }
     }
 
-    /// Update the sweeps for a scan identified by its start timestamp.
-    /// Also updates the scan's time bounds to encompass the actual sweep data.
-    /// Returns true if the scan was found and updated.
-    pub fn update_scan_sweeps(&mut self, scan_timestamp: i64, sweeps: Vec<Sweep>) -> bool {
-        if let Some(scan) = self
-            .scans
-            .iter_mut()
-            .find(|s| (s.start_time as i64) == scan_timestamp)
-        {
-            // Update scan time bounds to match actual sweep data
-            if !sweeps.is_empty() {
-                let sweep_start = sweeps
-                    .iter()
-                    .map(|s| s.start_time)
-                    .fold(f64::INFINITY, f64::min);
-                let sweep_end = sweeps
-                    .iter()
-                    .map(|s| s.end_time)
-                    .fold(f64::NEG_INFINITY, f64::max);
-
-                // Expand scan bounds to encompass all sweeps
-                scan.start_time = scan.start_time.min(sweep_start);
-                scan.end_time = scan.end_time.max(sweep_end);
-            }
-
-            scan.sweeps = sweeps;
-            true
-        } else {
-            false
-        }
-    }
-
     /// Get the timestamp of a scan for identification purposes.
     /// Used to check if we need to load a different scan.
     #[allow(dead_code)] // Utility method

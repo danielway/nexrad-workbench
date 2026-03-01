@@ -12,25 +12,11 @@ mod nexrad;
 mod state;
 mod ui;
 
-use eframe::egui;
-// Used by legacy decode path (worker_decode, apply_decoded_volume)
-#[allow(unused_imports)]
-use ::nexrad::model::data::Scan;
 use data::DataFacade;
-use state::radar_data::Sweep as TimelineSweep;
+use eframe::egui;
 use state::AppState;
 
 fn main() {}
-
-/// Decode raw NEXRAD archive bytes into a bincode-serialized Scan.
-/// Called from the Web Worker via worker.js.
-#[wasm_bindgen::prelude::wasm_bindgen]
-pub fn worker_decode(data: &[u8]) -> Result<Vec<u8>, wasm_bindgen::JsValue> {
-    let scan = ::nexrad::load(data)
-        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("{}", e)))?;
-    bincode::serialize(&scan)
-        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("{}", e)))
-}
 
 /// Ingest a raw NEXRAD archive file: split into LDM records, probe for elevation
 /// metadata, store in IndexedDB, and return metadata.
@@ -85,9 +71,10 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // Open IDB from worker context
         let store = IndexedDbRecordStore::new();
-        store.open().await.map_err(|e| {
-            wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e))
-        })?;
+        store
+            .open()
+            .await
+            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e)))?;
 
         let scan_start = UnixMillis::from_secs(timestamp_secs);
         let scan_key = ScanKey::new(site_id.as_str(), scan_start);
@@ -186,7 +173,9 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         use crate::data::indexeddb::IndexedDbRecordStore;
         use crate::data::keys::*;
         use crate::nexrad::decode_record_to_radials;
-        use nexrad_render::{default_color_scale, render_sweep, Interpolation, Product, RenderOptions};
+        use nexrad_render::{
+            default_color_scale, render_sweep, Interpolation, Product, RenderOptions,
+        };
 
         let t_total = web_time::Instant::now();
 
@@ -233,9 +222,10 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // Open IDB and fetch record entries
         let t_idb_open = web_time::Instant::now();
         let store = IndexedDbRecordStore::new();
-        store.open().await.map_err(|e| {
-            wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e))
-        })?;
+        store
+            .open()
+            .await
+            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e)))?;
         let idb_open_ms = t_idb_open.elapsed().as_secs_f64() * 1000.0;
 
         let t_list = web_time::Instant::now();
@@ -333,9 +323,8 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             .with_interpolation(interpolation);
 
         let t_render = web_time::Instant::now();
-        let render_result = render_sweep(&field, &color_scale, &options).map_err(|e| {
-            wasm_bindgen::JsValue::from_str(&format!("Render failed: {}", e))
-        })?;
+        let render_result = render_sweep(&field, &color_scale, &options)
+            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Render failed: {}", e)))?;
 
         let image = render_result.into_image();
         let (width, height) = image.dimensions();
@@ -520,9 +509,6 @@ pub struct WorkbenchApp {
     /// Currently loaded NEXRAD scan
     current_scan: Option<nexrad::CachedScan>,
 
-    /// Ring buffer of decoded volumes for dynamic sweep rendering
-    volume_ring: nexrad::VolumeRing,
-
     /// Texture cache for rendered radar imagery
     radar_texture_cache: nexrad::RadarTextureCache,
 
@@ -542,17 +528,9 @@ pub struct WorkbenchApp {
     /// Channel for real-time streaming
     realtime_channel: nexrad::RealtimeChannel,
 
-    /// Shared results from partial volume decode tasks (legacy fallback path).
-    #[allow(dead_code)]
-    partial_volume_results: std::rc::Rc<std::cell::RefCell<Vec<(i64, Scan)>>>,
-
-    /// Web Worker for offloading expensive nexrad::load() calls.
-    /// None if the worker failed to initialize (falls back to main-thread decode).
+    /// Web Worker for offloading expensive NEXRAD operations.
+    /// None if the worker failed to initialize.
     decode_worker: Option<nexrad::DecodeWorker>,
-
-    /// Assembled scan data awaiting worker decode (legacy fallback path).
-    #[allow(dead_code, clippy::type_complexity)]
-    pending_decode_data: std::rc::Rc<std::cell::RefCell<Vec<(i64, Vec<u8>)>>>,
 
     /// Scan key of the currently displayed scan (data storage format "SITE|TIMESTAMP_MS").
     /// Used to send render requests to the worker.
@@ -584,78 +562,6 @@ static COUNTIES_SHP: &[u8] =
     include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.shp");
 static COUNTIES_DBF: &[u8] =
     include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.dbf");
-
-/// Extract sweep timing information from a decoded volume for timeline display.
-///
-/// Each sweep's start/end times are derived from the first/last radial's
-/// collection timestamps, and elevation is taken from the first radial.
-fn extract_sweep_timing(volume: &Scan) -> Vec<TimelineSweep> {
-    volume
-        .sweeps()
-        .iter()
-        .filter_map(|sweep| {
-            let radials = sweep.radials();
-            if radials.is_empty() {
-                return None;
-            }
-
-            // Get timing from first and last radial (timestamps are in milliseconds)
-            let first_radial = radials.first()?;
-            let last_radial = radials.last()?;
-
-            let start_time = first_radial.collection_timestamp() as f64 / 1000.0;
-            let end_time = last_radial.collection_timestamp() as f64 / 1000.0;
-            let elevation = first_radial.elevation_angle_degrees();
-            let elevation_number = sweep.elevation_number();
-
-            Some(TimelineSweep {
-                start_time,
-                end_time,
-                elevation,
-                elevation_number,
-                radials: Vec::new(), // We don't need radial data for timeline display
-            })
-        })
-        .collect()
-}
-
-/// Persist sweep metadata to the scan index so future timeline loads
-/// have accurate scan duration and sweep detail without decoding.
-fn persist_sweep_meta(
-    facade: &DataFacade,
-    site_id: &str,
-    scan_timestamp_secs: i64,
-    sweeps: &[TimelineSweep],
-) {
-    use data::SweepMeta;
-
-    let sweep_metas: Vec<SweepMeta> = sweeps
-        .iter()
-        .map(|s| SweepMeta {
-            start: s.start_time,
-            end: s.end_time,
-            elevation: s.elevation,
-            elevation_number: s.elevation_number,
-        })
-        .collect();
-
-    let end_secs = sweeps
-        .iter()
-        .map(|s| s.end_time as i64)
-        .max()
-        .unwrap_or(scan_timestamp_secs);
-
-    let scan_key = data::ScanKey::new(site_id, data::UnixMillis::from_secs(scan_timestamp_secs));
-    let facade = facade.clone();
-    wasm_bindgen_futures::spawn_local(async move {
-        if let Err(e) = facade
-            .update_scan_sweep_meta(&scan_key, end_secs, sweep_metas)
-            .await
-        {
-            log::warn!("Failed to persist sweep metadata: {}", e);
-        }
-    });
-}
 
 impl WorkbenchApp {
     /// Creates a new WorkbenchApp instance.
@@ -777,16 +683,13 @@ impl WorkbenchApp {
             cache_load_channel,
             archive_index: nexrad::ArchiveIndex::new(),
             current_scan: None,
-            volume_ring: nexrad::VolumeRing::new(),
             radar_texture_cache: nexrad::RadarTextureCache::new(),
             selection_download_queue: Vec::new(),
             displayed_scan_timestamp: None,
             previous_site_id: initial_site_id,
             scrub_load_channel: nexrad::ScrubLoadChannel::new(),
             realtime_channel,
-            partial_volume_results: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             decode_worker,
-            pending_decode_data: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             current_render_scan_key: None,
             available_elevation_numbers: Vec::new(),
             last_render_params: None,
@@ -985,51 +888,6 @@ impl WorkbenchApp {
             .start(ctx.clone(), site_id, self.data_facade.clone());
     }
 
-    /// Apply a decoded volume to the application state.
-    ///
-    /// This is the common post-decode handler used by both the synchronous
-    /// fallback path and the worker result handler. It extracts sweep timing,
-    /// persists metadata, inserts into the volume ring, and invalidates caches.
-    fn apply_decoded_volume(&mut self, volume: Scan, timestamp: i64, set_playback: bool) {
-        let t = web_time::Instant::now();
-        let sweep_count = volume.sweeps().len();
-
-        // Extract sweep timing for timeline display
-        let sweep_timing = extract_sweep_timing(&volume);
-        persist_sweep_meta(
-            &self.data_facade,
-            &self.state.viz_state.site_id,
-            timestamp,
-            &sweep_timing,
-        );
-        if self
-            .state
-            .radar_timeline
-            .update_scan_sweeps(timestamp, sweep_timing)
-        {
-            log::debug!(
-                "Updated timeline with {} sweeps for scan {}",
-                sweep_count,
-                timestamp
-            );
-        }
-
-        // Insert into volume ring (timestamp in ms)
-        self.volume_ring.insert(timestamp * 1000, volume);
-        self.displayed_scan_timestamp = Some(timestamp);
-        if set_playback {
-            self.state
-                .playback_state
-                .set_playback_position(timestamp as f64);
-        }
-        // Invalidate texture cache to trigger re-render
-        self.radar_texture_cache.invalidate();
-        self.state.timeline_needs_refresh = true;
-
-        let ms = t.elapsed().as_secs_f64() * 1000.0;
-        log::info!("apply_decoded_volume: {} sweeps in {:.1}ms", sweep_count, ms);
-    }
-
     /// Find the best elevation number for the current target_elevation.
     ///
     /// If sweep metadata with angles is available, picks the number whose angle
@@ -1044,16 +902,12 @@ impl WorkbenchApp {
         {
             if !scan.sweeps.is_empty() {
                 // Find sweep whose angle is closest to target
-                if let Some(best) = scan
-                    .sweeps
-                    .iter()
-                    .min_by(|a, b| {
-                        (a.elevation - target)
-                            .abs()
-                            .partial_cmp(&(b.elevation - target).abs())
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                {
+                if let Some(best) = scan.sweeps.iter().min_by(|a, b| {
+                    (a.elevation - target)
+                        .abs()
+                        .partial_cmp(&(b.elevation - target).abs())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                }) {
                     return best.elevation_number;
                 }
             }
@@ -1106,10 +960,12 @@ impl WorkbenchApp {
 
         let scan_key = scan_key.clone();
         self.last_render_params = Some(params);
-        self.decode_worker
-            .as_mut()
-            .unwrap()
-            .render(scan_key, elevation_number, product, interpolation);
+        self.decode_worker.as_mut().unwrap().render(
+            scan_key,
+            elevation_number,
+            product,
+            interpolation,
+        );
     }
 
     /// Stop live mode streaming.
@@ -1235,11 +1091,10 @@ impl eframe::App for WorkbenchApp {
         // Detect site changes and clear volume ring
         if self.state.viz_state.site_id != self.previous_site_id {
             log::info!(
-                "Site changed from {} to {}, clearing volume ring",
+                "Site changed from {} to {}",
                 self.previous_site_id,
                 self.state.viz_state.site_id
             );
-            self.volume_ring.clear();
             self.radar_texture_cache.invalidate();
             self.displayed_scan_timestamp = None;
             self.previous_site_id = self.state.viz_state.site_id.clone();
@@ -1364,62 +1219,6 @@ impl eframe::App for WorkbenchApp {
         if let Some(ref mut worker) = self.decode_worker {
             for outcome in worker.try_recv() {
                 match outcome {
-                    nexrad::WorkerOutcome::Decode(decode_outcome) => match decode_outcome {
-                        nexrad::DecodeOutcome::Success(decoded) => {
-                            match decoded.context {
-                                nexrad::DecodeContext::Download {
-                                    timestamp,
-                                    fetch_latency_ms,
-                                    ..
-                                } => {
-                                    self.state
-                                        .session_stats
-                                        .record_decode_time(decoded.worker_decode_ms);
-                                    let _ = fetch_latency_ms;
-                                    self.apply_decoded_volume(decoded.scan, timestamp, true);
-                                }
-                                nexrad::DecodeContext::Scrub { timestamp } => {
-                                    self.apply_decoded_volume(decoded.scan, timestamp, false);
-                                }
-                                nexrad::DecodeContext::Realtime { timestamp } => {
-                                    self.apply_decoded_volume(decoded.scan, timestamp, false);
-                                }
-                                nexrad::DecodeContext::PartialDecode { timestamp_ms } => {
-                                    if self
-                                        .volume_ring
-                                        .insert_or_update(timestamp_ms, decoded.scan)
-                                    {
-                                        self.displayed_scan_timestamp =
-                                            Some(timestamp_ms / 1000);
-                                        self.radar_texture_cache.invalidate();
-                                        log::debug!(
-                                            "Worker: inserted partial volume at {}",
-                                            timestamp_ms
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        nexrad::DecodeOutcome::Error(err) => {
-                            log::error!("Worker decode failed: {}", err.message);
-                            match err.context {
-                                nexrad::DecodeContext::Download { .. } => {
-                                    self.state.status_message =
-                                        format!("Decode error: {}", err.message);
-                                }
-                                nexrad::DecodeContext::Scrub { timestamp } => {
-                                    self.displayed_scan_timestamp = Some(timestamp);
-                                }
-                                nexrad::DecodeContext::Realtime { .. } => {
-                                    self.state.status_message =
-                                        format!("Live: decode error: {}", err.message);
-                                }
-                                nexrad::DecodeContext::PartialDecode { .. } => {
-                                    // Partial decodes can fail normally
-                                }
-                            }
-                        }
-                    },
                     nexrad::WorkerOutcome::Ingested(result) => {
                         log::info!(
                             "Ingest complete: {} ({} records, {} elevations, {:.0}ms, fetch: {:.0}ms)",
@@ -1433,15 +1232,12 @@ impl eframe::App for WorkbenchApp {
                         self.state
                             .session_stats
                             .record_fetch_latency(result.context.fetch_latency_ms);
-                        self.state
-                            .session_stats
-                            .record_store_time(result.total_ms);
+                        self.state.session_stats.record_store_time(result.total_ms);
 
                         // Track the scan for render requests
                         self.current_render_scan_key = Some(result.scan_key.clone());
                         self.available_elevation_numbers = result.elevation_numbers;
-                        self.displayed_scan_timestamp =
-                            Some(result.context.timestamp_secs);
+                        self.displayed_scan_timestamp = Some(result.context.timestamp_secs);
                         self.state
                             .playback_state
                             .set_playback_position(result.context.timestamp_secs as f64);
@@ -1521,19 +1317,17 @@ impl eframe::App for WorkbenchApp {
 
             if let Some(scan) = scan_opt {
                 let fetch_latency = match &result {
-                    nexrad::DownloadResult::Success { fetch_latency_ms, .. } => *fetch_latency_ms,
+                    nexrad::DownloadResult::Success {
+                        fetch_latency_ms, ..
+                    } => *fetch_latency_ms,
                     _ => 0.0,
                 };
 
                 if is_cache_hit {
-                    self.state.status_message =
-                        format!("Loaded from cache: {}", scan.file_name);
+                    self.state.status_message = format!("Loaded from cache: {}", scan.file_name);
 
                     // Cache hit: records already in IDB. Send render request directly.
-                    let scan_key = data::ScanKey::from_secs(
-                        &scan.key.site_id,
-                        scan.key.timestamp,
-                    );
+                    let scan_key = data::ScanKey::from_secs(&scan.key.site_id, scan.key.timestamp);
                     self.current_render_scan_key = Some(scan_key.to_storage_key());
                     self.displayed_scan_timestamp = Some(scan.key.timestamp);
                     self.state
@@ -1542,11 +1336,8 @@ impl eframe::App for WorkbenchApp {
                     self.last_render_params = None; // Force fresh render
                     self.request_worker_render();
                 } else {
-                    self.state.status_message = format!(
-                        "Downloaded: {} ({} bytes)",
-                        scan.file_name,
-                        scan.data.len()
-                    );
+                    self.state.status_message =
+                        format!("Downloaded: {} ({} bytes)", scan.file_name, scan.data.len());
 
                     // Fresh download: send raw bytes to worker for ingest.
                     // Worker splits records, probes elevations, stores in IDB,
@@ -1611,9 +1402,9 @@ impl eframe::App for WorkbenchApp {
         // Check for completed scrub load operations (legacy path, kept for fallback)
         if let Some(result) = self.scrub_load_channel.try_recv() {
             match result {
-                nexrad::ScrubLoadResult::Success { timestamp, .. } |
-                nexrad::ScrubLoadResult::NotFound { timestamp } |
-                nexrad::ScrubLoadResult::Error { timestamp, .. } => {
+                nexrad::ScrubLoadResult::Success { timestamp, .. }
+                | nexrad::ScrubLoadResult::NotFound { timestamp }
+                | nexrad::ScrubLoadResult::Error { timestamp, .. } => {
                     // In the new architecture, scrub uses worker.render() directly.
                     // This handler just marks the timestamp to prevent retry loops.
                     self.displayed_scan_timestamp = Some(timestamp);
@@ -1631,10 +1422,7 @@ impl eframe::App for WorkbenchApp {
         // We just need to send a render request.
         if let Some((timestamp_ms, _scan_key)) = self.state.pending_partial_decode.take() {
             let scan_ts_secs = timestamp_ms / 1000;
-            let scan_key = data::ScanKey::from_secs(
-                &self.state.viz_state.site_id,
-                scan_ts_secs,
-            );
+            let scan_key = data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts_secs);
             self.current_render_scan_key = Some(scan_key.to_storage_key());
             self.displayed_scan_timestamp = Some(scan_ts_secs);
             self.last_render_params = None;
@@ -1690,10 +1478,7 @@ impl eframe::App for WorkbenchApp {
                     );
 
                     // Build scan key in data storage format: "SITE|TIMESTAMP_MS"
-                    let scan_key = data::ScanKey::from_secs(
-                        &self.state.viz_state.site_id,
-                        scan_ts,
-                    );
+                    let scan_key = data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts);
                     self.current_render_scan_key = Some(scan_key.to_storage_key());
                     self.displayed_scan_timestamp = Some(scan_ts);
                     self.last_render_params = None; // Force fresh render
@@ -1751,7 +1536,6 @@ impl eframe::App for WorkbenchApp {
             &mut self.state,
             &self.download_channel,
             &self.data_facade,
-            &self.volume_ring,
         );
         ui::render_right_panel(ctx, &mut self.state);
 
@@ -1760,7 +1544,6 @@ impl eframe::App for WorkbenchApp {
             ctx,
             &mut self.state,
             Some(&self.geo_layers),
-            &self.volume_ring,
             &mut self.radar_texture_cache,
         );
 

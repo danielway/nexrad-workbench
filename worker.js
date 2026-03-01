@@ -1,11 +1,8 @@
-// Decode Worker — ES module worker that offloads heavy data operations from the main thread.
+// Data Worker — ES module worker that offloads heavy data operations from the main thread.
 //
 // Protocol:
 //   Main → Worker:  { type: 'init',   jsUrl, wasmUrl }
 //   Worker → Main:  { type: 'ready' }
-//
-//   Main → Worker:  { type: 'decode',  id, data: ArrayBuffer }
-//   Worker → Main:  { type: 'decoded', id, data: ArrayBuffer, decodeMs }
 //
 //   Main → Worker:  { type: 'ingest',  id, data: ArrayBuffer, siteId, timestampSecs, fileName }
 //   Worker → Main:  { type: 'ingested', id, result: { recordsStored, scanKey, elevationMap, totalMs } }
@@ -36,28 +33,6 @@ self.onmessage = async function (e) {
 
     if (!wasm) {
         self.postMessage({ type: 'error', id: msg.id, message: 'Worker not initialized' });
-        return;
-    }
-
-    if (msg.type === 'decode') {
-        try {
-            const start = performance.now();
-            // worker_decode: &[u8] -> Result<Vec<u8>, JsValue>
-            // Input: raw compressed NEXRAD archive bytes
-            // Output: bincode-serialized Scan
-            const inputBytes = new Uint8Array(msg.data);
-            const resultBytes = wasm.worker_decode(inputBytes);
-            const decodeMs = performance.now() - start;
-
-            // Transfer the result buffer (zero-copy ownership move)
-            const buffer = resultBytes.buffer;
-            self.postMessage(
-                { type: 'decoded', id: msg.id, data: buffer, decodeMs: decodeMs },
-                [buffer]
-            );
-        } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
-        }
         return;
     }
 

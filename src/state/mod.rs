@@ -23,18 +23,15 @@ pub mod vcp;
 mod viz;
 
 pub use layer::{GeoLayerVisibility, LayerState};
-pub use preferences::UserPreferences;
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use playback::{LoopMode, PlaybackSpeed, PlaybackState};
+pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
 pub use settings::{format_bytes, StorageSettings};
 pub use stats::SessionStats;
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
-pub use viz::{
-    ColorPalette, InterpolationMode, ProcessingConfig, RadarProduct, RenderMode, SmoothingMode,
-    VizState,
-};
+pub use viz::{ColorPalette, InterpolationMode, RadarProduct, RenderMode, SmoothingMode, VizState};
 
 /// Root application state containing all sub-states.
 #[derive(Default)]

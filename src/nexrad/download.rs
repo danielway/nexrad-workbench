@@ -5,10 +5,7 @@
 
 use super::archive_index::{current_timestamp_secs, ArchiveFileMeta, ArchiveListing};
 use super::types::{CachedScan, DownloadResult, ScanKey};
-use crate::data::{
-    DataFacade, ScanCompleteness,
-    ScanKey as DataScanKey,
-};
+use crate::data::{DataFacade, ScanCompleteness, ScanKey as DataScanKey};
 use chrono::NaiveDate;
 use eframe::egui;
 use std::cell::RefCell;

@@ -1,14 +1,10 @@
 //! Central canvas UI: radar visualization area.
 
 use super::colors::{canvas as canvas_colors, radar, sites as site_colors};
-use super::left_panel::RadarPosition;
 use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::{GeoLayerSet, MapProjection};
-use crate::nexrad::{
-    radar_coverage_range_km, render_sweep_field_to_image, RadarCacheKey, RadarTextureCache,
-    RenderSweep, VolumeRing,
-};
-use crate::state::{AppState, GeoLayerVisibility, SmoothingMode};
+use crate::nexrad::{radar_coverage_range_km, RadarTextureCache};
+use crate::state::{AppState, GeoLayerVisibility};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use geo_types::Coord;
 use std::f32::consts::PI;
@@ -18,7 +14,6 @@ pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
     geo_layers: Option<&GeoLayerSet>,
-    volume_ring: &VolumeRing,
     texture_cache: &mut RadarTextureCache,
 ) {
     egui::CentralPanel::default().show(ctx, |ui| {
@@ -58,11 +53,8 @@ pub fn render_canvas_with_geo(
             &state.layer_state.geo,
         );
 
-        // Render radar data.
-        // Primary path: draw from worker-rendered texture cache.
-        // Legacy fallback: build dynamic sweep from VolumeRing.
-        let radar_position = if texture_cache.texture().is_some() && volume_ring.is_empty() {
-            // Worker-rendered texture: draw it directly (no VolumeRing needed)
+        // Render radar data from worker-rendered texture cache.
+        if texture_cache.texture().is_some() {
             draw_cached_texture(
                 &painter,
                 &projection,
@@ -71,68 +63,10 @@ pub fn render_canvas_with_geo(
                 state.viz_state.center_lat,
                 state.viz_state.center_lon,
             );
-            None
-        } else if !volume_ring.is_empty() {
-            // Legacy VolumeRing path (kept for backward compat during transition)
-            let playback_ts_ms = (state.playback_state.playback_position() * 1000.0) as i64;
-
-            let render_sweep = RenderSweep::from_volume_ring(
-                volume_ring,
-                state.viz_state.target_elevation,
-                playback_ts_ms,
-            );
-
-            // Compute staleness for fixed-tilt mode
-            {
-                let now_ms = js_sys::Date::now() as i64;
-                state.viz_state.data_staleness_secs = render_sweep.staleness_seconds(now_ms);
-            }
-
-            // Render if we have radials
-            if !render_sweep.is_empty() {
-                let render_product = state.viz_state.product.to_render_product();
-                let render_interp = state.viz_state.interpolation.to_render_interpolation();
-                let processing = state.viz_state.processing;
-                if let Some(render_time_ms) = render_dynamic_sweep(
-                    ctx,
-                    &painter,
-                    &projection,
-                    &render_sweep,
-                    texture_cache,
-                    &rect,
-                    state.viz_state.center_lat,
-                    state.viz_state.center_lon,
-                    render_product,
-                    render_interp,
-                    processing,
-                ) {
-                    state.session_stats.record_render_time(render_time_ms);
-                }
-
-                // Render data age timestamp markers at cardinal azimuths
-                render_age_markers(&painter, &rect, state, &render_sweep);
-            }
-
-            // Get radar position from most recent radial in the sweep
-            render_sweep
-                .most_recent_radial()
-                .map(|radial| RadarPosition {
-                    azimuth: radial.azimuth_angle_degrees(),
-                    elevation: radial.elevation_angle_degrees(),
-                })
-        } else {
-            None
-        };
-
-        // Show sweep line only in real-time playback mode
-        let azimuth = if state.playback_state.speed == crate::state::PlaybackSpeed::Realtime {
-            radar_position.as_ref().map(|pos| pos.azimuth)
-        } else {
-            None
-        };
+        }
 
         // Draw the radar sweep visualization
-        render_radar_sweep(&painter, &rect, state, azimuth);
+        render_radar_sweep(&painter, &rect, state, None);
 
         // Draw overlay info in top-left corner
         draw_overlay_info(ui, &rect, state);
@@ -190,211 +124,6 @@ fn draw_cached_texture(
             );
 
             painter.image(texture.id(), clipped_rect, clipped_uv, Color32::WHITE);
-        }
-    }
-}
-
-/// Render a dynamic sweep as a cached texture.
-#[allow(clippy::too_many_arguments)]
-fn render_dynamic_sweep(
-    ctx: &egui::Context,
-    painter: &Painter,
-    projection: &MapProjection,
-    render_sweep: &RenderSweep,
-    cache: &mut RadarTextureCache,
-    rect: &Rect,
-    radar_lat: f64,
-    radar_lon: f64,
-    product: nexrad_render::Product,
-    interpolation: nexrad_render::Interpolation,
-    processing: crate::state::ProcessingConfig,
-) -> Option<f64> {
-    let content_signature = render_sweep.cache_signature();
-    // Dimensions are (0, 0) because we always render at native resolution
-    // (determined by gate_count). The content_signature, product, interpolation,
-    // and processing fields uniquely identify the render.
-    let cache_key = RadarCacheKey::for_dynamic_sweep(content_signature, 0, (0, 0))
-        .with_product(product as u8)
-        .with_interpolation(interpolation as u8)
-        .with_processing(processing.cache_hash());
-
-    let render_time_ms = if !cache.is_valid(&cache_key) {
-        let radials = render_sweep.radials();
-        let owned_radials: Vec<::nexrad::model::data::Radial> =
-            radials.iter().map(|r| (*r).clone()).collect();
-
-        let field = match ::nexrad::model::data::SweepField::from_radials(&owned_radials, product)
-        {
-            Some(f) => f,
-            None => {
-                log::error!("Failed to build SweepField from radials");
-                return None;
-            }
-        };
-
-        let render_result = if processing.enabled {
-            match apply_processing_pipeline(field, processing) {
-                Ok(processed) => render_sweep_field_to_image(&processed, product, interpolation),
-                Err(e) => Err(e),
-            }
-        } else {
-            render_sweep_field_to_image(&field, product, interpolation)
-        };
-
-        match render_result {
-            Ok(result) => {
-                cache.update(ctx, cache_key, result.image);
-                Some(result.render_time_ms)
-            }
-            Err(e) => {
-                log::error!("Failed to render dynamic sweep: {}", e);
-                return None;
-            }
-        }
-    } else {
-        None
-    };
-
-    // Draw the cached texture
-    if let Some(texture) = cache.texture() {
-        let range_km = radar_coverage_range_km();
-
-        let km_to_deg = 1.0 / 111.0;
-        let lat_correction = radar_lat.to_radians().cos();
-
-        let lat_range = range_km * km_to_deg;
-        let lon_range = range_km * km_to_deg / lat_correction;
-
-        let top_left = projection.geo_to_screen(Coord {
-            x: radar_lon - lon_range,
-            y: radar_lat + lat_range,
-        });
-        let bottom_right = projection.geo_to_screen(Coord {
-            x: radar_lon + lon_range,
-            y: radar_lat - lat_range,
-        });
-
-        let texture_rect = Rect::from_min_max(top_left, bottom_right);
-        let clipped_rect = texture_rect.intersect(*rect);
-
-        if clipped_rect.width() > 0.0 && clipped_rect.height() > 0.0 {
-            let full_width = texture_rect.width();
-            let full_height = texture_rect.height();
-
-            let uv_min_x = (clipped_rect.min.x - texture_rect.min.x) / full_width;
-            let uv_min_y = (clipped_rect.min.y - texture_rect.min.y) / full_height;
-            let uv_max_x = (clipped_rect.max.x - texture_rect.min.x) / full_width;
-            let uv_max_y = (clipped_rect.max.y - texture_rect.min.y) / full_height;
-
-            let clipped_uv = egui::Rect::from_min_max(
-                egui::pos2(uv_min_x, uv_min_y),
-                egui::pos2(uv_max_x, uv_max_y),
-            );
-
-            painter.image(texture.id(), clipped_rect, clipped_uv, Color32::WHITE);
-        }
-    }
-
-    render_time_ms
-}
-
-/// Apply processing pipeline (threshold, smoothing) to a SweepField.
-fn apply_processing_pipeline(
-    field: ::nexrad::model::data::SweepField,
-    processing: crate::state::ProcessingConfig,
-) -> Result<::nexrad::model::data::SweepField, String> {
-    use nexrad_process::filter::{GaussianSmooth, MedianFilter, ThresholdFilter};
-    use nexrad_process::SweepPipeline;
-
-    let mut pipeline = SweepPipeline::new();
-
-    if processing.threshold_min.is_some() || processing.threshold_max.is_some() {
-        pipeline = pipeline.then(ThresholdFilter {
-            min: processing.threshold_min,
-            max: processing.threshold_max,
-        });
-    }
-
-    match processing.smoothing {
-        SmoothingMode::Median => {
-            let kernel = processing.smoothing_strength as usize;
-            let kernel = if kernel.is_multiple_of(2) {
-                kernel + 1
-            } else {
-                kernel
-            };
-            pipeline = pipeline.then(MedianFilter {
-                azimuth_kernel: kernel,
-                range_kernel: kernel,
-            });
-        }
-        SmoothingMode::Gaussian => {
-            let sigma = processing.smoothing_strength as f32 * 0.5;
-            let sigma = sigma.max(0.5);
-            pipeline = pipeline.then(GaussianSmooth {
-                sigma_azimuth: sigma,
-                sigma_range: sigma,
-            });
-        }
-        SmoothingMode::None => {}
-    }
-
-    pipeline
-        .execute(&field)
-        .map_err(|e| format!("Processing pipeline failed: {}", e))
-}
-
-/// Render data age timestamp markers at cardinal azimuth positions (N, E, S, W).
-fn render_age_markers(
-    painter: &Painter,
-    rect: &Rect,
-    state: &AppState,
-    render_sweep: &RenderSweep,
-) {
-    let center = rect.center() + state.viz_state.pan_offset;
-    let base_radius = rect.width().min(rect.height()) * 0.4;
-    let radius = base_radius * state.viz_state.zoom;
-    let dark = state.is_dark;
-
-    // Place labels at ~75% of radius to avoid overlapping with range rings/cardinal labels
-    let label_radius = radius * 0.75;
-    let font_id = egui::FontId::proportional(11.0);
-    let playback_ts_ms = (state.playback_state.playback_position() * 1000.0) as i64;
-
-    // Cardinal azimuths: N=0, E=90, S=180, W=270
-    let azimuths = [
-        (0.0_f32, egui::Align2::CENTER_BOTTOM),
-        (90.0, egui::Align2::LEFT_CENTER),
-        (180.0, egui::Align2::CENTER_TOP),
-        (270.0, egui::Align2::RIGHT_CENTER),
-    ];
-
-    for (az, align) in &azimuths {
-        if let Some(radial_time_ms) = render_sweep.radial_time_at_azimuth(*az) {
-            let age_secs = ((playback_ts_ms - radial_time_ms) as f64 / 1000.0).max(0.0);
-            let label = format_age(age_secs);
-
-            // Convert azimuth to screen position (0=N, clockwise)
-            let angle_rad = (*az - 90.0) * PI / 180.0;
-            let pos = Pos2::new(
-                center.x + label_radius * angle_rad.cos(),
-                center.y + label_radius * angle_rad.sin(),
-            );
-
-            let text_color = age_color(age_secs);
-            let bg_color = if dark {
-                Color32::from_rgba_unmultiplied(20, 20, 35, 180)
-            } else {
-                Color32::from_rgba_unmultiplied(240, 240, 245, 200)
-            };
-
-            // Draw background rect behind text for readability
-            let galley = painter.layout_no_wrap(label.clone(), font_id.clone(), text_color);
-            let text_rect = align.anchor_size(pos, galley.size());
-            let padded = text_rect.expand(2.0);
-            painter.rect_filled(padded, 2.0, bg_color);
-
-            painter.text(pos, *align, label, font_id.clone(), text_color);
         }
     }
 }

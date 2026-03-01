@@ -1,14 +1,9 @@
-//! Web Worker-based decode offloading.
+//! Web Worker-based data operations.
 //!
-//! Moves the expensive `nexrad::load()` call (bzip2 decompression + protocol decode,
-//! 500-3000ms) off the main UI thread into a dedicated Web Worker. Communication uses
-//! `postMessage` with Transferable ArrayBuffers for zero-copy data transfer.
-//!
-//! The worker loads the same WASM binary as the main thread. The `start()` function
-//! detects the worker context (no `window`) and exits early, leaving only the
-//! `worker_decode` export available to the worker JS shim.
+//! Offloads expensive NEXRAD operations (ingestion, rendering) from the main UI
+//! thread into a dedicated Web Worker. Communication uses `postMessage` with
+//! Transferable ArrayBuffers for zero-copy data transfer.
 
-use ::nexrad::model::data::Scan;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -16,56 +11,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, Worker, WorkerOptions, WorkerType};
 
-/// Unique ID for tracking decode requests.
+/// Unique ID for tracking worker requests.
 type RequestId = u64;
-
-/// Context describing what triggered a decode request, so the result handler
-/// in the main update loop knows which state updates to apply.
-#[allow(dead_code)]
-pub enum DecodeContext {
-    /// Decode triggered by archive download completion.
-    Download {
-        timestamp: i64,
-        #[allow(dead_code)]
-        file_name: String,
-        #[allow(dead_code)]
-        is_cache_hit: bool,
-        fetch_latency_ms: f64,
-    },
-    /// Decode triggered by scrubbing to a cached scan.
-    Scrub { timestamp: i64 },
-    /// Decode triggered by realtime volume completion.
-    Realtime { timestamp: i64 },
-    /// Decode triggered by partial volume assembly (incremental realtime).
-    PartialDecode { timestamp_ms: i64 },
-}
-
-/// Successful decode result from the worker.
-pub struct DecodeResult {
-    /// The context that triggered this decode.
-    pub context: DecodeContext,
-    /// The decoded radar volume.
-    pub scan: Scan,
-    /// Time spent in the worker (decode + serialize), in milliseconds.
-    pub worker_decode_ms: f64,
-    /// Time spent deserializing on the main thread, in milliseconds.
-    #[allow(dead_code)]
-    pub deserialize_ms: f64,
-}
-
-/// Failed decode result from the worker.
-pub struct DecodeErrorResult {
-    /// The context that triggered this decode.
-    pub context: DecodeContext,
-    /// Error message from the worker.
-    pub message: String,
-}
-
-/// Outcome of a worker decode operation.
-pub enum DecodeOutcome {
-    Success(DecodeResult),
-    Error(DecodeErrorResult),
-}
 
 /// Context for an ingest request.
 pub struct IngestContext {
@@ -116,8 +63,6 @@ pub struct RenderResult {
 
 /// Outcome of any worker operation.
 pub enum WorkerOutcome {
-    /// Legacy full-scan decode result.
-    Decode(DecodeOutcome),
     /// Archive ingest completed.
     Ingested(IngestResult),
     /// Render completed.
@@ -129,8 +74,7 @@ pub enum WorkerOutcome {
 /// Manages a dedicated Web Worker for NEXRAD data operations.
 ///
 /// Created once at app startup and kept alive for the entire session.
-/// Supports three command types:
-/// - `decode`: Legacy full-scan decode (kept for backward compat)
+/// Supports two command types:
 /// - `ingest`: Split, probe, and store archive records in IDB
 /// - `render`: Selectively decode + render a single elevation
 ///
@@ -139,8 +83,6 @@ pub struct DecodeWorker {
     worker: Worker,
     next_id: u64,
     ready: Rc<RefCell<bool>>,
-    #[allow(dead_code)]
-    pending_decode: Rc<RefCell<HashMap<RequestId, DecodeContext>>>,
     pending_ingest: Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     results: Rc<RefCell<Vec<WorkerOutcome>>>,
@@ -150,8 +92,6 @@ pub struct DecodeWorker {
 
 /// A request queued before the worker was ready.
 enum QueuedRequest {
-    #[allow(dead_code)]
-    Decode(RequestId, Vec<u8>),
     Ingest(RequestId, Vec<u8>, String, i64, String),
     Render(RequestId, String, u8, String, String),
 }
@@ -183,8 +123,6 @@ impl DecodeWorker {
             .map_err(|e| format!("Failed to create Worker: {:?}", e))?;
 
         let ready = Rc::new(RefCell::new(false));
-        let pending_decode: Rc<RefCell<HashMap<RequestId, DecodeContext>>> =
-            Rc::new(RefCell::new(HashMap::new()));
         let pending_ingest: Rc<RefCell<HashMap<RequestId, IngestContext>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>> =
@@ -194,7 +132,6 @@ impl DecodeWorker {
         // Set up the onmessage handler
         {
             let ready_c = ready.clone();
-            let pending_decode_c = pending_decode.clone();
             let pending_ingest_c = pending_ingest.clone();
             let pending_render_c = pending_render.clone();
             let results_c = results.clone();
@@ -211,10 +148,6 @@ impl DecodeWorker {
                         *ready_c.borrow_mut() = true;
                         log::info!("Decode worker ready");
                     }
-                    Some("decoded") => {
-                        handle_decoded_message(&data, &pending_decode_c, &results_c);
-                        ctx_c.request_repaint();
-                    }
                     Some("ingested") => {
                         handle_ingested_message(&data, &pending_ingest_c, &results_c);
                         ctx_c.request_repaint();
@@ -224,7 +157,7 @@ impl DecodeWorker {
                         ctx_c.request_repaint();
                     }
                     Some("error") => {
-                        handle_error_message(&data, &pending_decode_c, &results_c);
+                        handle_error_message(&data, &results_c);
                         ctx_c.request_repaint();
                     }
                     other => {
@@ -239,16 +172,15 @@ impl DecodeWorker {
 
         // Set up onerror handler
         {
-            let onerror = Closure::<dyn Fn(web_sys::ErrorEvent)>::new(
-                move |event: web_sys::ErrorEvent| {
+            let onerror =
+                Closure::<dyn Fn(web_sys::ErrorEvent)>::new(move |event: web_sys::ErrorEvent| {
                     log::error!(
                         "Decode worker error: {} ({}:{})",
                         event.message(),
                         event.filename(),
                         event.lineno()
                     );
-                },
-            );
+                });
 
             worker.set_onerror(Some(onerror.as_ref().unchecked_ref()));
             onerror.forget();
@@ -268,7 +200,6 @@ impl DecodeWorker {
             worker,
             next_id: 1,
             ready,
-            pending_decode,
             pending_ingest,
             pending_render,
             results,
@@ -280,19 +211,6 @@ impl DecodeWorker {
         let id = self.next_id;
         self.next_id += 1;
         id
-    }
-
-    /// Submit raw NEXRAD archive bytes for full-scan decoding (legacy path).
-    #[allow(dead_code)]
-    pub fn decode(&mut self, data: Vec<u8>, context: DecodeContext) {
-        let id = self.next_request_id();
-        self.pending_decode.borrow_mut().insert(id, context);
-
-        if *self.ready.borrow() {
-            send_decode_request(&self.worker, id, &data);
-        } else {
-            self.queue.push(QueuedRequest::Decode(id, data));
-        }
     }
 
     /// Submit an archive for ingestion: split, probe elevations, store in IDB.
@@ -315,7 +233,14 @@ impl DecodeWorker {
         );
 
         if *self.ready.borrow() {
-            send_ingest_request(&self.worker, id, &data, &site_id, timestamp_secs, &file_name);
+            send_ingest_request(
+                &self.worker,
+                id,
+                &data,
+                &site_id,
+                timestamp_secs,
+                &file_name,
+            );
         } else {
             self.queue.push(QueuedRequest::Ingest(
                 id,
@@ -371,21 +296,11 @@ impl DecodeWorker {
             log::info!("Flushing {} queued worker requests", queued.len());
             for request in queued {
                 match request {
-                    QueuedRequest::Decode(id, data) => {
-                        send_decode_request(&self.worker, id, &data);
-                    }
                     QueuedRequest::Ingest(id, data, site_id, ts, file_name) => {
                         send_ingest_request(&self.worker, id, &data, &site_id, ts, &file_name);
                     }
                     QueuedRequest::Render(id, scan_key, elev, product, interp) => {
-                        send_render_request(
-                            &self.worker,
-                            id,
-                            &scan_key,
-                            elev,
-                            &product,
-                            &interp,
-                        );
+                        send_render_request(&self.worker, id, &scan_key, elev, &product, &interp);
                     }
                 }
             }
@@ -402,78 +317,6 @@ impl DecodeWorker {
     #[allow(dead_code)]
     pub fn is_ready(&self) -> bool {
         *self.ready.borrow()
-    }
-}
-
-/// Handle a "decoded" message from the worker (legacy full-scan decode).
-fn handle_decoded_message(
-    data: &JsValue,
-    pending: &Rc<RefCell<HashMap<RequestId, DecodeContext>>>,
-    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
-) {
-    let id = js_sys::Reflect::get(data, &"id".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u64;
-
-    let worker_decode_ms = js_sys::Reflect::get(data, &"decodeMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-
-    let context = match pending.borrow_mut().remove(&id) {
-        Some(ctx) => ctx,
-        None => {
-            log::warn!("Received decoded message for unknown request {}", id);
-            return;
-        }
-    };
-
-    // Extract the serialized Scan bytes from the transferred ArrayBuffer
-    let scan_buffer = match js_sys::Reflect::get(data, &"data".into()) {
-        Ok(val) => val,
-        Err(_) => {
-            results.borrow_mut().push(WorkerOutcome::Decode(
-                DecodeOutcome::Error(DecodeErrorResult {
-                    context,
-                    message: "Missing data field in decoded message".to_string(),
-                }),
-            ));
-            return;
-        }
-    };
-
-    let scan_bytes = js_sys::Uint8Array::new(&scan_buffer).to_vec();
-
-    // Deserialize the Scan on the main thread
-    let deser_start = web_time::Instant::now();
-    match bincode::deserialize::<Scan>(&scan_bytes) {
-        Ok(scan) => {
-            let deserialize_ms = deser_start.elapsed().as_secs_f64() * 1000.0;
-            log::info!(
-                "Worker decode: {}ms in worker, {}ms deserialize, {} sweeps",
-                worker_decode_ms as u32,
-                deserialize_ms as u32,
-                scan.sweeps().len()
-            );
-            results.borrow_mut().push(WorkerOutcome::Decode(
-                DecodeOutcome::Success(DecodeResult {
-                    context,
-                    scan,
-                    worker_decode_ms,
-                    deserialize_ms,
-                }),
-            ));
-        }
-        Err(e) => {
-            log::error!("Failed to deserialize Scan from worker: {}", e);
-            results.borrow_mut().push(WorkerOutcome::Decode(
-                DecodeOutcome::Error(DecodeErrorResult {
-                    context,
-                    message: format!("Deserialization failed: {}", e),
-                }),
-            ));
-        }
     }
 }
 
@@ -521,9 +364,7 @@ fn handle_ingested_message(
             let keys = js_sys::Object::keys(&elev_obj);
             for i in 0..keys.length() {
                 if let Some(key_str) = keys.get(i).as_string() {
-                    if let Ok(arr) =
-                        js_sys::Reflect::get(&elev_obj, &JsValue::from_str(&key_str))
-                    {
+                    if let Ok(arr) = js_sys::Reflect::get(&elev_obj, &JsValue::from_str(&key_str)) {
                         let arr: js_sys::Array = arr.unchecked_into();
                         for j in 0..arr.length() {
                             if let Some(n) = arr.get(j).as_f64() {
@@ -670,11 +511,7 @@ fn handle_rendered_message(
 }
 
 /// Handle an "error" message from the worker.
-fn handle_error_message(
-    data: &JsValue,
-    pending_decode: &Rc<RefCell<HashMap<RequestId, DecodeContext>>>,
-    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
-) {
+fn handle_error_message(data: &JsValue, results: &Rc<RefCell<Vec<WorkerOutcome>>>) {
     let id = js_sys::Reflect::get(data, &"id".into())
         .ok()
         .and_then(|v| v.as_f64())
@@ -687,39 +524,14 @@ fn handle_error_message(
 
     log::error!("Worker error (request {}): {}", id, message);
 
-    // Try to match against pending decode requests (legacy path)
-    if let Some(context) = pending_decode.borrow_mut().remove(&id) {
-        results.borrow_mut().push(WorkerOutcome::Decode(
-            DecodeOutcome::Error(DecodeErrorResult { context, message }),
-        ));
-    } else {
-        results
-            .borrow_mut()
-            .push(WorkerOutcome::WorkerError { id, message });
-    }
+    results
+        .borrow_mut()
+        .push(WorkerOutcome::WorkerError { id, message });
 }
 
 // ============================================================================
 // Send helpers
 // ============================================================================
-
-/// Send a decode request to the worker, transferring the data buffer.
-fn send_decode_request(worker: &Worker, id: u64, data: &[u8]) {
-    let array = js_sys::Uint8Array::from(data);
-    let buffer = array.buffer();
-
-    let msg = js_sys::Object::new();
-    js_sys::Reflect::set(&msg, &"type".into(), &"decode".into()).ok();
-    js_sys::Reflect::set(&msg, &"id".into(), &JsValue::from(id as f64)).ok();
-    js_sys::Reflect::set(&msg, &"data".into(), &buffer).ok();
-
-    let transfer = js_sys::Array::new();
-    transfer.push(&buffer);
-
-    if let Err(e) = worker.post_message_with_transfer(&msg, &transfer) {
-        log::error!("Failed to send decode request {}: {:?}", id, e);
-    }
-}
 
 /// Send an ingest request to the worker.
 fn send_ingest_request(
@@ -789,7 +601,9 @@ fn send_render_request(
 /// Discover the Trunk-generated JS module URL from DOM `<link rel="modulepreload">` tags.
 fn discover_js_url() -> Option<String> {
     let document = web_sys::window()?.document()?;
-    let links = document.query_selector_all("link[rel='modulepreload']").ok()?;
+    let links = document
+        .query_selector_all("link[rel='modulepreload']")
+        .ok()?;
     for i in 0..links.length() {
         if let Some(el) = links.get(i) {
             let el: &web_sys::Element = el.unchecked_ref();

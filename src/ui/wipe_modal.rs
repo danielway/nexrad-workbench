@@ -17,8 +17,7 @@ pub fn render_wipe_modal(ctx: &egui::Context, state: &mut AppState) {
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             let screen_rect = ctx.input(|i| i.viewport_rect());
-            let (response, painter) =
-                ui.allocate_painter(screen_rect.size(), egui::Sense::click());
+            let (response, painter) = ui.allocate_painter(screen_rect.size(), egui::Sense::click());
             painter.rect_filled(
                 screen_rect,
                 0.0,
@@ -39,10 +38,7 @@ pub fn render_wipe_modal(ctx: &egui::Context, state: &mut AppState) {
         .show(ctx, |ui| {
             ui.add_space(8.0);
 
-            ui.label(
-                RichText::new("This will permanently delete all application data:")
-                    .strong(),
-            );
+            ui.label(RichText::new("This will permanently delete all application data:").strong());
 
             ui.add_space(8.0);
 
@@ -68,10 +64,8 @@ pub fn render_wipe_modal(ctx: &egui::Context, state: &mut AppState) {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let reset_btn = ui.add(
-                        egui::Button::new(
-                            RichText::new("Reset Everything").color(Color32::WHITE),
-                        )
-                        .fill(Color32::from_rgb(200, 60, 60)),
+                        egui::Button::new(RichText::new("Reset Everything").color(Color32::WHITE))
+                            .fill(Color32::from_rgb(200, 60, 60)),
                     );
                     if reset_btn.clicked() {
                         state.wipe_modal_open = false;

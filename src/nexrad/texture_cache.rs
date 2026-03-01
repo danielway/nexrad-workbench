@@ -51,24 +51,6 @@ impl RadarCacheKey {
             processing_hash: 0,
         }
     }
-
-    /// Set the product index on this cache key (builder pattern).
-    pub fn with_product(mut self, product_index: u8) -> Self {
-        self.product_index = product_index;
-        self
-    }
-
-    /// Set the interpolation mode on this cache key (builder pattern).
-    pub fn with_interpolation(mut self, interpolation_mode: u8) -> Self {
-        self.interpolation_mode = interpolation_mode;
-        self
-    }
-
-    /// Set the processing config hash on this cache key (builder pattern).
-    pub fn with_processing(mut self, processing_hash: u64) -> Self {
-        self.processing_hash = processing_hash;
-        self
-    }
 }
 
 /// Texture cache for radar imagery.
@@ -94,11 +76,6 @@ impl RadarTextureCache {
             texture: None,
             cache_key: None,
         }
-    }
-
-    /// Check if the cache contains a valid texture for the given key.
-    pub fn is_valid(&self, key: &RadarCacheKey) -> bool {
-        self.cache_key.as_ref() == Some(key) && self.texture.is_some()
     }
 
     /// Update the cache with a new rendered image.

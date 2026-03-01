@@ -1,43 +1,11 @@
 //! Left panel UI: file upload controls and radar operations visualization.
 
 use crate::data::DataFacade;
-use crate::nexrad::{DownloadChannel, RenderSweep, VolumeRing};
+use crate::nexrad::DownloadChannel;
 use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
 use chrono::Datelike;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
-
-/// Radar position data from the most recent radial in the render sweep
-pub struct RadarPosition {
-    /// Azimuth angle in degrees (0-360)
-    pub azimuth: f32,
-    /// Elevation angle in degrees
-    pub elevation: f32,
-}
-
-/// Find the radar position from a VolumeRing at the given playback timestamp.
-///
-/// Builds a RenderSweep at the target elevation and returns the position
-/// of the most recent radial included in that sweep.
-fn find_radar_position_at_timestamp(
-    volume_ring: &VolumeRing,
-    target_elevation: f32,
-    playback_timestamp_ms: i64,
-) -> Option<RadarPosition> {
-    if volume_ring.is_empty() {
-        return None;
-    }
-
-    let render_sweep =
-        RenderSweep::from_volume_ring(volume_ring, target_elevation, playback_timestamp_ms);
-
-    render_sweep
-        .most_recent_radial()
-        .map(|radial| RadarPosition {
-            azimuth: radial.azimuth_angle_degrees(),
-            elevation: radial.elevation_angle_degrees(),
-        })
-}
 
 /// State queried from the radar timeline at the current timestamp
 struct RadarStateAtTimestamp<'a> {
@@ -60,7 +28,6 @@ pub fn render_left_panel(
     state: &mut AppState,
     download_channel: &DownloadChannel,
     data_facade: &DataFacade,
-    volume_ring: &VolumeRing,
 ) {
     if !state.left_sidebar_visible {
         return;
@@ -73,7 +40,7 @@ pub fn render_left_panel(
         .max_width(400.0)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                render_radar_operations_section(ui, state, volume_ring);
+                render_radar_operations_section(ui, state);
                 ui.add_space(15.0);
                 ui.separator();
                 ui.add_space(10.0);
@@ -165,26 +132,13 @@ fn render_aws_archive_section(
     );
 }
 
-fn render_radar_operations_section(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    volume_ring: &VolumeRing,
-) {
+fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
     // Header
     ui.label(RichText::new("Radar Operations").strong().size(14.0));
 
     ui.add_space(4.0);
 
-    // Get radar position from volume ring at current playback timestamp
-    let playback_ts_ms = (state.playback_state.playback_position() * 1000.0) as i64;
-
-    let radar_position = find_radar_position_at_timestamp(
-        volume_ring,
-        state.viz_state.target_elevation,
-        playback_ts_ms,
-    );
-
-    let radar_state = query_radar_state_at_timestamp(state, &radar_position);
+    let radar_state = query_radar_state_at_timestamp(state);
 
     // Top-down and side views side-by-side
     let is_live = state.live_mode_state.is_active();
@@ -206,20 +160,11 @@ fn render_radar_operations_section(
     render_vcp_breakdown(ui, &radar_state);
 }
 
-fn query_radar_state_at_timestamp<'a>(
-    state: &'a AppState,
-    radar_position: &Option<RadarPosition>,
-) -> RadarStateAtTimestamp<'a> {
+fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimestamp<'a> {
     let ts = state.playback_state.playback_position();
 
     // Find the scan at the current timestamp
     let scan = state.radar_timeline.find_scan_at_timestamp(ts);
-
-    // Use actual radial position if available (from decoded volume)
-    let (azimuth, elevation) = match radar_position {
-        Some(pos) => (Some(pos.azimuth), Some(pos.elevation)),
-        None => (None, None),
-    };
 
     match scan {
         Some(scan) => {
@@ -228,8 +173,8 @@ fn query_radar_state_at_timestamp<'a>(
             let sweep_index = sweep_data.map(|(idx, _)| idx);
 
             RadarStateAtTimestamp {
-                azimuth,
-                elevation,
+                azimuth: None,
+                elevation: None,
                 vcp: Some(scan.vcp),
                 sweep_index,
                 scan_progress,
@@ -237,8 +182,8 @@ fn query_radar_state_at_timestamp<'a>(
             }
         }
         None => RadarStateAtTimestamp {
-            azimuth,
-            elevation,
+            azimuth: None,
+            elevation: None,
             vcp: None,
             sweep_index: None,
             scan_progress: None,
@@ -679,4 +624,3 @@ fn render_elevation_row(
         });
     });
 }
-

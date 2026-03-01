@@ -4,32 +4,24 @@
 //! - Downloading archival NEXRAD data from AWS
 //! - Caching downloaded data in IndexedDB via record-based storage
 //! - High-performance radar rendering via nexrad-render with texture caching
-//! - Dynamic sweep rendering across multiple volumes
 
 mod archive_index;
 mod cache_channel;
 mod decode_worker;
-mod record_decode;
 mod download;
 mod realtime;
-#[allow(dead_code)]
-mod render_sweep;
+mod record_decode;
 mod texture_cache;
 mod texture_render;
 #[allow(dead_code)]
 mod types;
-mod volume_ring;
 
 pub use archive_index::ArchiveIndex;
 pub use cache_channel::{CacheLoadChannel, CacheLoadResult, ScrubLoadChannel, ScrubLoadResult};
-pub use decode_worker::{
-    DecodeContext, DecodeOutcome, DecodeWorker, WorkerOutcome,
-};
-pub use record_decode::{decode_record_to_radials, probe_record_elevations};
+pub use decode_worker::{DecodeWorker, WorkerOutcome};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use realtime::{RealtimeChannel, RealtimeResult};
-pub use render_sweep::RenderSweep;
+pub use record_decode::{decode_record_to_radials, probe_record_elevations};
 pub use texture_cache::{RadarCacheKey, RadarTextureCache};
-pub use texture_render::{radar_coverage_range_km, render_sweep_field_to_image};
+pub use texture_render::radar_coverage_range_km;
 pub use types::{CachedScan, DownloadResult, ScanMetadata};
-pub use volume_ring::VolumeRing;

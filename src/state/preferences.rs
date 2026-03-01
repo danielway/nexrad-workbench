@@ -5,9 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    AppState, ColorPalette, InterpolationMode, PlaybackSpeed, RenderMode, SmoothingMode,
-};
+use super::{AppState, ColorPalette, InterpolationMode, PlaybackSpeed, RenderMode, SmoothingMode};
 
 /// User preferences that persist across page reloads.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]

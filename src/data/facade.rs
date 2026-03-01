@@ -532,8 +532,7 @@ pub async fn process_archive_download(
         // First record typically contains VCP metadata
         let has_vcp = record_id == 0;
 
-        let meta =
-            RecordIndexEntry::new(record_key, record_data.len() as u32).with_vcp(has_vcp);
+        let meta = RecordIndexEntry::new(record_key, record_data.len() as u32).with_vcp(has_vcp);
 
         if facade.store_record(&blob, meta).await? {
             stored += 1;
