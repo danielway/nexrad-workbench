@@ -23,6 +23,7 @@ nexrad = { version = "1.0.0-rc.4", default-features = false, features = ["wasm"]
 nexrad-data = "1.0.0-rc.5"  # Direct dependency for latest ChunkIterator fixes
 nexrad-render = "1.0.0-rc.4"  # Direct dependency for render_radials API
 nexrad-process = "1.0.0-rc.1"  # Direct dependency for processing algorithms
+bincode = "1.3"
 piet-common = "0.8"
 web-time = "1.1"  # Cross-platform timing (works on WASM and native)
 wasm-bindgen = "0.2"
@@ -47,6 +48,14 @@ web-sys = { version = "0.3", features = [
     "Response",
     "Location",
     "History",
+    "Worker",
+    "WorkerOptions",
+    "WorkerType",
+    "MessageEvent",
+    "ErrorEvent",
+    "Document",
+    "Element",
+    "NodeList",
 ] }
 js-sys = "0.3"
 

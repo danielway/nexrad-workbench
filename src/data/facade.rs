@@ -234,6 +234,8 @@ impl DataFacade {
     /// Returns `Ok(volume)` on successful decode, or `Err(DecodeStatus)` if
     /// incomplete or failed.
     pub async fn decode_available_records(&self, scan: &ScanKey) -> Result<Scan, DecodeStatus> {
+        let t_total = web_time::Instant::now();
+
         // List all available records for this scan
         let record_keys = match self.cache.list_records_for_scan(scan).await {
             Ok(keys) => keys,
@@ -248,6 +250,83 @@ impl DataFacade {
         }
 
         // Fetch all record blobs
+        let t_fetch = web_time::Instant::now();
+        let mut records = Vec::with_capacity(record_keys.len());
+        for key in &record_keys {
+            match self.cache.get_record(key).await {
+                Ok(Some(blob)) => records.push(blob),
+                Ok(None) => {
+                    log::warn!("Record {} listed but not found", key);
+                }
+                Err(e) => {
+                    log::warn!("Failed to fetch record {}: {}", key, e);
+                }
+            }
+        }
+        let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
+
+        if records.is_empty() {
+            return Err(DecodeStatus::Incomplete {
+                records_have: 0,
+                estimated_need: None,
+            });
+        }
+
+        // Sort by record_id and reassemble
+        records.sort_by_key(|r| r.key.record_id);
+        let data = reassemble_records(&records);
+
+        // Attempt decode
+        let t_decode = web_time::Instant::now();
+        match load(&data) {
+            Ok(volume) => {
+                let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
+                let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+                log::info!(
+                    "decode_available_records: {} records, {} sweeps in {:.0}ms (fetch: {:.0}ms, decode: {:.0}ms)",
+                    records.len(),
+                    volume.sweeps().len(),
+                    total_ms,
+                    fetch_ms,
+                    decode_ms,
+                );
+                Ok(volume)
+            }
+            Err(e) => {
+                log::debug!(
+                    "decode_available_records: failed with {} records: {}",
+                    records.len(),
+                    e
+                );
+                Err(DecodeStatus::Incomplete {
+                    records_have: records.len() as u32,
+                    estimated_need: None,
+                })
+            }
+        }
+    }
+
+    /// Assembles raw record data for a scan without decoding.
+    ///
+    /// This fetches all cached records, reassembles them into a single byte
+    /// buffer, and returns the raw archive bytes. The caller is responsible
+    /// for calling `nexrad::load()` on the result (potentially in a Web Worker).
+    ///
+    /// Returns `Ok(data)` on success, or `Err(DecodeStatus)` if no records
+    /// are available.
+    pub async fn assemble_scan_data(&self, scan: &ScanKey) -> Result<Vec<u8>, DecodeStatus> {
+        let record_keys = match self.cache.list_records_for_scan(scan).await {
+            Ok(keys) => keys,
+            Err(e) => return Err(DecodeStatus::Error(e)),
+        };
+
+        if record_keys.is_empty() {
+            return Err(DecodeStatus::Incomplete {
+                records_have: 0,
+                estimated_need: None,
+            });
+        }
+
         let mut records = Vec::with_capacity(record_keys.len());
         for key in &record_keys {
             match self.cache.get_record(key).await {
@@ -268,32 +347,8 @@ impl DataFacade {
             });
         }
 
-        // Sort by record_id and reassemble
         records.sort_by_key(|r| r.key.record_id);
-        let data = reassemble_records(&records);
-
-        // Attempt decode
-        match load(&data) {
-            Ok(volume) => {
-                log::debug!(
-                    "decode_available_records: success with {} records, {} sweeps",
-                    records.len(),
-                    volume.sweeps().len()
-                );
-                Ok(volume)
-            }
-            Err(e) => {
-                log::debug!(
-                    "decode_available_records: failed with {} records: {}",
-                    records.len(),
-                    e
-                );
-                Err(DecodeStatus::Incomplete {
-                    records_have: records.len() as u32,
-                    estimated_need: None,
-                })
-            }
-        }
+        Ok(reassemble_records(&records))
     }
 
     // ========================================================================
@@ -449,24 +504,28 @@ pub async fn process_archive_download(
     timestamp_secs: i64,
     data: &[u8],
 ) -> CacheResult<(ScanKey, u32)> {
+    let t_total = web_time::Instant::now();
     let scan_start = UnixMillis::from_secs(timestamp_secs);
     let scan_key = ScanKey::new(site_id, scan_start);
 
     // Split into records
+    let t_split = web_time::Instant::now();
     let record_parts = split_archive2_into_records(data);
+    let split_ms = t_split.elapsed().as_secs_f64() * 1000.0;
 
     if record_parts.is_empty() {
         return Err("No records found in archive file".to_string());
     }
 
     // Store each record
+    let t_store = web_time::Instant::now();
     let mut stored = 0;
-    for (record_id, record_data) in record_parts {
-        let record_key = RecordKey::new(scan_key.clone(), record_id);
+    for (record_id, record_data) in &record_parts {
+        let record_key = RecordKey::new(scan_key.clone(), *record_id);
         let record = RecordBlob::new(record_key.clone(), record_data.clone());
 
         // First record typically contains VCP metadata
-        let has_vcp = record_id == 0;
+        let has_vcp = *record_id == 0;
 
         let meta = RecordIndexEntry::new(record_key, record_data.len() as u32).with_vcp(has_vcp);
 
@@ -474,15 +533,16 @@ pub async fn process_archive_download(
             stored += 1;
         }
     }
+    let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
 
-    // Update scan index with file name
-    // (This would require extending the cache API, for now we skip it)
-
+    let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
     log::info!(
-        "Processed archive {}: {} records stored for scan {}",
+        "process_archive_download: {} ({} records) in {:.0}ms (split: {:.0}ms, store: {:.0}ms)",
         file_name,
         stored,
-        scan_key
+        total_ms,
+        split_ms,
+        store_ms,
     );
 
     Ok((scan_key, stored))

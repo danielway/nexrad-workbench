@@ -20,8 +20,8 @@ pub struct SessionStats {
     /// Median chunk fetch latency in milliseconds.
     pub median_chunk_latency_ms: Option<f64>,
 
-    /// Median decompression time in milliseconds.
-    pub median_decompression_time_ms: Option<f64>,
+    /// Median archive store (split + IDB write) time in milliseconds.
+    pub median_store_time_ms: Option<f64>,
 
     /// Median decoding time in milliseconds.
     pub median_decode_time_ms: Option<f64>,
@@ -50,7 +50,7 @@ impl SessionStats {
             session_transferred_bytes: 12_582_912, // ~12 MB
             active_request_count: 3,
             median_chunk_latency_ms: Some(142.5),
-            median_decompression_time_ms: Some(8.3),
+            median_store_time_ms: Some(8.3),
             median_decode_time_ms: Some(23.7),
             avg_render_time_ms: Some(45.0),
             avg_fps: Some(60.0),
@@ -106,10 +106,10 @@ impl SessionStats {
         });
     }
 
-    /// Record a decompression time sample, updating the running average.
-    pub fn record_decompression_time(&mut self, ms: f64) {
+    /// Record an archive store (split + IDB write) time sample.
+    pub fn record_store_time(&mut self, ms: f64) {
         const ALPHA: f64 = 0.2;
-        self.median_decompression_time_ms = Some(match self.median_decompression_time_ms {
+        self.median_store_time_ms = Some(match self.median_store_time_ms {
             Some(avg) => avg * (1.0 - ALPHA) + ms * ALPHA,
             None => ms,
         });
@@ -131,8 +131,8 @@ impl SessionStats {
         if let Some(latency) = self.median_chunk_latency_ms {
             parts.push(format!("fetch: {:.0}ms", latency));
         }
-        if let Some(decomp) = self.median_decompression_time_ms {
-            parts.push(format!("decomp: {:.1}ms", decomp));
+        if let Some(store) = self.median_store_time_ms {
+            parts.push(format!("store: {:.1}ms", store));
         }
         if let Some(decode) = self.median_decode_time_ms {
             parts.push(format!("decode: {:.1}ms", decode));

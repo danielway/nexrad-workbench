@@ -66,6 +66,7 @@ impl CacheLoadChannel {
         let loading = self.loading.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
+            let t_total = web_time::Instant::now();
             log::info!("Loading cache metadata for site: {}", site_id);
 
             // Query scan index
@@ -75,6 +76,8 @@ impl CacheLoadChannel {
 
             let result = match facade.list_scans(&site, start, end).await {
                 Ok(scan_entries) => {
+                    let list_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+
                     // Convert ScanIndexEntry to ScanMetadata for UI compatibility
                     let metadata: Vec<ScanMetadata> = scan_entries
                         .iter()
@@ -97,15 +100,17 @@ impl CacheLoadChannel {
                         })
                         .collect();
 
-                    log::info!(
-                        "Loaded {} cached scan(s) for site {}",
-                        metadata.len(),
-                        site_id
-                    );
-
                     // Also calculate total cache size across all sites
                     let total_cache_size = facade.total_cache_size().await.unwrap_or(0);
-                    log::info!("Total cache size: {} bytes", total_cache_size);
+
+                    let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+                    log::info!(
+                        "Timeline loaded: {} scan(s) for {} in {:.0}ms (list_scans: {:.0}ms)",
+                        metadata.len(),
+                        site_id,
+                        total_ms,
+                        list_ms,
+                    );
 
                     CacheLoadResult::Success {
                         site_id,
@@ -248,16 +253,20 @@ impl ScrubLoadChannel {
         let pending = self.pending_timestamp.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
+            let t_total = web_time::Instant::now();
             let scan_key = DataScanKey::from_secs(&site_id, timestamp);
 
             // List all records for this scan
+            let t_list = web_time::Instant::now();
             let result = match facade.cache().list_records_for_scan(&scan_key).await {
                 Ok(record_keys) => {
+                    let list_ms = t_list.elapsed().as_secs_f64() * 1000.0;
                     if record_keys.is_empty() {
-                        log::debug!("Scrub load: cache miss for {} (no records)", timestamp);
+                        log::debug!("Scrub load: cache miss for {} (no records, list: {:.0}ms)", timestamp, list_ms);
                         ScrubLoadResult::NotFound { timestamp }
                     } else {
                         // Fetch all records
+                        let t_fetch = web_time::Instant::now();
                         let mut records = Vec::with_capacity(record_keys.len());
                         let mut fetch_error = None;
 
@@ -273,6 +282,7 @@ impl ScrubLoadChannel {
                                 }
                             }
                         }
+                        let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
 
                         if let Some(e) = fetch_error {
                             log::error!("Scrub load failed: {}", e);
@@ -287,11 +297,15 @@ impl ScrubLoadChannel {
                             // Sort by record_id and reassemble
                             records.sort_by_key(|r| r.key.record_id);
                             let data = reassemble_records(&records);
-                            log::debug!(
-                                "Scrub load: cache hit for {} ({} records, {} bytes)",
+                            let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+                            log::info!(
+                                "Scrub load: {} ({} records, {} bytes) in {:.0}ms (list: {:.0}ms, fetch: {:.0}ms)",
                                 timestamp,
                                 records.len(),
-                                data.len()
+                                data.len(),
+                                total_ms,
+                                list_ms,
+                                fetch_ms,
                             );
                             ScrubLoadResult::Success { timestamp, data }
                         }

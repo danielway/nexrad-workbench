@@ -98,6 +98,7 @@ impl IndexedDbRecordStore {
         record: &RecordBlob,
         meta: RecordIndexEntry,
     ) -> Result<PutOutcome, String> {
+        let t = web_time::Instant::now();
         self.ensure_open().await?;
 
         let record_key = record.key.to_storage_key();
@@ -178,6 +179,9 @@ impl IndexedDbRecordStore {
         // Wait for transaction to complete
         wait_for_transaction(&tx).await?;
 
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        log::debug!("IDB put_record: {:.1}ms (inserted={})", ms, !exists);
+
         Ok(PutOutcome {
             inserted: !exists,
             updated_scan_index: true,
@@ -233,6 +237,7 @@ impl IndexedDbRecordStore {
 
     /// Gets a record blob by key.
     pub async fn get_record(&self, key: &RecordKey) -> Result<Option<RecordBlob>, String> {
+        let t = web_time::Instant::now();
         self.ensure_open().await?;
         let db = self.get_db()?;
 
@@ -266,6 +271,9 @@ impl IndexedDbRecordStore {
         // Touch the scan for LRU tracking (fire and forget)
         let _ = self.touch_scan(&key.scan).await;
 
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        log::debug!("IDB get_record: {:.1}ms ({} bytes)", ms, data.len());
+
         Ok(Some(RecordBlob::new(key.clone(), data)))
     }
 
@@ -296,6 +304,7 @@ impl IndexedDbRecordStore {
 
     /// Lists all record keys for a scan.
     pub async fn list_records_for_scan(&self, scan: &ScanKey) -> Result<Vec<RecordKey>, String> {
+        let t = web_time::Instant::now();
         self.ensure_open().await?;
         let db = self.get_db()?;
 
@@ -334,6 +343,9 @@ impl IndexedDbRecordStore {
         if !keys.is_empty() {
             let _ = self.touch_scan(scan).await;
         }
+
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        log::debug!("IDB list_records_for_scan: {:.1}ms ({} keys from {} total)", ms, keys.len(), array.length());
 
         Ok(keys)
     }
@@ -514,6 +526,7 @@ impl IndexedDbRecordStore {
         start: UnixMillis,
         end: UnixMillis,
     ) -> Result<Vec<ScanIndexEntry>, String> {
+        let t = web_time::Instant::now();
         self.ensure_open().await?;
         let db = self.get_db()?;
 
@@ -554,6 +567,10 @@ impl IndexedDbRecordStore {
         }
 
         scans.sort_by_key(|s| s.scan.scan_start.0);
+
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        log::debug!("IDB list_scans: {:.1}ms ({} matched from {} total)", ms, scans.len(), array.length());
+
         Ok(scans)
     }
 
