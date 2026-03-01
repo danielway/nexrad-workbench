@@ -104,6 +104,15 @@ self.onmessage = async function (e) {
                     renderTimeMs: result.renderTimeMs,
                     radialCount: result.radialCount,
                     fetchMs: result.fetchMs,
+                    // Sub-timings for diagnostics
+                    idbOpenMs: result.idbOpenMs,
+                    listMs: result.listMs,
+                    blobFetchMs: result.blobFetchMs,
+                    buildMs: result.buildMs,
+                    renderMs: result.renderMs,
+                    matchingRecords: result.matchingRecords,
+                    totalRecords: result.totalRecords,
+                    blobBytes: result.blobBytes,
                 },
                 [imageData]
             );

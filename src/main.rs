@@ -231,12 +231,14 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         };
 
         // Open IDB and fetch record entries
+        let t_idb_open = web_time::Instant::now();
         let store = IndexedDbRecordStore::new();
         store.open().await.map_err(|e| {
             wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e))
         })?;
+        let idb_open_ms = t_idb_open.elapsed().as_secs_f64() * 1000.0;
 
-        let t_fetch = web_time::Instant::now();
+        let t_list = web_time::Instant::now();
         let entries = store
             .list_record_entries_for_scan(&scan_key)
             .await
@@ -256,6 +258,16 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             })
             .map(|entry| entry.key.clone())
             .collect();
+        let list_ms = t_list.elapsed().as_secs_f64() * 1000.0;
+
+        log::info!(
+            "worker_render fetch: {} total entries, {} match elev {} (idb_open: {:.0}ms, list: {:.0}ms)",
+            entries.len(),
+            matching_keys.len(),
+            elevation_number,
+            idb_open_ms,
+            list_ms,
+        );
 
         if matching_keys.is_empty() {
             return Err(wasm_bindgen::JsValue::from_str(
@@ -263,17 +275,21 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             ));
         }
 
-        // Fetch matching record blobs
+        // Fetch matching record blobs and decode
+        let t_blob_fetch = web_time::Instant::now();
         let mut all_radials = Vec::new();
+        let mut blob_bytes = 0u64;
         for key in &matching_keys {
             if let Ok(Some(blob)) = store.get_record(key).await {
+                blob_bytes += blob.data.len() as u64;
                 match decode_record_to_radials(&blob.data) {
                     Ok(radials) => all_radials.extend(radials),
                     Err(e) => log::warn!("Failed to decode record {}: {}", key, e),
                 }
             }
         }
-        let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
+        let blob_fetch_ms = t_blob_fetch.elapsed().as_secs_f64() * 1000.0;
+        let fetch_ms = idb_open_ms + list_ms + blob_fetch_ms;
 
         // Filter radials to target elevation (in case records contain multiple elevations)
         let target_radials: Vec<_> = all_radials
@@ -283,6 +299,14 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         let radial_count = target_radials.len();
 
+        log::info!(
+            "worker_render decode: {} records → {} radials ({} bytes) in {:.0}ms",
+            matching_keys.len(),
+            radial_count,
+            blob_bytes,
+            blob_fetch_ms,
+        );
+
         if target_radials.is_empty() {
             return Err(wasm_bindgen::JsValue::from_str(
                 "No radials found for target elevation",
@@ -290,17 +314,25 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         }
 
         // Build SweepField and render
-        let t_render = web_time::Instant::now();
+        let t_build = web_time::Instant::now();
         let field = ::nexrad::model::data::SweepField::from_radials_owned(target_radials, product)
             .ok_or_else(|| {
                 wasm_bindgen::JsValue::from_str("Failed to build SweepField from radials")
             })?;
+        let build_ms = t_build.elapsed().as_secs_f64() * 1000.0;
 
         let color_scale = default_color_scale(product);
-        let options = RenderOptions::native_for(&field)
+
+        // Cap render resolution: native_for uses gate_count*2 which can be 3600+
+        // pixels per side (13M+ pixels). Cap to 1024x1024 for ~1M pixels instead.
+        const MAX_RENDER_SIZE: usize = 1024;
+        let native_size = field.gate_count() * 2;
+        let render_size = native_size.min(MAX_RENDER_SIZE);
+        let options = RenderOptions::new(render_size, render_size)
             .transparent()
             .with_interpolation(interpolation);
 
+        let t_render = web_time::Instant::now();
         let render_result = render_sweep(&field, &color_scale, &options).map_err(|e| {
             wasm_bindgen::JsValue::from_str(&format!("Render failed: {}", e))
         })?;
@@ -312,12 +344,14 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         log::info!(
-            "worker_render: {} radials, {}x{} in {:.0}ms (fetch: {:.0}ms, render: {:.0}ms)",
+            "worker_render: {} radials, {}x{} (native {}) in {:.0}ms (fetch: {:.0}ms, build: {:.0}ms, render: {:.0}ms)",
             radial_count,
             width,
             height,
+            native_size,
             total_ms,
             fetch_ms,
+            build_ms,
             render_ms,
         );
 
@@ -355,6 +389,55 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             &result,
             &"fetchMs".into(),
             &wasm_bindgen::JsValue::from(fetch_ms),
+        )
+        .ok();
+        // Sub-timings for diagnostics (worker log is not visible without logger init)
+        js_sys::Reflect::set(
+            &result,
+            &"idbOpenMs".into(),
+            &wasm_bindgen::JsValue::from(idb_open_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"listMs".into(),
+            &wasm_bindgen::JsValue::from(list_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"blobFetchMs".into(),
+            &wasm_bindgen::JsValue::from(blob_fetch_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"buildMs".into(),
+            &wasm_bindgen::JsValue::from(build_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"renderMs".into(),
+            &wasm_bindgen::JsValue::from(render_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"matchingRecords".into(),
+            &wasm_bindgen::JsValue::from(matching_keys.len() as u32),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"totalRecords".into(),
+            &wasm_bindgen::JsValue::from(entries.len() as u32),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"blobBytes".into(),
+            &wasm_bindgen::JsValue::from(blob_bytes as f64),
         )
         .ok();
 

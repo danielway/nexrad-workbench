@@ -606,13 +606,54 @@ fn handle_rendered_message(
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
 
+    // Extract sub-timings for diagnostics
+    let idb_open_ms = js_sys::Reflect::get(data, &"idbOpenMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let list_ms = js_sys::Reflect::get(data, &"listMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let blob_fetch_ms = js_sys::Reflect::get(data, &"blobFetchMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let build_ms = js_sys::Reflect::get(data, &"buildMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let render_only_ms = js_sys::Reflect::get(data, &"renderMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let matching_records = js_sys::Reflect::get(data, &"matchingRecords".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
+    let total_records = js_sys::Reflect::get(data, &"totalRecords".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
+    let blob_bytes = js_sys::Reflect::get(data, &"blobBytes".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u64;
+
     log::info!(
-        "Worker render complete: {}x{}, {} radials, {:.0}ms (fetch: {:.0}ms)",
+        "Worker render: {}x{}, {} radials in {:.0}ms | idb_open: {:.0}ms, list: {:.0}ms ({}/{} records), blob_fetch+decode: {:.0}ms ({} bytes), build: {:.0}ms, render: {:.0}ms",
         width,
         height,
         radial_count,
         render_time_ms,
-        fetch_ms,
+        idb_open_ms,
+        list_ms,
+        matching_records,
+        total_records,
+        blob_fetch_ms,
+        blob_bytes,
+        build_ms,
+        render_only_ms,
     );
 
     results
