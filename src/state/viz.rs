@@ -1,11 +1,6 @@
-//! Visualization state (canvas, zoom/pan, product/palette selection).
+//! Visualization state (canvas, zoom/pan, product selection).
 
 use eframe::egui::Vec2;
-use nexrad_render::{Interpolation, Product};
-
-// ============================================================================
-// Product and Palette Selection
-// ============================================================================
 
 /// Available radar products for display.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +67,7 @@ impl RadarProduct {
         ]
     }
 
-    /// String identifier used by the worker render protocol.
+    /// String identifier used by the worker protocol.
     pub fn to_worker_string(self) -> &'static str {
         match self {
             RadarProduct::Reflectivity => "reflectivity",
@@ -84,28 +79,9 @@ impl RadarProduct {
             RadarProduct::ClutterFilterPower => "reflectivity", // fallback
         }
     }
-
-    /// Convert to the nexrad-render Product type.
-    pub fn to_render_product(self) -> Product {
-        match self {
-            RadarProduct::Reflectivity => Product::Reflectivity,
-            RadarProduct::Velocity => Product::Velocity,
-            RadarProduct::SpectrumWidth => Product::SpectrumWidth,
-            RadarProduct::DifferentialReflectivity => Product::DifferentialReflectivity,
-            RadarProduct::CorrelationCoefficient => Product::CorrelationCoefficient,
-            RadarProduct::DifferentialPhase => Product::DifferentialPhase,
-            RadarProduct::ClutterFilterPower => Product::ClutterFilterPower,
-        }
-    }
 }
 
-// ============================================================================
-// Render Mode System
-// ============================================================================
-
-/// Radar rendering mode per PRODUCT.md specification.
-///
-/// Determines how radar data is selected and displayed on the canvas.
+/// Radar rendering mode.
 #[derive(Default, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RenderMode {
     /// Fixed elevation - shows complete sweep at a specific tilt.
@@ -137,161 +113,6 @@ impl RenderMode {
     }
 }
 
-// ============================================================================
-// Color Palettes
-// ============================================================================
-
-/// Available color palettes for rendering.
-#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ColorPalette {
-    #[default]
-    Standard,
-    Enhanced,
-    ColorBlindSafe,
-    Monochrome,
-}
-
-impl ColorPalette {
-    pub fn label(&self) -> &'static str {
-        match self {
-            ColorPalette::Standard => "Standard",
-            ColorPalette::Enhanced => "Enhanced",
-            ColorPalette::ColorBlindSafe => "Color-blind Safe",
-            ColorPalette::Monochrome => "Monochrome",
-        }
-    }
-
-    pub fn all() -> &'static [ColorPalette] {
-        &[
-            ColorPalette::Standard,
-            ColorPalette::Enhanced,
-            ColorPalette::ColorBlindSafe,
-            ColorPalette::Monochrome,
-        ]
-    }
-}
-
-// ============================================================================
-// Processing Configuration
-// ============================================================================
-
-/// Smoothing algorithm selection.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum SmoothingMode {
-    /// No smoothing applied
-    #[default]
-    None,
-    /// Median filter (removes spikes while preserving edges)
-    Median,
-    /// Gaussian smoothing (overall blur)
-    Gaussian,
-}
-
-impl SmoothingMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            SmoothingMode::None => "None",
-            SmoothingMode::Median => "Median",
-            SmoothingMode::Gaussian => "Gaussian",
-        }
-    }
-
-    pub fn all() -> &'static [SmoothingMode] {
-        &[
-            SmoothingMode::None,
-            SmoothingMode::Median,
-            SmoothingMode::Gaussian,
-        ]
-    }
-}
-
-/// Processing pipeline configuration applied before rendering.
-#[derive(Clone, Copy)]
-pub struct ProcessingConfig {
-    /// Whether processing is enabled at all
-    pub enabled: bool,
-    /// Minimum value threshold (gates below are masked). Product-dependent units.
-    pub threshold_min: Option<f32>,
-    /// Maximum value threshold (gates above are masked).
-    pub threshold_max: Option<f32>,
-    /// Smoothing algorithm
-    pub smoothing: SmoothingMode,
-    /// Smoothing kernel size (for median: odd integer 3-9; for gaussian: sigma 0.5-5.0)
-    pub smoothing_strength: u8,
-}
-
-impl Default for ProcessingConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            threshold_min: None,
-            threshold_max: None,
-            smoothing: SmoothingMode::None,
-            smoothing_strength: 3,
-        }
-    }
-}
-
-impl ProcessingConfig {
-    /// Compute a hash for cache key discrimination.
-    pub fn cache_hash(self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        self.enabled.hash(&mut hasher);
-        if self.enabled {
-            self.threshold_min.map(|v| v.to_bits()).hash(&mut hasher);
-            self.threshold_max.map(|v| v.to_bits()).hash(&mut hasher);
-            self.smoothing.hash(&mut hasher);
-            self.smoothing_strength.hash(&mut hasher);
-        }
-        hasher.finish()
-    }
-}
-
-// ============================================================================
-// Interpolation Mode
-// ============================================================================
-
-/// Available interpolation modes for radar rendering.
-#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum InterpolationMode {
-    /// Nearest-neighbor sampling (fastest, produces blocky output)
-    #[default]
-    Nearest,
-    /// Bilinear interpolation (smoother, anti-aliased output)
-    Bilinear,
-}
-
-impl InterpolationMode {
-    pub fn label(&self) -> &'static str {
-        match self {
-            InterpolationMode::Nearest => "Nearest",
-            InterpolationMode::Bilinear => "Bilinear",
-        }
-    }
-
-    pub fn all() -> &'static [InterpolationMode] {
-        &[InterpolationMode::Nearest, InterpolationMode::Bilinear]
-    }
-
-    /// String identifier used by the worker render protocol.
-    pub fn to_worker_string(self) -> &'static str {
-        match self {
-            InterpolationMode::Nearest => "nearest",
-            InterpolationMode::Bilinear => "bilinear",
-        }
-    }
-
-    /// Convert to the nexrad-render Interpolation type.
-    pub fn to_render_interpolation(self) -> Interpolation {
-        match self {
-            InterpolationMode::Nearest => Interpolation::Nearest,
-            InterpolationMode::Bilinear => Interpolation::Bilinear,
-        }
-    }
-}
-
 /// Visualization state including view controls.
 pub struct VizState {
     /// Current zoom level (1.0 = 100%)
@@ -303,17 +124,8 @@ pub struct VizState {
     /// Selected radar product
     pub product: RadarProduct,
 
-    /// Selected color palette
-    pub palette: ColorPalette,
-
     /// Render mode (fixed-tilt vs most-recent)
     pub render_mode: RenderMode,
-
-    /// Interpolation mode for rendering
-    pub interpolation: InterpolationMode,
-
-    /// Data processing pipeline settings
-    pub processing: ProcessingConfig,
 
     /// Target elevation for fixed-tilt mode (degrees)
     pub target_elevation: f32,
@@ -343,10 +155,7 @@ impl Default for VizState {
             zoom: 1.0,
             pan_offset: Vec2::ZERO,
             product: RadarProduct::default(),
-            palette: ColorPalette::default(),
             render_mode: RenderMode::default(),
-            interpolation: InterpolationMode::default(),
-            processing: ProcessingConfig::default(),
             target_elevation: 0.5,
             site_id: "KDMX".to_string(),
             timestamp: "--:--:-- UTC".to_string(),

@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{AppState, ColorPalette, InterpolationMode, PlaybackSpeed, RenderMode, SmoothingMode};
+use super::{AppState, PlaybackSpeed, RenderMode};
 
 /// User preferences that persist across page reloads.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -13,21 +13,7 @@ pub struct UserPreferences {
     #[serde(default)]
     pub speed: PlaybackSpeed,
     #[serde(default)]
-    pub palette: ColorPalette,
-    #[serde(default)]
-    pub interpolation: InterpolationMode,
-    #[serde(default)]
     pub render_mode: RenderMode,
-    #[serde(default)]
-    pub processing_enabled: bool,
-    #[serde(default)]
-    pub threshold_min: Option<f32>,
-    #[serde(default)]
-    pub threshold_max: Option<f32>,
-    #[serde(default)]
-    pub smoothing: SmoothingMode,
-    #[serde(default = "default_smoothing_strength")]
-    pub smoothing_strength: u8,
     #[serde(default = "default_true")]
     pub layer_states: bool,
     #[serde(default = "default_true")]
@@ -42,22 +28,11 @@ fn default_true() -> bool {
     true
 }
 
-fn default_smoothing_strength() -> u8 {
-    3
-}
-
 impl Default for UserPreferences {
     fn default() -> Self {
         Self {
             speed: PlaybackSpeed::default(),
-            palette: ColorPalette::default(),
-            interpolation: InterpolationMode::default(),
             render_mode: RenderMode::default(),
-            processing_enabled: false,
-            threshold_min: None,
-            threshold_max: None,
-            smoothing: SmoothingMode::default(),
-            smoothing_strength: 3,
             layer_states: true,
             layer_counties: true,
             layer_labels: true,
@@ -73,14 +48,7 @@ impl UserPreferences {
     pub fn from_app_state(state: &AppState) -> Self {
         Self {
             speed: state.playback_state.speed,
-            palette: state.viz_state.palette,
-            interpolation: state.viz_state.interpolation,
             render_mode: state.viz_state.render_mode,
-            processing_enabled: state.viz_state.processing.enabled,
-            threshold_min: state.viz_state.processing.threshold_min,
-            threshold_max: state.viz_state.processing.threshold_max,
-            smoothing: state.viz_state.processing.smoothing,
-            smoothing_strength: state.viz_state.processing.smoothing_strength,
             layer_states: state.layer_state.geo.states,
             layer_counties: state.layer_state.geo.counties,
             layer_labels: state.layer_state.geo.labels,
@@ -91,14 +59,7 @@ impl UserPreferences {
     /// Apply loaded preferences to application state.
     pub fn apply_to(&self, state: &mut AppState) {
         state.playback_state.speed = self.speed;
-        state.viz_state.palette = self.palette;
-        state.viz_state.interpolation = self.interpolation;
         state.viz_state.render_mode = self.render_mode;
-        state.viz_state.processing.enabled = self.processing_enabled;
-        state.viz_state.processing.threshold_min = self.threshold_min;
-        state.viz_state.processing.threshold_max = self.threshold_max;
-        state.viz_state.processing.smoothing = self.smoothing;
-        state.viz_state.processing.smoothing_strength = self.smoothing_strength;
         state.layer_state.geo.states = self.layer_states;
         state.layer_state.geo.counties = self.layer_counties;
         state.layer_state.geo.labels = self.layer_labels;

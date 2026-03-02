@@ -190,16 +190,14 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 ///   { imageData: ArrayBuffer, width, height, renderTimeMs, radialCount }
 ///
 /// Parameters are passed as a JS object:
-///   { scanKey: string, elevationNumber: number, product: string, interpolation: string }
+///   { scanKey: string, elevationNumber: number, product: string }
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     wasm_bindgen_futures::future_to_promise(async move {
         use crate::data::indexeddb::IndexedDbRecordStore;
         use crate::data::keys::*;
         use crate::nexrad::record_decode::decode_record_to_radials_timed;
-        use nexrad_render::{
-            default_color_scale, render_sweep, Interpolation, Product, RenderOptions,
-        };
+        use nexrad_render::Product;
 
         let t_total = web_time::Instant::now();
 
@@ -220,11 +218,6 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             .and_then(|v| v.as_string())
             .unwrap_or_else(|| "reflectivity".to_string());
 
-        let interpolation_str = js_sys::Reflect::get(&params, &"interpolation".into())
-            .ok()
-            .and_then(|v| v.as_string())
-            .unwrap_or_else(|| "nearest".to_string());
-
         let scan_key = ScanKey::from_storage_key(&scan_key_str)
             .ok_or_else(|| wasm_bindgen::JsValue::from_str("Invalid scanKey format"))?;
 
@@ -236,11 +229,6 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             "differential_phase" => Product::DifferentialPhase,
             "correlation_coefficient" => Product::CorrelationCoefficient,
             _ => Product::Reflectivity,
-        };
-
-        let interpolation = match interpolation_str.as_str() {
-            "bilinear" => Interpolation::Bilinear,
-            _ => Interpolation::Nearest,
         };
 
         // Open IDB and fetch record entries
@@ -268,20 +256,11 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     .elevation_numbers
                     .as_ref()
                     .map(|nums| nums.contains(&elevation_number))
-                    .unwrap_or(true) // Include records without metadata (fallback)
+                    .unwrap_or(true)
             })
             .map(|entry| entry.key.clone())
             .collect();
         let list_ms = t_list.elapsed().as_secs_f64() * 1000.0;
-
-        log::info!(
-            "worker_render fetch: {} total entries, {} match elev {} (idb_open: {:.0}ms, list: {:.0}ms)",
-            entries.len(),
-            matching_keys.len(),
-            elevation_number,
-            idb_open_ms,
-            list_ms,
-        );
 
         if matching_keys.is_empty() {
             return Err(wasm_bindgen::JsValue::from_str(
@@ -289,9 +268,9 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             ));
         }
 
-        // Fetch matching record blobs, decompress, and decode — with sub-timings
+        // Fetch matching record blobs and decode
         let mut all_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
-        let mut blob_bytes = 0u64;
+        let mut _blob_bytes = 0u64;
         let mut idb_fetch_ms = 0.0f64;
         let mut decompress_ms = 0.0f64;
         let mut decode_ms = 0.0f64;
@@ -301,7 +280,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             idb_fetch_ms += t_fetch.elapsed().as_secs_f64() * 1000.0;
 
             if let Ok(Some(blob)) = blob_opt {
-                blob_bytes += blob.data.len() as u64;
+                _blob_bytes += blob.data.len() as u64;
                 match decode_record_to_radials_timed(&blob.data) {
                     Ok((radials, timings)) => {
                         decompress_ms += timings.decompress_ms;
@@ -312,10 +291,9 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 }
             }
         }
-        let blob_fetch_ms = idb_fetch_ms + decompress_ms + decode_ms;
-        let fetch_ms = idb_open_ms + list_ms + blob_fetch_ms;
+        let fetch_ms = idb_open_ms + list_ms + idb_fetch_ms + decompress_ms + decode_ms;
 
-        // Filter radials to target elevation (in case records contain multiple elevations)
+        // Filter radials to target elevation
         let target_radials: Vec<_> = all_radials
             .into_iter()
             .filter(|r| r.elevation_number() == elevation_number)
@@ -323,24 +301,13 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         let radial_count = target_radials.len();
 
-        log::info!(
-            "worker_render decode: {} records → {} radials ({} bytes) in {:.0}ms (idb_fetch: {:.0}ms, decompress: {:.0}ms, decode: {:.0}ms)",
-            matching_keys.len(),
-            radial_count,
-            blob_bytes,
-            blob_fetch_ms,
-            idb_fetch_ms,
-            decompress_ms,
-            decode_ms,
-        );
-
         if target_radials.is_empty() {
             return Err(wasm_bindgen::JsValue::from_str(
                 "No radials found for target elevation",
             ));
         }
 
-        // Build SweepField and render
+        // Build SweepField (keeps raw data for GPU rendering)
         let t_build = web_time::Instant::now();
         let field = ::nexrad::model::data::SweepField::from_radials_owned(target_radials, product)
             .ok_or_else(|| {
@@ -348,142 +315,51 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             })?;
         let build_ms = t_build.elapsed().as_secs_f64() * 1000.0;
 
-        let color_scale = default_color_scale(product);
+        let azimuth_count = field.azimuth_count();
+        let gate_count = field.gate_count();
 
-        // Cap render resolution: native_for uses gate_count*2 which can be 3600+
-        // pixels per side (13M+ pixels). Cap to 1024x1024 for ~1M pixels instead.
-        const MAX_RENDER_SIZE: usize = 1024;
-        let native_size = field.gate_count() * 2;
-        let render_size = native_size.min(MAX_RENDER_SIZE);
-        let options = RenderOptions::new(render_size, render_size)
-            .transparent()
-            .with_interpolation(interpolation);
-
-        let t_render = web_time::Instant::now();
-        let render_result = render_sweep(&field, &color_scale, &options)
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Render failed: {}", e)))?;
-
-        let image = render_result.into_image();
-        let (width, height) = image.dimensions();
-        let pixels = image.into_raw();
-        let render_ms = t_render.elapsed().as_secs_f64() * 1000.0;
+        // Encode gate values with sentinel for non-valid gates
+        const SENTINEL: f32 = -9999.0;
+        let values = field.values();
+        let statuses = field.statuses();
+        let mut encoded_values = Vec::with_capacity(values.len());
+        for (val, status) in values.iter().zip(statuses.iter()) {
+            use ::nexrad::model::data::GateStatus;
+            encoded_values.push(match status {
+                GateStatus::Valid => *val,
+                _ => SENTINEL,
+            });
+        }
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
         log::info!(
-            "worker_render: {} radials, {}x{} (native {}) in {:.0}ms (fetch: {:.0}ms, build: {:.0}ms, render: {:.0}ms)",
+            "worker_decode: {} radials, {}x{} in {:.0}ms (fetch: {:.0}ms, build: {:.0}ms)",
             radial_count,
-            width,
-            height,
-            native_size,
+            azimuth_count,
+            gate_count,
             total_ms,
             fetch_ms,
             build_ms,
-            render_ms,
         );
 
-        // Transfer pixel buffer back to main thread
-        let pixel_array = js_sys::Uint8Array::from(pixels.as_slice());
-        let buffer = pixel_array.buffer();
+        // Transfer raw data back to main thread
+        let azimuths_array = js_sys::Float32Array::from(field.azimuths());
+        let values_array = js_sys::Float32Array::from(encoded_values.as_slice());
+        let az_buf = azimuths_array.buffer();
+        let val_buf = values_array.buffer();
 
         let result = js_sys::Object::new();
-        js_sys::Reflect::set(&result, &"imageData".into(), &buffer).ok();
-        js_sys::Reflect::set(
-            &result,
-            &"width".into(),
-            &wasm_bindgen::JsValue::from(width),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"height".into(),
-            &wasm_bindgen::JsValue::from(height),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"renderTimeMs".into(),
-            &wasm_bindgen::JsValue::from(total_ms),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"radialCount".into(),
-            &wasm_bindgen::JsValue::from(radial_count as u32),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"fetchMs".into(),
-            &wasm_bindgen::JsValue::from(fetch_ms),
-        )
-        .ok();
-        // Sub-timings for diagnostics (worker log is not visible without logger init)
-        js_sys::Reflect::set(
-            &result,
-            &"idbOpenMs".into(),
-            &wasm_bindgen::JsValue::from(idb_open_ms),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"listMs".into(),
-            &wasm_bindgen::JsValue::from(list_ms),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"blobFetchMs".into(),
-            &wasm_bindgen::JsValue::from(blob_fetch_ms),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"idbFetchMs".into(),
-            &wasm_bindgen::JsValue::from(idb_fetch_ms),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"decompressMs".into(),
-            &wasm_bindgen::JsValue::from(decompress_ms),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"decodeMs".into(),
-            &wasm_bindgen::JsValue::from(decode_ms),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"buildMs".into(),
-            &wasm_bindgen::JsValue::from(build_ms),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"renderMs".into(),
-            &wasm_bindgen::JsValue::from(render_ms),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"matchingRecords".into(),
-            &wasm_bindgen::JsValue::from(matching_keys.len() as u32),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"totalRecords".into(),
-            &wasm_bindgen::JsValue::from(entries.len() as u32),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"blobBytes".into(),
-            &wasm_bindgen::JsValue::from(blob_bytes as f64),
-        )
-        .ok();
+        js_sys::Reflect::set(&result, &"azimuths".into(), &az_buf).ok();
+        js_sys::Reflect::set(&result, &"gateValues".into(), &val_buf).ok();
+        js_sys::Reflect::set(&result, &"azimuthCount".into(), &wasm_bindgen::JsValue::from(azimuth_count as u32)).ok();
+        js_sys::Reflect::set(&result, &"gateCount".into(), &wasm_bindgen::JsValue::from(gate_count as u32)).ok();
+        js_sys::Reflect::set(&result, &"firstGateRangeKm".into(), &wasm_bindgen::JsValue::from(field.first_gate_range_km())).ok();
+        js_sys::Reflect::set(&result, &"gateIntervalKm".into(), &wasm_bindgen::JsValue::from(field.gate_interval_km())).ok();
+        js_sys::Reflect::set(&result, &"maxRangeKm".into(), &wasm_bindgen::JsValue::from(field.max_range_km())).ok();
+        js_sys::Reflect::set(&result, &"product".into(), &wasm_bindgen::JsValue::from_str(&product_str)).ok();
+        js_sys::Reflect::set(&result, &"radialCount".into(), &wasm_bindgen::JsValue::from(radial_count as u32)).ok();
+        js_sys::Reflect::set(&result, &"fetchMs".into(), &wasm_bindgen::JsValue::from(fetch_ms)).ok();
+        js_sys::Reflect::set(&result, &"totalMs".into(), &wasm_bindgen::JsValue::from(total_ms)).ok();
 
         Ok(result.into())
     })
@@ -564,8 +440,11 @@ pub struct WorkbenchApp {
     /// Currently loaded NEXRAD scan
     current_scan: Option<nexrad::CachedScan>,
 
-    /// Texture cache for rendered radar imagery
-    radar_texture_cache: nexrad::RadarTextureCache,
+    /// GPU renderer for radar data (None if GL not available).
+    gpu_renderer: Option<std::sync::Arc<std::sync::Mutex<nexrad::RadarGpuRenderer>>>,
+
+    /// GL context for uploading data to GPU textures.
+    gpu_renderer_gl: Option<std::sync::Arc<glow::Context>>,
 
     /// Queue of files to download for selection download feature.
     /// Each entry is (date, file_name, timestamp).
@@ -594,9 +473,9 @@ pub struct WorkbenchApp {
     /// Available elevation numbers for the current scan (from ingest).
     available_elevation_numbers: Vec<u8>,
 
-    /// Previous render parameters for change detection (scan_key, elev_num, product, interp).
-    /// When any of these change, a new worker.render() is sent.
-    last_render_params: Option<(String, u8, String, String)>,
+    /// Previous render parameters for change detection (scan_key, elev_num, product).
+    /// When any of these change, a new worker decode is sent.
+    last_render_params: Option<(String, u8, String)>,
 
     /// Monotonic instant of last URL push (for throttling to ~1/sec).
     last_url_push: web_time::Instant,
@@ -730,6 +609,14 @@ impl WorkbenchApp {
             }
         };
 
+        // Create GPU renderer for radar visualization
+        let gpu_renderer_gl = cc.gl.clone();
+        let gpu_renderer = cc.gl.as_ref().map(|gl| {
+            let renderer = nexrad::RadarGpuRenderer::new(gl);
+            log::info!("GPU radar renderer created");
+            std::sync::Arc::new(std::sync::Mutex::new(renderer))
+        });
+
         Self {
             state,
             geo_layers,
@@ -738,7 +625,8 @@ impl WorkbenchApp {
             cache_load_channel,
             archive_index: nexrad::ArchiveIndex::new(),
             current_scan: None,
-            radar_texture_cache: nexrad::RadarTextureCache::new(),
+            gpu_renderer,
+            gpu_renderer_gl,
             selection_download_queue: Vec::new(),
             displayed_scan_timestamp: None,
             previous_site_id: initial_site_id,
@@ -975,7 +863,7 @@ impl WorkbenchApp {
             .unwrap_or(1)
     }
 
-    /// Send a render request to the worker for the current scan + settings.
+    /// Send a decode request to the worker for the current scan + settings.
     fn request_worker_render(&mut self) {
         let Some(ref scan_key) = self.current_render_scan_key else {
             return;
@@ -986,19 +874,8 @@ impl WorkbenchApp {
 
         let elevation_number = self.best_elevation_number();
         let product = self.state.viz_state.product.to_worker_string().to_string();
-        let interpolation = self
-            .state
-            .viz_state
-            .interpolation
-            .to_worker_string()
-            .to_string();
 
-        let params = (
-            scan_key.clone(),
-            elevation_number,
-            product.clone(),
-            interpolation.clone(),
-        );
+        let params = (scan_key.clone(), elevation_number, product.clone());
 
         // Skip if same as last request
         if self.last_render_params.as_ref() == Some(&params) {
@@ -1006,21 +883,18 @@ impl WorkbenchApp {
         }
 
         log::info!(
-            "Requesting worker render: {} elev={} product={} interp={}",
+            "Requesting worker decode: {} elev={} product={}",
             scan_key,
             elevation_number,
             product,
-            interpolation
         );
 
         let scan_key = scan_key.clone();
         self.last_render_params = Some(params);
-        self.decode_worker.as_mut().unwrap().render(
-            scan_key,
-            elevation_number,
-            product,
-            interpolation,
-        );
+        self.decode_worker
+            .as_mut()
+            .unwrap()
+            .render(scan_key, elevation_number, product);
     }
 
     /// Stop live mode streaming.
@@ -1150,7 +1024,11 @@ impl eframe::App for WorkbenchApp {
                 self.previous_site_id,
                 self.state.viz_state.site_id
             );
-            self.radar_texture_cache.invalidate();
+            if let Some(ref renderer) = self.gpu_renderer {
+                if let Ok(mut r) = renderer.lock() {
+                    r.clear_data();
+                }
+            }
             self.displayed_scan_timestamp = None;
             self.previous_site_id = self.state.viz_state.site_id.clone();
         }
@@ -1309,35 +1187,37 @@ impl eframe::App for WorkbenchApp {
                         // Trigger render for the ingested scan
                         self.request_worker_render();
                     }
-                    nexrad::WorkerOutcome::Rendered(result) => {
+                    nexrad::WorkerOutcome::Decoded(result) => {
                         log::info!(
-                            "Render complete: {}x{}, {} radials, {:.0}ms (fetch: {:.0}ms)",
-                            result.width,
-                            result.height,
+                            "Decode complete: {}x{} (az x gates), {} radials, product={}, {:.0}ms",
+                            result.azimuth_count,
+                            result.gate_count,
                             result.radial_count,
-                            result.render_time_ms,
+                            result.product,
                             result.fetch_ms,
                         );
 
                         self.state
                             .session_stats
-                            .record_render_time(result.render_time_ms);
+                            .record_render_time(result.fetch_ms);
 
-                        // Upload pixel data as GPU texture
-                        if result.width > 0 && result.height > 0 && !result.image_data.is_empty() {
-                            let image = egui::ColorImage::from_rgba_unmultiplied(
-                                [result.width as usize, result.height as usize],
-                                &result.image_data,
-                            );
-
-                            // Build a cache key for the rendered result
-                            let cache_key = nexrad::RadarCacheKey::for_dynamic_sweep(
-                                0, // content signature (not used for worker-rendered textures)
-                                result.context.elevation_number as usize,
-                                (0, 0),
-                            );
-
-                            self.radar_texture_cache.update(ctx, cache_key, image);
+                        // Upload decoded data to GPU renderer
+                        if let (Some(ref renderer), Some(ref gl)) =
+                            (&self.gpu_renderer, &self.gpu_renderer_gl)
+                        {
+                            if let Ok(mut r) = renderer.lock() {
+                                r.update_data(
+                                    gl,
+                                    &result.azimuths,
+                                    &result.gate_values,
+                                    result.azimuth_count,
+                                    result.gate_count,
+                                    result.first_gate_range_km,
+                                    result.gate_interval_km,
+                                    result.max_range_km,
+                                );
+                                r.update_color_table(gl, &result.product);
+                            }
                         }
                     }
                     nexrad::WorkerOutcome::WorkerError { id, message } => {
@@ -1542,7 +1422,7 @@ impl eframe::App for WorkbenchApp {
             }
         }
 
-        // Detect elevation/product/interpolation changes and trigger worker re-render.
+        // Detect elevation/product changes and trigger worker re-render.
         // If the user changes these settings and we have a current scan, we need
         // a new render from the worker.
         if self.current_render_scan_key.is_some() && self.decode_worker.is_some() {
@@ -1594,12 +1474,12 @@ impl eframe::App for WorkbenchApp {
         );
         ui::render_right_panel(ctx, &mut self.state);
 
-        // Render canvas with texture-based radar rendering
+        // Render canvas with GPU-based radar rendering
         ui::render_canvas_with_geo(
             ctx,
             &mut self.state,
             Some(&self.geo_layers),
-            &mut self.radar_texture_cache,
+            self.gpu_renderer.as_ref(),
         );
 
         // Process keyboard shortcuts

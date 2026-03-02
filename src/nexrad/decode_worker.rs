@@ -35,29 +35,31 @@ pub struct IngestResult {
     pub total_ms: f64,
 }
 
-/// Context for a render request.
+/// Context for a render/decode request.
 pub struct RenderContext {
     /// Scan storage key.
     #[allow(dead_code)]
     pub scan_key: String,
     /// Elevation number being rendered.
+    #[allow(dead_code)]
     pub elevation_number: u8,
 }
 
-/// Successful render result from the worker.
-pub struct RenderResult {
+/// Decoded radar sweep data from the worker (raw data for GPU rendering).
+pub struct DecodeResult {
+    #[allow(dead_code)]
     pub context: RenderContext,
-    /// RGBA pixel data.
-    pub image_data: Vec<u8>,
-    /// Image width in pixels.
-    pub width: u32,
-    /// Image height in pixels.
-    pub height: u32,
-    /// Total render time (ms).
-    pub render_time_ms: f64,
-    /// Number of radials rendered.
+    /// Sorted azimuth angles in degrees.
+    pub azimuths: Vec<f32>,
+    /// Flat row-major gate values (azimuth_count * gate_count). Sentinel-encoded.
+    pub gate_values: Vec<f32>,
+    pub azimuth_count: u32,
+    pub gate_count: u32,
+    pub first_gate_range_km: f64,
+    pub gate_interval_km: f64,
+    pub max_range_km: f64,
+    pub product: String,
     pub radial_count: u32,
-    /// Time spent fetching from IDB (ms).
     pub fetch_ms: f64,
 }
 
@@ -65,8 +67,8 @@ pub struct RenderResult {
 pub enum WorkerOutcome {
     /// Archive ingest completed.
     Ingested(IngestResult),
-    /// Render completed.
-    Rendered(RenderResult),
+    /// Decode completed (raw data for GPU rendering).
+    Decoded(DecodeResult),
     /// Error from any operation.
     WorkerError { id: u64, message: String },
 }
@@ -93,7 +95,7 @@ pub struct DecodeWorker {
 /// A request queued before the worker was ready.
 enum QueuedRequest {
     Ingest(RequestId, Vec<u8>, String, i64, String),
-    Render(RequestId, String, u8, String, String),
+    Render(RequestId, String, u8, String),
 }
 
 impl DecodeWorker {
@@ -152,8 +154,8 @@ impl DecodeWorker {
                         handle_ingested_message(&data, &pending_ingest_c, &results_c);
                         ctx_c.request_repaint();
                     }
-                    Some("rendered") => {
-                        handle_rendered_message(&data, &pending_render_c, &results_c);
+                    Some("decoded") => {
+                        handle_decoded_message(&data, &pending_render_c, &results_c);
                         ctx_c.request_repaint();
                     }
                     Some("error") => {
@@ -252,13 +254,12 @@ impl DecodeWorker {
         }
     }
 
-    /// Submit a render request: fetch records from IDB, decode target elevation, render.
+    /// Submit a decode request: fetch records from IDB, decode target elevation, return raw data.
     pub fn render(
         &mut self,
         scan_key: String,
         elevation_number: u8,
         product: String,
-        interpolation: String,
     ) {
         let id = self.next_request_id();
         self.pending_render.borrow_mut().insert(
@@ -276,7 +277,6 @@ impl DecodeWorker {
                 &scan_key,
                 elevation_number,
                 &product,
-                &interpolation,
             );
         } else {
             self.queue.push(QueuedRequest::Render(
@@ -284,7 +284,6 @@ impl DecodeWorker {
                 scan_key,
                 elevation_number,
                 product,
-                interpolation,
             ));
         }
     }
@@ -299,8 +298,8 @@ impl DecodeWorker {
                     QueuedRequest::Ingest(id, data, site_id, ts, file_name) => {
                         send_ingest_request(&self.worker, id, &data, &site_id, ts, &file_name);
                     }
-                    QueuedRequest::Render(id, scan_key, elev, product, interp) => {
-                        send_render_request(&self.worker, id, &scan_key, elev, &product, &interp);
+                    QueuedRequest::Render(id, scan_key, elev, product) => {
+                        send_render_request(&self.worker, id, &scan_key, elev, &product);
                     }
                 }
             }
@@ -400,8 +399,8 @@ fn handle_ingested_message(
         }));
 }
 
-/// Handle a "rendered" message from the worker.
-fn handle_rendered_message(
+/// Handle a "decoded" message from the worker.
+fn handle_decoded_message(
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
@@ -414,112 +413,53 @@ fn handle_rendered_message(
     let context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
         None => {
-            log::warn!("Received rendered message for unknown request {}", id);
+            log::warn!("Received decoded message for unknown request {}", id);
             return;
         }
     };
 
-    let image_buffer = js_sys::Reflect::get(data, &"imageData".into()).unwrap_or(JsValue::NULL);
-    let image_data = js_sys::Uint8Array::new(&image_buffer).to_vec();
+    let az_buffer = js_sys::Reflect::get(data, &"azimuths".into()).unwrap_or(JsValue::NULL);
+    let azimuths = js_sys::Float32Array::new(&az_buffer).to_vec();
 
-    let width = js_sys::Reflect::get(data, &"width".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
+    let val_buffer = js_sys::Reflect::get(data, &"gateValues".into()).unwrap_or(JsValue::NULL);
+    let gate_values = js_sys::Float32Array::new(&val_buffer).to_vec();
 
-    let height = js_sys::Reflect::get(data, &"height".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
-
-    let render_time_ms = js_sys::Reflect::get(data, &"renderTimeMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-
+    let azimuth_count = js_sys::Reflect::get(data, &"azimuthCount".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+    let gate_count = js_sys::Reflect::get(data, &"gateCount".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+    let first_gate_range_km = js_sys::Reflect::get(data, &"firstGateRangeKm".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let gate_interval_km = js_sys::Reflect::get(data, &"gateIntervalKm".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let max_range_km = js_sys::Reflect::get(data, &"maxRangeKm".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let product = js_sys::Reflect::get(data, &"product".into())
+        .ok().and_then(|v| v.as_string()).unwrap_or_else(|| "reflectivity".to_string());
     let radial_count = js_sys::Reflect::get(data, &"radialCount".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
-
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
     let fetch_ms = js_sys::Reflect::get(data, &"fetchMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-
-    // Extract sub-timings for diagnostics
-    let idb_open_ms = js_sys::Reflect::get(data, &"idbOpenMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let list_ms = js_sys::Reflect::get(data, &"listMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let blob_fetch_ms = js_sys::Reflect::get(data, &"blobFetchMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let idb_fetch_ms = js_sys::Reflect::get(data, &"idbFetchMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let decompress_ms = js_sys::Reflect::get(data, &"decompressMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let decode_ms = js_sys::Reflect::get(data, &"decodeMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let build_ms = js_sys::Reflect::get(data, &"buildMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let render_only_ms = js_sys::Reflect::get(data, &"renderMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let matching_records = js_sys::Reflect::get(data, &"matchingRecords".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
-    let total_records = js_sys::Reflect::get(data, &"totalRecords".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
-    let blob_bytes = js_sys::Reflect::get(data, &"blobBytes".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u64;
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let total_ms = js_sys::Reflect::get(data, &"totalMs".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
 
     log::info!(
-        "Worker render: {}x{}, {} radials in {:.0}ms | idb_open: {:.0}ms, list: {:.0}ms ({}/{} records), blob_fetch+decode: {:.0}ms (fetch: {:.0}ms, decompress: {:.0}ms, decode: {:.0}ms, {} bytes), build: {:.0}ms, render: {:.0}ms",
-        width,
-        height,
-        radial_count,
-        render_time_ms,
-        idb_open_ms,
-        list_ms,
-        matching_records,
-        total_records,
-        blob_fetch_ms,
-        idb_fetch_ms,
-        decompress_ms,
-        decode_ms,
-        blob_bytes,
-        build_ms,
-        render_only_ms,
+        "Worker decode: {}x{} (az x gates), {} radials, product={}, {:.0}ms (fetch: {:.0}ms)",
+        azimuth_count, gate_count, radial_count, product, total_ms, fetch_ms,
     );
 
     results
         .borrow_mut()
-        .push(WorkerOutcome::Rendered(RenderResult {
+        .push(WorkerOutcome::Decoded(DecodeResult {
             context,
-            image_data,
-            width,
-            height,
-            render_time_ms,
+            azimuths,
+            gate_values,
+            azimuth_count,
+            gate_count,
+            first_gate_range_km,
+            gate_interval_km,
+            max_range_km,
+            product,
             radial_count,
             fetch_ms,
         }));
@@ -588,7 +528,6 @@ fn send_render_request(
     scan_key: &str,
     elevation_number: u8,
     product: &str,
-    interpolation: &str,
 ) {
     let msg = js_sys::Object::new();
     js_sys::Reflect::set(&msg, &"type".into(), &"render".into()).ok();
@@ -601,12 +540,6 @@ fn send_render_request(
     )
     .ok();
     js_sys::Reflect::set(&msg, &"product".into(), &JsValue::from_str(product)).ok();
-    js_sys::Reflect::set(
-        &msg,
-        &"interpolation".into(),
-        &JsValue::from_str(interpolation),
-    )
-    .ok();
 
     if let Err(e) = worker.post_message(&msg) {
         log::error!("Failed to send render request {}: {:?}", id, e);

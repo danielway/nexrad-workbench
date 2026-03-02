@@ -7,8 +7,8 @@
 //   Main → Worker:  { type: 'ingest',  id, data: ArrayBuffer, siteId, timestampSecs, fileName }
 //   Worker → Main:  { type: 'ingested', id, result: { recordsStored, scanKey, elevationMap, totalMs } }
 //
-//   Main → Worker:  { type: 'render',  id, scanKey, elevationNumber, product, interpolation }
-//   Worker → Main:  { type: 'rendered', id, imageData: ArrayBuffer, width, height, renderTimeMs, radialCount, fetchMs }
+//   Main → Worker:  { type: 'render',  id, scanKey, elevationNumber, product }
+//   Worker → Main:  { type: 'decoded', id, azimuths, gateValues, azimuthCount, gateCount, ... }
 //
 //   Worker → Main:  { type: 'error',   id, message }
 
@@ -58,41 +58,34 @@ self.onmessage = async function (e) {
     if (msg.type === 'render') {
         try {
             // worker_render: JsValue -> Promise<JsValue>
-            // Input: { scanKey, elevationNumber, product, interpolation }
-            // Output: { imageData: ArrayBuffer, width, height, renderTimeMs, radialCount, fetchMs }
+            // Input: { scanKey, elevationNumber, product }
+            // Output: { azimuths, gateValues, azimuthCount, gateCount, ... }
             const result = await wasm.worker_render({
                 scanKey: msg.scanKey,
                 elevationNumber: msg.elevationNumber,
                 product: msg.product,
-                interpolation: msg.interpolation,
             });
 
-            // Transfer the pixel buffer (zero-copy)
-            const imageData = result.imageData;
+            // Transfer the float buffers (zero-copy)
+            const azimuths = result.azimuths;
+            const gateValues = result.gateValues;
             self.postMessage(
                 {
-                    type: 'rendered',
+                    type: 'decoded',
                     id: msg.id,
-                    imageData: imageData,
-                    width: result.width,
-                    height: result.height,
-                    renderTimeMs: result.renderTimeMs,
+                    azimuths: azimuths,
+                    gateValues: gateValues,
+                    azimuthCount: result.azimuthCount,
+                    gateCount: result.gateCount,
+                    firstGateRangeKm: result.firstGateRangeKm,
+                    gateIntervalKm: result.gateIntervalKm,
+                    maxRangeKm: result.maxRangeKm,
+                    product: result.product,
                     radialCount: result.radialCount,
                     fetchMs: result.fetchMs,
-                    // Sub-timings for diagnostics
-                    idbOpenMs: result.idbOpenMs,
-                    listMs: result.listMs,
-                    blobFetchMs: result.blobFetchMs,
-                    idbFetchMs: result.idbFetchMs,
-                    decompressMs: result.decompressMs,
-                    decodeMs: result.decodeMs,
-                    buildMs: result.buildMs,
-                    renderMs: result.renderMs,
-                    matchingRecords: result.matchingRecords,
-                    totalRecords: result.totalRecords,
-                    blobBytes: result.blobBytes,
+                    totalMs: result.totalMs,
                 },
-                [imageData]
+                [azimuths, gateValues]
             );
         } catch (err) {
             self.postMessage({ type: 'error', id: msg.id, message: String(err) });

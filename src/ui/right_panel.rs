@@ -1,8 +1,8 @@
 //! Right panel UI: product selection, layers, and rendering controls.
 
 use crate::state::{
-    format_bytes, get_vcp_definition, AppState, ColorPalette, InterpolationMode, RadarProduct,
-    RenderMode, SmoothingMode, StorageSettings, ThemeMode,
+    format_bytes, get_vcp_definition, AppState, RadarProduct, RenderMode, StorageSettings,
+    ThemeMode,
 };
 use eframe::egui::{self, RichText, ScrollArea};
 
@@ -22,15 +22,6 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
                 ui.separator();
 
                 render_product_section(ui, state);
-                ui.add_space(5.0);
-
-                render_rendering_section(ui, state);
-                ui.add_space(5.0);
-
-                render_processing_section(ui, state);
-                ui.add_space(5.0);
-
-                render_palette_section(ui, state);
                 ui.add_space(5.0);
 
                 render_layers_section(ui, state);
@@ -125,131 +116,6 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                     );
                 }
             }
-        });
-}
-
-fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::CollapsingHeader::new(RichText::new("Rendering").strong())
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.label("Interpolation:");
-            egui::ComboBox::from_id_salt("interpolation_selector")
-                .selected_text(state.viz_state.interpolation.label())
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    for mode in InterpolationMode::all() {
-                        ui.selectable_value(
-                            &mut state.viz_state.interpolation,
-                            *mode,
-                            mode.label(),
-                        );
-                    }
-                });
-            ui.label(
-                RichText::new(match state.viz_state.interpolation {
-                    InterpolationMode::Nearest => "Fast, produces blocky output",
-                    InterpolationMode::Bilinear => "Smooth, anti-aliased output",
-                })
-                .small()
-                .weak(),
-            );
-        });
-}
-
-fn render_processing_section(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::CollapsingHeader::new(RichText::new("Processing").strong())
-        .default_open(false)
-        .show(ui, |ui| {
-            ui.checkbox(&mut state.viz_state.processing.enabled, "Enable Processing");
-
-            if state.viz_state.processing.enabled {
-                ui.add_space(4.0);
-
-                // Threshold filter
-                ui.label("Threshold Filter:");
-
-                let mut use_min = state.viz_state.processing.threshold_min.is_some();
-                let mut min_val = state.viz_state.processing.threshold_min.unwrap_or(5.0);
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut use_min, "Min:");
-                    ui.add_enabled(
-                        use_min,
-                        egui::DragValue::new(&mut min_val).speed(0.5).suffix(" dBZ"),
-                    );
-                });
-                state.viz_state.processing.threshold_min =
-                    if use_min { Some(min_val) } else { None };
-
-                let mut use_max = state.viz_state.processing.threshold_max.is_some();
-                let mut max_val = state.viz_state.processing.threshold_max.unwrap_or(75.0);
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut use_max, "Max:");
-                    ui.add_enabled(
-                        use_max,
-                        egui::DragValue::new(&mut max_val).speed(0.5).suffix(" dBZ"),
-                    );
-                });
-                state.viz_state.processing.threshold_max =
-                    if use_max { Some(max_val) } else { None };
-
-                ui.add_space(4.0);
-
-                // Smoothing
-                ui.label("Smoothing:");
-                egui::ComboBox::from_id_salt("smoothing_selector")
-                    .selected_text(state.viz_state.processing.smoothing.label())
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for mode in SmoothingMode::all() {
-                            ui.selectable_value(
-                                &mut state.viz_state.processing.smoothing,
-                                *mode,
-                                mode.label(),
-                            );
-                        }
-                    });
-
-                if state.viz_state.processing.smoothing != SmoothingMode::None {
-                    let label = match state.viz_state.processing.smoothing {
-                        SmoothingMode::Median => "Kernel Size:",
-                        SmoothingMode::Gaussian => "Strength:",
-                        SmoothingMode::None => unreachable!(),
-                    };
-                    ui.label(label);
-                    ui.add(
-                        egui::Slider::new(
-                            &mut state.viz_state.processing.smoothing_strength,
-                            1..=9,
-                        )
-                        .step_by(1.0),
-                    );
-                }
-            } else {
-                ui.label(
-                    RichText::new("Filters and smoothing for data cleanup")
-                        .small()
-                        .weak(),
-                );
-            }
-        });
-}
-
-fn render_palette_section(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::CollapsingHeader::new(RichText::new("Palette").strong())
-        .default_open(true)
-        .show(ui, |ui| {
-            egui::ComboBox::from_id_salt("palette_selector")
-                .selected_text(state.viz_state.palette.label())
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    for palette in ColorPalette::all() {
-                        ui.selectable_value(
-                            &mut state.viz_state.palette,
-                            *palette,
-                            palette.label(),
-                        );
-                    }
-                });
         });
 }
 

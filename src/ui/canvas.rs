@@ -3,18 +3,19 @@
 use super::colors::{canvas as canvas_colors, radar, sites as site_colors};
 use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::{GeoLayerSet, MapProjection};
-use crate::nexrad::{radar_coverage_range_km, RadarTextureCache};
+use crate::nexrad::{RadarGpuRenderer, RADAR_COVERAGE_RANGE_KM};
 use crate::state::{AppState, GeoLayerVisibility};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use geo_types::Coord;
 use std::f32::consts::PI;
+use std::sync::{Arc, Mutex};
 
 /// Render canvas with optional geographic layers and NEXRAD data.
 pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
     geo_layers: Option<&GeoLayerSet>,
-    texture_cache: &mut RadarTextureCache,
+    gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
 ) {
     egui::CentralPanel::default().show(ctx, |ui| {
         let available_size = ui.available_size();
@@ -53,20 +54,20 @@ pub fn render_canvas_with_geo(
             &state.layer_state.geo,
         );
 
-        // Render radar data from worker-rendered texture cache.
-        if texture_cache.texture().is_some() {
-            draw_cached_texture(
-                &painter,
+        // Render radar data via GPU shader
+        if let Some(renderer) = gpu_renderer {
+            draw_radar_gpu(
+                ui,
                 &projection,
-                texture_cache,
+                renderer,
                 &rect,
                 state.viz_state.center_lat,
                 state.viz_state.center_lon,
             );
         }
 
-        // Draw the radar sweep visualization
-        render_radar_sweep(&painter, &rect, state, None);
+        // Draw the radar sweep visualization (range rings, radials, labels)
+        render_radar_sweep(&painter, &projection, state, None);
 
         // Draw overlay info in top-left corner
         draw_overlay_info(ui, &rect, state);
@@ -76,56 +77,73 @@ pub fn render_canvas_with_geo(
     });
 }
 
-/// Draw a pre-rendered texture from the cache onto the canvas.
-///
-/// This is the worker-render path: the texture was rendered by the worker
-/// and uploaded via `cache.update()`. We just draw it at the correct geographic position.
-fn draw_cached_texture(
-    painter: &Painter,
+/// Draw radar data using a GPU shader via egui PaintCallback.
+fn draw_radar_gpu(
+    ui: &mut egui::Ui,
     projection: &MapProjection,
-    cache: &RadarTextureCache,
+    renderer: &Arc<Mutex<RadarGpuRenderer>>,
     rect: &Rect,
     radar_lat: f64,
     radar_lon: f64,
 ) {
-    if let Some(texture) = cache.texture() {
-        let range_km = radar_coverage_range_km();
-
-        let km_to_deg = 1.0 / 111.0;
-        let lat_correction = radar_lat.to_radians().cos();
-
-        let lat_range = range_km * km_to_deg;
-        let lon_range = range_km * km_to_deg / lat_correction;
-
-        let top_left = projection.geo_to_screen(Coord {
-            x: radar_lon - lon_range,
-            y: radar_lat + lat_range,
-        });
-        let bottom_right = projection.geo_to_screen(Coord {
-            x: radar_lon + lon_range,
-            y: radar_lat - lat_range,
-        });
-
-        let texture_rect = Rect::from_min_max(top_left, bottom_right);
-        let clipped_rect = texture_rect.intersect(*rect);
-
-        if clipped_rect.width() > 0.0 && clipped_rect.height() > 0.0 {
-            let full_width = texture_rect.width();
-            let full_height = texture_rect.height();
-
-            let uv_min_x = (clipped_rect.min.x - texture_rect.min.x) / full_width;
-            let uv_min_y = (clipped_rect.min.y - texture_rect.min.y) / full_height;
-            let uv_max_x = (clipped_rect.max.x - texture_rect.min.x) / full_width;
-            let uv_max_y = (clipped_rect.max.y - texture_rect.min.y) / full_height;
-
-            let clipped_uv = egui::Rect::from_min_max(
-                egui::pos2(uv_min_x, uv_min_y),
-                egui::pos2(uv_max_x, uv_max_y),
-            );
-
-            painter.image(texture.id(), clipped_rect, clipped_uv, Color32::WHITE);
+    // Check if renderer has data and get the actual data range
+    let max_range_km = {
+        let r = renderer.lock().unwrap();
+        if !r.has_data() {
+            return;
         }
-    }
+        r.max_range_km()
+    };
+
+    // Use the actual data max range (not a fixed constant) so the shader's
+    // pixel-to-km mapping matches the geographic projection exactly.
+    let range_km = max_range_km;
+
+    let km_to_deg = 1.0 / 111.0;
+    let lat_correction = radar_lat.to_radians().cos();
+    let lon_range = range_km * km_to_deg / lat_correction;
+
+    // Compute radar center in screen coordinates
+    let center_screen = projection.geo_to_screen(Coord {
+        x: radar_lon,
+        y: radar_lat,
+    });
+
+    // Compute radius: distance from center to edge of coverage in screen pixels
+    let edge_screen = projection.geo_to_screen(Coord {
+        x: radar_lon + lon_range,
+        y: radar_lat,
+    });
+    let radius_px = (edge_screen.x - center_screen.x).abs();
+
+    let renderer = renderer.clone();
+    let center = [center_screen.x, center_screen.y];
+    let canvas_min = rect.min;
+
+    let callback = egui::PaintCallback {
+        rect: *rect,
+        callback: Arc::new(egui_glow::CallbackFn::new(move |info, painter| {
+            let gl = painter.gl();
+            let r = renderer.lock().unwrap();
+            if r.has_data() {
+                let px_per_point = info.pixels_per_point;
+                let viewport = info.viewport_in_pixels();
+                // Convert from screen points to physical pixels relative to viewport
+                let adjusted_center = [
+                    (center[0] - canvas_min.x) * px_per_point,
+                    (center[1] - canvas_min.y) * px_per_point,
+                ];
+                r.paint(
+                    gl,
+                    adjusted_center,
+                    radius_px * px_per_point,
+                    [viewport.width_px as f32, viewport.height_px as f32],
+                );
+            }
+        })),
+    };
+
+    ui.painter().add(callback);
 }
 
 /// Format an age in seconds as a human-readable string.
@@ -236,12 +254,37 @@ fn handle_canvas_interaction(response: &egui::Response, rect: &Rect, state: &mut
     }
 }
 
-/// Render the radar sweep visualization
-fn render_radar_sweep(painter: &Painter, rect: &Rect, state: &AppState, azimuth: Option<f32>) {
-    let center = rect.center() + state.viz_state.pan_offset;
-    let base_radius = rect.width().min(rect.height()) * 0.4;
-    let radius = base_radius * state.viz_state.zoom;
+/// Render the radar sweep visualization (range rings, radial lines, cardinal labels).
+///
+/// Uses the same MapProjection as the GPU radar and geo layers so everything
+/// pans and zooms together.
+fn render_radar_sweep(
+    painter: &Painter,
+    projection: &MapProjection,
+    state: &AppState,
+    azimuth: Option<f32>,
+) {
+    let radar_lat = state.viz_state.center_lat;
+    let radar_lon = state.viz_state.center_lon;
     let dark = state.is_dark;
+
+    // Compute center from geographic projection (same as GPU renderer)
+    let center = projection.geo_to_screen(Coord {
+        x: radar_lon,
+        y: radar_lat,
+    });
+
+    // Compute radius in screen pixels for the coverage range
+    let range_km = RADAR_COVERAGE_RANGE_KM;
+    let km_to_deg = 1.0 / 111.0;
+    let lat_correction = radar_lat.to_radians().cos();
+    let lon_range = range_km * km_to_deg / lat_correction;
+
+    let edge = projection.geo_to_screen(Coord {
+        x: radar_lon + lon_range,
+        y: radar_lat,
+    });
+    let radius = (edge.x - center.x).abs();
 
     // Draw range rings
     let ring_color = canvas_colors::ring(dark);

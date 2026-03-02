@@ -31,7 +31,7 @@ pub use settings::{format_bytes, StorageSettings};
 pub use stats::SessionStats;
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
-pub use viz::{ColorPalette, InterpolationMode, RadarProduct, RenderMode, SmoothingMode, VizState};
+pub use viz::{RadarProduct, RenderMode, VizState};
 
 /// Root application state containing all sub-states.
 #[derive(Default)]
