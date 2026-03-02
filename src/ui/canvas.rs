@@ -4,7 +4,7 @@ use super::colors::{canvas as canvas_colors, radar, sites as site_colors};
 use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::{RadarGpuRenderer, RADAR_COVERAGE_RANGE_KM};
-use crate::state::{AppState, GeoLayerVisibility};
+use crate::state::{AppState, GeoLayerVisibility, RenderProcessing};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use geo_types::Coord;
 use std::f32::consts::PI;
@@ -63,6 +63,7 @@ pub fn render_canvas_with_geo(
                 &rect,
                 state.viz_state.center_lat,
                 state.viz_state.center_lon,
+                &state.render_processing,
             );
         }
 
@@ -85,6 +86,7 @@ fn draw_radar_gpu(
     rect: &Rect,
     radar_lat: f64,
     radar_lon: f64,
+    processing: &RenderProcessing,
 ) {
     // Check if renderer has data and get the actual data range
     let max_range_km = {
@@ -119,6 +121,7 @@ fn draw_radar_gpu(
     let renderer = renderer.clone();
     let center = [center_screen.x, center_screen.y];
     let canvas_min = rect.min;
+    let processing = processing.clone();
 
     let callback = egui::PaintCallback {
         rect: *rect,
@@ -138,6 +141,7 @@ fn draw_radar_gpu(
                     adjusted_center,
                     radius_px * px_per_point,
                     [viewport.width_px as f32, viewport.height_px as f32],
+                    &processing,
                 );
             }
         })),

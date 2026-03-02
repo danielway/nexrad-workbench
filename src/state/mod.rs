@@ -31,7 +31,7 @@ pub use settings::{format_bytes, StorageSettings};
 pub use stats::SessionStats;
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
-pub use viz::{RadarProduct, RenderMode, VizState};
+pub use viz::{InterpolationMode, RadarProduct, RenderMode, RenderProcessing, VizState};
 
 /// Root application state containing all sub-states.
 #[derive(Default)]
@@ -120,6 +120,9 @@ pub struct AppState {
 
     /// Resolved dark mode flag for the current frame.
     pub is_dark: bool,
+
+    /// GPU rendering processing options (interpolation, smoothing, etc.).
+    pub render_processing: RenderProcessing,
 }
 
 /// State for the datetime jump picker popup.

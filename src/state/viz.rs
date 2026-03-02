@@ -113,6 +113,59 @@ impl RenderMode {
     }
 }
 
+/// Interpolation mode for radar rendering.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub enum InterpolationMode {
+    /// Raw nearest-neighbor sampling (blocky, traditional).
+    #[default]
+    Nearest,
+    /// Bilinear interpolation between adjacent gates and azimuths.
+    Bilinear,
+}
+
+impl InterpolationMode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            InterpolationMode::Nearest => "Nearest",
+            InterpolationMode::Bilinear => "Bilinear",
+        }
+    }
+
+    pub fn all() -> &'static [InterpolationMode] {
+        &[InterpolationMode::Nearest, InterpolationMode::Bilinear]
+    }
+}
+
+/// GPU rendering processing options (shader uniforms).
+#[derive(Clone)]
+pub struct RenderProcessing {
+    /// Interpolation mode (nearest vs bilinear).
+    pub interpolation: InterpolationMode,
+    /// Whether Gaussian smoothing is enabled.
+    pub smoothing_enabled: bool,
+    /// Smoothing kernel radius in samples (1.0..5.0).
+    pub smoothing_radius: f32,
+    /// Whether despeckle filtering is enabled.
+    pub despeckle_enabled: bool,
+    /// Minimum valid neighbors to keep a pixel (1..6).
+    pub despeckle_threshold: u32,
+    /// Global opacity for radar data (0.0..1.0).
+    pub opacity: f32,
+}
+
+impl Default for RenderProcessing {
+    fn default() -> Self {
+        Self {
+            interpolation: InterpolationMode::Nearest,
+            smoothing_enabled: false,
+            smoothing_radius: 2.0,
+            despeckle_enabled: false,
+            despeckle_threshold: 3,
+            opacity: 1.0,
+        }
+    }
+}
+
 /// Visualization state including view controls.
 pub struct VizState {
     /// Current zoom level (1.0 = 100%)
