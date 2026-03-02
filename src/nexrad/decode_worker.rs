@@ -460,6 +460,18 @@ fn handle_rendered_message(
         .ok()
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
+    let idb_fetch_ms = js_sys::Reflect::get(data, &"idbFetchMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let decompress_ms = js_sys::Reflect::get(data, &"decompressMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let decode_ms = js_sys::Reflect::get(data, &"decodeMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let build_ms = js_sys::Reflect::get(data, &"buildMs".into())
         .ok()
         .and_then(|v| v.as_f64())
@@ -482,7 +494,7 @@ fn handle_rendered_message(
         .unwrap_or(0.0) as u64;
 
     log::info!(
-        "Worker render: {}x{}, {} radials in {:.0}ms | idb_open: {:.0}ms, list: {:.0}ms ({}/{} records), blob_fetch+decode: {:.0}ms ({} bytes), build: {:.0}ms, render: {:.0}ms",
+        "Worker render: {}x{}, {} radials in {:.0}ms | idb_open: {:.0}ms, list: {:.0}ms ({}/{} records), blob_fetch+decode: {:.0}ms (fetch: {:.0}ms, decompress: {:.0}ms, decode: {:.0}ms, {} bytes), build: {:.0}ms, render: {:.0}ms",
         width,
         height,
         radial_count,
@@ -492,6 +504,9 @@ fn handle_rendered_message(
         matching_records,
         total_records,
         blob_fetch_ms,
+        idb_fetch_ms,
+        decompress_ms,
+        decode_ms,
         blob_bytes,
         build_ms,
         render_only_ms,

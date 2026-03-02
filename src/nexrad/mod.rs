@@ -10,7 +10,7 @@ mod cache_channel;
 mod decode_worker;
 mod download;
 mod realtime;
-mod record_decode;
+pub(crate) mod record_decode;
 mod texture_cache;
 mod texture_render;
 #[allow(dead_code)]
@@ -21,7 +21,7 @@ pub use cache_channel::{CacheLoadChannel, CacheLoadResult, ScrubLoadChannel, Scr
 pub use decode_worker::{DecodeWorker, WorkerOutcome};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use realtime::{RealtimeChannel, RealtimeResult};
-pub use record_decode::{decode_record_to_radials, probe_record_elevations};
+pub use record_decode::{extract_elevation_numbers, probe_record_elevations};
 pub use texture_cache::{RadarCacheKey, RadarTextureCache};
 pub use texture_render::radar_coverage_range_km;
 pub use types::{CachedScan, DownloadResult, ScanMetadata};

@@ -31,7 +31,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     wasm_bindgen_futures::future_to_promise(async move {
         use crate::data::indexeddb::IndexedDbRecordStore;
         use crate::data::keys::*;
-        use crate::nexrad::probe_record_elevations;
+        use crate::nexrad::{extract_elevation_numbers, probe_record_elevations};
 
         let t_total = web_time::Instant::now();
 
@@ -79,24 +79,47 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let scan_start = UnixMillis::from_secs(timestamp_secs);
         let scan_key = ScanKey::new(site_id.as_str(), scan_start);
 
-        // Store each record, probing for elevation metadata
+        // Decompress, probe elevation metadata, and store decompressed records.
+        // Records are stored decompressed so the render path skips bzip2 entirely.
         let t_store = web_time::Instant::now();
         let mut stored = 0u32;
+        let mut decompress_ms = 0.0f64;
         let elevation_map = js_sys::Object::new();
 
         for (record_id, record) in records.iter().enumerate() {
             let record_id = record_id as u32;
             let record_key = RecordKey::new(scan_key.clone(), record_id);
-            let record_data = record.data();
-            let blob = RecordBlob::new(record_key.clone(), record_data.to_vec());
 
-            // Probe for elevation numbers
-            let elevation_numbers = probe_record_elevations(record_data).ok();
+            // Decompress once: keep the bytes for storage and extract elevations
+            let (store_bytes, elevation_numbers) = if record.compressed() {
+                let t_decompress = web_time::Instant::now();
+                let decompressed = record.decompress().map_err(|e| {
+                    wasm_bindgen::JsValue::from_str(&format!(
+                        "Failed to decompress record {}: {}",
+                        record_id, e
+                    ))
+                })?;
+                decompress_ms += t_decompress.elapsed().as_secs_f64() * 1000.0;
+
+                let bytes = decompressed.data().to_vec();
+                let elevs = match decompressed.radials() {
+                    Ok(radials) => Some(extract_elevation_numbers(&radials)),
+                    Err(_) => None,
+                };
+                (bytes, elevs)
+            } else {
+                // Legacy CTM — already uncompressed
+                let bytes = record.data().to_vec();
+                let elevs = probe_record_elevations(record.data()).ok();
+                (bytes, elevs)
+            };
+
+            let blob = RecordBlob::new(record_key.clone(), store_bytes);
 
             // First record typically contains VCP metadata
             let has_vcp = record_id == 0;
 
-            let meta = RecordIndexEntry::new(record_key, record_data.len() as u32)
+            let meta = RecordIndexEntry::new(record_key, blob.data.len() as u32)
                 .with_vcp(has_vcp)
                 .with_elevations(elevation_numbers.clone());
 
@@ -126,11 +149,12 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
         log::info!(
-            "worker_ingest: {} ({} records) in {:.0}ms (split: {:.0}ms, store: {:.0}ms)",
+            "worker_ingest: {} ({} records) in {:.0}ms (split: {:.0}ms, decompress: {:.0}ms, store: {:.0}ms)",
             file_name,
             stored,
             total_ms,
             split_ms,
+            decompress_ms,
             store_ms,
         );
 
@@ -172,7 +196,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     wasm_bindgen_futures::future_to_promise(async move {
         use crate::data::indexeddb::IndexedDbRecordStore;
         use crate::data::keys::*;
-        use crate::nexrad::decode_record_to_radials;
+        use crate::nexrad::record_decode::decode_record_to_radials_timed;
         use nexrad_render::{
             default_color_scale, render_sweep, Interpolation, Product, RenderOptions,
         };
@@ -265,20 +289,30 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             ));
         }
 
-        // Fetch matching record blobs and decode
-        let t_blob_fetch = web_time::Instant::now();
-        let mut all_radials = Vec::new();
+        // Fetch matching record blobs, decompress, and decode — with sub-timings
+        let mut all_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
         let mut blob_bytes = 0u64;
+        let mut idb_fetch_ms = 0.0f64;
+        let mut decompress_ms = 0.0f64;
+        let mut decode_ms = 0.0f64;
         for key in &matching_keys {
-            if let Ok(Some(blob)) = store.get_record(key).await {
+            let t_fetch = web_time::Instant::now();
+            let blob_opt = store.get_record(key).await;
+            idb_fetch_ms += t_fetch.elapsed().as_secs_f64() * 1000.0;
+
+            if let Ok(Some(blob)) = blob_opt {
                 blob_bytes += blob.data.len() as u64;
-                match decode_record_to_radials(&blob.data) {
-                    Ok(radials) => all_radials.extend(radials),
+                match decode_record_to_radials_timed(&blob.data) {
+                    Ok((radials, timings)) => {
+                        decompress_ms += timings.decompress_ms;
+                        decode_ms += timings.decode_ms;
+                        all_radials.extend(radials);
+                    }
                     Err(e) => log::warn!("Failed to decode record {}: {}", key, e),
                 }
             }
         }
-        let blob_fetch_ms = t_blob_fetch.elapsed().as_secs_f64() * 1000.0;
+        let blob_fetch_ms = idb_fetch_ms + decompress_ms + decode_ms;
         let fetch_ms = idb_open_ms + list_ms + blob_fetch_ms;
 
         // Filter radials to target elevation (in case records contain multiple elevations)
@@ -290,11 +324,14 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let radial_count = target_radials.len();
 
         log::info!(
-            "worker_render decode: {} records → {} radials ({} bytes) in {:.0}ms",
+            "worker_render decode: {} records → {} radials ({} bytes) in {:.0}ms (idb_fetch: {:.0}ms, decompress: {:.0}ms, decode: {:.0}ms)",
             matching_keys.len(),
             radial_count,
             blob_bytes,
             blob_fetch_ms,
+            idb_fetch_ms,
+            decompress_ms,
+            decode_ms,
         );
 
         if target_radials.is_empty() {
@@ -397,6 +434,24 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             &result,
             &"blobFetchMs".into(),
             &wasm_bindgen::JsValue::from(blob_fetch_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"idbFetchMs".into(),
+            &wasm_bindgen::JsValue::from(idb_fetch_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"decompressMs".into(),
+            &wasm_bindgen::JsValue::from(decompress_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"decodeMs".into(),
+            &wasm_bindgen::JsValue::from(decode_ms),
         )
         .ok();
         js_sys::Reflect::set(

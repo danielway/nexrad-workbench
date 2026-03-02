@@ -9,7 +9,7 @@
 //! ## Record ID Derivation
 //!
 //! Records within a scan are identified by a sequence number (0-based).
-//! For archive files, this is the order of bzip2 blocks in the file.
+//! For archive files, this is the order of LDM records in the file.
 //! For realtime streaming, this is the chunk sequence number.
 //!
 //! The first record (id=0) typically contains LDM/VCP metadata needed
@@ -135,7 +135,7 @@ impl fmt::Display for ScanKey {
 
 /// Identifies an individual record within a scan.
 ///
-/// Records are the atomic unit of storage. Each record contains a bzip2-compressed
+/// Records are the atomic unit of storage. Each record contains a decompressed
 /// chunk of radar data, typically covering a portion of one sweep.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RecordKey {
@@ -182,15 +182,18 @@ impl fmt::Display for RecordKey {
     }
 }
 
-/// A record blob containing compressed radar data.
+/// A record blob containing decompressed radar data.
 ///
 /// Note: This struct is NOT serialized to JSON for IndexedDB storage.
 /// The `data` field is stored directly as an ArrayBuffer in IndexedDB.
 /// This struct is used for in-memory representation only.
+///
+/// Records are stored decompressed (bzip2 already decoded at ingest time)
+/// so the render path can skip the expensive decompression step.
 #[derive(Debug, Clone)]
 pub struct RecordBlob {
     pub key: RecordKey,
-    /// Raw bzip2-compressed bytes.
+    /// Raw decompressed record bytes.
     pub data: Vec<u8>,
 }
 
@@ -308,7 +311,7 @@ pub struct RecordIndexEntry {
     /// Precise timestamp for this record if derivable from header.
     /// If None, use scan_start + record ordering.
     pub record_time: Option<UnixMillis>,
-    /// Compressed size in bytes.
+    /// Size in bytes (decompressed).
     pub size_bytes: u32,
     /// Whether this record contains VCP/LDM metadata.
     pub has_vcp: bool,

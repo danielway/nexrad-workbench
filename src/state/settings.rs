@@ -16,8 +16,8 @@ pub struct StorageSettings {
 impl Default for StorageSettings {
     fn default() -> Self {
         Self {
-            quota_bytes: 500 * 1024 * 1024,           // 500 MB
-            eviction_target_bytes: 400 * 1024 * 1024, // 400 MB (80% of quota)
+            quota_bytes: 2 * 1024 * 1024 * 1024,           // 2 GB
+            eviction_target_bytes: 1600 * 1024 * 1024, // 1.6 GB (80% of quota)
         }
     }
 }
@@ -103,9 +103,9 @@ impl StorageSettings {
         100 * 1024 * 1024
     }
 
-    /// Returns maximum quota (2 GB).
+    /// Returns maximum quota (5 GB).
     pub fn max_quota() -> u64 {
-        2 * 1024 * 1024 * 1024
+        5 * 1024 * 1024 * 1024
     }
 }
 
