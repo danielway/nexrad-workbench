@@ -18,6 +18,36 @@ use state::AppState;
 
 fn main() {}
 
+// ---------------------------------------------------------------------------
+// Worker-side cached IDB connection
+// ---------------------------------------------------------------------------
+// WASM is single-threaded so thread_local! is safe.  We keep a single
+// IndexedDbRecordStore alive for the lifetime of the worker so that
+// subsequent ingest/render calls reuse the already-open IDB connection
+// instead of paying the ~60ms open+list overhead every time.
+
+thread_local! {
+    static WORKER_IDB: std::cell::RefCell<Option<data::indexeddb::IndexedDbRecordStore>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Get (or lazily open) the shared worker IDB store.
+async fn worker_idb_store() -> Result<data::indexeddb::IndexedDbRecordStore, wasm_bindgen::JsValue> {
+    let existing = WORKER_IDB.with(|cell| cell.borrow().clone());
+    if let Some(store) = existing {
+        return Ok(store);
+    }
+    let store = data::indexeddb::IndexedDbRecordStore::new();
+    store
+        .open()
+        .await
+        .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e)))?;
+    WORKER_IDB.with(|cell| {
+        *cell.borrow_mut() = Some(store.clone());
+    });
+    Ok(store)
+}
+
 /// Ingest a raw NEXRAD archive file: split into LDM records, probe for elevation
 /// metadata, store in IndexedDB, and return metadata.
 ///
@@ -29,9 +59,8 @@ fn main() {}
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     wasm_bindgen_futures::future_to_promise(async move {
-        use crate::data::indexeddb::IndexedDbRecordStore;
         use crate::data::keys::*;
-        use crate::nexrad::{extract_elevation_numbers, probe_record_elevations};
+        use crate::nexrad::{extract_elevation_numbers, record_decode::decode_record_to_radials};
 
         let t_total = web_time::Instant::now();
 
@@ -69,29 +98,29 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             return Err(wasm_bindgen::JsValue::from_str("No records found"));
         }
 
-        // Open IDB from worker context
-        let store = IndexedDbRecordStore::new();
-        store
-            .open()
-            .await
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e)))?;
+        // Reuse cached IDB connection (or open on first call)
+        let store = worker_idb_store().await?;
 
         let scan_start = UnixMillis::from_secs(timestamp_secs);
         let scan_key = ScanKey::new(site_id.as_str(), scan_start);
 
         // Decompress, probe elevation metadata, and store decompressed records.
         // Records are stored decompressed so the render path skips bzip2 entirely.
+        // Also collect per-radial metadata for sweep building.
         let t_store = web_time::Instant::now();
         let mut stored = 0u32;
         let mut decompress_ms = 0.0f64;
         let elevation_map = js_sys::Object::new();
 
+        // Accumulate (timestamp_ms, elevation_number, elevation_angle) from all radials
+        let mut radial_metas: Vec<(i64, u8, f32)> = Vec::new();
+
         for (record_id, record) in records.iter().enumerate() {
             let record_id = record_id as u32;
             let record_key = RecordKey::new(scan_key.clone(), record_id);
 
-            // Decompress once: keep the bytes for storage and extract elevations
-            let (store_bytes, elevation_numbers) = if record.compressed() {
+            // Decompress once: keep the bytes for storage and extract radials
+            let (store_bytes, radials) = if record.compressed() {
                 let t_decompress = web_time::Instant::now();
                 let decompressed = record.decompress().map_err(|e| {
                     wasm_bindgen::JsValue::from_str(&format!(
@@ -102,16 +131,27 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 decompress_ms += t_decompress.elapsed().as_secs_f64() * 1000.0;
 
                 let bytes = decompressed.data().to_vec();
-                let elevs = match decompressed.radials() {
-                    Ok(radials) => Some(extract_elevation_numbers(&radials)),
-                    Err(_) => None,
-                };
-                (bytes, elevs)
+                let radials = decompressed.radials().unwrap_or_default();
+                (bytes, radials)
             } else {
                 // Legacy CTM — already uncompressed
                 let bytes = record.data().to_vec();
-                let elevs = probe_record_elevations(record.data()).ok();
-                (bytes, elevs)
+                let radials = decode_record_to_radials(record.data()).unwrap_or_default();
+                (bytes, radials)
+            };
+
+            let elevation_numbers = if radials.is_empty() {
+                None
+            } else {
+                // Collect per-radial metadata for sweep building
+                for r in &radials {
+                    radial_metas.push((
+                        r.collection_timestamp(),
+                        r.elevation_number(),
+                        r.elevation_angle_degrees(),
+                    ));
+                }
+                Some(extract_elevation_numbers(&radials))
             };
 
             let blob = RecordBlob::new(record_key.clone(), store_bytes);
@@ -145,13 +185,31 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 .ok();
             }
         }
+
+        // Build sweep metadata by grouping radials by elevation_number
+        let sweeps = build_sweep_meta_from_radials(&radial_metas);
+        let end_timestamp_secs = sweeps
+            .iter()
+            .map(|s| s.end as i64)
+            .max()
+            .unwrap_or(timestamp_secs);
+
+        // Persist sweep metadata to IDB scan index
+        if let Err(e) = store
+            .update_scan_sweep_meta(&scan_key, end_timestamp_secs, sweeps.clone())
+            .await
+        {
+            log::warn!("Failed to persist sweep metadata: {}", e);
+        }
+
         let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
         log::info!(
-            "worker_ingest: {} ({} records) in {:.0}ms (split: {:.0}ms, decompress: {:.0}ms, store: {:.0}ms)",
+            "worker_ingest: {} ({} records, {} sweeps) in {:.0}ms (split: {:.0}ms, decompress: {:.0}ms, store: {:.0}ms)",
             file_name,
             stored,
+            sweeps.len(),
             total_ms,
             split_ms,
             decompress_ms,
@@ -180,8 +238,58 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         )
         .ok();
 
+        // Include sweep metadata as JSON so the main thread has it immediately
+        let sweeps_json = serde_json::to_string(&sweeps).unwrap_or_else(|_| "[]".to_string());
+        js_sys::Reflect::set(
+            &result,
+            &"sweepsJson".into(),
+            &wasm_bindgen::JsValue::from_str(&sweeps_json),
+        )
+        .ok();
+
         Ok(result.into())
     })
+}
+
+/// Build `SweepMeta` entries by grouping radial metadata by elevation number.
+///
+/// Each tuple is `(timestamp_ms, elevation_number, elevation_angle_degrees)`.
+fn build_sweep_meta_from_radials(
+    radial_metas: &[(i64, u8, f32)],
+) -> Vec<crate::data::keys::SweepMeta> {
+    use std::collections::BTreeMap;
+
+    struct Accum {
+        min_ts_ms: i64,
+        max_ts_ms: i64,
+        angle_sum: f64,
+        count: u32,
+    }
+
+    let mut groups: BTreeMap<u8, Accum> = BTreeMap::new();
+
+    for &(ts_ms, elev_num, elev_angle) in radial_metas {
+        let entry = groups.entry(elev_num).or_insert(Accum {
+            min_ts_ms: ts_ms,
+            max_ts_ms: ts_ms,
+            angle_sum: 0.0,
+            count: 0,
+        });
+        entry.min_ts_ms = entry.min_ts_ms.min(ts_ms);
+        entry.max_ts_ms = entry.max_ts_ms.max(ts_ms);
+        entry.angle_sum += elev_angle as f64;
+        entry.count += 1;
+    }
+
+    groups
+        .into_iter()
+        .map(|(elev_num, acc)| crate::data::keys::SweepMeta {
+            start: acc.min_ts_ms as f64 / 1000.0,
+            end: acc.max_ts_ms as f64 / 1000.0,
+            elevation: (acc.angle_sum / acc.count as f64) as f32,
+            elevation_number: elev_num,
+        })
+        .collect()
 }
 
 /// Render a specific elevation from a scan stored in IndexedDB.
@@ -194,7 +302,6 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     wasm_bindgen_futures::future_to_promise(async move {
-        use crate::data::indexeddb::IndexedDbRecordStore;
         use crate::data::keys::*;
         use crate::nexrad::record_decode::decode_record_to_radials_timed;
         use nexrad_render::Product;
@@ -231,13 +338,9 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             _ => Product::Reflectivity,
         };
 
-        // Open IDB and fetch record entries
+        // Reuse cached IDB connection (or open on first call)
         let t_idb_open = web_time::Instant::now();
-        let store = IndexedDbRecordStore::new();
-        store
-            .open()
-            .await
-            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e)))?;
+        let store = worker_idb_store().await?;
         let idb_open_ms = t_idb_open.elapsed().as_secs_f64() * 1000.0;
 
         let t_list = web_time::Instant::now();
@@ -319,6 +422,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let gate_count = field.gate_count();
 
         // Encode gate values with sentinel for non-valid gates
+        let t_encode = web_time::Instant::now();
         const SENTINEL: f32 = -9999.0;
         let values = field.values();
         let statuses = field.statuses();
@@ -330,19 +434,10 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 _ => SENTINEL,
             });
         }
-
-        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-        log::info!(
-            "worker_decode: {} radials, {}x{} in {:.0}ms (fetch: {:.0}ms, build: {:.0}ms)",
-            radial_count,
-            azimuth_count,
-            gate_count,
-            total_ms,
-            fetch_ms,
-            build_ms,
-        );
+        let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
 
         // Transfer raw data back to main thread
+        let t_marshal = web_time::Instant::now();
         let azimuths_array = js_sys::Float32Array::from(field.azimuths());
         let values_array = js_sys::Float32Array::from(encoded_values.as_slice());
         let az_buf = azimuths_array.buffer();
@@ -358,8 +453,21 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         js_sys::Reflect::set(&result, &"maxRangeKm".into(), &wasm_bindgen::JsValue::from(field.max_range_km())).ok();
         js_sys::Reflect::set(&result, &"product".into(), &wasm_bindgen::JsValue::from_str(&product_str)).ok();
         js_sys::Reflect::set(&result, &"radialCount".into(), &wasm_bindgen::JsValue::from(radial_count as u32)).ok();
+        let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
+
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+
+        // Add timing fields to result
         js_sys::Reflect::set(&result, &"fetchMs".into(), &wasm_bindgen::JsValue::from(fetch_ms)).ok();
         js_sys::Reflect::set(&result, &"totalMs".into(), &wasm_bindgen::JsValue::from(total_ms)).ok();
+        js_sys::Reflect::set(&result, &"decompressMs".into(), &wasm_bindgen::JsValue::from(decompress_ms)).ok();
+        js_sys::Reflect::set(&result, &"decodeMs".into(), &wasm_bindgen::JsValue::from(decode_ms)).ok();
+        js_sys::Reflect::set(&result, &"buildMs".into(), &wasm_bindgen::JsValue::from(build_ms)).ok();
+        js_sys::Reflect::set(&result, &"idbFetchMs".into(), &wasm_bindgen::JsValue::from(idb_fetch_ms)).ok();
+        js_sys::Reflect::set(&result, &"idbOpenMs".into(), &wasm_bindgen::JsValue::from(idb_open_ms)).ok();
+        js_sys::Reflect::set(&result, &"listMs".into(), &wasm_bindgen::JsValue::from(list_ms)).ok();
+        js_sys::Reflect::set(&result, &"encodeMs".into(), &wasm_bindgen::JsValue::from(encode_ms)).ok();
+        js_sys::Reflect::set(&result, &"marshalMs".into(), &wasm_bindgen::JsValue::from(marshal_ms)).ok();
 
         Ok(result.into())
     })
@@ -1017,6 +1125,25 @@ impl eframe::App for WorkbenchApp {
             ctx.set_visuals(egui::Visuals::light());
         }
 
+        // Run storm cell detection on demand when toggled on with existing data
+        if self.state.storm_cells_visible && self.state.detected_storm_cells.is_empty() {
+            if let Some(ref renderer) = self.gpu_renderer {
+                if let Ok(r) = renderer.lock() {
+                    if r.has_data() {
+                        self.state.detected_storm_cells = r.detect_storm_cells(
+                            self.state.viz_state.center_lat,
+                            self.state.viz_state.center_lon,
+                            35.0,
+                        );
+                    }
+                }
+            }
+        }
+        // Clear cached cells when toggle is off
+        if !self.state.storm_cells_visible && !self.state.detected_storm_cells.is_empty() {
+            self.state.detected_storm_cells.clear();
+        }
+
         // Detect site changes and clear volume ring
         if self.state.viz_state.site_id != self.previous_site_id {
             log::info!(
@@ -1154,10 +1281,11 @@ impl eframe::App for WorkbenchApp {
                 match outcome {
                     nexrad::WorkerOutcome::Ingested(result) => {
                         log::info!(
-                            "Ingest complete: {} ({} records, {} elevations, {:.0}ms, fetch: {:.0}ms)",
+                            "Ingest complete: {} ({} records, {} elevations, {} sweeps, {:.0}ms, fetch: {:.0}ms)",
                             result.scan_key,
                             result.records_stored,
                             result.elevation_numbers.len(),
+                            result.sweeps.len(),
                             result.total_ms,
                             result.context.fetch_latency_ms,
                         );
@@ -1175,7 +1303,9 @@ impl eframe::App for WorkbenchApp {
                             .playback_state
                             .set_playback_position(result.context.timestamp_secs as f64);
 
-                        // Refresh timeline to include the new scan
+                        // Refresh timeline to include the new scan (sweeps
+                        // were persisted to IDB during ingest and will be
+                        // loaded by from_metadata on the next refresh).
                         self.state.timeline_needs_refresh = true;
 
                         // Request eviction check
@@ -1217,6 +1347,15 @@ impl eframe::App for WorkbenchApp {
                                     result.max_range_km,
                                 );
                                 r.update_color_table(gl, &result.product);
+
+                                // Run storm cell detection if enabled
+                                if self.state.storm_cells_visible {
+                                    self.state.detected_storm_cells = r.detect_storm_cells(
+                                        self.state.viz_state.center_lat,
+                                        self.state.viz_state.center_lon,
+                                        35.0, // threshold dBZ
+                                    );
+                                }
                             }
                         }
                     }

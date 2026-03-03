@@ -66,27 +66,13 @@ self.onmessage = async function (e) {
                 product: msg.product,
             });
 
-            // Transfer the float buffers (zero-copy)
-            const azimuths = result.azimuths;
-            const gateValues = result.gateValues;
-            self.postMessage(
-                {
-                    type: 'decoded',
-                    id: msg.id,
-                    azimuths: azimuths,
-                    gateValues: gateValues,
-                    azimuthCount: result.azimuthCount,
-                    gateCount: result.gateCount,
-                    firstGateRangeKm: result.firstGateRangeKm,
-                    gateIntervalKm: result.gateIntervalKm,
-                    maxRangeKm: result.maxRangeKm,
-                    product: result.product,
-                    radialCount: result.radialCount,
-                    fetchMs: result.fetchMs,
-                    totalMs: result.totalMs,
-                },
-                [azimuths, gateValues]
-            );
+            // Forward all result fields plus type/id; transfer float buffers zero-copy
+            const { azimuths, gateValues } = result;
+            const payload = Object.assign({}, result, {
+                type: 'decoded',
+                id: msg.id,
+            });
+            self.postMessage(payload, [azimuths, gateValues]);
         } catch (err) {
             self.postMessage({ type: 'error', id: msg.id, message: String(err) });
         }

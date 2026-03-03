@@ -67,18 +67,6 @@ pub fn decode_record_to_radials_timed(
     Ok((radials, DecodeTimings { decompress_ms, decode_ms }))
 }
 
-/// Probe a compressed LDM record for elevation numbers without retaining radial data.
-///
-/// Decompresses the record and peeks at each radial's elevation_number field.
-/// Returns a sorted, deduplicated list of elevation numbers found in the record.
-///
-/// This is used at ingest time to populate `RecordIndexEntry.elevation_numbers`,
-/// enabling selective record fetching by elevation.
-pub fn probe_record_elevations(record_bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let radials = decode_record_to_radials(record_bytes)?;
-    Ok(extract_elevation_numbers(&radials))
-}
-
 /// Extract sorted, deduplicated elevation numbers from already-decoded radials.
 ///
 /// Use this when radials have already been decoded (e.g. after decompressing a

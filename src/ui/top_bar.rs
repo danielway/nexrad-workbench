@@ -9,6 +9,20 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
         .exact_height(36.0)
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
+                // Left panel toggle
+                let left_icon = if state.left_sidebar_visible {
+                    "\u{25C0}"
+                } else {
+                    "\u{25B6}"
+                };
+                if ui
+                    .button(RichText::new(left_icon).size(12.0))
+                    .on_hover_text("Toggle left panel")
+                    .clicked()
+                {
+                    state.left_sidebar_visible = !state.left_sidebar_visible;
+                }
+
                 // App title
                 ui.label(
                     RichText::new("NEXRAD Workbench")
@@ -41,6 +55,22 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                             .color(Color32::GRAY),
                     );
                 }
+
+                // Right-aligned: right panel toggle
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let right_icon = if state.right_sidebar_visible {
+                        "\u{25B6}"
+                    } else {
+                        "\u{25C0}"
+                    };
+                    if ui
+                        .button(RichText::new(right_icon).size(12.0))
+                        .on_hover_text("Toggle right panel")
+                        .clicked()
+                    {
+                        state.right_sidebar_visible = !state.right_sidebar_visible;
+                    }
+                });
             });
         });
 }

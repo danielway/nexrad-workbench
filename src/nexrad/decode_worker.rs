@@ -31,6 +31,8 @@ pub struct IngestResult {
     pub records_stored: u32,
     /// Unique elevation numbers found across all records.
     pub elevation_numbers: Vec<u8>,
+    /// Per-sweep metadata extracted from radials during ingest.
+    pub sweeps: Vec<crate::data::SweepMeta>,
     /// Total time in worker (ms).
     pub total_ms: f64,
 }
@@ -380,11 +382,20 @@ fn handle_ingested_message(
     }
     elevation_numbers.sort_unstable();
 
+    // Parse sweep metadata from JSON
+    let sweeps: Vec<crate::data::SweepMeta> =
+        js_sys::Reflect::get(&result_obj, &"sweepsJson".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
     log::info!(
-        "Worker ingest complete: {} ({} records, {} elevations, {:.0}ms)",
+        "Worker ingest complete: {} ({} records, {} elevations, {} sweeps, {:.0}ms)",
         scan_key,
         records_stored,
         elevation_numbers.len(),
+        sweeps.len(),
         total_ms,
     );
 
@@ -395,6 +406,7 @@ fn handle_ingested_message(
             scan_key,
             records_stored,
             elevation_numbers,
+            sweeps,
             total_ms,
         }));
 }
@@ -442,10 +454,27 @@ fn handle_decoded_message(
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
     let total_ms = js_sys::Reflect::get(data, &"totalMs".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let decompress_ms = js_sys::Reflect::get(data, &"decompressMs".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let decode_ms = js_sys::Reflect::get(data, &"decodeMs".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let build_ms = js_sys::Reflect::get(data, &"buildMs".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let idb_fetch_ms = js_sys::Reflect::get(data, &"idbFetchMs".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let idb_open_ms = js_sys::Reflect::get(data, &"idbOpenMs".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let list_ms = js_sys::Reflect::get(data, &"listMs".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let encode_ms = js_sys::Reflect::get(data, &"encodeMs".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let marshal_ms = js_sys::Reflect::get(data, &"marshalMs".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
 
     log::info!(
-        "Worker decode: {}x{} (az x gates), {} radials, product={}, {:.0}ms (fetch: {:.0}ms)",
-        azimuth_count, gate_count, radial_count, product, total_ms, fetch_ms,
+        "Worker decode: {}x{}, {} radials, {}, {:.0}ms (open: {:.1}, list: {:.1}, fetch: {:.1}, decomp: {:.1}, decode: {:.1}, build: {:.1}, encode: {:.1}, marshal: {:.1})",
+        azimuth_count, gate_count, radial_count, product, total_ms,
+        idb_open_ms, list_ms, idb_fetch_ms, decompress_ms, decode_ms, build_ms, encode_ms, marshal_ms,
     );
 
     results

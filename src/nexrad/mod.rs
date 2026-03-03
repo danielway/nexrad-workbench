@@ -21,7 +21,7 @@ pub use decode_worker::{DecodeWorker, WorkerOutcome};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use gpu_renderer::RadarGpuRenderer;
 pub use realtime::{RealtimeChannel, RealtimeResult};
-pub use record_decode::{extract_elevation_numbers, probe_record_elevations};
+pub use record_decode::extract_elevation_numbers;
 pub use types::{CachedScan, DownloadResult, ScanMetadata};
 
 /// Standard NEXRAD coverage range in km.

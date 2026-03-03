@@ -123,6 +123,40 @@ pub struct AppState {
 
     /// GPU rendering processing options (interpolation, smoothing, etc.).
     pub render_processing: RenderProcessing,
+
+    /// Whether the inspector tool is active (hover shows lat/lon and data value).
+    pub inspector_enabled: bool,
+
+    /// Whether the distance measurement tool is active.
+    pub distance_tool_active: bool,
+
+    /// Distance measurement start point (lat, lon).
+    pub distance_start: Option<(f64, f64)>,
+
+    /// Distance measurement end point (lat, lon).
+    pub distance_end: Option<(f64, f64)>,
+
+    /// Whether storm cell detection overlay is visible.
+    pub storm_cells_visible: bool,
+
+    /// Cached storm cell detection results (centroid lat, lon, max dBZ, area km2).
+    pub detected_storm_cells: Vec<StormCellInfo>,
+}
+
+/// Lightweight storm cell info for rendering on the canvas.
+#[derive(Clone, Debug)]
+#[allow(dead_code)] // Fields are part of detection results data model
+pub struct StormCellInfo {
+    /// Centroid latitude.
+    pub lat: f64,
+    /// Centroid longitude.
+    pub lon: f64,
+    /// Maximum reflectivity (dBZ).
+    pub max_dbz: f32,
+    /// Cell area in km^2.
+    pub area_km2: f32,
+    /// Bounding box (min_lat, min_lon, max_lat, max_lon).
+    pub bounds: (f64, f64, f64, f64),
 }
 
 /// State for the datetime jump picker popup.

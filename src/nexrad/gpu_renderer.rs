@@ -361,6 +361,10 @@ pub struct RadarGpuRenderer {
     value_min: f32,
     value_range: f32,
     has_data: bool,
+
+    // CPU-side copies for inspector value lookup
+    cpu_azimuths: Vec<f32>,
+    cpu_gate_values: Vec<f32>,
 }
 
 impl RadarGpuRenderer {
@@ -489,6 +493,8 @@ impl RadarGpuRenderer {
                 value_min: 0.0,
                 value_range: 1.0,
                 has_data: false,
+                cpu_azimuths: Vec::new(),
+                cpu_gate_values: Vec::new(),
             }
         }
     }
@@ -507,6 +513,8 @@ impl RadarGpuRenderer {
         gate_interval_km: f64,
         max_range_km: f64,
     ) {
+        let t_total = web_time::Instant::now();
+
         self.azimuth_count = azimuth_count;
         self.gate_count = gate_count;
         self.first_gate_km = first_gate_km;
@@ -514,10 +522,17 @@ impl RadarGpuRenderer {
         self.max_range_km = max_range_km;
         self.has_data = azimuth_count > 0 && gate_count > 0;
 
+        // Keep CPU copies for inspector value lookup
+        let t_copy = web_time::Instant::now();
+        self.cpu_azimuths = azimuths.to_vec();
+        self.cpu_gate_values = gate_values.to_vec();
+        let copy_ms = t_copy.elapsed().as_secs_f64() * 1000.0;
+
         if !self.has_data {
             return;
         }
 
+        let t_upload = web_time::Instant::now();
         unsafe {
             // Re-create data texture (gates x azimuths, R32F)
             gl.delete_texture(self.data_texture);
@@ -537,23 +552,31 @@ impl RadarGpuRenderer {
                 azimuths,
             );
         }
+        let upload_ms = t_upload.elapsed().as_secs_f64() * 1000.0;
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
         log::info!(
-            "GPU data uploaded: {}x{} (azimuths x gates), range {:.1}-{:.1} km",
+            "GPU update_data: {}x{} (az x gates), range {:.1}-{:.1} km, {:.1}ms (copy: {:.1}ms, upload: {:.1}ms)",
             azimuth_count,
             gate_count,
             first_gate_km,
             max_range_km,
+            total_ms,
+            copy_ms,
+            upload_ms,
         );
     }
 
     /// Build and upload a color lookup table for the given product.
     pub fn update_color_table(&mut self, gl: &glow::Context, product_str: &str) {
+        let t_total = web_time::Instant::now();
+
         let product = product_from_str(product_str);
         let (min_val, max_val) = product_value_range(product);
         self.value_min = min_val;
         self.value_range = max_val - min_val;
 
+        let t_build = web_time::Instant::now();
         let color_scale = nexrad_render::default_color_scale(product);
 
         // Build 256-entry RGBA LUT
@@ -566,17 +589,24 @@ impl RadarGpuRenderer {
             let rgba = color.to_rgba8();
             lut_data.extend_from_slice(&rgba);
         }
+        let build_ms = t_build.elapsed().as_secs_f64() * 1000.0;
 
+        let t_upload = web_time::Instant::now();
         unsafe {
             gl.delete_texture(self.lut_texture);
             self.lut_texture = create_rgba8_texture(gl, lut_size as i32, 1, &lut_data);
         }
+        let upload_ms = t_upload.elapsed().as_secs_f64() * 1000.0;
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
         log::info!(
-            "GPU LUT uploaded for {:?}: {:.1}..{:.1}",
+            "GPU update_color_table: {:?} ({:.1}..{:.1}), {:.1}ms (build: {:.1}ms, upload: {:.1}ms)",
             product,
             min_val,
             max_val,
+            total_ms,
+            build_ms,
+            upload_ms,
         );
     }
 
@@ -593,6 +623,65 @@ impl RadarGpuRenderer {
     /// Clear all radar data (e.g. on site change).
     pub fn clear_data(&mut self) {
         self.has_data = false;
+        self.cpu_azimuths.clear();
+        self.cpu_gate_values.clear();
+    }
+
+    /// Look up the raw data value at a given polar coordinate.
+    ///
+    /// Returns `None` if outside the data range or if the value is the no-data sentinel.
+    pub fn value_at_polar(&self, azimuth_deg: f32, range_km: f64) -> Option<f32> {
+        if !self.has_data || self.cpu_azimuths.is_empty() {
+            return None;
+        }
+
+        // Check range bounds
+        if range_km < self.first_gate_km || range_km >= self.max_range_km {
+            return None;
+        }
+
+        // Find nearest azimuth index
+        let az_count = self.azimuth_count as usize;
+        let gate_count = self.gate_count as usize;
+        let mut best_idx = 0usize;
+        let mut best_dist = 360.0f32;
+        for (i, &az) in self.cpu_azimuths.iter().enumerate() {
+            let mut d = (azimuth_deg - az).abs();
+            if d > 180.0 {
+                d = 360.0 - d;
+            }
+            if d < best_dist {
+                best_dist = d;
+                best_idx = i;
+            }
+        }
+
+        // Gap check: if nearest azimuth is too far away, no data
+        let az_spacing = 360.0 / az_count as f32;
+        if best_dist > az_spacing * 1.5 {
+            return None;
+        }
+
+        // Compute gate index
+        let gate_idx =
+            ((range_km - self.first_gate_km) / self.gate_interval_km).floor() as usize;
+        if gate_idx >= gate_count {
+            return None;
+        }
+
+        // Data layout: row-major [azimuth][gate]
+        let offset = best_idx * gate_count + gate_idx;
+        if offset >= self.cpu_gate_values.len() {
+            return None;
+        }
+
+        let value = self.cpu_gate_values[offset];
+        // Check sentinel
+        if value < -9998.0 {
+            return None;
+        }
+
+        Some(value)
     }
 
     /// Render the radar data using the current GL context.
@@ -668,6 +757,135 @@ impl RadarGpuRenderer {
             gl.use_program(None);
             gl.active_texture(glow::TEXTURE0);
         }
+    }
+
+    /// Detect storm cells from the current CPU-side data.
+    ///
+    /// Returns lightweight cell info for rendering on the canvas.
+    /// Uses nexrad-process connected-component analysis on the reflectivity data.
+    pub fn detect_storm_cells(
+        &self,
+        radar_lat: f64,
+        radar_lon: f64,
+        threshold_dbz: f32,
+    ) -> Vec<crate::state::StormCellInfo> {
+        if !self.has_data || self.cpu_azimuths.is_empty() {
+            return Vec::new();
+        }
+
+        let t_total = web_time::Instant::now();
+
+        let az_count = self.azimuth_count as usize;
+        let gate_count = self.gate_count as usize;
+
+        // Compute azimuth spacing
+        let az_spacing = if az_count > 1 {
+            360.0 / az_count as f32
+        } else {
+            1.0
+        };
+
+        // Build a SweepField from the CPU data
+        let t_field = web_time::Instant::now();
+        let mut field = nexrad_model::data::SweepField::new_empty(
+            "Reflectivity",
+            "dBZ",
+            0.5, // elevation doesn't matter for 2D detection
+            self.cpu_azimuths.clone(),
+            az_spacing,
+            self.first_gate_km,
+            self.gate_interval_km,
+            gate_count,
+        );
+
+        // Populate the field with our gate values
+        let mut valid_gates = 0u32;
+        for az_idx in 0..az_count {
+            let row_start = az_idx * gate_count;
+            for g in 0..gate_count {
+                let v = self.cpu_gate_values[row_start + g];
+                if v > -9998.0 {
+                    field.set(az_idx, g, v, nexrad_model::data::GateStatus::Valid);
+                    valid_gates += 1;
+                }
+                // new_empty defaults to NoData, so we only set Valid gates
+            }
+        }
+        let field_ms = t_field.elapsed().as_secs_f64() * 1000.0;
+
+        // Build coordinate system from site location
+        use nexrad_model::meta::Site;
+        use nexrad_model::geo::RadarCoordinateSystem;
+        use nexrad_process::detection::StormCellDetector;
+
+        let site = Site::new(
+            *b"SITE",
+            radar_lat as f32,
+            radar_lon as f32,
+            0,  // altitude (not critical for 2D detection)
+            0,  // tower height
+        );
+        let coord_system = RadarCoordinateSystem::new(&site);
+
+        // Run detection
+        let t_detect = web_time::Instant::now();
+        let detector: StormCellDetector = match StormCellDetector::new(threshold_dbz, 10) {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        };
+
+        let cells: Vec<nexrad_process::detection::StormCell> =
+            match detector.detect(&field, &coord_system) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("Storm cell detection failed: {}", e);
+                    return Vec::new();
+                }
+            };
+        let detect_ms = t_detect.elapsed().as_secs_f64() * 1000.0;
+
+        // Convert to lightweight info, filtering out small noise cells
+        let t_convert = web_time::Instant::now();
+        const MIN_AREA_KM2: f64 = 5.0;
+
+        let result: Vec<_> = cells
+            .iter()
+            .filter(|cell| cell.area_km2() >= MIN_AREA_KM2)
+            .map(|cell| {
+                let centroid = cell.centroid();
+                let bounds = cell.bounds();
+                crate::state::StormCellInfo {
+                    lat: centroid.latitude,
+                    lon: centroid.longitude,
+                    max_dbz: cell.max_reflectivity_dbz(),
+                    area_km2: cell.area_km2() as f32,
+                    bounds: (
+                        bounds.min_latitude(),
+                        bounds.min_longitude(),
+                        bounds.max_latitude(),
+                        bounds.max_longitude(),
+                    ),
+                }
+            })
+            .collect();
+        let convert_ms = t_convert.elapsed().as_secs_f64() * 1000.0;
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+
+        log::info!(
+            "detect_storm_cells: {}x{} grid, {} valid gates, {} raw cells, {} after filter (>={:.0} km2), {:.1}ms (field: {:.1}ms, detect: {:.1}ms, convert: {:.1}ms)",
+            az_count,
+            gate_count,
+            valid_gates,
+            cells.len(),
+            result.len(),
+            MIN_AREA_KM2,
+            total_ms,
+            field_ms,
+            detect_ms,
+            convert_ms,
+        );
+
+        result
     }
 
     /// Clean up GL resources.

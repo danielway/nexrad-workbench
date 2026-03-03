@@ -2,7 +2,7 @@
 
 use crate::data::DataFacade;
 use crate::nexrad::DownloadChannel;
-use crate::state::{get_vcp_definition, radar_data::Scan, AppState, InterpolationMode};
+use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
 use chrono::Datelike;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
@@ -45,10 +45,6 @@ pub fn render_left_panel(
                 ui.separator();
                 ui.add_space(10.0);
                 render_aws_archive_section(ui, ctx, state, download_channel, data_facade);
-                ui.add_space(15.0);
-                ui.separator();
-                ui.add_space(10.0);
-                render_rendering_section(ui, state);
             });
         });
 }
@@ -559,74 +555,6 @@ fn get_sweep_info(elevation: f32, waveform: Option<&str>) -> &'static str {
             }
         }
     }
-}
-
-fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::CollapsingHeader::new(RichText::new("Rendering").strong().size(14.0))
-        .default_open(true)
-        .show(ui, |ui| {
-            let proc = &mut state.render_processing;
-
-            // Interpolation mode
-            ui.label("Interpolation:");
-            egui::ComboBox::from_id_salt("interpolation_selector")
-                .selected_text(proc.interpolation.label())
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    for mode in InterpolationMode::all() {
-                        ui.selectable_value(&mut proc.interpolation, *mode, mode.label());
-                    }
-                });
-
-            ui.add_space(8.0);
-
-            // Smoothing
-            ui.checkbox(&mut proc.smoothing_enabled, "Smoothing");
-            if proc.smoothing_enabled {
-                ui.indent("smoothing_indent", |ui| {
-                    ui.add(
-                        egui::Slider::new(&mut proc.smoothing_radius, 1.0..=5.0)
-                            .text("Radius")
-                            .step_by(0.5),
-                    );
-                });
-            }
-
-            ui.add_space(4.0);
-
-            // Despeckle
-            ui.checkbox(&mut proc.despeckle_enabled, "Despeckle");
-            if proc.despeckle_enabled {
-                ui.indent("despeckle_indent", |ui| {
-                    let mut threshold = proc.despeckle_threshold as i32;
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut threshold, 1..=6)
-                                .text("Threshold"),
-                        )
-                        .changed()
-                    {
-                        proc.despeckle_threshold = threshold as u32;
-                    }
-                });
-            }
-
-            ui.add_space(4.0);
-
-            // Opacity
-            let mut opacity_pct = proc.opacity * 100.0;
-            if ui
-                .add(
-                    egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
-                        .text("Opacity")
-                        .suffix("%")
-                        .step_by(1.0),
-                )
-                .changed()
-            {
-                proc.opacity = opacity_pct / 100.0;
-            }
-        });
 }
 
 fn render_elevation_row(

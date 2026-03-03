@@ -1,8 +1,8 @@
 //! Right panel UI: product selection, layers, and rendering controls.
 
 use crate::state::{
-    format_bytes, get_vcp_definition, AppState, RadarProduct, RenderMode, StorageSettings,
-    ThemeMode,
+    format_bytes, get_vcp_definition, AppState, InterpolationMode, RadarProduct, RenderMode,
+    StorageSettings, ThemeMode,
 };
 use eframe::egui::{self, RichText, ScrollArea};
 
@@ -25,6 +25,12 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
                 ui.add_space(5.0);
 
                 render_layers_section(ui, state);
+                ui.add_space(5.0);
+
+                render_rendering_section(ui, state);
+                ui.add_space(5.0);
+
+                render_tools_section(ui, state);
                 ui.add_space(5.0);
 
                 render_appearance_section(ui, state);
@@ -127,6 +133,92 @@ fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
             ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
             ui.checkbox(&mut state.layer_state.geo.labels, "Labels");
+        });
+}
+
+fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
+    egui::CollapsingHeader::new(RichText::new("Rendering").strong())
+        .default_open(true)
+        .show(ui, |ui| {
+            let proc = &mut state.render_processing;
+
+            // Interpolation mode
+            ui.label("Interpolation:");
+            egui::ComboBox::from_id_salt("interpolation_selector")
+                .selected_text(proc.interpolation.label())
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for mode in InterpolationMode::all() {
+                        ui.selectable_value(&mut proc.interpolation, *mode, mode.label());
+                    }
+                });
+
+            ui.add_space(8.0);
+
+            // Smoothing
+            ui.checkbox(&mut proc.smoothing_enabled, "Smoothing");
+            if proc.smoothing_enabled {
+                ui.indent("smoothing_indent", |ui| {
+                    ui.add(
+                        egui::Slider::new(&mut proc.smoothing_radius, 1.0..=5.0)
+                            .text("Radius")
+                            .step_by(0.5),
+                    );
+                });
+            }
+
+            ui.add_space(4.0);
+
+            // Despeckle
+            ui.checkbox(&mut proc.despeckle_enabled, "Despeckle");
+            if proc.despeckle_enabled {
+                ui.indent("despeckle_indent", |ui| {
+                    let mut threshold = proc.despeckle_threshold as i32;
+                    if ui
+                        .add(egui::Slider::new(&mut threshold, 1..=6).text("Threshold"))
+                        .changed()
+                    {
+                        proc.despeckle_threshold = threshold as u32;
+                    }
+                });
+            }
+
+            ui.add_space(4.0);
+
+            // Opacity
+            let mut opacity_pct = proc.opacity * 100.0;
+            if ui
+                .add(
+                    egui::Slider::new(&mut opacity_pct, 0.0..=100.0)
+                        .text("Opacity")
+                        .suffix("%")
+                        .step_by(1.0),
+                )
+                .changed()
+            {
+                proc.opacity = opacity_pct / 100.0;
+            }
+        });
+}
+
+fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
+    egui::CollapsingHeader::new(RichText::new("Tools").strong())
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.checkbox(&mut state.inspector_enabled, "Inspector")
+                .on_hover_text("Hover over radar to see position and data value");
+
+            let was_active = state.distance_tool_active;
+            ui.checkbox(&mut state.distance_tool_active, "Distance Measure")
+                .on_hover_text("Click two points on the map to measure distance");
+            // Clear measurement points when tool is toggled off
+            if was_active && !state.distance_tool_active {
+                state.distance_start = None;
+                state.distance_end = None;
+            }
+
+            ui.checkbox(&mut state.storm_cells_visible, "Storm Cells")
+                .on_hover_text("Detect and display storm cells on the radar");
         });
 }
 
