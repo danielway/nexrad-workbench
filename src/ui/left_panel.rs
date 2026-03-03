@@ -495,11 +495,8 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                         if let Some(pattern) = extracted_pattern {
                             // Use extracted VCP elevations (full fidelity from scan data)
                             for (idx, elev) in pattern.elevations.iter().enumerate() {
-                                // Match extracted elevation to actual sweep for "current" highlighting
-                                let is_current = scan.sweeps.iter().enumerate().any(|(si, sw)| {
-                                    (sw.elevation - elev.angle).abs() < 0.15
-                                        && radar_state.sweep_index == Some(si)
-                                });
+                                // Match by index: VCP pattern entries correspond 1:1 with sweeps
+                                let is_current = radar_state.sweep_index == Some(idx);
                                 let wf_short = match elev.waveform.as_str() {
                                     "CS" => "CS",
                                     "CDW" | "CDWO" => "CD",
@@ -512,14 +509,6 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                                     prf_short: prf_number_to_short(elev.prf_number),
                                     waveform_raw: &elev.waveform,
                                 };
-                                let mut label = String::new();
-                                if elev.is_sails {
-                                    label.push_str("SAILS ");
-                                }
-                                if elev.is_mrle {
-                                    label.push_str("MRLE ");
-                                }
-                                let _ = idx; // suppress unused warning
                                 render_elevation_row(
                                     ui,
                                     elev.angle,

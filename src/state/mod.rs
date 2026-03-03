@@ -73,6 +73,10 @@ pub struct AppState {
     /// Set by UI, handled in main update loop.
     pub download_selection_requested: bool,
 
+    /// Flag to signal that the scan at the current playback position should be downloaded.
+    /// Set by UI when Download button clicked without a selection range.
+    pub download_at_position_requested: bool,
+
     /// Whether a selection download is currently in progress.
     pub download_selection_in_progress: bool,
 
@@ -132,6 +136,9 @@ pub struct AppState {
 
     /// Whether storm cell detection overlay is visible.
     pub storm_cells_visible: bool,
+
+    /// Minimum dBZ threshold for storm cell detection.
+    pub storm_cell_threshold_dbz: f32,
 
     /// Cached storm cell detection results (centroid lat, lon, max dBZ, area km2).
     pub detected_storm_cells: Vec<StormCellInfo>,
@@ -238,6 +245,7 @@ impl AppState {
             right_sidebar_visible: true,
             theme_mode,
             is_dark,
+            storm_cell_threshold_dbz: 35.0,
             // Request timeline refresh on startup to load from cache
             timeline_needs_refresh: true,
             ..Default::default()

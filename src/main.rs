@@ -959,26 +959,39 @@ impl WorkbenchApp {
         }
 
         // No queue - check if we should build one
-        if !self.state.download_selection_requested {
+        let is_position_download = self.state.download_at_position_requested;
+        if is_position_download {
+            self.state.download_at_position_requested = false;
+        }
+        if !self.state.download_selection_requested && !is_position_download {
             return;
         }
         self.state.download_selection_requested = false;
 
-        // Get the selection range
-        let Some((sel_start, sel_end)) = self.state.playback_state.selection_range() else {
-            log::warn!("Download selection requested but no valid selection");
-            return;
+        // Get the download range: either from selection or from current position
+        let (sel_start, sel_end) = if is_position_download {
+            // Download a 10-minute window around the current playback position
+            let pos = self.state.playback_state.playback_position();
+            (pos - 300.0, pos + 300.0)
+        } else {
+            match self.state.playback_state.selection_range() {
+                Some(range) => range,
+                None => {
+                    log::warn!("Download selection requested but no valid selection");
+                    return;
+                }
+            }
         };
 
         let sel_start_i64 = sel_start as i64;
         let sel_end_i64 = sel_end as i64;
 
-        // Determine the date range
-        let start_date = match chrono::DateTime::from_timestamp(sel_start_i64, 0) {
+        // Determine the date range (extend by 5 min for partial overlap)
+        let start_date = match chrono::DateTime::from_timestamp(sel_start_i64 - 300, 0) {
             Some(dt) => dt.date_naive(),
             None => return,
         };
-        let end_date = match chrono::DateTime::from_timestamp(sel_end_i64, 0) {
+        let end_date = match chrono::DateTime::from_timestamp(sel_end_i64 + 300, 0) {
             Some(dt) => dt.date_naive(),
             None => return,
         };
@@ -998,9 +1011,13 @@ impl WorkbenchApp {
         while current_date <= end_date {
             // Check if we have the listing for this date
             if let Some(listing) = self.archive_index.get(&site_id, &current_date) {
-                // Find all files in the selection range
+                // Find all files in the selection range (with 5-min overlap on each side
+                // to include scans that partially overlap the selection boundaries)
+                let overlap_secs: i64 = 300; // 5 minutes
                 for file in &listing.files {
-                    if file.timestamp >= sel_start_i64 && file.timestamp <= sel_end_i64 {
+                    if file.timestamp >= (sel_start_i64 - overlap_secs)
+                        && file.timestamp <= (sel_end_i64 + overlap_secs)
+                    {
                         // Check if already cached
                         let is_cached = self
                             .state
@@ -1337,7 +1354,7 @@ impl eframe::App for WorkbenchApp {
                         self.state.detected_storm_cells = r.detect_storm_cells(
                             self.state.viz_state.center_lat,
                             self.state.viz_state.center_lon,
-                            35.0,
+                            self.state.storm_cell_threshold_dbz,
                         );
                     }
                 }
@@ -1565,7 +1582,7 @@ impl eframe::App for WorkbenchApp {
                                     self.state.detected_storm_cells = r.detect_storm_cells(
                                         self.state.viz_state.center_lat,
                                         self.state.viz_state.center_lon,
-                                        35.0, // threshold dBZ
+                                        self.state.storm_cell_threshold_dbz,
                                     );
                                 }
                             }
@@ -1815,6 +1832,65 @@ impl eframe::App for WorkbenchApp {
                     self.state.displayed_sweep_elevation_number = Some(target_elev_num);
                     self.last_render_params = None; // Force fresh render
                     self.request_worker_render();
+                }
+            }
+        }
+
+        // Pre-render next sweep: when playing and near the end of the current sweep,
+        // preemptively send a render request for the upcoming sweep so the result
+        // is ready when the boundary is crossed, reducing perceived stutter.
+        if self.state.playback_state.playing && self.decode_worker.is_some() {
+            let playback_ts = self.state.playback_state.playback_position();
+            let speed = self.state.playback_state.speed.timeline_seconds_per_real_second();
+            // Prefetch threshold: 0.5 real seconds * playback speed = timeline seconds ahead
+            let prefetch_lookahead = 0.5 * speed;
+
+            if let Some(scan) = self.state.radar_timeline.find_scan_at_timestamp(playback_ts) {
+                if let Some((sweep_idx, sweep)) = scan.find_sweep_at_timestamp(playback_ts) {
+                    let time_to_end = sweep.end_time - playback_ts;
+                    if time_to_end > 0.0 && time_to_end < prefetch_lookahead {
+                        // We're near the end of this sweep — figure out the next one
+                        let next_elev_num = if sweep_idx + 1 < scan.sweeps.len() {
+                            // Next sweep in same scan
+                            Some(scan.sweeps[sweep_idx + 1].elevation_number)
+                        } else {
+                            // End of scan — next scan's first sweep at target elevation
+                            let future_ts = playback_ts + prefetch_lookahead;
+                            self.state
+                                .radar_timeline
+                                .find_scan_at_timestamp(future_ts)
+                                .and_then(|next_scan| {
+                                    next_scan.sweeps.first().map(|s| s.elevation_number)
+                                })
+                        };
+
+                        if let Some(next_en) = next_elev_num {
+                            // Only prefetch if it differs from what we're currently showing
+                            if self.displayed_sweep_elevation_number != Some(next_en) {
+                                if let Some(ref scan_key) = self.current_render_scan_key {
+                                    let product = self.state.viz_state.product.to_worker_string().to_string();
+                                    let prefetch_params = (
+                                        scan_key.clone(),
+                                        next_en,
+                                        product.clone(),
+                                        self.state.viz_state.render_mode,
+                                    );
+                                    if self.last_render_params.as_ref() != Some(&prefetch_params) {
+                                        log::debug!(
+                                            "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
+                                            next_en,
+                                            time_to_end,
+                                        );
+                                        self.last_render_params = Some(prefetch_params);
+                                        self.decode_worker
+                                            .as_mut()
+                                            .unwrap()
+                                            .render(scan_key.clone(), next_en, product);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

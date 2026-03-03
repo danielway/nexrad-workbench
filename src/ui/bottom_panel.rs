@@ -264,6 +264,18 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     if state.playback_state.playing {
         state.playback_state.advance(dt as f64);
 
+        // Pin playback position at ~quarter of the visible timeline during playback.
+        // Compute approximate visible width (use a reasonable estimate since
+        // we don't have the exact widget width here; will be refined in render_timeline).
+        let zoom = state.playback_state.timeline_zoom;
+        if zoom > 0.0 {
+            let approx_width = 1000.0; // reasonable approximate timeline width in pixels
+            let view_width_secs = approx_width / zoom;
+            let target_offset = view_width_secs * 0.25; // pin at 25% from left
+            let pos = state.playback_state.playback_position();
+            state.playback_state.timeline_view_start = pos - target_offset;
+        }
+
         // Request continuous repaint while playing
         ctx.request_repaint();
     }
@@ -665,6 +677,20 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     // Check if shift is held
     let shift_held = ui.input(|i| i.modifiers.shift);
 
+    // Handle shift+click to create range from current playback position to click point
+    if shift_held && response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let clicked_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
+            let current_pos = state.playback_state.playback_position();
+            state.playback_state.selection_start = Some(current_pos);
+            state.playback_state.selection_end = Some(clicked_ts);
+            state.playback_state.apply_selection_as_bounds();
+            let duration_mins =
+                (clicked_ts - current_pos).abs() / 60.0;
+            log::info!("Shift+click range: {:.0} minutes", duration_mins);
+        }
+    }
+
     // Handle shift+drag to select a range
     if shift_held && response.drag_started() {
         if let Some(pos) = response.interact_pointer_pos() {
@@ -706,13 +732,21 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             }
 
             let clicked_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
-            state.playback_state.set_playback_position(clicked_ts);
+
+            // Snap to nearest scan/sweep boundary if within 10 pixels
+            let snap_dist_secs = 10.0 / zoom;
+            let snapped_ts = state
+                .radar_timeline
+                .snap_to_boundary(clicked_ts, snap_dist_secs)
+                .unwrap_or(clicked_ts);
+
+            state.playback_state.set_playback_position(snapped_ts);
 
             // Clear any selection range on regular click
             state.playback_state.clear_selection();
 
             // If clicked within loaded data range, also seek to that frame
-            if let Some(frame) = state.playback_state.timestamp_to_frame(clicked_ts as i64) {
+            if let Some(frame) = state.playback_state.timestamp_to_frame(snapped_ts as i64) {
                 state.playback_state.current_frame = frame;
             }
         }
@@ -842,11 +876,12 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
                                     // Update playback position
                                     state.playback_state.set_playback_position(ts);
 
-                                    // Center timeline view on new position
+                                    // Left-align timeline view on new position
+                                    // Place the jumped-to position at ~5% from the left edge
                                     let view_width_secs = ui.available_width() as f64
                                         / state.playback_state.timeline_zoom;
                                     state.playback_state.timeline_view_start =
-                                        ts - view_width_secs / 2.0;
+                                        ts - view_width_secs * 0.05;
 
                                     // Exit live mode if active
                                     if state.live_mode_state.is_active() {
@@ -1032,7 +1067,7 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.separator();
 
-    // Download selection button (enabled when a range is selected)
+    // Download button
     let has_selection = state.playback_state.selection_range().is_some();
     let download_in_progress = state.download_selection_in_progress;
 
@@ -1050,15 +1085,13 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
             state.download_selection_requested = true;
         }
     } else {
-        ui.add_enabled(
-            false,
-            egui::Button::new(
-                RichText::new("Download Selection")
-                    .size(11.0)
-                    .color(Color32::GRAY),
-            ),
-        )
-        .on_hover_text("Drag on timeline to select a range to download");
+        if ui
+            .button(RichText::new("\u{2B07} Download").size(11.0))
+            .on_hover_text("Download the scan at the current playback position")
+            .clicked()
+        {
+            state.download_at_position_requested = true;
+        }
     }
 
     // Push session stats to the right

@@ -318,13 +318,12 @@ fn handle_canvas_interaction(
 /// Returns `Some(azimuth_degrees)` when playing at slow speeds (< 1 min/s)
 /// and the playback position falls within a sweep.
 fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
-    if !state.playback_state.playing {
+    // Only show sweep line at 30s/s or slower (real-time or 30s/s)
+    if state.playback_state.speed.timeline_seconds_per_real_second() > 30.0 {
         return None;
     }
-    // Only show sweep line at slow playback speeds (< 1 min/s)
-    if state.playback_state.speed.timeline_seconds_per_real_second() > 60.0 {
-        return None;
-    }
+    // Show sweep line when playing, or when paused at a low-enough speed
+    // (paused state freezes the line at the current azimuth)
 
     let ts = state.playback_state.playback_position();
     let scan = state.radar_timeline.find_scan_at_timestamp(ts)?;

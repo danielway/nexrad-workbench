@@ -281,6 +281,36 @@ impl RadarTimeline {
         Self { scans }
     }
 
+    /// Find the nearest scan or sweep boundary to a given timestamp.
+    /// Returns the snapped timestamp if a boundary is within `max_dist_secs`.
+    pub fn snap_to_boundary(&self, ts: f64, max_dist_secs: f64) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        let mut best_dist = max_dist_secs;
+
+        for scan in &self.scans {
+            // Check scan boundaries
+            for &boundary in &[scan.start_time, scan.end_time] {
+                let dist = (ts - boundary).abs();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best = Some(boundary);
+                }
+            }
+            // Check sweep boundaries
+            for sweep in &scan.sweeps {
+                for &boundary in &[sweep.start_time, sweep.end_time] {
+                    let dist = (ts - boundary).abs();
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best = Some(boundary);
+                    }
+                }
+            }
+        }
+
+        best
+    }
+
     /// Find scans that overlap with the given time range
     pub fn scans_in_range(&self, start: f64, end: f64) -> impl Iterator<Item = &Scan> {
         self.scans

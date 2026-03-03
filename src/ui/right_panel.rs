@@ -2,7 +2,7 @@
 
 use crate::state::{
     format_bytes, get_vcp_definition, AppState, InterpolationMode, RadarProduct, RenderMode,
-    StorageSettings, ThemeMode,
+    StorageSettings,
 };
 use eframe::egui::{self, RichText, ScrollArea};
 
@@ -31,9 +31,6 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
                 ui.add_space(5.0);
 
                 render_tools_section(ui, state);
-                ui.add_space(5.0);
-
-                render_appearance_section(ui, state);
                 ui.add_space(5.0);
 
                 render_storage_section(ui, state);
@@ -166,7 +163,7 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
             if proc.smoothing_enabled {
                 ui.indent("smoothing_indent", |ui| {
                     ui.add(
-                        egui::Slider::new(&mut proc.smoothing_radius, 1.0..=5.0)
+                        egui::Slider::new(&mut proc.smoothing_radius, 1.0..=10.0)
                             .text("Radius")
                             .step_by(0.5),
                     );
@@ -181,7 +178,7 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.indent("despeckle_indent", |ui| {
                     let mut threshold = proc.despeckle_threshold as i32;
                     if ui
-                        .add(egui::Slider::new(&mut threshold, 1..=6).text("Threshold"))
+                        .add(egui::Slider::new(&mut threshold, 1..=8).text("Threshold"))
                         .changed()
                     {
                         proc.despeckle_threshold = threshold as u32;
@@ -225,25 +222,22 @@ fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.checkbox(&mut state.storm_cells_visible, "Storm Cells")
                 .on_hover_text("Detect and display storm cells on the radar");
-        });
-}
-
-fn render_appearance_section(ui: &mut egui::Ui, state: &mut AppState) {
-    egui::CollapsingHeader::new(RichText::new("Appearance").strong())
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.label("Theme:");
-            let prev_mode = state.theme_mode;
-            egui::ComboBox::from_id_salt("theme_selector")
-                .selected_text(state.theme_mode.label())
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    for mode in ThemeMode::all() {
-                        ui.selectable_value(&mut state.theme_mode, *mode, mode.label());
+            if state.storm_cells_visible {
+                ui.indent("storm_cell_indent", |ui| {
+                    let mut threshold = state.storm_cell_threshold_dbz;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut threshold, 20.0..=60.0)
+                                .text("Min dBZ")
+                                .step_by(1.0),
+                        )
+                        .changed()
+                    {
+                        state.storm_cell_threshold_dbz = threshold;
+                        // Clear cached results so detection re-runs with new threshold
+                        state.detected_storm_cells.clear();
                     }
                 });
-            if state.theme_mode != prev_mode {
-                crate::state::theme::save_theme_mode(state.theme_mode);
             }
         });
 }

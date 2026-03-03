@@ -103,9 +103,9 @@ impl StorageSettings {
         100 * 1024 * 1024
     }
 
-    /// Returns maximum quota (5 GB).
+    /// Returns maximum quota (20 GB).
     pub fn max_quota() -> u64 {
-        5 * 1024 * 1024 * 1024
+        20 * 1024 * 1024 * 1024
     }
 }
 
