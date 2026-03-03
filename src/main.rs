@@ -304,6 +304,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     wasm_bindgen_futures::future_to_promise(async move {
         use crate::data::keys::*;
         use crate::nexrad::record_decode::decode_record_to_radials_timed;
+        use nexrad_model::data::DataMoment;
         use nexrad_render::Product;
 
         let t_total = web_time::Instant::now();
@@ -396,13 +397,15 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         }
         let fetch_ms = idb_open_ms + list_ms + idb_fetch_ms + decompress_ms + decode_ms;
 
-        // Filter radials to target elevation
-        let target_radials: Vec<_> = all_radials
+        // Filter radials to target elevation + product, sort by azimuth
+        let t_extract = web_time::Instant::now();
+        let mut target_radials: Vec<_> = all_radials
             .into_iter()
-            .filter(|r| r.elevation_number() == elevation_number)
+            .filter(|r| {
+                r.elevation_number() == elevation_number
+                    && (product.moment_data(r).is_some() || product.cfp_moment_data(r).is_some())
+            })
             .collect();
-
-        let radial_count = target_radials.len();
 
         if target_radials.is_empty() {
             return Err(wasm_bindgen::JsValue::from_str(
@@ -410,36 +413,71 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             ));
         }
 
-        // Build SweepField (keeps raw data for GPU rendering)
-        let t_build = web_time::Instant::now();
-        let field = ::nexrad::model::data::SweepField::from_radials_owned(target_radials, product)
-            .ok_or_else(|| {
-                wasm_bindgen::JsValue::from_str("Failed to build SweepField from radials")
-            })?;
-        let build_ms = t_build.elapsed().as_secs_f64() * 1000.0;
+        target_radials.sort_by(|a, b| {
+            a.azimuth_angle_degrees()
+                .partial_cmp(&b.azimuth_angle_degrees())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-        let azimuth_count = field.azimuth_count();
-        let gate_count = field.gate_count();
+        let radial_count = target_radials.len();
 
-        // Encode gate values with sentinel for non-valid gates
-        let t_encode = web_time::Instant::now();
-        const SENTINEL: f32 = -9999.0;
-        let values = field.values();
-        let statuses = field.statuses();
-        let mut encoded_values = Vec::with_capacity(values.len());
-        for (val, status) in values.iter().zip(statuses.iter()) {
-            use ::nexrad::model::data::GateStatus;
-            encoded_values.push(match status {
-                GateStatus::Valid => *val,
-                _ => SENTINEL,
-            });
+        // Extract gate params + scale/offset from first radial's moment
+        let (first_gate_range_km, gate_interval_km, gate_count, scale, offset) = {
+            let r = &target_radials[0];
+            if let Some(m) = product.moment_data(r) {
+                (m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset())
+            } else if let Some(m) = product.cfp_moment_data(r) {
+                (m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset())
+            } else {
+                return Err(wasm_bindgen::JsValue::from_str("Could not extract moment params"));
+            }
+        };
+
+        // Build flat arrays: azimuths + raw gate values (u16 cast to f32)
+        // Use raw_values() byte slice directly for bulk conversion instead of
+        // the per-element raw_gate_values() iterator which has high overhead in WASM.
+        let azimuth_count = target_radials.len();
+        let total = azimuth_count * gate_count;
+        let mut azimuths = Vec::with_capacity(azimuth_count);
+        let mut raw_values: Vec<f32> = vec![0.0; total]; // 0.0 = "below threshold" sentinel
+
+        for (row, radial) in target_radials.iter().enumerate() {
+            azimuths.push(radial.azimuth_angle_degrees());
+            let row_offset = row * gate_count;
+
+            // Get raw byte slice and word size, then bulk-convert
+            let (bytes, word_size) = if let Some(m) = product.moment_data(radial) {
+                (m.raw_values(), m.data_word_size())
+            } else if let Some(m) = product.cfp_moment_data(radial) {
+                (m.raw_values(), m.data_word_size())
+            } else {
+                continue;
+            };
+
+            let dest = &mut raw_values[row_offset..row_offset + gate_count];
+            if word_size == 16 {
+                // 16-bit: pairs of big-endian bytes → u16 → f32
+                let n = (bytes.len() / 2).min(gate_count);
+                for i in 0..n {
+                    let raw = u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+                    dest[i] = raw as f32;
+                }
+            } else {
+                // 8-bit: each byte → f32
+                let n = bytes.len().min(gate_count);
+                for i in 0..n {
+                    dest[i] = bytes[i] as f32;
+                }
+            }
         }
-        let encode_ms = t_encode.elapsed().as_secs_f64() * 1000.0;
+
+        let max_range_km = first_gate_range_km + (gate_count as f64) * gate_interval_km;
+        let extract_ms = t_extract.elapsed().as_secs_f64() * 1000.0;
 
         // Transfer raw data back to main thread
         let t_marshal = web_time::Instant::now();
-        let azimuths_array = js_sys::Float32Array::from(field.azimuths());
-        let values_array = js_sys::Float32Array::from(encoded_values.as_slice());
+        let azimuths_array = js_sys::Float32Array::from(azimuths.as_slice());
+        let values_array = js_sys::Float32Array::from(raw_values.as_slice());
         let az_buf = azimuths_array.buffer();
         let val_buf = values_array.buffer();
 
@@ -448,11 +486,13 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         js_sys::Reflect::set(&result, &"gateValues".into(), &val_buf).ok();
         js_sys::Reflect::set(&result, &"azimuthCount".into(), &wasm_bindgen::JsValue::from(azimuth_count as u32)).ok();
         js_sys::Reflect::set(&result, &"gateCount".into(), &wasm_bindgen::JsValue::from(gate_count as u32)).ok();
-        js_sys::Reflect::set(&result, &"firstGateRangeKm".into(), &wasm_bindgen::JsValue::from(field.first_gate_range_km())).ok();
-        js_sys::Reflect::set(&result, &"gateIntervalKm".into(), &wasm_bindgen::JsValue::from(field.gate_interval_km())).ok();
-        js_sys::Reflect::set(&result, &"maxRangeKm".into(), &wasm_bindgen::JsValue::from(field.max_range_km())).ok();
+        js_sys::Reflect::set(&result, &"firstGateRangeKm".into(), &wasm_bindgen::JsValue::from(first_gate_range_km)).ok();
+        js_sys::Reflect::set(&result, &"gateIntervalKm".into(), &wasm_bindgen::JsValue::from(gate_interval_km)).ok();
+        js_sys::Reflect::set(&result, &"maxRangeKm".into(), &wasm_bindgen::JsValue::from(max_range_km)).ok();
         js_sys::Reflect::set(&result, &"product".into(), &wasm_bindgen::JsValue::from_str(&product_str)).ok();
         js_sys::Reflect::set(&result, &"radialCount".into(), &wasm_bindgen::JsValue::from(radial_count as u32)).ok();
+        js_sys::Reflect::set(&result, &"scale".into(), &wasm_bindgen::JsValue::from(scale as f64)).ok();
+        js_sys::Reflect::set(&result, &"offset".into(), &wasm_bindgen::JsValue::from(offset as f64)).ok();
         let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
@@ -462,11 +502,10 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         js_sys::Reflect::set(&result, &"totalMs".into(), &wasm_bindgen::JsValue::from(total_ms)).ok();
         js_sys::Reflect::set(&result, &"decompressMs".into(), &wasm_bindgen::JsValue::from(decompress_ms)).ok();
         js_sys::Reflect::set(&result, &"decodeMs".into(), &wasm_bindgen::JsValue::from(decode_ms)).ok();
-        js_sys::Reflect::set(&result, &"buildMs".into(), &wasm_bindgen::JsValue::from(build_ms)).ok();
+        js_sys::Reflect::set(&result, &"extractMs".into(), &wasm_bindgen::JsValue::from(extract_ms)).ok();
         js_sys::Reflect::set(&result, &"idbFetchMs".into(), &wasm_bindgen::JsValue::from(idb_fetch_ms)).ok();
         js_sys::Reflect::set(&result, &"idbOpenMs".into(), &wasm_bindgen::JsValue::from(idb_open_ms)).ok();
         js_sys::Reflect::set(&result, &"listMs".into(), &wasm_bindgen::JsValue::from(list_ms)).ok();
-        js_sys::Reflect::set(&result, &"encodeMs".into(), &wasm_bindgen::JsValue::from(encode_ms)).ok();
         js_sys::Reflect::set(&result, &"marshalMs".into(), &wasm_bindgen::JsValue::from(marshal_ms)).ok();
 
         Ok(result.into())
@@ -1345,6 +1384,8 @@ impl eframe::App for WorkbenchApp {
                                     result.first_gate_range_km,
                                     result.gate_interval_km,
                                     result.max_range_km,
+                                    result.offset,
+                                    result.scale,
                                 );
                                 r.update_color_table(gl, &result.product);
 

@@ -83,22 +83,26 @@ uniform int u_despeckle_enabled;   // 0 or 1
 uniform int u_despeckle_threshold; // min valid neighbors to keep
 uniform float u_opacity;           // global alpha multiplier
 
-const float SENTINEL = -9999.0;
+// Raw-to-physical conversion: physical = (raw - u_offset) / u_scale
+uniform float u_offset;            // moment offset
+uniform float u_scale;             // moment scale (0.0 = raw values are physical)
+
 const float PI = 3.14159265359;
 
 // Sample the raw data texture at a given (gate_index, azimuth_index).
-// Returns SENTINEL for out-of-range or no-data.
+// Returns 0.0 for out-of-range (sentinel: below threshold).
 float sample_data(float g, float a) {
     if (g < 0.0 || g >= u_gate_count || a < 0.0 || a >= u_azimuth_count) {
-        return SENTINEL;
+        return 0.0;
     }
     float gu = (g + 0.5) / u_gate_count;
     float av = (a + 0.5) / u_azimuth_count;
     return texture(u_data_tex, vec2(gu, av)).r;
 }
 
+// Raw values 0 (below threshold) and 1 (range folded) are sentinels.
 bool is_valid(float v) {
-    return v > SENTINEL + 1.0;
+    return v > 1.5;
 }
 
 // Find the nearest azimuth index for a given angle in degrees.
@@ -311,8 +315,16 @@ void main() {
         }
     }
 
+    // Convert raw value to physical units: physical = (raw - offset) / scale
+    float physical;
+    if (u_scale == 0.0) {
+        physical = value;           // raw values are already physical
+    } else {
+        physical = (value - u_offset) / u_scale;
+    }
+
     // Normalize and look up color
-    float normalized = clamp((value - u_value_min) / u_value_range, 0.0, 1.0);
+    float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
     vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
 
     // Apply opacity and output premultiplied alpha (egui requirement)
@@ -352,6 +364,10 @@ pub struct RadarGpuRenderer {
     u_despeckle_threshold: glow::UniformLocation,
     u_opacity: glow::UniformLocation,
 
+    // Raw-to-physical conversion uniform locations
+    u_offset: glow::UniformLocation,
+    u_scale: glow::UniformLocation,
+
     // Data metadata
     azimuth_count: u32,
     gate_count: u32,
@@ -361,6 +377,10 @@ pub struct RadarGpuRenderer {
     value_min: f32,
     value_range: f32,
     has_data: bool,
+
+    // Raw-to-physical conversion params (for CPU-side inspector/storm detection)
+    data_offset: f32,
+    data_scale: f32,
 
     // CPU-side copies for inspector value lookup
     cpu_azimuths: Vec<f32>,
@@ -460,6 +480,10 @@ impl RadarGpuRenderer {
             let u_despeckle_threshold = gl.get_uniform_location(program, "u_despeckle_threshold").expect("Missing u_despeckle_threshold");
             let u_opacity = gl.get_uniform_location(program, "u_opacity").expect("Missing u_opacity");
 
+            // Raw-to-physical conversion uniforms
+            let u_offset = gl.get_uniform_location(program, "u_offset").expect("Missing u_offset");
+            let u_scale = gl.get_uniform_location(program, "u_scale").expect("Missing u_scale");
+
             gl.use_program(None);
 
             Self {
@@ -485,6 +509,8 @@ impl RadarGpuRenderer {
                 u_despeckle_enabled,
                 u_despeckle_threshold,
                 u_opacity,
+                u_offset,
+                u_scale,
                 azimuth_count: 0,
                 gate_count: 0,
                 first_gate_km: 0.0,
@@ -493,6 +519,8 @@ impl RadarGpuRenderer {
                 value_min: 0.0,
                 value_range: 1.0,
                 has_data: false,
+                data_offset: 0.0,
+                data_scale: 1.0,
                 cpu_azimuths: Vec::new(),
                 cpu_gate_values: Vec::new(),
             }
@@ -501,7 +529,9 @@ impl RadarGpuRenderer {
 
     /// Upload decoded radar data to GPU textures.
     ///
-    /// `gate_values` should already have sentinel encoding for non-valid gates.
+    /// `gate_values` contains raw u16 values cast to f32.
+    /// Sentinels: 0 = below threshold, 1 = range folded.
+    /// Physical value = (raw - offset) / scale.
     pub fn update_data(
         &mut self,
         gl: &glow::Context,
@@ -512,6 +542,8 @@ impl RadarGpuRenderer {
         first_gate_km: f64,
         gate_interval_km: f64,
         max_range_km: f64,
+        offset: f32,
+        scale: f32,
     ) {
         let t_total = web_time::Instant::now();
 
@@ -520,6 +552,8 @@ impl RadarGpuRenderer {
         self.first_gate_km = first_gate_km;
         self.gate_interval_km = gate_interval_km;
         self.max_range_km = max_range_km;
+        self.data_offset = offset;
+        self.data_scale = scale;
         self.has_data = azimuth_count > 0 && gate_count > 0;
 
         // Keep CPU copies for inspector value lookup
@@ -675,13 +709,18 @@ impl RadarGpuRenderer {
             return None;
         }
 
-        let value = self.cpu_gate_values[offset];
-        // Check sentinel
-        if value < -9998.0 {
+        let raw = self.cpu_gate_values[offset];
+        // Raw sentinels: 0 = below threshold, 1 = range folded
+        if raw <= 1.0 {
             return None;
         }
 
-        Some(value)
+        // Convert raw to physical value
+        if self.data_scale == 0.0 {
+            Some(raw)
+        } else {
+            Some((raw - self.data_offset) / self.data_scale)
+        }
     }
 
     /// Render the radar data using the current GL context.
@@ -749,6 +788,10 @@ impl RadarGpuRenderer {
             gl.uniform_1_i32(Some(&self.u_despeckle_threshold), processing.despeckle_threshold as i32);
             gl.uniform_1_f32(Some(&self.u_opacity), processing.opacity);
 
+            // Raw-to-physical conversion
+            gl.uniform_1_f32(Some(&self.u_offset), self.data_offset);
+            gl.uniform_1_f32(Some(&self.u_scale), self.data_scale);
+
             // Draw fullscreen quad
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
 
@@ -798,14 +841,20 @@ impl RadarGpuRenderer {
             gate_count,
         );
 
-        // Populate the field with our gate values
+        // Populate the field with our gate values (convert raw → physical)
         let mut valid_gates = 0u32;
         for az_idx in 0..az_count {
             let row_start = az_idx * gate_count;
             for g in 0..gate_count {
-                let v = self.cpu_gate_values[row_start + g];
-                if v > -9998.0 {
-                    field.set(az_idx, g, v, nexrad_model::data::GateStatus::Valid);
+                let raw = self.cpu_gate_values[row_start + g];
+                // Raw sentinels: 0 = below threshold, 1 = range folded
+                if raw > 1.0 {
+                    let physical = if self.data_scale == 0.0 {
+                        raw
+                    } else {
+                        (raw - self.data_offset) / self.data_scale
+                    };
+                    field.set(az_idx, g, physical, nexrad_model::data::GateStatus::Valid);
                     valid_gates += 1;
                 }
                 // new_empty defaults to NoData, so we only set Valid gates

@@ -53,7 +53,8 @@ pub struct DecodeResult {
     pub context: RenderContext,
     /// Sorted azimuth angles in degrees.
     pub azimuths: Vec<f32>,
-    /// Flat row-major gate values (azimuth_count * gate_count). Sentinel-encoded.
+    /// Flat row-major raw gate values (azimuth_count * gate_count).
+    /// Raw u16 values cast to f32. Sentinels: 0=below threshold, 1=range folded.
     pub gate_values: Vec<f32>,
     pub azimuth_count: u32,
     pub gate_count: u32,
@@ -63,6 +64,10 @@ pub struct DecodeResult {
     pub product: String,
     pub radial_count: u32,
     pub fetch_ms: f64,
+    /// Scale factor for decoding raw values: physical = (raw - offset) / scale.
+    pub scale: f32,
+    /// Offset for decoding raw values.
+    pub offset: f32,
 }
 
 /// Outcome of any worker operation.
@@ -458,7 +463,7 @@ fn handle_decoded_message(
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
     let decode_ms = js_sys::Reflect::get(data, &"decodeMs".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let build_ms = js_sys::Reflect::get(data, &"buildMs".into())
+    let extract_ms = js_sys::Reflect::get(data, &"extractMs".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
     let idb_fetch_ms = js_sys::Reflect::get(data, &"idbFetchMs".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -466,15 +471,17 @@ fn handle_decoded_message(
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
     let list_ms = js_sys::Reflect::get(data, &"listMs".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let encode_ms = js_sys::Reflect::get(data, &"encodeMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
     let marshal_ms = js_sys::Reflect::get(data, &"marshalMs".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let scale = js_sys::Reflect::get(data, &"scale".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+    let offset = js_sys::Reflect::get(data, &"offset".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
 
     log::info!(
-        "Worker decode: {}x{}, {} radials, {}, {:.0}ms (open: {:.1}, list: {:.1}, fetch: {:.1}, decomp: {:.1}, decode: {:.1}, build: {:.1}, encode: {:.1}, marshal: {:.1})",
+        "Worker decode: {}x{}, {} radials, {}, {:.0}ms (open: {:.1}, list: {:.1}, fetch: {:.1}, decomp: {:.1}, decode: {:.1}, extract: {:.1}, marshal: {:.1})",
         azimuth_count, gate_count, radial_count, product, total_ms,
-        idb_open_ms, list_ms, idb_fetch_ms, decompress_ms, decode_ms, build_ms, encode_ms, marshal_ms,
+        idb_open_ms, list_ms, idb_fetch_ms, decompress_ms, decode_ms, extract_ms, marshal_ms,
     );
 
     results
@@ -491,6 +498,8 @@ fn handle_decoded_message(
             product,
             radial_count,
             fetch_ms,
+            scale,
+            offset,
         }));
 }
 
