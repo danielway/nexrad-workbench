@@ -189,7 +189,11 @@ pub struct PrecomputedSweep {
     pub gate_values: Vec<f32>,
 }
 
-const HEADER_SIZE: usize = 44;
+/// Header size: 48 bytes (44 bytes of fields + 4 bytes reserved padding).
+/// Padding ensures Float64Array alignment for timestamps section
+/// (offset 48 + az*4 is 8-aligned when az is even, which is always
+/// true for NEXRAD data: 360 or 720 radials per sweep).
+const HEADER_SIZE: usize = 48;
 
 impl PrecomputedSweep {
     /// Serialize to binary blob for IDB storage.
@@ -203,15 +207,16 @@ impl PrecomputedSweep {
             + total_floats * 4;  // gate_values (f32)
         let mut buf = Vec::with_capacity(size);
 
-        // Header
-        buf.extend_from_slice(&self.azimuth_count.to_le_bytes());
-        buf.extend_from_slice(&self.gate_count.to_le_bytes());
-        buf.extend_from_slice(&self.first_gate_range_km.to_le_bytes());
-        buf.extend_from_slice(&self.gate_interval_km.to_le_bytes());
-        buf.extend_from_slice(&self.max_range_km.to_le_bytes());
-        buf.extend_from_slice(&self.scale.to_le_bytes());
-        buf.extend_from_slice(&self.offset.to_le_bytes());
-        buf.extend_from_slice(&self.radial_count.to_le_bytes());
+        // Header (48 bytes)
+        buf.extend_from_slice(&self.azimuth_count.to_le_bytes());    // 0..4
+        buf.extend_from_slice(&self.gate_count.to_le_bytes());       // 4..8
+        buf.extend_from_slice(&self.first_gate_range_km.to_le_bytes()); // 8..16
+        buf.extend_from_slice(&self.gate_interval_km.to_le_bytes()); // 16..24
+        buf.extend_from_slice(&self.max_range_km.to_le_bytes());     // 24..32
+        buf.extend_from_slice(&self.scale.to_le_bytes());            // 32..36
+        buf.extend_from_slice(&self.offset.to_le_bytes());           // 36..40
+        buf.extend_from_slice(&self.radial_count.to_le_bytes());     // 40..44
+        buf.extend_from_slice(&[0u8; 4]);                            // 44..48 reserved
 
         // Per-radial metadata
         for &a in &self.azimuths {
@@ -250,6 +255,7 @@ impl PrecomputedSweep {
         let scale = f32::from_le_bytes(data[32..36].try_into().unwrap());
         let offset = f32::from_le_bytes(data[36..40].try_into().unwrap());
         let radial_count = u32::from_le_bytes(data[40..44].try_into().unwrap());
+        // bytes 44..48 are reserved padding
 
         let az = azimuth_count as usize;
         let gc = gate_count as usize;
@@ -296,6 +302,70 @@ impl PrecomputedSweep {
         let az = self.azimuth_count as usize;
         HEADER_SIZE + az * 4 + az * 8 + az * 4 + az * self.gate_count as usize * 4
     }
+}
+
+/// Parsed header from a serialized sweep blob, with byte offsets for zero-copy access.
+pub struct SweepHeader {
+    pub azimuth_count: u32,
+    pub gate_count: u32,
+    pub first_gate_range_km: f64,
+    pub gate_interval_km: f64,
+    pub max_range_km: f64,
+    pub scale: f32,
+    pub offset: f32,
+    pub radial_count: u32,
+    /// Byte offset to azimuths array (f32 × azimuth_count)
+    pub azimuths_offset: u32,
+    /// Byte offset to timestamps array (f64 × azimuth_count)
+    pub timestamps_offset: u32,
+    /// Byte offset to elevation_angles array (f32 × azimuth_count)
+    pub elev_angles_offset: u32,
+    /// Byte offset to gate_values array (f32 × azimuth_count × gate_count)
+    pub gate_values_offset: u32,
+}
+
+/// Parse only the 48-byte header from a serialized sweep blob.
+/// Returns scalar metadata and byte offsets for each array section,
+/// without allocating or copying any array data.
+pub fn parse_sweep_header(data: &[u8]) -> Result<SweepHeader, String> {
+    if data.len() < HEADER_SIZE {
+        return Err(format!(
+            "Sweep blob too small: {} < {} header",
+            data.len(),
+            HEADER_SIZE
+        ));
+    }
+
+    let azimuth_count = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let gate_count = u32::from_le_bytes(data[4..8].try_into().unwrap());
+    let first_gate_range_km = f64::from_le_bytes(data[8..16].try_into().unwrap());
+    let gate_interval_km = f64::from_le_bytes(data[16..24].try_into().unwrap());
+    let max_range_km = f64::from_le_bytes(data[24..32].try_into().unwrap());
+    let scale = f32::from_le_bytes(data[32..36].try_into().unwrap());
+    let offset = f32::from_le_bytes(data[36..40].try_into().unwrap());
+    let radial_count = u32::from_le_bytes(data[40..44].try_into().unwrap());
+
+    let az = azimuth_count as usize;
+
+    let azimuths_offset = HEADER_SIZE;
+    let timestamps_offset = azimuths_offset + az * 4;
+    let elev_angles_offset = timestamps_offset + az * 8;
+    let gate_values_offset = elev_angles_offset + az * 4;
+
+    Ok(SweepHeader {
+        azimuth_count,
+        gate_count,
+        first_gate_range_km,
+        gate_interval_km,
+        max_range_km,
+        scale,
+        offset,
+        radial_count,
+        azimuths_offset: azimuths_offset as u32,
+        timestamps_offset: timestamps_offset as u32,
+        elev_angles_offset: elev_angles_offset as u32,
+        gate_values_offset: gate_values_offset as u32,
+    })
 }
 
 fn read_f32_slice(data: &[u8], offset: usize, count: usize) -> Vec<f32> {

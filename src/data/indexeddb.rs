@@ -101,8 +101,49 @@ impl IndexedDbRecordStore {
         Ok(())
     }
 
-    /// Gets a pre-computed sweep blob by key.
-    pub async fn get_sweep(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+    /// Stores multiple pre-computed sweep blobs in a single IDB transaction.
+    ///
+    /// Batches all writes into one readwrite transaction to avoid per-transaction
+    /// disk-flush overhead. Critical: no await between puts — IDB transactions
+    /// auto-commit when the event loop yields in WASM.
+    pub async fn put_sweeps_batch(
+        &self,
+        items: &[(String, Vec<u8>)],
+    ) -> Result<(), String> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        self.ensure_open().await?;
+        let db = self.get_db()?;
+
+        let tx = db
+            .transaction_with_str_and_mode(STORE_SWEEPS, IdbTransactionMode::Readwrite)
+            .map_err(|e| format!("Failed to create batch transaction: {:?}", e))?;
+
+        let store = tx
+            .object_store(STORE_SWEEPS)
+            .map_err(|e| format!("Failed to get sweeps store: {:?}", e))?;
+
+        // All puts synchronous — NO await between operations
+        for (key, data) in items {
+            let array = Uint8Array::from(data.as_slice());
+            let buffer = array.buffer();
+            store
+                .put_with_key(&buffer, &JsValue::from_str(key))
+                .map_err(|e| format!("Failed to put sweep '{}': {:?}", key, e))?;
+        }
+
+        // Single await — transaction commits atomically
+        wait_for_transaction(&tx).await?;
+        Ok(())
+    }
+
+    /// Gets a pre-computed sweep blob by key, returning the raw JS ArrayBuffer.
+    /// Avoids the 5MB+ copy from JS to Rust that `get_sweep` performs.
+    pub async fn get_sweep_as_js(
+        &self,
+        key: &str,
+    ) -> Result<Option<ArrayBuffer>, String> {
         self.ensure_open().await?;
         let db = self.get_db()?;
 
@@ -127,8 +168,7 @@ impl IndexedDbRecordStore {
         let buffer: ArrayBuffer = result
             .dyn_into()
             .map_err(|_| "Expected ArrayBuffer".to_string())?;
-        let array = Uint8Array::new(&buffer);
-        Ok(Some(array.to_vec()))
+        Ok(Some(buffer))
     }
 
     // ========================================================================

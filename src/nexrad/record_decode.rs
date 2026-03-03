@@ -85,6 +85,10 @@ pub fn extract_elevation_numbers(radials: &[Radial]) -> Vec<u8> {
 ///
 /// Filters radials to the target elevation/product, sorts by azimuth, and
 /// bulk-converts raw gate values to f32. Returns `None` if no matching radials.
+///
+/// For bulk extraction of many (elevation, product) pairs, prefer
+/// `extract_sweep_data_from_sorted` with pre-grouped radials for better performance.
+#[allow(dead_code)]
 pub fn extract_sweep_data(
     radials: &[Radial],
     elevation_number: u8,
@@ -151,6 +155,108 @@ pub fn extract_sweep_data(
         let row_offset = row * gate_count;
 
         // Get raw byte slice and word size, then bulk-convert
+        let (bytes, word_size) = if let Some(m) = product.moment_data(radial) {
+            (m.raw_values(), m.data_word_size())
+        } else if let Some(m) = product.cfp_moment_data(radial) {
+            (m.raw_values(), m.data_word_size())
+        } else {
+            continue;
+        };
+
+        let dest = &mut gate_values[row_offset..row_offset + gate_count];
+        if word_size == 16 {
+            let n = (bytes.len() / 2).min(gate_count);
+            for i in 0..n {
+                let raw = u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+                dest[i] = raw as f32;
+            }
+        } else {
+            let n = bytes.len().min(gate_count);
+            for i in 0..n {
+                dest[i] = bytes[i] as f32;
+            }
+        }
+    }
+
+    let max_range_km = first_gate_range_km + (gate_count as f64) * gate_interval_km;
+
+    Some(PrecomputedSweep {
+        azimuth_count: azimuth_count as u32,
+        gate_count: gate_count as u32,
+        first_gate_range_km,
+        gate_interval_km,
+        max_range_km,
+        scale,
+        offset,
+        radial_count: radial_count as u32,
+        azimuths,
+        timestamps,
+        elevation_angles,
+        gate_values,
+    })
+}
+
+/// Extract a pre-computed sweep from radials already filtered to one elevation
+/// and sorted by azimuth. Only filters by product availability.
+///
+/// This avoids redundant full-array scans and per-product sorting when
+/// extracting multiple products from the same elevation group.
+pub fn extract_sweep_data_from_sorted(
+    sorted_radials: &[&Radial],
+    product: Product,
+) -> Option<PrecomputedSweep> {
+    // Filter to radials that have this product's moment data
+    let target: Vec<&Radial> = sorted_radials
+        .iter()
+        .filter(|r| product.moment_data(r).is_some() || product.cfp_moment_data(r).is_some())
+        .copied()
+        .collect();
+
+    if target.is_empty() {
+        return None;
+    }
+
+    // Already sorted by azimuth — no sort needed
+    let radial_count = target.len();
+
+    // Extract gate params from first radial's moment
+    let (first_gate_range_km, gate_interval_km, gate_count, scale, offset) = {
+        let r = target[0];
+        if let Some(m) = product.moment_data(r) {
+            (
+                m.first_gate_range_km(),
+                m.gate_interval_km(),
+                m.gate_count() as usize,
+                m.scale(),
+                m.offset(),
+            )
+        } else if let Some(m) = product.cfp_moment_data(r) {
+            (
+                m.first_gate_range_km(),
+                m.gate_interval_km(),
+                m.gate_count() as usize,
+                m.scale(),
+                m.offset(),
+            )
+        } else {
+            return None;
+        }
+    };
+
+    let azimuth_count = target.len();
+    let total = azimuth_count * gate_count;
+    let mut azimuths = Vec::with_capacity(azimuth_count);
+    let mut timestamps = Vec::with_capacity(azimuth_count);
+    let mut elevation_angles = Vec::with_capacity(azimuth_count);
+    let mut gate_values: Vec<f32> = vec![0.0; total];
+
+    for (row, radial) in target.iter().enumerate() {
+        azimuths.push(radial.azimuth_angle_degrees());
+        timestamps.push(radial.collection_timestamp() as f64);
+        elevation_angles.push(radial.elevation_angle_degrees());
+
+        let row_offset = row * gate_count;
+
         let (bytes, word_size) = if let Some(m) = product.moment_data(radial) {
             (m.raw_values(), m.data_word_size())
         } else if let Some(m) = product.cfp_moment_data(radial) {

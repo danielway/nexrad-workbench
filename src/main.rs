@@ -74,7 +74,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     worker_init_logger();
     wasm_bindgen_futures::future_to_promise(async move {
         use crate::data::keys::*;
-        use crate::nexrad::{extract_elevation_numbers, record_decode::extract_sweep_data};
+        use crate::nexrad::extract_elevation_numbers;
         use nexrad_render::Product;
 
         let t_total = web_time::Instant::now();
@@ -216,6 +216,9 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // --- Phase 2: Extract sweep data for all (elevation, product) pairs ---
         let t_extract = web_time::Instant::now();
+        use std::collections::HashMap;
+        use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
+
         let products = [
             Product::Reflectivity,
             Product::Velocity,
@@ -233,14 +236,36 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             "differential_phase",
         ];
 
+        // Pre-group radials by elevation in ONE pass (vs 138 full-array scans)
+        let mut by_elevation: HashMap<u8, Vec<&::nexrad::model::data::Radial>> = HashMap::new();
+        for radial in &all_radials {
+            by_elevation
+                .entry(radial.elevation_number())
+                .or_default()
+                .push(radial);
+        }
+
+        // Sort each group by azimuth ONCE (vs 6 times per elevation)
+        for group in by_elevation.values_mut() {
+            group.sort_by(|a, b| {
+                a.azimuth_angle_degrees()
+                    .partial_cmp(&b.azimuth_angle_degrees())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        }
+
         let mut sweep_blobs: Vec<(String, Vec<u8>)> = Vec::new();
 
         for &elev_num in &elevation_numbers {
-            for (product, product_name) in products.iter().zip(product_names.iter()) {
-                if let Some(sweep) = extract_sweep_data(&all_radials, elev_num, *product) {
-                    let key = SweepDataKey::new(scan_key.clone(), elev_num, *product_name);
-                    let bytes = sweep.to_bytes();
-                    sweep_blobs.push((key.to_storage_key(), bytes));
+            if let Some(sorted_radials) = by_elevation.get(&elev_num) {
+                for (product, product_name) in products.iter().zip(product_names.iter()) {
+                    if let Some(sweep) =
+                        extract_sweep_data_from_sorted(sorted_radials, *product)
+                    {
+                        let key = SweepDataKey::new(scan_key.clone(), elev_num, *product_name);
+                        let bytes = sweep.to_bytes();
+                        sweep_blobs.push((key.to_storage_key(), bytes));
+                    }
                 }
             }
         }
@@ -259,11 +284,9 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // --- Phase 3: Store sweep blobs in IDB ---
         let t_store = web_time::Instant::now();
 
-        for (key, bytes) in &sweep_blobs {
-            store.put_sweep(key, bytes).await.map_err(|e| {
-                wasm_bindgen::JsValue::from_str(&format!("Failed to store sweep: {}", e))
-            })?;
-        }
+        store.put_sweeps_batch(&sweep_blobs).await.map_err(|e| {
+            wasm_bindgen::JsValue::from_str(&format!("Failed to store sweeps batch: {}", e))
+        })?;
         let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
 
         log::info!(
@@ -420,11 +443,11 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // Reuse cached IDB connection
         let store = worker_idb_store().await?;
 
-        // Fetch pre-computed sweep blob
+        // Fetch raw IDB ArrayBuffer (no Rust-side copy)
         let t_fetch = web_time::Instant::now();
         let sweep_key = SweepDataKey::new(scan_key, elevation_number, &product_str);
-        let blob = store
-            .get_sweep(&sweep_key.to_storage_key())
+        let blob_buffer = store
+            .get_sweep_as_js(&sweep_key.to_storage_key())
             .await
             .map_err(|e| {
                 wasm_bindgen::JsValue::from_str(&format!("Failed to fetch sweep: {}", e))
@@ -436,41 +459,69 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 ))
             })?;
         let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
+        let blob_len = blob_buffer.byte_length();
 
-        // Deserialize
+        // Parse header only (48 bytes) — no array allocations
         let t_deser = web_time::Instant::now();
-        let sweep = PrecomputedSweep::from_bytes(&blob).map_err(|e| {
-            wasm_bindgen::JsValue::from_str(&format!("Failed to deserialize sweep: {}", e))
+        let header_bytes = {
+            let view = js_sys::Uint8Array::new_with_byte_offset_and_length(&blob_buffer, 0, 48);
+            let mut buf = [0u8; 48];
+            view.copy_to(&mut buf);
+            buf
+        };
+        let header = parse_sweep_header(&header_bytes).map_err(|e| {
+            wasm_bindgen::JsValue::from_str(&format!("Failed to parse sweep header: {}", e))
         })?;
+
+        // Validate full blob size
+        let az = header.azimuth_count as usize;
+        let gc = header.gate_count as usize;
+        let expected = header.gate_values_offset as usize + az * gc * 4;
+        if (blob_len as usize) < expected {
+            return Err(wasm_bindgen::JsValue::from_str(&format!(
+                "Sweep blob too small: {} < {} expected",
+                blob_len, expected
+            )));
+        }
         let deser_ms = t_deser.elapsed().as_secs_f64() * 1000.0;
 
-        // Marshal to JS — create Float32/Float64Array views and transfer buffers
+        // Zero-copy marshal: create typed array views over raw IDB ArrayBuffer,
+        // then slice() to create independent transferable buffers.
         let t_marshal = web_time::Instant::now();
 
-        let azimuths_array = js_sys::Float32Array::from(sweep.azimuths.as_slice());
-        let values_array = js_sys::Float32Array::from(sweep.gate_values.as_slice());
-        let timestamps_array = js_sys::Float64Array::from(sweep.timestamps.as_slice());
-        let elev_angles_array = js_sys::Float32Array::from(sweep.elevation_angles.as_slice());
+        let az_view = js_sys::Float32Array::new_with_byte_offset_and_length(
+            &blob_buffer, header.azimuths_offset, header.azimuth_count,
+        );
+        let ts_view = js_sys::Float64Array::new_with_byte_offset_and_length(
+            &blob_buffer, header.timestamps_offset, header.azimuth_count,
+        );
+        let ea_view = js_sys::Float32Array::new_with_byte_offset_and_length(
+            &blob_buffer, header.elev_angles_offset, header.azimuth_count,
+        );
+        let gv_view = js_sys::Float32Array::new_with_byte_offset_and_length(
+            &blob_buffer, header.gate_values_offset, header.azimuth_count * header.gate_count,
+        );
 
-        let az_buf = azimuths_array.buffer();
-        let val_buf = values_array.buffer();
-        let ts_buf = timestamps_array.buffer();
-        let ea_buf = elev_angles_array.buffer();
+        // slice() creates independent ArrayBuffers for postMessage transfer
+        let az_buf = az_view.slice(0, header.azimuth_count).buffer();
+        let ts_buf = ts_view.slice(0, header.azimuth_count).buffer();
+        let ea_buf = ea_view.slice(0, header.azimuth_count).buffer();
+        let val_buf = gv_view.slice(0, header.azimuth_count * header.gate_count).buffer();
 
         let result = js_sys::Object::new();
         js_sys::Reflect::set(&result, &"azimuths".into(), &az_buf).ok();
         js_sys::Reflect::set(&result, &"gateValues".into(), &val_buf).ok();
         js_sys::Reflect::set(&result, &"timestamps".into(), &ts_buf).ok();
         js_sys::Reflect::set(&result, &"elevationAngles".into(), &ea_buf).ok();
-        js_sys::Reflect::set(&result, &"azimuthCount".into(), &wasm_bindgen::JsValue::from(sweep.azimuth_count)).ok();
-        js_sys::Reflect::set(&result, &"gateCount".into(), &wasm_bindgen::JsValue::from(sweep.gate_count)).ok();
-        js_sys::Reflect::set(&result, &"firstGateRangeKm".into(), &wasm_bindgen::JsValue::from(sweep.first_gate_range_km)).ok();
-        js_sys::Reflect::set(&result, &"gateIntervalKm".into(), &wasm_bindgen::JsValue::from(sweep.gate_interval_km)).ok();
-        js_sys::Reflect::set(&result, &"maxRangeKm".into(), &wasm_bindgen::JsValue::from(sweep.max_range_km)).ok();
+        js_sys::Reflect::set(&result, &"azimuthCount".into(), &wasm_bindgen::JsValue::from(header.azimuth_count)).ok();
+        js_sys::Reflect::set(&result, &"gateCount".into(), &wasm_bindgen::JsValue::from(header.gate_count)).ok();
+        js_sys::Reflect::set(&result, &"firstGateRangeKm".into(), &wasm_bindgen::JsValue::from(header.first_gate_range_km)).ok();
+        js_sys::Reflect::set(&result, &"gateIntervalKm".into(), &wasm_bindgen::JsValue::from(header.gate_interval_km)).ok();
+        js_sys::Reflect::set(&result, &"maxRangeKm".into(), &wasm_bindgen::JsValue::from(header.max_range_km)).ok();
         js_sys::Reflect::set(&result, &"product".into(), &wasm_bindgen::JsValue::from_str(&product_str)).ok();
-        js_sys::Reflect::set(&result, &"radialCount".into(), &wasm_bindgen::JsValue::from(sweep.radial_count)).ok();
-        js_sys::Reflect::set(&result, &"scale".into(), &wasm_bindgen::JsValue::from(sweep.scale as f64)).ok();
-        js_sys::Reflect::set(&result, &"offset".into(), &wasm_bindgen::JsValue::from(sweep.offset as f64)).ok();
+        js_sys::Reflect::set(&result, &"radialCount".into(), &wasm_bindgen::JsValue::from(header.radial_count)).ok();
+        js_sys::Reflect::set(&result, &"scale".into(), &wasm_bindgen::JsValue::from(header.scale as f64)).ok();
+        js_sys::Reflect::set(&result, &"offset".into(), &wasm_bindgen::JsValue::from(header.offset as f64)).ok();
 
         let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
@@ -479,9 +530,9 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             "render: elev={} {} {}x{} ({:.1}KB) in {:.1}ms | fetch {:.1} | deser {:.1} | marshal {:.1}",
             elevation_number,
             product_str,
-            sweep.azimuth_count,
-            sweep.gate_count,
-            blob.len() as f64 / 1024.0,
+            header.azimuth_count,
+            header.gate_count,
+            blob_len as f64 / 1024.0,
             total_ms,
             fetch_ms,
             deser_ms,
