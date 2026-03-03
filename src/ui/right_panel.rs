@@ -84,36 +84,42 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                 let playback_ts = state.playback_state.playback_position();
                 let current_scan = state.radar_timeline.find_scan_at_timestamp(playback_ts);
 
-                if let Some(scan) = current_scan {
-                    if let Some(vcp_def) = get_vcp_definition(scan.vcp) {
-                        egui::ComboBox::from_id_salt("elevation_selector")
-                            .selected_text(format!(
-                                "{:.1}\u{00B0}",
-                                state.viz_state.target_elevation
-                            ))
-                            .width(150.0)
-                            .show_ui(ui, |ui| {
-                                for elev in vcp_def.elevations {
-                                    let is_selected =
-                                        (state.viz_state.target_elevation - elev.angle).abs() < 0.1;
-                                    if ui
-                                        .selectable_label(
-                                            is_selected,
-                                            format!("{:.1}\u{00B0}", elev.angle),
-                                        )
-                                        .clicked()
-                                    {
-                                        state.viz_state.target_elevation = elev.angle;
-                                    }
-                                }
-                            });
-                    } else {
-                        ui.add(
-                            egui::Slider::new(&mut state.viz_state.target_elevation, 0.5..=19.5)
-                                .suffix("\u{00B0}")
-                                .step_by(0.5),
-                        );
+                // Collect elevation angles: prefer extracted VCP, then static, then slider
+                let elevation_angles: Option<Vec<f32>> = current_scan.and_then(|scan| {
+                    // First try extracted VCP pattern
+                    if let Some(ref pattern) = scan.vcp_pattern {
+                        if !pattern.elevations.is_empty() {
+                            return Some(pattern.elevations.iter().map(|e| e.angle).collect());
+                        }
                     }
+                    // Fall back to static VCP definition
+                    get_vcp_definition(scan.vcp).map(|def| {
+                        def.elevations.iter().map(|e| e.angle).collect()
+                    })
+                });
+
+                if let Some(angles) = elevation_angles {
+                    egui::ComboBox::from_id_salt("elevation_selector")
+                        .selected_text(format!(
+                            "{:.1}\u{00B0}",
+                            state.viz_state.target_elevation
+                        ))
+                        .width(150.0)
+                        .show_ui(ui, |ui| {
+                            for angle in &angles {
+                                let is_selected =
+                                    (state.viz_state.target_elevation - angle).abs() < 0.1;
+                                if ui
+                                    .selectable_label(
+                                        is_selected,
+                                        format!("{:.1}\u{00B0}", angle),
+                                    )
+                                    .clicked()
+                                {
+                                    state.viz_state.target_elevation = *angle;
+                                }
+                            }
+                        });
                 } else {
                     ui.add(
                         egui::Slider::new(&mut state.viz_state.target_elevation, 0.5..=19.5)

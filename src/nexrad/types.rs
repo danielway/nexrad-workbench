@@ -124,8 +124,8 @@ pub struct ScanMetadata {
     pub file_size: u64,
     /// End timestamp of the scan (populated when scan is decoded)
     pub end_timestamp: Option<i64>,
-    /// Volume Coverage Pattern identifier
-    pub vcp: Option<u16>,
+    /// Full Volume Coverage Pattern extracted from scan data.
+    pub vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Completeness state for this scan.
     pub completeness: Option<crate::data::ScanCompleteness>,
     /// Number of records currently present.
@@ -160,7 +160,7 @@ impl ScanMetadata {
     pub fn from_cached_scan_with_info(
         scan: &CachedScan,
         end_timestamp: Option<i64>,
-        vcp: Option<u16>,
+        vcp: Option<crate::data::keys::ExtractedVcp>,
     ) -> Self {
         Self {
             key: scan.key.clone(),

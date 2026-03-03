@@ -72,8 +72,9 @@ pub fn render_canvas_with_geo(
             render_storm_cells(&painter, &projection, &state.detected_storm_cells, dark);
         }
 
-        // Draw the radar sweep visualization (range rings, radials, labels)
-        render_radar_sweep(&painter, &projection, state, None);
+        // Draw the radar sweep visualization (range rings, radials, labels, sweep line)
+        let sweep_azimuth = compute_sweep_line_azimuth(state);
+        render_radar_sweep(&painter, &projection, state, sweep_azimuth);
 
         // Draw distance measurement line
         if state.distance_tool_active || state.distance_start.is_some() {
@@ -312,6 +313,32 @@ fn handle_canvas_interaction(
 ///
 /// Uses the same MapProjection as the GPU radar and geo layers so everything
 /// pans and zooms together.
+/// Compute the sweep line azimuth for the current playback position.
+///
+/// Returns `Some(azimuth_degrees)` when playing at slow speeds (< 1 min/s)
+/// and the playback position falls within a sweep.
+fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
+    if !state.playback_state.playing {
+        return None;
+    }
+    // Only show sweep line at slow playback speeds (< 1 min/s)
+    if state.playback_state.speed.timeline_seconds_per_real_second() > 60.0 {
+        return None;
+    }
+
+    let ts = state.playback_state.playback_position();
+    let scan = state.radar_timeline.find_scan_at_timestamp(ts)?;
+    let (_, sweep) = scan.find_sweep_at_timestamp(ts)?;
+
+    let duration = sweep.end_time - sweep.start_time;
+    if duration <= 0.0 {
+        return None;
+    }
+
+    let progress = (ts - sweep.start_time) / duration;
+    Some(((progress * 360.0) as f32) % 360.0)
+}
+
 fn render_radar_sweep(
     painter: &Painter,
     projection: &MapProjection,

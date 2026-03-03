@@ -140,6 +140,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let mut radial_metas: Vec<(i64, u8, f32)> = Vec::new();
         let elevation_map = js_sys::Object::new();
         let mut has_vcp = false;
+        let mut extracted_vcp: Option<ExtractedVcp> = None;
         let mut compressed_count = 0u32;
 
         for (record_id, record) in records.iter().enumerate() {
@@ -156,7 +157,72 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 })?;
                 decompress_ms_total += t_decompress.elapsed().as_secs_f64() * 1000.0;
                 let t_radials = web_time::Instant::now();
-                let r = decompressed.radials().unwrap_or_default();
+
+                let r = if extracted_vcp.is_none() {
+                    // Decode messages manually to extract VCP pattern in the same pass
+                    use nexrad_decode::messages::MessageContents;
+                    match decompressed.messages() {
+                        Ok(messages) => {
+                            let mut radials = Vec::new();
+                            for msg in messages {
+                                // Borrow to read VCP data before consuming
+                                if extracted_vcp.is_none() {
+                                    match msg.contents() {
+                                        MessageContents::VolumeCoveragePattern(ref vcp_msg) => {
+                                            let header = vcp_msg.header();
+                                            let elevations: Vec<ExtractedVcpElevation> = vcp_msg.elevations().iter().map(|e| {
+                                                ExtractedVcpElevation {
+                                                    angle: e.elevation_angle() as f32,
+                                                    waveform: format!("{:?}", e.waveform_type()),
+                                                    prf_number: e.surveillance_prf_number(),
+                                                    is_sails: e.is_sails_cut(),
+                                                    is_mrle: e.is_mrle_cut(),
+                                                    is_base_tilt: e.is_base_tilt_cut(),
+                                                }
+                                            }).collect();
+                                            extracted_vcp = Some(ExtractedVcp {
+                                                number: header.pattern_number(),
+                                                elevations,
+                                            });
+                                        }
+                                        MessageContents::DigitalRadarData(ref m) => {
+                                            // Fallback: extract VCP number from radial volume data block
+                                            if let Some(vol_block) = m.volume_data_block() {
+                                                let raw = vol_block.volume_coverage_pattern_number();
+                                                if raw > 0 {
+                                                    extracted_vcp = Some(ExtractedVcp {
+                                                        number: raw,
+                                                        elevations: Vec::new(),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                // Consume to convert to radials
+                                match msg.into_contents() {
+                                    MessageContents::DigitalRadarData(m) => {
+                                        if let Ok(radial) = m.into_radial() {
+                                            radials.push(radial);
+                                        }
+                                    }
+                                    MessageContents::DigitalRadarDataLegacy(m) => {
+                                        if let Ok(radial) = m.into_radial() {
+                                            radials.push(radial);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            radials
+                        }
+                        Err(_) => Vec::new(),
+                    }
+                } else {
+                    decompressed.radials().unwrap_or_default()
+                };
+
                 decode_only_ms += t_radials.elapsed().as_secs_f64() * 1000.0;
                 r
             } else {
@@ -299,6 +365,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let t_index = web_time::Instant::now();
         let mut scan_entry = ScanIndexEntry::new(scan_key.clone());
         scan_entry.has_vcp = has_vcp;
+        scan_entry.vcp = extracted_vcp.clone();
         scan_entry.present_records = records.len() as u32;
         scan_entry.file_name = Some(file_name.clone());
         scan_entry.total_size_bytes = total_sweep_bytes;
@@ -360,6 +427,17 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             &wasm_bindgen::JsValue::from_str(&sweeps_json),
         )
         .ok();
+
+        // Include extracted VCP pattern as JSON
+        if let Some(ref vcp) = extracted_vcp {
+            let vcp_json = serde_json::to_string(vcp).unwrap_or_else(|_| "null".to_string());
+            js_sys::Reflect::set(
+                &result,
+                &"vcpJson".into(),
+                &wasm_bindgen::JsValue::from_str(&vcp_json),
+            )
+            .ok();
+        }
 
         Ok(result.into())
     })
@@ -636,6 +714,10 @@ pub struct WorkbenchApp {
     /// Timestamp of the currently displayed scan (for detecting when to load a new scan)
     displayed_scan_timestamp: Option<i64>,
 
+    /// Elevation number of the currently displayed sweep within the scan.
+    /// Used to detect intra-scan sweep changes when scrubbing through a multi-sweep scan.
+    displayed_sweep_elevation_number: Option<u8>,
+
     /// Previous site ID to detect site changes (for clearing volume ring)
     previous_site_id: String,
 
@@ -653,9 +735,9 @@ pub struct WorkbenchApp {
     /// Available elevation numbers for the current scan (from ingest).
     available_elevation_numbers: Vec<u8>,
 
-    /// Previous render parameters for change detection (scan_key, elev_num, product).
+    /// Previous render parameters for change detection (scan_key, elev_num, product, render_mode).
     /// When any of these change, a new worker decode is sent.
-    last_render_params: Option<(String, u8, String)>,
+    last_render_params: Option<(String, u8, String, crate::state::RenderMode)>,
 
     /// Monotonic instant of last URL push (for throttling to ~1/sec).
     last_url_push: web_time::Instant,
@@ -809,6 +891,7 @@ impl WorkbenchApp {
             gpu_renderer_gl,
             selection_download_queue: Vec::new(),
             displayed_scan_timestamp: None,
+            displayed_sweep_elevation_number: None,
             previous_site_id: initial_site_id,
             realtime_channel,
             decode_worker,
@@ -1042,6 +1125,80 @@ impl WorkbenchApp {
             .unwrap_or(1)
     }
 
+    /// Find the best elevation number for a scan given the playback position.
+    ///
+    /// In FixedTilt mode, finds the most recent sweep at the target elevation
+    /// whose start_time <= playback_ts. A scan may contain multiple sweeps at the
+    /// same elevation (e.g. VCP 215 has 0.5° at elevation_number 1 and 3).
+    fn best_elevation_at_playback(&self, scan: &crate::state::radar_data::Scan, playback_ts: f64) -> u8 {
+        let target = self.state.viz_state.target_elevation;
+
+        // Filter sweeps matching target elevation (within 0.15° tolerance)
+        // then filter to those that have started (start_time <= playback_ts)
+        // pick the one with the latest start_time (most recent instance)
+        let matching = scan
+            .sweeps
+            .iter()
+            .filter(|s| (s.elevation - target).abs() < 0.15)
+            .filter(|s| s.start_time <= playback_ts)
+            .max_by(|a, b| {
+                a.start_time
+                    .partial_cmp(&b.start_time)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+        if let Some(sweep) = matching {
+            return sweep.elevation_number;
+        }
+
+        // No matching sweep started yet — fall back to best_elevation_number()
+        self.best_elevation_number()
+    }
+
+    /// Find the most recent sweep (any elevation) at or before the playback position.
+    ///
+    /// Used by MostRecent render mode to always show the latest available data
+    /// regardless of elevation.
+    fn most_recent_sweep_elevation(
+        &self,
+        scan: &crate::state::radar_data::Scan,
+        playback_ts: f64,
+    ) -> u8 {
+        scan.sweeps
+            .iter()
+            .filter(|s| s.start_time <= playback_ts)
+            .max_by(|a, b| {
+                a.start_time
+                    .partial_cmp(&b.start_time)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|s| s.elevation_number)
+            .unwrap_or_else(|| self.best_elevation_number())
+    }
+
+    /// Update the canvas overlay text with sweep timing and elevation info.
+    fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
+        self.state.viz_state.elevation = format!("{:.1}\u{00B0}", elevation_deg);
+
+        // Format midpoint timestamp as HH:MM:SS UTC
+        let mid_ms = ((start + end) / 2.0) * 1000.0;
+        let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(mid_ms));
+        self.state.viz_state.timestamp = format!(
+            "{:02}:{:02}:{:02} UTC",
+            date.get_utc_hours(),
+            date.get_utc_minutes(),
+            date.get_utc_seconds()
+        );
+
+        // Staleness = now - sweep end
+        let staleness = js_sys::Date::now() / 1000.0 - end;
+        self.state.viz_state.data_staleness_secs = if staleness >= 0.0 {
+            Some(staleness)
+        } else {
+            None
+        };
+    }
+
     /// Send a decode request to the worker for the current scan + settings.
     fn request_worker_render(&mut self) {
         let Some(ref scan_key) = self.current_render_scan_key else {
@@ -1051,10 +1208,17 @@ impl WorkbenchApp {
             return;
         }
 
-        let elevation_number = self.best_elevation_number();
+        let elevation_number = self
+            .displayed_sweep_elevation_number
+            .unwrap_or_else(|| self.best_elevation_number());
         let product = self.state.viz_state.product.to_worker_string().to_string();
 
-        let params = (scan_key.clone(), elevation_number, product.clone());
+        let params = (
+            scan_key.clone(),
+            elevation_number,
+            product.clone(),
+            self.state.viz_state.render_mode,
+        );
 
         // Skip if same as last request
         if self.last_render_params.as_ref() == Some(&params) {
@@ -1197,6 +1361,9 @@ impl eframe::App for WorkbenchApp {
                 }
             }
             self.displayed_scan_timestamp = None;
+            self.displayed_sweep_elevation_number = None;
+            self.state.displayed_scan_timestamp = None;
+            self.state.displayed_sweep_elevation_number = None;
             self.previous_site_id = self.state.viz_state.site_id.clone();
         }
 
@@ -1339,6 +1506,9 @@ impl eframe::App for WorkbenchApp {
                         self.current_render_scan_key = Some(result.scan_key.clone());
                         self.available_elevation_numbers = result.elevation_numbers;
                         self.displayed_scan_timestamp = Some(result.context.timestamp_secs);
+                        self.displayed_sweep_elevation_number = None;
+                        self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
+                        self.state.displayed_sweep_elevation_number = None;
                         self.state
                             .playback_state
                             .set_playback_position(result.context.timestamp_secs as f64);
@@ -1400,6 +1570,27 @@ impl eframe::App for WorkbenchApp {
                                 }
                             }
                         }
+
+                        // Refine canvas overlay with precise decoded data
+                        if !result.timestamps.is_empty() {
+                            let start = result
+                                .timestamps
+                                .iter()
+                                .copied()
+                                .fold(f64::INFINITY, f64::min);
+                            let end = result
+                                .timestamps
+                                .iter()
+                                .copied()
+                                .fold(f64::NEG_INFINITY, f64::max);
+                            let mean_elev = if !result.elevation_angles.is_empty() {
+                                result.elevation_angles.iter().sum::<f32>()
+                                    / result.elevation_angles.len() as f32
+                            } else {
+                                self.state.viz_state.target_elevation
+                            };
+                            self.update_overlay_from_sweep(start, end, mean_elev);
+                        }
                     }
                     nexrad::WorkerOutcome::WorkerError { id, message } => {
                         log::error!("Worker error (request {}): {}", id, message);
@@ -1446,6 +1637,9 @@ impl eframe::App for WorkbenchApp {
                     let scan_key = data::ScanKey::from_secs(&scan.key.site_id, scan.key.timestamp);
                     self.current_render_scan_key = Some(scan_key.to_storage_key());
                     self.displayed_scan_timestamp = Some(scan.key.timestamp);
+                    self.displayed_sweep_elevation_number = None;
+                    self.state.displayed_scan_timestamp = Some(scan.key.timestamp);
+                    self.state.displayed_sweep_elevation_number = None;
                     self.state
                         .playback_state
                         .set_playback_position(scan.key.timestamp as f64);
@@ -1545,33 +1739,80 @@ impl eframe::App for WorkbenchApp {
         // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
         // In the worker architecture, this sends a render request directly —
         // the worker reads records from IDB, decodes the target elevation, and renders.
+        //
+        // In FixedTilt mode, we also detect intra-scan sweep changes: a scan may
+        // contain multiple sweeps at the target elevation (e.g. VCP 215 has 0.5°
+        // at both elevation_number 1 and 3). As playback advances past a new
+        // sweep's start_time, we re-render with that sweep's elevation_number.
         const MAX_SCAN_AGE_SECS: f64 = 15.0 * 60.0;
         {
             let playback_ts = self.state.playback_state.playback_position();
-            if let Some(scan) = self
+
+            // Extract scrub decision data from the immutable borrow of radar_timeline
+            let scrub_action = self
                 .state
                 .radar_timeline
                 .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
+                .map(|scan| {
+                    let scan_ts = scan.start_time as i64;
+                    let target_elev_num = match self.state.viz_state.render_mode {
+                        crate::state::RenderMode::FixedTilt => {
+                            self.best_elevation_at_playback(scan, playback_ts)
+                        }
+                        crate::state::RenderMode::MostRecent => {
+                            self.most_recent_sweep_elevation(scan, playback_ts)
+                        }
+                    };
+
+                    let needs_new_scan = match self.displayed_scan_timestamp {
+                        Some(displayed) => displayed != scan_ts,
+                        None => true,
+                    };
+                    let needs_new_sweep = !needs_new_scan
+                        && self.displayed_sweep_elevation_number != Some(target_elev_num);
+
+                    // Capture overlay data from the matching sweep
+                    let sweep_overlay = scan
+                        .sweeps
+                        .iter()
+                        .find(|s| s.elevation_number == target_elev_num)
+                        .map(|s| (s.start_time, s.end_time, s.elevation));
+
+                    (scan_ts, target_elev_num, needs_new_scan, needs_new_sweep, sweep_overlay)
+                });
+
+            if let Some((scan_ts, target_elev_num, needs_new_scan, needs_new_sweep, sweep_overlay)) =
+                scrub_action
             {
-                let scan_ts = scan.start_time as i64;
+                if (needs_new_scan || needs_new_sweep) && self.decode_worker.is_some() {
+                    if needs_new_scan {
+                        log::debug!(
+                            "Scrubbing: new scan at {} elev={} (playback at {})",
+                            scan_ts,
+                            target_elev_num,
+                            playback_ts as i64
+                        );
+                    } else {
+                        log::debug!(
+                            "Scrubbing: new sweep elev_num={} within scan {} (playback at {})",
+                            target_elev_num,
+                            scan_ts,
+                            playback_ts as i64
+                        );
+                    }
 
-                // Check if we need to load a different scan
-                let needs_load = match self.displayed_scan_timestamp {
-                    Some(displayed) => displayed != scan_ts,
-                    None => true,
-                };
-
-                if needs_load && self.decode_worker.is_some() {
-                    log::debug!(
-                        "Scrubbing: render scan at {} (playback at {})",
-                        scan_ts,
-                        playback_ts as i64
-                    );
+                    // Update canvas overlay from sweep metadata
+                    if let Some((start, end, elev)) = sweep_overlay {
+                        self.update_overlay_from_sweep(start, end, elev);
+                    }
 
                     // Build scan key in data storage format: "SITE|TIMESTAMP_MS"
                     let scan_key = data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts);
                     self.current_render_scan_key = Some(scan_key.to_storage_key());
                     self.displayed_scan_timestamp = Some(scan_ts);
+                    self.displayed_sweep_elevation_number = Some(target_elev_num);
+                    self.state.displayed_scan_timestamp = Some(scan_ts);
+                    self.state.displayed_sweep_elevation_number = Some(target_elev_num);
                     self.last_render_params = None; // Force fresh render
                     self.request_worker_render();
                 }

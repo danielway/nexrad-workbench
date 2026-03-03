@@ -23,6 +23,7 @@ shapefile = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["std", "wasmbind"] }
 nexrad = { version = "1.0.0-rc.4", default-features = false, features = ["wasm"] }
 nexrad-data = "1.0.0-rc.5"  # Direct dependency for latest ChunkIterator fixes
+nexrad-decode = "1.0.0-rc.3"  # Direct dependency for VCP message extraction
 nexrad-model = "1.0.0-rc.2"   # Direct dependency for SweepField/RadarCoordinateSystem
 nexrad-process = "1.0.0-rc.1" # Storm cell detection
 nexrad-render = "1.0.0-rc.4"  # Direct dependency for render_radials API

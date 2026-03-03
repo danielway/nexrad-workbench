@@ -135,6 +135,12 @@ pub struct AppState {
 
     /// Cached storm cell detection results (centroid lat, lon, max dBZ, area km2).
     pub detected_storm_cells: Vec<StormCellInfo>,
+
+    /// Timestamp of the currently displayed scan (mirrored from WorkbenchApp for UI access).
+    pub displayed_scan_timestamp: Option<i64>,
+
+    /// Elevation number of the currently displayed sweep (mirrored from WorkbenchApp for UI access).
+    pub displayed_sweep_elevation_number: Option<u8>,
 }
 
 /// Lightweight storm cell info for rendering on the canvas.

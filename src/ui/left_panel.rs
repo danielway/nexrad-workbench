@@ -172,9 +172,20 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
             let sweep_data = scan.find_sweep_at_timestamp(ts);
             let sweep_index = sweep_data.map(|(idx, _)| idx);
 
+            // Compute azimuth from sweep timing (linear interpolation: 360° per sweep)
+            let azimuth = sweep_data.and_then(|(_, sweep)| {
+                let dur = sweep.end_time - sweep.start_time;
+                if dur <= 0.0 {
+                    return None;
+                }
+                let progress = (ts - sweep.start_time) / dur;
+                Some(((progress * 360.0) as f32) % 360.0)
+            });
+            let elevation = sweep_data.map(|(_, s)| s.elevation);
+
             RadarStateAtTimestamp {
-                azimuth: None,
-                elevation: None,
+                azimuth,
+                elevation,
                 vcp: Some(scan.vcp),
                 sweep_index,
                 scan_progress,
@@ -472,31 +483,95 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
 
             ui.add_space(2.0);
 
-            // Use the scan's actual sweeps with VCP metadata if available
+            // Prefer extracted VCP pattern (from Message Type 5), then static definitions
+            let extracted_pattern = radar_state.scan.and_then(|s| s.vcp_pattern.as_ref());
             let vcp_def = get_vcp_definition(vcp);
+
             if let Some(scan) = radar_state.scan {
                 egui::ScrollArea::vertical()
                     .max_height(200.0)
                     .show(ui, |ui| {
                         ui.set_min_width(available_width);
-                        for (idx, sweep) in scan.sweeps.iter().enumerate() {
-                            let is_current = radar_state.sweep_index == Some(idx);
-                            // Try to match elevation with VCP definition for metadata
-                            let elev_meta = vcp_def.and_then(|def| {
-                                def.elevations
-                                    .iter()
-                                    .find(|e| (e.angle - sweep.elevation).abs() < 0.1)
-                            });
-                            render_elevation_row(
-                                ui,
-                                sweep.elevation,
-                                elev_meta,
-                                is_current,
-                                available_width,
-                            );
+                        if let Some(pattern) = extracted_pattern {
+                            // Use extracted VCP elevations (full fidelity from scan data)
+                            for (idx, elev) in pattern.elevations.iter().enumerate() {
+                                // Match extracted elevation to actual sweep for "current" highlighting
+                                let is_current = scan.sweeps.iter().enumerate().any(|(si, sw)| {
+                                    (sw.elevation - elev.angle).abs() < 0.15
+                                        && radar_state.sweep_index == Some(si)
+                                });
+                                let wf_short = match elev.waveform.as_str() {
+                                    "CS" => "CS",
+                                    "CDW" | "CDWO" => "CD",
+                                    "B" => "B",
+                                    "SPP" => "SP",
+                                    _ => "--",
+                                };
+                                let meta = ElevRowMeta {
+                                    waveform: wf_short,
+                                    prf_short: prf_number_to_short(elev.prf_number),
+                                    waveform_raw: &elev.waveform,
+                                };
+                                let mut label = String::new();
+                                if elev.is_sails {
+                                    label.push_str("SAILS ");
+                                }
+                                if elev.is_mrle {
+                                    label.push_str("MRLE ");
+                                }
+                                let _ = idx; // suppress unused warning
+                                render_elevation_row(
+                                    ui,
+                                    elev.angle,
+                                    Some(meta),
+                                    is_current,
+                                    available_width,
+                                );
+                            }
+                        } else {
+                            // Fall back: use sweep metadata with static VCP definitions
+                            for (idx, sweep) in scan.sweeps.iter().enumerate() {
+                                let is_current = radar_state.sweep_index == Some(idx);
+                                let meta = vcp_def.and_then(|def| {
+                                    def.elevations
+                                        .iter()
+                                        .find(|e| (e.angle - sweep.elevation).abs() < 0.1)
+                                        .map(static_vcp_meta)
+                                });
+                                render_elevation_row(
+                                    ui,
+                                    sweep.elevation,
+                                    meta,
+                                    is_current,
+                                    available_width,
+                                );
+                            }
+                        }
+                    });
+            } else if let Some(pattern) = extracted_pattern {
+                // No scan reference but have VCP pattern
+                egui::ScrollArea::vertical()
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        ui.set_min_width(available_width);
+                        for elev in &pattern.elevations {
+                            let wf_short = match elev.waveform.as_str() {
+                                "CS" => "CS",
+                                "CDW" | "CDWO" => "CD",
+                                "B" => "B",
+                                "SPP" => "SP",
+                                _ => "--",
+                            };
+                            let meta = ElevRowMeta {
+                                waveform: wf_short,
+                                prf_short: prf_number_to_short(elev.prf_number),
+                                waveform_raw: &elev.waveform,
+                            };
+                            render_elevation_row(ui, elev.angle, Some(meta), false, available_width);
                         }
                     });
             } else if let Some(def) = vcp_def {
+                // Fall back to static VCP definitions
                 egui::ScrollArea::vertical()
                     .max_height(200.0)
                     .show(ui, |ui| {
@@ -505,7 +580,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                             render_elevation_row(
                                 ui,
                                 elev.angle,
-                                Some(elev),
+                                Some(static_vcp_meta(elev)),
                                 false,
                                 available_width,
                             );
@@ -523,44 +598,38 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
     }
 }
 
-/// Get a brief description of what a sweep at this elevation/waveform does
-fn get_sweep_info(elevation: f32, waveform: Option<&str>) -> &'static str {
+/// Map a raw waveform code to available product letters and their colors.
+fn waveform_to_products(waveform: &str) -> &'static [(&'static str, (u8, u8, u8))] {
+    const REF: (&str, (u8, u8, u8)) = ("R", (80, 200, 80));
+    const VEL: (&str, (u8, u8, u8)) = ("V", (200, 80, 80));
+    const SW: (&str, (u8, u8, u8)) = ("S", (80, 180, 180));
+    const ZDR: (&str, (u8, u8, u8)) = ("Z", (200, 200, 80));
+    const PHI: (&str, (u8, u8, u8)) = ("P", (180, 80, 180));
+    const RHO: (&str, (u8, u8, u8)) = ("C", (80, 120, 200));
+
     match waveform {
-        Some("CS") => {
-            // Contiguous Surveillance - optimized for reflectivity at long range
-            if elevation < 1.0 {
-                "Refl, long rng"
-            } else {
-                "Refl, surv"
-            }
-        }
-        Some("CD") => {
-            // Contiguous Doppler - optimized for velocity data
-            if elevation < 3.0 {
-                "Vel+Refl"
-            } else if elevation < 8.0 {
-                "Vel, mid alt"
-            } else {
-                "Vel, high alt"
-            }
-        }
-        _ => {
-            // Fallback based on elevation
-            if elevation < 2.0 {
-                "Low tilt"
-            } else if elevation < 6.0 {
-                "Mid tilt"
-            } else {
-                "High tilt"
-            }
-        }
+        "CS" => &[REF],
+        "CDW" => &[REF, VEL, SW, ZDR, PHI, RHO],
+        "CDWO" => &[REF, VEL, SW],
+        "B" => &[REF, VEL, SW],
+        "SPP" => &[REF, VEL],
+        _ => &[],
     }
+}
+
+/// Display-ready elevation metadata for a row.
+struct ElevRowMeta<'a> {
+    waveform: &'a str,
+    prf_short: &'a str,
+    /// Original waveform code from VCP (for product mapping). Differs from
+    /// `waveform` which may be a shortened display code.
+    waveform_raw: &'a str,
 }
 
 fn render_elevation_row(
     ui: &mut egui::Ui,
     elevation: f32,
-    elev_meta: Option<&crate::state::vcp::VcpElevation>,
+    meta: Option<ElevRowMeta>,
     is_current: bool,
     row_width: f32,
 ) {
@@ -594,7 +663,7 @@ fn render_elevation_row(
         );
 
         // Waveform type
-        let waveform = elev_meta.map(|e| e.waveform).unwrap_or("--");
+        let waveform = meta.as_ref().map(|m| m.waveform).unwrap_or("--");
         ui.label(
             RichText::new(format!(" {:2}", waveform))
                 .color(dim_color)
@@ -603,13 +672,7 @@ fn render_elevation_row(
         );
 
         // PRF
-        let prf = elev_meta.map(|e| e.prf).unwrap_or("--");
-        let prf_short = match prf {
-            "Low" => "L",
-            "Med" => "M",
-            "High" => "H",
-            _ => "-",
-        };
+        let prf_short = meta.as_ref().map(|m| m.prf_short).unwrap_or("-");
         ui.label(
             RichText::new(format!(" {}", prf_short))
                 .color(dim_color)
@@ -617,10 +680,57 @@ fn render_elevation_row(
                 .small(),
         );
 
-        // Info/description - right aligned
-        let info = get_sweep_info(elevation, elev_meta.map(|e| e.waveform));
+        // Product indicators - right aligned
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(info).color(dim_color).small());
+            let products = meta
+                .as_ref()
+                .map(|m| waveform_to_products(m.waveform_raw))
+                .unwrap_or(&[]);
+            if products.is_empty() {
+                ui.label(RichText::new("--").color(dim_color).small());
+            } else {
+                // Right-to-left layout reverses order, so iterate backwards
+                for &(letter, (r, g, b)) in products.iter().rev() {
+                    ui.label(
+                        RichText::new(letter)
+                            .color(Color32::from_rgb(r, g, b))
+                            .monospace()
+                            .small(),
+                    );
+                }
+            }
         });
     });
+}
+
+/// Convert a static VcpElevation to display metadata.
+fn static_vcp_meta(e: &crate::state::vcp::VcpElevation) -> ElevRowMeta<'_> {
+    ElevRowMeta {
+        waveform: e.waveform,
+        prf_short: match e.prf {
+            "Low" => "L",
+            "Med" => "M",
+            "High" => "H",
+            _ => "-",
+        },
+        // Map static waveform codes to raw codes for product lookup
+        waveform_raw: match e.waveform {
+            "CS" => "CS",
+            "CD" => "CDW",
+            "B" => "B",
+            "SP" => "SPP",
+            other => other,
+        },
+    }
+}
+
+/// Convert PRF number (1-8) to a short label.
+fn prf_number_to_short(prf: u8) -> &'static str {
+    // PRF numbers: 1-3 are low, 4-5 are medium, 6-8 are high
+    match prf {
+        1..=3 => "L",
+        4..=5 => "M",
+        6..=8 => "H",
+        _ => "-",
+    }
 }

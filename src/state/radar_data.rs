@@ -73,8 +73,10 @@ pub struct Scan {
     pub start_time: f64,
     /// End timestamp
     pub end_time: f64,
-    /// Volume Coverage Pattern identifier (e.g., VCP 215)
+    /// Volume Coverage Pattern number (e.g., 215, 35, 212)
     pub vcp: u16,
+    /// Full extracted VCP pattern with per-elevation metadata.
+    pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
     /// Sweeps in this scan, ordered by elevation
     pub sweeps: Vec<Sweep>,
     /// Completeness state for this scan (from cache metadata).
@@ -265,6 +267,7 @@ impl RadarTimeline {
                 start_time: scan_start,
                 end_time: scan_end,
                 vcp: 215,
+                vcp_pattern: None,
                 sweeps,
                 completeness: Some(ScanCompleteness::Complete),
                 present_records: None,
@@ -317,10 +320,13 @@ impl RadarTimeline {
                     })
                     .collect();
 
+                let vcp_number = meta.vcp.as_ref().map(|v| v.number).unwrap_or(0);
+
                 Scan {
                     start_time,
                     end_time,
-                    vcp: meta.vcp.unwrap_or(0),
+                    vcp: vcp_number,
+                    vcp_pattern: meta.vcp,
                     sweeps,
                     completeness: meta.completeness,
                     present_records: meta.present_records,

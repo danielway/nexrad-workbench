@@ -33,6 +33,9 @@ pub struct IngestResult {
     pub elevation_numbers: Vec<u8>,
     /// Per-sweep metadata extracted from radials during ingest.
     pub sweeps: Vec<crate::data::SweepMeta>,
+    /// Full extracted VCP pattern (from Message Type 5).
+    #[allow(dead_code)] // Available for direct VCP inspection; primary propagation is via IDB metadata
+    pub vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Total time in worker (ms).
     pub total_ms: f64,
 }
@@ -401,12 +404,20 @@ fn handle_ingested_message(
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
 
+    // Parse extracted VCP pattern from JSON
+    let vcp: Option<crate::data::keys::ExtractedVcp> =
+        js_sys::Reflect::get(&result_obj, &"vcpJson".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .and_then(|s| serde_json::from_str(&s).ok());
+
     log::info!(
-        "Worker ingest complete: {} ({} records, {} elevations, {} sweeps, {:.0}ms)",
+        "Worker ingest complete: {} ({} records, {} elevations, {} sweeps, vcp={}, {:.0}ms)",
         scan_key,
         records_stored,
         elevation_numbers.len(),
         sweeps.len(),
+        vcp.as_ref().map(|v| v.number.to_string()).unwrap_or_else(|| "none".to_string()),
         total_ms,
     );
 
@@ -418,6 +429,7 @@ fn handle_ingested_message(
             records_stored,
             elevation_numbers,
             sweeps,
+            vcp,
             total_ms,
         }));
 }

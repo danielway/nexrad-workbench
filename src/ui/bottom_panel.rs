@@ -33,6 +33,7 @@ fn render_radar_data(
     view_end: f64,
     zoom: f64,
     detail_level: DetailLevel,
+    active_sweep: Option<(i64, u8)>,
 ) {
     // Helper to convert timestamp to x position
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
@@ -183,6 +184,40 @@ fn render_radar_data(
                                         1.0,
                                         Stroke::new(0.5, Color32::from_rgb(40, 80, 55)),
                                         StrokeKind::Inside,
+                                    );
+                                }
+
+                                // Feature 2: Highlight the actively rendered sweep
+                                let is_active = active_sweep.map_or(false, |(scan_ts, elev_num)| {
+                                    scan.start_time as i64 == scan_ts
+                                        && sweep.elevation_number == elev_num
+                                });
+                                if is_active {
+                                    painter.rect_stroke(
+                                        sweep_rect,
+                                        1.0,
+                                        Stroke::new(2.0, tl_colors::ACTIVE_SWEEP),
+                                        StrokeKind::Outside,
+                                    );
+                                }
+
+                                // Feature 3: Elevation labels on wide sweep blocks
+                                let sweep_width = x_end - x_start;
+                                if sweep_width > 25.0 {
+                                    let label = if sweep_width > 60.0 {
+                                        format!(
+                                            "E{} {:.1}\u{00B0}",
+                                            sweep.elevation_number, sweep.elevation
+                                        )
+                                    } else {
+                                        format!("{:.1}", sweep.elevation)
+                                    };
+                                    painter.text(
+                                        sweep_rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        label,
+                                        egui::FontId::monospace(8.0),
+                                        Color32::from_rgba_unmultiplied(255, 255, 255, 180),
                                     );
                                 }
                             }
@@ -483,6 +518,18 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         DetailLevel::Sweeps
     };
 
+    let active_sweep = if detail_level == DetailLevel::Sweeps {
+        match (
+            state.displayed_scan_timestamp,
+            state.displayed_sweep_elevation_number,
+        ) {
+            (Some(ts), Some(en)) => Some((ts, en)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
     render_radar_data(
         &painter,
         &rect,
@@ -491,6 +538,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         view_end,
         zoom,
         detail_level,
+        active_sweep,
     );
 
     // Select appropriate tick configuration

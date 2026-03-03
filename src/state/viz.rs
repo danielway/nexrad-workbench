@@ -88,8 +88,7 @@ pub enum RenderMode {
     #[default]
     FixedTilt,
 
-    /// Most recent data - shows the most recent eligible value at each
-    /// azimuth/range regardless of elevation.
+    /// Most recent sweep regardless of elevation.
     MostRecent,
 }
 
@@ -104,7 +103,7 @@ impl RenderMode {
     pub fn description(&self) -> &'static str {
         match self {
             RenderMode::FixedTilt => "Shows complete sweep at selected elevation",
-            RenderMode::MostRecent => "Shows most recent data across all tilts",
+            RenderMode::MostRecent => "Shows most recent sweep regardless of elevation",
         }
     }
 

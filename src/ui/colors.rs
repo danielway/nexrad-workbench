@@ -98,6 +98,8 @@ pub mod timeline {
 
     /// Selection marker color (theme-independent).
     pub const SELECTION: Color32 = Color32::from_rgb(255, 100, 100);
+    /// Active sweep highlight (theme-independent).
+    pub const ACTIVE_SWEEP: Color32 = Color32::from_rgb(255, 255, 100);
 }
 
 /// Colors for the map canvas.

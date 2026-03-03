@@ -433,12 +433,41 @@ pub struct SweepMeta {
     pub elevation_number: u8,
 }
 
+/// A single elevation cut extracted from a VCP message (Message Type 5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedVcpElevation {
+    /// Elevation angle in degrees.
+    pub angle: f32,
+    /// Waveform type: "CS", "CDW", "CDWO", "B", "SPP".
+    pub waveform: String,
+    /// Surveillance PRF number (1-8), relates to unambiguous range.
+    pub prf_number: u8,
+    /// SAILS (Supplemental Adaptive Intra-Volume Low-Level Scan) cut.
+    pub is_sails: bool,
+    /// MRLE (Mid-Volume Rescan of Low-Level Elevations) cut.
+    pub is_mrle: bool,
+    /// BASE TILT cut.
+    pub is_base_tilt: bool,
+}
+
+/// Full Volume Coverage Pattern extracted from a NEXRAD VCP message (Type 5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtractedVcp {
+    /// VCP number (e.g., 215, 35, 212).
+    pub number: u16,
+    /// Ordered elevation cuts in this VCP.
+    pub elevations: Vec<ExtractedVcpElevation>,
+}
+
 /// Metadata for a scan stored in the scan index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanIndexEntry {
     pub scan: ScanKey,
     /// Whether VCP metadata record (record 0) is present.
     pub has_vcp: bool,
+    /// Full Volume Coverage Pattern extracted from the scan data.
+    #[serde(default)]
+    pub vcp: Option<ExtractedVcp>,
     /// Expected number of records if known from VCP.
     pub expected_records: Option<u32>,
     /// Number of records currently stored.
@@ -469,6 +498,7 @@ impl ScanIndexEntry {
         Self {
             scan,
             has_vcp: false,
+            vcp: None,
             expected_records: None,
             present_records: 0,
             file_name: None,
