@@ -1,14 +1,11 @@
-//! IndexedDB storage implementation for record-based radar data.
+//! IndexedDB storage for pre-computed radar sweep data.
 //!
 //! ## Object Stores
 //!
-//! 1. `records` - Raw bzip2-compressed record blobs (ArrayBuffer)
-//!    - Key: "SITE|SCAN_START_MS|RECORD_ID" (e.g., "KDMX|1700000000000|12")
+//! 1. `sweeps` - Pre-computed sweep blobs (ArrayBuffer)
+//!    - Key: "SITE|SCAN_MS|ELEV_NUM|PRODUCT"
 //!
-//! 2. `record_index` - Per-record metadata (JSON)
-//!    - Key: Same as records
-//!
-//! 3. `scan_index` - Per-scan metadata for timeline (JSON)
+//! 2. `scan_index` - Per-scan metadata for timeline (JSON)
 //!    - Key: "SITE|SCAN_START_MS"
 
 use crate::data::keys::*;
@@ -21,26 +18,16 @@ use wasm_bindgen::JsCast;
 use web_sys::{IdbDatabase, IdbRequest, IdbTransaction, IdbTransactionMode};
 
 /// Current database schema version.
-const DATABASE_VERSION: u32 = 1;
+const DATABASE_VERSION: u32 = 2;
 
 /// Database name.
 const DATABASE_NAME: &str = "nexrad-workbench";
 
 /// Object store names.
-const STORE_RECORDS: &str = "records";
-const STORE_RECORD_INDEX: &str = "record_index";
+const STORE_SWEEPS: &str = "sweeps";
 const STORE_SCAN_INDEX: &str = "scan_index";
 
-/// Result of a put operation.
-#[derive(Debug, Clone)]
-pub struct PutOutcome {
-    /// Whether the record blob was inserted (false if already existed).
-    pub inserted: bool,
-    /// Whether the scan index was updated.
-    pub updated_scan_index: bool,
-}
-
-/// IndexedDB record store.
+/// IndexedDB sweep store.
 #[derive(Clone)]
 pub struct IndexedDbRecordStore {
     db: Rc<RefCell<Option<IdbDatabase>>>,
@@ -87,133 +74,72 @@ impl IndexedDbRecordStore {
     }
 
     // ========================================================================
-    // Record operations
+    // Sweep operations
     // ========================================================================
 
-    /// Stores a record blob and updates indexes.
-    ///
-    /// Idempotent: if record already exists, does not overwrite blob.
-    pub async fn put_record(
-        &self,
-        record: &RecordBlob,
-        meta: RecordIndexEntry,
-    ) -> Result<PutOutcome, String> {
-        let t = web_time::Instant::now();
+    /// Stores a pre-computed sweep blob.
+    pub async fn put_sweep(&self, key: &str, data: &[u8]) -> Result<(), String> {
         self.ensure_open().await?;
-
-        let record_key = record.key.to_storage_key();
-        let scan_key = record.key.scan.to_storage_key();
-
-        // Read existing state in separate readonly transactions BEFORE the
-        // write transaction. Awaiting inside a readwrite transaction causes
-        // it to auto-commit in IndexedDB, so all reads must happen first.
-        let exists = self.has_record(&record.key).await?;
-        let existing_scan = self.scan_availability(&record.key.scan).await?;
-
-        // Now do all writes synchronously in a single transaction (no awaits
-        // between request creation and wait_for_transaction).
         let db = self.get_db()?;
-        let store_names = Array::new();
-        store_names.push(&JsValue::from_str(STORE_RECORDS));
-        store_names.push(&JsValue::from_str(STORE_RECORD_INDEX));
-        store_names.push(&JsValue::from_str(STORE_SCAN_INDEX));
 
         let tx = db
-            .transaction_with_str_sequence_and_mode(&store_names, IdbTransactionMode::Readwrite)
+            .transaction_with_str_and_mode(STORE_SWEEPS, IdbTransactionMode::Readwrite)
             .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
 
-        // Write record blob if not exists
-        if !exists {
-            let records_store = tx
-                .object_store(STORE_RECORDS)
-                .map_err(|e| format!("Failed to get records store: {:?}", e))?;
+        let store = tx
+            .object_store(STORE_SWEEPS)
+            .map_err(|e| format!("Failed to get sweeps store: {:?}", e))?;
 
-            let array = Uint8Array::from(record.data.as_slice());
-            let buffer = array.buffer();
+        let array = Uint8Array::from(data);
+        let buffer = array.buffer();
 
-            records_store
-                .put_with_key(&buffer, &JsValue::from_str(&record_key))
-                .map_err(|e| format!("Failed to put record: {:?}", e))?;
-        }
+        store
+            .put_with_key(&buffer, &JsValue::from_str(key))
+            .map_err(|e| format!("Failed to put sweep: {:?}", e))?;
 
-        // Write record index entry
-        let index_store = tx
-            .object_store(STORE_RECORD_INDEX)
-            .map_err(|e| format!("Failed to get record_index store: {:?}", e))?;
-
-        let meta_json =
-            serde_json::to_string(&meta).map_err(|e| format!("Serialization error: {}", e))?;
-        let meta_js =
-            js_sys::JSON::parse(&meta_json).map_err(|e| format!("JSON parse error: {:?}", e))?;
-
-        index_store
-            .put_with_key(&meta_js, &JsValue::from_str(&record_key))
-            .map_err(|e| format!("Failed to put record index: {:?}", e))?;
-
-        // Update scan index using pre-read data (no await needed)
-        let scan_store = tx
-            .object_store(STORE_SCAN_INDEX)
-            .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
-
-        let mut scan_entry =
-            existing_scan.unwrap_or_else(|| ScanIndexEntry::new(record.key.scan.clone()));
-
-        if !exists {
-            scan_entry.present_records += 1;
-            scan_entry.total_size_bytes += record.data.len() as u64;
-        }
-        if meta.has_vcp {
-            scan_entry.has_vcp = true;
-        }
-        scan_entry.updated_at = UnixMillis::now();
-
-        let scan_json = serde_json::to_string(&scan_entry)
-            .map_err(|e| format!("Serialization error: {}", e))?;
-        let scan_js =
-            js_sys::JSON::parse(&scan_json).map_err(|e| format!("JSON parse error: {:?}", e))?;
-
-        scan_store
-            .put_with_key(&scan_js, &JsValue::from_str(&scan_key))
-            .map_err(|e| format!("Failed to put scan index: {:?}", e))?;
-
-        // Wait for transaction to complete
         wait_for_transaction(&tx).await?;
-
-        let ms = t.elapsed().as_secs_f64() * 1000.0;
-        log::debug!("IDB put_record: {:.1}ms (inserted={})", ms, !exists);
-
-        Ok(PutOutcome {
-            inserted: !exists,
-            updated_scan_index: true,
-        })
+        Ok(())
     }
 
-    /// Updates sweep metadata on an existing scan index entry.
-    ///
-    /// Called after a volume is decoded to persist the actual end timestamp
-    /// and per-sweep timing so subsequent timeline loads don't need to decode.
-    pub async fn update_scan_sweep_meta(
-        &self,
-        scan: &ScanKey,
-        end_timestamp_secs: i64,
-        sweeps: Vec<SweepMeta>,
-    ) -> Result<bool, String> {
+    /// Gets a pre-computed sweep blob by key.
+    pub async fn get_sweep(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         self.ensure_open().await?;
-
-        // Read existing entry in a separate readonly transaction first.
-        let existing = self.scan_availability(scan).await?;
-
-        let Some(mut entry) = existing else {
-            return Ok(false);
-        };
-
-        entry.end_timestamp_secs = Some(end_timestamp_secs);
-        entry.sweeps = Some(sweeps);
-        entry.updated_at = UnixMillis::now();
-
-        // Write in a separate readwrite transaction (no awaits between ops).
         let db = self.get_db()?;
-        let scan_key = scan.to_storage_key();
+
+        let tx = db
+            .transaction_with_str_and_mode(STORE_SWEEPS, IdbTransactionMode::Readonly)
+            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
+
+        let store = tx
+            .object_store(STORE_SWEEPS)
+            .map_err(|e| format!("Failed to get sweeps store: {:?}", e))?;
+
+        let request = store
+            .get(&JsValue::from_str(key))
+            .map_err(|e| format!("Failed to get sweep: {:?}", e))?;
+
+        let result = wait_for_request(&request).await?;
+
+        if result.is_undefined() || result.is_null() {
+            return Ok(None);
+        }
+
+        let buffer: ArrayBuffer = result
+            .dyn_into()
+            .map_err(|_| "Expected ArrayBuffer".to_string())?;
+        let array = Uint8Array::new(&buffer);
+        Ok(Some(array.to_vec()))
+    }
+
+    // ========================================================================
+    // Scan index operations
+    // ========================================================================
+
+    /// Writes or updates a scan index entry.
+    pub async fn put_scan_index_entry(&self, entry: &ScanIndexEntry) -> Result<(), String> {
+        self.ensure_open().await?;
+        let db = self.get_db()?;
+        let storage_key = entry.storage_key();
 
         let tx = db
             .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readwrite)
@@ -224,288 +150,39 @@ impl IndexedDbRecordStore {
             .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
 
         let json =
-            serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
+            serde_json::to_string(entry).map_err(|e| format!("Serialization error: {}", e))?;
         let js = js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
 
         store
-            .put_with_key(&js, &JsValue::from_str(&scan_key))
+            .put_with_key(&js, &JsValue::from_str(&storage_key))
             .map_err(|e| format!("Failed to put scan index: {:?}", e))?;
 
         wait_for_transaction(&tx).await?;
-        Ok(true)
+        Ok(())
     }
 
-    /// Gets a record blob by key.
-    pub async fn get_record(&self, key: &RecordKey) -> Result<Option<RecordBlob>, String> {
-        let t = web_time::Instant::now();
-        self.ensure_open().await?;
-        let db = self.get_db()?;
-
-        let storage_key = key.to_storage_key();
-
-        let tx = db
-            .transaction_with_str_and_mode(STORE_RECORDS, IdbTransactionMode::Readonly)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        let store = tx
-            .object_store(STORE_RECORDS)
-            .map_err(|e| format!("Failed to get store: {:?}", e))?;
-
-        let request = store
-            .get(&JsValue::from_str(&storage_key))
-            .map_err(|e| format!("Failed to get record: {:?}", e))?;
-
-        let result = wait_for_request(&request).await?;
-
-        if result.is_undefined() || result.is_null() {
-            return Ok(None);
-        }
-
-        // Result is an ArrayBuffer
-        let buffer: ArrayBuffer = result
-            .dyn_into()
-            .map_err(|_| "Expected ArrayBuffer".to_string())?;
-        let array = Uint8Array::new(&buffer);
-        let data = array.to_vec();
-
-        // Touch the scan for LRU tracking (fire and forget)
-        let _ = self.touch_scan(&key.scan).await;
-
-        let ms = t.elapsed().as_secs_f64() * 1000.0;
-        log::debug!("IDB get_record: {:.1}ms ({} bytes)", ms, data.len());
-
-        Ok(Some(RecordBlob::new(key.clone(), data)))
-    }
-
-    /// Checks if a record exists.
-    pub async fn has_record(&self, key: &RecordKey) -> Result<bool, String> {
-        self.ensure_open().await?;
-        let db = self.get_db()?;
-
-        let storage_key = key.to_storage_key();
-
-        let tx = db
-            .transaction_with_str_and_mode(STORE_RECORD_INDEX, IdbTransactionMode::Readonly)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        let store = tx
-            .object_store(STORE_RECORD_INDEX)
-            .map_err(|e| format!("Failed to get store: {:?}", e))?;
-
-        let request = store
-            .count_with_key(&JsValue::from_str(&storage_key))
-            .map_err(|e| format!("Failed to count: {:?}", e))?;
-
-        let result = wait_for_request(&request).await?;
-        let count = result.as_f64().unwrap_or(0.0) as u32;
-
-        Ok(count > 0)
-    }
-
-    /// Lists all record keys for a scan.
-    pub async fn list_records_for_scan(&self, scan: &ScanKey) -> Result<Vec<RecordKey>, String> {
-        let t = web_time::Instant::now();
-        self.ensure_open().await?;
-        let db = self.get_db()?;
-
-        let tx = db
-            .transaction_with_str_and_mode(STORE_RECORD_INDEX, IdbTransactionMode::Readonly)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        let store = tx
-            .object_store(STORE_RECORD_INDEX)
-            .map_err(|e| format!("Failed to get store: {:?}", e))?;
-
-        // Use key prefix to find all records for this scan
-        let prefix = format!("{}|{}|", scan.site.0, scan.scan_start.0);
-
-        let request = store
-            .get_all_keys()
-            .map_err(|e| format!("Failed to get keys: {:?}", e))?;
-
-        let result = wait_for_request(&request).await?;
-        let array = Array::from(&result);
-
-        let mut keys = Vec::new();
-        for i in 0..array.length() {
-            if let Some(key_str) = array.get(i).as_string() {
-                if key_str.starts_with(&prefix) {
-                    if let Some(key) = RecordKey::from_storage_key(&key_str) {
-                        keys.push(key);
-                    }
-                }
-            }
-        }
-
-        keys.sort_by_key(|k| k.record_id);
-
-        // Touch the scan for LRU tracking if we found records
-        if !keys.is_empty() {
-            let _ = self.touch_scan(scan).await;
-        }
-
-        let ms = t.elapsed().as_secs_f64() * 1000.0;
-        log::debug!(
-            "IDB list_records_for_scan: {:.1}ms ({} keys from {} total)",
-            ms,
-            keys.len(),
-            array.length()
-        );
-
-        Ok(keys)
-    }
-
-    /// Lists all record index entries (full metadata) for a scan.
-    ///
-    /// Unlike `list_records_for_scan` which returns only keys, this returns
-    /// the full `RecordIndexEntry` with elevation metadata for filtering.
-    pub async fn list_record_entries_for_scan(
+    /// Updates sweep metadata on an existing scan index entry.
+    pub async fn update_scan_sweep_meta(
         &self,
         scan: &ScanKey,
-    ) -> Result<Vec<RecordIndexEntry>, String> {
-        let t = web_time::Instant::now();
+        end_timestamp_secs: i64,
+        sweeps: Vec<SweepMeta>,
+    ) -> Result<bool, String> {
         self.ensure_open().await?;
-        let db = self.get_db()?;
 
-        let tx = db
-            .transaction_with_str_and_mode(STORE_RECORD_INDEX, IdbTransactionMode::Readonly)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
+        let existing = self.scan_availability(scan).await?;
 
-        let store = tx
-            .object_store(STORE_RECORD_INDEX)
-            .map_err(|e| format!("Failed to get store: {:?}", e))?;
+        let Some(mut entry) = existing else {
+            return Ok(false);
+        };
 
-        let prefix = format!("{}|{}|", scan.site.0, scan.scan_start.0);
+        entry.end_timestamp_secs = Some(end_timestamp_secs);
+        entry.sweeps = Some(sweeps);
+        entry.updated_at = UnixMillis::now();
 
-        // Get all keys first, then fetch matching entries
-        let request = store
-            .get_all_keys()
-            .map_err(|e| format!("Failed to get keys: {:?}", e))?;
-
-        let result = wait_for_request(&request).await?;
-        let array = Array::from(&result);
-
-        let mut entries = Vec::new();
-        for i in 0..array.length() {
-            if let Some(key_str) = array.get(i).as_string() {
-                if key_str.starts_with(&prefix) {
-                    // Fetch the full entry
-                    let get_request = store
-                        .get(&wasm_bindgen::JsValue::from_str(&key_str))
-                        .map_err(|e| format!("Failed to get entry: {:?}", e))?;
-
-                    let value = wait_for_request(&get_request).await?;
-                    if !value.is_undefined() && !value.is_null() {
-                        if let Some(entry) = deserialize_js_value::<RecordIndexEntry>(&value) {
-                            entries.push(entry);
-                        }
-                    }
-                }
-            }
-        }
-
-        entries.sort_by_key(|e| e.key.record_id);
-
-        let ms = t.elapsed().as_secs_f64() * 1000.0;
-        log::debug!(
-            "IDB list_record_entries_for_scan: {:.1}ms ({} entries)",
-            ms,
-            entries.len()
-        );
-
-        Ok(entries)
+        self.put_scan_index_entry(&entry).await?;
+        Ok(true)
     }
-
-    // ========================================================================
-    // Time-based queries
-    // ========================================================================
-
-    /// Queries record keys by time range.
-    pub async fn query_record_keys_by_time(
-        &self,
-        site: &SiteId,
-        start: UnixMillis,
-        end: UnixMillis,
-        limit: u32,
-    ) -> Result<Vec<RecordKey>, String> {
-        self.ensure_open().await?;
-        let db = self.get_db()?;
-
-        let tx = db
-            .transaction_with_str_and_mode(STORE_RECORD_INDEX, IdbTransactionMode::Readonly)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        let store = tx
-            .object_store(STORE_RECORD_INDEX)
-            .map_err(|e| format!("Failed to get store: {:?}", e))?;
-
-        // Get all keys and filter by site and time
-        // Note: In production, we'd use an index, but for simplicity we filter in Rust
-        let request = store
-            .get_all()
-            .map_err(|e| format!("Failed to get all: {:?}", e))?;
-
-        let result = wait_for_request(&request).await?;
-        let array = Array::from(&result);
-
-        let mut keys = Vec::new();
-        for i in 0..array.length() {
-            if keys.len() >= limit as usize {
-                break;
-            }
-
-            let value = array.get(i);
-            if let Ok(json_str) = js_sys::JSON::stringify(&value) {
-                if let Some(s) = json_str.as_string() {
-                    if let Ok(entry) = serde_json::from_str::<RecordIndexEntry>(&s) {
-                        // Filter by site
-                        if entry.key.scan.site.0 != site.0 {
-                            continue;
-                        }
-
-                        // Filter by time
-                        let time = entry.effective_time();
-                        if time >= start && time <= end {
-                            keys.push(entry.key);
-                        }
-                    }
-                }
-            }
-        }
-
-        keys.sort_by_key(|k| (k.scan.scan_start.0, k.record_id));
-        Ok(keys)
-    }
-
-    /// Queries records by time range, optionally including blob data.
-    pub async fn query_records_by_time(
-        &self,
-        site: &SiteId,
-        start: UnixMillis,
-        end: UnixMillis,
-        limit: u32,
-        include_bytes: bool,
-    ) -> Result<Vec<(RecordKey, Option<RecordBlob>)>, String> {
-        let keys = self
-            .query_record_keys_by_time(site, start, end, limit)
-            .await?;
-
-        if !include_bytes {
-            return Ok(keys.into_iter().map(|k| (k, None)).collect());
-        }
-
-        let mut results = Vec::with_capacity(keys.len());
-        for key in keys {
-            let blob = self.get_record(&key).await?;
-            results.push((key, blob));
-        }
-
-        Ok(results)
-    }
-
-    // ========================================================================
-    // Scan index operations
-    // ========================================================================
 
     /// Gets scan availability information.
     pub async fn scan_availability(
@@ -564,15 +241,12 @@ impl IndexedDbRecordStore {
             if let Ok(json_str) = js_sys::JSON::stringify(&value) {
                 if let Some(s) = json_str.as_string() {
                     if let Ok(entry) = serde_json::from_str::<ScanIndexEntry>(&s) {
-                        // Filter by site
                         if entry.scan.site.0 != site.0 {
                             continue;
                         }
 
-                        // Filter by time
                         let scan_time = entry.scan.scan_start;
                         if scan_time >= start && scan_time <= end {
-                            // Estimate scan duration as 5 minutes
                             let scan_end = UnixMillis(scan_time.0 + 5 * 60 * 1000);
                             ranges.push(TimeRange::new(scan_time, scan_end));
                         }
@@ -581,7 +255,6 @@ impl IndexedDbRecordStore {
             }
         }
 
-        // Merge adjacent ranges with 15-minute gap threshold
         Ok(merge_time_ranges(ranges, 15 * 60 * 1000))
     }
 
@@ -592,7 +265,6 @@ impl IndexedDbRecordStore {
         start: UnixMillis,
         end: UnixMillis,
     ) -> Result<Vec<ScanIndexEntry>, String> {
-        let t = web_time::Instant::now();
         self.ensure_open().await?;
         let db = self.get_db()?;
 
@@ -617,12 +289,10 @@ impl IndexedDbRecordStore {
             if let Ok(json_str) = js_sys::JSON::stringify(&value) {
                 if let Some(s) = json_str.as_string() {
                     if let Ok(entry) = serde_json::from_str::<ScanIndexEntry>(&s) {
-                        // Filter by site
                         if entry.scan.site.0 != site.0 {
                             continue;
                         }
 
-                        // Filter by time
                         let scan_time = entry.scan.scan_start;
                         if scan_time >= start && scan_time <= end {
                             scans.push(entry);
@@ -633,15 +303,6 @@ impl IndexedDbRecordStore {
         }
 
         scans.sort_by_key(|s| s.scan.scan_start.0);
-
-        let ms = t.elapsed().as_secs_f64() * 1000.0;
-        log::debug!(
-            "IDB list_scans: {:.1}ms ({} matched from {} total)",
-            ms,
-            scans.len(),
-            array.length()
-        );
-
         Ok(scans)
     }
 
@@ -649,38 +310,17 @@ impl IndexedDbRecordStore {
     pub async fn set_expected_records(&self, scan: &ScanKey, expected: u32) -> Result<(), String> {
         self.ensure_open().await?;
 
-        // Read existing entry in a separate readonly transaction first.
         let existing = self.scan_availability(scan).await?;
         let mut entry = existing.unwrap_or_else(|| ScanIndexEntry::new(scan.clone()));
 
         entry.expected_records = Some(expected);
         entry.updated_at = UnixMillis::now();
 
-        // Write in a separate readwrite transaction (no awaits between ops).
-        let db = self.get_db()?;
-        let storage_key = scan.to_storage_key();
-
-        let tx = db
-            .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readwrite)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        let store = tx
-            .object_store(STORE_SCAN_INDEX)
-            .map_err(|e| format!("Failed to get store: {:?}", e))?;
-
-        let json =
-            serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
-        let js = js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
-
-        store
-            .put_with_key(&js, &JsValue::from_str(&storage_key))
-            .map_err(|e| format!("Failed to put: {:?}", e))?;
-
-        wait_for_transaction(&tx).await?;
+        self.put_scan_index_entry(&entry).await?;
         Ok(())
     }
 
-    /// Gets total cache size across all records.
+    /// Gets total cache size across all scans.
     pub async fn total_cache_size(&self) -> Result<u64, String> {
         self.ensure_open().await?;
         let db = self.get_db()?;
@@ -719,7 +359,6 @@ impl IndexedDbRecordStore {
     pub async fn touch_scan(&self, scan: &ScanKey) -> Result<(), String> {
         self.ensure_open().await?;
 
-        // Read existing entry in a separate readonly transaction first.
         let existing = self.scan_availability(scan).await?;
 
         let Some(mut entry) = existing else {
@@ -727,28 +366,7 @@ impl IndexedDbRecordStore {
         };
 
         entry.last_accessed_at = UnixMillis::now();
-
-        // Write in a separate readwrite transaction (no awaits between ops).
-        let db = self.get_db()?;
-        let storage_key = scan.to_storage_key();
-
-        let tx = db
-            .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readwrite)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        let store = tx
-            .object_store(STORE_SCAN_INDEX)
-            .map_err(|e| format!("Failed to get store: {:?}", e))?;
-
-        let json =
-            serde_json::to_string(&entry).map_err(|e| format!("Serialization error: {}", e))?;
-        let js = js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
-
-        store
-            .put_with_key(&js, &JsValue::from_str(&storage_key))
-            .map_err(|e| format!("Failed to put: {:?}", e))?;
-
-        wait_for_transaction(&tx).await?;
+        self.put_scan_index_entry(&entry).await?;
         Ok(())
     }
 
@@ -784,15 +402,12 @@ impl IndexedDbRecordStore {
             }
         }
 
-        // Sort by last_accessed_at ascending (oldest first)
         scans.sort_by_key(|s| s.last_accessed_at.0);
-
-        // Return only the requested limit
         scans.truncate(limit as usize);
         Ok(scans)
     }
 
-    /// Deletes a scan and all its records.
+    /// Deletes a scan and all its sweep blobs.
     /// Returns the number of bytes freed.
     pub async fn delete_scan(&self, scan: &ScanKey) -> Result<u64, String> {
         self.ensure_open().await?;
@@ -800,54 +415,67 @@ impl IndexedDbRecordStore {
 
         let scan_storage_key = scan.to_storage_key();
 
-        // First, get the scan entry to know its size
+        // Get the scan entry to know its size and elevation structure
         let scan_entry = self.scan_availability(scan).await?;
         let bytes_freed = scan_entry.as_ref().map(|e| e.total_size_bytes).unwrap_or(0);
 
-        // Get all record keys for this scan
-        let record_keys = self.list_records_for_scan(scan).await?;
+        // Build list of all possible sweep keys for this scan
+        let sweep_keys: Vec<String> = if let Some(ref entry) = scan_entry {
+            if let Some(ref sweeps) = entry.sweeps {
+                let mut keys = Vec::new();
+                for sweep in sweeps {
+                    for product in ALL_PRODUCTS {
+                        let key = SweepDataKey::new(
+                            scan.clone(),
+                            sweep.elevation_number,
+                            *product,
+                        );
+                        keys.push(key.to_storage_key());
+                    }
+                }
+                keys
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
 
-        // Delete all records and indexes in a transaction
+        // Delete all sweep blobs and scan index entry in one transaction
         let store_names = Array::new();
-        store_names.push(&JsValue::from_str(STORE_RECORDS));
-        store_names.push(&JsValue::from_str(STORE_RECORD_INDEX));
+        store_names.push(&JsValue::from_str(STORE_SWEEPS));
         store_names.push(&JsValue::from_str(STORE_SCAN_INDEX));
 
         let tx = db
             .transaction_with_str_sequence_and_mode(&store_names, IdbTransactionMode::Readwrite)
             .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
 
-        let records_store = tx
-            .object_store(STORE_RECORDS)
-            .map_err(|e| format!("Failed to get records store: {:?}", e))?;
-
-        let index_store = tx
-            .object_store(STORE_RECORD_INDEX)
-            .map_err(|e| format!("Failed to get record_index store: {:?}", e))?;
+        let sweeps_store = tx
+            .object_store(STORE_SWEEPS)
+            .map_err(|e| format!("Failed to get sweeps store: {:?}", e))?;
 
         let scan_store = tx
             .object_store(STORE_SCAN_INDEX)
             .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
 
-        // Delete all records and record index entries
-        for key in record_keys {
-            let record_storage_key = key.to_storage_key();
-            records_store
-                .delete(&JsValue::from_str(&record_storage_key))
-                .map_err(|e| format!("Failed to delete record: {:?}", e))?;
-            index_store
-                .delete(&JsValue::from_str(&record_storage_key))
-                .map_err(|e| format!("Failed to delete record index: {:?}", e))?;
+        for key in &sweep_keys {
+            sweeps_store
+                .delete(&JsValue::from_str(key))
+                .map_err(|e| format!("Failed to delete sweep: {:?}", e))?;
         }
 
-        // Delete scan index entry
         scan_store
             .delete(&JsValue::from_str(&scan_storage_key))
             .map_err(|e| format!("Failed to delete scan index: {:?}", e))?;
 
         wait_for_transaction(&tx).await?;
 
-        log::info!("Deleted scan {} ({} bytes freed)", scan, bytes_freed);
+        log::info!(
+            "Deleted scan {} ({} sweep blobs, {} bytes freed)",
+            scan,
+            sweep_keys.len(),
+            bytes_freed
+        );
         Ok(bytes_freed)
     }
 
@@ -858,11 +486,9 @@ impl IndexedDbRecordStore {
         let mut evicted_count = 0u32;
 
         while current_size > target_bytes {
-            // Get the oldest scan
             let lru_scans = self.get_lru_scans(1).await?;
 
             if lru_scans.is_empty() {
-                // No more scans to evict
                 break;
             }
 
@@ -897,15 +523,14 @@ impl IndexedDbRecordStore {
         let db = self.get_db()?;
 
         let store_names = Array::new();
-        store_names.push(&JsValue::from_str(STORE_RECORDS));
-        store_names.push(&JsValue::from_str(STORE_RECORD_INDEX));
+        store_names.push(&JsValue::from_str(STORE_SWEEPS));
         store_names.push(&JsValue::from_str(STORE_SCAN_INDEX));
 
         let tx = db
             .transaction_with_str_sequence_and_mode(&store_names, IdbTransactionMode::Readwrite)
             .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
 
-        for name in [STORE_RECORDS, STORE_RECORD_INDEX, STORE_SCAN_INDEX] {
+        for name in [STORE_SWEEPS, STORE_SCAN_INDEX] {
             let store = tx
                 .object_store(name)
                 .map_err(|e| format!("Failed to get store: {:?}", e))?;
@@ -952,8 +577,19 @@ async fn open_database() -> Result<IdbDatabase, String> {
             .expect("Expected IdbRequest");
         let db: IdbDatabase = request.result().unwrap().dyn_into().unwrap();
 
-        for store_name in [STORE_RECORDS, STORE_RECORD_INDEX, STORE_SCAN_INDEX] {
-            if !db.object_store_names().contains(store_name) {
+        // Delete old stores from v1 if they exist
+        let store_names = db.object_store_names();
+        for old_store in ["records", "record_index"] {
+            if store_names.contains(old_store) {
+                db.delete_object_store(old_store)
+                    .expect("Failed to delete old object store");
+                log::info!("Deleted old IndexedDB store: {}", old_store);
+            }
+        }
+
+        // Create new stores if they don't exist
+        for store_name in [STORE_SWEEPS, STORE_SCAN_INDEX] {
+            if !store_names.contains(store_name) {
                 db.create_object_store(store_name)
                     .expect("Failed to create object store");
                 log::info!("Created IndexedDB store: {}", store_name);
@@ -1039,7 +675,6 @@ async fn wait_for_transaction(tx: &IdbTransaction) -> Result<(), String> {
 
     let tx_error = sender;
     let onerror = Closure::wrap(Box::new(move |_event: web_sys::Event| {
-        // Getting the specific error is complex with web-sys, use a generic message
         let error_msg = "Transaction error".to_string();
         if let Some(tx) = tx_error.borrow_mut().take() {
             let _ = tx.send(Err(error_msg));

@@ -2,7 +2,7 @@
 //!
 //! This module provides functionality for:
 //! - Downloading archival NEXRAD data from AWS
-//! - Caching downloaded data in IndexedDB via record-based storage
+//! - Pre-computed sweep storage in IndexedDB for near-zero render latency
 //! - GPU-based radar rendering via WebGL2 shaders
 
 mod archive_index;
@@ -16,7 +16,7 @@ pub(crate) mod record_decode;
 mod types;
 
 pub use archive_index::ArchiveIndex;
-pub use cache_channel::{CacheLoadChannel, CacheLoadResult, ScrubLoadChannel, ScrubLoadResult};
+pub use cache_channel::{CacheLoadChannel, CacheLoadResult};
 pub use decode_worker::{DecodeWorker, WorkerOutcome};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use gpu_renderer::RadarGpuRenderer;

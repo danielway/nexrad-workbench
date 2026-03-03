@@ -29,6 +29,19 @@ fn main() {}
 thread_local! {
     static WORKER_IDB: std::cell::RefCell<Option<data::indexeddb::IndexedDbRecordStore>> =
         const { std::cell::RefCell::new(None) };
+    static WORKER_LOGGER_INIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Initialize the log crate in the worker context (once).
+/// The main thread uses `eframe::WebLogger` during `eframe::WebRunner::start()`,
+/// but the worker loads a separate WASM instance that never calls that.
+fn worker_init_logger() {
+    WORKER_LOGGER_INIT.with(|init| {
+        if !init.get() {
+            eframe::WebLogger::init(log::LevelFilter::Debug).ok();
+            init.set(true);
+        }
+    });
 }
 
 /// Get (or lazily open) the shared worker IDB store.
@@ -58,9 +71,11 @@ async fn worker_idb_store() -> Result<data::indexeddb::IndexedDbRecordStore, was
 ///   { data: ArrayBuffer, siteId: string, timestampSecs: number, fileName: string }
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
+    worker_init_logger();
     wasm_bindgen_futures::future_to_promise(async move {
         use crate::data::keys::*;
-        use crate::nexrad::{extract_elevation_numbers, record_decode::decode_record_to_radials};
+        use crate::nexrad::{extract_elevation_numbers, record_decode::extract_sweep_data};
+        use nexrad_render::Product;
 
         let t_total = web_time::Instant::now();
 
@@ -86,7 +101,14 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             .and_then(|v| v.as_string())
             .unwrap_or_default();
 
-        // Split into LDM records
+        let data_size = data.len();
+        log::info!(
+            "ingest: received {} ({:.1}MB)",
+            file_name,
+            data_size as f64 / (1024.0 * 1024.0),
+        );
+
+        // --- Split into LDM records ---
         let t_split = web_time::Instant::now();
         let file = nexrad_data::volume::File::new(data);
         let records = file.records().map_err(|e| {
@@ -98,29 +120,33 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             return Err(wasm_bindgen::JsValue::from_str("No records found"));
         }
 
+        log::info!(
+            "ingest: split into {} records in {:.1}ms",
+            records.len(),
+            split_ms,
+        );
+
         // Reuse cached IDB connection (or open on first call)
         let store = worker_idb_store().await?;
 
         let scan_start = UnixMillis::from_secs(timestamp_secs);
         let scan_key = ScanKey::new(site_id.as_str(), scan_start);
 
-        // Decompress, probe elevation metadata, and store decompressed records.
-        // Records are stored decompressed so the render path skips bzip2 entirely.
-        // Also collect per-radial metadata for sweep building.
-        let t_store = web_time::Instant::now();
-        let mut stored = 0u32;
-        let mut decompress_ms = 0.0f64;
-        let elevation_map = js_sys::Object::new();
-
-        // Accumulate (timestamp_ms, elevation_number, elevation_angle) from all radials
+        // --- Phase 1: Decompress + decode all records into radials ---
+        let t_decode = web_time::Instant::now();
+        let mut decompress_ms_total = 0.0f64;
+        let mut decode_only_ms = 0.0f64;
+        let mut all_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
         let mut radial_metas: Vec<(i64, u8, f32)> = Vec::new();
+        let elevation_map = js_sys::Object::new();
+        let mut has_vcp = false;
+        let mut compressed_count = 0u32;
 
         for (record_id, record) in records.iter().enumerate() {
             let record_id = record_id as u32;
-            let record_key = RecordKey::new(scan_key.clone(), record_id);
 
-            // Decompress once: keep the bytes for storage and extract radials
-            let (store_bytes, radials) = if record.compressed() {
+            let radials = if record.compressed() {
+                compressed_count += 1;
                 let t_decompress = web_time::Instant::now();
                 let decompressed = record.decompress().map_err(|e| {
                     wasm_bindgen::JsValue::from_str(&format!(
@@ -128,22 +154,24 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                         record_id, e
                     ))
                 })?;
-                decompress_ms += t_decompress.elapsed().as_secs_f64() * 1000.0;
-
-                let bytes = decompressed.data().to_vec();
-                let radials = decompressed.radials().unwrap_or_default();
-                (bytes, radials)
+                decompress_ms_total += t_decompress.elapsed().as_secs_f64() * 1000.0;
+                let t_radials = web_time::Instant::now();
+                let r = decompressed.radials().unwrap_or_default();
+                decode_only_ms += t_radials.elapsed().as_secs_f64() * 1000.0;
+                r
             } else {
-                // Legacy CTM — already uncompressed
-                let bytes = record.data().to_vec();
-                let radials = decode_record_to_radials(record.data()).unwrap_or_default();
-                (bytes, radials)
+                use crate::nexrad::record_decode::decode_record_to_radials;
+                let t_radials = web_time::Instant::now();
+                let r = decode_record_to_radials(record.data()).unwrap_or_default();
+                decode_only_ms += t_radials.elapsed().as_secs_f64() * 1000.0;
+                r
             };
 
-            let elevation_numbers = if radials.is_empty() {
-                None
-            } else {
-                // Collect per-radial metadata for sweep building
+            if record_id == 0 {
+                has_vcp = true;
+            }
+
+            if !radials.is_empty() {
                 for r in &radials {
                     radial_metas.push((
                         r.collection_timestamp(),
@@ -151,30 +179,9 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                         r.elevation_angle_degrees(),
                     ));
                 }
-                Some(extract_elevation_numbers(&radials))
-            };
-
-            let blob = RecordBlob::new(record_key.clone(), store_bytes);
-
-            // First record typically contains VCP metadata
-            let has_vcp = record_id == 0;
-
-            let meta = RecordIndexEntry::new(record_key, blob.data.len() as u32)
-                .with_vcp(has_vcp)
-                .with_elevations(elevation_numbers.clone());
-
-            let outcome = store.put_record(&blob, meta).await.map_err(|e| {
-                wasm_bindgen::JsValue::from_str(&format!("Failed to store record: {}", e))
-            })?;
-
-            if outcome.inserted {
-                stored += 1;
-            }
-
-            // Add to elevation map for the response
-            if let Some(ref elevs) = elevation_numbers {
+                let elevation_numbers = extract_elevation_numbers(&radials);
                 let arr = js_sys::Array::new();
-                for &e in elevs {
+                for &e in &elevation_numbers {
                     arr.push(&wasm_bindgen::JsValue::from(e));
                 }
                 js_sys::Reflect::set(
@@ -183,37 +190,121 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     &arr,
                 )
                 .ok();
+                all_radials.extend(radials);
             }
         }
+        let phase1_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
         // Build sweep metadata by grouping radials by elevation_number
         let sweeps = build_sweep_meta_from_radials(&radial_metas);
+        let elevation_numbers: Vec<u8> = sweeps.iter().map(|s| s.elevation_number).collect();
         let end_timestamp_secs = sweeps
             .iter()
             .map(|s| s.end as i64)
             .max()
             .unwrap_or(timestamp_secs);
 
-        // Persist sweep metadata to IDB scan index
-        if let Err(e) = store
-            .update_scan_sweep_meta(&scan_key, end_timestamp_secs, sweeps.clone())
-            .await
-        {
-            log::warn!("Failed to persist sweep metadata: {}", e);
-        }
+        log::info!(
+            "ingest: decompressed {} records, decoded {} radials across {} elevations in {:.1}ms (decompress: {:.1}ms, decode: {:.1}ms)",
+            compressed_count,
+            all_radials.len(),
+            elevation_numbers.len(),
+            phase1_ms,
+            decompress_ms_total,
+            decode_only_ms,
+        );
 
+        // --- Phase 2: Extract sweep data for all (elevation, product) pairs ---
+        let t_extract = web_time::Instant::now();
+        let products = [
+            Product::Reflectivity,
+            Product::Velocity,
+            Product::SpectrumWidth,
+            Product::DifferentialReflectivity,
+            Product::CorrelationCoefficient,
+            Product::DifferentialPhase,
+        ];
+        let product_names = [
+            "reflectivity",
+            "velocity",
+            "spectrum_width",
+            "differential_reflectivity",
+            "correlation_coefficient",
+            "differential_phase",
+        ];
+
+        let mut sweep_blobs: Vec<(String, Vec<u8>)> = Vec::new();
+
+        for &elev_num in &elevation_numbers {
+            for (product, product_name) in products.iter().zip(product_names.iter()) {
+                if let Some(sweep) = extract_sweep_data(&all_radials, elev_num, *product) {
+                    let key = SweepDataKey::new(scan_key.clone(), elev_num, *product_name);
+                    let bytes = sweep.to_bytes();
+                    sweep_blobs.push((key.to_storage_key(), bytes));
+                }
+            }
+        }
+        let extract_ms = t_extract.elapsed().as_secs_f64() * 1000.0;
+
+        let sweep_count = sweep_blobs.len() as u32;
+        let total_sweep_bytes: u64 = sweep_blobs.iter().map(|(_, b)| b.len() as u64).sum();
+
+        log::info!(
+            "ingest: extracted {} sweeps ({:.1}MB) in {:.1}ms",
+            sweep_count,
+            total_sweep_bytes as f64 / (1024.0 * 1024.0),
+            extract_ms,
+        );
+
+        // --- Phase 3: Store sweep blobs in IDB ---
+        let t_store = web_time::Instant::now();
+
+        for (key, bytes) in &sweep_blobs {
+            store.put_sweep(key, bytes).await.map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!("Failed to store sweep: {}", e))
+            })?;
+        }
         let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
+
+        log::info!(
+            "ingest: stored {} sweep blobs in IDB in {:.1}ms",
+            sweep_count,
+            store_ms,
+        );
+
+        // --- Phase 4: Store scan index entry ---
+        let t_index = web_time::Instant::now();
+        let mut scan_entry = ScanIndexEntry::new(scan_key.clone());
+        scan_entry.has_vcp = has_vcp;
+        scan_entry.present_records = records.len() as u32;
+        scan_entry.file_name = Some(file_name.clone());
+        scan_entry.total_size_bytes = total_sweep_bytes;
+        scan_entry.end_timestamp_secs = Some(end_timestamp_secs);
+        scan_entry.sweeps = Some(sweeps.clone());
+        scan_entry.has_precomputed_sweeps = true;
+
+        store.put_scan_index_entry(&scan_entry).await.map_err(|e| {
+            wasm_bindgen::JsValue::from_str(&format!("Failed to store scan index: {}", e))
+        })?;
+        let index_ms = t_index.elapsed().as_secs_f64() * 1000.0;
+
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
         log::info!(
-            "worker_ingest: {} ({} records, {} sweeps) in {:.0}ms (split: {:.0}ms, decompress: {:.0}ms, store: {:.0}ms)",
+            "ingest: complete {} in {:.0}ms | split {:.1} | decompress {:.1} | decode {:.1} | extract {:.1} | store {:.1} | index {:.1} | {} records, {} radials, {} elevations, {} sweeps, {:.1}MB",
             file_name,
-            stored,
-            sweeps.len(),
             total_ms,
             split_ms,
-            decompress_ms,
+            decompress_ms_total,
+            decode_only_ms,
+            extract_ms,
             store_ms,
+            index_ms,
+            records.len(),
+            all_radials.len(),
+            elevation_numbers.len(),
+            sweep_count,
+            total_sweep_bytes as f64 / (1024.0 * 1024.0),
         );
 
         // Build response object
@@ -221,7 +312,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         js_sys::Reflect::set(
             &result,
             &"recordsStored".into(),
-            &wasm_bindgen::JsValue::from(stored),
+            &wasm_bindgen::JsValue::from(sweep_count),
         )
         .ok();
         js_sys::Reflect::set(
@@ -292,20 +383,17 @@ fn build_sweep_meta_from_radials(
         .collect()
 }
 
-/// Render a specific elevation from a scan stored in IndexedDB.
+/// Render a specific elevation from pre-computed sweep data in IndexedDB.
 ///
-/// Called from the Web Worker. Returns a Promise that resolves to a JS object with:
-///   { imageData: ArrayBuffer, width, height, renderTimeMs, radialCount }
+/// Called from the Web Worker. Fetches a single pre-computed sweep blob
+/// and returns the data directly — no decoding or extraction needed.
 ///
-/// Parameters are passed as a JS object:
-///   { scanKey: string, elevationNumber: number, product: string }
+/// Parameters: { scanKey: string, elevationNumber: number, product: string }
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
+    worker_init_logger();
     wasm_bindgen_futures::future_to_promise(async move {
         use crate::data::keys::*;
-        use crate::nexrad::record_decode::decode_record_to_radials_timed;
-        use nexrad_model::data::DataMoment;
-        use nexrad_render::Product;
 
         let t_total = web_time::Instant::now();
 
@@ -329,183 +417,80 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let scan_key = ScanKey::from_storage_key(&scan_key_str)
             .ok_or_else(|| wasm_bindgen::JsValue::from_str("Invalid scanKey format"))?;
 
-        let product = match product_str.as_str() {
-            "reflectivity" => Product::Reflectivity,
-            "velocity" => Product::Velocity,
-            "spectrum_width" => Product::SpectrumWidth,
-            "differential_reflectivity" => Product::DifferentialReflectivity,
-            "differential_phase" => Product::DifferentialPhase,
-            "correlation_coefficient" => Product::CorrelationCoefficient,
-            _ => Product::Reflectivity,
-        };
-
-        // Reuse cached IDB connection (or open on first call)
-        let t_idb_open = web_time::Instant::now();
+        // Reuse cached IDB connection
         let store = worker_idb_store().await?;
-        let idb_open_ms = t_idb_open.elapsed().as_secs_f64() * 1000.0;
 
-        let t_list = web_time::Instant::now();
-        let entries = store
-            .list_record_entries_for_scan(&scan_key)
+        // Fetch pre-computed sweep blob
+        let t_fetch = web_time::Instant::now();
+        let sweep_key = SweepDataKey::new(scan_key, elevation_number, &product_str);
+        let blob = store
+            .get_sweep(&sweep_key.to_storage_key())
             .await
             .map_err(|e| {
-                wasm_bindgen::JsValue::from_str(&format!("Failed to list records: {}", e))
+                wasm_bindgen::JsValue::from_str(&format!("Failed to fetch sweep: {}", e))
+            })?
+            .ok_or_else(|| {
+                wasm_bindgen::JsValue::from_str(&format!(
+                    "No pre-computed sweep for elev={} product={}",
+                    elevation_number, product_str
+                ))
             })?;
+        let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
 
-        // Filter to records matching the target elevation
-        let matching_keys: Vec<RecordKey> = entries
-            .iter()
-            .filter(|entry| {
-                entry
-                    .elevation_numbers
-                    .as_ref()
-                    .map(|nums| nums.contains(&elevation_number))
-                    .unwrap_or(true)
-            })
-            .map(|entry| entry.key.clone())
-            .collect();
-        let list_ms = t_list.elapsed().as_secs_f64() * 1000.0;
+        // Deserialize
+        let t_deser = web_time::Instant::now();
+        let sweep = PrecomputedSweep::from_bytes(&blob).map_err(|e| {
+            wasm_bindgen::JsValue::from_str(&format!("Failed to deserialize sweep: {}", e))
+        })?;
+        let deser_ms = t_deser.elapsed().as_secs_f64() * 1000.0;
 
-        if matching_keys.is_empty() {
-            return Err(wasm_bindgen::JsValue::from_str(
-                "No records found for target elevation",
-            ));
-        }
-
-        // Fetch matching record blobs and decode
-        let mut all_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
-        let mut _blob_bytes = 0u64;
-        let mut idb_fetch_ms = 0.0f64;
-        let mut decompress_ms = 0.0f64;
-        let mut decode_ms = 0.0f64;
-        for key in &matching_keys {
-            let t_fetch = web_time::Instant::now();
-            let blob_opt = store.get_record(key).await;
-            idb_fetch_ms += t_fetch.elapsed().as_secs_f64() * 1000.0;
-
-            if let Ok(Some(blob)) = blob_opt {
-                _blob_bytes += blob.data.len() as u64;
-                match decode_record_to_radials_timed(&blob.data) {
-                    Ok((radials, timings)) => {
-                        decompress_ms += timings.decompress_ms;
-                        decode_ms += timings.decode_ms;
-                        all_radials.extend(radials);
-                    }
-                    Err(e) => log::warn!("Failed to decode record {}: {}", key, e),
-                }
-            }
-        }
-        let fetch_ms = idb_open_ms + list_ms + idb_fetch_ms + decompress_ms + decode_ms;
-
-        // Filter radials to target elevation + product, sort by azimuth
-        let t_extract = web_time::Instant::now();
-        let mut target_radials: Vec<_> = all_radials
-            .into_iter()
-            .filter(|r| {
-                r.elevation_number() == elevation_number
-                    && (product.moment_data(r).is_some() || product.cfp_moment_data(r).is_some())
-            })
-            .collect();
-
-        if target_radials.is_empty() {
-            return Err(wasm_bindgen::JsValue::from_str(
-                "No radials found for target elevation",
-            ));
-        }
-
-        target_radials.sort_by(|a, b| {
-            a.azimuth_angle_degrees()
-                .partial_cmp(&b.azimuth_angle_degrees())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-
-        let radial_count = target_radials.len();
-
-        // Extract gate params + scale/offset from first radial's moment
-        let (first_gate_range_km, gate_interval_km, gate_count, scale, offset) = {
-            let r = &target_radials[0];
-            if let Some(m) = product.moment_data(r) {
-                (m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset())
-            } else if let Some(m) = product.cfp_moment_data(r) {
-                (m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset())
-            } else {
-                return Err(wasm_bindgen::JsValue::from_str("Could not extract moment params"));
-            }
-        };
-
-        // Build flat arrays: azimuths + raw gate values (u16 cast to f32)
-        // Use raw_values() byte slice directly for bulk conversion instead of
-        // the per-element raw_gate_values() iterator which has high overhead in WASM.
-        let azimuth_count = target_radials.len();
-        let total = azimuth_count * gate_count;
-        let mut azimuths = Vec::with_capacity(azimuth_count);
-        let mut raw_values: Vec<f32> = vec![0.0; total]; // 0.0 = "below threshold" sentinel
-
-        for (row, radial) in target_radials.iter().enumerate() {
-            azimuths.push(radial.azimuth_angle_degrees());
-            let row_offset = row * gate_count;
-
-            // Get raw byte slice and word size, then bulk-convert
-            let (bytes, word_size) = if let Some(m) = product.moment_data(radial) {
-                (m.raw_values(), m.data_word_size())
-            } else if let Some(m) = product.cfp_moment_data(radial) {
-                (m.raw_values(), m.data_word_size())
-            } else {
-                continue;
-            };
-
-            let dest = &mut raw_values[row_offset..row_offset + gate_count];
-            if word_size == 16 {
-                // 16-bit: pairs of big-endian bytes → u16 → f32
-                let n = (bytes.len() / 2).min(gate_count);
-                for i in 0..n {
-                    let raw = u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
-                    dest[i] = raw as f32;
-                }
-            } else {
-                // 8-bit: each byte → f32
-                let n = bytes.len().min(gate_count);
-                for i in 0..n {
-                    dest[i] = bytes[i] as f32;
-                }
-            }
-        }
-
-        let max_range_km = first_gate_range_km + (gate_count as f64) * gate_interval_km;
-        let extract_ms = t_extract.elapsed().as_secs_f64() * 1000.0;
-
-        // Transfer raw data back to main thread
+        // Marshal to JS — create Float32/Float64Array views and transfer buffers
         let t_marshal = web_time::Instant::now();
-        let azimuths_array = js_sys::Float32Array::from(azimuths.as_slice());
-        let values_array = js_sys::Float32Array::from(raw_values.as_slice());
+
+        let azimuths_array = js_sys::Float32Array::from(sweep.azimuths.as_slice());
+        let values_array = js_sys::Float32Array::from(sweep.gate_values.as_slice());
+        let timestamps_array = js_sys::Float64Array::from(sweep.timestamps.as_slice());
+        let elev_angles_array = js_sys::Float32Array::from(sweep.elevation_angles.as_slice());
+
         let az_buf = azimuths_array.buffer();
         let val_buf = values_array.buffer();
+        let ts_buf = timestamps_array.buffer();
+        let ea_buf = elev_angles_array.buffer();
 
         let result = js_sys::Object::new();
         js_sys::Reflect::set(&result, &"azimuths".into(), &az_buf).ok();
         js_sys::Reflect::set(&result, &"gateValues".into(), &val_buf).ok();
-        js_sys::Reflect::set(&result, &"azimuthCount".into(), &wasm_bindgen::JsValue::from(azimuth_count as u32)).ok();
-        js_sys::Reflect::set(&result, &"gateCount".into(), &wasm_bindgen::JsValue::from(gate_count as u32)).ok();
-        js_sys::Reflect::set(&result, &"firstGateRangeKm".into(), &wasm_bindgen::JsValue::from(first_gate_range_km)).ok();
-        js_sys::Reflect::set(&result, &"gateIntervalKm".into(), &wasm_bindgen::JsValue::from(gate_interval_km)).ok();
-        js_sys::Reflect::set(&result, &"maxRangeKm".into(), &wasm_bindgen::JsValue::from(max_range_km)).ok();
+        js_sys::Reflect::set(&result, &"timestamps".into(), &ts_buf).ok();
+        js_sys::Reflect::set(&result, &"elevationAngles".into(), &ea_buf).ok();
+        js_sys::Reflect::set(&result, &"azimuthCount".into(), &wasm_bindgen::JsValue::from(sweep.azimuth_count)).ok();
+        js_sys::Reflect::set(&result, &"gateCount".into(), &wasm_bindgen::JsValue::from(sweep.gate_count)).ok();
+        js_sys::Reflect::set(&result, &"firstGateRangeKm".into(), &wasm_bindgen::JsValue::from(sweep.first_gate_range_km)).ok();
+        js_sys::Reflect::set(&result, &"gateIntervalKm".into(), &wasm_bindgen::JsValue::from(sweep.gate_interval_km)).ok();
+        js_sys::Reflect::set(&result, &"maxRangeKm".into(), &wasm_bindgen::JsValue::from(sweep.max_range_km)).ok();
         js_sys::Reflect::set(&result, &"product".into(), &wasm_bindgen::JsValue::from_str(&product_str)).ok();
-        js_sys::Reflect::set(&result, &"radialCount".into(), &wasm_bindgen::JsValue::from(radial_count as u32)).ok();
-        js_sys::Reflect::set(&result, &"scale".into(), &wasm_bindgen::JsValue::from(scale as f64)).ok();
-        js_sys::Reflect::set(&result, &"offset".into(), &wasm_bindgen::JsValue::from(offset as f64)).ok();
-        let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
+        js_sys::Reflect::set(&result, &"radialCount".into(), &wasm_bindgen::JsValue::from(sweep.radial_count)).ok();
+        js_sys::Reflect::set(&result, &"scale".into(), &wasm_bindgen::JsValue::from(sweep.scale as f64)).ok();
+        js_sys::Reflect::set(&result, &"offset".into(), &wasm_bindgen::JsValue::from(sweep.offset as f64)).ok();
 
+        let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        // Add timing fields to result
+        log::info!(
+            "render: elev={} {} {}x{} ({:.1}KB) in {:.1}ms | fetch {:.1} | deser {:.1} | marshal {:.1}",
+            elevation_number,
+            product_str,
+            sweep.azimuth_count,
+            sweep.gate_count,
+            blob.len() as f64 / 1024.0,
+            total_ms,
+            fetch_ms,
+            deser_ms,
+            marshal_ms,
+        );
+
+        // Timing fields
         js_sys::Reflect::set(&result, &"fetchMs".into(), &wasm_bindgen::JsValue::from(fetch_ms)).ok();
         js_sys::Reflect::set(&result, &"totalMs".into(), &wasm_bindgen::JsValue::from(total_ms)).ok();
-        js_sys::Reflect::set(&result, &"decompressMs".into(), &wasm_bindgen::JsValue::from(decompress_ms)).ok();
-        js_sys::Reflect::set(&result, &"decodeMs".into(), &wasm_bindgen::JsValue::from(decode_ms)).ok();
-        js_sys::Reflect::set(&result, &"extractMs".into(), &wasm_bindgen::JsValue::from(extract_ms)).ok();
-        js_sys::Reflect::set(&result, &"idbFetchMs".into(), &wasm_bindgen::JsValue::from(idb_fetch_ms)).ok();
-        js_sys::Reflect::set(&result, &"idbOpenMs".into(), &wasm_bindgen::JsValue::from(idb_open_ms)).ok();
-        js_sys::Reflect::set(&result, &"listMs".into(), &wasm_bindgen::JsValue::from(list_ms)).ok();
         js_sys::Reflect::set(&result, &"marshalMs".into(), &wasm_bindgen::JsValue::from(marshal_ms)).ok();
 
         Ok(result.into())
@@ -602,9 +587,6 @@ pub struct WorkbenchApp {
 
     /// Previous site ID to detect site changes (for clearing volume ring)
     previous_site_id: String,
-
-    /// Channel for loading scans from cache on-demand (for scrubbing)
-    scrub_load_channel: nexrad::ScrubLoadChannel,
 
     /// Channel for real-time streaming
     realtime_channel: nexrad::RealtimeChannel,
@@ -777,7 +759,6 @@ impl WorkbenchApp {
             selection_download_queue: Vec::new(),
             displayed_scan_timestamp: None,
             previous_site_id: initial_site_id,
-            scrub_load_channel: nexrad::ScrubLoadChannel::new(),
             realtime_channel,
             decode_worker,
             current_render_scan_key: None,
@@ -1091,37 +1072,6 @@ impl WorkbenchApp {
                     is_volume_end,
                     now,
                 );
-            }
-            nexrad::RealtimeResult::RecordStored {
-                scan_key,
-                record_id,
-                records_available,
-            } => {
-                log::debug!(
-                    "Record stored: {} record {} ({} available)",
-                    scan_key,
-                    record_id,
-                    records_available
-                );
-                // Records are now cached incrementally - timeline refresh will pick them up
-                self.state.timeline_needs_refresh = true;
-            }
-            nexrad::RealtimeResult::PartialVolumeReady {
-                scan_key,
-                sweep_count,
-                timestamp_ms,
-            } => {
-                log::info!(
-                    "Partial volume ready: {} with {} sweeps at {}",
-                    scan_key,
-                    sweep_count,
-                    timestamp_ms
-                );
-
-                // Store the pending decode request - will be processed in update loop
-                self.state.pending_partial_decode = Some((timestamp_ms, scan_key.clone()));
-
-                self.state.status_message = format!("Live: partial volume {} sweeps", sweep_count);
             }
             nexrad::RealtimeResult::VolumeComplete { data, timestamp } => {
                 log::info!(
@@ -1514,34 +1464,9 @@ impl eframe::App for WorkbenchApp {
             self.process_selection_download(ctx);
         }
 
-        // Check for completed scrub load operations (legacy path, kept for fallback)
-        if let Some(result) = self.scrub_load_channel.try_recv() {
-            match result {
-                nexrad::ScrubLoadResult::Success { timestamp, .. }
-                | nexrad::ScrubLoadResult::NotFound { timestamp }
-                | nexrad::ScrubLoadResult::Error { timestamp, .. } => {
-                    // In the new architecture, scrub uses worker.render() directly.
-                    // This handler just marks the timestamp to prevent retry loops.
-                    self.displayed_scan_timestamp = Some(timestamp);
-                }
-            }
-        }
-
         // Handle realtime streaming results
         while let Some(result) = self.realtime_channel.try_recv() {
             self.handle_realtime_result(result, ctx);
-        }
-
-        // Handle pending partial volume decode — in the worker architecture,
-        // partial volumes are already stored in IDB by the realtime ingest path.
-        // We just need to send a render request.
-        if let Some((timestamp_ms, _scan_key)) = self.state.pending_partial_decode.take() {
-            let scan_ts_secs = timestamp_ms / 1000;
-            let scan_key = data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts_secs);
-            self.current_render_scan_key = Some(scan_key.to_storage_key());
-            self.displayed_scan_timestamp = Some(scan_ts_secs);
-            self.last_render_params = None;
-            self.request_worker_render();
         }
 
         // Stop realtime channel if live mode was stopped by UI

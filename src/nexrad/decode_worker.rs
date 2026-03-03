@@ -56,6 +56,12 @@ pub struct DecodeResult {
     /// Flat row-major raw gate values (azimuth_count * gate_count).
     /// Raw u16 values cast to f32. Sentinels: 0=below threshold, 1=range folded.
     pub gate_values: Vec<f32>,
+    /// Per-radial collection timestamps (Unix seconds with sub-second precision).
+    #[allow(dead_code)] // Used for progressive playback and VCP inspector
+    pub timestamps: Vec<f64>,
+    /// Per-radial actual elevation angles in degrees.
+    #[allow(dead_code)] // Used for VCP inspector
+    pub elevation_angles: Vec<f32>,
     pub azimuth_count: u32,
     pub gate_count: u32,
     pub first_gate_range_km: f64,
@@ -441,6 +447,20 @@ fn handle_decoded_message(
     let val_buffer = js_sys::Reflect::get(data, &"gateValues".into()).unwrap_or(JsValue::NULL);
     let gate_values = js_sys::Float32Array::new(&val_buffer).to_vec();
 
+    let ts_buffer = js_sys::Reflect::get(data, &"timestamps".into()).unwrap_or(JsValue::NULL);
+    let timestamps = if ts_buffer.is_null() || ts_buffer.is_undefined() {
+        Vec::new()
+    } else {
+        js_sys::Float64Array::new(&ts_buffer).to_vec()
+    };
+
+    let ea_buffer = js_sys::Reflect::get(data, &"elevationAngles".into()).unwrap_or(JsValue::NULL);
+    let elevation_angles = if ea_buffer.is_null() || ea_buffer.is_undefined() {
+        Vec::new()
+    } else {
+        js_sys::Float32Array::new(&ea_buffer).to_vec()
+    };
+
     let azimuth_count = js_sys::Reflect::get(data, &"azimuthCount".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
     let gate_count = js_sys::Reflect::get(data, &"gateCount".into())
@@ -459,18 +479,6 @@ fn handle_decoded_message(
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
     let total_ms = js_sys::Reflect::get(data, &"totalMs".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let decompress_ms = js_sys::Reflect::get(data, &"decompressMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let decode_ms = js_sys::Reflect::get(data, &"decodeMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let extract_ms = js_sys::Reflect::get(data, &"extractMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let idb_fetch_ms = js_sys::Reflect::get(data, &"idbFetchMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let idb_open_ms = js_sys::Reflect::get(data, &"idbOpenMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let list_ms = js_sys::Reflect::get(data, &"listMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
     let marshal_ms = js_sys::Reflect::get(data, &"marshalMs".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
     let scale = js_sys::Reflect::get(data, &"scale".into())
@@ -479,9 +487,9 @@ fn handle_decoded_message(
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
 
     log::info!(
-        "Worker decode: {}x{}, {} radials, {}, {:.0}ms (open: {:.1}, list: {:.1}, fetch: {:.1}, decomp: {:.1}, decode: {:.1}, extract: {:.1}, marshal: {:.1})",
+        "Worker decode: {}x{}, {} radials, {}, {:.0}ms (fetch: {:.1}, marshal: {:.1})",
         azimuth_count, gate_count, radial_count, product, total_ms,
-        idb_open_ms, list_ms, idb_fetch_ms, decompress_ms, decode_ms, extract_ms, marshal_ms,
+        fetch_ms, marshal_ms,
     );
 
     results
@@ -490,6 +498,8 @@ fn handle_decoded_message(
             context,
             azimuths,
             gate_values,
+            timestamps,
+            elevation_angles,
             azimuth_count,
             gate_count,
             first_gate_range_km,

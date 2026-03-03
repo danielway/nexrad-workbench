@@ -67,12 +67,15 @@ self.onmessage = async function (e) {
             });
 
             // Forward all result fields plus type/id; transfer float buffers zero-copy
-            const { azimuths, gateValues } = result;
+            const { azimuths, gateValues, timestamps, elevationAngles } = result;
+            const transferList = [azimuths, gateValues];
+            if (timestamps) transferList.push(timestamps);
+            if (elevationAngles) transferList.push(elevationAngles);
             const payload = Object.assign({}, result, {
                 type: 'decoded',
                 id: msg.id,
             });
-            self.postMessage(payload, [azimuths, gateValues]);
+            self.postMessage(payload, transferList);
         } catch (err) {
             self.postMessage({ type: 'error', id: msg.id, message: String(err) });
         }

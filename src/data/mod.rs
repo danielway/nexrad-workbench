@@ -1,27 +1,26 @@
-//! Data modules containing static datasets and record-based caching.
+//! Data modules containing static datasets and sweep-based caching.
 //!
 //! ## Static Data
 //! - `sites`: NEXRAD radar site definitions
 //!
-//! ## Record Cache
+//! ## Sweep Cache
 //!
-//! Stores individual compressed records rather than full scans, enabling:
-//! - Efficient partial scan storage (realtime streaming, interrupted downloads)
-//! - Time-based queries without loading full scans
-//! - Deduplication across download/streaming sources
+//! Stores pre-computed sweep data (GPU-ready) rather than raw records, enabling:
+//! - Near-zero render latency (~5-10ms per sweep)
+//! - Efficient elevation/product switching
+//! - Time-based queries for timeline display
 //!
 //! ### Key Types
 //! - `SiteId`: Radar site identifier (e.g., "KDMX")
 //! - `ScanKey`: Identifies a volume scan (site + start time)
-//! - `RecordKey`: Identifies a record within a scan
-//! - `RecordBlob`: Compressed record data
+//! - `SweepDataKey`: Identifies a sweep (scan + elevation + product)
+//! - `PrecomputedSweep`: GPU-ready sweep data (azimuths, gates, metadata)
 //!
 //! ### Storage Hierarchy
 //! ```text
 //! IndexedDB "nexrad-workbench"
-//! ├── records      - Raw bzip2-compressed record blobs
-//! ├── record_index - Per-record metadata with time indexing
-//! └── scan_index   - Per-scan metadata with completeness tracking
+//! ├── sweeps     - Pre-computed sweep blobs (binary, GPU-ready)
+//! └── scan_index - Per-scan metadata with completeness tracking
 //! ```
 
 #[allow(dead_code)]
@@ -38,7 +37,6 @@ pub mod indexeddb;
 // Re-export static site data
 pub use sites::{all_sites_sorted, get_site, NEXRAD_SITES};
 
-// Re-export record cache types
+// Re-export cache types
 pub use facade::*;
 pub use keys::*;
-pub use record_cache::*;

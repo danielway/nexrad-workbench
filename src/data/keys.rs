@@ -1,19 +1,10 @@
-//! Core key types for record-based storage.
+//! Core key types for storage.
 //!
 //! These types provide strongly-typed identifiers for the storage layer:
 //! - `SiteId`: Radar site identifier (e.g., "KDMX")
 //! - `UnixMillis`: Timestamp in milliseconds since Unix epoch
 //! - `ScanKey`: Identifies a complete volume scan
-//! - `RecordKey`: Identifies an individual record within a scan
-//!
-//! ## Record ID Derivation
-//!
-//! Records within a scan are identified by a sequence number (0-based).
-//! For archive files, this is the order of LDM records in the file.
-//! For realtime streaming, this is the chunk sequence number.
-//!
-//! The first record (id=0) typically contains LDM/VCP metadata needed
-//! to interpret the scan structure.
+//! - `SweepDataKey`: Identifies a pre-computed sweep (scan + elevation + product)
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -133,78 +124,200 @@ impl fmt::Display for ScanKey {
     }
 }
 
-/// Identifies an individual record within a scan.
+/// Identifies a pre-computed sweep blob in the `sweeps` IDB store.
 ///
-/// Records are the atomic unit of storage. Each record contains a decompressed
-/// chunk of radar data, typically covering a portion of one sweep.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct RecordKey {
+/// Key format: "SITE|SCAN_MS|ELEV_NUM|PRODUCT"
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SweepDataKey {
     pub scan: ScanKey,
-    /// Record sequence number within the scan (0-based).
-    /// Record 0 typically contains VCP/LDM metadata.
-    pub record_id: u32,
+    pub elevation_number: u8,
+    pub product: String,
 }
 
-impl RecordKey {
-    pub fn new(scan: ScanKey, record_id: u32) -> Self {
-        Self { scan, record_id }
+impl SweepDataKey {
+    pub fn new(scan: ScanKey, elevation_number: u8, product: impl Into<String>) -> Self {
+        Self {
+            scan,
+            elevation_number,
+            product: product.into(),
+        }
     }
 
-    /// Convert to storage key string: "KDMX|1700000000000|12"
     pub fn to_storage_key(&self) -> String {
         format!(
-            "{}|{}|{}",
-            self.scan.site.0, self.scan.scan_start.0, self.record_id
+            "{}|{}|{}|{}",
+            self.scan.site.0, self.scan.scan_start.0, self.elevation_number, self.product
         )
     }
 
-    /// Parse from storage key string.
-    pub fn from_storage_key(key: &str) -> Option<Self> {
-        let parts: Vec<&str> = key.split('|').collect();
-        if parts.len() != 3 {
-            return None;
+    /// Returns the key prefix for all sweeps in a scan: "SITE|SCAN_MS|"
+    pub fn prefix_for_scan(scan: &ScanKey) -> String {
+        format!("{}|{}|", scan.site.0, scan.scan_start.0)
+    }
+}
+
+impl fmt::Display for SweepDataKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}@{}#{}",
+            self.scan, self.elevation_number, self.product
+        )
+    }
+}
+
+/// Pre-computed sweep data ready for GPU rendering.
+///
+/// Binary layout (little-endian):
+/// - Header (44 bytes): azimuth_count, gate_count, first_gate_range_km,
+///   gate_interval_km, max_range_km, scale, offset, radial_count
+/// - Per-radial metadata (sorted by azimuth):
+///   azimuths (f32), timestamps (f64, Unix ms), elevation_angles (f32)
+/// - Gate data: gate_values (f32, row-major azimuth×gate)
+pub struct PrecomputedSweep {
+    pub azimuth_count: u32,
+    pub gate_count: u32,
+    pub first_gate_range_km: f64,
+    pub gate_interval_km: f64,
+    pub max_range_km: f64,
+    pub scale: f32,
+    pub offset: f32,
+    pub radial_count: u32,
+    pub azimuths: Vec<f32>,
+    pub timestamps: Vec<f64>,
+    pub elevation_angles: Vec<f32>,
+    pub gate_values: Vec<f32>,
+}
+
+const HEADER_SIZE: usize = 44;
+
+impl PrecomputedSweep {
+    /// Serialize to binary blob for IDB storage.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let az = self.azimuth_count as usize;
+        let total_floats = az * self.gate_count as usize;
+        let size = HEADER_SIZE
+            + az * 4             // azimuths (f32)
+            + az * 8             // timestamps (f64)
+            + az * 4             // elevation_angles (f32)
+            + total_floats * 4;  // gate_values (f32)
+        let mut buf = Vec::with_capacity(size);
+
+        // Header
+        buf.extend_from_slice(&self.azimuth_count.to_le_bytes());
+        buf.extend_from_slice(&self.gate_count.to_le_bytes());
+        buf.extend_from_slice(&self.first_gate_range_km.to_le_bytes());
+        buf.extend_from_slice(&self.gate_interval_km.to_le_bytes());
+        buf.extend_from_slice(&self.max_range_km.to_le_bytes());
+        buf.extend_from_slice(&self.scale.to_le_bytes());
+        buf.extend_from_slice(&self.offset.to_le_bytes());
+        buf.extend_from_slice(&self.radial_count.to_le_bytes());
+
+        // Per-radial metadata
+        for &a in &self.azimuths {
+            buf.extend_from_slice(&a.to_le_bytes());
         }
-        let scan_start = parts[1].parse::<i64>().ok()?;
-        let record_id = parts[2].parse::<u32>().ok()?;
-        Some(Self {
-            scan: ScanKey {
-                site: SiteId(parts[0].to_string()),
-                scan_start: UnixMillis(scan_start),
-            },
-            record_id,
+        for &t in &self.timestamps {
+            buf.extend_from_slice(&t.to_le_bytes());
+        }
+        for &e in &self.elevation_angles {
+            buf.extend_from_slice(&e.to_le_bytes());
+        }
+
+        // Gate data
+        for &v in &self.gate_values {
+            buf.extend_from_slice(&v.to_le_bytes());
+        }
+
+        buf
+    }
+
+    /// Deserialize from binary blob.
+    pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
+        if data.len() < HEADER_SIZE {
+            return Err(format!(
+                "Sweep blob too small: {} < {} header",
+                data.len(),
+                HEADER_SIZE
+            ));
+        }
+
+        let azimuth_count = u32::from_le_bytes(data[0..4].try_into().unwrap());
+        let gate_count = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        let first_gate_range_km = f64::from_le_bytes(data[8..16].try_into().unwrap());
+        let gate_interval_km = f64::from_le_bytes(data[16..24].try_into().unwrap());
+        let max_range_km = f64::from_le_bytes(data[24..32].try_into().unwrap());
+        let scale = f32::from_le_bytes(data[32..36].try_into().unwrap());
+        let offset = f32::from_le_bytes(data[36..40].try_into().unwrap());
+        let radial_count = u32::from_le_bytes(data[40..44].try_into().unwrap());
+
+        let az = azimuth_count as usize;
+        let gc = gate_count as usize;
+        let expected = HEADER_SIZE + az * 4 + az * 8 + az * 4 + az * gc * 4;
+        if data.len() < expected {
+            return Err(format!(
+                "Sweep blob too small: {} < {} expected",
+                data.len(),
+                expected
+            ));
+        }
+
+        let mut pos = HEADER_SIZE;
+
+        let azimuths = read_f32_slice(data, pos, az);
+        pos += az * 4;
+
+        let timestamps = read_f64_slice(data, pos, az);
+        pos += az * 8;
+
+        let elevation_angles = read_f32_slice(data, pos, az);
+        pos += az * 4;
+
+        let gate_values = read_f32_slice(data, pos, az * gc);
+
+        Ok(Self {
+            azimuth_count,
+            gate_count,
+            first_gate_range_km,
+            gate_interval_km,
+            max_range_km,
+            scale,
+            offset,
+            radial_count,
+            azimuths,
+            timestamps,
+            elevation_angles,
+            gate_values,
         })
     }
-}
 
-impl fmt::Display for RecordKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#{}", self.scan, self.record_id)
+    /// Total size in bytes when serialized.
+    pub fn byte_size(&self) -> usize {
+        let az = self.azimuth_count as usize;
+        HEADER_SIZE + az * 4 + az * 8 + az * 4 + az * self.gate_count as usize * 4
     }
 }
 
-/// A record blob containing decompressed radar data.
-///
-/// Note: This struct is NOT serialized to JSON for IndexedDB storage.
-/// The `data` field is stored directly as an ArrayBuffer in IndexedDB.
-/// This struct is used for in-memory representation only.
-///
-/// Records are stored decompressed (bzip2 already decoded at ingest time)
-/// so the render path can skip the expensive decompression step.
-#[derive(Debug, Clone)]
-pub struct RecordBlob {
-    pub key: RecordKey,
-    /// Raw decompressed record bytes.
-    pub data: Vec<u8>,
+fn read_f32_slice(data: &[u8], offset: usize, count: usize) -> Vec<f32> {
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let start = offset + i * 4;
+        out.push(f32::from_le_bytes(
+            data[start..start + 4].try_into().unwrap(),
+        ));
+    }
+    out
 }
 
-impl RecordBlob {
-    pub fn new(key: RecordKey, data: Vec<u8>) -> Self {
-        Self { key, data }
+fn read_f64_slice(data: &[u8], offset: usize, count: usize) -> Vec<f64> {
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let start = offset + i * 8;
+        out.push(f64::from_le_bytes(
+            data[start..start + 8].try_into().unwrap(),
+        ));
     }
-
-    pub fn size_bytes(&self) -> u32 {
-        self.data.len() as u32
-    }
+    out
 }
 
 /// Completeness state for a scan.
@@ -275,6 +388,9 @@ pub struct ScanIndexEntry {
     /// Sweep metadata, populated after decode.
     #[serde(default)]
     pub sweeps: Option<Vec<SweepMeta>>,
+    /// Whether pre-computed sweep blobs are stored for this scan.
+    #[serde(default)]
+    pub has_precomputed_sweeps: bool,
 }
 
 impl ScanIndexEntry {
@@ -291,6 +407,7 @@ impl ScanIndexEntry {
             last_accessed_at: now,
             end_timestamp_secs: None,
             sweeps: None,
+            has_precomputed_sweeps: false,
         }
     }
 
@@ -304,61 +421,15 @@ impl ScanIndexEntry {
     }
 }
 
-/// Metadata for an individual record stored in the record index.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecordIndexEntry {
-    pub key: RecordKey,
-    /// Precise timestamp for this record if derivable from header.
-    /// If None, use scan_start + record ordering.
-    pub record_time: Option<UnixMillis>,
-    /// Size in bytes (decompressed).
-    pub size_bytes: u32,
-    /// Whether this record contains VCP/LDM metadata.
-    pub has_vcp: bool,
-    /// When this record was stored.
-    pub stored_at: UnixMillis,
-    /// Elevation numbers contained in this record.
-    /// Populated at ingest by probing the record content.
-    pub elevation_numbers: Option<Vec<u8>>,
-}
-
-impl RecordIndexEntry {
-    pub fn new(key: RecordKey, size_bytes: u32) -> Self {
-        Self {
-            key,
-            record_time: None,
-            size_bytes,
-            has_vcp: false,
-            stored_at: UnixMillis::now(),
-            elevation_numbers: None,
-        }
-    }
-
-    pub fn with_time(mut self, time: UnixMillis) -> Self {
-        self.record_time = Some(time);
-        self
-    }
-
-    pub fn with_vcp(mut self, has_vcp: bool) -> Self {
-        self.has_vcp = has_vcp;
-        self
-    }
-
-    pub fn with_elevations(mut self, elevation_numbers: Option<Vec<u8>>) -> Self {
-        self.elevation_numbers = elevation_numbers;
-        self
-    }
-
-    /// Convert to storage key string.
-    pub fn storage_key(&self) -> String {
-        self.key.to_storage_key()
-    }
-
-    /// Get the effective time for this record (record_time or scan_start).
-    pub fn effective_time(&self) -> UnixMillis {
-        self.record_time.unwrap_or(self.key.scan.scan_start)
-    }
-}
+/// All known radar products for sweep pre-computation.
+pub const ALL_PRODUCTS: &[&str] = &[
+    "reflectivity",
+    "velocity",
+    "spectrum_width",
+    "differential_reflectivity",
+    "correlation_coefficient",
+    "differential_phase",
+];
 
 /// A time range with start and end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -431,13 +502,13 @@ mod tests {
     }
 
     #[test]
-    fn test_record_key_storage_format() {
+    fn test_sweep_data_key_storage_format() {
         let scan = ScanKey::new("KDMX", UnixMillis(1700000000000));
-        let key = RecordKey::new(scan, 12);
-        assert_eq!(key.to_storage_key(), "KDMX|1700000000000|12");
-
-        let parsed = RecordKey::from_storage_key("KDMX|1700000000000|12").unwrap();
-        assert_eq!(parsed, key);
+        let key = SweepDataKey::new(scan, 1, "reflectivity");
+        assert_eq!(
+            key.to_storage_key(),
+            "KDMX|1700000000000|1|reflectivity"
+        );
     }
 
     #[test]

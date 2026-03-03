@@ -1,34 +1,10 @@
-//! Data facade that coordinates cache, archive, and realtime sources.
+//! Data facade that coordinates cache and sweep-based storage.
 //!
 //! The facade provides a unified interface for accessing radar data,
 //! transparently handling caching and source selection.
-//!
-//! ## Access Policies
-//!
-//! - `PreferCache`: Use cache if available, fallback to network
-//! - `CacheThenNetwork`: Always check cache first, refresh from network if stale
-//! - `NetworkOnly`: Bypass cache, always fetch from network
-//! - `CacheOnly`: Only use cache, never fetch from network
-//!
-//! ## Data Flow
-//!
-//! Archive download:
-//! 1. Check cache for existing records
-//! 2. If missing and policy allows, download from AWS
-//! 3. Split downloaded file into records
-//! 4. Store records in cache with metadata
-//! 5. Return assembled volume data
-//!
-//! Realtime streaming:
-//! 1. Receive record from stream
-//! 2. Compute record key (scan_start + record_id)
-//! 3. Store record in cache
-//! 4. Notify subscribers of new data
 
 use crate::data::keys::*;
 use crate::data::record_cache::*;
-use ::nexrad::load;
-use ::nexrad::model::data::Scan;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -39,76 +15,15 @@ pub enum AccessPolicy {
     #[default]
     PreferCache,
     /// Always check cache first, refresh from network if stale.
+    #[allow(dead_code)]
     CacheThenNetwork,
     /// Bypass cache, always fetch from network.
+    #[allow(dead_code)]
     NetworkOnly,
     /// Only use cache, never fetch from network.
+    #[allow(dead_code)]
     CacheOnly,
 }
-
-/// Result of attempting to decode available records.
-#[derive(Debug)]
-pub enum DecodeStatus {
-    /// Successfully decoded a volume.
-    Success(Scan),
-    /// Not enough records to decode (have, estimated need).
-    Incomplete {
-        records_have: u32,
-        estimated_need: Option<u32>,
-    },
-    /// Decode failed with error.
-    Error(String),
-}
-
-/// Result of a data fetch operation.
-#[derive(Debug, Clone)]
-pub enum FetchResult {
-    /// Data retrieved from cache.
-    CacheHit {
-        scan: ScanKey,
-        data: Vec<u8>,
-        completeness: ScanCompleteness,
-    },
-    /// Data downloaded from network and cached.
-    Downloaded {
-        scan: ScanKey,
-        data: Vec<u8>,
-        records_stored: u32,
-    },
-    /// Partial data available (some records missing).
-    Partial {
-        scan: ScanKey,
-        data: Vec<u8>,
-        present_records: u32,
-        expected_records: Option<u32>,
-    },
-    /// Data not available.
-    NotFound { scan: ScanKey },
-    /// Error occurred.
-    Error(String),
-}
-
-/// Event emitted when new data is available.
-#[derive(Debug, Clone)]
-pub enum DataEvent {
-    /// New record stored in cache.
-    RecordStored {
-        key: RecordKey,
-        size_bytes: u32,
-        is_new_scan: bool,
-    },
-    /// Scan completeness changed.
-    ScanUpdated {
-        scan: ScanKey,
-        completeness: ScanCompleteness,
-        present_records: u32,
-    },
-    /// Timeline data changed (need to refresh UI).
-    TimelineChanged { site: SiteId },
-}
-
-/// Callback for data events.
-pub type EventCallback = Box<dyn Fn(DataEvent)>;
 
 /// Data facade that coordinates cache and network sources.
 #[derive(Clone)]
@@ -137,11 +52,13 @@ impl DataFacade {
     }
 
     /// Gets the current access policy.
+    #[allow(dead_code)]
     pub fn policy(&self) -> AccessPolicy {
         *self.policy.borrow()
     }
 
     /// Sets the access policy.
+    #[allow(dead_code)]
     pub fn set_policy(&self, policy: AccessPolicy) {
         *self.policy.borrow_mut() = policy;
     }
@@ -154,237 +71,6 @@ impl DataFacade {
     // ========================================================================
     // Scan operations
     // ========================================================================
-
-    /// Gets scan data, using cache and/or network based on policy.
-    ///
-    /// Returns the assembled volume data (all records concatenated).
-    pub async fn get_scan(&self, scan: &ScanKey) -> FetchResult {
-        let policy = self.policy();
-
-        // Check cache first (unless NetworkOnly)
-        if policy != AccessPolicy::NetworkOnly {
-            if let Ok(Some(entry)) = self.cache.scan_availability(scan).await {
-                if entry.completeness() == ScanCompleteness::Complete {
-                    // Fetch all records and assemble
-                    match self.assemble_scan_from_cache(scan).await {
-                        Ok(data) => {
-                            return FetchResult::CacheHit {
-                                scan: scan.clone(),
-                                data,
-                                completeness: entry.completeness(),
-                            };
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to assemble scan from cache: {}", e);
-                        }
-                    }
-                } else if policy == AccessPolicy::CacheOnly {
-                    // Return partial data from cache
-                    match self.assemble_scan_from_cache(scan).await {
-                        Ok(data) => {
-                            return FetchResult::Partial {
-                                scan: scan.clone(),
-                                data,
-                                present_records: entry.present_records,
-                                expected_records: entry.expected_records,
-                            };
-                        }
-                        Err(e) => {
-                            return FetchResult::Error(e);
-                        }
-                    }
-                }
-            } else if policy == AccessPolicy::CacheOnly {
-                return FetchResult::NotFound { scan: scan.clone() };
-            }
-        }
-
-        // If we get here and policy is CacheOnly, return not found
-        if policy == AccessPolicy::CacheOnly {
-            return FetchResult::NotFound { scan: scan.clone() };
-        }
-
-        // Network fetch would go here, but for now return not found
-        // The actual network fetch is handled by the download channel
-        FetchResult::NotFound { scan: scan.clone() }
-    }
-
-    /// Assembles a complete scan from cached records.
-    async fn assemble_scan_from_cache(&self, scan: &ScanKey) -> CacheResult<Vec<u8>> {
-        let record_keys = self.cache.list_records_for_scan(scan).await?;
-
-        let mut records = Vec::with_capacity(record_keys.len());
-        for key in record_keys {
-            if let Some(record) = self.cache.get_record(&key).await? {
-                records.push(record);
-            }
-        }
-
-        // Sort by record_id and reassemble
-        records.sort_by_key(|r| r.key.record_id);
-        Ok(reassemble_records(&records))
-    }
-
-    /// Attempts to decode all available records for a scan.
-    ///
-    /// This method fetches all cached records, reassembles them, and attempts
-    /// to decode the volume. It may succeed with partial data if enough sweeps
-    /// are present.
-    ///
-    /// Returns `Ok(volume)` on successful decode, or `Err(DecodeStatus)` if
-    /// incomplete or failed.
-    pub async fn decode_available_records(&self, scan: &ScanKey) -> Result<Scan, DecodeStatus> {
-        let t_total = web_time::Instant::now();
-
-        // List all available records for this scan
-        let record_keys = match self.cache.list_records_for_scan(scan).await {
-            Ok(keys) => keys,
-            Err(e) => return Err(DecodeStatus::Error(e)),
-        };
-
-        if record_keys.is_empty() {
-            return Err(DecodeStatus::Incomplete {
-                records_have: 0,
-                estimated_need: None,
-            });
-        }
-
-        // Fetch all record blobs
-        let t_fetch = web_time::Instant::now();
-        let mut records = Vec::with_capacity(record_keys.len());
-        for key in &record_keys {
-            match self.cache.get_record(key).await {
-                Ok(Some(blob)) => records.push(blob),
-                Ok(None) => {
-                    log::warn!("Record {} listed but not found", key);
-                }
-                Err(e) => {
-                    log::warn!("Failed to fetch record {}: {}", key, e);
-                }
-            }
-        }
-        let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
-
-        if records.is_empty() {
-            return Err(DecodeStatus::Incomplete {
-                records_have: 0,
-                estimated_need: None,
-            });
-        }
-
-        // Sort by record_id and reassemble
-        records.sort_by_key(|r| r.key.record_id);
-        let data = reassemble_records(&records);
-
-        // Attempt decode
-        let t_decode = web_time::Instant::now();
-        match load(&data) {
-            Ok(volume) => {
-                let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
-                let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-                log::info!(
-                    "decode_available_records: {} records, {} sweeps in {:.0}ms (fetch: {:.0}ms, decode: {:.0}ms)",
-                    records.len(),
-                    volume.sweeps().len(),
-                    total_ms,
-                    fetch_ms,
-                    decode_ms,
-                );
-                Ok(volume)
-            }
-            Err(e) => {
-                log::debug!(
-                    "decode_available_records: failed with {} records: {}",
-                    records.len(),
-                    e
-                );
-                Err(DecodeStatus::Incomplete {
-                    records_have: records.len() as u32,
-                    estimated_need: None,
-                })
-            }
-        }
-    }
-
-    /// Assembles raw record data for a scan without decoding.
-    ///
-    /// This fetches all cached records, reassembles them into a single byte
-    /// buffer, and returns the raw archive bytes. The caller is responsible
-    /// for calling `nexrad::load()` on the result (potentially in a Web Worker).
-    ///
-    /// Returns `Ok(data)` on success, or `Err(DecodeStatus)` if no records
-    /// are available.
-    pub async fn assemble_scan_data(&self, scan: &ScanKey) -> Result<Vec<u8>, DecodeStatus> {
-        let record_keys = match self.cache.list_records_for_scan(scan).await {
-            Ok(keys) => keys,
-            Err(e) => return Err(DecodeStatus::Error(e)),
-        };
-
-        if record_keys.is_empty() {
-            return Err(DecodeStatus::Incomplete {
-                records_have: 0,
-                estimated_need: None,
-            });
-        }
-
-        let mut records = Vec::with_capacity(record_keys.len());
-        for key in &record_keys {
-            match self.cache.get_record(key).await {
-                Ok(Some(blob)) => records.push(blob),
-                Ok(None) => {
-                    log::warn!("Record {} listed but not found", key);
-                }
-                Err(e) => {
-                    log::warn!("Failed to fetch record {}: {}", key, e);
-                }
-            }
-        }
-
-        if records.is_empty() {
-            return Err(DecodeStatus::Incomplete {
-                records_have: 0,
-                estimated_need: None,
-            });
-        }
-
-        records.sort_by_key(|r| r.key.record_id);
-        Ok(reassemble_records(&records))
-    }
-
-    // ========================================================================
-    // Record operations
-    // ========================================================================
-
-    /// Stores a record in the cache.
-    ///
-    /// This is called by the download channel after splitting an archive file,
-    /// or by the realtime channel for each incoming chunk.
-    pub async fn store_record(
-        &self,
-        record: &RecordBlob,
-        meta: RecordIndexEntry,
-    ) -> CacheResult<bool> {
-        self.cache.put_record(record, meta).await
-    }
-
-    /// Stores multiple records in a batch (more efficient for archive downloads).
-    pub async fn store_records_batch(
-        &self,
-        records: Vec<(RecordBlob, RecordIndexEntry)>,
-    ) -> CacheResult<u32> {
-        let mut stored = 0;
-        for (record, meta) in records {
-            if self.cache.put_record(&record, meta).await? {
-                stored += 1;
-            }
-        }
-        Ok(stored)
-    }
-
-    /// Gets a single record from cache.
-    pub async fn get_record(&self, key: &RecordKey) -> CacheResult<Option<RecordBlob>> {
-        self.cache.get_record(key).await
-    }
 
     /// Updates sweep metadata on a scan index entry after decode.
     pub async fn update_scan_sweep_meta(
@@ -422,20 +108,6 @@ impl DataFacade {
         self.cache.availability_ranges(site, start, end).await
     }
 
-    /// Queries records by time range.
-    pub async fn query_records_by_time(
-        &self,
-        site: &SiteId,
-        start: UnixMillis,
-        end: UnixMillis,
-        limit: u32,
-        include_bytes: bool,
-    ) -> CacheResult<Vec<(RecordKey, Option<RecordBlob>)>> {
-        self.cache
-            .query_records_by_time(site, start, end, limit, include_bytes)
-            .await
-    }
-
     // ========================================================================
     // Utility operations
     // ========================================================================
@@ -455,7 +127,7 @@ impl DataFacade {
         self.cache.get_lru_scans(limit).await
     }
 
-    /// Deletes a scan and all its records. Returns bytes freed.
+    /// Deletes a scan and all its sweeps. Returns bytes freed.
     pub async fn delete_scan(&self, scan: &ScanKey) -> CacheResult<u64> {
         self.cache.delete_scan(scan).await
     }
@@ -488,95 +160,4 @@ impl DataFacade {
             Ok((false, 0))
         }
     }
-}
-
-/// Helper to process an archive download and store records.
-///
-/// This function:
-/// 1. Splits the archive file into individual LDM records using nexrad-data
-/// 2. Stores each record (with LDM prefix, compressed) in the cache
-/// 3. Returns the scan key and number of records stored
-pub async fn process_archive_download(
-    facade: &DataFacade,
-    site_id: &str,
-    file_name: &str,
-    timestamp_secs: i64,
-    data: &[u8],
-) -> CacheResult<(ScanKey, u32)> {
-    let t_total = web_time::Instant::now();
-    let scan_start = UnixMillis::from_secs(timestamp_secs);
-    let scan_key = ScanKey::new(site_id, scan_start);
-
-    // Split into LDM records using nexrad-data's proper size-prefix parsing.
-    // Each record includes the 4-byte LDM prefix + bzip2 payload.
-    let t_split = web_time::Instant::now();
-    let file = nexrad_data::volume::File::new(data.to_vec());
-    let records = file
-        .records()
-        .map_err(|e| format!("Failed to split archive into records: {}", e))?;
-    let split_ms = t_split.elapsed().as_secs_f64() * 1000.0;
-
-    if records.is_empty() {
-        return Err("No records found in archive file".to_string());
-    }
-
-    // Store each record
-    let t_store = web_time::Instant::now();
-    let mut stored = 0;
-    for (record_id, record) in records.iter().enumerate() {
-        let record_id = record_id as u32;
-        let record_key = RecordKey::new(scan_key.clone(), record_id);
-        let record_data = record.data();
-        let blob = RecordBlob::new(record_key.clone(), record_data.to_vec());
-
-        // First record typically contains VCP metadata
-        let has_vcp = record_id == 0;
-
-        let meta = RecordIndexEntry::new(record_key, record_data.len() as u32).with_vcp(has_vcp);
-
-        if facade.store_record(&blob, meta).await? {
-            stored += 1;
-        }
-    }
-    let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
-
-    let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-    log::info!(
-        "process_archive_download: {} ({} records) in {:.0}ms (split: {:.0}ms, store: {:.0}ms)",
-        file_name,
-        stored,
-        total_ms,
-        split_ms,
-        store_ms,
-    );
-
-    Ok((scan_key, stored))
-}
-
-/// Helper to process a realtime chunk and store it.
-///
-/// This function:
-/// 1. Computes the record key from scan start and chunk sequence
-/// 2. Creates record metadata
-/// 3. Stores the record in the cache
-pub async fn process_realtime_chunk(
-    facade: &DataFacade,
-    site_id: &str,
-    scan_start_secs: i64,
-    chunk_seq: u32,
-    data: &[u8],
-    is_first_chunk: bool,
-) -> CacheResult<RecordKey> {
-    let scan_start = UnixMillis::from_secs(scan_start_secs);
-    let scan_key = ScanKey::new(site_id, scan_start);
-    let record_key = RecordKey::new(scan_key, chunk_seq);
-
-    let record = RecordBlob::new(record_key.clone(), data.to_vec());
-    let meta = RecordIndexEntry::new(record_key.clone(), data.len() as u32)
-        .with_vcp(is_first_chunk)
-        .with_time(UnixMillis::now());
-
-    facade.store_record(&record, meta).await?;
-
-    Ok(record_key)
 }
