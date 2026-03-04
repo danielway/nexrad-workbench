@@ -28,6 +28,19 @@ impl RadarProduct {
         }
     }
 
+    /// Unit string for display (e.g., "dBZ", "m/s").
+    pub fn unit(&self) -> &'static str {
+        match self {
+            RadarProduct::Reflectivity => "dBZ",
+            RadarProduct::Velocity => "m/s",
+            RadarProduct::SpectrumWidth => "m/s",
+            RadarProduct::DifferentialReflectivity => "dB",
+            RadarProduct::CorrelationCoefficient => "",
+            RadarProduct::DifferentialPhase => "\u{00B0}/km",
+            RadarProduct::ClutterFilterPower => "dB",
+        }
+    }
+
     /// Short code for URL parameters.
     pub fn short_code(&self) -> &'static str {
         match self {

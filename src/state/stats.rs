@@ -1,8 +1,90 @@
-//! Session and performance statistics for the top bar.
+//! Session and performance statistics for the status bar.
 
 use crate::nexrad::NetworkStats;
 
-/// Statistics displayed in the top bar.
+/// Active pipeline phase flags.
+///
+/// Each phase tracks both a live flag and a "last completed" timestamp (ms).
+/// The UI uses the timestamp to keep phases visually lit for a short period
+/// after they finish, so the user can see which phases ran even when they
+/// complete within a single frame.
+#[derive(Default, Clone)]
+pub struct PipelineStatus {
+    /// Number of active downloads.
+    pub downloading: u32,
+    /// Whether decoding is in progress.
+    pub decoding: bool,
+    /// Whether IDB store is in progress.
+    pub storing: bool,
+    /// Whether GPU rendering is in progress.
+    pub rendering: bool,
+
+    /// Timestamp (ms since epoch) when each phase last completed.
+    /// Used by the UI to keep indicators lit briefly after completion.
+    pub last_download_done_ms: f64,
+    pub last_store_done_ms: f64,
+    pub last_decode_done_ms: f64,
+    pub last_render_done_ms: f64,
+
+    /// Whether any pipeline activity has occurred this session.
+    pub ever_active: bool,
+}
+
+impl PipelineStatus {
+    /// How long (in ms) a phase stays "recently completed" in the UI.
+    const LINGER_MS: f64 = 1500.0;
+
+    /// Whether a phase is active or recently completed.
+    pub fn phase_visible(&self, active: bool, last_done_ms: f64) -> bool {
+        if active {
+            return true;
+        }
+        if last_done_ms <= 0.0 {
+            return false;
+        }
+        let now = js_sys::Date::now();
+        (now - last_done_ms) < Self::LINGER_MS
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.downloading > 0 || self.decoding || self.storing || self.rendering
+    }
+
+    /// Whether the indicator row should be shown at all.
+    pub fn should_show(&self) -> bool {
+        if self.is_active() {
+            return true;
+        }
+        // Show if any phase completed recently
+        let now = js_sys::Date::now();
+        (now - self.last_download_done_ms) < Self::LINGER_MS
+            || (now - self.last_store_done_ms) < Self::LINGER_MS
+            || (now - self.last_decode_done_ms) < Self::LINGER_MS
+            || (now - self.last_render_done_ms) < Self::LINGER_MS
+    }
+
+    /// Mark a download as completed (timestamp the finish).
+    pub fn mark_download_done(&mut self) {
+        self.last_download_done_ms = js_sys::Date::now();
+        self.ever_active = true;
+    }
+
+    /// Mark store phase as completed.
+    pub fn mark_store_done(&mut self) {
+        self.storing = false;
+        self.last_store_done_ms = js_sys::Date::now();
+        self.ever_active = true;
+    }
+
+    /// Mark decode phase as completed.
+    pub fn mark_decode_done(&mut self) {
+        self.decoding = false;
+        self.last_decode_done_ms = js_sys::Date::now();
+        self.ever_active = true;
+    }
+}
+
+/// Statistics displayed in the status bar.
 #[derive(Default, Clone)]
 pub struct SessionStats {
     /// Total persisted cache size in bytes (IndexedDB).
@@ -27,12 +109,13 @@ pub struct SessionStats {
     pub median_decode_time_ms: Option<f64>,
 
     /// Running average of radar render time in milliseconds.
-    /// Uses exponential moving average for smooth updates.
     pub avg_render_time_ms: Option<f64>,
 
     /// Running average of frames per second.
-    /// Uses exponential moving average for smooth updates.
     pub avg_fps: Option<f64>,
+
+    /// Current pipeline phase status.
+    pub pipeline: PipelineStatus,
 }
 
 impl SessionStats {
@@ -54,6 +137,7 @@ impl SessionStats {
             median_decode_time_ms: Some(23.7),
             avg_render_time_ms: Some(45.0),
             avg_fps: Some(60.0),
+            pipeline: PipelineStatus::default(),
         }
     }
 
@@ -62,6 +146,7 @@ impl SessionStats {
         self.session_request_count = network_stats.total_count();
         self.session_transferred_bytes = network_stats.bytes_transferred();
         self.active_request_count = network_stats.active_count();
+        self.pipeline.downloading = self.active_request_count;
     }
 
     /// Record a frame time sample from `stable_dt`, updating the FPS average.

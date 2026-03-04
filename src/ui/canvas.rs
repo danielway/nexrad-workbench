@@ -97,6 +97,7 @@ pub fn render_canvas_with_geo(
                     state.viz_state.center_lat,
                     state.viz_state.center_lon,
                     gpu_renderer,
+                    &state.viz_state.product,
                 );
             }
         }
@@ -315,15 +316,19 @@ fn handle_canvas_interaction(
 /// pans and zooms together.
 /// Compute the sweep line azimuth for the current playback position.
 ///
-/// Returns `Some(azimuth_degrees)` when playing at slow speeds (< 1 min/s)
+/// Returns `Some(azimuth_degrees)` when playing at slow speeds (<= 30s/s)
 /// and the playback position falls within a sweep.
+///
+/// The animation uses linear interpolation: azimuth = (sweep_progress * 360).
+/// Different sweeps have different durations (higher elevations are often faster),
+/// so the rotation speed naturally varies between sweeps. This accurately reflects
+/// how the radar instrument operates — the antenna changes rotation speed at
+/// different elevation cuts. If per-radial azimuth data is available, we use it
+/// for more accurate positioning.
 fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
-    // Only show sweep line at 30s/s or slower (real-time or 30s/s)
     if state.playback_state.speed.timeline_seconds_per_real_second() > 30.0 {
         return None;
     }
-    // Show sweep line when playing, or when paused at a low-enough speed
-    // (paused state freezes the line at the current azimuth)
 
     let ts = state.playback_state.playback_position();
     let scan = state.radar_timeline.find_scan_at_timestamp(ts)?;
@@ -334,6 +339,42 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
         return None;
     }
 
+    // If per-radial azimuth data is available, interpolate from actual azimuths
+    if !sweep.radials.is_empty() {
+        // Find the radial at or just before this timestamp
+        let mut last_az = 0.0f32;
+        let mut last_time = sweep.start_time;
+        let mut next_az = 360.0f32;
+        let mut next_time = sweep.end_time;
+
+        for radial in &sweep.radials {
+            if radial.start_time <= ts {
+                last_az = radial.azimuth;
+                last_time = radial.start_time;
+            } else {
+                next_az = radial.azimuth;
+                next_time = radial.start_time;
+                break;
+            }
+        }
+
+        // Handle wrap-around (e.g., from 359 to 1)
+        let mut delta_az = next_az - last_az;
+        if delta_az < -180.0 {
+            delta_az += 360.0;
+        } else if delta_az > 180.0 {
+            delta_az -= 360.0;
+        }
+
+        let dt = next_time - last_time;
+        if dt > 0.0 {
+            let frac = (ts - last_time) / dt;
+            return Some(((last_az + delta_az * frac as f32) % 360.0 + 360.0) % 360.0);
+        }
+        return Some(last_az);
+    }
+
+    // Fallback: linear interpolation assuming uniform rotation
     let progress = (ts - sweep.start_time) / duration;
     Some(((progress * 360.0) as f32) % 360.0)
 }
@@ -526,6 +567,7 @@ fn render_inspector(
     radar_lat: f64,
     radar_lon: f64,
     gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
+    product: &crate::state::RadarProduct,
 ) {
     let geo = projection.screen_to_geo(hover_pos);
     let lat = geo.y;
@@ -549,7 +591,12 @@ fn render_inspector(
         format!("Az: {:.1}\u{00B0}  Rng: {:.1} km", azimuth_deg, range_km),
     ];
     if let Some(v) = value {
-        lines.push(format!("Value: {:.1}", v));
+        let unit = product.unit();
+        if unit.is_empty() {
+            lines.push(format!("{}: {:.3}", product.short_code(), v));
+        } else {
+            lines.push(format!("{}: {:.1} {}", product.short_code(), v, unit));
+        }
     }
     let text = lines.join("\n");
 

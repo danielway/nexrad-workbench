@@ -49,6 +49,10 @@ pub struct AppState {
     /// Application status message displayed in top bar
     pub status_message: String,
 
+    /// Timestamp (ms since epoch) when the status message was last set.
+    /// Used for auto-dismissal.
+    pub status_message_set_ms: f64,
+
     /// Session and performance statistics
     pub session_stats: SessionStats,
 
@@ -148,6 +152,12 @@ pub struct AppState {
 
     /// Elevation number of the currently displayed sweep (mirrored from WorkbenchApp for UI access).
     pub displayed_sweep_elevation_number: Option<u8>,
+
+    /// Whether to display times in local timezone (false = UTC).
+    pub use_local_time: bool,
+
+    /// Whether the stats detail popup is open.
+    pub stats_detail_open: bool,
 }
 
 /// Lightweight storm cell info for rendering on the canvas.
@@ -256,5 +266,12 @@ impl AppState {
         prefs.apply_to(&mut state);
 
         state
+    }
+
+    /// Set the status message and record the timestamp for auto-dismissal.
+    #[allow(dead_code)]
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_message = msg.into();
+        self.status_message_set_ms = js_sys::Date::now();
     }
 }

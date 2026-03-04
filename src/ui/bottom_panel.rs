@@ -34,6 +34,7 @@ fn render_radar_data(
     zoom: f64,
     detail_level: DetailLevel,
     active_sweep: Option<(i64, u8)>,
+    target_elevation: f32,
 ) {
     // Helper to convert timestamp to x position
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
@@ -41,27 +42,27 @@ fn render_radar_data(
     // Color function based on VCP number with completeness as opacity modifier.
     // Different VCPs get distinct hues; incomplete scans get reduced opacity.
     let vcp_to_color = |vcp: u16, completeness: Option<ScanCompleteness>| -> (Color32, Color32) {
-        // Base color by VCP category
+        // Base color by VCP category — muted tones to avoid overwhelming at zoom
         let (r, g, b) = match vcp {
-            // Precipitation modes (VCP 21x) — green family
-            215 => (50, 140, 80),
-            212 => (60, 130, 90),
-            // Clear air modes (VCP 3x) — blue family
-            31 | 32 | 35 => (50, 100, 160),
-            // Severe weather modes — orange/red family
-            12 | 121 => (180, 100, 50),
-            // Other known VCPs — teal
-            _ if vcp > 0 => (60, 120, 120),
+            // Precipitation modes (VCP 21x) — muted green
+            215 => (40, 90, 55),
+            212 => (45, 85, 60),
+            // Clear air modes (VCP 3x) — muted blue
+            31 | 32 | 35 => (40, 70, 110),
+            // Severe weather modes — muted orange
+            12 | 121 => (130, 75, 40),
+            // Other known VCPs — muted teal
+            _ if vcp > 0 => (45, 80, 80),
             // Unknown (vcp == 0) — gray
-            _ => (80, 80, 80),
+            _ => (60, 60, 60),
         };
 
         // Opacity based on completeness
         let alpha = match completeness {
-            Some(ScanCompleteness::Complete) | None => 255u8,
-            Some(ScanCompleteness::PartialWithVcp) => 200,
-            Some(ScanCompleteness::PartialNoVcp) => 150,
-            Some(ScanCompleteness::Missing) => 80,
+            Some(ScanCompleteness::Complete) | None => 200u8,
+            Some(ScanCompleteness::PartialWithVcp) => 160,
+            Some(ScanCompleteness::PartialNoVcp) => 120,
+            Some(ScanCompleteness::Missing) => 60,
         };
 
         let fill = Color32::from_rgba_unmultiplied(r, g, b, alpha);
@@ -76,14 +77,13 @@ fn render_radar_data(
     };
 
     // Color function based on elevation angle (0-20 degrees typical range)
-    // Lower elevations are darker/more blue, higher elevations are lighter/more cyan
+    // Muted palette: lower elevations are darker, higher are slightly brighter
     let elevation_to_color = |elevation: f32| -> Color32 {
-        // Normalize elevation to 0-1 range (clamp to 0-20 degrees)
         let t = (elevation / 20.0).clamp(0.0, 1.0);
-        // Interpolate from dark blue-green to bright cyan-green
-        let r = (40.0 + t * 40.0) as u8; // 40-80
-        let g = (80.0 + t * 80.0) as u8; // 80-160
-        let b = (60.0 + t * 60.0) as u8; // 60-120
+        // Muted blue-gray to slate-blue range
+        let r = (35.0 + t * 30.0) as u8; // 35-65
+        let g = (55.0 + t * 50.0) as u8; // 55-105
+        let b = (50.0 + t * 45.0) as u8; // 50-95
         Color32::from_rgb(r, g, b)
     };
 
@@ -109,7 +109,7 @@ fn render_radar_data(
                             Pos2::new(x_end, rect.bottom() - 2.0),
                         ),
                         2.0,
-                        Color32::from_rgba_unmultiplied(60, 120, 80, 180),
+                        Color32::from_rgba_unmultiplied(45, 80, 60, 140),
                     );
                 }
             }
@@ -161,13 +161,35 @@ fn render_radar_data(
 
                     // Draw individual sweep blocks inside the scan (if loaded)
                     if !scan.sweeps.is_empty() {
+                        // Look up VCP elevation info for product annotations
+                        let vcp_elevations = scan.vcp_pattern.as_ref().map(|v| &v.elevations);
+
                         for sweep in scan.sweeps.iter() {
                             let x_start = ts_to_x(sweep.start_time).max(rect.left());
                             let x_end = ts_to_x(sweep.end_time).min(rect.right());
 
                             if x_end > x_start && (x_end - x_start) > 0.5 {
-                                // Color based on elevation for visual distinction
-                                let color = elevation_to_color(sweep.elevation);
+                                // Determine if this sweep matches the user's target elevation
+                                let matches_elevation = (sweep.elevation - target_elevation).abs() < 0.3;
+
+                                // Color: matching sweeps are brighter, non-matching are dimmed
+                                let base = elevation_to_color(sweep.elevation);
+                                let color = if matches_elevation {
+                                    // Brighten matching sweeps
+                                    Color32::from_rgb(
+                                        (base.r() as u16 + 30).min(255) as u8,
+                                        (base.g() as u16 + 40).min(255) as u8,
+                                        (base.b() as u16 + 30).min(255) as u8,
+                                    )
+                                } else {
+                                    // Dim non-matching sweeps
+                                    Color32::from_rgba_unmultiplied(
+                                        base.r(),
+                                        base.g(),
+                                        base.b(),
+                                        120,
+                                    )
+                                };
 
                                 // Sweeps are narrower (more inset) than the scan block
                                 let sweep_rect = Rect::from_min_max(
@@ -177,17 +199,17 @@ fn render_radar_data(
 
                                 painter.rect_filled(sweep_rect, 1.0, color);
 
-                                // Draw border between sweeps if there's enough space
+                                // Subtle border between sweeps
                                 if (x_end - x_start) > 3.0 {
                                     painter.rect_stroke(
                                         sweep_rect,
                                         1.0,
-                                        Stroke::new(0.5, Color32::from_rgb(40, 80, 55)),
+                                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(30, 50, 40, 100)),
                                         StrokeKind::Inside,
                                     );
                                 }
 
-                                // Feature 2: Highlight the actively rendered sweep
+                                // Highlight the actively rendered sweep
                                 let is_active = active_sweep.map_or(false, |(scan_ts, elev_num)| {
                                     scan.start_time as i64 == scan_ts
                                         && sweep.elevation_number == elev_num
@@ -201,17 +223,36 @@ fn render_radar_data(
                                     );
                                 }
 
-                                // Feature 3: Elevation labels on wide sweep blocks
+                                // Elevation + product labels on wide sweep blocks
                                 let sweep_width = x_end - x_start;
                                 if sweep_width > 25.0 {
-                                    let label = if sweep_width > 60.0 {
-                                        format!(
-                                            "E{} {:.1}\u{00B0}",
-                                            sweep.elevation_number, sweep.elevation
-                                        )
+                                    // Build label with product info from VCP
+                                    let mut label = if sweep_width > 60.0 {
+                                        format!("E{} {:.1}\u{00B0}", sweep.elevation_number, sweep.elevation)
                                     } else {
                                         format!("{:.1}", sweep.elevation)
                                     };
+
+                                    // Append product codes if VCP info is available and wide enough
+                                    if sweep_width > 80.0 {
+                                        if let Some(elevs) = vcp_elevations {
+                                            // Match VCP elevation entry by number
+                                            if let Some(vcp_elev) = elevs.get(sweep.elevation_number.saturating_sub(1) as usize) {
+                                                let wf = &vcp_elev.waveform;
+                                                let products = match wf.as_str() {
+                                                    "CS" | "ContiguousSurveillance" => "R",
+                                                    "CDW" | "CDWO" | "ContiguousDopplerWithGating" | "ContiguousDopplerWithoutGating" => "V",
+                                                    "B" | "Batch" => "R/V",
+                                                    "SPP" | "StaggeredPulsePair" => "R/V/D",
+                                                    _ => "",
+                                                };
+                                                if !products.is_empty() {
+                                                    label.push_str(&format!(" {}", products));
+                                                }
+                                            }
+                                        }
+                                    }
+
                                     painter.text(
                                         sweep_rect.center(),
                                         egui::Align2::CENTER_CENTER,
@@ -265,12 +306,8 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
         state.playback_state.advance(dt as f64);
 
         // Pin playback position at ~quarter of the visible timeline during playback.
-        // Compute approximate visible width (use a reasonable estimate since
-        // we don't have the exact widget width here; will be refined in render_timeline).
-        let zoom = state.playback_state.timeline_zoom;
-        if zoom > 0.0 {
-            let approx_width = 1000.0; // reasonable approximate timeline width in pixels
-            let view_width_secs = approx_width / zoom;
+        let view_width_secs = state.playback_state.view_width_secs();
+        if view_width_secs > 0.0 {
             let target_offset = view_width_secs * 0.25; // pin at 25% from left
             let pos = state.playback_state.playback_position();
             state.playback_state.timeline_view_start = pos - target_offset;
@@ -281,7 +318,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     }
 
     egui::TopBottomPanel::bottom("bottom_panel")
-        .exact_height(82.0)
+        .exact_height(96.0)
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 // Mode and acquisition status bar
@@ -301,19 +338,6 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
                             .size(10.0)
                             .strong()
                             .color(mode_color),
-                    );
-
-                    // Show current product and elevation compactly
-                    ui.separator();
-                    ui.label(
-                        RichText::new(state.viz_state.product.label())
-                            .size(10.0)
-                            .color(ui_colors::value(state.is_dark)),
-                    );
-                    ui.label(
-                        RichText::new(format!("{:.1}\u{00B0}", state.viz_state.target_elevation))
-                            .size(10.0)
-                            .color(ui_colors::value(state.is_dark)),
                     );
 
                     // Show data staleness if available
@@ -349,6 +373,9 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
                 });
             });
         });
+
+    // Stats detail popup (rendered as an overlay outside the panel)
+    render_stats_detail_popup(ctx, state);
 }
 
 /// Time intervals for tick marks, from coarsest to finest
@@ -457,41 +484,95 @@ fn select_tick_config(zoom: f64) -> &'static TickConfig {
     &TICK_CONFIGS[0]
 }
 
-fn format_timestamp(timestamp: i64, tick_config: &TickConfig) -> String {
-    let dt = Utc.timestamp_opt(timestamp, 0).unwrap();
+/// Date/time components extracted from a Unix timestamp.
+struct DateTimeComponents {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+}
+
+impl DateTimeComponents {
+    fn from_timestamp(timestamp: i64, use_local: bool) -> Self {
+        if use_local {
+            let d = js_sys::Date::new_0();
+            d.set_time((timestamp as f64) * 1000.0);
+            Self {
+                year: d.get_full_year() as i32,
+                month: d.get_month() + 1, // JS months are 0-based
+                day: d.get_date(),
+                hour: d.get_hours(),
+                minute: d.get_minutes(),
+                second: d.get_seconds(),
+            }
+        } else {
+            let dt = Utc.timestamp_opt(timestamp, 0).unwrap();
+            Self {
+                year: dt.year(),
+                month: dt.month(),
+                day: dt.day(),
+                hour: dt.hour(),
+                minute: dt.minute(),
+                second: dt.second(),
+            }
+        }
+    }
+
+    fn month_abbrev(&self) -> &'static str {
+        match self.month {
+            1 => "Jan", 2 => "Feb", 3 => "Mar", 4 => "Apr",
+            5 => "May", 6 => "Jun", 7 => "Jul", 8 => "Aug",
+            9 => "Sep", 10 => "Oct", 11 => "Nov", 12 => "Dec",
+            _ => "???",
+        }
+    }
+}
+
+fn format_timestamp(timestamp: i64, tick_config: &TickConfig, use_local: bool) -> String {
+    let dt = DateTimeComponents::from_timestamp(timestamp, use_local);
     let interval = tick_config.major_interval;
 
     if interval >= 30 * 24 * 3600 {
-        // Months or longer: show "Jan 2024" or "2024"
         if interval >= 365 * 24 * 3600 {
-            format!("{}", dt.year())
+            format!("{}", dt.year)
         } else {
-            format!("{}", dt.format("%b %Y"))
+            format!("{} {}", dt.month_abbrev(), dt.year)
         }
     } else if interval >= 24 * 3600 {
-        // Days to weeks: show "May 15" or "Mon 15"
-        format!("{}", dt.format("%b %d"))
-    } else if interval >= 3600 {
-        // Hours: show "14:00"
-        format!("{:02}:{:02}", dt.hour(), dt.minute())
+        format!("{} {:02}", dt.month_abbrev(), dt.day)
     } else if interval >= 60 {
-        // Minutes: show "14:30"
-        format!("{:02}:{:02}", dt.hour(), dt.minute())
+        format!("{:02}:{:02}", dt.hour, dt.minute)
     } else {
-        // Seconds: show "14:30:45"
-        format!("{:02}:{:02}:{:02}", dt.hour(), dt.minute(), dt.second())
+        format!("{:02}:{:02}:{:02}", dt.hour, dt.minute, dt.second)
     }
 }
 
 fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
+    let use_local = state.use_local_time;
     let available_width = ui.available_width() as f64;
-    let timeline_height = 28.0;
+    // Store actual pixel width so centering calculations outside this
+    // function use the real value instead of the 1000px approximation.
+    state.playback_state.timeline_width_px = available_width;
+    let vcp_track_height = 6.0;
+    let timeline_height = 36.0 + vcp_track_height;
 
     let (response, painter) = ui.allocate_painter(
         Vec2::new(available_width as f32, timeline_height),
         Sense::click_and_drag(),
     );
-    let rect = response.rect;
+    let full_rect = response.rect;
+
+    // Split into main timeline and VCP track
+    let rect = Rect::from_min_max(
+        full_rect.min,
+        Pos2::new(full_rect.max.x, full_rect.max.y - vcp_track_height),
+    );
+    let vcp_rect = Rect::from_min_max(
+        Pos2::new(full_rect.min.x, full_rect.max.y - vcp_track_height),
+        full_rect.max,
+    );
 
     let dark = state.is_dark;
 
@@ -551,7 +632,62 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         zoom,
         detail_level,
         active_sweep,
+        state.viz_state.target_elevation,
     );
+
+    // VCP info track — thin colored bar showing VCP mode transitions
+    {
+        let vcp_color = |vcp: u16| -> Color32 {
+            match vcp {
+                215 => Color32::from_rgb(50, 120, 70),   // Precipitation — green
+                212 => Color32::from_rgb(55, 110, 75),   // Precipitation fast — green
+                31 | 32 | 35 => Color32::from_rgb(50, 85, 140), // Clear air — blue
+                12 | 121 => Color32::from_rgb(160, 85, 45),     // Severe — orange
+                _ if vcp > 0 => Color32::from_rgb(55, 90, 90),  // Other — teal
+                _ => Color32::from_rgb(50, 50, 50),              // Unknown — gray
+            }
+        };
+
+        // Background for VCP track
+        painter.rect_filled(
+            vcp_rect,
+            0.0,
+            Color32::from_rgb(22, 22, 30),
+        );
+
+        for scan in state.radar_timeline.scans_in_range(view_start, view_end) {
+            let x_start = ts_to_x(scan.start_time).max(vcp_rect.left());
+            let x_end = ts_to_x(scan.end_time).min(vcp_rect.right());
+
+            if x_end > x_start {
+                let bar_rect = Rect::from_min_max(
+                    Pos2::new(x_start, vcp_rect.top() + 1.0),
+                    Pos2::new(x_end, vcp_rect.bottom() - 1.0),
+                );
+                painter.rect_filled(bar_rect, 0.0, vcp_color(scan.vcp));
+            }
+        }
+
+        // VCP label at scan zoom when there's space
+        if detail_level != DetailLevel::Solid {
+            let mut last_vcp = 0u16;
+            for scan in state.radar_timeline.scans_in_range(view_start, view_end) {
+                if scan.vcp != last_vcp && scan.vcp > 0 {
+                    last_vcp = scan.vcp;
+                    let x = ts_to_x(scan.start_time);
+                    if x >= vcp_rect.left() && x <= vcp_rect.right() - 30.0 {
+                        painter.text(
+                            Pos2::new(x + 2.0, vcp_rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            format!("{}", scan.vcp),
+                            egui::FontId::monospace(7.0),
+                            Color32::from_rgba_unmultiplied(220, 220, 240, 180),
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     // Select appropriate tick configuration
     let tick_config = select_tick_config(zoom);
@@ -586,7 +722,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
             // Draw label for major ticks
             if is_major {
-                let label = format_timestamp(tick, tick_config);
+                let label = format_timestamp(tick, tick_config, use_local);
                 painter.text(
                     Pos2::new(x, rect.top() + 10.0),
                     egui::Align2::CENTER_CENTER,
@@ -671,6 +807,108 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
                 marker_color,
                 Stroke::NONE,
             ));
+        }
+    }
+
+    // Draw "now" marker (current wall-clock time)
+    {
+        let now_ts = current_timestamp_secs();
+        let now_x = ts_to_x(now_ts);
+
+        if now_x >= rect.left() && now_x <= rect.right() {
+            let now_color = tl_colors::NOW_MARKER;
+
+            // Dashed-style: short line at top and bottom
+            painter.line_segment(
+                [
+                    Pos2::new(now_x, rect.top()),
+                    Pos2::new(now_x, rect.top() + 4.0),
+                ],
+                Stroke::new(1.5, now_color),
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(now_x, rect.bottom() - 4.0),
+                    Pos2::new(now_x, rect.bottom()),
+                ],
+                Stroke::new(1.5, now_color),
+            );
+            // Thin line through middle
+            painter.line_segment(
+                [
+                    Pos2::new(now_x, rect.top() + 4.0),
+                    Pos2::new(now_x, rect.bottom() - 4.0),
+                ],
+                Stroke::new(0.5, Color32::from_rgba_unmultiplied(
+                    now_color.r(), now_color.g(), now_color.b(), 100,
+                )),
+            );
+            // Small diamond at bottom
+            let d = 3.0;
+            let diamond = vec![
+                Pos2::new(now_x, rect.bottom() - d),
+                Pos2::new(now_x + d, rect.bottom()),
+                Pos2::new(now_x, rect.bottom() + d),
+                Pos2::new(now_x - d, rect.bottom()),
+            ];
+            painter.add(egui::Shape::convex_polygon(
+                diamond,
+                now_color,
+                Stroke::NONE,
+            ));
+        }
+    }
+
+    // Draw selection range labels (boundaries and duration)
+    if let Some((range_start, range_end)) = state.playback_state.selection_range() {
+        let start_x = ts_to_x(range_start);
+        let end_x = ts_to_x(range_end);
+
+        if end_x >= rect.left() && start_x <= rect.right() {
+            let label_color = tl_colors::SELECTION_LABEL;
+            let duration_secs = range_end - range_start;
+            let duration_text = if duration_secs < 60.0 {
+                format!("{:.0}s", duration_secs)
+            } else if duration_secs < 3600.0 {
+                format!("{:.1}m", duration_secs / 60.0)
+            } else {
+                format!("{:.1}h", duration_secs / 3600.0)
+            };
+
+            // Duration label centered in the selection
+            let center_x = ((start_x + end_x) / 2.0).clamp(rect.left() + 20.0, rect.right() - 20.0);
+            painter.text(
+                Pos2::new(center_x, rect.top() + 3.0),
+                egui::Align2::CENTER_TOP,
+                &duration_text,
+                egui::FontId::monospace(8.0),
+                label_color,
+            );
+
+            // Boundary timestamps at sufficient zoom
+            let tick_config = select_tick_config(zoom);
+            if (end_x - start_x) > 100.0 {
+                let start_label = format_timestamp(range_start as i64, tick_config, use_local);
+                let end_label = format_timestamp(range_end as i64, tick_config, use_local);
+                if start_x >= rect.left() && start_x <= rect.right() {
+                    painter.text(
+                        Pos2::new(start_x + 2.0, rect.bottom() - 2.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        &start_label,
+                        egui::FontId::monospace(7.0),
+                        label_color,
+                    );
+                }
+                if end_x >= rect.left() && end_x <= rect.right() {
+                    painter.text(
+                        Pos2::new(end_x - 2.0, rect.bottom() - 2.0),
+                        egui::Align2::RIGHT_BOTTOM,
+                        &end_label,
+                        egui::FontId::monospace(7.0),
+                        label_color,
+                    );
+                }
+            }
         }
     }
 
@@ -781,11 +1019,14 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 /// Format a timestamp (f64 unix seconds) for display with sub-second precision
-fn format_timestamp_full(ts: f64) -> String {
+fn format_timestamp_full(ts: f64, use_local: bool) -> String {
     let secs = ts.floor() as i64;
     let millis = ((ts.fract()) * 1000.0).round() as u32;
-    let dt = Utc.timestamp_opt(secs, 0).unwrap();
-    format!("{}.{:03}", dt.format("%Y-%m-%d %H:%M:%S"), millis)
+    let dt = DateTimeComponents::from_timestamp(secs, use_local);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, millis
+    )
 }
 
 /// Render the datetime picker popup for jumping to a specific time.
@@ -878,8 +1119,7 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
 
                                     // Left-align timeline view on new position
                                     // Place the jumped-to position at ~5% from the left edge
-                                    let view_width_secs = ui.available_width() as f64
-                                        / state.playback_state.timeline_zoom;
+                                    let view_width_secs = state.playback_state.view_width_secs();
                                     state.playback_state.timeline_view_start =
                                         ts - view_width_secs * 0.05;
 
@@ -907,12 +1147,15 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
+    let use_local = state.use_local_time;
+
     // Current position timestamp display (clickable to open datetime picker)
     {
         let selected_ts = state.playback_state.playback_position();
+        let tz_suffix = if use_local { "" } else { " Z" };
         let timestamp_btn = ui.add(
             egui::Button::new(
-                RichText::new(format_timestamp_full(selected_ts))
+                RichText::new(format!("{}{}", format_timestamp_full(selected_ts, use_local), tz_suffix))
                     .monospace()
                     .size(13.0)
                     .color(tl_colors::SELECTION),
@@ -1094,6 +1337,20 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
 
+    ui.separator();
+
+    // UTC/Local toggle
+    {
+        let label = if state.use_local_time { "Local" } else { "UTC" };
+        if ui
+            .button(RichText::new(label).size(10.0).monospace())
+            .on_hover_text("Toggle between UTC and local time")
+            .clicked()
+        {
+            state.use_local_time = !state.use_local_time;
+        }
+    }
+
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         render_session_stats(ui, state);
@@ -1173,81 +1430,268 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
 }
 
 /// Render session statistics (right-aligned in the bottom bar).
+///
+/// Layout (right-to-left): FPS | pipeline | latency summary | download | cache
 fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     let stats = &state.session_stats;
+    let dark = state.is_dark;
 
     // FPS (rightmost)
     if let Some(fps) = stats.avg_fps {
         ui.label(
             RichText::new(format!("{:.0} fps", fps))
                 .size(11.0)
-                .color(ui_colors::value(state.is_dark)),
+                .color(ui_colors::value(dark)),
         );
         ui.separator();
     }
 
-    // Latency stats
-    ui.label(
-        RichText::new(stats.format_latency_stats())
-            .size(11.0)
-            .color(ui_colors::value(state.is_dark)),
-    );
-    ui.label(
-        RichText::new("median:")
-            .size(11.0)
-            .color(ui_colors::label(state.is_dark)),
-    );
+    // Pipeline status — phase boxes with active highlighting
+    render_pipeline_indicator(ui, stats, dark);
 
-    ui.separator();
+    // Compact latency summary (clickable to open detail)
+    let has_any_timing = stats.median_chunk_latency_ms.is_some()
+        || stats.median_store_time_ms.is_some()
+        || stats.median_decode_time_ms.is_some()
+        || stats.avg_render_time_ms.is_some();
 
-    // Cache size with clear button
+    if has_any_timing {
+        // Show a compact summary; click to expand
+        let summary = stats.format_latency_stats();
+        let btn = ui.add(
+            egui::Button::new(
+                RichText::new(&summary)
+                    .size(10.0)
+                    .color(ui_colors::value(dark)),
+            )
+            .frame(false),
+        );
+        if btn.clicked() {
+            state.stats_detail_open = !state.stats_detail_open;
+        }
+        btn.on_hover_text("Click for detailed timing breakdown");
+        ui.separator();
+    }
+
+    // Download group: requests + transferred
+    if stats.active_request_count > 0 {
+        ui.label(
+            RichText::new(format!("({} active)", stats.active_request_count))
+                .size(10.0)
+                .italics()
+                .color(ui_colors::ACTIVE),
+        );
+    }
+    if stats.session_request_count > 0 {
+        ui.label(
+            RichText::new(format!("{} req / {}", stats.session_request_count, stats.format_transferred()))
+                .size(10.0)
+                .color(ui_colors::value(dark)),
+        );
+        ui.separator();
+    }
+
+    // Cache group: size with clear button
     if ui.small_button("x").on_hover_text("Clear cache").clicked() {
         state.clear_cache_requested = true;
     }
     ui.label(
         RichText::new(stats.format_cache_size())
-            .size(11.0)
-            .color(ui_colors::value(state.is_dark)),
+            .size(10.0)
+            .color(ui_colors::value(dark)),
     );
-    ui.label(
-        RichText::new("cache:")
-            .size(11.0)
-            .color(ui_colors::label(state.is_dark)),
-    );
+}
 
+/// Render pipeline phase indicator boxes.
+///
+/// Shows a row of small phase labels (DL, STORE, DEC, GPU). Active or
+/// recently-completed phases are highlighted; idle ones are dimmed.
+/// The indicator stays visible for 1.5 s after the last phase completes
+/// so the user can see which stages ran.
+fn render_pipeline_indicator(
+    ui: &mut egui::Ui,
+    stats: &crate::state::SessionStats,
+    dark: bool,
+) {
+    let pipeline = &stats.pipeline;
+
+    // Each entry: (label, is_lit)
+    // "lit" means actively running OR recently completed (within linger window)
+    let dl_lit = pipeline.phase_visible(pipeline.downloading > 0, pipeline.last_download_done_ms);
+    let store_lit = pipeline.phase_visible(pipeline.storing, pipeline.last_store_done_ms);
+    let dec_lit = pipeline.phase_visible(pipeline.decoding, pipeline.last_decode_done_ms);
+    let gpu_lit = pipeline.phase_visible(pipeline.rendering, pipeline.last_render_done_ms);
+
+    let dl_label = if pipeline.downloading > 1 { "DL+" } else { "DL" };
+
+    let phases: &[(&str, bool)] = &[
+        (dl_label, dl_lit),
+        ("STORE", store_lit),
+        ("DEC", dec_lit),
+        ("GPU", gpu_lit),
+    ];
+
+    // Use a fixed-width left-to-right sub-layout so phases read correctly
+    // and don't consume all remaining horizontal space in the parent R-to-L layout.
+    let indicator_width = 150.0;
+    ui.allocate_ui_with_layout(
+        Vec2::new(indicator_width, ui.available_height()),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            for (i, (label, lit)) in phases.iter().enumerate() {
+                if i > 0 {
+                    ui.label(
+                        RichText::new("\u{203A}")
+                            .size(9.0)
+                            .color(Color32::from_rgb(70, 70, 80)),
+                    );
+                }
+                let color = if *lit {
+                    ui_colors::ACTIVE
+                } else if dark {
+                    Color32::from_rgb(55, 55, 65)
+                } else {
+                    Color32::from_rgb(180, 180, 190)
+                };
+                ui.label(RichText::new(*label).size(9.0).monospace().color(color));
+            }
+        },
+    );
     ui.separator();
 
-    // Transferred data
-    ui.label(
-        RichText::new(stats.format_transferred())
-            .size(11.0)
-            .color(ui_colors::value(state.is_dark)),
-    );
-    ui.label(
-        RichText::new("transferred:")
-            .size(11.0)
-            .color(ui_colors::label(state.is_dark)),
-    );
-
-    ui.separator();
-
-    // Request count with active indicator
-    if stats.active_request_count > 0 {
-        ui.label(
-            RichText::new(format!("({} active)", stats.active_request_count))
-                .size(11.0)
-                .italics()
-                .color(ui_colors::ACTIVE),
-        );
+    // Request repaint while lingering so phases fade out smoothly
+    if pipeline.should_show() && !pipeline.is_active() {
+        ui.ctx().request_repaint();
     }
-    ui.label(
-        RichText::new(format!("{}", stats.session_request_count))
-            .size(11.0)
-            .color(ui_colors::value(state.is_dark)),
-    );
-    ui.label(
-        RichText::new("requests:")
-            .size(11.0)
-            .color(ui_colors::label(state.is_dark)),
-    );
+}
+
+/// Render the stats detail popup (expanded timing breakdown).
+fn render_stats_detail_popup(ctx: &egui::Context, state: &mut AppState) {
+    if !state.stats_detail_open {
+        return;
+    }
+
+    let popup_id = egui::Id::new("stats_detail_popup");
+    let dark = state.is_dark;
+    let stats = &state.session_stats;
+
+    egui::Area::new(popup_id)
+        .order(egui::Order::Foreground)
+        .anchor(egui::Align2::RIGHT_BOTTOM, [-10.0, -110.0])
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style())
+                .inner_margin(10.0)
+                .show(ui, |ui| {
+                    ui.set_min_width(220.0);
+
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Performance Detail").strong().size(12.0));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("\u{2715}").clicked() {
+                                state.stats_detail_open = false;
+                            }
+                        });
+                    });
+                    ui.separator();
+
+                    let label_color = ui_colors::label(dark);
+                    let value_color = ui_colors::value(dark);
+
+                    // Download
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Download").size(11.0).color(label_color));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let text = match stats.median_chunk_latency_ms {
+                                Some(v) => format!("{:.0} ms avg", v),
+                                None => "\u{2014}".to_string(),
+                            };
+                            ui.label(RichText::new(text).size(11.0).monospace().color(value_color));
+                        });
+                    });
+
+                    // Store
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Ingest/Store").size(11.0).color(label_color));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let text = match stats.median_store_time_ms {
+                                Some(v) => format!("{:.1} ms avg", v),
+                                None => "\u{2014}".to_string(),
+                            };
+                            ui.label(RichText::new(text).size(11.0).monospace().color(value_color));
+                        });
+                    });
+
+                    // Decode
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Decode").size(11.0).color(label_color));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let text = match stats.median_decode_time_ms {
+                                Some(v) => format!("{:.1} ms avg", v),
+                                None => "\u{2014}".to_string(),
+                            };
+                            ui.label(RichText::new(text).size(11.0).monospace().color(value_color));
+                        });
+                    });
+
+                    // Render
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Render").size(11.0).color(label_color));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let text = match stats.avg_render_time_ms {
+                                Some(v) => format!("{:.0} ms avg", v),
+                                None => "\u{2014}".to_string(),
+                            };
+                            ui.label(RichText::new(text).size(11.0).monospace().color(value_color));
+                        });
+                    });
+
+                    ui.separator();
+
+                    // Network summary
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Requests").size(11.0).color(label_color));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} total ({} active)",
+                                    stats.session_request_count, stats.active_request_count
+                                ))
+                                .size(11.0)
+                                .monospace()
+                                .color(value_color),
+                            );
+                        });
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Transferred").size(11.0).color(label_color));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(stats.format_transferred())
+                                    .size(11.0)
+                                    .monospace()
+                                    .color(value_color),
+                            );
+                        });
+                    });
+
+                    // FPS
+                    if let Some(fps) = stats.avg_fps {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Frame Rate").size(11.0).color(label_color));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        RichText::new(format!("{:.0} fps", fps))
+                                            .size(11.0)
+                                            .monospace()
+                                            .color(value_color),
+                                    );
+                                },
+                            );
+                        });
+                    }
+                });
+        });
 }

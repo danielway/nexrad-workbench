@@ -95,34 +95,38 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                     })
                 });
 
-                if let Some(angles) = elevation_angles {
-                    egui::ComboBox::from_id_salt("elevation_selector")
-                        .selected_text(format!(
-                            "{:.1}\u{00B0}",
-                            state.viz_state.target_elevation
-                        ))
-                        .width(150.0)
-                        .show_ui(ui, |ui| {
-                            for angle in &angles {
-                                let is_selected =
-                                    (state.viz_state.target_elevation - angle).abs() < 0.1;
-                                if ui
-                                    .selectable_label(
-                                        is_selected,
-                                        format!("{:.1}\u{00B0}", angle),
-                                    )
-                                    .clicked()
-                                {
-                                    state.viz_state.target_elevation = *angle;
-                                }
-                            }
-                        });
-                } else {
-                    ui.add(
-                        egui::Slider::new(&mut state.viz_state.target_elevation, 0.5..=19.5)
-                            .suffix("\u{00B0}")
-                            .step_by(0.5),
-                    );
+                // Slider for elevation selection; snaps to known VCP
+                // elevation angles when available.
+                let max_elev = elevation_angles
+                    .as_ref()
+                    .and_then(|a| a.last().copied())
+                    .unwrap_or(19.5)
+                    .max(19.5);
+
+                let slider = egui::Slider::new(
+                    &mut state.viz_state.target_elevation,
+                    0.5..=max_elev,
+                )
+                .suffix("\u{00B0}")
+                .step_by(0.1);
+
+                let resp = ui.add(slider);
+
+                // Snap to nearest VCP elevation on release
+                if resp.drag_stopped() || resp.lost_focus() {
+                    if let Some(ref angles) = elevation_angles {
+                        let current = state.viz_state.target_elevation;
+                        if let Some(closest) = angles
+                            .iter()
+                            .min_by(|a, b| {
+                                ((**a - current).abs())
+                                    .partial_cmp(&((**b - current).abs()))
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                            })
+                        {
+                            state.viz_state.target_elevation = *closest;
+                        }
+                    }
                 }
             }
         });

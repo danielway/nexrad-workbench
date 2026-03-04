@@ -827,11 +827,10 @@ impl WorkbenchApp {
         }
         if let Some(time) = url_params.time {
             state.playback_state.set_playback_position(time);
-            // Center the timeline view on the restored playback position.
-            // We don't know the actual panel pixel width yet, so use the same
-            // assumed width (1000px) that PlaybackState constructors use.
-            let view_width_secs = 1000.0 / state.playback_state.timeline_zoom;
-            state.playback_state.timeline_view_start = time - view_width_secs / 2.0;
+            // Center view on the restored position. timeline_width_px may
+            // still be the default 1000px since we haven't rendered yet, but
+            // it will be accurate on subsequent centers.
+            state.playback_state.center_view_on(time);
         }
 
         // First-launch detection: open site selection modal if no site in URL
@@ -1045,8 +1044,12 @@ impl WorkbenchApp {
                     self.download_channel
                         .fetch_listing(ctx.clone(), site_id.clone(), current_date);
                 }
-                // Re-trigger download selection once listing arrives
-                self.state.download_selection_requested = true;
+                // Re-trigger once listing arrives — preserve the download type
+                if is_position_download {
+                    self.state.download_at_position_requested = true;
+                } else {
+                    self.state.download_selection_requested = true;
+                }
                 self.state.status_message =
                     format!("Fetching archive listing for {}...", current_date);
                 return;
@@ -1197,15 +1200,24 @@ impl WorkbenchApp {
     fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
         self.state.viz_state.elevation = format!("{:.1}\u{00B0}", elevation_deg);
 
-        // Format midpoint timestamp as HH:MM:SS UTC
+        // Format midpoint timestamp as HH:MM:SS in selected timezone
         let mid_ms = ((start + end) / 2.0) * 1000.0;
         let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(mid_ms));
-        self.state.viz_state.timestamp = format!(
-            "{:02}:{:02}:{:02} UTC",
-            date.get_utc_hours(),
-            date.get_utc_minutes(),
-            date.get_utc_seconds()
-        );
+        if self.state.use_local_time {
+            self.state.viz_state.timestamp = format!(
+                "{:02}:{:02}:{:02}",
+                date.get_hours(),
+                date.get_minutes(),
+                date.get_seconds()
+            );
+        } else {
+            self.state.viz_state.timestamp = format!(
+                "{:02}:{:02}:{:02} UTC",
+                date.get_utc_hours(),
+                date.get_utc_minutes(),
+                date.get_utc_seconds()
+            );
+        }
 
         // Staleness = now - sweep end
         let staleness = js_sys::Date::now() / 1000.0 - end;
@@ -1251,6 +1263,7 @@ impl WorkbenchApp {
 
         let scan_key = scan_key.clone();
         self.last_render_params = Some(params);
+        self.state.session_stats.pipeline.decoding = true;
         self.decode_worker
             .as_mut()
             .unwrap()
@@ -1320,6 +1333,7 @@ impl WorkbenchApp {
                 let site_id = self.state.viz_state.site_id.clone();
                 let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                 if let Some(ref mut worker) = self.decode_worker {
+                    self.state.session_stats.pipeline.storing = true;
                     worker.ingest(data, site_id, timestamp, file_name, 0.0);
                 }
             }
@@ -1460,11 +1474,7 @@ impl eframe::App for WorkbenchApp {
                             self.state
                                 .playback_state
                                 .set_playback_position(most_recent_end);
-
-                            // Center the timeline view on the data so it's visible
-                            let view_width_secs = 1000.0 / self.state.playback_state.timeline_zoom;
-                            self.state.playback_state.timeline_view_start =
-                                most_recent_end - view_width_secs / 2.0;
+                            self.state.playback_state.center_view_on(most_recent_end);
                         }
 
                         log::info!("Timeline has {} contiguous range(s)", ranges.len());
@@ -1504,6 +1514,7 @@ impl eframe::App for WorkbenchApp {
             for outcome in worker.try_recv() {
                 match outcome {
                     nexrad::WorkerOutcome::Ingested(result) => {
+                        self.state.session_stats.pipeline.mark_store_done();
                         log::info!(
                             "Ingest complete: {} ({} records, {} elevations, {} sweeps, {:.0}ms, fetch: {:.0}ms)",
                             result.scan_key,
@@ -1526,9 +1537,13 @@ impl eframe::App for WorkbenchApp {
                         self.displayed_sweep_elevation_number = None;
                         self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
                         self.state.displayed_sweep_elevation_number = None;
+                        let ingest_ts = result.context.timestamp_secs as f64;
                         self.state
                             .playback_state
-                            .set_playback_position(result.context.timestamp_secs as f64);
+                            .set_playback_position(ingest_ts);
+
+                        // Center the timeline view on the newly ingested scan.
+                        self.state.playback_state.center_view_on(ingest_ts);
 
                         // Refresh timeline to include the new scan (sweeps
                         // were persisted to IDB during ingest and will be
@@ -1545,6 +1560,7 @@ impl eframe::App for WorkbenchApp {
                         self.request_worker_render();
                     }
                     nexrad::WorkerOutcome::Decoded(result) => {
+                        self.state.session_stats.pipeline.mark_decode_done();
                         log::info!(
                             "Decode complete: {}x{} (az x gates), {} radials, product={}, {:.0}ms",
                             result.azimuth_count,
@@ -1670,6 +1686,7 @@ impl eframe::App for WorkbenchApp {
                     // Worker splits records, probes elevations, stores in IDB,
                     // then returns metadata. We render on the Ingested callback.
                     if let Some(ref mut worker) = self.decode_worker {
+                        self.state.session_stats.pipeline.storing = true;
                         worker.ingest(
                             scan.data.clone(),
                             scan.key.site_id.clone(),

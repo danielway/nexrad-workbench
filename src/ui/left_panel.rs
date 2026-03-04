@@ -172,15 +172,25 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
             let sweep_data = scan.find_sweep_at_timestamp(ts);
             let sweep_index = sweep_data.map(|(idx, _)| idx);
 
-            // Compute azimuth from sweep timing (linear interpolation: 360° per sweep)
-            let azimuth = sweep_data.and_then(|(_, sweep)| {
-                let dur = sweep.end_time - sweep.start_time;
-                if dur <= 0.0 {
-                    return None;
-                }
-                let progress = (ts - sweep.start_time) / dur;
-                Some(((progress * 360.0) as f32) % 360.0)
-            });
+            // Compute azimuth from sweep timing (linear interpolation: 360° per sweep).
+            // Hidden at high playback speeds (>30 s/s) where the animation is meaningless.
+            let azimuth = if state
+                .playback_state
+                .speed
+                .timeline_seconds_per_real_second()
+                > 30.0
+            {
+                None
+            } else {
+                sweep_data.and_then(|(_, sweep)| {
+                    let dur = sweep.end_time - sweep.start_time;
+                    if dur <= 0.0 {
+                        return None;
+                    }
+                    let progress = (ts - sweep.start_time) / dur;
+                    Some(((progress * 360.0) as f32) % 360.0)
+                })
+            };
             let elevation = sweep_data.map(|(_, s)| s.elevation);
 
             RadarStateAtTimestamp {

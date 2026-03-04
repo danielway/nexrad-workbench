@@ -5,6 +5,16 @@ use crate::state::{AppState, LivePhase};
 use eframe::egui::{self, Color32, RichText};
 
 pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
+    // Detect status message changes: if the message content differs from when we
+    // last recorded the timestamp, update the timestamp now. This works even when
+    // callers assign directly to `status_message` without using `set_status()`.
+    let status_id = egui::Id::new("__last_status_msg");
+    let prev_msg: Option<String> = ctx.data(|d| d.get_temp(status_id));
+    if prev_msg.as_deref() != Some(&state.status_message) {
+        state.status_message_set_ms = js_sys::Date::now();
+        ctx.data_mut(|d| d.insert_temp(status_id, state.status_message.clone()));
+    }
+
     egui::TopBottomPanel::top("top_bar")
         .exact_height(36.0)
         .show(ctx, |ui| {
@@ -48,12 +58,34 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                 // Show live status or regular status message
                 if state.live_mode_state.is_active() {
                     render_live_status(ui, state);
-                } else {
-                    ui.label(
-                        RichText::new(&state.status_message)
-                            .size(13.0)
-                            .color(Color32::GRAY),
-                    );
+                } else if !state.status_message.is_empty() {
+                    // Auto-dismiss: fade out after 8 seconds, clear after 10
+                    let now = js_sys::Date::now();
+                    let age_ms = now - state.status_message_set_ms;
+                    const FADE_START_MS: f64 = 8000.0;
+                    const DISMISS_MS: f64 = 10000.0;
+
+                    if state.status_message_set_ms > 0.0 && age_ms >= DISMISS_MS {
+                        state.status_message.clear();
+                    } else {
+                        let alpha = if state.status_message_set_ms <= 0.0 || age_ms < FADE_START_MS {
+                            255u8
+                        } else {
+                            let t = 1.0 - (age_ms - FADE_START_MS) / (DISMISS_MS - FADE_START_MS);
+                            (t.clamp(0.0, 1.0) * 255.0) as u8
+                        };
+
+                        ui.label(
+                            RichText::new(&state.status_message)
+                                .size(13.0)
+                                .color(Color32::from_rgba_unmultiplied(128, 128, 128, alpha)),
+                        );
+
+                        // Request repaint during fade
+                        if age_ms >= FADE_START_MS && age_ms < DISMISS_MS {
+                            ui.ctx().request_repaint();
+                        }
+                    }
                 }
 
                 // Right-aligned: right panel toggle

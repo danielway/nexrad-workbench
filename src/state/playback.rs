@@ -354,6 +354,10 @@ pub struct PlaybackState {
 
     /// Total frames (legacy, used by some displays)
     pub total_frames: usize,
+
+    /// Actual pixel width of the timeline widget (set by render_timeline each frame).
+    /// Used for accurate view centering calculations outside the render function.
+    pub timeline_width_px: f64,
 }
 
 impl Default for PlaybackState {
@@ -376,6 +380,7 @@ impl Default for PlaybackState {
             data_end_timestamp: None,
             current_frame: 0,
             total_frames: 0,
+            timeline_width_px: 1000.0,
         }
     }
 }
@@ -410,6 +415,20 @@ impl PlaybackState {
     /// Set playback position (convenience method).
     pub fn set_playback_position(&mut self, position: f64) {
         self.time_model.seek_to(position);
+    }
+
+    /// Visible time width in seconds, using the real timeline widget width.
+    pub fn view_width_secs(&self) -> f64 {
+        if self.timeline_zoom > 0.0 {
+            self.timeline_width_px / self.timeline_zoom
+        } else {
+            0.0
+        }
+    }
+
+    /// Center the timeline view on a given timestamp.
+    pub fn center_view_on(&mut self, ts: f64) {
+        self.timeline_view_start = ts - self.view_width_secs() / 2.0;
     }
 
     /// Toggle playback on/off.
