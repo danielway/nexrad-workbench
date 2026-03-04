@@ -559,27 +559,18 @@ impl IndexedDbRecordStore {
 
     /// Clears all data from all stores.
     pub async fn clear_all(&self) -> Result<(), String> {
-        self.ensure_open().await?;
-        let db = self.get_db()?;
-
-        let store_names = Array::new();
-        store_names.push(&JsValue::from_str(STORE_SWEEPS));
-        store_names.push(&JsValue::from_str(STORE_SCAN_INDEX));
-
-        let tx = db
-            .transaction_with_str_sequence_and_mode(&store_names, IdbTransactionMode::Readwrite)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        for name in [STORE_SWEEPS, STORE_SCAN_INDEX] {
-            let store = tx
-                .object_store(name)
-                .map_err(|e| format!("Failed to get store: {:?}", e))?;
-            store
-                .clear()
-                .map_err(|e| format!("Failed to clear store: {:?}", e))?;
+        // Close the existing connection so the delete is not blocked.
+        if let Some(db) = self.db.borrow_mut().take() {
+            db.close();
         }
 
-        wait_for_transaction(&tx).await?;
+        let factory = get_idb_factory()?;
+        let req = factory
+            .delete_database(DATABASE_NAME)
+            .map_err(|e| format!("Failed to request database deletion: {:?}", e))?;
+
+        wait_for_request(&req).await?;
+        log::info!("Deleted IndexedDB database '{}'", DATABASE_NAME);
         Ok(())
     }
 }
