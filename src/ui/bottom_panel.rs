@@ -374,8 +374,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
             });
         });
 
-    // Stats detail popup (rendered as an overlay outside the panel)
-    render_stats_detail_popup(ctx, state);
+    // Stats detail is now a proper modal rendered from main.rs via render_stats_modal.
 }
 
 /// Time intervals for tick marks, from coarsest to finest
@@ -1456,13 +1455,18 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
 
 /// Render session statistics (right-aligned in the bottom bar).
 ///
-/// Layout (right-to-left): FPS | pipeline | latency summary | download | cache
+/// Layout (right-to-left): FPS | pipeline (clickable) | download | cache
 fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
-    let stats = &state.session_stats;
     let dark = state.is_dark;
 
-    // FPS (rightmost)
-    if let Some(fps) = stats.avg_fps {
+    // FPS (rightmost) — read value before mutable borrow
+    let fps = state.session_stats.avg_fps;
+    let active_count = state.session_stats.active_request_count;
+    let request_count = state.session_stats.session_request_count;
+    let transferred = state.session_stats.format_transferred();
+    let cache_size = state.session_stats.format_cache_size();
+
+    if let Some(fps) = fps {
         ui.label(
             RichText::new(format!("{:.0} fps", fps))
                 .size(11.0)
@@ -1471,45 +1475,21 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
         ui.separator();
     }
 
-    // Pipeline status — phase boxes with active highlighting
-    render_pipeline_indicator(ui, stats, &state.download_progress, dark);
-
-    // Compact latency summary (clickable to open detail)
-    let has_any_timing = stats.median_chunk_latency_ms.is_some()
-        || stats.median_store_time_ms.is_some()
-        || stats.median_decode_time_ms.is_some()
-        || stats.avg_render_time_ms.is_some();
-
-    if has_any_timing {
-        // Show a compact summary; click to expand
-        let summary = stats.format_latency_stats();
-        let btn = ui.add(
-            egui::Button::new(
-                RichText::new(&summary)
-                    .size(10.0)
-                    .color(ui_colors::value(dark)),
-            )
-            .frame(false),
-        );
-        if btn.clicked() {
-            state.stats_detail_open = !state.stats_detail_open;
-        }
-        btn.on_hover_text("Click for detailed timing breakdown");
-        ui.separator();
-    }
+    // Pipeline status — clickable phase boxes open detail modal
+    render_pipeline_indicator(ui, state);
 
     // Download group: requests + transferred
-    if stats.active_request_count > 0 {
+    if active_count > 0 {
         ui.label(
-            RichText::new(format!("({} active)", stats.active_request_count))
+            RichText::new(format!("({} active)", active_count))
                 .size(10.0)
                 .italics()
                 .color(ui_colors::ACTIVE),
         );
     }
-    if stats.session_request_count > 0 {
+    if request_count > 0 {
         ui.label(
-            RichText::new(format!("{} req / {}", stats.session_request_count, stats.format_transferred()))
+            RichText::new(format!("{} req / {}", request_count, transferred))
                 .size(10.0)
                 .color(ui_colors::value(dark)),
         );
@@ -1521,7 +1501,7 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
         state.clear_cache_requested = true;
     }
     ui.label(
-        RichText::new(stats.format_cache_size())
+        RichText::new(cache_size)
             .size(10.0)
             .color(ui_colors::value(dark)),
     );
@@ -1529,7 +1509,8 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// Render translucent ghost blocks on the timeline for pending downloads.
 ///
-/// Each pending timestamp gets a ghost block. The currently-active download
+/// Each pending scan gets a ghost block spanning its actual `[start, end)`
+/// boundary (derived from the archive listing). The currently-active download
 /// pulses to distinguish it from queued items. Ghosts that overlap with
 /// already-loaded scans are skipped.
 fn render_download_ghosts(
@@ -1545,17 +1526,21 @@ fn render_download_ghosts(
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    // Estimated scan duration for ghost block width (5 minutes)
-    const GHOST_DURATION_SECS: f64 = 300.0;
+    // Combine pending and in-flight scan boundaries for ghost rendering.
+    let all_ghost_scans: Vec<(i64, i64)> = progress
+        .pending_scans
+        .iter()
+        .chain(progress.in_flight_scans.iter())
+        .copied()
+        .collect();
 
     if detail_level == DetailLevel::Solid {
-        // At solid detail level, render a single translucent region spanning all pending timestamps
-        let timestamps = &progress.pending_timestamps;
-        if timestamps.is_empty() {
+        // At solid detail level, render a single translucent region spanning all ghosts
+        if all_ghost_scans.is_empty() {
             return;
         }
-        let min_ts = timestamps.iter().copied().min().unwrap() as f64;
-        let max_ts = timestamps.iter().copied().max().unwrap() as f64 + GHOST_DURATION_SECS;
+        let min_ts = all_ghost_scans.iter().map(|(s, _)| *s).min().unwrap() as f64;
+        let max_ts = all_ghost_scans.iter().map(|(_, e)| *e).max().unwrap() as f64;
 
         let x_start = ts_to_x(min_ts).max(rect.left());
         let x_end = ts_to_x(max_ts).min(rect.right());
@@ -1575,30 +1560,30 @@ fn render_download_ghosts(
     }
 
     // At Scans/Sweeps detail level, render individual ghost blocks
-    for &ts in &progress.pending_timestamps {
-        let ts_f64 = ts as f64;
-        let ghost_end = ts_f64 + GHOST_DURATION_SECS;
+    for &(scan_start, scan_end) in &all_ghost_scans {
+        let start_f64 = scan_start as f64;
+        let end_f64 = scan_end as f64;
 
         // Skip if outside visible range
-        if ghost_end < view_start || ts_f64 > view_end {
+        if end_f64 < view_start || start_f64 > view_end {
             continue;
         }
 
         // Skip if a real scan already covers this timestamp
         if timeline
-            .scans_in_range(ts_f64, ghost_end)
-            .any(|s| s.start_time <= ts_f64 + 30.0 && s.end_time >= ts_f64 - 30.0)
+            .scans_in_range(start_f64, end_f64)
+            .any(|s| s.start_time <= start_f64 + 30.0 && s.end_time >= start_f64 - 30.0)
         {
             continue;
         }
 
-        let x_start = ts_to_x(ts_f64).max(rect.left());
-        let x_end = ts_to_x(ghost_end).min(rect.right());
+        let x_start = ts_to_x(start_f64).max(rect.left());
+        let x_end = ts_to_x(end_f64).min(rect.right());
         if x_end <= x_start || (x_end - x_start) < 1.0 {
             continue;
         }
 
-        let is_active = progress.active_timestamp == Some(ts);
+        let is_active = progress.active_scan.map(|(s, _)| s) == Some(scan_start);
 
         // Pulse animation for the active ghost
         let pulse = if is_active {
@@ -1640,25 +1625,23 @@ fn render_download_ghosts(
     }
 }
 
-/// Render pipeline phase indicator boxes.
+/// Render pipeline phase indicator boxes (3 high-level groups).
 ///
-/// Shows a row of small phase labels (DL, STORE, DEC, GPU). Active or
+/// Shows a row of small clickable phase labels (DL, PROC, GPU). Active or
 /// recently-completed phases are highlighted; idle ones are dimmed.
+/// Clicking any phase opens the detailed stats modal.
 /// The indicator stays visible for 1.5 s after the last phase completes
 /// so the user can see which stages ran.
-fn render_pipeline_indicator(
-    ui: &mut egui::Ui,
-    stats: &crate::state::SessionStats,
-    progress: &crate::state::DownloadProgress,
-    dark: bool,
-) {
-    let pipeline = &stats.pipeline;
+fn render_pipeline_indicator(ui: &mut egui::Ui, state: &mut AppState) {
+    let pipeline = &state.session_stats.pipeline;
+    let progress = &state.download_progress;
+    let dark = state.is_dark;
 
     // Each entry: (label, is_lit)
     // "lit" means actively running OR recently completed (within linger window)
     let dl_lit = pipeline.phase_visible(pipeline.downloading > 0, pipeline.last_download_done_ms);
-    let store_lit = pipeline.phase_visible(pipeline.storing, pipeline.last_store_done_ms);
-    let dec_lit = pipeline.phase_visible(pipeline.decoding, pipeline.last_decode_done_ms);
+    let proc_lit =
+        pipeline.phase_visible(pipeline.processing, pipeline.last_processing_done_ms);
     let gpu_lit = pipeline.phase_visible(pipeline.rendering, pipeline.last_render_done_ms);
 
     // Show batch count on DL when doing a multi-file download
@@ -1676,16 +1659,29 @@ fn render_pipeline_indicator(
 
     let phases: &[(&str, bool)] = &[
         (&dl_label, dl_lit),
-        ("STORE", store_lit),
-        ("DEC", dec_lit),
+        ("PROC", proc_lit),
         ("GPU", gpu_lit),
     ];
 
+    // Also show compact latency summary after the indicator
+    let has_any_timing = state.session_stats.median_chunk_latency_ms.is_some()
+        || state.session_stats.median_processing_time_ms.is_some()
+        || state.session_stats.avg_render_time_ms.is_some();
+
+    let summary_text = if has_any_timing {
+        Some(state.session_stats.format_latency_stats())
+    } else {
+        None
+    };
+
     // Wider when showing batch count
-    let indicator_width = if progress.is_batch() { 190.0 } else { 150.0 };
+    let base_width = if progress.is_batch() { 140.0 } else { 110.0 };
+    let summary_width = summary_text.as_ref().map(|s| s.len() as f32 * 6.0 + 16.0).unwrap_or(0.0);
+    let indicator_width = base_width + summary_width;
 
     // Use a fixed-width left-to-right sub-layout so phases read correctly
     // and don't consume all remaining horizontal space in the parent R-to-L layout.
+    let mut clicked = false;
     ui.allocate_ui_with_layout(
         Vec2::new(indicator_width, ui.available_height()),
         egui::Layout::left_to_right(egui::Align::Center),
@@ -1711,10 +1707,39 @@ fn render_pipeline_indicator(
                 } else {
                     Color32::from_rgb(180, 180, 190)
                 };
-                ui.label(RichText::new(*label).size(9.0).monospace().color(color));
+                let btn = ui.add(
+                    egui::Button::new(RichText::new(*label).size(9.0).monospace().color(color))
+                        .frame(false),
+                );
+                if btn.clicked() {
+                    clicked = true;
+                }
+                btn.on_hover_text("Click for detailed timing breakdown");
+            }
+
+            // Compact latency summary inline after the indicator
+            if let Some(ref summary) = summary_text {
+                ui.add_space(4.0);
+                let btn = ui.add(
+                    egui::Button::new(
+                        RichText::new(summary)
+                            .size(10.0)
+                            .color(ui_colors::value(dark)),
+                    )
+                    .frame(false),
+                );
+                if btn.clicked() {
+                    clicked = true;
+                }
+                btn.on_hover_text("Click for detailed timing breakdown");
             }
         },
     );
+
+    if clicked {
+        state.stats_detail_open = !state.stats_detail_open;
+    }
+
     ui.separator();
 
     // Request repaint while lingering so phases fade out smoothly
@@ -1727,133 +1752,3 @@ fn render_pipeline_indicator(
     }
 }
 
-/// Render the stats detail popup (expanded timing breakdown).
-fn render_stats_detail_popup(ctx: &egui::Context, state: &mut AppState) {
-    if !state.stats_detail_open {
-        return;
-    }
-
-    let popup_id = egui::Id::new("stats_detail_popup");
-    let dark = state.is_dark;
-    let stats = &state.session_stats;
-
-    egui::Area::new(popup_id)
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::RIGHT_BOTTOM, [-10.0, -110.0])
-        .show(ctx, |ui| {
-            egui::Frame::popup(ui.style())
-                .inner_margin(10.0)
-                .show(ui, |ui| {
-                    ui.set_min_width(220.0);
-
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Performance Detail").strong().size(12.0));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("\u{2715}").clicked() {
-                                state.stats_detail_open = false;
-                            }
-                        });
-                    });
-                    ui.separator();
-
-                    let label_color = ui_colors::label(dark);
-                    let value_color = ui_colors::value(dark);
-
-                    // Download
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Download").size(11.0).color(label_color));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let text = match stats.median_chunk_latency_ms {
-                                Some(v) => format!("{:.0} ms avg", v),
-                                None => "\u{2014}".to_string(),
-                            };
-                            ui.label(RichText::new(text).size(11.0).monospace().color(value_color));
-                        });
-                    });
-
-                    // Store
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Ingest/Store").size(11.0).color(label_color));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let text = match stats.median_store_time_ms {
-                                Some(v) => format!("{:.1} ms avg", v),
-                                None => "\u{2014}".to_string(),
-                            };
-                            ui.label(RichText::new(text).size(11.0).monospace().color(value_color));
-                        });
-                    });
-
-                    // Decode
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Decode").size(11.0).color(label_color));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let text = match stats.median_decode_time_ms {
-                                Some(v) => format!("{:.1} ms avg", v),
-                                None => "\u{2014}".to_string(),
-                            };
-                            ui.label(RichText::new(text).size(11.0).monospace().color(value_color));
-                        });
-                    });
-
-                    // Render
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Render").size(11.0).color(label_color));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let text = match stats.avg_render_time_ms {
-                                Some(v) => format!("{:.0} ms avg", v),
-                                None => "\u{2014}".to_string(),
-                            };
-                            ui.label(RichText::new(text).size(11.0).monospace().color(value_color));
-                        });
-                    });
-
-                    ui.separator();
-
-                    // Network summary
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Requests").size(11.0).color(label_color));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} total ({} active)",
-                                    stats.session_request_count, stats.active_request_count
-                                ))
-                                .size(11.0)
-                                .monospace()
-                                .color(value_color),
-                            );
-                        });
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Transferred").size(11.0).color(label_color));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(stats.format_transferred())
-                                    .size(11.0)
-                                    .monospace()
-                                    .color(value_color),
-                            );
-                        });
-                    });
-
-                    // FPS
-                    if let Some(fps) = stats.avg_fps {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("Frame Rate").size(11.0).color(label_color));
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        RichText::new(format!("{:.0} fps", fps))
-                                            .size(11.0)
-                                            .monospace()
-                                            .color(value_color),
-                                    );
-                                },
-                            );
-                        });
-                    }
-                });
-        });
-}

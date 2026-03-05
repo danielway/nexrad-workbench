@@ -2,28 +2,25 @@
 
 use crate::nexrad::NetworkStats;
 
-/// Active pipeline phase flags.
+/// Active pipeline phase flags (3 high-level groups).
 ///
-/// Each phase tracks both a live flag and a "last completed" timestamp (ms).
-/// The UI uses the timestamp to keep phases visually lit for a short period
-/// after they finish, so the user can see which phases ran even when they
+/// Each group tracks both a live flag and a "last completed" timestamp (ms).
+/// The UI uses the timestamp to keep groups visually lit for a short period
+/// after they finish, so the user can see which stages ran even when they
 /// complete within a single frame.
 #[derive(Default, Clone)]
 pub struct PipelineStatus {
-    /// Number of active downloads.
+    /// Number of active downloads (group 1: Download).
     pub downloading: u32,
-    /// Whether decoding is in progress.
-    pub decoding: bool,
-    /// Whether IDB store is in progress.
-    pub storing: bool,
-    /// Whether GPU rendering is in progress.
+    /// Whether processing is in progress: ingest + decode in worker (group 2: Processing).
+    pub processing: bool,
+    /// Whether GPU rendering/upload is in progress (group 3: Rendering).
     pub rendering: bool,
 
-    /// Timestamp (ms since epoch) when each phase last completed.
+    /// Timestamp (ms since epoch) when each group last completed.
     /// Used by the UI to keep indicators lit briefly after completion.
     pub last_download_done_ms: f64,
-    pub last_store_done_ms: f64,
-    pub last_decode_done_ms: f64,
+    pub last_processing_done_ms: f64,
     pub last_render_done_ms: f64,
 
     /// Whether any pipeline activity has occurred this session.
@@ -47,7 +44,7 @@ impl PipelineStatus {
     }
 
     pub fn is_active(&self) -> bool {
-        self.downloading > 0 || self.decoding || self.storing || self.rendering
+        self.downloading > 0 || self.processing || self.rendering
     }
 
     /// Whether the indicator row should be shown at all.
@@ -55,27 +52,46 @@ impl PipelineStatus {
         if self.is_active() {
             return true;
         }
-        // Show if any phase completed recently
+        // Show if any group completed recently
         let now = js_sys::Date::now();
         (now - self.last_download_done_ms) < Self::LINGER_MS
-            || (now - self.last_store_done_ms) < Self::LINGER_MS
-            || (now - self.last_decode_done_ms) < Self::LINGER_MS
+            || (now - self.last_processing_done_ms) < Self::LINGER_MS
             || (now - self.last_render_done_ms) < Self::LINGER_MS
     }
 
-    /// Mark store phase as completed.
-    pub fn mark_store_done(&mut self) {
-        self.storing = false;
-        self.last_store_done_ms = js_sys::Date::now();
+    /// Mark processing phase as completed (ingest + decode finished).
+    pub fn mark_processing_done(&mut self) {
+        self.processing = false;
+        self.last_processing_done_ms = js_sys::Date::now();
         self.ever_active = true;
     }
 
-    /// Mark decode phase as completed.
-    pub fn mark_decode_done(&mut self) {
-        self.decoding = false;
-        self.last_decode_done_ms = js_sys::Date::now();
+    /// Mark rendering phase as completed (GPU upload finished).
+    pub fn mark_render_done(&mut self) {
+        self.rendering = false;
+        self.last_render_done_ms = js_sys::Date::now();
         self.ever_active = true;
     }
+}
+
+/// Detailed sub-phase timings from the most recent ingest operation.
+#[derive(Default, Clone)]
+pub struct IngestTimingDetail {
+    pub split_ms: f64,
+    pub decompress_ms: f64,
+    pub decode_ms: f64,
+    pub extract_ms: f64,
+    pub store_ms: f64,
+    pub index_ms: f64,
+}
+
+/// Detailed sub-phase timings from the most recent render/decode operation.
+#[derive(Default, Clone)]
+pub struct RenderTimingDetail {
+    pub fetch_ms: f64,
+    pub deser_ms: f64,
+    pub marshal_ms: f64,
+    pub gpu_upload_ms: f64,
 }
 
 /// Statistics displayed in the status bar.
@@ -93,14 +109,11 @@ pub struct SessionStats {
     /// Number of currently active (in-flight) requests.
     pub active_request_count: u32,
 
-    /// Median chunk fetch latency in milliseconds.
+    /// Running average of fetch latency in milliseconds.
     pub median_chunk_latency_ms: Option<f64>,
 
-    /// Median archive store (split + IDB write) time in milliseconds.
-    pub median_store_time_ms: Option<f64>,
-
-    /// Median decoding time in milliseconds.
-    pub median_decode_time_ms: Option<f64>,
+    /// Running average of full processing time (ingest total) in milliseconds.
+    pub median_processing_time_ms: Option<f64>,
 
     /// Running average of radar render time in milliseconds.
     pub avg_render_time_ms: Option<f64>,
@@ -110,29 +123,18 @@ pub struct SessionStats {
 
     /// Current pipeline phase status.
     pub pipeline: PipelineStatus,
+
+    /// Most recent ingest timing breakdown (for detail modal).
+    pub last_ingest_detail: Option<IngestTimingDetail>,
+
+    /// Most recent render timing breakdown (for detail modal).
+    pub last_render_detail: Option<RenderTimingDetail>,
 }
 
 impl SessionStats {
     /// Create stats with initial (zero) values.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Create stats with dummy data for UI testing.
-    #[allow(dead_code)]
-    pub fn with_dummy_data() -> Self {
-        Self {
-            cache_size_bytes: 156_842_496, // ~150 MB
-            session_request_count: 47,
-            session_transferred_bytes: 12_582_912, // ~12 MB
-            active_request_count: 3,
-            median_chunk_latency_ms: Some(142.5),
-            median_store_time_ms: Some(8.3),
-            median_decode_time_ms: Some(23.7),
-            avg_render_time_ms: Some(45.0),
-            avg_fps: Some(60.0),
-            pipeline: PipelineStatus::default(),
-        }
     }
 
     /// Update stats from live network statistics.
@@ -185,10 +187,10 @@ impl SessionStats {
         });
     }
 
-    /// Record an archive store (split + IDB write) time sample.
-    pub fn record_store_time(&mut self, ms: f64) {
+    /// Record a processing time sample (full ingest total), updating the running average.
+    pub fn record_processing_time(&mut self, ms: f64) {
         const ALPHA: f64 = 0.2;
-        self.median_store_time_ms = Some(match self.median_store_time_ms {
+        self.median_processing_time_ms = Some(match self.median_processing_time_ms {
             Some(avg) => avg * (1.0 - ALPHA) + ms * ALPHA,
             None => ms,
         });
@@ -199,22 +201,19 @@ impl SessionStats {
         let mut parts = Vec::new();
 
         if let Some(latency) = self.median_chunk_latency_ms {
-            parts.push(format!("fetch: {:.0}ms", latency));
+            parts.push(format!("dl: {:.0}ms", latency));
         }
-        if let Some(store) = self.median_store_time_ms {
-            parts.push(format!("store: {:.1}ms", store));
-        }
-        if let Some(decode) = self.median_decode_time_ms {
-            parts.push(format!("decode: {:.1}ms", decode));
+        if let Some(proc_time) = self.median_processing_time_ms {
+            parts.push(format!("proc: {:.0}ms", proc_time));
         }
         if let Some(render) = self.avg_render_time_ms {
-            parts.push(format!("render: {:.0}ms", render));
+            parts.push(format!("gpu: {:.0}ms", render));
         }
 
         if parts.is_empty() {
-            "—".to_string()
+            "\u{2014}".to_string()
         } else {
-            parts.join(" · ")
+            parts.join(" \u{00b7} ")
         }
     }
 }
@@ -235,20 +234,26 @@ pub enum DownloadPhase {
 }
 
 /// Tracks download progress for timeline ghost markers and pipeline display.
+///
+/// Scan boundaries are `(start_secs, end_secs)` pairs derived from the archive
+/// listing's adjacent file timestamps, giving accurate ghost widths on the timeline.
 #[derive(Default, Clone)]
 pub struct DownloadProgress {
-    /// Timestamps (secs since epoch) of files queued but not yet loaded.
-    /// The timeline renders ghost markers at these positions.
-    pub pending_timestamps: Vec<i64>,
-    /// Timestamp of the file currently being downloaded/processed.
+    /// Scan boundaries (start, end) of files queued but not yet loaded.
+    /// The timeline renders ghost markers spanning these intervals.
+    pub pending_scans: Vec<(i64, i64)>,
+    /// Boundary of the file currently being downloaded/processed.
     /// Its ghost marker pulses to distinguish it from queued items.
-    pub active_timestamp: Option<i64>,
+    pub active_scan: Option<(i64, i64)>,
     /// Phase of the currently active file.
     pub phase: DownloadPhase,
     /// Batch total file count.
     pub batch_total: u32,
     /// Number of files completed so far.
     pub batch_completed: u32,
+    /// Scan boundaries of files downloaded but still being ingested/decoded/rendered.
+    /// Ghosts for these stay visible until processing completes.
+    pub in_flight_scans: Vec<(i64, i64)>,
 }
 
 impl DownloadProgress {
@@ -260,7 +265,8 @@ impl DownloadProgress {
     /// Whether any download operation is active.
     pub fn is_active(&self) -> bool {
         self.phase != DownloadPhase::Idle && self.phase != DownloadPhase::Done
-            || !self.pending_timestamps.is_empty()
+            || !self.pending_scans.is_empty()
+            || !self.in_flight_scans.is_empty()
     }
 
     /// Reset all progress state.

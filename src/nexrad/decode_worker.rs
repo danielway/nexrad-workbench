@@ -38,6 +38,18 @@ pub struct IngestResult {
     pub vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Total time in worker (ms).
     pub total_ms: f64,
+    /// Sub-phase timing: record splitting.
+    pub split_ms: f64,
+    /// Sub-phase timing: decompression.
+    pub decompress_ms: f64,
+    /// Sub-phase timing: decoding records.
+    pub decode_ms: f64,
+    /// Sub-phase timing: sweep extraction.
+    pub extract_ms: f64,
+    /// Sub-phase timing: IDB store.
+    pub store_ms: f64,
+    /// Sub-phase timing: index update.
+    pub index_ms: f64,
 }
 
 /// Context for a render/decode request.
@@ -67,6 +79,12 @@ pub struct DecodeResult {
     pub product: String,
     pub radial_count: u32,
     pub fetch_ms: f64,
+    /// Sub-phase timing: deserialization.
+    pub deser_ms: f64,
+    /// Sub-phase timing: marshalling data for transfer.
+    pub marshal_ms: f64,
+    /// Total render time in worker (ms).
+    pub total_ms: f64,
     /// Scale factor for decoding raw values: physical = (raw - offset) / scale.
     pub scale: f32,
     /// Offset for decoding raw values.
@@ -371,6 +389,20 @@ fn handle_ingested_message(
         .and_then(|v| v.as_f64())
         .unwrap_or(0.0);
 
+    // Extract sub-phase timings
+    let get_f64 = |key: &str| -> f64 {
+        js_sys::Reflect::get(&result_obj, &key.into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+    };
+    let split_ms = get_f64("splitMs");
+    let decompress_ms = get_f64("decompressMs");
+    let decode_ms = get_f64("decodeMs");
+    let extract_ms = get_f64("extractMs");
+    let store_ms = get_f64("storeMs");
+    let index_ms = get_f64("indexMs");
+
     // Extract unique elevation numbers from the elevationMap
     let mut elevation_numbers: Vec<u8> = Vec::new();
     if let Ok(elev_map) = js_sys::Reflect::get(&result_obj, &"elevationMap".into()) {
@@ -431,6 +463,12 @@ fn handle_ingested_message(
             sweeps,
             vcp,
             total_ms,
+            split_ms,
+            decompress_ms,
+            decode_ms,
+            extract_ms,
+            store_ms,
+            index_ms,
         }));
 }
 
@@ -475,6 +513,8 @@ fn handle_decoded_message(
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
     let fetch_ms = js_sys::Reflect::get(data, &"fetchMs".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let deser_ms = js_sys::Reflect::get(data, &"deserMs".into())
+        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
     let total_ms = js_sys::Reflect::get(data, &"totalMs".into())
         .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
     let marshal_ms = js_sys::Reflect::get(data, &"marshalMs".into())
@@ -510,6 +550,9 @@ fn handle_decoded_message(
             product,
             radial_count,
             fetch_ms,
+            deser_ms,
+            marshal_ms,
+            total_ms,
             scale,
             offset,
             mean_elevation,

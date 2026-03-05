@@ -295,6 +295,12 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         js_sys::Reflect::set(&result, &"scanKey".into(), &wasm_bindgen::JsValue::from_str(&scan_key.to_storage_key())).ok();
         js_sys::Reflect::set(&result, &"elevationMap".into(), &elevation_map).ok();
         js_sys::Reflect::set(&result, &"totalMs".into(), &wasm_bindgen::JsValue::from(total_ms)).ok();
+        js_sys::Reflect::set(&result, &"splitMs".into(), &wasm_bindgen::JsValue::from(split_ms)).ok();
+        js_sys::Reflect::set(&result, &"decompressMs".into(), &wasm_bindgen::JsValue::from(decompress_ms_total)).ok();
+        js_sys::Reflect::set(&result, &"decodeMs".into(), &wasm_bindgen::JsValue::from(decode_only_ms)).ok();
+        js_sys::Reflect::set(&result, &"extractMs".into(), &wasm_bindgen::JsValue::from(extract_ms)).ok();
+        js_sys::Reflect::set(&result, &"storeMs".into(), &wasm_bindgen::JsValue::from(store_ms)).ok();
+        js_sys::Reflect::set(&result, &"indexMs".into(), &wasm_bindgen::JsValue::from(index_ms)).ok();
 
         let sweeps_json = serde_json::to_string(&sweeps).unwrap_or_else(|_| "[]".to_string());
         js_sys::Reflect::set(&result, &"sweepsJson".into(), &wasm_bindgen::JsValue::from_str(&sweeps_json)).ok();
@@ -432,6 +438,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
 
         js_sys::Reflect::set(&result, &"fetchMs".into(), &wasm_bindgen::JsValue::from(fetch_ms)).ok();
+        js_sys::Reflect::set(&result, &"deserMs".into(), &wasm_bindgen::JsValue::from(deser_ms)).ok();
         js_sys::Reflect::set(&result, &"totalMs".into(), &wasm_bindgen::JsValue::from(total_ms)).ok();
         js_sys::Reflect::set(&result, &"marshalMs".into(), &wasm_bindgen::JsValue::from(marshal_ms)).ok();
 

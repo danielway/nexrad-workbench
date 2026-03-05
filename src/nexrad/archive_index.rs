@@ -64,7 +64,71 @@ pub struct ArchiveListing {
     pub fetched_at: f64,
 }
 
+/// A scan's time boundaries derived from adjacent file timestamps in a listing.
+#[derive(Debug, Clone, Copy)]
+pub struct ScanBoundary {
+    /// Start of this scan (Unix seconds).
+    pub start: i64,
+    /// End of this scan (next scan's start, or estimated for last scan; Unix seconds).
+    pub end: i64,
+}
+
 impl ArchiveListing {
+    /// Compute scan time boundaries from adjacent file start times.
+    ///
+    /// Each scan starts at its own timestamp and ends at the next scan's
+    /// timestamp. The last scan's duration is estimated from the average
+    /// interval, or 300s if there's only one file.
+    pub fn scan_boundaries(&self) -> Vec<ScanBoundary> {
+        let n = self.files.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let mut boundaries = Vec::with_capacity(n);
+        for i in 0..n {
+            let start = self.files[i].timestamp;
+            let end = if i + 1 < n {
+                self.files[i + 1].timestamp
+            } else if n > 1 {
+                let total_span = self.files[n - 1].timestamp - self.files[0].timestamp;
+                let avg_interval = total_span / (n as i64 - 1);
+                start + avg_interval
+            } else {
+                start + 300
+            };
+            boundaries.push(ScanBoundary { start, end });
+        }
+        boundaries
+    }
+
+    /// Find all scans whose time span `[start, end)` intersects `[range_start, range_end]`.
+    pub fn scans_intersecting(
+        &self,
+        range_start: i64,
+        range_end: i64,
+    ) -> Vec<(&ArchiveFileMeta, ScanBoundary)> {
+        let boundaries = self.scan_boundaries();
+        self.files
+            .iter()
+            .zip(boundaries.iter())
+            .filter(|(_, b)| b.start < range_end && b.end > range_start)
+            .map(|(file, b)| (file, *b))
+            .collect()
+    }
+
+    /// Find the single scan containing the given timestamp.
+    pub fn find_scan_containing(
+        &self,
+        timestamp: i64,
+    ) -> Option<(&ArchiveFileMeta, ScanBoundary)> {
+        let boundaries = self.scan_boundaries();
+        self.files
+            .iter()
+            .zip(boundaries.iter())
+            .find(|(_, b)| timestamp >= b.start && timestamp < b.end)
+            .map(|(file, b)| (file, *b))
+    }
+
     /// Find the file containing or closest to the given timestamp.
     #[allow(dead_code)] // Utility method for future use
     pub fn find_file_at_timestamp(&self, timestamp: i64) -> Option<&ArchiveFileMeta> {

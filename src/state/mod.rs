@@ -22,7 +22,9 @@ pub use playback::{LoopMode, PlaybackSpeed, PlaybackState};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
 pub use settings::{format_bytes, StorageSettings};
-pub use stats::{DownloadPhase, DownloadProgress, SessionStats};
+pub use stats::{
+    DownloadPhase, DownloadProgress, IngestTimingDetail, RenderTimingDetail, SessionStats,
+};
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
 pub use viz::{InterpolationMode, RadarProduct, RenderMode, RenderProcessing, VizState};

@@ -102,8 +102,12 @@ pub struct WorkbenchApp {
     gpu_renderer_gl: Option<std::sync::Arc<glow::Context>>,
 
     /// Queue of files to download for selection download feature.
-    /// Each entry is (date, file_name, timestamp).
-    selection_download_queue: Vec<(chrono::NaiveDate, String, i64)>,
+    /// Each entry is (date, file_name, scan_start, scan_end).
+    selection_download_queue: Vec<(chrono::NaiveDate, String, i64, i64)>,
+
+    /// Map from scan start timestamp to computed end timestamp, populated when
+    /// building the download queue so in-flight tracking can look up boundaries.
+    scan_end_times: std::collections::HashMap<i64, i64>,
 
     /// Timestamp of the currently displayed scan (for detecting when to load a new scan)
     displayed_scan_timestamp: Option<i64>,
@@ -283,6 +287,7 @@ impl WorkbenchApp {
             gpu_renderer,
             gpu_renderer_gl,
             selection_download_queue: Vec::new(),
+            scan_end_times: std::collections::HashMap::new(),
             displayed_scan_timestamp: None,
             displayed_sweep_elevation_number: None,
             previous_site_id: initial_site_id,
@@ -304,7 +309,7 @@ impl WorkbenchApp {
         // If we have items in the queue, try to download the next one
         if !self.selection_download_queue.is_empty() {
             // Check if current download is still in progress
-            let (_, _, timestamp) = &self.selection_download_queue[0];
+            let (_, _, timestamp, _) = &self.selection_download_queue[0];
             if self
                 .download_channel
                 .is_download_pending(&site_id, *timestamp)
@@ -318,14 +323,15 @@ impl WorkbenchApp {
 
             // Start the next download if there are more items
             if !self.selection_download_queue.is_empty() {
-                let (next_date, next_name, next_ts) = &self.selection_download_queue[0];
+                let (next_date, next_name, next_ts, next_end) =
+                    &self.selection_download_queue[0];
                 self.state.status_message = format!(
                     "Downloading {} ({} remaining)",
                     next_name,
                     self.selection_download_queue.len()
                 );
                 // Update download progress for next file
-                self.state.download_progress.active_timestamp = Some(*next_ts);
+                self.state.download_progress.active_scan = Some((*next_ts, *next_end));
                 self.state.download_progress.phase =
                     crate::state::DownloadPhase::Downloading;
                 self.state.download_progress.batch_completed += 1;
@@ -338,9 +344,15 @@ impl WorkbenchApp {
                     self.data_facade.clone(),
                 );
             } else {
-                // All done
+                // Download queue drained, but in-flight processing may continue.
                 self.state.download_selection_in_progress = false;
-                self.state.download_progress.clear();
+                self.state.download_progress.pending_scans.clear();
+                self.state.download_progress.active_scan = None;
+                self.state.download_progress.phase = crate::state::DownloadPhase::Done;
+                // Full clear only if no in-flight scans remain.
+                if self.state.download_progress.in_flight_scans.is_empty() {
+                    self.state.download_progress.clear();
+                }
                 self.state.status_message = "Selection download complete".to_string();
                 log::info!("Selection download complete");
             }
@@ -357,11 +369,12 @@ impl WorkbenchApp {
         }
         self.state.download_selection_requested = false;
 
-        // Get the download range: either from selection or from current position
+        // Get the download range: either from selection or from current position.
+        // For position download, we use a temporary wide window to determine which
+        // date listings to fetch, then narrow to the exact scan below.
         let (sel_start, sel_end) = if is_position_download {
-            // Download a 10-minute window around the current playback position
             let pos = self.state.playback_state.playback_position();
-            (pos - 300.0, pos + 300.0)
+            (pos, pos)
         } else {
             match self.state.playback_state.selection_range() {
                 Some(range) => range,
@@ -375,12 +388,12 @@ impl WorkbenchApp {
         let sel_start_i64 = sel_start as i64;
         let sel_end_i64 = sel_end as i64;
 
-        // Determine the date range (extend by 5 min for partial overlap)
-        let start_date = match chrono::DateTime::from_timestamp(sel_start_i64 - 300, 0) {
+        // Determine the date range for listing lookups
+        let start_date = match chrono::DateTime::from_timestamp(sel_start_i64, 0) {
             Some(dt) => dt.date_naive(),
             None => return,
         };
-        let end_date = match chrono::DateTime::from_timestamp(sel_end_i64 + 300, 0) {
+        let end_date = match chrono::DateTime::from_timestamp(sel_end_i64, 0) {
             Some(dt) => dt.date_naive(),
             None => return,
         };
@@ -393,33 +406,49 @@ impl WorkbenchApp {
             end_date
         );
 
-        // Collect all files in the range from cached listings
+        // Collect all files whose scan boundaries intersect the selection
         let mut files_to_download = Vec::new();
         let mut current_date = start_date;
 
         while current_date <= end_date {
-            // Check if we have the listing for this date
             if let Some(listing) = self.archive_index.get(&site_id, &current_date) {
-                // Find all files in the selection range (with 5-min overlap on each side
-                // to include scans that partially overlap the selection boundaries)
-                let overlap_secs: i64 = 300; // 5 minutes
-                for file in &listing.files {
-                    if file.timestamp >= (sel_start_i64 - overlap_secs)
-                        && file.timestamp <= (sel_end_i64 + overlap_secs)
+                if is_position_download {
+                    // Single-position: find the exact scan containing the playback position
+                    if let Some((file, boundary)) =
+                        listing.find_scan_containing(sel_start_i64)
                     {
-                        // Check if already cached
                         let is_cached = self
                             .state
                             .radar_timeline
                             .scans
                             .iter()
                             .any(|s| (s.start_time as i64 - file.timestamp).abs() < 60);
-
                         if !is_cached {
                             files_to_download.push((
                                 current_date,
                                 file.name.clone(),
-                                file.timestamp,
+                                boundary.start,
+                                boundary.end,
+                            ));
+                        }
+                    }
+                } else {
+                    // Range selection: find all scans that intersect [sel_start, sel_end]
+                    for (file, boundary) in
+                        listing.scans_intersecting(sel_start_i64, sel_end_i64)
+                    {
+                        let is_cached = self
+                            .state
+                            .radar_timeline
+                            .scans
+                            .iter()
+                            .any(|s| (s.start_time as i64 - file.timestamp).abs() < 60);
+                        if !is_cached {
+                            files_to_download.push((
+                                current_date,
+                                file.name.clone(),
+                                boundary.start,
+                                boundary.end,
                             ));
                         }
                     }
@@ -454,8 +483,8 @@ impl WorkbenchApp {
             return;
         }
 
-        // Sort by timestamp
-        files_to_download.sort_by_key(|(_, _, ts)| *ts);
+        // Sort by start timestamp
+        files_to_download.sort_by_key(|(_, _, start, _)| *start);
 
         log::info!(
             "Queued {} files for download in selection",
@@ -466,23 +495,29 @@ impl WorkbenchApp {
         self.state.download_selection_in_progress = true;
         self.selection_download_queue = files_to_download;
 
+        // Build scan_end_times lookup for in-flight tracking
+        self.scan_end_times.clear();
+        for (_, _, start, end) in &self.selection_download_queue {
+            self.scan_end_times.insert(*start, *end);
+        }
+
         // Populate download progress for timeline ghosts and pipeline display
         {
             let progress = &mut self.state.download_progress;
-            progress.pending_timestamps = self
+            progress.pending_scans = self
                 .selection_download_queue
                 .iter()
-                .map(|(_, _, ts)| *ts)
+                .map(|(_, _, start, end)| (*start, *end))
                 .collect();
             progress.batch_total = self.selection_download_queue.len() as u32;
             progress.batch_completed = 0;
             progress.phase = crate::state::DownloadPhase::Downloading;
-            progress.active_timestamp =
-                Some(self.selection_download_queue[0].2);
+            let first = &self.selection_download_queue[0];
+            progress.active_scan = Some((first.2, first.3));
         }
 
         // Kick off first download
-        let (date, file_name, timestamp) = &self.selection_download_queue[0];
+        let (date, file_name, timestamp, _) = &self.selection_download_queue[0];
         self.state.status_message = format!(
             "Downloading {} ({} total)",
             file_name,
@@ -668,7 +703,9 @@ impl WorkbenchApp {
 
         let scan_key = scan_key.clone();
         self.last_render_params = Some(params);
-        self.state.session_stats.pipeline.decoding = true;
+        if !self.state.session_stats.pipeline.processing {
+            self.state.session_stats.pipeline.processing = true;
+        }
         self.decode_worker
             .as_mut()
             .unwrap()
@@ -738,7 +775,7 @@ impl WorkbenchApp {
                 let site_id = self.state.viz_state.site_id.clone();
                 let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                 if let Some(ref mut worker) = self.decode_worker {
-                    self.state.session_stats.pipeline.storing = true;
+                    self.state.session_stats.pipeline.processing = true;
                     worker.ingest(data, site_id, timestamp, file_name, 0.0);
                 }
             }
@@ -919,7 +956,7 @@ impl eframe::App for WorkbenchApp {
             for outcome in worker.try_recv() {
                 match outcome {
                     nexrad::WorkerOutcome::Ingested(result) => {
-                        self.state.session_stats.pipeline.mark_store_done();
+                        // Processing stays active through decode — don't mark done yet.
                         // Transition to decoding phase. Don't remove the ghost
                         // yet — it stays visible until the timeline refreshes
                         // and a real scan block replaces it (the ghost renderer's
@@ -939,7 +976,18 @@ impl eframe::App for WorkbenchApp {
                         self.state
                             .session_stats
                             .record_fetch_latency(result.context.fetch_latency_ms);
-                        self.state.session_stats.record_store_time(result.total_ms);
+                        self.state.session_stats.record_processing_time(result.total_ms);
+
+                        // Store detailed ingest timing for the detail modal.
+                        self.state.session_stats.last_ingest_detail =
+                            Some(crate::state::IngestTimingDetail {
+                                split_ms: result.split_ms,
+                                decompress_ms: result.decompress_ms,
+                                decode_ms: result.decode_ms,
+                                extract_ms: result.extract_ms,
+                                store_ms: result.store_ms,
+                                index_ms: result.index_ms,
+                            });
 
                         // Track the scan for render requests
                         self.current_render_scan_key = Some(result.scan_key.clone());
@@ -971,25 +1019,25 @@ impl eframe::App for WorkbenchApp {
                         self.request_worker_render();
                     }
                     nexrad::WorkerOutcome::Decoded(result) => {
-                        self.state.session_stats.pipeline.mark_decode_done();
-                        // Don't clear progress here — ghosts stay visible until
-                        // the real scans appear on the timeline. Final cleanup
-                        // happens in process_selection_download when the queue
-                        // drains completely.
+                        // Processing complete → transition to rendering.
+                        self.state.session_stats.pipeline.mark_processing_done();
+                        self.state.session_stats.pipeline.rendering = true;
+
                         log::info!(
                             "Decode complete: {}x{} (az x gates), {} radials, product={}, {:.0}ms",
                             result.azimuth_count,
                             result.gate_count,
                             result.radial_count,
                             result.product,
-                            result.fetch_ms,
+                            result.total_ms,
                         );
 
                         self.state
                             .session_stats
-                            .record_render_time(result.fetch_ms);
+                            .record_render_time(result.total_ms);
 
                         // Upload decoded data to GPU renderer
+                        let t_gpu = web_time::Instant::now();
                         if let (Some(ref renderer), Some(ref gl)) =
                             (&self.gpu_renderer, &self.gpu_renderer_gl)
                         {
@@ -1017,6 +1065,35 @@ impl eframe::App for WorkbenchApp {
                                     );
                                 }
                             }
+                        }
+                        let gpu_upload_ms =
+                            t_gpu.elapsed().as_secs_f64() * 1000.0;
+
+                        // Store detailed render timing for the detail modal.
+                        self.state.session_stats.last_render_detail =
+                            Some(crate::state::RenderTimingDetail {
+                                fetch_ms: result.fetch_ms,
+                                deser_ms: result.deser_ms,
+                                marshal_ms: result.marshal_ms,
+                                gpu_upload_ms,
+                            });
+
+                        // GPU upload complete.
+                        self.state.session_stats.pipeline.mark_render_done();
+
+                        // Remove this scan from in-flight ghost tracking.
+                        if let Some(displayed_ts) = self.displayed_scan_timestamp {
+                            self.state
+                                .download_progress
+                                .in_flight_scans
+                                .retain(|&(start, _)| start != displayed_ts);
+                        }
+                        // If no more in-flight or pending, fully clear progress.
+                        if self.state.download_progress.in_flight_scans.is_empty()
+                            && self.state.download_progress.pending_scans.is_empty()
+                            && !self.state.download_selection_in_progress
+                        {
+                            self.state.download_progress.clear();
                         }
 
                         // Refine canvas overlay with precise decoded data
@@ -1050,7 +1127,7 @@ impl eframe::App for WorkbenchApp {
                         .record_fetch_latency(*fetch_latency_ms);
                     self.state
                         .session_stats
-                        .record_store_time(*decode_latency_ms);
+                        .record_processing_time(*decode_latency_ms);
                     (Some(scan), false)
                 }
                 nexrad::DownloadResult::CacheHit(scan) => (Some(scan), true),
@@ -1064,6 +1141,19 @@ impl eframe::App for WorkbenchApp {
                     } => *fetch_latency_ms,
                     _ => 0.0,
                 };
+
+                // Move this scan's boundary to in-flight tracking (ghost stays
+                // visible until processing completes in the Decoded handler).
+                let scan_ts = scan.key.scan_start.as_secs();
+                let scan_end = self
+                    .scan_end_times
+                    .get(&scan_ts)
+                    .copied()
+                    .unwrap_or(scan_ts + 300);
+                self.state
+                    .download_progress
+                    .in_flight_scans
+                    .push((scan_ts, scan_end));
 
                 if is_cache_hit {
                     self.state.status_message = format!("Loaded from cache: {}", scan.file_name);
@@ -1097,7 +1187,7 @@ impl eframe::App for WorkbenchApp {
                     // Worker splits records, probes elevations, stores in IDB,
                     // then returns metadata. We render on the Ingested callback.
                     if let Some(ref mut worker) = self.decode_worker {
-                        self.state.session_stats.pipeline.storing = true;
+                        self.state.session_stats.pipeline.processing = true;
                         worker.ingest(
                             scan.data.clone(),
                             scan.key.site.0.clone(),
@@ -1385,5 +1475,6 @@ impl eframe::App for WorkbenchApp {
         ui::render_site_modal(ctx, &mut self.state, &mut self.site_modal_state);
         ui::render_shortcuts_help(ctx, &mut self.state);
         ui::render_wipe_modal(ctx, &mut self.state);
+        ui::render_stats_modal(ctx, &mut self.state);
     }
 }
