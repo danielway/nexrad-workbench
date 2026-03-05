@@ -559,18 +559,32 @@ impl IndexedDbRecordStore {
 
     /// Clears all data from all stores.
     pub async fn clear_all(&self) -> Result<(), String> {
-        // Close the existing connection so the delete is not blocked.
-        if let Some(db) = self.db.borrow_mut().take() {
-            db.close();
-        }
+        // Clear each object store rather than deleting the database.
+        // deleteDatabase would hang if any other connection (e.g. the worker)
+        // is still open, because the delete is blocked until ALL connections close.
+        self.ensure_open().await?;
+        let db = self.get_db()?;
 
-        let factory = get_idb_factory()?;
-        let req = factory
-            .delete_database(DATABASE_NAME)
-            .map_err(|e| format!("Failed to request database deletion: {:?}", e))?;
+        let store_names = Array::new();
+        store_names.push(&JsValue::from_str(STORE_SWEEPS));
+        store_names.push(&JsValue::from_str(STORE_SCAN_INDEX));
 
-        wait_for_request(&req).await?;
-        log::info!("Deleted IndexedDB database '{}'", DATABASE_NAME);
+        let tx = db
+            .transaction_with_str_sequence_and_mode(&store_names, IdbTransactionMode::Readwrite)
+            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
+
+        tx.object_store(STORE_SWEEPS)
+            .map_err(|e| format!("Failed to get sweeps store: {:?}", e))?
+            .clear()
+            .map_err(|e| format!("Failed to clear sweeps store: {:?}", e))?;
+
+        tx.object_store(STORE_SCAN_INDEX)
+            .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?
+            .clear()
+            .map_err(|e| format!("Failed to clear scan_index store: {:?}", e))?;
+
+        wait_for_transaction(&tx).await?;
+        log::info!("Cleared all IndexedDB stores");
         Ok(())
     }
 }

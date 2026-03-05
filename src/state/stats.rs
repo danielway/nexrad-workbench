@@ -234,6 +234,61 @@ impl SessionStats {
     }
 }
 
+/// Which phase of the download pipeline the current file is in.
+#[derive(Default, Clone, Copy, PartialEq)]
+pub enum DownloadPhase {
+    #[default]
+    Idle,
+    /// Fetching from AWS S3.
+    Downloading,
+    /// Worker is splitting, decompressing, decoding, and storing in IDB.
+    Ingesting,
+    /// Worker is decoding and rendering the sweep.
+    Decoding,
+    /// Complete.
+    Done,
+}
+
+/// Tracks download progress for timeline ghost markers and pipeline display.
+#[derive(Default, Clone)]
+pub struct DownloadProgress {
+    /// Timestamps (secs since epoch) of files queued but not yet loaded.
+    /// The timeline renders ghost markers at these positions.
+    pub pending_timestamps: Vec<i64>,
+    /// Timestamp of the file currently being downloaded/processed.
+    /// Its ghost marker pulses to distinguish it from queued items.
+    pub active_timestamp: Option<i64>,
+    /// Phase of the currently active file.
+    pub phase: DownloadPhase,
+    /// Batch total file count.
+    pub batch_total: u32,
+    /// Number of files completed so far.
+    pub batch_completed: u32,
+}
+
+impl DownloadProgress {
+    /// Whether this is a multi-file batch download.
+    pub fn is_batch(&self) -> bool {
+        self.batch_total > 1
+    }
+
+    /// Whether any download operation is active.
+    pub fn is_active(&self) -> bool {
+        self.phase != DownloadPhase::Idle && self.phase != DownloadPhase::Done
+            || !self.pending_timestamps.is_empty()
+    }
+
+    /// Remove a timestamp from the pending list (scan has loaded).
+    pub fn remove_pending(&mut self, ts: i64) {
+        self.pending_timestamps.retain(|&t| t != ts);
+    }
+
+    /// Reset all progress state.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Format bytes into a human-readable string.
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;

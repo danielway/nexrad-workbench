@@ -1,9 +1,6 @@
-//! Left panel UI: file upload controls and radar operations visualization.
+//! Left panel UI: radar operations visualization.
 
-use crate::data::DataFacade;
-use crate::nexrad::DownloadChannel;
 use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
-use chrono::Datelike;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
 
@@ -23,12 +20,7 @@ struct RadarStateAtTimestamp<'a> {
     scan: Option<&'a Scan>,
 }
 
-pub fn render_left_panel(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    download_channel: &DownloadChannel,
-    data_facade: &DataFacade,
-) {
+pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
     if !state.left_sidebar_visible {
         return;
     }
@@ -41,95 +33,8 @@ pub fn render_left_panel(
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 render_radar_operations_section(ui, state);
-                ui.add_space(15.0);
-                ui.separator();
-                ui.add_space(10.0);
-                render_aws_archive_section(ui, ctx, state, download_channel, data_facade);
             });
         });
-}
-
-fn render_aws_archive_section(
-    ui: &mut egui::Ui,
-    ctx: &egui::Context,
-    state: &mut AppState,
-    download_channel: &DownloadChannel,
-    data_facade: &DataFacade,
-) {
-    ui.heading("AWS Archive");
-    ui.separator();
-
-    // Initialize date to today if not set
-    let today = chrono::Utc::now().date_naive();
-    let selected_date = state.archive_date.unwrap_or(today);
-
-    // Date input fields
-    ui.horizontal(|ui| {
-        ui.label("Date:");
-
-        // Year input
-        let mut year = selected_date.year();
-        ui.add(
-            egui::DragValue::new(&mut year)
-                .range(1991..=today.year())
-                .prefix(""),
-        );
-        ui.label("-");
-
-        // Month input
-        let mut month = selected_date.month();
-        ui.add(egui::DragValue::new(&mut month).range(1..=12).prefix(""));
-        ui.label("-");
-
-        // Day input
-        let mut day = selected_date.day();
-        ui.add(egui::DragValue::new(&mut day).range(1..=31).prefix(""));
-
-        // Update date if changed
-        if let Some(new_date) = chrono::NaiveDate::from_ymd_opt(year, month, day) {
-            if new_date != selected_date {
-                state.archive_date = Some(new_date);
-            }
-        }
-    });
-
-    ui.add_space(8.0);
-
-    // Download button
-    let is_downloading = state.download_in_progress;
-
-    ui.add_enabled_ui(!is_downloading, |ui| {
-        if ui.button("Download from AWS").clicked() {
-            let date = state.archive_date.unwrap_or(today);
-            state.download_in_progress = true;
-            state.status_message = format!(
-                "Downloading {} data for {}...",
-                state.viz_state.site_id, date
-            );
-
-            download_channel.download(
-                ctx.clone(),
-                state.viz_state.site_id.clone(),
-                date,
-                data_facade.clone(),
-            );
-        }
-    });
-
-    if is_downloading {
-        ui.add_space(5.0);
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label("Downloading...");
-        });
-    }
-
-    ui.add_space(5.0);
-    ui.label(
-        RichText::new("Downloads archival NEXRAD data from AWS S3")
-            .small()
-            .color(Color32::GRAY),
-    );
 }
 
 fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
@@ -168,18 +73,18 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
 
     match scan {
         Some(scan) => {
-            let scan_progress = scan.progress_at_timestamp(ts);
             let sweep_data = scan.find_sweep_at_timestamp(ts);
-            let sweep_index = sweep_data.map(|(idx, _)| idx);
 
-            // Compute azimuth from sweep timing (linear interpolation: 360° per sweep).
-            // Hidden at high playback speeds (>30 s/s) where the animation is meaningless.
-            let azimuth = if state
+            // At high playback speeds (>30 s/s), freeze all animated radar state
+            // (azimuth, elevation, sweep indicator, progress) to prevent violent flashing.
+            // Static VCP info (number, name, elevation list) still renders.
+            let is_fast = state
                 .playback_state
                 .speed
                 .timeline_seconds_per_real_second()
-                > 30.0
-            {
+                > 30.0;
+
+            let azimuth = if is_fast {
                 None
             } else {
                 sweep_data.and_then(|(_, sweep)| {
@@ -191,7 +96,21 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                     Some(((progress * 360.0) as f32) % 360.0)
                 })
             };
-            let elevation = sweep_data.map(|(_, s)| s.elevation);
+            let elevation = if is_fast {
+                None
+            } else {
+                sweep_data.map(|(_, s)| s.elevation)
+            };
+            let sweep_index = if is_fast {
+                None
+            } else {
+                sweep_data.map(|(idx, _)| idx)
+            };
+            let scan_progress = if is_fast {
+                None
+            } else {
+                scan.progress_at_timestamp(ts)
+            };
 
             RadarStateAtTimestamp {
                 azimuth,

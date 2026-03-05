@@ -635,6 +635,23 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         state.viz_state.target_elevation,
     );
 
+    // Render ghost markers for pending downloads
+    if state.download_progress.is_active() {
+        let anim_time = ui.ctx().input(|i| i.time);
+        render_download_ghosts(
+            &painter,
+            &rect,
+            &state.download_progress,
+            &state.radar_timeline,
+            view_start,
+            view_end,
+            zoom,
+            detail_level,
+            anim_time,
+        );
+        ui.ctx().request_repaint();
+    }
+
     // VCP info track — thin colored bar showing VCP mode transitions
     {
         let vcp_color = |vcp: u16| -> Color32 {
@@ -1315,9 +1332,19 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
     let download_in_progress = state.download_selection_in_progress;
 
     if download_in_progress {
+        let label = if state.download_progress.is_batch() {
+            format!(
+                "Downloading {}/{}...",
+                (state.download_progress.batch_completed + 1)
+                    .min(state.download_progress.batch_total),
+                state.download_progress.batch_total
+            )
+        } else {
+            "Downloading...".to_string()
+        };
         ui.add_enabled(
             false,
-            egui::Button::new(RichText::new("Downloading...").size(11.0)),
+            egui::Button::new(RichText::new(label).size(11.0)),
         );
     } else if has_selection {
         if ui
@@ -1447,7 +1474,7 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     }
 
     // Pipeline status — phase boxes with active highlighting
-    render_pipeline_indicator(ui, stats, dark);
+    render_pipeline_indicator(ui, stats, &state.download_progress, dark);
 
     // Compact latency summary (clickable to open detail)
     let has_any_timing = stats.median_chunk_latency_ms.is_some()
@@ -1502,6 +1529,119 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     );
 }
 
+/// Render translucent ghost blocks on the timeline for pending downloads.
+///
+/// Each pending timestamp gets a ghost block. The currently-active download
+/// pulses to distinguish it from queued items. Ghosts that overlap with
+/// already-loaded scans are skipped.
+fn render_download_ghosts(
+    painter: &Painter,
+    rect: &Rect,
+    progress: &crate::state::DownloadProgress,
+    timeline: &RadarTimeline,
+    view_start: f64,
+    view_end: f64,
+    zoom: f64,
+    detail_level: DetailLevel,
+    anim_time: f64,
+) {
+    let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
+
+    // Estimated scan duration for ghost block width (5 minutes)
+    const GHOST_DURATION_SECS: f64 = 300.0;
+
+    if detail_level == DetailLevel::Solid {
+        // At solid detail level, render a single translucent region spanning all pending timestamps
+        let timestamps = &progress.pending_timestamps;
+        if timestamps.is_empty() {
+            return;
+        }
+        let min_ts = timestamps.iter().copied().min().unwrap() as f64;
+        let max_ts = timestamps.iter().copied().max().unwrap() as f64 + GHOST_DURATION_SECS;
+
+        let x_start = ts_to_x(min_ts).max(rect.left());
+        let x_end = ts_to_x(max_ts).min(rect.right());
+        if x_end > x_start {
+            let pulse = (0.5 + 0.5 * (anim_time * 3.0).sin()) as f32;
+            let alpha = (25.0 + 15.0 * pulse) as u8;
+            painter.rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(x_start, rect.top() + 2.0),
+                    Pos2::new(x_end, rect.bottom() - 2.0),
+                ),
+                2.0,
+                Color32::from_rgba_unmultiplied(100, 150, 255, alpha),
+            );
+        }
+        return;
+    }
+
+    // At Scans/Sweeps detail level, render individual ghost blocks
+    for &ts in &progress.pending_timestamps {
+        let ts_f64 = ts as f64;
+        let ghost_end = ts_f64 + GHOST_DURATION_SECS;
+
+        // Skip if outside visible range
+        if ghost_end < view_start || ts_f64 > view_end {
+            continue;
+        }
+
+        // Skip if a real scan already covers this timestamp
+        if timeline
+            .scans_in_range(ts_f64, ghost_end)
+            .any(|s| s.start_time <= ts_f64 + 30.0 && s.end_time >= ts_f64 - 30.0)
+        {
+            continue;
+        }
+
+        let x_start = ts_to_x(ts_f64).max(rect.left());
+        let x_end = ts_to_x(ghost_end).min(rect.right());
+        if x_end <= x_start || (x_end - x_start) < 1.0 {
+            continue;
+        }
+
+        let is_active = progress.active_timestamp == Some(ts);
+
+        // Pulse animation for the active ghost
+        let pulse = if is_active {
+            (0.5 + 0.5 * (anim_time * 3.0).sin()) as f32
+        } else {
+            0.0
+        };
+
+        let fill_alpha = if is_active {
+            (35.0 + 25.0 * pulse) as u8
+        } else {
+            30u8
+        };
+        let border_alpha = if is_active {
+            (55.0 + 30.0 * pulse) as u8
+        } else {
+            45u8
+        };
+
+        let ghost_rect = Rect::from_min_max(
+            Pos2::new(x_start, rect.top() + 3.0),
+            Pos2::new(x_end, rect.bottom() - 3.0),
+        );
+
+        painter.rect_filled(
+            ghost_rect,
+            2.0,
+            Color32::from_rgba_unmultiplied(100, 150, 255, fill_alpha),
+        );
+        painter.rect_stroke(
+            ghost_rect,
+            2.0,
+            Stroke::new(
+                1.0,
+                Color32::from_rgba_unmultiplied(100, 150, 255, border_alpha),
+            ),
+            StrokeKind::Inside,
+        );
+    }
+}
+
 /// Render pipeline phase indicator boxes.
 ///
 /// Shows a row of small phase labels (DL, STORE, DEC, GPU). Active or
@@ -1511,6 +1651,7 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
 fn render_pipeline_indicator(
     ui: &mut egui::Ui,
     stats: &crate::state::SessionStats,
+    progress: &crate::state::DownloadProgress,
     dark: bool,
 ) {
     let pipeline = &stats.pipeline;
@@ -1522,22 +1663,38 @@ fn render_pipeline_indicator(
     let dec_lit = pipeline.phase_visible(pipeline.decoding, pipeline.last_decode_done_ms);
     let gpu_lit = pipeline.phase_visible(pipeline.rendering, pipeline.last_render_done_ms);
 
-    let dl_label = if pipeline.downloading > 1 { "DL+" } else { "DL" };
+    // Show batch count on DL when doing a multi-file download
+    let dl_label: String = if progress.is_batch() {
+        format!(
+            "DL {}/{}",
+            (progress.batch_completed + 1).min(progress.batch_total),
+            progress.batch_total
+        )
+    } else if pipeline.downloading > 1 {
+        "DL+".to_string()
+    } else {
+        "DL".to_string()
+    };
 
     let phases: &[(&str, bool)] = &[
-        (dl_label, dl_lit),
+        (&dl_label, dl_lit),
         ("STORE", store_lit),
         ("DEC", dec_lit),
         ("GPU", gpu_lit),
     ];
 
+    // Wider when showing batch count
+    let indicator_width = if progress.is_batch() { 190.0 } else { 150.0 };
+
     // Use a fixed-width left-to-right sub-layout so phases read correctly
     // and don't consume all remaining horizontal space in the parent R-to-L layout.
-    let indicator_width = 150.0;
     ui.allocate_ui_with_layout(
         Vec2::new(indicator_width, ui.available_height()),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
+            let anim_time = ui.ctx().input(|i| i.time);
+            let pulse = (0.5 + 0.5 * (anim_time * 3.0).sin()) as f32;
+
             for (i, (label, lit)) in phases.iter().enumerate() {
                 if i > 0 {
                     ui.label(
@@ -1547,7 +1704,10 @@ fn render_pipeline_indicator(
                     );
                 }
                 let color = if *lit {
-                    ui_colors::ACTIVE
+                    // Pulse the active phase for visual emphasis
+                    let base = ui_colors::ACTIVE;
+                    let alpha = (180.0 + 75.0 * pulse) as u8;
+                    Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha)
                 } else if dark {
                     Color32::from_rgb(55, 55, 65)
                 } else {
@@ -1561,6 +1721,10 @@ fn render_pipeline_indicator(
 
     // Request repaint while lingering so phases fade out smoothly
     if pipeline.should_show() && !pipeline.is_active() {
+        ui.ctx().request_repaint();
+    }
+    // Also repaint during batch downloads for pulse animation
+    if progress.is_active() {
         ui.ctx().request_repaint();
     }
 }

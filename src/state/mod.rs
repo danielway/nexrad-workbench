@@ -26,7 +26,7 @@ pub use playback::{LoopMode, PlaybackSpeed, PlaybackState};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
 pub use settings::{format_bytes, StorageSettings};
-pub use stats::SessionStats;
+pub use stats::{DownloadPhase, DownloadProgress, SessionStats};
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
 pub use viz::{InterpolationMode, RadarProduct, RenderMode, RenderProcessing, VizState};
@@ -59,11 +59,8 @@ pub struct AppState {
     /// Live streaming mode state
     pub live_mode_state: LiveModeState,
 
-    /// Selected date for AWS archive download
-    pub archive_date: Option<chrono::NaiveDate>,
-
-    /// Whether an archive download is in progress
-    pub download_in_progress: bool,
+    /// Download progress tracking for timeline ghost markers and pipeline display.
+    pub download_progress: DownloadProgress,
 
     /// Flag to signal that the timeline needs to be refreshed from cache.
     /// Set to true when the site changes or after a download completes.

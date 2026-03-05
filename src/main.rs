@@ -943,6 +943,11 @@ impl WorkbenchApp {
                     next_name,
                     self.selection_download_queue.len()
                 );
+                // Update download progress for next file
+                self.state.download_progress.active_timestamp = Some(*next_ts);
+                self.state.download_progress.phase =
+                    crate::state::DownloadPhase::Downloading;
+                self.state.download_progress.batch_completed += 1;
                 self.download_channel.download_file(
                     ctx.clone(),
                     site_id.clone(),
@@ -954,6 +959,7 @@ impl WorkbenchApp {
             } else {
                 // All done
                 self.state.download_selection_in_progress = false;
+                self.state.download_progress.clear();
                 self.state.status_message = "Selection download complete".to_string();
                 log::info!("Selection download complete");
             }
@@ -1078,6 +1084,21 @@ impl WorkbenchApp {
         // Start downloading
         self.state.download_selection_in_progress = true;
         self.selection_download_queue = files_to_download;
+
+        // Populate download progress for timeline ghosts and pipeline display
+        {
+            let progress = &mut self.state.download_progress;
+            progress.pending_timestamps = self
+                .selection_download_queue
+                .iter()
+                .map(|(_, _, ts)| *ts)
+                .collect();
+            progress.batch_total = self.selection_download_queue.len() as u32;
+            progress.batch_completed = 0;
+            progress.phase = crate::state::DownloadPhase::Downloading;
+            progress.active_timestamp =
+                Some(self.selection_download_queue[0].2);
+        }
 
         // Kick off first download
         let (date, file_name, timestamp) = &self.selection_download_queue[0];
@@ -1518,6 +1539,12 @@ impl eframe::App for WorkbenchApp {
                 match outcome {
                     nexrad::WorkerOutcome::Ingested(result) => {
                         self.state.session_stats.pipeline.mark_store_done();
+                        // Transition to decoding phase. Don't remove the ghost
+                        // yet — it stays visible until the timeline refreshes
+                        // and a real scan block replaces it (the ghost renderer's
+                        // overlap check handles the visual transition).
+                        self.state.download_progress.phase =
+                            crate::state::DownloadPhase::Decoding;
                         log::info!(
                             "Ingest complete: {} ({} records, {} elevations, {} sweeps, {:.0}ms, fetch: {:.0}ms)",
                             result.scan_key,
@@ -1564,6 +1591,10 @@ impl eframe::App for WorkbenchApp {
                     }
                     nexrad::WorkerOutcome::Decoded(result) => {
                         self.state.session_stats.pipeline.mark_decode_done();
+                        // Don't clear progress here — ghosts stay visible until
+                        // the real scans appear on the timeline. Final cleanup
+                        // happens in process_selection_download when the queue
+                        // drains completely.
                         log::info!(
                             "Decode complete: {}x{} (az x gates), {} radials, product={}, {:.0}ms",
                             result.azimuth_count,
@@ -1626,7 +1657,6 @@ impl eframe::App for WorkbenchApp {
 
         // Check for completed NEXRAD download operations
         if let Some(result) = self.download_channel.try_recv() {
-            self.state.download_in_progress = false;
             // Extract scan and timing info from result
             let (scan_opt, is_cache_hit) = match &result {
                 nexrad::DownloadResult::Success {
@@ -1657,6 +1687,11 @@ impl eframe::App for WorkbenchApp {
                 if is_cache_hit {
                     self.state.status_message = format!("Loaded from cache: {}", scan.file_name);
 
+                    // Cache hit: skip ingest, go straight to decode.
+                    // Ghost stays until timeline refresh shows the real scan.
+                    self.state.download_progress.phase =
+                        crate::state::DownloadPhase::Decoding;
+
                     // Cache hit: records already in IDB. Send render request directly.
                     let scan_key = data::ScanKey::from_secs(&scan.key.site_id, scan.key.timestamp);
                     self.current_render_scan_key = Some(scan_key.to_storage_key());
@@ -1672,6 +1707,10 @@ impl eframe::App for WorkbenchApp {
                 } else {
                     self.state.status_message =
                         format!("Downloaded: {} ({} bytes)", scan.file_name, scan.data.len());
+
+                    // Transition to ingesting phase
+                    self.state.download_progress.phase =
+                        crate::state::DownloadPhase::Ingesting;
 
                     // Fresh download: send raw bytes to worker for ingest.
                     // Worker splits records, probes elevations, stores in IDB,
@@ -1698,6 +1737,10 @@ impl eframe::App for WorkbenchApp {
                 nexrad::DownloadResult::Error(msg) => {
                     self.state.status_message = format!("Download failed: {}", msg);
                     log::error!("Download failed: {}", msg);
+                    // Clear download progress on error (batch will continue via queue)
+                    if self.selection_download_queue.is_empty() {
+                        self.state.download_progress.clear();
+                    }
                 }
                 nexrad::DownloadResult::Progress(current, total) => {
                     self.state.status_message =
@@ -1730,7 +1773,10 @@ impl eframe::App for WorkbenchApp {
         }
 
         // Process selection download queue
-        if self.state.download_selection_requested || !self.selection_download_queue.is_empty() {
+        if self.state.download_selection_requested
+            || self.state.download_at_position_requested
+            || !self.selection_download_queue.is_empty()
+        {
             self.process_selection_download(ctx);
         }
 
@@ -1947,12 +1993,7 @@ impl eframe::App for WorkbenchApp {
         // Side and top/bottom panels must be rendered before CentralPanel
         ui::render_top_bar(ctx, &mut self.state);
         ui::render_bottom_panel(ctx, &mut self.state);
-        ui::render_left_panel(
-            ctx,
-            &mut self.state,
-            &self.download_channel,
-            &self.data_facade,
-        );
+        ui::render_left_panel(ctx, &mut self.state);
         ui::render_right_panel(ctx, &mut self.state);
 
         // Render canvas with GPU-based radar rendering
