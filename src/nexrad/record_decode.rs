@@ -223,8 +223,8 @@ fn build_precomputed_sweep(
         offset,
         radial_count: azimuth_count as u32,
         mean_elevation,
-        sweep_start_secs: min_ts,
-        sweep_end_secs: max_ts,
+        sweep_start_secs: min_ts / 1000.0,
+        sweep_end_secs: max_ts / 1000.0,
         azimuths,
         gate_values,
     })

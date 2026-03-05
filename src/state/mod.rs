@@ -186,21 +186,32 @@ pub struct DateTimePickerState {
 }
 
 impl DateTimePickerState {
-    /// Initialize the picker with a timestamp.
-    pub fn init_from_timestamp(&mut self, ts: f64) {
-        use chrono::{TimeZone, Utc};
-        let dt = Utc.timestamp_opt(ts as i64, 0).unwrap();
-        self.year = dt.format("%Y").to_string();
-        self.month = dt.format("%m").to_string();
-        self.day = dt.format("%d").to_string();
-        self.hour = dt.format("%H").to_string();
-        self.minute = dt.format("%M").to_string();
-        self.second = dt.format("%S").to_string();
+    /// Initialize the picker with a timestamp, respecting the timezone setting.
+    pub fn init_from_timestamp(&mut self, ts: f64, use_local: bool) {
+        if use_local {
+            let d = js_sys::Date::new_0();
+            d.set_time(ts * 1000.0);
+            self.year = format!("{:04}", d.get_full_year());
+            self.month = format!("{:02}", d.get_month() + 1); // JS months are 0-based
+            self.day = format!("{:02}", d.get_date());
+            self.hour = format!("{:02}", d.get_hours());
+            self.minute = format!("{:02}", d.get_minutes());
+            self.second = format!("{:02}", d.get_seconds());
+        } else {
+            use chrono::{TimeZone, Utc};
+            let dt = Utc.timestamp_opt(ts as i64, 0).unwrap();
+            self.year = dt.format("%Y").to_string();
+            self.month = dt.format("%m").to_string();
+            self.day = dt.format("%d").to_string();
+            self.hour = dt.format("%H").to_string();
+            self.minute = dt.format("%M").to_string();
+            self.second = dt.format("%S").to_string();
+        }
         self.open = true;
     }
 
-    /// Try to parse the current input values into a timestamp.
-    pub fn to_timestamp(&self) -> Option<f64> {
+    /// Try to parse the current input values into a UTC timestamp (seconds).
+    pub fn to_timestamp(&self, use_local: bool) -> Option<f64> {
         let year: i32 = self.year.parse().ok()?;
         let month: u32 = self.month.parse().ok()?;
         let day: u32 = self.day.parse().ok()?;
@@ -208,11 +219,26 @@ impl DateTimePickerState {
         let minute: u32 = self.minute.parse().ok()?;
         let second: u32 = self.second.parse().ok()?;
 
-        use chrono::{TimeZone, Utc};
-        let dt = Utc.with_ymd_and_hms(year, month, day, hour, minute, second);
-        match dt {
-            chrono::LocalResult::Single(dt) => Some(dt.timestamp() as f64),
-            _ => None,
+        if use_local {
+            // Construct a JS Date from local components and read back UTC millis
+            let d = js_sys::Date::new_0();
+            d.set_full_year(year as u32);
+            d.set_month(month.checked_sub(1)?); // JS months are 0-based
+            d.set_date(day);
+            d.set_hours(hour);
+            d.set_minutes(minute);
+            d.set_seconds(second);
+            d.set_milliseconds(0);
+            let ts = d.get_time(); // UTC milliseconds
+            if ts.is_nan() { return None; }
+            Some(ts / 1000.0)
+        } else {
+            use chrono::{TimeZone, Utc};
+            let dt = Utc.with_ymd_and_hms(year, month, day, hour, minute, second);
+            match dt {
+                chrono::LocalResult::Single(dt) => Some(dt.timestamp() as f64),
+                _ => None,
+            }
         }
     }
 

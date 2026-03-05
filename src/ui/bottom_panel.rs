@@ -710,9 +710,24 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     let major_interval = tick_config.major_interval;
     let minor_interval = (major_interval / tick_config.minor_divisions as i64).max(1);
 
-    // Align to tick boundaries (use integer timestamps for ticks)
-    let first_tick = ((view_start as i64) / minor_interval) * minor_interval;
-    let last_tick = (((view_end as i64) / minor_interval) + 1) * minor_interval;
+    // When displaying local time, align ticks to local boundaries instead of
+    // UTC boundaries.  For example, day ticks should land on local midnight,
+    // not UTC midnight.  We obtain the browser's timezone offset and shift
+    // into local seconds for alignment, then shift back to UTC for plotting.
+    let tz_offset_secs: i64 = if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(view_start * 1000.0);
+        // getTimezoneOffset() returns minutes positive-west; convert to
+        // seconds-east so that local = utc + tz_offset_secs.
+        -(d.get_timezone_offset() as i64) * 60
+    } else {
+        0
+    };
+
+    let local_start = view_start as i64 + tz_offset_secs;
+    let local_end = view_end as i64 + tz_offset_secs;
+    let first_tick = (local_start / minor_interval) * minor_interval - tz_offset_secs;
+    let last_tick = ((local_end / minor_interval) + 1) * minor_interval - tz_offset_secs;
 
     // Draw tick marks
     let mut tick = first_tick;
@@ -720,7 +735,8 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         let x = ts_to_x(tick as f64);
 
         if x >= rect.left() && x <= rect.right() {
-            let is_major = tick % major_interval == 0;
+            let local_tick = tick + tz_offset_secs;
+            let is_major = local_tick % major_interval == 0;
             let tick_height = if is_major { 12.0 } else { 6.0 };
             let tick_color = if is_major {
                 tl_colors::tick_major(dark)
@@ -1036,8 +1052,12 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// Format a timestamp (f64 unix seconds) for display with sub-second precision
 fn format_timestamp_full(ts: f64, use_local: bool) -> String {
-    let secs = ts.floor() as i64;
-    let millis = ((ts.fract()) * 1000.0).round() as u32;
+    let mut secs = ts.floor() as i64;
+    let mut millis = ((ts.fract()) * 1000.0).round() as u32;
+    if millis >= 1000 {
+        millis -= 1000;
+        secs += 1;
+    }
     let dt = DateTimeComponents::from_timestamp(secs, use_local);
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
@@ -1051,6 +1071,8 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
         return;
     }
 
+    let use_local = state.use_local_time;
+    let tz_label = if use_local { "Local" } else { "UTC" };
     let popup_id = ui.make_persistent_id("datetime_picker_popup");
 
     egui::Area::new(popup_id)
@@ -1061,7 +1083,7 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.set_min_width(280.0);
 
                 ui.vertical(|ui| {
-                    ui.heading("Jump to Date/Time (UTC)");
+                    ui.heading(format!("Jump to Date/Time ({tz_label})"));
                     ui.add_space(8.0);
 
                     // Date row
@@ -1108,13 +1130,13 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
                                 .desired_width(25.0)
                                 .hint_text("SS"),
                         );
-                        ui.label("UTC");
+                        ui.label(tz_label);
                     });
 
                     ui.add_space(12.0);
 
                     // Validation feedback
-                    let valid_ts = state.datetime_picker.to_timestamp();
+                    let valid_ts = state.datetime_picker.to_timestamp(use_local);
                     if valid_ts.is_none() {
                         ui.colored_label(Color32::from_rgb(255, 100, 100), "Invalid date/time");
                     }
@@ -1180,7 +1202,7 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
         );
 
         if timestamp_btn.clicked() {
-            state.datetime_picker.init_from_timestamp(selected_ts);
+            state.datetime_picker.init_from_timestamp(selected_ts, use_local);
         }
 
         if timestamp_btn.hovered() {
