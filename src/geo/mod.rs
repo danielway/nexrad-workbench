@@ -1,7 +1,7 @@
 //! Geographic layer system for map overlays.
 //!
 //! This module provides functionality for loading and rendering geographic
-//! features such as state boundaries, county lines, rivers, cities, etc.
+//! features such as state boundaries and county lines.
 
 mod layer;
 mod projection;

@@ -23,16 +23,10 @@
 //! └── scan_index - Per-scan metadata with completeness tracking
 //! ```
 
-#[allow(dead_code)]
-pub mod facade;
-#[allow(dead_code)]
-pub mod keys;
-#[allow(dead_code)]
-pub mod record_cache;
-pub mod sites;
-
-#[allow(dead_code)]
-pub mod indexeddb;
+pub(crate) mod facade;
+pub(crate) mod indexeddb;
+pub(crate) mod keys;
+pub(crate) mod sites;
 
 // Re-export static site data
 pub use sites::{all_sites_sorted, get_site, NEXRAD_SITES};

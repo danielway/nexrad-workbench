@@ -26,11 +26,6 @@ impl StorageSettings {
     /// localStorage key for persisting settings.
     const STORAGE_KEY: &'static str = "nexrad_storage_settings";
 
-    /// Creates new storage settings with default values.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Sets the quota and automatically calculates eviction target (80% of quota).
     pub fn set_quota(&mut self, quota_bytes: u64) {
         self.quota_bytes = quota_bytes;
@@ -91,11 +86,6 @@ impl StorageSettings {
         } else {
             log::info!("Saved storage settings to localStorage");
         }
-    }
-
-    /// Format quota as human-readable string.
-    pub fn format_quota(&self) -> String {
-        format_bytes(self.quota_bytes)
     }
 
     /// Returns minimum quota (100 MB).

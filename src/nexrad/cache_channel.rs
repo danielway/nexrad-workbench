@@ -27,8 +27,6 @@ pub enum CacheLoadResult {
 /// Channel for async cache loading operations.
 ///
 /// Allows the UI to request metadata loading from IndexedDB without blocking.
-/// The sender/receiver pattern enables the async operation to complete
-/// while the UI continues rendering.
 pub struct CacheLoadChannel {
     /// Receiver for completed cache loads
     receiver: Rc<RefCell<Option<CacheLoadResult>>>,
@@ -53,9 +51,7 @@ impl CacheLoadChannel {
     /// Initiates an async load of timeline metadata for a site.
     ///
     /// If a load is already in progress, this call is ignored.
-    /// Results can be retrieved via `try_recv()`.
     pub fn load_site_timeline(&self, ctx: Context, facade: DataFacade, site_id: String) {
-        // Don't start a new load if one is in progress
         if *self.loading.borrow() {
             log::debug!("Cache load already in progress, ignoring request");
             return;
@@ -69,7 +65,6 @@ impl CacheLoadChannel {
             let t_total = web_time::Instant::now();
             log::info!("Loading cache metadata for site: {}", site_id);
 
-            // Query scan index
             let site = SiteId::new(&site_id);
             let start = UnixMillis(0);
             let end = UnixMillis::now();
@@ -78,29 +73,21 @@ impl CacheLoadChannel {
                 Ok(scan_entries) => {
                     let list_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-                    // Convert ScanIndexEntry to ScanMetadata for UI compatibility
                     let metadata: Vec<ScanMetadata> = scan_entries
                         .iter()
-                        .map(|entry| {
-                            use super::types::ScanKey;
-                            ScanMetadata {
-                                key: ScanKey::new(
-                                    &entry.scan.site.0,
-                                    entry.scan.scan_start.as_secs(),
-                                ),
-                                file_name: entry.file_name.clone().unwrap_or_default(),
-                                file_size: entry.total_size_bytes,
-                                end_timestamp: entry.end_timestamp_secs,
-                                vcp: entry.vcp.clone(),
-                                completeness: Some(entry.completeness()),
-                                present_records: Some(entry.present_records),
-                                expected_records: entry.expected_records,
-                                sweeps: entry.sweeps.clone(),
-                            }
+                        .map(|entry| ScanMetadata {
+                            key: entry.scan.clone(),
+                            file_name: entry.file_name.clone().unwrap_or_default(),
+                            file_size: entry.total_size_bytes,
+                            end_timestamp: entry.end_timestamp_secs,
+                            vcp: entry.vcp.clone(),
+                            completeness: Some(entry.completeness()),
+                            present_records: Some(entry.present_records),
+                            expected_records: entry.expected_records,
+                            sweeps: entry.sweeps.clone(),
                         })
                         .collect();
 
-                    // Also calculate total cache size across all sites
                     let total_cache_size = facade.total_cache_size().await.unwrap_or(0);
 
                     let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
@@ -127,23 +114,17 @@ impl CacheLoadChannel {
             *receiver.borrow_mut() = Some(result);
             *loading.borrow_mut() = false;
 
-            // Request a repaint to process the result
             ctx.request_repaint();
         });
     }
 
     /// Non-blocking receive for cache load results.
-    ///
-    /// Returns `Some(result)` if a cache load has completed, `None` otherwise.
     pub fn try_recv(&self) -> Option<CacheLoadResult> {
         self.receiver.borrow_mut().take()
     }
 
     /// Clears all cached data.
-    ///
-    /// After clearing, the cache size will be 0 and timeline will be empty.
     pub fn clear_cache(&self, ctx: Context, facade: DataFacade) {
-        // Don't start if a load is in progress
         if *self.loading.borrow() {
             log::debug!("Cache operation in progress, ignoring clear request");
             return;

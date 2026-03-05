@@ -82,7 +82,7 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                         );
 
                         // Request repaint during fade
-                        if age_ms >= FADE_START_MS && age_ms < DISMISS_MS {
+                        if (FADE_START_MS..DISMISS_MS).contains(&age_ms) {
                             ui.ctx().request_repaint();
                         }
                     }

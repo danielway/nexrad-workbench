@@ -214,9 +214,8 @@ fn render_polygon_label(
 
     // Style based on layer type
     let (base_size, color) = match layer_type {
-        GeoLayerType::States => (12.0, Color32::from_rgb(220, 220, 240)), // Larger, brighter
-        GeoLayerType::Counties => (8.0, Color32::from_rgb(100, 100, 115)), // Smaller, dimmer
-        _ => (10.0, Color32::from_rgb(180, 180, 200)),
+        GeoLayerType::States => (12.0, Color32::from_rgb(220, 220, 240)),
+        GeoLayerType::Counties => (8.0, Color32::from_rgb(100, 100, 115)),
     };
 
     // Scale font size with zoom, clamped to reasonable range

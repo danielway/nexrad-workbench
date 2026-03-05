@@ -2,7 +2,6 @@
 
 use eframe::egui::Color32;
 use geo_types::Coord;
-use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use shapefile::dbase::FieldValue;
 use std::io::Cursor;
 
@@ -11,11 +10,6 @@ use std::io::Cursor;
 pub enum GeoLayerType {
     States,
     Counties,
-    Rivers,
-    Lakes,
-    Cities,
-    Roads,
-    Coastline,
 }
 
 impl GeoLayerType {
@@ -24,11 +18,6 @@ impl GeoLayerType {
         match self {
             GeoLayerType::States => Color32::from_rgb(100, 100, 120),
             GeoLayerType::Counties => Color32::from_rgb(70, 70, 90),
-            GeoLayerType::Rivers => Color32::from_rgb(60, 100, 180),
-            GeoLayerType::Lakes => Color32::from_rgb(50, 90, 160),
-            GeoLayerType::Cities => Color32::from_rgb(200, 200, 100),
-            GeoLayerType::Roads => Color32::from_rgb(120, 100, 80),
-            GeoLayerType::Coastline => Color32::from_rgb(80, 80, 100),
         }
     }
 
@@ -37,11 +26,6 @@ impl GeoLayerType {
         match self {
             GeoLayerType::States => 1.5,
             GeoLayerType::Counties => 0.8,
-            GeoLayerType::Rivers => 1.0,
-            GeoLayerType::Lakes => 1.0,
-            GeoLayerType::Cities => 0.0, // Points, not lines
-            GeoLayerType::Roads => 0.5,
-            GeoLayerType::Coastline => 1.2,
         }
     }
 
@@ -50,32 +34,20 @@ impl GeoLayerType {
         match self {
             GeoLayerType::States => 0.0,
             GeoLayerType::Counties => 1.5,
-            GeoLayerType::Rivers => 0.5,
-            GeoLayerType::Lakes => 0.5,
-            GeoLayerType::Cities => 1.0,
-            GeoLayerType::Roads => 2.5,
-            GeoLayerType::Coastline => 0.0,
         }
     }
 
     /// Minimum zoom level at which labels for this layer become visible.
-    /// Labels require higher zoom than the layer itself.
     pub fn min_label_zoom(&self) -> f32 {
         match self {
             GeoLayerType::States => 0.0,
-            GeoLayerType::Counties => 3.0, // Labels appear after more zooming
-            GeoLayerType::Rivers => 1.5,
-            GeoLayerType::Lakes => 1.5,
-            GeoLayerType::Cities => 1.5,
-            GeoLayerType::Roads => 3.0,
-            GeoLayerType::Coastline => 0.0,
+            GeoLayerType::Counties => 3.0,
         }
     }
 }
 
 /// A geographic feature that can be rendered.
 #[derive(Debug, Clone)]
-#[allow(dead_code, clippy::type_complexity)] // holes field is part of data model; complex type for polygon coords
 pub enum GeoFeature {
     /// A series of connected line segments (for boundaries, rivers, etc.)
     LineString(Vec<Coord<f64>>),
@@ -84,11 +56,13 @@ pub enum GeoFeature {
     /// A closed polygon with optional label
     Polygon {
         exterior: Vec<Coord<f64>>,
+        #[allow(dead_code)] // Part of polygon data model
         holes: Vec<Vec<Coord<f64>>>,
         label: Option<String>,
     },
     /// Multiple polygons with optional label
     MultiPolygon {
+        #[allow(clippy::type_complexity)]
         polygons: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)>,
         label: Option<String>,
     },
@@ -136,9 +110,6 @@ impl GeoLayer {
     }
 
     /// Loads features from a shapefile (.shp and .dbf bytes).
-    ///
-    /// The shp_bytes should be the contents of the .shp file.
-    /// The dbf_bytes should be the contents of the .dbf file (for attribute data like names).
     pub fn load_from_shapefile(
         &mut self,
         shp_bytes: &[u8],
@@ -165,7 +136,6 @@ impl GeoLayer {
                 records
                     .get(idx)
                     .and_then(|record: &shapefile::dbase::Record| {
-                        // Try common name fields
                         for field_name in &["NAME", "name", "Name", "NAMELSAD", "FULLNAME"] {
                             if let Some(FieldValue::Character(Some(s))) = record.get(field_name) {
                                 return Some(s.trim().to_string());
@@ -175,222 +145,84 @@ impl GeoLayer {
                     })
             });
 
-            if let Some(feature) = self.convert_shapefile_shape(&shape, label) {
+            if let Some(feature) = convert_shapefile_shape(&shape, label) {
                 self.features.push(feature);
             }
         }
 
         Ok(())
     }
+}
 
-    fn convert_shapefile_shape(
-        &self,
-        shape: &shapefile::Shape,
-        label: Option<String>,
-    ) -> Option<GeoFeature> {
-        match shape {
-            shapefile::Shape::Point(p) => {
-                let coord = Coord { x: p.x, y: p.y };
-                Some(GeoFeature::Point(coord, label))
+fn convert_shapefile_shape(
+    shape: &shapefile::Shape,
+    label: Option<String>,
+) -> Option<GeoFeature> {
+    match shape {
+        shapefile::Shape::Point(p) => {
+            let coord = Coord { x: p.x, y: p.y };
+            Some(GeoFeature::Point(coord, label))
+        }
+        shapefile::Shape::Polyline(pl) => {
+            let parts = pl.parts();
+            if parts.len() == 1 {
+                let coords: Vec<Coord<f64>> =
+                    parts[0].iter().map(|p| Coord { x: p.x, y: p.y }).collect();
+                Some(GeoFeature::LineString(coords))
+            } else {
+                let lines: Vec<Vec<Coord<f64>>> = parts
+                    .iter()
+                    .map(|part: &Vec<shapefile::Point>| {
+                        part.iter().map(|p| Coord { x: p.x, y: p.y }).collect()
+                    })
+                    .collect();
+                Some(GeoFeature::MultiLineString(lines))
             }
-            shapefile::Shape::Polyline(pl) => {
-                let parts = pl.parts();
-                if parts.len() == 1 {
-                    let coords: Vec<Coord<f64>> =
-                        parts[0].iter().map(|p| Coord { x: p.x, y: p.y }).collect();
-                    Some(GeoFeature::LineString(coords))
-                } else {
-                    let lines: Vec<Vec<Coord<f64>>> = parts
-                        .iter()
-                        .map(|part: &Vec<shapefile::Point>| {
-                            part.iter().map(|p| Coord { x: p.x, y: p.y }).collect()
-                        })
-                        .collect();
-                    Some(GeoFeature::MultiLineString(lines))
-                }
-            }
-            shapefile::Shape::Polygon(poly) => {
-                // Shapefile polygons can have multiple outer rings (disconnected parts)
-                // and inner rings (holes). We need to separate them properly.
-                use shapefile::PolygonRing;
+        }
+        shapefile::Shape::Polygon(poly) => {
+            use shapefile::PolygonRing;
 
-                let mut outer_rings: Vec<Vec<Coord<f64>>> = Vec::new();
-                let mut current_holes: Vec<Vec<Coord<f64>>> = Vec::new();
+            let mut outer_rings: Vec<Vec<Coord<f64>>> = Vec::new();
+            let mut current_holes: Vec<Vec<Coord<f64>>> = Vec::new();
 
-                for ring in poly.rings() {
-                    let coords: Vec<Coord<f64>> = ring
-                        .points()
-                        .iter()
-                        .map(|p| Coord { x: p.x, y: p.y })
-                        .collect();
+            for ring in poly.rings() {
+                let coords: Vec<Coord<f64>> = ring
+                    .points()
+                    .iter()
+                    .map(|p| Coord { x: p.x, y: p.y })
+                    .collect();
 
-                    match ring {
-                        PolygonRing::Outer(_) => {
-                            outer_rings.push(coords);
-                        }
-                        PolygonRing::Inner(_) => {
-                            current_holes.push(coords);
-                        }
+                match ring {
+                    PolygonRing::Outer(_) => {
+                        outer_rings.push(coords);
+                    }
+                    PolygonRing::Inner(_) => {
+                        current_holes.push(coords);
                     }
                 }
-
-                if outer_rings.is_empty() {
-                    return None;
-                }
-
-                // If single outer ring, return Polygon; otherwise MultiPolygon
-                if outer_rings.len() == 1 {
-                    Some(GeoFeature::Polygon {
-                        exterior: outer_rings.remove(0),
-                        holes: current_holes,
-                        label,
-                    })
-                } else {
-                    // Multiple outer rings = MultiPolygon
-                    // Note: This simplified approach doesn't associate holes with their outer rings
-                    #[allow(clippy::type_complexity)]
-                    let polygons: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)> = outer_rings
-                        .into_iter()
-                        .map(|ext| (ext, Vec::new()))
-                        .collect();
-                    Some(GeoFeature::MultiPolygon { polygons, label })
-                }
             }
-            shapefile::Shape::NullShape => None,
-            _ => None,
-        }
-    }
 
-    /// Loads features from GeoJSON data.
-    pub fn load_from_geojson(&mut self, geojson_str: &str) -> Result<(), String> {
-        let geojson: GeoJson = geojson_str
-            .parse()
-            .map_err(|e| format!("Failed to parse GeoJSON: {}", e))?;
+            if outer_rings.is_empty() {
+                return None;
+            }
 
-        match geojson {
-            GeoJson::FeatureCollection(fc) => {
-                self.load_feature_collection(fc);
-            }
-            GeoJson::Feature(f) => {
-                if let Some(feature) = self.convert_feature(&f) {
-                    self.features.push(feature);
-                }
-            }
-            GeoJson::Geometry(g) => {
-                if let Some(feature) = self.convert_geometry(&g, None) {
-                    self.features.push(feature);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn load_feature_collection(&mut self, fc: FeatureCollection) {
-        for feature in fc.features {
-            if let Some(geo_feature) = self.convert_feature(&feature) {
-                self.features.push(geo_feature);
-            }
-        }
-    }
-
-    fn convert_feature(&self, feature: &Feature) -> Option<GeoFeature> {
-        let label = feature
-            .properties
-            .as_ref()
-            .and_then(|p| p.get("name").or_else(|| p.get("NAME")))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        feature
-            .geometry
-            .as_ref()
-            .and_then(|g| self.convert_geometry(g, label))
-    }
-
-    fn convert_geometry(&self, geometry: &Geometry, label: Option<String>) -> Option<GeoFeature> {
-        match &geometry.value {
-            Value::Point(coords) => {
-                let coord = Coord {
-                    x: coords[0],
-                    y: coords[1],
-                };
-                Some(GeoFeature::Point(coord, label))
-            }
-            Value::MultiPoint(points) => {
-                // Convert MultiPoint to multiple Point features
-                // For simplicity, we treat the first point as the representative
-                if let Some(coords) = points.first() {
-                    let coord = Coord {
-                        x: coords[0],
-                        y: coords[1],
-                    };
-                    Some(GeoFeature::Point(coord, label))
-                } else {
-                    None
-                }
-            }
-            Value::LineString(coords) => {
-                let line: Vec<Coord<f64>> =
-                    coords.iter().map(|c| Coord { x: c[0], y: c[1] }).collect();
-                Some(GeoFeature::LineString(line))
-            }
-            Value::MultiLineString(lines) => {
-                let multi: Vec<Vec<Coord<f64>>> = lines
-                    .iter()
-                    .map(|line| line.iter().map(|c| Coord { x: c[0], y: c[1] }).collect())
-                    .collect();
-                Some(GeoFeature::MultiLineString(multi))
-            }
-            Value::Polygon(rings) => {
-                if rings.is_empty() {
-                    return None;
-                }
-                let exterior: Vec<Coord<f64>> = rings[0]
-                    .iter()
-                    .map(|c| Coord { x: c[0], y: c[1] })
-                    .collect();
-                let holes: Vec<Vec<Coord<f64>>> = rings[1..]
-                    .iter()
-                    .map(|ring| ring.iter().map(|c| Coord { x: c[0], y: c[1] }).collect())
-                    .collect();
+            if outer_rings.len() == 1 {
                 Some(GeoFeature::Polygon {
-                    exterior,
-                    holes,
+                    exterior: outer_rings.remove(0),
+                    holes: current_holes,
                     label,
                 })
-            }
-            Value::MultiPolygon(polygons) => {
+            } else {
                 #[allow(clippy::type_complexity)]
-                let polygons: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)> = polygons
-                    .iter()
-                    .filter_map(|rings| {
-                        if rings.is_empty() {
-                            return None;
-                        }
-                        let exterior: Vec<Coord<f64>> = rings[0]
-                            .iter()
-                            .map(|c| Coord { x: c[0], y: c[1] })
-                            .collect();
-                        let holes: Vec<Vec<Coord<f64>>> = rings[1..]
-                            .iter()
-                            .map(|ring| ring.iter().map(|c| Coord { x: c[0], y: c[1] }).collect())
-                            .collect();
-                        Some((exterior, holes))
-                    })
+                let polygons: Vec<(Vec<Coord<f64>>, Vec<Vec<Coord<f64>>>)> = outer_rings
+                    .into_iter()
+                    .map(|ext| (ext, Vec::new()))
                     .collect();
                 Some(GeoFeature::MultiPolygon { polygons, label })
             }
-            Value::GeometryCollection(geometries) => {
-                // For geometry collections, just take the first convertible geometry
-                for g in geometries {
-                    if let Some(feature) = self.convert_geometry(g, label.clone()) {
-                        return Some(feature);
-                    }
-                }
-                None
-            }
         }
+        shapefile::Shape::NullShape => None,
+        _ => None,
     }
 }
 
@@ -399,11 +231,6 @@ impl GeoLayer {
 pub struct GeoLayerSet {
     pub states: Option<GeoLayer>,
     pub counties: Option<GeoLayer>,
-    pub rivers: Option<GeoLayer>,
-    pub lakes: Option<GeoLayer>,
-    pub cities: Option<GeoLayer>,
-    pub roads: Option<GeoLayer>,
-    pub coastline: Option<GeoLayer>,
 }
 
 impl GeoLayerSet {
@@ -414,29 +241,9 @@ impl GeoLayerSet {
 
     /// Returns an iterator over all loaded layers.
     pub fn iter(&self) -> impl Iterator<Item = &GeoLayer> {
-        [
-            self.coastline.as_ref(),
-            self.states.as_ref(),
-            self.counties.as_ref(),
-            self.lakes.as_ref(),
-            self.rivers.as_ref(),
-            self.roads.as_ref(),
-            self.cities.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-    }
-
-    /// Loads a layer from GeoJSON string.
-    pub fn load_layer(
-        &mut self,
-        layer_type: GeoLayerType,
-        geojson_str: &str,
-    ) -> Result<(), String> {
-        let mut layer = GeoLayer::new(layer_type);
-        layer.load_from_geojson(geojson_str)?;
-        self.set_layer(layer_type, layer);
-        Ok(())
+        [self.states.as_ref(), self.counties.as_ref()]
+            .into_iter()
+            .flatten()
     }
 
     /// Loads a layer from shapefile bytes.
@@ -448,19 +255,10 @@ impl GeoLayerSet {
     ) -> Result<(), String> {
         let mut layer = GeoLayer::new(layer_type);
         layer.load_from_shapefile(shp_bytes, dbf_bytes)?;
-        self.set_layer(layer_type, layer);
-        Ok(())
-    }
-
-    fn set_layer(&mut self, layer_type: GeoLayerType, layer: GeoLayer) {
         match layer_type {
             GeoLayerType::States => self.states = Some(layer),
             GeoLayerType::Counties => self.counties = Some(layer),
-            GeoLayerType::Rivers => self.rivers = Some(layer),
-            GeoLayerType::Lakes => self.lakes = Some(layer),
-            GeoLayerType::Cities => self.cities = Some(layer),
-            GeoLayerType::Roads => self.roads = Some(layer),
-            GeoLayerType::Coastline => self.coastline = Some(layer),
         }
+        Ok(())
     }
 }

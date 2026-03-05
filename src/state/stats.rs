@@ -63,12 +63,6 @@ impl PipelineStatus {
             || (now - self.last_render_done_ms) < Self::LINGER_MS
     }
 
-    /// Mark a download as completed (timestamp the finish).
-    pub fn mark_download_done(&mut self) {
-        self.last_download_done_ms = js_sys::Date::now();
-        self.ever_active = true;
-    }
-
     /// Mark store phase as completed.
     pub fn mark_store_done(&mut self) {
         self.storing = false;
@@ -200,15 +194,6 @@ impl SessionStats {
         });
     }
 
-    /// Record a decode time sample, updating the running average.
-    pub fn record_decode_time(&mut self, ms: f64) {
-        const ALPHA: f64 = 0.2;
-        self.median_decode_time_ms = Some(match self.median_decode_time_ms {
-            Some(avg) => avg * (1.0 - ALPHA) + ms * ALPHA,
-            None => ms,
-        });
-    }
-
     /// Format latency statistics for display.
     pub fn format_latency_stats(&self) -> String {
         let mut parts = Vec::new();
@@ -278,30 +263,10 @@ impl DownloadProgress {
             || !self.pending_timestamps.is_empty()
     }
 
-    /// Remove a timestamp from the pending list (scan has loaded).
-    pub fn remove_pending(&mut self, ts: i64) {
-        self.pending_timestamps.retain(|&t| t != ts);
-    }
-
     /// Reset all progress state.
     pub fn clear(&mut self) {
         *self = Self::default();
     }
 }
 
-/// Format bytes into a human-readable string.
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.1} KB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
-}
+use super::settings::format_bytes;

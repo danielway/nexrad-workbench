@@ -239,80 +239,6 @@ impl TimeModel {
     }
 }
 
-/// Timeline bounds per PRODUCT.md specification.
-///
-/// The timeline has hard bounds: right = now + epsilon, left = start of NEXRAD data.
-/// Zoom level governs which operations are available.
-#[derive(Clone)]
-pub struct TimelineBounds {
-    /// Absolute left bound (start of NEXRAD data: ~1991).
-    pub hard_left: f64,
-
-    /// Small buffer beyond "now" for right bound (seconds).
-    pub right_epsilon: f64,
-
-    /// Minimum zoom level (px/sec) for playback to be enabled.
-    /// Below this, playback is disabled to avoid overwhelming data acquisition.
-    pub playback_min_zoom: f64,
-
-    /// Minimum zoom level for real-time mode to be available.
-    pub realtime_min_zoom: f64,
-
-    /// Maximum historical window for real-time mode (seconds).
-    /// In real-time mode, left bound is constrained to now - this value.
-    pub realtime_history_window: f64,
-}
-
-impl Default for TimelineBounds {
-    fn default() -> Self {
-        Self {
-            // NEXRAD data started ~1991
-            hard_left: 662688000.0, // 1991-01-01 00:00:00 UTC
-            // 5 minute buffer beyond now
-            right_epsilon: 300.0,
-            // Playback requires at least 0.1 px/sec (~3 hours visible in 1000px)
-            playback_min_zoom: 0.1,
-            // Real-time requires at least 0.5 px/sec (~30 min visible in 1000px)
-            realtime_min_zoom: 0.5,
-            // Real-time mode shows up to 1 hour of history
-            realtime_history_window: 3600.0,
-        }
-    }
-}
-
-impl TimelineBounds {
-    /// Get the current right bound (now + epsilon).
-    pub fn hard_right(&self) -> f64 {
-        TimeModel::wall_clock_time() + self.right_epsilon
-    }
-
-    /// Check if playback is allowed at the given zoom level.
-    pub fn is_playback_allowed(&self, zoom: f64) -> bool {
-        zoom >= self.playback_min_zoom
-    }
-
-    /// Check if real-time mode is allowed at the given zoom level.
-    pub fn is_realtime_allowed(&self, zoom: f64) -> bool {
-        zoom >= self.realtime_min_zoom
-    }
-
-    /// Clamp a view position to valid bounds.
-    pub fn clamp_view_start(&self, view_start: f64, view_width_secs: f64) -> f64 {
-        let max_start = self.hard_right() - view_width_secs;
-        view_start.clamp(self.hard_left, max_start.max(self.hard_left))
-    }
-
-    /// Clamp a playback position to valid bounds.
-    pub fn clamp_playback_position(&self, position: f64) -> f64 {
-        position.clamp(self.hard_left, self.hard_right())
-    }
-
-    /// Get the left bound for real-time mode (now - history window).
-    pub fn realtime_left_bound(&self) -> f64 {
-        TimeModel::wall_clock_time() - self.realtime_history_window
-    }
-}
-
 /// State for playback controls.
 pub struct PlaybackState {
     /// Whether playback is currently active
@@ -320,9 +246,6 @@ pub struct PlaybackState {
 
     /// Time model (playback position, bounds, loop mode)
     pub time_model: TimeModel,
-
-    /// Timeline bounds (hard limits, zoom restrictions)
-    pub bounds: TimelineBounds,
 
     /// Current playback speed
     pub speed: PlaybackSpeed,
@@ -369,7 +292,6 @@ impl Default for PlaybackState {
         Self {
             playing: false,
             time_model: TimeModel::at_position(now),
-            bounds: TimelineBounds::default(),
             speed: PlaybackSpeed::default(),
             timeline_zoom: zoom,
             timeline_view_start: now - view_width_secs / 2.0,
@@ -386,10 +308,6 @@ impl Default for PlaybackState {
 }
 
 impl PlaybackState {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn new_at_time(now: f64) -> Self {
         let zoom = 0.15;
         let view_width_secs = 1000.0 / zoom;
@@ -404,12 +322,6 @@ impl PlaybackState {
     /// Get the current playback position (convenience accessor).
     pub fn playback_position(&self) -> f64 {
         self.time_model.playback_position
-    }
-
-    /// Get playback position as Option for compatibility with old code.
-    /// Always returns Some in the new model.
-    pub fn selected_timestamp(&self) -> Option<f64> {
-        Some(self.time_model.playback_position)
     }
 
     /// Set playback position (convenience method).
@@ -431,24 +343,10 @@ impl PlaybackState {
         self.timeline_view_start = ts - self.view_width_secs() / 2.0;
     }
 
-    /// Toggle playback on/off.
-    pub fn toggle_playback(&mut self) {
-        // Only allow playback if zoom permits
-        if self.bounds.is_playback_allowed(self.timeline_zoom) {
-            self.playing = !self.playing;
-        } else {
-            self.playing = false;
-        }
-    }
-
-    /// Check if playback is allowed at current zoom.
+    /// Check if playback is allowed at current zoom level.
+    /// Playback requires at least 0.1 px/sec (~3 hours visible in 1000px).
     pub fn is_playback_allowed(&self) -> bool {
-        self.bounds.is_playback_allowed(self.timeline_zoom)
-    }
-
-    /// Check if real-time mode is allowed at current zoom.
-    pub fn is_realtime_allowed(&self) -> bool {
-        self.bounds.is_realtime_allowed(self.timeline_zoom)
+        self.timeline_zoom >= 0.1
     }
 
     /// Advance playback by delta time.
@@ -488,23 +386,6 @@ impl PlaybackState {
         if let Some((start, end)) = self.selection_range() {
             self.time_model.set_bounds_from_selection(start, end);
         }
-    }
-
-    /// Get the visible time range at current zoom.
-    pub fn visible_time_range(&self, view_width_pixels: f64) -> (f64, f64) {
-        let duration = view_width_pixels / self.timeline_zoom;
-        (
-            self.timeline_view_start,
-            self.timeline_view_start + duration,
-        )
-    }
-
-    /// Clamp view to bounds after pan/zoom.
-    pub fn clamp_view_to_bounds(&mut self, view_width_pixels: f64) {
-        let duration = view_width_pixels / self.timeline_zoom;
-        self.timeline_view_start = self
-            .bounds
-            .clamp_view_start(self.timeline_view_start, duration);
     }
 
     /// Get data duration in seconds.

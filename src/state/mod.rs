@@ -6,18 +6,14 @@
 
 mod layer;
 mod live_mode;
-#[allow(dead_code)]
 mod playback;
 mod preferences;
-pub mod radar_data;
-#[allow(dead_code)]
+pub(crate) mod radar_data;
 mod settings;
-#[allow(dead_code)]
 mod stats;
-pub mod theme;
-pub mod url_state;
-pub mod vcp;
-#[allow(dead_code)]
+pub(crate) mod theme;
+pub(crate) mod url_state;
+pub(crate) mod vcp;
 mod viz;
 
 pub use layer::{GeoLayerVisibility, LayerState};

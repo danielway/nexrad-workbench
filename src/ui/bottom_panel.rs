@@ -210,7 +210,7 @@ fn render_radar_data(
                                 }
 
                                 // Highlight the actively rendered sweep
-                                let is_active = active_sweep.map_or(false, |(scan_ts, elev_num)| {
+                                let is_active = active_sweep.is_some_and(|(scan_ts, elev_num)| {
                                     scan.start_time as i64 == scan_ts
                                         && sweep.elevation_number == elev_num
                                 });
@@ -1354,14 +1354,12 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
         {
             state.download_selection_requested = true;
         }
-    } else {
-        if ui
-            .button(RichText::new("\u{2B07} Download").size(11.0))
-            .on_hover_text("Download the scan at the current playback position")
-            .clicked()
-        {
-            state.download_at_position_requested = true;
-        }
+    } else if ui
+        .button(RichText::new("\u{2B07} Download").size(11.0))
+        .on_hover_text("Download the scan at the current playback position")
+        .clicked()
+    {
+        state.download_at_position_requested = true;
     }
 
     ui.separator();

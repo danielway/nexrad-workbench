@@ -330,10 +330,11 @@ impl RadarTimeline {
         let scans = metadata_list
             .into_iter()
             .map(|meta| {
-                let start_time = meta.key.timestamp as f64;
+                let ts_secs = meta.key.scan_start.as_secs();
+                let start_time = ts_secs as f64;
                 let end_time = meta
                     .end_timestamp
-                    .unwrap_or(meta.key.timestamp + DEFAULT_SCAN_DURATION_SECS)
+                    .unwrap_or(ts_secs + DEFAULT_SCAN_DURATION_SECS)
                     as f64;
 
                 // Convert persisted sweep metadata to timeline Sweep structs

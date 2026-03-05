@@ -143,15 +143,13 @@ pub fn extract_sweep_data_from_sorted(
 fn moment_params(product: Product, radial: &Radial) -> Option<(f64, f64, usize, f32, f32, u8)> {
     if let Some(m) = product.moment_data(radial) {
         Some((m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset(), m.data_word_size()))
-    } else if let Some(m) = product.cfp_moment_data(radial) {
-        Some((m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset(), m.data_word_size()))
     } else {
-        None
+        product.cfp_moment_data(radial).map(|m| (m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset(), m.data_word_size()))
     }
 }
 
 /// Get raw byte slice from a radial's moment data for a given product.
-fn moment_raw_values<'a>(product: Product, radial: &'a Radial) -> Option<&'a [u8]> {
+fn moment_raw_values(product: Product, radial: &Radial) -> Option<&[u8]> {
     if let Some(m) = product.moment_data(radial) {
         Some(m.raw_values())
     } else if let Some(m) = product.cfp_moment_data(radial) {

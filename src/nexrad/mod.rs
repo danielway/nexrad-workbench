@@ -9,11 +9,11 @@ mod archive_index;
 mod cache_channel;
 mod decode_worker;
 mod download;
-pub mod gpu_renderer;
+pub(crate) mod gpu_renderer;
 mod realtime;
 pub(crate) mod record_decode;
-#[allow(dead_code)]
 mod types;
+mod worker_api;
 
 pub use archive_index::ArchiveIndex;
 pub use cache_channel::{CacheLoadChannel, CacheLoadResult};

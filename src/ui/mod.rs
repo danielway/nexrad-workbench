@@ -9,7 +9,7 @@
 
 mod bottom_panel;
 mod canvas;
-pub mod colors;
+pub(crate) mod colors;
 mod left_panel;
 mod right_panel;
 mod shortcuts;

@@ -77,30 +77,6 @@ impl IndexedDbRecordStore {
     // Sweep operations
     // ========================================================================
 
-    /// Stores a pre-computed sweep blob.
-    pub async fn put_sweep(&self, key: &str, data: &[u8]) -> Result<(), String> {
-        self.ensure_open().await?;
-        let db = self.get_db()?;
-
-        let tx = db
-            .transaction_with_str_and_mode(STORE_SWEEPS, IdbTransactionMode::Readwrite)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        let store = tx
-            .object_store(STORE_SWEEPS)
-            .map_err(|e| format!("Failed to get sweeps store: {:?}", e))?;
-
-        let array = Uint8Array::from(data);
-        let buffer = array.buffer();
-
-        store
-            .put_with_key(&buffer, &JsValue::from_str(key))
-            .map_err(|e| format!("Failed to put sweep: {:?}", e))?;
-
-        wait_for_transaction(&tx).await?;
-        Ok(())
-    }
-
     /// Stores multiple pre-computed sweep blobs in a single IDB transaction.
     ///
     /// Batches all writes into one readwrite transaction to avoid per-transaction
@@ -201,29 +177,6 @@ impl IndexedDbRecordStore {
         Ok(())
     }
 
-    /// Updates sweep metadata on an existing scan index entry.
-    pub async fn update_scan_sweep_meta(
-        &self,
-        scan: &ScanKey,
-        end_timestamp_secs: i64,
-        sweeps: Vec<SweepMeta>,
-    ) -> Result<bool, String> {
-        self.ensure_open().await?;
-
-        let existing = self.scan_availability(scan).await?;
-
-        let Some(mut entry) = existing else {
-            return Ok(false);
-        };
-
-        entry.end_timestamp_secs = Some(end_timestamp_secs);
-        entry.sweeps = Some(sweeps);
-        entry.updated_at = UnixMillis::now();
-
-        self.put_scan_index_entry(&entry).await?;
-        Ok(true)
-    }
-
     /// Gets scan availability information.
     pub async fn scan_availability(
         &self,
@@ -248,54 +201,6 @@ impl IndexedDbRecordStore {
 
         let result = wait_for_request(&request).await?;
         Ok(deserialize_js_value(&result))
-    }
-
-    /// Gets availability ranges for a site within a time window.
-    pub async fn availability_ranges(
-        &self,
-        site: &SiteId,
-        start: UnixMillis,
-        end: UnixMillis,
-    ) -> Result<Vec<TimeRange>, String> {
-        self.ensure_open().await?;
-        let db = self.get_db()?;
-
-        let tx = db
-            .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readonly)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        let store = tx
-            .object_store(STORE_SCAN_INDEX)
-            .map_err(|e| format!("Failed to get store: {:?}", e))?;
-
-        let request = store
-            .get_all()
-            .map_err(|e| format!("Failed to get all: {:?}", e))?;
-
-        let result = wait_for_request(&request).await?;
-        let array = Array::from(&result);
-
-        let mut ranges = Vec::new();
-        for i in 0..array.length() {
-            let value = array.get(i);
-            if let Ok(json_str) = js_sys::JSON::stringify(&value) {
-                if let Some(s) = json_str.as_string() {
-                    if let Ok(entry) = serde_json::from_str::<ScanIndexEntry>(&s) {
-                        if entry.scan.site.0 != site.0 {
-                            continue;
-                        }
-
-                        let scan_time = entry.scan.scan_start;
-                        if scan_time >= start && scan_time <= end {
-                            let scan_end = UnixMillis(scan_time.0 + 5 * 60 * 1000);
-                            ranges.push(TimeRange::new(scan_time, scan_end));
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(merge_time_ranges(ranges, 15 * 60 * 1000))
     }
 
     /// Lists all scans for a site within a time window.
@@ -346,20 +251,6 @@ impl IndexedDbRecordStore {
         Ok(scans)
     }
 
-    /// Updates scan index with expected record count (from VCP).
-    pub async fn set_expected_records(&self, scan: &ScanKey, expected: u32) -> Result<(), String> {
-        self.ensure_open().await?;
-
-        let existing = self.scan_availability(scan).await?;
-        let mut entry = existing.unwrap_or_else(|| ScanIndexEntry::new(scan.clone()));
-
-        entry.expected_records = Some(expected);
-        entry.updated_at = UnixMillis::now();
-
-        self.put_scan_index_entry(&entry).await?;
-        Ok(())
-    }
-
     /// Gets total cache size across all scans.
     pub async fn total_cache_size(&self) -> Result<u64, String> {
         self.ensure_open().await?;
@@ -393,21 +284,6 @@ impl IndexedDbRecordStore {
         }
 
         Ok(total)
-    }
-
-    /// Updates the last_accessed_at timestamp for a scan (LRU tracking).
-    pub async fn touch_scan(&self, scan: &ScanKey) -> Result<(), String> {
-        self.ensure_open().await?;
-
-        let existing = self.scan_availability(scan).await?;
-
-        let Some(mut entry) = existing else {
-            return Ok(());
-        };
-
-        entry.last_accessed_at = UnixMillis::now();
-        self.put_scan_index_entry(&entry).await?;
-        Ok(())
     }
 
     /// Gets scans sorted by last_accessed_at (oldest first) for LRU eviction.

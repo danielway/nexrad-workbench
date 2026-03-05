@@ -18,9 +18,6 @@ impl SiteId {
         Self(id.into())
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 impl fmt::Display for SiteId {
@@ -61,9 +58,6 @@ impl UnixMillis {
         self.0 / 1000
     }
 
-    pub fn as_millis(&self) -> i64 {
-        self.0
-    }
 }
 
 impl fmt::Display for UnixMillis {
@@ -150,10 +144,6 @@ impl SweepDataKey {
         )
     }
 
-    /// Returns the key prefix for all sweeps in a scan: "SITE|SCAN_MS|"
-    pub fn prefix_for_scan(scan: &ScanKey) -> String {
-        format!("{}|{}|", scan.site.0, scan.scan_start.0)
-    }
 }
 
 impl fmt::Display for SweepDataKey {
@@ -175,14 +165,6 @@ pub enum GateValues {
 }
 
 impl GateValues {
-    /// Number of gate values.
-    pub fn len(&self) -> usize {
-        match self {
-            GateValues::U8(v) => v.len(),
-            GateValues::U16(v) => v.len(),
-        }
-    }
-
     /// Bytes per gate value (1 or 2).
     pub fn word_size(&self) -> u8 {
         match self {
@@ -282,77 +264,6 @@ impl PrecomputedSweep {
         buf
     }
 
-    /// Deserialize from binary blob.
-    pub fn from_bytes(data: &[u8]) -> Result<Self, String> {
-        if data.len() < HEADER_SIZE {
-            return Err(format!(
-                "Sweep blob too small: {} < {} header",
-                data.len(),
-                HEADER_SIZE
-            ));
-        }
-
-        let azimuth_count = u32::from_le_bytes(data[0..4].try_into().unwrap());
-        let gate_count = u32::from_le_bytes(data[4..8].try_into().unwrap());
-        let first_gate_range_km = f64::from_le_bytes(data[8..16].try_into().unwrap());
-        let gate_interval_km = f64::from_le_bytes(data[16..24].try_into().unwrap());
-        let max_range_km = f64::from_le_bytes(data[24..32].try_into().unwrap());
-        let scale = f32::from_le_bytes(data[32..36].try_into().unwrap());
-        let offset = f32::from_le_bytes(data[36..40].try_into().unwrap());
-        let radial_count = u32::from_le_bytes(data[40..44].try_into().unwrap());
-        let data_word_size = data[44];
-        // 45..48 reserved
-        let mean_elevation = f32::from_le_bytes(data[48..52].try_into().unwrap());
-        // 52..56 alignment pad
-        let sweep_start_secs = f64::from_le_bytes(data[56..64].try_into().unwrap());
-        let sweep_end_secs = f64::from_le_bytes(data[64..72].try_into().unwrap());
-
-        let az = azimuth_count as usize;
-        let gc = gate_count as usize;
-        let ws = data_word_size as usize;
-        let expected = HEADER_SIZE + az * 4 + az * gc * ws;
-        if data.len() < expected {
-            return Err(format!(
-                "Sweep blob too small: {} < {} expected",
-                data.len(),
-                expected
-            ));
-        }
-
-        let mut pos = HEADER_SIZE;
-
-        let azimuths = read_f32_slice(data, pos, az);
-        pos += az * 4;
-
-        let gate_values = if data_word_size == 1 {
-            GateValues::U8(data[pos..pos + az * gc].to_vec())
-        } else {
-            GateValues::U16(read_u16_slice(data, pos, az * gc))
-        };
-
-        Ok(Self {
-            azimuth_count,
-            gate_count,
-            first_gate_range_km,
-            gate_interval_km,
-            max_range_km,
-            scale,
-            offset,
-            radial_count,
-            mean_elevation,
-            sweep_start_secs,
-            sweep_end_secs,
-            azimuths,
-            gate_values,
-        })
-    }
-
-    /// Total size in bytes when serialized.
-    pub fn byte_size(&self) -> usize {
-        let az = self.azimuth_count as usize;
-        let ws = self.gate_values.word_size() as usize;
-        HEADER_SIZE + az * 4 + az * self.gate_count as usize * ws
-    }
 }
 
 /// Parsed header from a serialized sweep blob, with byte offsets for zero-copy access.
@@ -422,28 +333,6 @@ pub fn parse_sweep_header(data: &[u8]) -> Result<SweepHeader, String> {
         azimuths_offset: azimuths_offset as u32,
         gate_values_offset: gate_values_offset as u32,
     })
-}
-
-fn read_f32_slice(data: &[u8], offset: usize, count: usize) -> Vec<f32> {
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
-        let start = offset + i * 4;
-        out.push(f32::from_le_bytes(
-            data[start..start + 4].try_into().unwrap(),
-        ));
-    }
-    out
-}
-
-fn read_u16_slice(data: &[u8], offset: usize, count: usize) -> Vec<u16> {
-    let mut out = Vec::with_capacity(count);
-    for i in 0..count {
-        let start = offset + i * 2;
-        out.push(u16::from_le_bytes(
-            data[start..start + 2].try_into().unwrap(),
-        ));
-    }
-    out
 }
 
 /// Completeness state for a scan.
@@ -587,56 +476,6 @@ pub const ALL_PRODUCTS: &[&str] = &[
     "differential_phase",
 ];
 
-/// A time range with start and end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TimeRange {
-    pub start: UnixMillis,
-    pub end: UnixMillis,
-}
-
-impl TimeRange {
-    pub fn new(start: UnixMillis, end: UnixMillis) -> Self {
-        Self { start, end }
-    }
-
-    pub fn contains(&self, time: UnixMillis) -> bool {
-        time >= self.start && time <= self.end
-    }
-
-    pub fn overlaps(&self, other: &TimeRange) -> bool {
-        self.start <= other.end && other.start <= self.end
-    }
-
-    pub fn duration_millis(&self) -> i64 {
-        self.end.0 - self.start.0
-    }
-}
-
-/// Merge adjacent/overlapping time ranges.
-pub fn merge_time_ranges(mut ranges: Vec<TimeRange>, gap_threshold_ms: i64) -> Vec<TimeRange> {
-    if ranges.is_empty() {
-        return ranges;
-    }
-
-    ranges.sort_by_key(|r| r.start.0);
-
-    let mut merged = Vec::with_capacity(ranges.len());
-    let mut current = ranges[0];
-
-    for range in ranges.into_iter().skip(1) {
-        // Merge if overlapping or within gap threshold
-        if range.start.0 <= current.end.0 + gap_threshold_ms {
-            current.end = UnixMillis(current.end.0.max(range.end.0));
-        } else {
-            merged.push(current);
-            current = range;
-        }
-    }
-    merged.push(current);
-
-    merged
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,7 +492,7 @@ mod tests {
     #[test]
     fn test_scan_key_from_secs() {
         let key = ScanKey::from_secs("KDMX", 1700000000);
-        assert_eq!(key.scan_start.as_millis(), 1700000000000);
+        assert_eq!(key.scan_start.0, 1700000000000);
         assert_eq!(key.to_storage_key(), "KDMX|1700000000000");
     }
 
@@ -700,25 +539,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_merge_time_ranges() {
-        let ranges = vec![
-            TimeRange::new(UnixMillis(1000), UnixMillis(2000)),
-            TimeRange::new(UnixMillis(1500), UnixMillis(2500)), // Overlapping
-            TimeRange::new(UnixMillis(5000), UnixMillis(6000)), // Gap
-            TimeRange::new(UnixMillis(6100), UnixMillis(7000)), // Small gap (100ms)
-        ];
-
-        // With 200ms gap threshold, should merge last two
-        let merged = merge_time_ranges(ranges.clone(), 200);
-        assert_eq!(merged.len(), 2);
-        assert_eq!(merged[0].start.0, 1000);
-        assert_eq!(merged[0].end.0, 2500);
-        assert_eq!(merged[1].start.0, 5000);
-        assert_eq!(merged[1].end.0, 7000);
-
-        // With 50ms gap threshold, should not merge last two
-        let merged = merge_time_ranges(ranges, 50);
-        assert_eq!(merged.len(), 3);
-    }
 }

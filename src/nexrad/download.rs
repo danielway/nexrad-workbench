@@ -4,8 +4,8 @@
 //! with egui's synchronous update loop.
 
 use super::archive_index::{current_timestamp_secs, ArchiveFileMeta, ArchiveListing};
-use super::types::{CachedScan, DownloadResult, ScanKey};
-use crate::data::{DataFacade, ScanCompleteness, ScanKey as DataScanKey};
+use super::types::{CachedScan, DownloadResult};
+use crate::data::{DataFacade, ScanCompleteness, ScanKey};
 use chrono::NaiveDate;
 use eframe::egui;
 use std::cell::RefCell;
@@ -119,30 +119,6 @@ impl DownloadChannel {
         self.stats.clone()
     }
 
-    /// Spawns an async download task for NEXRAD data.
-    ///
-    /// The download pipeline:
-    /// 1. Check cache for existing data
-    /// 2. If not cached, download from AWS S3 using nexrad-data
-    /// 3. Cache the result
-    /// 4. Send through channel
-    pub fn download(
-        &self,
-        ctx: egui::Context,
-        site_id: String,
-        date: chrono::NaiveDate,
-        facade: DataFacade,
-    ) {
-        let sender = self.sender.clone();
-        let stats = self.stats.clone();
-
-        wasm_bindgen_futures::spawn_local(async move {
-            let result = download_nexrad_data(&site_id, date, facade, stats).await;
-            let _ = sender.send(result);
-            ctx.request_repaint();
-        });
-    }
-
     /// Download a specific file from the archive by name.
     ///
     /// Returns false if the download is already pending.
@@ -237,9 +213,6 @@ impl DownloadChannel {
     }
 
     /// Non-blocking check for a completed download.
-    ///
-    /// Returns Some(result) if a download completed,
-    /// None if no result is ready yet.
     pub fn try_recv(&self) -> Option<DownloadResult> {
         self.receiver.try_recv().ok()
     }
@@ -270,13 +243,12 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
             let timestamp = ArchiveFileMeta::parse_timestamp_from_name(&name, &date)?;
             Some(ArchiveFileMeta {
                 name,
-                size: 0, // Size not available from listing API
+                size: 0,
                 timestamp,
             })
         })
         .collect();
 
-    // Sort by timestamp
     file_metas.sort_by_key(|f| f.timestamp);
 
     log::info!(
@@ -307,28 +279,23 @@ async fn download_specific_file(
 ) -> DownloadResult {
     use nexrad::data::aws::archive;
 
-    let key = ScanKey::new(site_id, timestamp);
-
     // Check cache first (no network call).
-    // In the worker architecture, we only need to know the scan exists in IDB.
-    // The worker will read records directly when it renders.
-    let scan_key = DataScanKey::from_secs(site_id, timestamp);
-    if let Ok(Some(entry)) = facade.cache().scan_availability(&scan_key).await {
+    let scan_key = ScanKey::from_secs(site_id, timestamp);
+    if let Ok(Some(entry)) = facade.scan_availability(&scan_key).await {
         if entry.completeness() == ScanCompleteness::Complete {
-            log::info!("Cache hit for {}", key.to_storage_key());
-            // Return cache hit with empty data — the worker reads from IDB directly.
-            let cached = CachedScan::new(key, file_name.to_string(), vec![]);
+            log::info!("Cache hit for {}", scan_key);
+            let cached = CachedScan::new(site_id, timestamp, file_name.to_string(), vec![]);
             return DownloadResult::CacheHit(cached);
         }
     }
 
-    log::info!("Cache miss for {}", key.to_storage_key());
+    log::info!("Cache miss, downloading: {}", file_name);
 
     // Request 1: List files to find the one we want
     stats.request_started();
     let files = match archive::list_files(site_id, &date).await {
         Ok(files) => {
-            stats.request_completed(0); // Listing doesn't count toward bytes transferred
+            stats.request_completed(0);
             files
         }
         Err(e) => {
@@ -345,90 +312,6 @@ async fn download_specific_file(
         }
     };
 
-    log::info!("Downloading: {}", file_name);
-
-    // Request 2: Download the file (with timing)
-    stats.request_started();
-    let fetch_start = web_time::Instant::now();
-    let file = match archive::download_file(file_meta).await {
-        Ok(file) => file,
-        Err(e) => {
-            stats.request_completed(0);
-            return DownloadResult::Error(format!("Download failed: {}", e));
-        }
-    };
-    let fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0;
-
-    let data = file.data().to_vec();
-    let bytes_downloaded = data.len() as u64;
-    log::info!("Downloaded {} bytes in {:.0}ms", bytes_downloaded, fetch_ms);
-
-    // Return raw bytes — the worker will split, probe, and store in IDB.
-    let cached = CachedScan::new(key, file_name.to_string(), data);
-
-    stats.request_completed(bytes_downloaded);
-    DownloadResult::Success {
-        scan: cached,
-        fetch_latency_ms: fetch_ms,
-        decode_latency_ms: 0.0,
-    }
-}
-
-/// Performs the actual NEXRAD download using nexrad-data crate.
-async fn download_nexrad_data(
-    site_id: &str,
-    date: chrono::NaiveDate,
-    facade: DataFacade,
-    stats: NetworkStats,
-) -> DownloadResult {
-    use nexrad::data::aws::archive;
-
-    // Request 1: List available files for this site/date
-    stats.request_started();
-    let files = match archive::list_files(site_id, &date).await {
-        Ok(files) => {
-            stats.request_completed(0); // Listing doesn't count toward bytes transferred
-            files
-        }
-        Err(e) => {
-            stats.request_completed(0);
-            return DownloadResult::Error(format!("Failed to list files: {}", e));
-        }
-    };
-
-    if files.is_empty() {
-        return DownloadResult::Error(format!("No files available for {} on {}", site_id, date));
-    }
-
-    // Get the most recent file (last volume scan available for this date)
-    let file_meta = files.last().unwrap().clone();
-    let file_name = file_meta.name().to_string();
-
-    // Parse the actual timestamp from the filename (e.g., KDMX20260228_034158_V06)
-    let timestamp =
-        ArchiveFileMeta::parse_timestamp_from_name(&file_name, &date).unwrap_or_else(|| {
-            log::warn!("Could not parse timestamp from filename: {}", file_name);
-            date.and_hms_opt(0, 0, 0)
-                .map(|dt| dt.and_utc().timestamp())
-                .unwrap_or(0)
-        });
-
-    let key = ScanKey::new(site_id, timestamp);
-
-    // Check cache first (no network call).
-    let scan_key = DataScanKey::from_secs(site_id, timestamp);
-    if let Ok(Some(entry)) = facade.cache().scan_availability(&scan_key).await {
-        if entry.completeness() == ScanCompleteness::Complete {
-            log::info!("Cache hit for {}", key.to_storage_key());
-            let file_name = entry.file_name.unwrap_or_default();
-            let cached = CachedScan::new(key, file_name, vec![]);
-            return DownloadResult::CacheHit(cached);
-        }
-    }
-
-    log::info!("Cache miss for {}", key.to_storage_key());
-    log::info!("Downloading: {}", file_name);
-
     // Request 2: Download the file
     stats.request_started();
     let fetch_start = web_time::Instant::now();
@@ -441,13 +324,11 @@ async fn download_nexrad_data(
     };
     let fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0;
 
-    // Get the raw compressed data from the file
     let data = file.data().to_vec();
     let bytes_downloaded = data.len() as u64;
     log::info!("Downloaded {} bytes in {:.0}ms", bytes_downloaded, fetch_ms);
 
-    // Return raw bytes — the worker will split, probe, and store in IDB.
-    let cached = CachedScan::new(key, file_name, data);
+    let cached = CachedScan::new(site_id, timestamp, file_name.to_string(), data);
 
     stats.request_completed(bytes_downloaded);
     DownloadResult::Success {
