@@ -18,7 +18,7 @@ use wasm_bindgen::JsCast;
 use web_sys::{IdbDatabase, IdbRequest, IdbTransaction, IdbTransactionMode};
 
 /// Current database schema version.
-const DATABASE_VERSION: u32 = 2;
+const DATABASE_VERSION: u32 = 3;
 
 /// Database name.
 const DATABASE_NAME: &str = "nexrad-workbench";
@@ -608,23 +608,21 @@ async fn open_database() -> Result<IdbDatabase, String> {
             .expect("Expected IdbRequest");
         let db: IdbDatabase = request.result().unwrap().dyn_into().unwrap();
 
-        // Delete old stores from v1 if they exist
+        // Delete all existing stores and recreate — breaking schema change
         let store_names = db.object_store_names();
-        for old_store in ["records", "record_index"] {
-            if store_names.contains(old_store) {
-                db.delete_object_store(old_store)
-                    .expect("Failed to delete old object store");
-                log::info!("Deleted old IndexedDB store: {}", old_store);
+        for i in 0..store_names.length() {
+            if let Some(name) = store_names.get(i) {
+                db.delete_object_store(&name)
+                    .expect("Failed to delete object store");
+                log::info!("Deleted IndexedDB store: {}", name);
             }
         }
 
-        // Create new stores if they don't exist
+        // Create fresh stores
         for store_name in [STORE_SWEEPS, STORE_SCAN_INDEX] {
-            if !store_names.contains(store_name) {
-                db.create_object_store(store_name)
-                    .expect("Failed to create object store");
-                log::info!("Created IndexedDB store: {}", store_name);
-            }
+            db.create_object_store(store_name)
+                .expect("Failed to create object store");
+            log::info!("Created IndexedDB store: {}", store_name);
         }
     }) as Box<dyn FnMut(_)>);
 

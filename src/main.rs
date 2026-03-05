@@ -539,11 +539,11 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
         let blob_len = blob_buffer.byte_length();
 
-        // Parse header only (48 bytes) — no array allocations
+        // Parse header only (72 bytes) — no array allocations
         let t_deser = web_time::Instant::now();
         let header_bytes = {
-            let view = js_sys::Uint8Array::new_with_byte_offset_and_length(&blob_buffer, 0, 48);
-            let mut buf = [0u8; 48];
+            let view = js_sys::Uint8Array::new_with_byte_offset_and_length(&blob_buffer, 0, 72);
+            let mut buf = [0u8; 72];
             view.copy_to(&mut buf);
             buf
         };
@@ -554,7 +554,8 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // Validate full blob size
         let az = header.azimuth_count as usize;
         let gc = header.gate_count as usize;
-        let expected = header.gate_values_offset as usize + az * gc * 4;
+        let ws = header.data_word_size as usize;
+        let expected = header.gate_values_offset as usize + az * gc * ws;
         if (blob_len as usize) < expected {
             return Err(wasm_bindgen::JsValue::from_str(&format!(
                 "Sweep blob too small: {} < {} expected",
@@ -563,34 +564,33 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         }
         let deser_ms = t_deser.elapsed().as_secs_f64() * 1000.0;
 
-        // Zero-copy marshal: create typed array views over raw IDB ArrayBuffer,
-        // then slice() to create independent transferable buffers.
+        // Marshal: create typed array views over raw IDB ArrayBuffer.
+        // Azimuths are zero-copy sliced; gate values need u8/u16→f32 conversion.
         let t_marshal = web_time::Instant::now();
 
         let az_view = js_sys::Float32Array::new_with_byte_offset_and_length(
             &blob_buffer, header.azimuths_offset, header.azimuth_count,
         );
-        let ts_view = js_sys::Float64Array::new_with_byte_offset_and_length(
-            &blob_buffer, header.timestamps_offset, header.azimuth_count,
-        );
-        let ea_view = js_sys::Float32Array::new_with_byte_offset_and_length(
-            &blob_buffer, header.elev_angles_offset, header.azimuth_count,
-        );
-        let gv_view = js_sys::Float32Array::new_with_byte_offset_and_length(
-            &blob_buffer, header.gate_values_offset, header.azimuth_count * header.gate_count,
-        );
-
-        // slice() creates independent ArrayBuffers for postMessage transfer
         let az_buf = az_view.slice(0, header.azimuth_count).buffer();
-        let ts_buf = ts_view.slice(0, header.azimuth_count).buffer();
-        let ea_buf = ea_view.slice(0, header.azimuth_count).buffer();
-        let val_buf = gv_view.slice(0, header.azimuth_count * header.gate_count).buffer();
+
+        // Convert native-width gate values to f32 for GPU upload.
+        // Float32Array(typedArray) copies and converts each element natively.
+        let gate_count_total = header.azimuth_count * header.gate_count;
+        let val_buf = if header.data_word_size == 1 {
+            let u8_view = js_sys::Uint8Array::new_with_byte_offset_and_length(
+                &blob_buffer, header.gate_values_offset, gate_count_total,
+            );
+            js_sys::Float32Array::new(&u8_view).buffer()
+        } else {
+            let u16_view = js_sys::Uint16Array::new_with_byte_offset_and_length(
+                &blob_buffer, header.gate_values_offset, gate_count_total,
+            );
+            js_sys::Float32Array::new(&u16_view).buffer()
+        };
 
         let result = js_sys::Object::new();
         js_sys::Reflect::set(&result, &"azimuths".into(), &az_buf).ok();
         js_sys::Reflect::set(&result, &"gateValues".into(), &val_buf).ok();
-        js_sys::Reflect::set(&result, &"timestamps".into(), &ts_buf).ok();
-        js_sys::Reflect::set(&result, &"elevationAngles".into(), &ea_buf).ok();
         js_sys::Reflect::set(&result, &"azimuthCount".into(), &wasm_bindgen::JsValue::from(header.azimuth_count)).ok();
         js_sys::Reflect::set(&result, &"gateCount".into(), &wasm_bindgen::JsValue::from(header.gate_count)).ok();
         js_sys::Reflect::set(&result, &"firstGateRangeKm".into(), &wasm_bindgen::JsValue::from(header.first_gate_range_km)).ok();
@@ -600,6 +600,9 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         js_sys::Reflect::set(&result, &"radialCount".into(), &wasm_bindgen::JsValue::from(header.radial_count)).ok();
         js_sys::Reflect::set(&result, &"scale".into(), &wasm_bindgen::JsValue::from(header.scale as f64)).ok();
         js_sys::Reflect::set(&result, &"offset".into(), &wasm_bindgen::JsValue::from(header.offset as f64)).ok();
+        js_sys::Reflect::set(&result, &"meanElevation".into(), &wasm_bindgen::JsValue::from(header.mean_elevation as f64)).ok();
+        js_sys::Reflect::set(&result, &"sweepStartSecs".into(), &wasm_bindgen::JsValue::from(header.sweep_start_secs)).ok();
+        js_sys::Reflect::set(&result, &"sweepEndSecs".into(), &wasm_bindgen::JsValue::from(header.sweep_end_secs)).ok();
 
         let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
@@ -1605,24 +1608,12 @@ impl eframe::App for WorkbenchApp {
                         }
 
                         // Refine canvas overlay with precise decoded data
-                        if !result.timestamps.is_empty() {
-                            let start = result
-                                .timestamps
-                                .iter()
-                                .copied()
-                                .fold(f64::INFINITY, f64::min);
-                            let end = result
-                                .timestamps
-                                .iter()
-                                .copied()
-                                .fold(f64::NEG_INFINITY, f64::max);
-                            let mean_elev = if !result.elevation_angles.is_empty() {
-                                result.elevation_angles.iter().sum::<f32>()
-                                    / result.elevation_angles.len() as f32
-                            } else {
-                                self.state.viz_state.target_elevation
-                            };
-                            self.update_overlay_from_sweep(start, end, mean_elev);
+                        if result.sweep_start_secs > 0.0 {
+                            self.update_overlay_from_sweep(
+                                result.sweep_start_secs,
+                                result.sweep_end_secs,
+                                result.mean_elevation,
+                            );
                         }
                     }
                     nexrad::WorkerOutcome::WorkerError { id, message } => {

@@ -3,10 +3,10 @@
 //! Provides functions to decompress and decode individual LDM records
 //! into radials, and to extract pre-computed sweep data from radials.
 
-use crate::data::keys::PrecomputedSweep;
+use crate::data::keys::{GateValues, PrecomputedSweep};
 use ::nexrad::model::data::Radial;
-use nexrad_model::data::DataMoment;
 use nexrad_data::volume::Record;
+use nexrad_model::data::DataMoment;
 use nexrad_render::Product;
 
 /// Sub-timings for the decode pipeline.
@@ -84,7 +84,8 @@ pub fn extract_elevation_numbers(radials: &[Radial]) -> Vec<u8> {
 /// Extract a pre-computed sweep from decoded radials for a given elevation and product.
 ///
 /// Filters radials to the target elevation/product, sorts by azimuth, and
-/// bulk-converts raw gate values to f32. Returns `None` if no matching radials.
+/// stores raw gate values in native width (u8 or u16). Returns `None` if no
+/// matching radials.
 ///
 /// For bulk extraction of many (elevation, product) pairs, prefer
 /// `extract_sweep_data_from_sorted` with pre-grouped radials for better performance.
@@ -94,7 +95,6 @@ pub fn extract_sweep_data(
     elevation_number: u8,
     product: Product,
 ) -> Option<PrecomputedSweep> {
-    // Filter to matching elevation + product
     let mut target: Vec<&Radial> = radials
         .iter()
         .filter(|r| {
@@ -107,93 +107,13 @@ pub fn extract_sweep_data(
         return None;
     }
 
-    // Sort by azimuth for GPU rendering efficiency
     target.sort_by(|a, b| {
         a.azimuth_angle_degrees()
             .partial_cmp(&b.azimuth_angle_degrees())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let radial_count = target.len();
-
-    // Extract gate params + scale/offset from first radial's moment
-    let (first_gate_range_km, gate_interval_km, gate_count, scale, offset) = {
-        let r = target[0];
-        if let Some(m) = product.moment_data(r) {
-            (
-                m.first_gate_range_km(),
-                m.gate_interval_km(),
-                m.gate_count() as usize,
-                m.scale(),
-                m.offset(),
-            )
-        } else if let Some(m) = product.cfp_moment_data(r) {
-            (
-                m.first_gate_range_km(),
-                m.gate_interval_km(),
-                m.gate_count() as usize,
-                m.scale(),
-                m.offset(),
-            )
-        } else {
-            return None;
-        }
-    };
-
-    let azimuth_count = target.len();
-    let total = azimuth_count * gate_count;
-    let mut azimuths = Vec::with_capacity(azimuth_count);
-    let mut timestamps = Vec::with_capacity(azimuth_count);
-    let mut elevation_angles = Vec::with_capacity(azimuth_count);
-    let mut gate_values: Vec<f32> = vec![0.0; total]; // 0.0 = below threshold sentinel
-
-    for (row, radial) in target.iter().enumerate() {
-        azimuths.push(radial.azimuth_angle_degrees());
-        timestamps.push(radial.collection_timestamp() as f64);
-        elevation_angles.push(radial.elevation_angle_degrees());
-
-        let row_offset = row * gate_count;
-
-        // Get raw byte slice and word size, then bulk-convert
-        let (bytes, word_size) = if let Some(m) = product.moment_data(radial) {
-            (m.raw_values(), m.data_word_size())
-        } else if let Some(m) = product.cfp_moment_data(radial) {
-            (m.raw_values(), m.data_word_size())
-        } else {
-            continue;
-        };
-
-        let dest = &mut gate_values[row_offset..row_offset + gate_count];
-        if word_size == 16 {
-            let n = (bytes.len() / 2).min(gate_count);
-            for i in 0..n {
-                let raw = u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
-                dest[i] = raw as f32;
-            }
-        } else {
-            let n = bytes.len().min(gate_count);
-            for i in 0..n {
-                dest[i] = bytes[i] as f32;
-            }
-        }
-    }
-
-    let max_range_km = first_gate_range_km + (gate_count as f64) * gate_interval_km;
-
-    Some(PrecomputedSweep {
-        azimuth_count: azimuth_count as u32,
-        gate_count: gate_count as u32,
-        first_gate_range_km,
-        gate_interval_km,
-        max_range_km,
-        scale,
-        offset,
-        radial_count: radial_count as u32,
-        azimuths,
-        timestamps,
-        elevation_angles,
-        gate_values,
-    })
+    build_precomputed_sweep(&target, product)
 }
 
 /// Extract a pre-computed sweep from radials already filtered to one elevation
@@ -205,7 +125,6 @@ pub fn extract_sweep_data_from_sorted(
     sorted_radials: &[&Radial],
     product: Product,
 ) -> Option<PrecomputedSweep> {
-    // Filter to radials that have this product's moment data
     let target: Vec<&Radial> = sorted_radials
         .iter()
         .filter(|r| product.moment_data(r).is_some() || product.cfp_moment_data(r).is_some())
@@ -216,71 +135,85 @@ pub fn extract_sweep_data_from_sorted(
         return None;
     }
 
-    // Already sorted by azimuth — no sort needed
-    let radial_count = target.len();
+    build_precomputed_sweep(&target, product)
+}
 
-    // Extract gate params from first radial's moment
-    let (first_gate_range_km, gate_interval_km, gate_count, scale, offset) = {
-        let r = target[0];
-        if let Some(m) = product.moment_data(r) {
-            (
-                m.first_gate_range_km(),
-                m.gate_interval_km(),
-                m.gate_count() as usize,
-                m.scale(),
-                m.offset(),
-            )
-        } else if let Some(m) = product.cfp_moment_data(r) {
-            (
-                m.first_gate_range_km(),
-                m.gate_interval_km(),
-                m.gate_count() as usize,
-                m.scale(),
-                m.offset(),
-            )
-        } else {
-            return None;
-        }
-    };
+/// Extract gate params from a radial's moment data for a given product.
+/// Returns (first_gate_range_km, gate_interval_km, gate_count, scale, offset, data_word_size).
+fn moment_params(product: Product, radial: &Radial) -> Option<(f64, f64, usize, f32, f32, u8)> {
+    if let Some(m) = product.moment_data(radial) {
+        Some((m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset(), m.data_word_size()))
+    } else if let Some(m) = product.cfp_moment_data(radial) {
+        Some((m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset(), m.data_word_size()))
+    } else {
+        None
+    }
+}
+
+/// Get raw byte slice from a radial's moment data for a given product.
+fn moment_raw_values<'a>(product: Product, radial: &'a Radial) -> Option<&'a [u8]> {
+    if let Some(m) = product.moment_data(radial) {
+        Some(m.raw_values())
+    } else if let Some(m) = product.cfp_moment_data(radial) {
+        Some(m.raw_values())
+    } else {
+        None
+    }
+}
+
+/// Build a PrecomputedSweep from a filtered, sorted list of radials.
+fn build_precomputed_sweep(
+    target: &[&Radial],
+    product: Product,
+) -> Option<PrecomputedSweep> {
+    let (first_gate_range_km, gate_interval_km, gate_count, scale, offset, data_word_size) =
+        moment_params(product, target[0])?;
 
     let azimuth_count = target.len();
     let total = azimuth_count * gate_count;
     let mut azimuths = Vec::with_capacity(azimuth_count);
-    let mut timestamps = Vec::with_capacity(azimuth_count);
-    let mut elevation_angles = Vec::with_capacity(azimuth_count);
-    let mut gate_values: Vec<f32> = vec![0.0; total];
+    let mut min_ts = f64::INFINITY;
+    let mut max_ts = f64::NEG_INFINITY;
+    let mut elev_sum: f64 = 0.0;
 
-    for (row, radial) in target.iter().enumerate() {
-        azimuths.push(radial.azimuth_angle_degrees());
-        timestamps.push(radial.collection_timestamp() as f64);
-        elevation_angles.push(radial.elevation_angle_degrees());
+    let gate_values = if data_word_size == 16 {
+        let mut vals: Vec<u16> = vec![0; total]; // 0 = below threshold sentinel
+        for (row, radial) in target.iter().enumerate() {
+            azimuths.push(radial.azimuth_angle_degrees());
+            let ts = radial.collection_timestamp() as f64;
+            if ts < min_ts { min_ts = ts; }
+            if ts > max_ts { max_ts = ts; }
+            elev_sum += radial.elevation_angle_degrees() as f64;
 
-        let row_offset = row * gate_count;
-
-        let (bytes, word_size) = if let Some(m) = product.moment_data(radial) {
-            (m.raw_values(), m.data_word_size())
-        } else if let Some(m) = product.cfp_moment_data(radial) {
-            (m.raw_values(), m.data_word_size())
-        } else {
-            continue;
-        };
-
-        let dest = &mut gate_values[row_offset..row_offset + gate_count];
-        if word_size == 16 {
-            let n = (bytes.len() / 2).min(gate_count);
-            for i in 0..n {
-                let raw = u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
-                dest[i] = raw as f32;
-            }
-        } else {
-            let n = bytes.len().min(gate_count);
-            for i in 0..n {
-                dest[i] = bytes[i] as f32;
+            if let Some(bytes) = moment_raw_values(product, radial) {
+                let dest = &mut vals[row * gate_count..(row + 1) * gate_count];
+                let n = (bytes.len() / 2).min(gate_count);
+                for i in 0..n {
+                    dest[i] = u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]]);
+                }
             }
         }
-    }
+        GateValues::U16(vals)
+    } else {
+        let mut vals: Vec<u8> = vec![0; total]; // 0 = below threshold sentinel
+        for (row, radial) in target.iter().enumerate() {
+            azimuths.push(radial.azimuth_angle_degrees());
+            let ts = radial.collection_timestamp() as f64;
+            if ts < min_ts { min_ts = ts; }
+            if ts > max_ts { max_ts = ts; }
+            elev_sum += radial.elevation_angle_degrees() as f64;
+
+            if let Some(bytes) = moment_raw_values(product, radial) {
+                let dest = &mut vals[row * gate_count..(row + 1) * gate_count];
+                let n = bytes.len().min(gate_count);
+                dest[..n].copy_from_slice(&bytes[..n]);
+            }
+        }
+        GateValues::U8(vals)
+    };
 
     let max_range_km = first_gate_range_km + (gate_count as f64) * gate_interval_km;
+    let mean_elevation = (elev_sum / azimuth_count as f64) as f32;
 
     Some(PrecomputedSweep {
         azimuth_count: azimuth_count as u32,
@@ -290,10 +223,11 @@ pub fn extract_sweep_data_from_sorted(
         max_range_km,
         scale,
         offset,
-        radial_count: radial_count as u32,
+        radial_count: azimuth_count as u32,
+        mean_elevation,
+        sweep_start_secs: min_ts,
+        sweep_end_secs: max_ts,
         azimuths,
-        timestamps,
-        elevation_angles,
         gate_values,
     })
 }

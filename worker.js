@@ -67,10 +67,8 @@ self.onmessage = async function (e) {
             });
 
             // Forward all result fields plus type/id; transfer float buffers zero-copy
-            const { azimuths, gateValues, timestamps, elevationAngles } = result;
+            const { azimuths, gateValues } = result;
             const transferList = [azimuths, gateValues];
-            if (timestamps) transferList.push(timestamps);
-            if (elevationAngles) transferList.push(elevationAngles);
             const payload = Object.assign({}, result, {
                 type: 'decoded',
                 id: msg.id,
