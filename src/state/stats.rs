@@ -254,6 +254,9 @@ pub struct DownloadProgress {
     /// Scan boundaries of files downloaded but still being ingested/decoded/rendered.
     /// Ghosts for these stay visible until processing completes.
     pub in_flight_scans: Vec<(i64, i64)>,
+    /// Scans that recently completed processing, with wall-clock completion time.
+    /// Used for brief flash animation. Entries older than 1s are pruned in render.
+    pub recently_completed: Vec<(i64, f64)>,
 }
 
 impl DownloadProgress {

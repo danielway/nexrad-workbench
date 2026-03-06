@@ -1067,6 +1067,31 @@ impl eframe::App for WorkbenchApp {
                         self.displayed_scan_timestamp = Some(result.context.timestamp_secs);
                         self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
 
+                        // Record chunk data timestamp for timeline tick marks
+                        self.state.live_mode_state.record_chunk_time(
+                            result.context.timestamp_secs as f64,
+                        );
+
+                        // Update live mode partial scan tracking
+                        if !result.elevations_completed.is_empty() {
+                            self.state.live_mode_state.record_elevations(
+                                &result.elevations_completed,
+                                result.context.timestamp_secs as f64,
+                            );
+                        }
+                        if let Some(ref vcp) = result.vcp {
+                            self.state.live_mode_state.record_vcp(
+                                vcp.number,
+                                vcp.elevations.len() as u8,
+                            );
+                        }
+
+                        // Track in-progress elevation for partial sweep visualization
+                        self.state.live_mode_state.record_in_progress_elevation(
+                            result.current_elevation,
+                            result.current_elevation_radials,
+                        );
+
                         // Refresh timeline when new elevations are written to cache
                         if !result.elevations_completed.is_empty() {
                             log::info!(

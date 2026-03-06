@@ -82,6 +82,10 @@ pub struct ChunkIngestResult {
     pub vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Total processing time in worker (ms).
     pub total_ms: f64,
+    /// Elevation number currently being accumulated (partial sweep in progress).
+    pub current_elevation: Option<u8>,
+    /// Number of radials received so far for the current in-progress elevation.
+    pub current_elevation_radials: Option<u32>,
 }
 
 /// Context for a render/decode request.
@@ -645,6 +649,16 @@ fn handle_chunk_ingested_message(
             .and_then(|v| v.as_string())
             .and_then(|s| serde_json::from_str(&s).ok());
 
+    // Parse current in-progress elevation info
+    let current_elevation = js_sys::Reflect::get(&result_obj, &"currentElevation".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|v| v as u8);
+    let current_elevation_radials = js_sys::Reflect::get(&result_obj, &"currentElevationRadials".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|v| v as u32);
+
     results
         .borrow_mut()
         .push(WorkerOutcome::ChunkIngested(ChunkIngestResult {
@@ -656,6 +670,8 @@ fn handle_chunk_ingested_message(
             sweeps,
             vcp,
             total_ms,
+            current_elevation,
+            current_elevation_radials,
         }));
 }
 

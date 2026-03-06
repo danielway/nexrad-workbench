@@ -24,8 +24,8 @@ enum DetailLevel {
     Sweeps,
 }
 
-/// Render radar data on the timeline at the appropriate detail level
-fn render_radar_data(
+/// Render scan blocks on the scan track (warm palette, VCP-based colors).
+fn render_scan_track(
     painter: &Painter,
     rect: &Rect,
     timeline: &RadarTimeline,
@@ -33,59 +33,8 @@ fn render_radar_data(
     view_end: f64,
     zoom: f64,
     detail_level: DetailLevel,
-    active_sweep: Option<(i64, u8)>,
-    target_elevation: f32,
 ) {
-    // Helper to convert timestamp to x position
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
-
-    // Color function based on VCP number with completeness as opacity modifier.
-    // Different VCPs get distinct hues; incomplete scans get reduced opacity.
-    let vcp_to_color = |vcp: u16, completeness: Option<ScanCompleteness>| -> (Color32, Color32) {
-        // Base color by VCP category — muted tones to avoid overwhelming at zoom
-        let (r, g, b) = match vcp {
-            // Precipitation modes (VCP 21x) — muted green
-            215 => (40, 90, 55),
-            212 => (45, 85, 60),
-            // Clear air modes (VCP 3x) — muted blue
-            31 | 32 | 35 => (40, 70, 110),
-            // Severe weather modes — muted orange
-            12 | 121 => (130, 75, 40),
-            // Other known VCPs — muted teal
-            _ if vcp > 0 => (45, 80, 80),
-            // Unknown (vcp == 0) — gray
-            _ => (60, 60, 60),
-        };
-
-        // Opacity based on completeness
-        let alpha = match completeness {
-            Some(ScanCompleteness::Complete) | None => 200u8,
-            Some(ScanCompleteness::PartialWithVcp) => 160,
-            Some(ScanCompleteness::PartialNoVcp) => 120,
-            Some(ScanCompleteness::Missing) => 60,
-        };
-
-        let fill = Color32::from_rgba_unmultiplied(r, g, b, alpha);
-        let border_alpha = (alpha as u16 * 7 / 10) as u8;
-        let border = Color32::from_rgba_unmultiplied(
-            (r as u16 * 7 / 10) as u8,
-            (g as u16 * 7 / 10) as u8,
-            (b as u16 * 7 / 10) as u8,
-            border_alpha,
-        );
-        (fill, border)
-    };
-
-    // Color function based on elevation angle (0-20 degrees typical range)
-    // Muted palette: lower elevations are darker, higher are slightly brighter
-    let elevation_to_color = |elevation: f32| -> Color32 {
-        let t = (elevation / 20.0).clamp(0.0, 1.0);
-        // Muted blue-gray to slate-blue range
-        let r = (35.0 + t * 30.0) as u8; // 35-65
-        let g = (55.0 + t * 50.0) as u8; // 55-105
-        let b = (50.0 + t * 45.0) as u8; // 50-95
-        Color32::from_rgb(r, g, b)
-    };
 
     match detail_level {
         DetailLevel::Solid => {
@@ -95,8 +44,7 @@ fn render_radar_data(
                 let x_end = ts_to_x(range.end).min(rect.right());
 
                 // Enforce minimum visual width for sub-pixel data regions
-                let visual_width = x_end - x_start;
-                let x_end = if visual_width > 0.0 && visual_width < 8.0 {
+                let x_end = if (x_end - x_start) > 0.0 && (x_end - x_start) < 8.0 {
                     (x_start + 8.0).min(rect.right())
                 } else {
                     x_end
@@ -109,162 +57,216 @@ fn render_radar_data(
                             Pos2::new(x_end, rect.bottom() - 2.0),
                         ),
                         2.0,
-                        Color32::from_rgba_unmultiplied(45, 80, 60, 140),
+                        tl_colors::scan_fill(0, None),
                     );
                 }
             }
         }
-        DetailLevel::Scans => {
-            // Draw individual scan blocks
+        DetailLevel::Scans | DetailLevel::Sweeps => {
             for scan in timeline.scans_in_range(view_start, view_end) {
                 let x_start = ts_to_x(scan.start_time).max(rect.left());
                 let x_end = ts_to_x(scan.end_time).min(rect.right());
+                let width = x_end - x_start;
 
-                if x_end > x_start && (x_end - x_start) > 1.0 {
-                    let scan_rect = Rect::from_min_max(
-                        Pos2::new(x_start, rect.top() + 3.0),
-                        Pos2::new(x_end, rect.bottom() - 3.0),
+                if width < 1.0 {
+                    continue;
+                }
+
+                let scan_rect = Rect::from_min_max(
+                    Pos2::new(x_start, rect.top() + 2.0),
+                    Pos2::new(x_end, rect.bottom() - 2.0),
+                );
+
+                let fill = tl_colors::scan_fill(scan.vcp, scan.completeness);
+                let border = tl_colors::scan_border(scan.vcp, scan.completeness);
+
+                // Missing: outline only with dashed effect
+                if scan.completeness == Some(ScanCompleteness::Missing) {
+                    painter.rect_stroke(scan_rect, 2.0, Stroke::new(1.0, border), StrokeKind::Inside);
+                } else {
+                    painter.rect_filled(scan_rect, 2.0, fill);
+                    painter.rect_stroke(scan_rect, 2.0, Stroke::new(1.0, border), StrokeKind::Inside);
+
+                    // Hatch pattern for PartialWithVcp
+                    if scan.completeness == Some(ScanCompleteness::PartialWithVcp) {
+                        let hatch_color = tl_colors::scan_hatch(scan.vcp);
+                        let spacing = 6.0;
+                        let mut offset = 0.0;
+                        while offset < width + scan_rect.height() {
+                            let x0 = scan_rect.left() + offset;
+                            let y0 = scan_rect.top();
+                            let x1 = x0 - scan_rect.height();
+                            let y1 = scan_rect.bottom();
+                            painter.line_segment(
+                                [
+                                    Pos2::new(x0.max(scan_rect.left()).min(scan_rect.right()), y0.max(scan_rect.top())),
+                                    Pos2::new(x1.max(scan_rect.left()).min(scan_rect.right()), y1.min(scan_rect.bottom())),
+                                ],
+                                Stroke::new(0.5, hatch_color),
+                            );
+                            offset += spacing;
+                        }
+                    }
+
+                    // PartialNoVcp: draw dashed border on top of filled rect
+                    if scan.completeness == Some(ScanCompleteness::PartialNoVcp) {
+                        // Already drew solid border above; the reduced alpha handles visual distinction
+                    }
+                }
+
+                // Single combined label: "VCP 212 15/17" — centered in block
+                // Only show when the block is wide enough to avoid overlap with
+                // neighboring blocks and time tick labels.
+                if width > 60.0 && scan.vcp > 0 {
+                    let is_partial = matches!(
+                        (scan.present_records, scan.expected_records),
+                        (Some(p), Some(e)) if e > 0 && p < e
                     );
-
-                    let (scan_fill, scan_stroke) = vcp_to_color(scan.vcp, scan.completeness);
-                    painter.rect_filled(scan_rect, 2.0, scan_fill);
-                    painter.rect_stroke(
-                        scan_rect,
-                        2.0,
-                        Stroke::new(1.0, scan_stroke),
-                        StrokeKind::Inside,
+                    let label = if is_partial {
+                        let (p, e) = (scan.present_records.unwrap(), scan.expected_records.unwrap());
+                        if width > 120.0 {
+                            format!("VCP {} {}/{}", scan.vcp, p, e)
+                        } else {
+                            format!("{} {}/{}", scan.vcp, p, e)
+                        }
+                    } else if width > 100.0 {
+                        let elev_count = scan.vcp_pattern.as_ref()
+                            .map(|v| v.elevations.len())
+                            .unwrap_or(scan.sweeps.len());
+                        if elev_count > 0 {
+                            format!("VCP {} ({})", scan.vcp, elev_count)
+                        } else {
+                            format!("VCP {}", scan.vcp)
+                        }
+                    } else {
+                        format!("{}", scan.vcp)
+                    };
+                    painter.text(
+                        scan_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        label,
+                        egui::FontId::monospace(7.0),
+                        Color32::from_rgba_unmultiplied(220, 220, 240, 180),
                     );
                 }
             }
         }
-        DetailLevel::Sweeps => {
-            // Draw scan blocks as background, with sweep blocks inside
-            for scan in timeline.scans_in_range(view_start, view_end) {
-                let scan_x_start = ts_to_x(scan.start_time).max(rect.left());
-                let scan_x_end = ts_to_x(scan.end_time).min(rect.right());
+    }
+}
 
-                if scan_x_end > scan_x_start && (scan_x_end - scan_x_start) > 1.0 {
-                    // Always draw the scan block as background
-                    let scan_rect = Rect::from_min_max(
-                        Pos2::new(scan_x_start, rect.top() + 3.0),
-                        Pos2::new(scan_x_end, rect.bottom() - 3.0),
-                    );
+/// Render sweep blocks on the sweep track (cool indigo-to-cyan palette).
+fn render_sweep_track(
+    painter: &Painter,
+    rect: &Rect,
+    timeline: &RadarTimeline,
+    view_start: f64,
+    view_end: f64,
+    zoom: f64,
+    active_sweep: Option<(i64, u8)>,
+    target_elevation: f32,
+) {
+    let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
-                    let (scan_fill, scan_stroke) = vcp_to_color(scan.vcp, scan.completeness);
-                    painter.rect_filled(scan_rect, 2.0, scan_fill);
-                    painter.rect_stroke(
-                        scan_rect,
-                        2.0,
-                        Stroke::new(1.0, scan_stroke),
-                        StrokeKind::Inside,
-                    );
+    for scan in timeline.scans_in_range(view_start, view_end) {
+        if scan.sweeps.is_empty() {
+            continue;
+        }
 
-                    // Draw individual sweep blocks inside the scan (if loaded)
-                    if !scan.sweeps.is_empty() {
-                        // Look up VCP elevation info for product annotations
-                        let vcp_elevations = scan.vcp_pattern.as_ref().map(|v| &v.elevations);
+        let vcp_elevations = scan.vcp_pattern.as_ref().map(|v| &v.elevations);
 
-                        for sweep in scan.sweeps.iter() {
-                            let x_start = ts_to_x(sweep.start_time).max(rect.left());
-                            let x_end = ts_to_x(sweep.end_time).min(rect.right());
+        for sweep in scan.sweeps.iter() {
+            let x_start = ts_to_x(sweep.start_time).max(rect.left());
+            let x_end = ts_to_x(sweep.end_time).min(rect.right());
+            let width = x_end - x_start;
 
-                            if x_end > x_start && (x_end - x_start) > 0.5 {
-                                // Determine if this sweep matches the user's target elevation
-                                let matches_elevation = (sweep.elevation - target_elevation).abs() < 0.3;
+            if width < 0.5 {
+                continue;
+            }
 
-                                // Color: matching sweeps are brighter, non-matching are dimmed
-                                let base = elevation_to_color(sweep.elevation);
-                                let color = if matches_elevation {
-                                    // Brighten matching sweeps
-                                    Color32::from_rgb(
-                                        (base.r() as u16 + 30).min(255) as u8,
-                                        (base.g() as u16 + 40).min(255) as u8,
-                                        (base.b() as u16 + 30).min(255) as u8,
-                                    )
-                                } else {
-                                    // Dim non-matching sweeps
-                                    Color32::from_rgba_unmultiplied(
-                                        base.r(),
-                                        base.g(),
-                                        base.b(),
-                                        120,
-                                    )
-                                };
+            let matches_elevation = (sweep.elevation - target_elevation).abs() < 0.3;
+            let is_active = active_sweep.is_some_and(|(scan_ts, elev_num)| {
+                scan.start_time as i64 == scan_ts && sweep.elevation_number == elev_num
+            });
 
-                                // Sweeps are narrower (more inset) than the scan block
-                                let sweep_rect = Rect::from_min_max(
-                                    Pos2::new(x_start, rect.top() + 6.0),
-                                    Pos2::new(x_end, rect.bottom() - 6.0),
-                                );
+            let fill = tl_colors::sweep_fill(sweep.elevation, matches_elevation);
+            let border = tl_colors::sweep_border(sweep.elevation, is_active);
 
-                                painter.rect_filled(sweep_rect, 1.0, color);
+            let sweep_rect = Rect::from_min_max(
+                Pos2::new(x_start, rect.top() + 2.0),
+                Pos2::new(x_end, rect.bottom() - 2.0),
+            );
 
-                                // Subtle border between sweeps
-                                if (x_end - x_start) > 3.0 {
-                                    painter.rect_stroke(
-                                        sweep_rect,
-                                        1.0,
-                                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(30, 50, 40, 100)),
-                                        StrokeKind::Inside,
-                                    );
-                                }
+            painter.rect_filled(sweep_rect, 1.0, fill);
 
-                                // Highlight the actively rendered sweep
-                                let is_active = active_sweep.is_some_and(|(scan_ts, elev_num)| {
-                                    scan.start_time as i64 == scan_ts
-                                        && sweep.elevation_number == elev_num
-                                });
-                                if is_active {
-                                    painter.rect_stroke(
-                                        sweep_rect,
-                                        1.0,
-                                        Stroke::new(2.0, tl_colors::ACTIVE_SWEEP),
-                                        StrokeKind::Outside,
-                                    );
-                                }
+            if width > 3.0 {
+                let stroke_width = if is_active { 2.0 } else { 0.5 };
+                let stroke_kind = if is_active { StrokeKind::Outside } else { StrokeKind::Inside };
+                painter.rect_stroke(sweep_rect, 1.0, Stroke::new(stroke_width, border), stroke_kind);
+            }
 
-                                // Elevation + product labels on wide sweep blocks
-                                let sweep_width = x_end - x_start;
-                                if sweep_width > 25.0 {
-                                    // Build label with product info from VCP
-                                    let mut label = if sweep_width > 60.0 {
-                                        format!("E{} {:.1}\u{00B0}", sweep.elevation_number, sweep.elevation)
-                                    } else {
-                                        format!("{:.1}", sweep.elevation)
-                                    };
+            // Elevation + product labels
+            if width > 25.0 {
+                let mut label = if width > 60.0 {
+                    format!("E{} {:.1}\u{00B0}", sweep.elevation_number, sweep.elevation)
+                } else {
+                    format!("{:.1}", sweep.elevation)
+                };
 
-                                    // Append product codes if VCP info is available and wide enough
-                                    if sweep_width > 80.0 {
-                                        if let Some(elevs) = vcp_elevations {
-                                            // Match VCP elevation entry by number
-                                            if let Some(vcp_elev) = elevs.get(sweep.elevation_number.saturating_sub(1) as usize) {
-                                                let wf = &vcp_elev.waveform;
-                                                let products = match wf.as_str() {
-                                                    "CS" | "ContiguousSurveillance" => "R",
-                                                    "CDW" | "CDWO" | "ContiguousDopplerWithGating" | "ContiguousDopplerWithoutGating" => "V",
-                                                    "B" | "Batch" => "R/V",
-                                                    "SPP" | "StaggeredPulsePair" => "R/V/D",
-                                                    _ => "",
-                                                };
-                                                if !products.is_empty() {
-                                                    label.push_str(&format!(" {}", products));
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    painter.text(
-                                        sweep_rect.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        label,
-                                        egui::FontId::monospace(8.0),
-                                        Color32::from_rgba_unmultiplied(255, 255, 255, 180),
-                                    );
-                                }
+                if width > 80.0 {
+                    if let Some(elevs) = vcp_elevations {
+                        if let Some(vcp_elev) = elevs.get(sweep.elevation_number.saturating_sub(1) as usize) {
+                            let products = match vcp_elev.waveform.as_str() {
+                                "CS" | "ContiguousSurveillance" => "R",
+                                "CDW" | "CDWO" | "ContiguousDopplerWithGating" | "ContiguousDopplerWithoutGating" => "V",
+                                "B" | "Batch" => "R/V",
+                                "SPP" | "StaggeredPulsePair" => "R/V/D",
+                                _ => "",
+                            };
+                            if !products.is_empty() {
+                                label.push_str(&format!(" {}", products));
                             }
                         }
                     }
                 }
+
+                painter.text(
+                    sweep_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::monospace(8.0),
+                    Color32::from_rgba_unmultiplied(220, 230, 255, 180),
+                );
+            }
+        }
+    }
+}
+
+/// Draw thin connector lines from scan boundaries into the sweep track.
+fn render_connector_lines(
+    painter: &Painter,
+    scan_rect: &Rect,
+    sweep_rect: &Rect,
+    timeline: &RadarTimeline,
+    view_start: f64,
+    view_end: f64,
+    zoom: f64,
+) {
+    let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
+
+    for scan in timeline.scans_in_range(view_start, view_end) {
+        if scan.sweeps.is_empty() {
+            continue;
+        }
+        for ts in [scan.start_time, scan.end_time] {
+            let x = ts_to_x(ts);
+            if x >= scan_rect.left() && x <= scan_rect.right() {
+                painter.line_segment(
+                    [
+                        Pos2::new(x, scan_rect.bottom()),
+                        Pos2::new(x, sweep_rect.top() + 2.0),
+                    ],
+                    Stroke::new(0.5, tl_colors::connector()),
+                );
             }
         }
     }
@@ -325,7 +327,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     }
 
     egui::TopBottomPanel::bottom("bottom_panel")
-        .exact_height(96.0)
+        .exact_height(116.0)
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 // Mode and acquisition status bar
@@ -558,57 +560,9 @@ fn format_timestamp(timestamp: i64, tick_config: &TickConfig, use_local: bool) -
 fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     let use_local = state.use_local_time;
     let available_width = ui.available_width() as f64;
-    // Store actual pixel width so centering calculations outside this
-    // function use the real value instead of the 1000px approximation.
     state.playback_state.timeline_width_px = available_width;
-    let vcp_track_height = 6.0;
-    let timeline_height = 36.0 + vcp_track_height;
 
-    let (response, painter) = ui.allocate_painter(
-        Vec2::new(available_width as f32, timeline_height),
-        Sense::click_and_drag(),
-    );
-    let full_rect = response.rect;
-
-    // Split into main timeline and VCP track
-    let rect = Rect::from_min_max(
-        full_rect.min,
-        Pos2::new(full_rect.max.x, full_rect.max.y - vcp_track_height),
-    );
-    let vcp_rect = Rect::from_min_max(
-        Pos2::new(full_rect.min.x, full_rect.max.y - vcp_track_height),
-        full_rect.max,
-    );
-
-    let dark = state.is_dark;
-
-    // Background
-    painter.rect_filled(rect, 2.0, tl_colors::background(dark));
-    painter.rect_stroke(
-        rect,
-        2.0,
-        Stroke::new(1.0, tl_colors::border(dark)),
-        StrokeKind::Outside,
-    );
-
-    let zoom = state.playback_state.timeline_zoom; // pixels per second
-    if zoom <= 0.0 {
-        return;
-    }
-
-    let view_start = state.playback_state.timeline_view_start; // absolute timestamp (f64)
-
-    // Calculate visible time range
-    let visible_secs = available_width / zoom;
-    let view_end = view_start + visible_secs;
-
-    // Helper to convert timestamp to x position
-    let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
-
-    // Draw radar data based on zoom level
-    // - Zoomed out (< 0.2 px/sec): solid fill where we have data
-    // - Medium zoom (0.2 - 1.0 px/sec): show individual scan blocks
-    // - Zoomed in (> 1.0 px/sec): show sweep blocks within scans
+    let zoom = state.playback_state.timeline_zoom;
     let detail_level = if zoom < 0.2 {
         DetailLevel::Solid
     } else if zoom < 1.0 {
@@ -616,6 +570,68 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         DetailLevel::Sweeps
     };
+
+    // Track heights — sweep track only shown at Sweeps detail level
+    let scan_track_h: f32 = if detail_level == DetailLevel::Sweeps { 18.0 } else { 36.0 };
+    let sweep_track_h: f32 = if detail_level == DetailLevel::Sweeps { 22.0 } else { 0.0 };
+    let separator_h: f32 = if detail_level == DetailLevel::Sweeps { 1.0 } else { 0.0 };
+    let vcp_track_h: f32 = 6.0;
+    let timeline_height = scan_track_h + separator_h + sweep_track_h + vcp_track_h;
+
+    let (response, painter) = ui.allocate_painter(
+        Vec2::new(available_width as f32, timeline_height),
+        Sense::click_and_drag(),
+    );
+    let full_rect = response.rect;
+
+    // Sub-rects for each track
+    let scan_rect = Rect::from_min_max(
+        full_rect.min,
+        Pos2::new(full_rect.max.x, full_rect.min.y + scan_track_h),
+    );
+    let sweep_rect = if detail_level == DetailLevel::Sweeps {
+        Rect::from_min_max(
+            Pos2::new(full_rect.min.x, scan_rect.max.y + separator_h),
+            Pos2::new(full_rect.max.x, scan_rect.max.y + separator_h + sweep_track_h),
+        )
+    } else {
+        Rect::NOTHING // not used
+    };
+    let vcp_rect = Rect::from_min_max(
+        Pos2::new(full_rect.min.x, full_rect.max.y - vcp_track_h),
+        full_rect.max,
+    );
+
+    let dark = state.is_dark;
+
+    // Background for scan track
+    painter.rect_filled(scan_rect, 2.0, tl_colors::background(dark));
+    painter.rect_stroke(scan_rect, 2.0, Stroke::new(1.0, tl_colors::border(dark)), StrokeKind::Outside);
+
+    // Background for sweep track (when visible)
+    if detail_level == DetailLevel::Sweeps {
+        painter.rect_filled(sweep_rect, 0.0, tl_colors::background(dark));
+        painter.rect_stroke(sweep_rect, 0.0, Stroke::new(0.5, tl_colors::border(dark)), StrokeKind::Outside);
+        // Separator line
+        painter.line_segment(
+            [
+                Pos2::new(full_rect.left(), scan_rect.bottom()),
+                Pos2::new(full_rect.right(), scan_rect.bottom()),
+            ],
+            Stroke::new(0.5, tl_colors::track_separator()),
+        );
+    }
+
+    if zoom <= 0.0 {
+        return;
+    }
+
+    let view_start = state.playback_state.timeline_view_start;
+    let visible_secs = available_width / zoom;
+    let view_end = view_start + visible_secs;
+
+    // Use scan_rect for ts_to_x since it spans the full width
+    let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
 
     let active_sweep = if detail_level == DetailLevel::Sweeps {
         match (
@@ -629,54 +645,58 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         None
     };
 
-    render_radar_data(
-        &painter,
-        &rect,
-        &state.radar_timeline,
-        view_start,
-        view_end,
-        zoom,
-        detail_level,
-        active_sweep,
-        state.viz_state.target_elevation,
+    // ── Render scan track ─────────────────────────────────────────────
+    render_scan_track(
+        &painter, &scan_rect, &state.radar_timeline,
+        view_start, view_end, zoom, detail_level,
     );
 
-    // Render ghost markers for pending downloads
+    // ── Render sweep track (only at Sweeps detail) ────────────────────
+    if detail_level == DetailLevel::Sweeps {
+        render_sweep_track(
+            &painter, &sweep_rect, &state.radar_timeline,
+            view_start, view_end, zoom, active_sweep,
+            state.viz_state.target_elevation,
+        );
+        render_connector_lines(
+            &painter, &scan_rect, &sweep_rect, &state.radar_timeline,
+            view_start, view_end, zoom,
+        );
+    }
+
+    // ── Render ghost markers for pending downloads ────────────────────
     if state.download_progress.is_active() {
         let anim_time = ui.ctx().input(|i| i.time);
         render_download_ghosts(
-            &painter,
-            &rect,
-            &state.download_progress,
-            &state.radar_timeline,
-            view_start,
-            view_end,
-            zoom,
-            detail_level,
-            anim_time,
+            &painter, &scan_rect, &state.download_progress,
+            &state.radar_timeline, view_start, view_end, zoom,
+            detail_level, anim_time,
         );
         ui.ctx().request_repaint();
     }
 
-    // VCP info track — thin colored bar showing VCP mode transitions
+    // ── Render real-time partial scan progress ────────────────────────
+    // Compute `now` once per frame so render + tooltip use a consistent boundary.
+    let frame_now_secs = js_sys::Date::now() / 1000.0;
+    if state.live_mode_state.is_active() {
+        let anim_time = ui.ctx().input(|i| i.time);
+        render_realtime_progress(
+            &painter, &scan_rect,
+            if detail_level == DetailLevel::Sweeps { Some(&sweep_rect) } else { None },
+            &state.live_mode_state, view_start, view_end, zoom, anim_time,
+            frame_now_secs,
+        );
+        ui.ctx().request_repaint();
+    }
+
+    // ── VCP info track ────────────────────────────────────────────────
     {
         let vcp_color = |vcp: u16| -> Color32 {
-            match vcp {
-                215 => Color32::from_rgb(50, 120, 70),   // Precipitation — green
-                212 => Color32::from_rgb(55, 110, 75),   // Precipitation fast — green
-                31 | 32 | 35 => Color32::from_rgb(50, 85, 140), // Clear air — blue
-                12 | 121 => Color32::from_rgb(160, 85, 45),     // Severe — orange
-                _ if vcp > 0 => Color32::from_rgb(55, 90, 90),  // Other — teal
-                _ => Color32::from_rgb(50, 50, 50),              // Unknown — gray
-            }
+            let (r, g, b) = tl_colors::vcp_base_rgb(vcp);
+            Color32::from_rgb(r, g, b)
         };
 
-        // Background for VCP track
-        painter.rect_filled(
-            vcp_rect,
-            0.0,
-            Color32::from_rgb(22, 22, 30),
-        );
+        painter.rect_filled(vcp_rect, 0.0, Color32::from_rgb(22, 22, 30));
 
         for scan in state.radar_timeline.scans_in_range(view_start, view_end) {
             let x_start = ts_to_x(scan.start_time).max(vcp_rect.left());
@@ -691,7 +711,6 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             }
         }
 
-        // VCP label at scan zoom when there's space
         if detail_level != DetailLevel::Solid {
             let mut last_vcp = 0u16;
             for scan in state.radar_timeline.scans_in_range(view_start, view_end) {
@@ -711,6 +730,10 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             }
         }
     }
+
+    // Track headers removed — the tracks are self-evident from content and
+    // color palette, and the headers overlapped with scan/sweep block labels.
+    // Hover tooltips provide the educational labeling instead.
 
     // Select appropriate tick configuration
     let tick_config = select_tick_config(zoom);
@@ -736,15 +759,15 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     let first_tick = (local_start / minor_interval) * minor_interval - tz_offset_secs;
     let last_tick = ((local_end / minor_interval) + 1) * minor_interval - tz_offset_secs;
 
-    // Draw tick marks
+    // Draw tick marks on scan track
     let mut tick = first_tick;
     while tick <= last_tick {
         let x = ts_to_x(tick as f64);
 
-        if x >= rect.left() && x <= rect.right() {
+        if x >= scan_rect.left() && x <= scan_rect.right() {
             let local_tick = tick + tz_offset_secs;
             let is_major = local_tick % major_interval == 0;
-            let tick_height = if is_major { 12.0 } else { 6.0 };
+            let tick_height = if is_major { 10.0 } else { 5.0 };
             let tick_color = if is_major {
                 tl_colors::tick_major(dark)
             } else {
@@ -753,18 +776,19 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
             painter.line_segment(
                 [
-                    Pos2::new(x, rect.bottom() - tick_height),
-                    Pos2::new(x, rect.bottom()),
+                    Pos2::new(x, scan_rect.bottom() - tick_height),
+                    Pos2::new(x, scan_rect.bottom()),
                 ],
                 Stroke::new(1.0, tick_color),
             );
 
-            // Draw label for major ticks
+            // Draw label for major ticks — positioned at bottom of scan track
+            // to avoid overlapping with scan block content (VCP labels, fraction labels)
             if is_major {
                 let label = format_timestamp(tick, tick_config, use_local);
                 painter.text(
-                    Pos2::new(x, rect.top() + 10.0),
-                    egui::Align2::CENTER_CENTER,
+                    Pos2::new(x, scan_rect.bottom() - tick_height - 1.0),
+                    egui::Align2::CENTER_BOTTOM,
                     label,
                     egui::FontId::monospace(9.0),
                     tl_colors::tick_label(dark),
@@ -775,43 +799,39 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         tick += minor_interval;
     }
 
+    // The overlay_rect spans all data tracks (scan + sweep, not VCP)
+    let overlay_rect = Rect::from_min_max(
+        scan_rect.min,
+        Pos2::new(
+            scan_rect.max.x,
+            if detail_level == DetailLevel::Sweeps { sweep_rect.max.y } else { scan_rect.max.y },
+        ),
+    );
+
     // Draw selection range (if user has selected a range via shift+drag)
     if let Some((range_start, range_end)) = state.playback_state.selection_range() {
         let start_x = ts_to_x(range_start);
         let end_x = ts_to_x(range_end);
 
-        // Only draw if visible
-        if end_x >= rect.left() && start_x <= rect.right() {
-            let visible_start = start_x.max(rect.left());
-            let visible_end = end_x.min(rect.right());
+        if end_x >= overlay_rect.left() && start_x <= overlay_rect.right() {
+            let visible_start = start_x.max(overlay_rect.left());
+            let visible_end = end_x.min(overlay_rect.right());
 
-            // Selection range highlight
             let range_rect = Rect::from_min_max(
-                Pos2::new(visible_start, rect.top()),
-                Pos2::new(visible_end, rect.bottom()),
+                Pos2::new(visible_start, overlay_rect.top()),
+                Pos2::new(visible_end, overlay_rect.bottom()),
             );
-            painter.rect_filled(
-                range_rect,
-                0.0,
-                Color32::from_rgba_unmultiplied(100, 150, 255, 60),
-            );
+            painter.rect_filled(range_rect, 0.0, Color32::from_rgba_unmultiplied(100, 150, 255, 40));
 
-            // Range boundaries
-            if start_x >= rect.left() && start_x <= rect.right() {
+            if start_x >= overlay_rect.left() && start_x <= overlay_rect.right() {
                 painter.line_segment(
-                    [
-                        Pos2::new(start_x, rect.top()),
-                        Pos2::new(start_x, rect.bottom()),
-                    ],
+                    [Pos2::new(start_x, overlay_rect.top()), Pos2::new(start_x, overlay_rect.bottom())],
                     Stroke::new(1.5, Color32::from_rgb(100, 150, 255)),
                 );
             }
-            if end_x >= rect.left() && end_x <= rect.right() {
+            if end_x >= overlay_rect.left() && end_x <= overlay_rect.right() {
                 painter.line_segment(
-                    [
-                        Pos2::new(end_x, rect.top()),
-                        Pos2::new(end_x, rect.bottom()),
-                    ],
+                    [Pos2::new(end_x, overlay_rect.top()), Pos2::new(end_x, overlay_rect.bottom())],
                     Stroke::new(1.5, Color32::from_rgb(100, 150, 255)),
                 );
             }
@@ -823,29 +843,20 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         let selected_ts = state.playback_state.playback_position();
         let sel_x = ts_to_x(selected_ts);
 
-        if sel_x >= rect.left() && sel_x <= rect.right() {
+        if sel_x >= overlay_rect.left() && sel_x <= overlay_rect.right() {
             let marker_color = tl_colors::SELECTION;
 
-            // Selection line
             painter.line_segment(
-                [
-                    Pos2::new(sel_x, rect.top()),
-                    Pos2::new(sel_x, rect.bottom()),
-                ],
+                [Pos2::new(sel_x, overlay_rect.top()), Pos2::new(sel_x, overlay_rect.bottom())],
                 Stroke::new(2.0, marker_color),
             );
 
-            // Selection triangle
             let triangle = vec![
-                Pos2::new(sel_x - 5.0, rect.top()),
-                Pos2::new(sel_x + 5.0, rect.top()),
-                Pos2::new(sel_x, rect.top() + 8.0),
+                Pos2::new(sel_x - 5.0, overlay_rect.top()),
+                Pos2::new(sel_x + 5.0, overlay_rect.top()),
+                Pos2::new(sel_x, overlay_rect.top() + 8.0),
             ];
-            painter.add(egui::Shape::convex_polygon(
-                triangle,
-                marker_color,
-                Stroke::NONE,
-            ));
+            painter.add(egui::Shape::convex_polygon(triangle, marker_color, Stroke::NONE));
         }
     }
 
@@ -854,47 +865,29 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         let now_ts = current_timestamp_secs();
         let now_x = ts_to_x(now_ts);
 
-        if now_x >= rect.left() && now_x <= rect.right() {
+        if now_x >= overlay_rect.left() && now_x <= overlay_rect.right() {
             let now_color = tl_colors::NOW_MARKER;
 
-            // Dashed-style: short line at top and bottom
             painter.line_segment(
-                [
-                    Pos2::new(now_x, rect.top()),
-                    Pos2::new(now_x, rect.top() + 4.0),
-                ],
+                [Pos2::new(now_x, overlay_rect.top()), Pos2::new(now_x, overlay_rect.top() + 4.0)],
                 Stroke::new(1.5, now_color),
             );
             painter.line_segment(
-                [
-                    Pos2::new(now_x, rect.bottom() - 4.0),
-                    Pos2::new(now_x, rect.bottom()),
-                ],
+                [Pos2::new(now_x, overlay_rect.bottom() - 4.0), Pos2::new(now_x, overlay_rect.bottom())],
                 Stroke::new(1.5, now_color),
             );
-            // Thin line through middle
             painter.line_segment(
-                [
-                    Pos2::new(now_x, rect.top() + 4.0),
-                    Pos2::new(now_x, rect.bottom() - 4.0),
-                ],
-                Stroke::new(0.5, Color32::from_rgba_unmultiplied(
-                    now_color.r(), now_color.g(), now_color.b(), 100,
-                )),
+                [Pos2::new(now_x, overlay_rect.top() + 4.0), Pos2::new(now_x, overlay_rect.bottom() - 4.0)],
+                Stroke::new(0.5, Color32::from_rgba_unmultiplied(now_color.r(), now_color.g(), now_color.b(), 100)),
             );
-            // Small diamond at bottom
             let d = 3.0;
             let diamond = vec![
-                Pos2::new(now_x, rect.bottom() - d),
-                Pos2::new(now_x + d, rect.bottom()),
-                Pos2::new(now_x, rect.bottom() + d),
-                Pos2::new(now_x - d, rect.bottom()),
+                Pos2::new(now_x, overlay_rect.bottom() - d),
+                Pos2::new(now_x + d, overlay_rect.bottom()),
+                Pos2::new(now_x, overlay_rect.bottom() + d),
+                Pos2::new(now_x - d, overlay_rect.bottom()),
             ];
-            painter.add(egui::Shape::convex_polygon(
-                diamond,
-                now_color,
-                Stroke::NONE,
-            ));
+            painter.add(egui::Shape::convex_polygon(diamond, now_color, Stroke::NONE));
         }
     }
 
@@ -903,7 +896,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         let start_x = ts_to_x(range_start);
         let end_x = ts_to_x(range_end);
 
-        if end_x >= rect.left() && start_x <= rect.right() {
+        if end_x >= scan_rect.left() && start_x <= scan_rect.right() {
             let label_color = tl_colors::SELECTION_LABEL;
             let duration_secs = range_end - range_start;
             let duration_text = if duration_secs < 60.0 {
@@ -914,33 +907,31 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
                 format!("{:.1}h", duration_secs / 3600.0)
             };
 
-            // Duration label centered in the selection
-            let center_x = ((start_x + end_x) / 2.0).clamp(rect.left() + 20.0, rect.right() - 20.0);
+            let center_x = ((start_x + end_x) / 2.0).clamp(scan_rect.left() + 20.0, scan_rect.right() - 20.0);
             painter.text(
-                Pos2::new(center_x, rect.top() + 3.0),
+                Pos2::new(center_x, scan_rect.top() + 3.0),
                 egui::Align2::CENTER_TOP,
                 &duration_text,
                 egui::FontId::monospace(8.0),
                 label_color,
             );
 
-            // Boundary timestamps at sufficient zoom
-            let tick_config = select_tick_config(zoom);
+            let tick_config_sel = select_tick_config(zoom);
             if (end_x - start_x) > 100.0 {
-                let start_label = format_timestamp(range_start as i64, tick_config, use_local);
-                let end_label = format_timestamp(range_end as i64, tick_config, use_local);
-                if start_x >= rect.left() && start_x <= rect.right() {
+                let start_label = format_timestamp(range_start as i64, tick_config_sel, use_local);
+                let end_label = format_timestamp(range_end as i64, tick_config_sel, use_local);
+                if start_x >= scan_rect.left() && start_x <= scan_rect.right() {
                     painter.text(
-                        Pos2::new(start_x + 2.0, rect.bottom() - 2.0),
+                        Pos2::new(start_x + 2.0, scan_rect.bottom() - 2.0),
                         egui::Align2::LEFT_BOTTOM,
                         &start_label,
                         egui::FontId::monospace(7.0),
                         label_color,
                     );
                 }
-                if end_x >= rect.left() && end_x <= rect.right() {
+                if end_x >= scan_rect.left() && end_x <= scan_rect.right() {
                     painter.text(
-                        Pos2::new(end_x - 2.0, rect.bottom() - 2.0),
+                        Pos2::new(end_x - 2.0, scan_rect.bottom() - 2.0),
                         egui::Align2::RIGHT_BOTTOM,
                         &end_label,
                         egui::FontId::monospace(7.0),
@@ -951,27 +942,32 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
 
-    // Check if shift is held
+    // ── Hover tooltips ────────────────────────────────────────────────
+    if response.hovered() {
+        if let Some(hover_pos) = response.hover_pos() {
+            let hover_ts = view_start + (hover_pos.x - full_rect.left()) as f64 / zoom;
+            render_timeline_tooltip(ui, &state.radar_timeline, &state.live_mode_state, hover_ts, hover_pos, &scan_rect, &sweep_rect, detail_level, use_local, frame_now_secs);
+        }
+    }
+
+    // ── Interaction handling ──────────────────────────────────────────
     let shift_held = ui.input(|i| i.modifiers.shift);
 
-    // Handle shift+click to create range from current playback position to click point
     if shift_held && response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
-            let clicked_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
+            let clicked_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
             let current_pos = state.playback_state.playback_position();
             state.playback_state.selection_start = Some(current_pos);
             state.playback_state.selection_end = Some(clicked_ts);
             state.playback_state.apply_selection_as_bounds();
-            let duration_mins =
-                (clicked_ts - current_pos).abs() / 60.0;
+            let duration_mins = (clicked_ts - current_pos).abs() / 60.0;
             log::info!("Shift+click range: {:.0} minutes", duration_mins);
         }
     }
 
-    // Handle shift+drag to select a range
     if shift_held && response.drag_started() {
         if let Some(pos) = response.interact_pointer_pos() {
-            let drag_start_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
+            let drag_start_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
             state.playback_state.selection_start = Some(drag_start_ts);
             state.playback_state.selection_end = Some(drag_start_ts);
             state.playback_state.selection_in_progress = true;
@@ -980,14 +976,13 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
     if shift_held && response.dragged() && state.playback_state.selection_in_progress {
         if let Some(pos) = response.interact_pointer_pos() {
-            let current_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
+            let current_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
             state.playback_state.selection_end = Some(current_ts);
         }
     }
 
     if response.drag_stopped() && state.playback_state.selection_in_progress {
         state.playback_state.selection_in_progress = false;
-        // Apply selection as playback bounds for loop/ping-pong behavior
         if let Some((start, end)) = state.playback_state.selection_range() {
             let duration_mins = (end - start) / 60.0;
             log::info!("Selected time range: {:.0} minutes", duration_mins);
@@ -995,10 +990,8 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
 
-    // Handle click to select time (when not shift-dragging)
     if response.clicked() && !shift_held {
         if let Some(pos) = response.interact_pointer_pos() {
-            // Exit live mode when user clicks timeline
             if state.live_mode_state.is_active() {
                 state.live_mode_state.stop(LiveExitReason::UserSeeked);
                 state.playback_state.time_model.disable_realtime_lock();
@@ -1009,9 +1002,8 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
                     .unwrap_or_default();
             }
 
-            let clicked_ts = view_start + (pos.x - rect.left()) as f64 / zoom;
+            let clicked_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
 
-            // Snap to nearest scan/sweep boundary if within 10 pixels
             let snap_dist_secs = 10.0 / zoom;
             let snapped_ts = state
                 .radar_timeline
@@ -1019,37 +1011,31 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
                 .unwrap_or(clicked_ts);
 
             state.playback_state.set_playback_position(snapped_ts);
-
-            // Clear any selection range on regular click
             state.playback_state.clear_selection();
 
-            // If clicked within loaded data range, also seek to that frame
             if let Some(frame) = state.playback_state.timestamp_to_frame(snapped_ts as i64) {
                 state.playback_state.current_frame = frame;
             }
         }
     }
 
-    // Handle drag to pan - NO CLAMPING, free scrolling anywhere in time
-    // Only pan when not shift-dragging (selection mode)
+    // Drag to pan
     if response.dragged() && !shift_held && !state.playback_state.selection_in_progress {
         let delta_secs = -response.drag_delta().x as f64 / zoom;
         state.playback_state.timeline_view_start += delta_secs;
     }
 
-    // Handle zoom with scroll wheel
+    // Scroll wheel zoom
     if response.hovered() {
         let scroll_delta = ui.input(|i| i.raw_scroll_delta);
         if scroll_delta.y != 0.0 {
             let zoom_factor = 1.0 + scroll_delta.y as f64 * 0.002;
             let old_zoom = state.playback_state.timeline_zoom;
-            // Allow zooming from ~10 years visible to ~1 second visible
             let new_zoom = (old_zoom * zoom_factor).clamp(0.000001, 1000.0);
 
-            // Zoom centered on cursor position
             if let Some(cursor_pos) = response.hover_pos() {
-                let cursor_ts = view_start + (cursor_pos.x - rect.left()) as f64 / old_zoom;
-                let new_view_start = cursor_ts - (cursor_pos.x - rect.left()) as f64 / new_zoom;
+                let cursor_ts = view_start + (cursor_pos.x - full_rect.left()) as f64 / old_zoom;
+                let new_view_start = cursor_ts - (cursor_pos.x - full_rect.left()) as f64 / new_zoom;
                 state.playback_state.timeline_view_start = new_view_start;
             }
 
@@ -1538,12 +1524,13 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     );
 }
 
-/// Render translucent ghost blocks on the timeline for pending downloads.
+/// Render ghost blocks on the scan track for pending/active/processing downloads.
 ///
-/// Each pending scan gets a ghost block spanning its actual `[start, end)`
-/// boundary (derived from the archive listing). The currently-active download
-/// pulses to distinguish it from queued items. Ghosts that overlap with
-/// already-loaded scans are skipped.
+/// Distinct visual styles per state:
+/// - Pending (queued): blue outline with diagonal stripe pattern
+/// - Active (downloading): pulsing blue fill
+/// - Processing (in_flight after download): amber tint
+/// - Recently completed: brief green flash
 fn render_download_ghosts(
     painter: &Painter,
     rect: &Rect,
@@ -1557,22 +1544,14 @@ fn render_download_ghosts(
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    // Combine pending and in-flight scan boundaries for ghost rendering.
-    let all_ghost_scans: Vec<(i64, i64)> = progress
-        .pending_scans
-        .iter()
-        .chain(progress.in_flight_scans.iter())
-        .copied()
-        .collect();
-
     if detail_level == DetailLevel::Solid {
-        // At solid detail level, render a single translucent region spanning all ghosts
-        if all_ghost_scans.is_empty() {
-            return;
-        }
-        let min_ts = all_ghost_scans.iter().map(|(s, _)| *s).min().unwrap() as f64;
-        let max_ts = all_ghost_scans.iter().map(|(_, e)| *e).max().unwrap() as f64;
-
+        // At solid detail, combine all ghosts into one region
+        let all: Vec<_> = progress.pending_scans.iter()
+            .chain(progress.in_flight_scans.iter())
+            .copied().collect();
+        if all.is_empty() { return; }
+        let min_ts = all.iter().map(|(s, _)| *s).min().unwrap() as f64;
+        let max_ts = all.iter().map(|(_, e)| *e).max().unwrap() as f64;
         let x_start = ts_to_x(min_ts).max(rect.left());
         let x_end = ts_to_x(max_ts).min(rect.right());
         if x_end > x_start {
@@ -1590,70 +1569,629 @@ fn render_download_ghosts(
         return;
     }
 
-    // At Scans/Sweeps detail level, render individual ghost blocks
-    for &(scan_start, scan_end) in &all_ghost_scans {
+    let now_wall = js_sys::Date::now() / 1000.0;
+
+    // Recently completed scans — brief green flash
+    for &(scan_start, completion_time) in &progress.recently_completed {
+        let age = now_wall - completion_time;
+        if age > 1.0 { continue; }
+        let flash_alpha = ((1.0 - age) * 80.0) as u8;
+        // Find this scan's end time from timeline
+        if let Some(scan) = timeline.scans_in_range(scan_start as f64, scan_start as f64 + 600.0)
+            .find(|s| (s.start_time as i64 - scan_start).abs() < 30)
+        {
+            let x_start = ts_to_x(scan.start_time).max(rect.left());
+            let x_end = ts_to_x(scan.end_time).min(rect.right());
+            if x_end > x_start {
+                let flash_rect = Rect::from_min_max(
+                    Pos2::new(x_start, rect.top() + 2.0),
+                    Pos2::new(x_end, rect.bottom() - 2.0),
+                );
+                painter.rect_filled(flash_rect, 2.0,
+                    Color32::from_rgba_unmultiplied(100, 220, 120, flash_alpha));
+            }
+        }
+    }
+
+    // Helper: draw a ghost block for a scan boundary
+    let draw_ghost = |scan_start: i64, scan_end: i64, is_active: bool, is_processing: bool| {
         let start_f64 = scan_start as f64;
         let end_f64 = scan_end as f64;
+        if end_f64 < view_start || start_f64 > view_end { return; }
 
-        // Skip if outside visible range
-        if end_f64 < view_start || start_f64 > view_end {
-            continue;
-        }
-
-        // Skip if a real scan already covers this timestamp
-        if timeline
-            .scans_in_range(start_f64, end_f64)
+        // Skip if real data already covers this timestamp
+        if timeline.scans_in_range(start_f64, end_f64)
             .any(|s| s.start_time <= start_f64 + 30.0 && s.end_time >= start_f64 - 30.0)
-        {
-            continue;
-        }
+        { return; }
 
         let x_start = ts_to_x(start_f64).max(rect.left());
         let x_end = ts_to_x(end_f64).min(rect.right());
-        if x_end <= x_start || (x_end - x_start) < 1.0 {
-            continue;
-        }
-
-        let is_active = progress.active_scan.map(|(s, _)| s) == Some(scan_start);
-
-        // Pulse animation for the active ghost
-        let pulse = if is_active {
-            (0.5 + 0.5 * (anim_time * 3.0).sin()) as f32
-        } else {
-            0.0
-        };
-
-        let fill_alpha = if is_active {
-            (35.0 + 25.0 * pulse) as u8
-        } else {
-            30u8
-        };
-        let border_alpha = if is_active {
-            (55.0 + 30.0 * pulse) as u8
-        } else {
-            45u8
-        };
+        if x_end <= x_start || (x_end - x_start) < 1.0 { return; }
 
         let ghost_rect = Rect::from_min_max(
-            Pos2::new(x_start, rect.top() + 3.0),
-            Pos2::new(x_end, rect.bottom() - 3.0),
+            Pos2::new(x_start, rect.top() + 2.0),
+            Pos2::new(x_end, rect.bottom() - 2.0),
         );
 
-        painter.rect_filled(
-            ghost_rect,
-            2.0,
-            Color32::from_rgba_unmultiplied(100, 150, 255, fill_alpha),
-        );
-        painter.rect_stroke(
-            ghost_rect,
-            2.0,
-            Stroke::new(
-                1.0,
-                Color32::from_rgba_unmultiplied(100, 150, 255, border_alpha),
-            ),
-            StrokeKind::Inside,
-        );
+        if is_active {
+            // Active download: pulsing blue fill
+            let pulse = (0.5 + 0.5 * (anim_time * 3.0).sin()) as f32;
+            let fill_alpha = (35.0 + 30.0 * pulse) as u8;
+            let border_alpha = (60.0 + 35.0 * pulse) as u8;
+            painter.rect_filled(ghost_rect, 2.0,
+                Color32::from_rgba_unmultiplied(100, 160, 255, fill_alpha));
+            painter.rect_stroke(ghost_rect, 2.0,
+                Stroke::new(1.5, Color32::from_rgba_unmultiplied(100, 160, 255, border_alpha)),
+                StrokeKind::Inside);
+        } else if is_processing {
+            // Processing (ingesting): amber tint with subtle pulse
+            let pulse = (0.5 + 0.5 * (anim_time * 2.0).sin()) as f32;
+            let fill_alpha = (30.0 + 20.0 * pulse) as u8;
+            painter.rect_filled(ghost_rect, 2.0,
+                Color32::from_rgba_unmultiplied(200, 160, 60, fill_alpha));
+            painter.rect_stroke(ghost_rect, 2.0,
+                Stroke::new(1.0, tl_colors::ghost_processing_border()), StrokeKind::Inside);
+        } else {
+            // Pending: blue outline with diagonal stripe pattern
+            painter.rect_stroke(ghost_rect, 2.0,
+                Stroke::new(1.0, tl_colors::ghost_pending_border()), StrokeKind::Inside);
+            // Diagonal stripes
+            let width = x_end - x_start;
+            let height = ghost_rect.height();
+            let spacing = 8.0;
+            let mut offset = 0.0;
+            while offset < width + height {
+                let x0 = ghost_rect.left() + offset;
+                let y0 = ghost_rect.top();
+                let x1 = x0 - height;
+                let y1 = ghost_rect.bottom();
+                painter.line_segment(
+                    [
+                        Pos2::new(x0.max(ghost_rect.left()).min(ghost_rect.right()), y0),
+                        Pos2::new(x1.max(ghost_rect.left()).min(ghost_rect.right()), y1),
+                    ],
+                    Stroke::new(0.5, tl_colors::ghost_pending_fill()),
+                );
+                offset += spacing;
+            }
+        }
+    };
+
+    // Draw pending scans
+    for &(s, e) in &progress.pending_scans {
+        draw_ghost(s, e, false, false);
     }
+
+    // Draw active scan
+    if let Some((s, e)) = progress.active_scan {
+        draw_ghost(s, e, true, false);
+    }
+
+    // Draw in-flight (processing) scans
+    for &(s, e) in &progress.in_flight_scans {
+        draw_ghost(s, e, false, true);
+    }
+}
+
+/// Render real-time partial scan progress on the timeline.
+fn render_realtime_progress(
+    painter: &Painter,
+    scan_rect: &Rect,
+    sweep_rect: Option<&Rect>,
+    live_state: &crate::state::LiveModeState,
+    view_start: f64,
+    view_end: f64,
+    zoom: f64,
+    anim_time: f64,
+    now_secs: f64,
+) {
+    let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
+
+    // Projected future scan boundaries (subtle dashed lines)
+    if let (Some(vol_start), Some(vol_dur)) = (live_state.current_volume_start, live_state.last_volume_duration_secs) {
+        if vol_dur > 30.0 {
+            for i in 1..=2 {
+                let projected_ts = vol_start + vol_dur * i as f64;
+                let x = ts_to_x(projected_ts);
+                if x >= scan_rect.left() && x <= scan_rect.right() {
+                    // Dashed line: draw short segments
+                    let mut y = scan_rect.top();
+                    while y < scan_rect.bottom() {
+                        let y_end = (y + 3.0).min(scan_rect.bottom());
+                        painter.line_segment(
+                            [Pos2::new(x, y), Pos2::new(x, y_end)],
+                            Stroke::new(0.5, tl_colors::estimated_boundary()),
+                        );
+                        y += 6.0; // 3px on, 3px off
+                    }
+                    // "est." label
+                    painter.text(
+                        Pos2::new(x + 2.0, scan_rect.top() + 2.0),
+                        egui::Align2::LEFT_TOP,
+                        "est.",
+                        egui::FontId::monospace(6.0),
+                        tl_colors::estimated_boundary(),
+                    );
+                }
+            }
+        }
+    }
+
+    // Chunk arrival tick marks — show each received chunk as a small vertical line
+    // on the scan track, visible even before any sweep completes.
+    if !live_state.chunk_data_times.is_empty() {
+        if live_state.current_volume_start.is_some() {
+            let pulse = (0.5 + 0.5 * (anim_time * 2.0).sin()) as f32;
+            for (i, &chunk_ts) in live_state.chunk_data_times.iter().enumerate() {
+                let x = ts_to_x(chunk_ts);
+                if x >= scan_rect.left() && x <= scan_rect.right() {
+                    let is_latest = i == live_state.chunk_data_times.len() - 1;
+                    let alpha = if is_latest {
+                        (140.0 + 80.0 * pulse) as u8
+                    } else {
+                        120u8
+                    };
+                    // Small upward tick from bottom of scan track
+                    let tick_h = if is_latest { 8.0 } else { 5.0 };
+                    painter.line_segment(
+                        [
+                            Pos2::new(x, scan_rect.bottom() - 2.0 - tick_h),
+                            Pos2::new(x, scan_rect.bottom() - 2.0),
+                        ],
+                        Stroke::new(
+                            if is_latest { 1.5 } else { 1.0 },
+                            Color32::from_rgba_unmultiplied(100, 180, 255, alpha),
+                        ),
+                    );
+                    // Small dot at the top of the tick for the latest chunk
+                    if is_latest {
+                        painter.circle_filled(
+                            Pos2::new(x, scan_rect.bottom() - 2.0 - tick_h),
+                            1.5,
+                            Color32::from_rgba_unmultiplied(100, 180, 255, alpha),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Growing active scan block — extends to expected end, not just "now"
+    if let Some(vol_start) = live_state.current_volume_start {
+        let now = now_secs;
+        let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
+        let expected_end = vol_start + expected_dur;
+
+        let x_start = ts_to_x(vol_start).max(scan_rect.left());
+        let x_now = ts_to_x(now).min(scan_rect.right());
+        let x_expected_end = ts_to_x(expected_end).min(scan_rect.right());
+
+        let pulse = (0.5 + 0.5 * (anim_time * 2.0).sin()) as f32;
+
+        if x_expected_end > x_start && vol_start < view_end && expected_end > view_start {
+            // Future portion (now → expected end): dashed outline, very subtle
+            if x_expected_end > x_now && x_now >= scan_rect.left() {
+                let future_rect = Rect::from_min_max(
+                    Pos2::new(x_now, scan_rect.top() + 2.0),
+                    Pos2::new(x_expected_end, scan_rect.bottom() - 2.0),
+                );
+                // Subtle dashed border for the projected remainder
+                let future_alpha = (15.0 + 10.0 * pulse) as u8;
+                painter.rect_filled(future_rect, 2.0,
+                    Color32::from_rgba_unmultiplied(55, 130, 75, future_alpha));
+                // Dashed right edge
+                let mut y = future_rect.top();
+                while y < future_rect.bottom() {
+                    let y_end = (y + 3.0).min(future_rect.bottom());
+                    painter.line_segment(
+                        [Pos2::new(x_expected_end, y), Pos2::new(x_expected_end, y_end)],
+                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(55, 130, 75, 50)),
+                    );
+                    y += 6.0;
+                }
+                // Dashed top and bottom edges for future portion
+                let mut x = x_now;
+                while x < x_expected_end {
+                    let x_seg_end = (x + 4.0).min(x_expected_end);
+                    painter.line_segment(
+                        [Pos2::new(x, future_rect.top()), Pos2::new(x_seg_end, future_rect.top())],
+                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(55, 130, 75, 40)),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(x, future_rect.bottom()), Pos2::new(x_seg_end, future_rect.bottom())],
+                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(55, 130, 75, 40)),
+                    );
+                    x += 8.0;
+                }
+
+                // "est. end" label on the future portion if wide enough
+                let future_width = x_expected_end - x_now;
+                if future_width > 50.0 {
+                    let remaining_secs = expected_end - now;
+                    let remaining_label = if remaining_secs < 60.0 {
+                        format!("~{:.0}s left", remaining_secs)
+                    } else {
+                        format!("~{:.0}m left", remaining_secs / 60.0)
+                    };
+                    painter.text(
+                        Pos2::new((x_now + x_expected_end) / 2.0, scan_rect.center().y),
+                        egui::Align2::CENTER_CENTER,
+                        remaining_label,
+                        egui::FontId::monospace(6.0),
+                        Color32::from_rgba_unmultiplied(180, 210, 180, 120),
+                    );
+                }
+            }
+
+            // Received portion (vol_start → now): solid fill
+            if x_now > x_start {
+                let block_rect = Rect::from_min_max(
+                    Pos2::new(x_start, scan_rect.top() + 2.0),
+                    Pos2::new(x_now, scan_rect.bottom() - 2.0),
+                );
+
+                let edge_alpha = (30.0 + 20.0 * pulse) as u8;
+                painter.rect_filled(block_rect, 2.0,
+                    Color32::from_rgba_unmultiplied(55, 130, 75, edge_alpha));
+                painter.rect_stroke(block_rect, 2.0,
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(55, 130, 75, (edge_alpha as u16 + 40).min(255) as u8)),
+                    StrokeKind::Inside);
+
+                // Elevation progress label
+                let received = live_state.elevations_received.len();
+                let expected = live_state.expected_elevation_count.unwrap_or(0) as usize;
+                let width = x_now - x_start;
+                if width > 40.0 && (received > 0 || expected > 0) {
+                    let label = if expected > 0 {
+                        format!("{}/{} elev", received, expected)
+                    } else {
+                        format!("{} elev", received)
+                    };
+                    painter.text(
+                        block_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        label,
+                        egui::FontId::monospace(7.0),
+                        Color32::from_rgba_unmultiplied(220, 240, 220, 180),
+                    );
+                }
+            }
+
+            // Next chunk countdown indicator at the "now" line
+            if let Some(remaining) = live_state.countdown_remaining_secs(now) {
+                let indicator_x = x_now.min(scan_rect.right() - 2.0);
+                let indicator_y = scan_rect.bottom() - 2.0;
+
+                let d = 2.5;
+                let diamond = vec![
+                    Pos2::new(indicator_x, indicator_y - d),
+                    Pos2::new(indicator_x + d, indicator_y),
+                    Pos2::new(indicator_x, indicator_y + d),
+                    Pos2::new(indicator_x - d, indicator_y),
+                ];
+                let pulse_alpha = (128.0 + 127.0 * pulse) as u8;
+                painter.add(egui::Shape::convex_polygon(
+                    diamond,
+                    Color32::from_rgba_unmultiplied(180, 200, 255, pulse_alpha),
+                    Stroke::NONE,
+                ));
+
+                let total_width = x_expected_end - x_start;
+                if total_width > 60.0 {
+                    painter.text(
+                        Pos2::new(indicator_x - 4.0, indicator_y - 1.0),
+                        egui::Align2::RIGHT_CENTER,
+                        format!("~{}s", remaining.ceil() as i32),
+                        egui::FontId::monospace(6.0),
+                        tl_colors::rt_next_chunk(),
+                    );
+                }
+            }
+        }
+
+        // Pending sweep placeholders + in-progress sweep in sweep track
+        if let (Some(sweep_rect), Some(expected_count)) = (sweep_rect, live_state.expected_elevation_count) {
+            let received = &live_state.elevations_received;
+            let in_progress_elev = live_state.current_in_progress_elevation;
+            let in_progress_radials = live_state.current_in_progress_radials.unwrap_or(0);
+
+            for elev_num in 1..=expected_count {
+                if received.contains(&elev_num) {
+                    continue; // Already complete — rendered by normal sweep track
+                }
+
+                // Estimate position: distribute evenly across the volume duration
+                let vol_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
+                let frac = (elev_num as f64 - 0.5) / expected_count as f64;
+                let sweep_start = vol_start + frac * vol_dur - vol_dur / expected_count as f64 / 2.0;
+                let sweep_end = sweep_start + vol_dur / expected_count as f64;
+
+                let x_start = ts_to_x(sweep_start).max(sweep_rect.left());
+                let x_end = ts_to_x(sweep_end).min(sweep_rect.right());
+                if x_end <= x_start || (x_end - x_start) <= 2.0 {
+                    continue;
+                }
+
+                let placeholder = Rect::from_min_max(
+                    Pos2::new(x_start, sweep_rect.top() + 2.0),
+                    Pos2::new(x_end, sweep_rect.bottom() - 2.0),
+                );
+
+                let is_in_progress = in_progress_elev == Some(elev_num);
+
+                if is_in_progress && in_progress_radials > 0 {
+                    // This elevation is actively accumulating — show partial fill
+                    // Typical sweep has ~720 radials (0.5° spacing) or ~360 (1° spacing)
+                    let estimated_total = 360u32; // conservative estimate
+                    let fill_frac = (in_progress_radials as f32 / estimated_total as f32).clamp(0.0, 1.0);
+                    let fill_width = (x_end - x_start) * fill_frac;
+
+                    // Partial fill (growing from left) — steady, no pulse
+                    let fill_rect = Rect::from_min_max(
+                        placeholder.min,
+                        Pos2::new(x_start + fill_width, placeholder.max.y),
+                    );
+                    painter.rect_filled(fill_rect, 1.0,
+                        Color32::from_rgba_unmultiplied(60, 140, 200, 50));
+
+                    // Steady outline (no pulsing — avoids visual flicker)
+                    painter.rect_stroke(placeholder, 1.0,
+                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(60, 140, 200, 70)),
+                        StrokeKind::Inside);
+
+                    // Radial count label if wide enough
+                    let width = x_end - x_start;
+                    if width > 30.0 {
+                        painter.text(
+                            placeholder.center(),
+                            egui::Align2::CENTER_CENTER,
+                            format!("{}", in_progress_radials),
+                            egui::FontId::monospace(6.0),
+                            Color32::from_rgba_unmultiplied(140, 200, 255, 160),
+                        );
+                    }
+                } else {
+                    // Pending (not yet started) — dashed outline
+                    painter.rect_stroke(placeholder, 1.0,
+                        Stroke::new(0.5, tl_colors::rt_pending_sweep_border()),
+                        StrokeKind::Inside);
+                }
+            }
+        }
+    }
+}
+
+/// Render hover tooltip for timeline elements.
+fn render_timeline_tooltip(
+    ui: &mut egui::Ui,
+    timeline: &RadarTimeline,
+    live_state: &crate::state::LiveModeState,
+    hover_ts: f64,
+    hover_pos: Pos2,
+    scan_rect: &Rect,
+    sweep_rect: &Rect,
+    detail_level: DetailLevel,
+    use_local: bool,
+    now_secs: f64,
+) {
+    let in_sweep_track = detail_level == DetailLevel::Sweeps && hover_pos.y > sweep_rect.top();
+
+    // Find the scan at the hovered timestamp
+    let scan = timeline.scans_in_range(hover_ts - 0.5, hover_ts + 0.5)
+        .find(|s| s.start_time <= hover_ts && s.end_time >= hover_ts);
+
+    // Check if hovering within the active real-time volume (including projected future)
+    let in_active_volume = scan.is_none() && live_state.is_active() && live_state.current_volume_start.is_some() && {
+        let vol_start = live_state.current_volume_start.unwrap();
+        let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
+        hover_ts >= vol_start && hover_ts <= vol_start + expected_dur
+    };
+
+    // If in sweep track, search for sweep across ALL visible scans (not just the
+    // scan containing hover_ts). This handles edge cases where a sweep's time range
+    // extends before its parent scan's start_time.
+    let (sweep, sweep_parent_scan) = if in_sweep_track {
+        let mut found = None;
+        for s in timeline.scans_in_range(hover_ts - 600.0, hover_ts + 600.0) {
+            if let Some(sw) = s.sweeps.iter().find(|sw| sw.start_time <= hover_ts && sw.end_time >= hover_ts) {
+                found = Some((sw, s));
+                break;
+            }
+        }
+        match found {
+            Some((sw, s)) => (Some(sw), Some(s)),
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
+    if scan.is_none() && sweep.is_none() && !in_active_volume {
+        return;
+    }
+
+    egui::Tooltip::always_open(
+        ui.ctx().clone(),
+        egui::LayerId::new(egui::Order::Tooltip, ui.id()),
+        ui.id().with("tl_tooltip"),
+        hover_pos + egui::vec2(10.0, 10.0),
+    ).show(|ui: &mut egui::Ui| {
+        if let Some(sweep) = sweep {
+            let parent_scan = sweep_parent_scan; // may differ from `scan` if sweep extends outside scan boundary
+            // Sweep tooltip
+            ui.label(RichText::new(format!("Elevation Sweep #{}", sweep.elevation_number)).strong().size(12.0));
+            ui.label(RichText::new("One 360\u{00B0} rotation at a single antenna tilt angle.").size(10.0).weak());
+            ui.separator();
+
+            let sweep_count = parent_scan
+                .and_then(|s| s.vcp_pattern.as_ref().map(|v| v.elevations.len()))
+                .or_else(|| parent_scan.map(|s| s.sweeps.len()))
+                .unwrap_or(0);
+            if sweep_count > 0 {
+                ui.label(format!("Elevation: {:.1}\u{00B0} (cut #{} of {})", sweep.elevation, sweep.elevation_number, sweep_count));
+            } else {
+                ui.label(format!("Elevation: {:.1}\u{00B0} (cut #{})", sweep.elevation, sweep.elevation_number));
+            }
+
+            let duration = sweep.end_time - sweep.start_time;
+            let start_str = format_timestamp_full(sweep.start_time, use_local);
+            let end_str = format_timestamp_full(sweep.end_time, use_local);
+            ui.label(format!("Time: {} \u{2192} {} ({:.0}s)", start_str, end_str, duration));
+
+            // Warn if sweep extends outside its parent scan
+            if let Some(ps) = parent_scan {
+                if sweep.start_time < ps.start_time || sweep.end_time > ps.end_time {
+                    ui.label(RichText::new("Note: sweep time range extends outside its parent scan")
+                        .size(9.0).italics()
+                        .color(Color32::from_rgb(255, 200, 100)));
+                }
+            }
+
+            // Waveform and products from VCP
+            if let Some(vcp) = parent_scan.and_then(|s| s.vcp_pattern.as_ref()) {
+                if let Some(vcp_elev) = vcp.elevations.get(sweep.elevation_number.saturating_sub(1) as usize) {
+                    let wf_label = match vcp_elev.waveform.as_str() {
+                        "CS" | "ContiguousSurveillance" => "Contiguous Surveillance",
+                        "CDW" | "ContiguousDopplerWithGating" => "Contiguous Doppler (Gated)",
+                        "CDWO" | "ContiguousDopplerWithoutGating" => "Contiguous Doppler",
+                        "B" | "Batch" => "Batch",
+                        "SPP" | "StaggeredPulsePair" => "Staggered Pulse Pair",
+                        other => other,
+                    };
+                    let products = match vcp_elev.waveform.as_str() {
+                        "CS" | "ContiguousSurveillance" => "Reflectivity",
+                        "CDW" | "CDWO" | "ContiguousDopplerWithGating" | "ContiguousDopplerWithoutGating" => "Velocity",
+                        "B" | "Batch" => "Reflectivity / Velocity",
+                        "SPP" | "StaggeredPulsePair" => "Reflectivity / Velocity / Differential",
+                        _ => "Unknown",
+                    };
+                    ui.label(format!("Waveform: {}", wf_label));
+                    ui.label(format!("Products: {}", products));
+
+                    let mut flags = Vec::new();
+                    if vcp_elev.is_sails { flags.push("SAILS"); }
+                    if vcp_elev.is_mrle { flags.push("MRLE"); }
+                    if vcp_elev.is_base_tilt { flags.push("Base Tilt"); }
+                    if !flags.is_empty() {
+                        ui.label(format!("Flags: {}", flags.join(", ")));
+                    }
+                }
+            }
+        } else if in_active_volume {
+            // Tooltip for in-progress real-time volume (including projected future)
+            let vol_start = live_state.current_volume_start.unwrap();
+            let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
+            let expected_end = vol_start + expected_dur;
+            let now = now_secs;
+            let past_now = hover_ts > now;
+
+            let vcp_num = live_state.current_vcp_number.unwrap_or(0);
+            let vcp_label = if vcp_num > 0 { format!("VCP {}", vcp_num) } else { "Unknown VCP".to_string() };
+            ui.label(RichText::new(format!("Volume Scan In Progress ({})", vcp_label)).strong().size(12.0));
+
+            let mode_desc = match vcp_num {
+                215 | 212 => "Precipitation Mode",
+                31 | 32 | 35 => "Clear Air Mode",
+                12 | 121 => "Severe Weather Mode",
+                _ if vcp_num > 0 => "Known Mode",
+                _ => "Unknown Mode",
+            };
+            ui.label(RichText::new(format!("Radar is actively collecting data. ({})", mode_desc)).size(10.0).weak());
+            ui.separator();
+
+            let start_str = format_timestamp_full(vol_start, use_local);
+            ui.label(format!("Started: {}", start_str));
+            // Round to whole seconds so text doesn't change every frame (avoids tooltip resize flicker)
+            let elapsed = (now - vol_start).floor();
+            let remaining = (expected_end - now).ceil();
+            if remaining > 0.0 {
+                ui.label(format!("Elapsed: {}s / est. {:.0}s total", elapsed as i64, expected_dur));
+            } else {
+                ui.label(format!("Elapsed: {}s (expected ~{:.0}s)", elapsed as i64, expected_dur));
+            }
+
+            let received = live_state.elevations_received.len();
+            let expected = live_state.expected_elevation_count.unwrap_or(0);
+            if expected > 0 {
+                ui.label(format!("Elevations: {}/{} received", received, expected));
+            } else if received > 0 {
+                ui.label(format!("Elevations: {} received", received));
+            }
+
+            if past_now {
+                ui.separator();
+                ui.label(RichText::new("Projected area \u{2014} data not yet collected")
+                    .size(10.0).italics()
+                    .color(Color32::from_rgba_unmultiplied(180, 200, 180, 160)));
+                if remaining > 0.0 {
+                    ui.label(format!("Est. ~{}s remaining", remaining as i64));
+                }
+            } else {
+                ui.separator();
+                ui.label(RichText::new(format!("Live: {}/{} elevations received", received, expected))
+                    .color(Color32::from_rgb(100, 200, 100)));
+            }
+        } else if let Some(scan) = scan {
+            // Scan tooltip (persisted data)
+            let vcp_label = if scan.vcp > 0 { format!("VCP {}", scan.vcp) } else { "Unknown VCP".to_string() };
+            ui.label(RichText::new(format!("Volume Scan ({})", vcp_label)).strong().size(12.0));
+
+            let mode_desc = match scan.vcp {
+                215 | 212 => "Precipitation Mode",
+                31 | 32 | 35 => "Clear Air Mode",
+                12 | 121 => "Severe Weather Mode",
+                _ if scan.vcp > 0 => "Known Mode",
+                _ => "Unknown Mode",
+            };
+            let elev_count = scan.vcp_pattern.as_ref().map(|v| v.elevations.len()).unwrap_or(scan.sweeps.len());
+            let desc = if elev_count > 0 {
+                format!("A complete 360\u{00B0} survey at {} elevation angles. ({})", elev_count, mode_desc)
+            } else {
+                format!("A volume scan using {}.", mode_desc)
+            };
+            ui.label(RichText::new(desc).size(10.0).weak());
+            ui.separator();
+
+            let duration = scan.end_time - scan.start_time;
+            let start_str = format_timestamp_full(scan.start_time, use_local);
+            let end_str = format_timestamp_full(scan.end_time, use_local);
+            ui.label(format!("Start: {}", start_str));
+            ui.label(format!("End:   {} ({:.0}s)", end_str, duration));
+
+            if elev_count > 0 {
+                ui.label(format!("Elevations: {} sweeps", elev_count));
+            }
+
+            // Completeness
+            let completeness_str = match scan.completeness {
+                Some(ScanCompleteness::Complete) => "Complete",
+                Some(ScanCompleteness::PartialWithVcp) => "Partial (VCP known)",
+                Some(ScanCompleteness::PartialNoVcp) => "Partial (no VCP)",
+                Some(ScanCompleteness::Missing) => "Missing",
+                None => "Unknown",
+            };
+            if let (Some(present), Some(expected)) = (scan.present_records, scan.expected_records) {
+                ui.label(format!("Records: {}/{} ({})", present, expected, completeness_str));
+            } else {
+                ui.label(format!("Status: {}", completeness_str));
+            }
+
+            // Live mode info if this scan matches the active volume
+            if live_state.is_active() {
+                if let Some(vol_start) = live_state.current_volume_start {
+                    if (scan.start_time - vol_start).abs() < 30.0 {
+                        ui.separator();
+                        let received = live_state.elevations_received.len();
+                        let expected = live_state.expected_elevation_count.unwrap_or(0);
+                        ui.label(RichText::new(format!("Live: {}/{} elevations received", received, expected))
+                            .color(Color32::from_rgb(100, 200, 100)));
+                    }
+                }
+            }
+        }
+    });
+
+    let _ = scan_rect; // suppress unused warning when not in sweep mode
 }
 
 /// Render pipeline phase indicator boxes (3 high-level groups).

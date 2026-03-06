@@ -107,6 +107,35 @@ pub struct LiveModeState {
     /// Whether to auto-scroll timeline to follow live data.
     #[allow(dead_code)] // Used when auto-scroll feature is implemented
     pub auto_scroll_enabled: bool,
+
+    // ── Real-time partial scan tracking for timeline visualization ────
+
+    /// Elevation numbers received in the current in-progress volume.
+    pub elevations_received: Vec<u8>,
+
+    /// Total expected elevation count from the current VCP.
+    pub expected_elevation_count: Option<u8>,
+
+    /// VCP number of the current/last volume (for projecting scan boundaries).
+    pub current_vcp_number: Option<u16>,
+
+    /// Duration of the last completed volume scan in seconds.
+    pub last_volume_duration_secs: Option<f64>,
+
+    /// Start timestamp of the current in-progress volume (Unix seconds).
+    pub current_volume_start: Option<f64>,
+
+    /// Elevation number of the sweep currently being accumulated (partial).
+    pub current_in_progress_elevation: Option<u8>,
+
+    /// Number of radials received for the current in-progress elevation.
+    pub current_in_progress_radials: Option<u32>,
+
+    /// Data collection timestamps (Unix secs) of chunks in the current volume.
+    /// Used to show chunk tick marks on the timeline before sweeps complete.
+    /// These use the radar data's timestamp so marks appear at the correct
+    /// timeline position, not when the chunk arrived at the browser.
+    pub chunk_data_times: Vec<f64>,
 }
 
 impl Default for LiveModeState {
@@ -121,6 +150,14 @@ impl Default for LiveModeState {
             chunks_received: 0,
             pulse_phase: 0.0,
             auto_scroll_enabled: true,
+            elevations_received: Vec::new(),
+            expected_elevation_count: None,
+            current_vcp_number: None,
+            last_volume_duration_secs: None,
+            current_volume_start: None,
+            current_in_progress_elevation: None,
+            current_in_progress_radials: None,
+            chunk_data_times: Vec::new(),
         }
     }
 }
@@ -175,6 +212,11 @@ impl LiveModeState {
         self.phase_started_at = None;
         self.next_chunk_expected_at = None;
         self.last_exit_reason = Some(reason);
+        self.elevations_received.clear();
+        self.current_volume_start = None;
+        self.current_in_progress_elevation = None;
+        self.current_in_progress_radials = None;
+        self.chunk_data_times.clear();
     }
 
     /// Set error state with message.
@@ -305,9 +347,51 @@ impl LiveModeState {
         }
     }
 
-    /// Handle volume complete event.
+    /// Handle volume complete event — compute duration and reset elevation tracking.
     pub fn handle_volume_complete(&mut self, now: f64) {
+        // Compute volume duration from the start we tracked
+        if let Some(start) = self.current_volume_start {
+            let dur = now - start;
+            if dur > 0.0 && dur < 1200.0 {
+                self.last_volume_duration_secs = Some(dur);
+            }
+        }
         self.phase = LivePhase::Streaming;
         self.phase_started_at = Some(now);
+        self.elevations_received.clear();
+        self.current_volume_start = None;
+        self.current_in_progress_elevation = None;
+        self.current_in_progress_radials = None;
+        self.chunk_data_times.clear();
+    }
+
+    /// Record that new elevation cuts were received in the current volume.
+    pub fn record_elevations(&mut self, elevations: &[u8], volume_start: f64) {
+        if self.current_volume_start.is_none() {
+            self.current_volume_start = Some(volume_start);
+        }
+        for &e in elevations {
+            if !self.elevations_received.contains(&e) {
+                self.elevations_received.push(e);
+            }
+        }
+        self.elevations_received.sort_unstable();
+    }
+
+    /// Record that a chunk was received with the given data collection timestamp.
+    pub fn record_chunk_time(&mut self, data_timestamp_secs: f64) {
+        self.chunk_data_times.push(data_timestamp_secs);
+    }
+
+    /// Record which elevation is currently being accumulated (partial sweep).
+    pub fn record_in_progress_elevation(&mut self, elevation: Option<u8>, radials: Option<u32>) {
+        self.current_in_progress_elevation = elevation;
+        self.current_in_progress_radials = radials;
+    }
+
+    /// Record VCP info from an ingest result.
+    pub fn record_vcp(&mut self, vcp_number: u16, elevation_count: u8) {
+        self.current_vcp_number = Some(vcp_number);
+        self.expected_elevation_count = Some(elevation_count);
     }
 }

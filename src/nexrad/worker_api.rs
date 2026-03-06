@@ -915,6 +915,26 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             js_sys::Reflect::set(&result, &"vcpJson".into(), &wasm_bindgen::JsValue::from_str(&vj)).ok();
         }
 
+        // Current in-progress elevation number (for partial sweep visualization)
+        let current_elev = CHUNK_ACCUM.with(|c| {
+            c.borrow().as_ref().and_then(|a| a.last_elevation_number)
+        });
+        if let Some(elev) = current_elev {
+            js_sys::Reflect::set(&result, &"currentElevation".into(), &wasm_bindgen::JsValue::from(elev)).ok();
+        }
+
+        // Radial count for the current in-progress elevation
+        let current_elev_radials = CHUNK_ACCUM.with(|c| {
+            c.borrow().as_ref().and_then(|a| {
+                a.last_elevation_number.map(|elev| {
+                    a.radial_metas.iter().filter(|m| m.1 == elev).count() as u32
+                })
+            })
+        });
+        if let Some(count) = current_elev_radials {
+            js_sys::Reflect::set(&result, &"currentElevationRadials".into(), &wasm_bindgen::JsValue::from(count)).ok();
+        }
+
         Ok(result.into())
     })
 }
