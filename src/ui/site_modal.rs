@@ -125,6 +125,7 @@ pub fn render_site_modal(
                             state.viz_state.center_lon = site.lon;
                             state.viz_state.pan_offset = Vec2::ZERO;
                             state.timeline_needs_refresh = true;
+                            state.auto_position_on_timeline_load = true;
                             state.site_modal_open = false;
                             modal_state.filter.clear();
                             selected = true;

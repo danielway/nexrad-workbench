@@ -64,6 +64,10 @@ pub struct AppState {
     /// Set to true when the site changes or after a download completes.
     pub timeline_needs_refresh: bool,
 
+    /// Whether the next timeline load should auto-position the playback cursor.
+    /// Set to true on initial startup and site changes; false for download-triggered refreshes.
+    pub auto_position_on_timeline_load: bool,
+
     /// Flag to signal that the cache should be cleared.
     /// Set by UI, handled in main update loop.
     pub clear_cache_requested: bool,
@@ -279,6 +283,7 @@ impl AppState {
             storm_cell_threshold_dbz: 35.0,
             // Request timeline refresh on startup to load from cache
             timeline_needs_refresh: true,
+            auto_position_on_timeline_load: true,
             ..Default::default()
         };
 

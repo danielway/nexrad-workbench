@@ -204,6 +204,7 @@ impl WorkbenchApp {
                 state.viz_state.center_lon = site_info.lon;
             }
             state.timeline_needs_refresh = true;
+            state.auto_position_on_timeline_load = true;
         }
         if let Some(lat) = url_params.lat {
             state.viz_state.center_lat = lat;
@@ -908,15 +909,18 @@ impl eframe::App for WorkbenchApp {
                         // Position playback at the end of the most recent range
                         let most_recent_end = ranges.last().unwrap().end;
 
-                        // If current position is not within any range, move to most recent
-                        // and center the timeline view on the data
-                        let ts = self.state.playback_state.playback_position();
-                        let in_any_range = ranges.iter().any(|r| r.contains(ts));
-                        if !in_any_range {
-                            self.state
-                                .playback_state
-                                .set_playback_position(most_recent_end);
-                            self.state.playback_state.center_view_on(most_recent_end);
+                        // Only auto-position on initial load or site change,
+                        // not when refreshing after a download.
+                        if self.state.auto_position_on_timeline_load {
+                            self.state.auto_position_on_timeline_load = false;
+                            let ts = self.state.playback_state.playback_position();
+                            let in_any_range = ranges.iter().any(|r| r.contains(ts));
+                            if !in_any_range {
+                                self.state
+                                    .playback_state
+                                    .set_playback_position(most_recent_end);
+                                self.state.playback_state.center_view_on(most_recent_end);
+                            }
                         }
 
                         log::info!("Timeline has {} contiguous range(s)", ranges.len());
@@ -996,14 +1000,6 @@ impl eframe::App for WorkbenchApp {
                         self.displayed_sweep_elevation_number = None;
                         self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
                         self.state.displayed_sweep_elevation_number = None;
-                        let ingest_ts = result.context.timestamp_secs as f64;
-                        self.state
-                            .playback_state
-                            .set_playback_position(ingest_ts);
-
-                        // Center the timeline view on the newly ingested scan.
-                        self.state.playback_state.center_view_on(ingest_ts);
-
                         // Refresh timeline to include the new scan (sweeps
                         // were persisted to IDB during ingest and will be
                         // loaded by from_metadata on the next refresh).
@@ -1108,6 +1104,22 @@ impl eframe::App for WorkbenchApp {
                     nexrad::WorkerOutcome::WorkerError { id, message } => {
                         log::error!("Worker error (request {}): {}", id, message);
                         self.state.status_message = format!("Worker error: {}", message);
+
+                        // Clean up ghost and progress for the failed scan.
+                        if let Some(displayed_ts) = self.displayed_scan_timestamp {
+                            self.state
+                                .download_progress
+                                .in_flight_scans
+                                .retain(|&(start, _)| start != displayed_ts);
+                        }
+                        self.state.session_stats.pipeline.processing = false;
+                        self.state.session_stats.pipeline.rendering = false;
+                        if self.state.download_progress.in_flight_scans.is_empty()
+                            && self.state.download_progress.pending_scans.is_empty()
+                            && !self.state.download_selection_in_progress
+                        {
+                            self.state.download_progress.clear();
+                        }
                     }
                 }
             }
@@ -1155,6 +1167,11 @@ impl eframe::App for WorkbenchApp {
                     .in_flight_scans
                     .push((scan_ts, scan_end));
 
+                // Track which scan is being processed so error cleanup
+                // can remove the correct ghost.
+                self.displayed_scan_timestamp = Some(scan_ts);
+                self.state.displayed_scan_timestamp = Some(scan_ts);
+
                 if is_cache_hit {
                     self.state.status_message = format!("Loaded from cache: {}", scan.file_name);
 
@@ -1165,14 +1182,8 @@ impl eframe::App for WorkbenchApp {
 
                     // Cache hit: records already in IDB. Send render request directly.
                     self.current_render_scan_key = Some(scan.key.to_storage_key());
-                    let ts_secs = scan.key.scan_start.as_secs();
-                    self.displayed_scan_timestamp = Some(ts_secs);
                     self.displayed_sweep_elevation_number = None;
-                    self.state.displayed_scan_timestamp = Some(ts_secs);
                     self.state.displayed_sweep_elevation_number = None;
-                    self.state
-                        .playback_state
-                        .set_playback_position(ts_secs as f64);
                     self.last_render_params = None; // Force fresh render
                     self.request_worker_render();
                 } else {
