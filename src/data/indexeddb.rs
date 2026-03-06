@@ -433,6 +433,108 @@ impl IndexedDbRecordStore {
         Ok(evicted_count)
     }
 
+    /// Merges incremental data into an existing scan index entry, or creates one
+    /// if it doesn't exist yet. Used by per-chunk ingest to build up scan metadata
+    /// incrementally as elevations complete.
+    ///
+    /// Two-transaction pattern: read in readonly first, then write the merged
+    /// result in a separate readwrite transaction (no await inside readwrite).
+    pub async fn merge_scan_index_entry(
+        &self,
+        partial: &ScanIndexEntry,
+        new_records: u32,
+        new_size_bytes: u64,
+        new_sweeps: &[SweepMeta],
+    ) -> Result<(), String> {
+        self.ensure_open().await?;
+        let db = self.get_db()?;
+        let storage_key = partial.storage_key();
+
+        // --- Readonly tx: read existing entry ---
+        let existing: Option<ScanIndexEntry> = {
+            let tx = db
+                .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readonly)
+                .map_err(|e| format!("Failed to create readonly transaction: {:?}", e))?;
+            let store = tx
+                .object_store(STORE_SCAN_INDEX)
+                .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
+            let request = store
+                .get(&JsValue::from_str(&storage_key))
+                .map_err(|e| format!("Failed to get scan index: {:?}", e))?;
+            let result = wait_for_request(&request).await?;
+            deserialize_js_value(&result)
+        };
+
+        // --- Merge in memory ---
+        let merged = if let Some(mut entry) = existing {
+            entry.present_records += new_records;
+            entry.total_size_bytes += new_size_bytes;
+            entry.updated_at = UnixMillis::now();
+            entry.has_precomputed_sweeps = true;
+
+            // Merge VCP if newly available
+            if !entry.has_vcp && partial.has_vcp {
+                entry.has_vcp = true;
+                entry.vcp = partial.vcp.clone();
+                if let Some(ref vcp) = entry.vcp {
+                    entry.expected_records = Some(vcp.elevations.len() as u32);
+                }
+            }
+
+            // Merge file_name if not set
+            if entry.file_name.is_none() {
+                entry.file_name = partial.file_name.clone();
+            }
+
+            // Append new sweeps
+            if !new_sweeps.is_empty() {
+                let sweeps = entry.sweeps.get_or_insert_with(Vec::new);
+                sweeps.extend_from_slice(new_sweeps);
+            }
+
+            // Update end timestamp to max
+            if let Some(new_end) = partial.end_timestamp_secs {
+                entry.end_timestamp_secs = Some(
+                    entry
+                        .end_timestamp_secs
+                        .map(|old| old.max(new_end))
+                        .unwrap_or(new_end),
+                );
+            }
+
+            entry
+        } else {
+            // No existing entry — create from partial
+            let mut entry = partial.clone();
+            entry.present_records = new_records;
+            entry.total_size_bytes = new_size_bytes;
+            entry.has_precomputed_sweeps = true;
+            if !new_sweeps.is_empty() {
+                entry.sweeps = Some(new_sweeps.to_vec());
+            }
+            entry
+        };
+
+        // --- Readwrite tx: write merged entry (no await between put and commit) ---
+        let tx = db
+            .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readwrite)
+            .map_err(|e| format!("Failed to create readwrite transaction: {:?}", e))?;
+        let store = tx
+            .object_store(STORE_SCAN_INDEX)
+            .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
+
+        let json = serde_json::to_string(&merged)
+            .map_err(|e| format!("Serialization error: {}", e))?;
+        let js = js_sys::JSON::parse(&json)
+            .map_err(|e| format!("JSON parse error: {:?}", e))?;
+        store
+            .put_with_key(&js, &JsValue::from_str(&storage_key))
+            .map_err(|e| format!("Failed to put scan index: {:?}", e))?;
+
+        wait_for_transaction(&tx).await?;
+        Ok(())
+    }
+
     /// Clears all data from all stores.
     pub async fn clear_all(&self) -> Result<(), String> {
         // Clear each object store rather than deleting the database.

@@ -447,6 +447,479 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 }
 
 // ---------------------------------------------------------------------------
+// Per-chunk incremental ingest
+// ---------------------------------------------------------------------------
+
+/// Accumulator for per-chunk ingest. Holds decoded radials across chunks
+/// until an elevation is complete, then flushes sweep blobs to IDB.
+#[allow(dead_code)]
+struct ChunkAccumulator {
+    scan_key: ScanKey,
+    site_id: String,
+    all_radials: Vec<::nexrad::model::data::Radial>,
+    radial_metas: Vec<(i64, u8, f32)>,
+    completed_elevations: std::collections::HashSet<u8>,
+    last_elevation_number: Option<u8>,
+    vcp: Option<ExtractedVcp>,
+    has_vcp: bool,
+    total_chunks: u32,
+    total_size_bytes: u64,
+    file_name: String,
+    timestamp_secs: i64,
+}
+
+thread_local! {
+    static CHUNK_ACCUM: std::cell::RefCell<Option<ChunkAccumulator>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Ingest a single real-time chunk: decompress, decode, and store completed
+/// elevations to IDB incrementally.
+///
+/// Called from the Web Worker via worker.js.
+///
+/// Parameters (JS object):
+/// `{ data: ArrayBuffer, siteId: string, timestampSecs: number,
+///    chunkIndex: number, isStart: bool, isEnd: bool, fileName: string }`
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
+    init_logger();
+    wasm_bindgen_futures::future_to_promise(async move {
+        use crate::nexrad::extract_elevation_numbers;
+        use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
+        use nexrad_render::Product;
+        use std::collections::HashMap;
+
+        let t_total = web_time::Instant::now();
+
+        // --- Extract parameters from JS ---
+        let data_val = js_sys::Reflect::get(&params, &"data".into())
+            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Missing data: {:?}", e)))?;
+        let data = js_sys::Uint8Array::new(&data_val).to_vec();
+
+        let site_id = js_sys::Reflect::get(&params, &"siteId".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Missing siteId"))?;
+
+        let timestamp_secs = js_sys::Reflect::get(&params, &"timestampSecs".into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Missing timestampSecs"))?
+            as i64;
+
+        let chunk_index = js_sys::Reflect::get(&params, &"chunkIndex".into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as u32;
+
+        let is_start = js_sys::Reflect::get(&params, &"isStart".into())
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let is_end = js_sys::Reflect::get(&params, &"isEnd".into())
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let file_name = js_sys::Reflect::get(&params, &"fileName".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+
+        let data_len = data.len();
+
+        // --- Reset accumulator on Start ---
+        if is_start {
+            CHUNK_ACCUM.with(|cell| {
+                *cell.borrow_mut() = Some(ChunkAccumulator {
+                    scan_key: ScanKey::new(site_id.as_str(), UnixMillis::from_secs(timestamp_secs)),
+                    site_id: site_id.clone(),
+                    all_radials: Vec::new(),
+                    radial_metas: Vec::new(),
+                    completed_elevations: std::collections::HashSet::new(),
+                    last_elevation_number: None,
+                    vcp: None,
+                    has_vcp: false,
+                    total_chunks: 0,
+                    total_size_bytes: 0,
+                    file_name: file_name.clone(),
+                    timestamp_secs,
+                });
+            });
+        }
+
+        // --- Decode the chunk's record(s) into radials ---
+        let mut chunk_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
+        let mut chunk_vcp: Option<ExtractedVcp> = None;
+        let mut chunk_has_vcp = false;
+
+        if is_start {
+            // Start chunk = volume header + first compressed record
+            let file = nexrad_data::volume::File::new(data);
+            let records = file.records().map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!("Failed to split start chunk: {}", e))
+            })?;
+
+            // Check if accumulator already has VCP
+            let accum_has_vcp = CHUNK_ACCUM.with(|cell| {
+                cell.borrow()
+                    .as_ref()
+                    .map(|a| a.vcp.is_some())
+                    .unwrap_or(false)
+            });
+
+            for (i, record) in records.iter().enumerate() {
+                if record.compressed() {
+                    match record.decompress() {
+                        Ok(decompressed) => {
+                            if !accum_has_vcp && chunk_vcp.is_none() {
+                                match decompressed.messages() {
+                                    Ok(msgs) => {
+                                        let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
+                                        chunk_radials.extend(r);
+                                    }
+                                    Err(_) => {}
+                                }
+                            } else {
+                                chunk_radials
+                                    .extend(decompressed.radials().unwrap_or_default());
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("Failed to decompress record {} in start chunk: {}", i, e);
+                        }
+                    }
+                } else {
+                    use crate::nexrad::record_decode::decode_record_to_radials;
+                    chunk_radials
+                        .extend(decode_record_to_radials(record.data()).unwrap_or_default());
+                }
+                if chunk_vcp.is_some() {
+                    chunk_has_vcp = true;
+                }
+            }
+        } else {
+            // Subsequent chunk = single compressed LDM record
+            use nexrad_data::volume::Record;
+            let record = Record::from_slice(&data);
+
+            // Check if accumulator already has VCP
+            let accum_has_vcp = CHUNK_ACCUM.with(|cell| {
+                cell.borrow()
+                    .as_ref()
+                    .map(|a| a.vcp.is_some())
+                    .unwrap_or(false)
+            });
+
+            if record.compressed() {
+                match record.decompress() {
+                    Ok(decompressed) => {
+                        if !accum_has_vcp {
+                            match decompressed.messages() {
+                                Ok(msgs) => {
+                                    let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
+                                    chunk_radials.extend(r);
+                                }
+                                Err(_) => {}
+                            }
+                        } else {
+                            chunk_radials.extend(decompressed.radials().unwrap_or_default());
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to decompress chunk {}: {}",
+                            chunk_index,
+                            e
+                        );
+                    }
+                }
+            } else {
+                use crate::nexrad::record_decode::decode_record_to_radials;
+                chunk_radials
+                    .extend(decode_record_to_radials(record.data()).unwrap_or_default());
+            }
+        }
+
+        // --- Update accumulator with this chunk's radials ---
+        // Detect which elevations in this chunk's radials differ from last_elevation_number
+        let chunk_elev_numbers = extract_elevation_numbers(&chunk_radials);
+        let mut newly_completed: Vec<u8> = Vec::new();
+
+        CHUNK_ACCUM.with(|cell| {
+            let mut borrow = cell.borrow_mut();
+            let accum = borrow.as_mut().ok_or_else(|| {
+                wasm_bindgen::JsValue::from_str("No accumulator — missing Start chunk?")
+            })?;
+
+            accum.total_chunks += 1;
+            accum.total_size_bytes += data_len as u64;
+
+            // Update VCP if newly extracted
+            if chunk_has_vcp {
+                accum.has_vcp = true;
+            }
+            if chunk_vcp.is_some() && accum.vcp.is_none() {
+                accum.vcp = chunk_vcp.clone();
+            }
+
+            // Check for elevation transition → previous elevation is complete
+            if let Some(first_elev) = chunk_elev_numbers.first() {
+                if let Some(last) = accum.last_elevation_number {
+                    if *first_elev != last && !accum.completed_elevations.contains(&last) {
+                        newly_completed.push(last);
+                        accum.completed_elevations.insert(last);
+                    }
+                }
+            }
+
+            // Append radials and metadata
+            for r in &chunk_radials {
+                accum.radial_metas.push((
+                    r.collection_timestamp(),
+                    r.elevation_number(),
+                    r.elevation_angle_degrees(),
+                ));
+            }
+            accum.all_radials.extend(chunk_radials);
+
+            // Update last elevation number
+            if let Some(&last) = chunk_elev_numbers.last() {
+                accum.last_elevation_number = Some(last);
+            }
+
+            Ok::<(), wasm_bindgen::JsValue>(())
+        })?;
+
+        // On end, finalize all remaining elevations
+        if is_end {
+            CHUNK_ACCUM.with(|cell| {
+                let mut borrow = cell.borrow_mut();
+                if let Some(accum) = borrow.as_mut() {
+                    // All unique elevation numbers that haven't been completed yet
+                    let all_elevs: std::collections::HashSet<u8> = accum
+                        .all_radials
+                        .iter()
+                        .map(|r| r.elevation_number())
+                        .collect();
+                    for elev in all_elevs {
+                        if !accum.completed_elevations.contains(&elev) {
+                            newly_completed.push(elev);
+                            accum.completed_elevations.insert(elev);
+                        }
+                    }
+                }
+            });
+        }
+
+        // --- Flush completed elevations to IDB ---
+        let mut sweeps_stored: u32 = 0;
+        let new_sweep_metas: Vec<SweepMeta>;
+        let new_size_bytes: u64;
+
+        if !newly_completed.is_empty() {
+            let store = idb_store().await?;
+
+            let products = [
+                (Product::Reflectivity, "reflectivity"),
+                (Product::Velocity, "velocity"),
+                (Product::SpectrumWidth, "spectrum_width"),
+                (Product::DifferentialReflectivity, "differential_reflectivity"),
+                (Product::CorrelationCoefficient, "correlation_coefficient"),
+                (Product::DifferentialPhase, "differential_phase"),
+            ];
+
+            // Build sweep blobs for completed elevations
+            let (sweep_blobs, sweep_metas, _scan_key_clone) = CHUNK_ACCUM.with(|cell| {
+                let borrow = cell.borrow();
+                let accum = borrow.as_ref().unwrap();
+
+                // Group radials by elevation
+                let mut by_elevation: HashMap<u8, Vec<&::nexrad::model::data::Radial>> =
+                    HashMap::new();
+                for radial in &accum.all_radials {
+                    by_elevation
+                        .entry(radial.elevation_number())
+                        .or_default()
+                        .push(radial);
+                }
+                for group in by_elevation.values_mut() {
+                    group.sort_by(|a, b| {
+                        a.azimuth_angle_degrees()
+                            .partial_cmp(&b.azimuth_angle_degrees())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                }
+
+                let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
+                let mut metas: Vec<SweepMeta> = Vec::new();
+
+                for &elev_num in &newly_completed {
+                    if let Some(sorted_radials) = by_elevation.get(&elev_num) {
+                        for (product, product_name) in &products {
+                            if let Some(sweep) =
+                                extract_sweep_data_from_sorted(sorted_radials, *product)
+                            {
+                                let key = SweepDataKey::new(
+                                    accum.scan_key.clone(),
+                                    elev_num,
+                                    *product_name,
+                                );
+                                blobs.push((key.to_storage_key(), sweep.to_bytes()));
+                            }
+                        }
+
+                        // Build sweep meta for this elevation
+                        let elev_metas: Vec<&(i64, u8, f32)> = accum
+                            .radial_metas
+                            .iter()
+                            .filter(|(_, en, _)| *en == elev_num)
+                            .collect();
+                        if !elev_metas.is_empty() {
+                            let min_ts = elev_metas.iter().map(|(t, _, _)| *t).min().unwrap();
+                            let max_ts = elev_metas.iter().map(|(t, _, _)| *t).max().unwrap();
+                            let angle_sum: f64 =
+                                elev_metas.iter().map(|(_, _, a)| *a as f64).sum();
+                            let count = elev_metas.len();
+                            metas.push(SweepMeta {
+                                start: min_ts as f64 / 1000.0,
+                                end: max_ts as f64 / 1000.0,
+                                elevation: (angle_sum / count as f64) as f32,
+                                elevation_number: elev_num,
+                            });
+                        }
+                    }
+                }
+
+                (blobs, metas, accum.scan_key.clone())
+            });
+
+            new_size_bytes = sweep_blobs.iter().map(|(_, b)| b.len() as u64).sum();
+            sweeps_stored = sweep_blobs.len() as u32;
+            new_sweep_metas = sweep_metas;
+
+            // Store sweep blobs
+            if !sweep_blobs.is_empty() {
+                store.put_sweeps_batch(&sweep_blobs).await.map_err(|e| {
+                    wasm_bindgen::JsValue::from_str(&format!("Failed to store sweeps: {}", e))
+                })?;
+            }
+
+            // Merge scan index entry
+            let partial_entry = CHUNK_ACCUM.with(|cell| {
+                let borrow = cell.borrow();
+                let accum = borrow.as_ref().unwrap();
+
+                let end_ts = new_sweep_metas
+                    .iter()
+                    .map(|s| s.end as i64)
+                    .max()
+                    .unwrap_or(accum.timestamp_secs);
+
+                let mut entry = ScanIndexEntry::new(accum.scan_key.clone());
+                entry.has_vcp = accum.has_vcp;
+                entry.vcp = accum.vcp.clone();
+                entry.file_name = Some(accum.file_name.clone());
+                entry.end_timestamp_secs = Some(end_ts);
+                if let Some(ref vcp) = accum.vcp {
+                    entry.expected_records = Some(vcp.elevations.len() as u32);
+                }
+                entry
+            });
+
+            store
+                .merge_scan_index_entry(
+                    &partial_entry,
+                    newly_completed.len() as u32,
+                    new_size_bytes,
+                    &new_sweep_metas,
+                )
+                .await
+                .map_err(|e| {
+                    wasm_bindgen::JsValue::from_str(&format!(
+                        "Failed to merge scan index: {}",
+                        e
+                    ))
+                })?;
+        }
+
+        // --- Build the scan key for response ---
+        let scan_key_str = CHUNK_ACCUM.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .map(|a| a.scan_key.to_storage_key())
+                .unwrap_or_default()
+        });
+
+        // Build sweep metadata for all completed elevations so far
+        let all_sweeps_json = CHUNK_ACCUM.with(|cell| {
+            let borrow = cell.borrow();
+            let accum = borrow.as_ref().unwrap();
+            let all_metas = build_sweep_meta(&accum.radial_metas);
+            // Only include completed elevations
+            let completed: Vec<SweepMeta> = all_metas
+                .into_iter()
+                .filter(|m| accum.completed_elevations.contains(&m.elevation_number))
+                .collect();
+            serde_json::to_string(&completed).unwrap_or_else(|_| "[]".to_string())
+        });
+
+        let vcp_json = CHUNK_ACCUM.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .and_then(|a| a.vcp.as_ref())
+                .and_then(|v| serde_json::to_string(v).ok())
+        });
+
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+
+        let accum_info = CHUNK_ACCUM.with(|c| {
+            c.borrow().as_ref().map(|a| {
+                (a.all_radials.len(), a.has_vcp, a.vcp.as_ref().map(|v| v.number))
+            }).unwrap_or((0, false, None))
+        });
+        log::info!(
+            "ingest_chunk: chunk={} is_start={} is_end={} radials={} vcp={:?} has_vcp={} completed_elevs={:?} sweeps_stored={} {:.1}ms",
+            chunk_index, is_start, is_end,
+            accum_info.0, accum_info.2, accum_info.1,
+            newly_completed, sweeps_stored, total_ms,
+        );
+
+        // --- Clear accumulator on end ---
+        if is_end {
+            CHUNK_ACCUM.with(|cell| {
+                *cell.borrow_mut() = None;
+            });
+        }
+
+        // --- Build JS response ---
+        let result = js_sys::Object::new();
+        js_sys::Reflect::set(&result, &"chunkIndex".into(), &wasm_bindgen::JsValue::from(chunk_index)).ok();
+        js_sys::Reflect::set(&result, &"radialsDecoded".into(), &wasm_bindgen::JsValue::from(chunk_elev_numbers.len() as u32)).ok();
+        js_sys::Reflect::set(&result, &"sweepsStored".into(), &wasm_bindgen::JsValue::from(sweeps_stored)).ok();
+        js_sys::Reflect::set(&result, &"scanKey".into(), &wasm_bindgen::JsValue::from_str(&scan_key_str)).ok();
+        js_sys::Reflect::set(&result, &"isEnd".into(), &wasm_bindgen::JsValue::from(is_end)).ok();
+        js_sys::Reflect::set(&result, &"totalMs".into(), &wasm_bindgen::JsValue::from(total_ms)).ok();
+        js_sys::Reflect::set(&result, &"sweepsJson".into(), &wasm_bindgen::JsValue::from_str(&all_sweeps_json)).ok();
+
+        // Elevations completed array
+        let completed_arr = js_sys::Array::new();
+        for &e in &newly_completed {
+            completed_arr.push(&wasm_bindgen::JsValue::from(e));
+        }
+        js_sys::Reflect::set(&result, &"elevationsCompleted".into(), &completed_arr).ok();
+
+        if let Some(vj) = vcp_json {
+            js_sys::Reflect::set(&result, &"vcpJson".into(), &wasm_bindgen::JsValue::from_str(&vj)).ok();
+        }
+
+        Ok(result.into())
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
 

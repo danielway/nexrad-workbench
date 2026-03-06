@@ -17,15 +17,21 @@ use crate::data::facade::DataFacade;
 pub enum RealtimeResult {
     /// Iterator initialized, streaming started
     Started { site_id: String },
-    /// Chunk received from the stream
+    /// Chunk received from the stream (UI status update)
     ChunkReceived {
         chunks_in_volume: u32,
         time_until_next: Option<Duration>,
         is_volume_end: bool,
         fetch_latency_ms: f64,
     },
-    /// Volume complete (all chunks received and assembled)
-    VolumeComplete { data: Vec<u8>, timestamp: i64 },
+    /// Raw chunk data for incremental ingest
+    ChunkData {
+        data: Vec<u8>,
+        chunk_index: u32,
+        is_start: bool,
+        is_end: bool,
+        timestamp: i64,
+    },
     /// Error occurred during streaming
     Error(String),
 }
@@ -152,10 +158,93 @@ async fn streaming_loop(
     }
     ctx.request_repaint();
 
-    let mut volume_data: Vec<u8> = Vec::new();
-    let mut chunks_in_volume: u32 = 0;
-    let mut current_scan_start_secs: i64 = current_timestamp();
+    let mut chunks_in_volume: u32;
+    let mut current_scan_start_secs: i64;
 
+    // --- Process init chunks (backfill from mid-volume join) ---
+    // If start_chunk is Some, we joined mid-volume: emit start chunk + latest chunk.
+    // If start_chunk is None, latest_chunk IS the start chunk.
+    if let Some(start_chunk) = init_result.start_chunk {
+        // Joined mid-volume: emit the start chunk first
+        let start_data = start_chunk.chunk.data().to_vec();
+        current_scan_start_secs = current_timestamp();
+
+        log::info!(
+            "Init: emitting start_chunk ({} bytes) for mid-volume join",
+            start_data.len()
+        );
+        {
+            let mut s = state.borrow_mut();
+            s.results.push(RealtimeResult::ChunkData {
+                data: start_data,
+                chunk_index: 0,
+                is_start: true,
+                is_end: false,
+                timestamp: current_scan_start_secs,
+            });
+        }
+
+        // Then emit the latest chunk (where we actually joined)
+        let latest_data = init_result.latest_chunk.chunk.data().to_vec();
+        let latest_type = init_result.latest_chunk.identifier.chunk_type();
+        let latest_is_end = latest_type == ChunkType::End;
+        chunks_in_volume = 2; // start + latest
+
+        log::info!(
+            "Init: emitting latest_chunk ({} bytes, is_end={})",
+            latest_data.len(),
+            latest_is_end
+        );
+        {
+            let mut s = state.borrow_mut();
+            s.results.push(RealtimeResult::ChunkData {
+                data: latest_data,
+                chunk_index: 1,
+                is_start: false,
+                is_end: latest_is_end,
+                timestamp: current_scan_start_secs,
+            });
+            s.results.push(RealtimeResult::ChunkReceived {
+                chunks_in_volume,
+                time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
+                is_volume_end: latest_is_end,
+                fetch_latency_ms: 0.0,
+            });
+        }
+        ctx.request_repaint();
+    } else {
+        // Joined at volume start: latest_chunk IS the start chunk
+        let latest_data = init_result.latest_chunk.chunk.data().to_vec();
+        let latest_type = init_result.latest_chunk.identifier.chunk_type();
+        let latest_is_start = latest_type == ChunkType::Start;
+        let latest_is_end = latest_type == ChunkType::End;
+        current_scan_start_secs = current_timestamp();
+        chunks_in_volume = 1;
+
+        log::info!(
+            "Init: emitting latest_chunk as start ({} bytes)",
+            latest_data.len()
+        );
+        {
+            let mut s = state.borrow_mut();
+            s.results.push(RealtimeResult::ChunkData {
+                data: latest_data,
+                chunk_index: 0,
+                is_start: latest_is_start,
+                is_end: latest_is_end,
+                timestamp: current_scan_start_secs,
+            });
+            s.results.push(RealtimeResult::ChunkReceived {
+                chunks_in_volume,
+                time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
+                is_volume_end: latest_is_end,
+                fetch_latency_ms: 0.0,
+            });
+        }
+        ctx.request_repaint();
+    }
+
+    // --- Main streaming loop: emit ChunkData per chunk ---
     loop {
         // Check stop signal
         if state.borrow().stop_requested {
@@ -167,7 +256,6 @@ async fn streaming_loop(
         if let Some(wait_duration) = iter.time_until_next().and_then(|d| d.to_std().ok()) {
             let wait_ms = wait_duration.as_millis() as u32;
             if wait_ms > 0 {
-                // Wait in increments, updating countdown UI
                 if !interruptible_sleep(&state, &ctx, wait_ms).await {
                     log::info!("Realtime streaming stopped");
                     break;
@@ -182,43 +270,38 @@ async fn streaming_loop(
                 let chunk_fetch_ms = chunk_fetch_start.elapsed().as_secs_f64() * 1000.0;
                 stats_tracker.update(&stats, &iter);
 
-                let chunk_data = chunk.chunk.data();
+                let chunk_data = chunk.chunk.data().to_vec();
                 let chunk_type = chunk.identifier.chunk_type();
                 let is_end = chunk_type == ChunkType::End;
                 let is_start = chunk_type == ChunkType::Start;
 
-                // Reset on new volume
+                // Reset counters on new volume
                 if is_start {
-                    volume_data.clear();
                     chunks_in_volume = 0;
                     current_scan_start_secs = current_timestamp();
                 }
 
                 chunks_in_volume += 1;
-                volume_data.extend_from_slice(chunk_data);
 
                 let time_until_next = iter.time_until_next().and_then(|td| td.to_std().ok());
 
                 {
                     let mut s = state.borrow_mut();
+                    // Emit the raw chunk for incremental ingest
+                    s.results.push(RealtimeResult::ChunkData {
+                        data: chunk_data,
+                        chunk_index: chunks_in_volume - 1,
+                        is_start,
+                        is_end,
+                        timestamp: current_scan_start_secs,
+                    });
+                    // Emit UI status update
                     s.results.push(RealtimeResult::ChunkReceived {
                         chunks_in_volume,
                         time_until_next,
                         is_volume_end: is_end,
                         fetch_latency_ms: chunk_fetch_ms,
                     });
-                }
-
-                if is_end {
-                    let volume_size = volume_data.len();
-                    {
-                        let mut s = state.borrow_mut();
-                        s.results.push(RealtimeResult::VolumeComplete {
-                            data: std::mem::take(&mut volume_data),
-                            timestamp: current_scan_start_secs,
-                        });
-                    }
-                    log::info!("Volume complete: {} bytes", volume_size);
                 }
 
                 ctx.request_repaint();

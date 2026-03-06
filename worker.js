@@ -55,6 +55,24 @@ self.onmessage = async function (e) {
         return;
     }
 
+    if (msg.type === 'ingest_chunk') {
+        try {
+            const result = await wasm.worker_ingest_chunk({
+                data: msg.data,
+                siteId: msg.siteId,
+                timestampSecs: msg.timestampSecs,
+                chunkIndex: msg.chunkIndex,
+                isStart: msg.isStart,
+                isEnd: msg.isEnd,
+                fileName: msg.fileName,
+            });
+            self.postMessage({ type: 'chunk_ingested', id: msg.id, result: result });
+        } catch (err) {
+            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+        }
+        return;
+    }
+
     if (msg.type === 'render') {
         try {
             // worker_render: JsValue -> Promise<JsValue>

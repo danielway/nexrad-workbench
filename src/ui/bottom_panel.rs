@@ -305,10 +305,17 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     if state.playback_state.playing {
         state.playback_state.advance(dt as f64);
 
-        // Pin playback position at ~quarter of the visible timeline during playback.
+        // Pin playback position on the visible timeline during playback.
+        // In live/real-time mode, pin at 75% from left (right quarter) so more
+        // history is visible. In archive playback, pin at 25% from left.
         let view_width_secs = state.playback_state.view_width_secs();
         if view_width_secs > 0.0 {
-            let target_offset = view_width_secs * 0.25; // pin at 25% from left
+            let pin_fraction = if state.live_mode_state.is_active() {
+                0.75
+            } else {
+                0.25
+            };
+            let target_offset = view_width_secs * pin_fraction;
             let pos = state.playback_state.playback_position();
             state.playback_state.timeline_view_start = pos - target_offset;
         }
@@ -994,6 +1001,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             // Exit live mode when user clicks timeline
             if state.live_mode_state.is_active() {
                 state.live_mode_state.stop(LiveExitReason::UserSeeked);
+                state.playback_state.time_model.disable_realtime_lock();
                 state.status_message = state
                     .live_mode_state
                     .last_exit_reason
@@ -1253,6 +1261,7 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
             // Stop - also exits live mode if active
             if state.live_mode_state.is_active() {
                 state.live_mode_state.stop(LiveExitReason::UserStopped);
+                state.playback_state.time_model.disable_realtime_lock();
                 state.status_message = state
                     .live_mode_state
                     .last_exit_reason

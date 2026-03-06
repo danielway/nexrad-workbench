@@ -719,6 +719,7 @@ impl WorkbenchApp {
         log::info!("Stopping live mode: {:?}", reason);
 
         self.state.live_mode_state.stop(reason);
+        self.state.playback_state.time_model.disable_realtime_lock();
         self.realtime_channel.stop();
 
         self.state.status_message = self
@@ -749,10 +750,12 @@ impl WorkbenchApp {
                 self.state
                     .session_stats
                     .record_fetch_latency(fetch_latency_ms);
-                log::debug!(
-                    "Chunk received: {} in volume, is_end={}",
+                log::info!(
+                    "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?}",
                     chunks_in_volume,
-                    is_volume_end
+                    is_volume_end,
+                    fetch_latency_ms,
+                    time_until_next,
                 );
                 self.state.live_mode_state.handle_realtime_chunk(
                     chunks_in_volume,
@@ -761,23 +764,47 @@ impl WorkbenchApp {
                     now,
                 );
             }
-            nexrad::RealtimeResult::VolumeComplete { data, timestamp } => {
+            nexrad::RealtimeResult::ChunkData {
+                data,
+                chunk_index,
+                is_start,
+                is_end,
+                timestamp,
+            } => {
                 log::info!(
-                    "Volume complete: {} bytes, timestamp={}",
+                    "Realtime chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
+                    chunk_index,
+                    is_start,
+                    is_end,
                     data.len(),
-                    timestamp
+                    timestamp,
                 );
-                self.state.live_mode_state.handle_volume_complete(now);
-                self.state.status_message = format!("Live: received volume ({} bytes)", data.len());
 
-                // Send raw bytes to worker for ingest (split + store + probe).
-                // The worker stores records in IDB and returns metadata.
-                // The Ingested handler then triggers a render request.
+                if is_start {
+                    self.state.status_message = "Live: receiving new volume...".to_string();
+                    log::info!("Realtime: new volume started, forwarding start chunk to worker");
+                }
+
+                // Forward chunk to worker for incremental ingest
                 let site_id = self.state.viz_state.site_id.clone();
                 let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
                 if let Some(ref mut worker) = self.decode_worker {
-                    self.state.session_stats.pipeline.processing = true;
-                    worker.ingest(data, site_id, timestamp, file_name, 0.0);
+                    if is_start {
+                        self.state.session_stats.pipeline.processing = true;
+                    }
+                    log::info!(
+                        "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={})",
+                        chunk_index, site_id, timestamp
+                    );
+                    worker.ingest_chunk(
+                        data,
+                        site_id,
+                        timestamp,
+                        chunk_index,
+                        is_start,
+                        is_end,
+                        file_name,
+                    );
                 }
             }
             nexrad::RealtimeResult::Error(msg) => {
@@ -1013,6 +1040,76 @@ impl eframe::App for WorkbenchApp {
 
                         // Trigger render for the ingested scan
                         self.request_worker_render();
+                    }
+                    nexrad::WorkerOutcome::ChunkIngested(result) => {
+                        log::info!(
+                            "Chunk ingested: scan={} elevations_completed={:?} sweeps_stored={} is_end={} vcp={:?} available_elevs={:?} {:.1}ms",
+                            result.scan_key,
+                            result.elevations_completed,
+                            result.sweeps_stored,
+                            result.is_end,
+                            result.vcp.as_ref().map(|v| v.number),
+                            self.available_elevation_numbers,
+                            result.total_ms,
+                        );
+
+                        // Update scan key and available elevations
+                        self.current_render_scan_key = Some(result.scan_key.clone());
+                        let had_elevations = !self.available_elevation_numbers.is_empty();
+                        for elev in &result.elevations_completed {
+                            if !self.available_elevation_numbers.contains(elev) {
+                                self.available_elevation_numbers.push(*elev);
+                                self.available_elevation_numbers.sort_unstable();
+                            }
+                        }
+
+                        // Update displayed timestamp
+                        self.displayed_scan_timestamp = Some(result.context.timestamp_secs);
+                        self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
+
+                        // Refresh timeline when new elevations are written to cache
+                        if !result.elevations_completed.is_empty() {
+                            log::info!(
+                                "Realtime: {} new elevation(s) cached, refreshing timeline (total available: {:?})",
+                                result.elevations_completed.len(),
+                                self.available_elevation_numbers,
+                            );
+                            self.state.timeline_needs_refresh = true;
+
+                            // Update status to show progress
+                            self.state.status_message = format!(
+                                "Live: {} elevation(s) cached",
+                                self.available_elevation_numbers.len()
+                            );
+                        }
+
+                        if result.is_end {
+                            // Volume complete: trigger render, check eviction
+                            let now = js_sys::Date::now() / 1000.0;
+                            self.state.live_mode_state.handle_volume_complete(now);
+                            log::info!(
+                                "Realtime: volume complete — {} elevations, triggering render",
+                                self.available_elevation_numbers.len()
+                            );
+                            self.state.status_message = format!(
+                                "Live: volume complete ({} elevations)",
+                                self.available_elevation_numbers.len()
+                            );
+                            self.state.timeline_needs_refresh = true;
+                            self.state.check_eviction_requested = true;
+                            self.state.session_stats.pipeline.mark_processing_done();
+
+                            // Clear last render params to force a fresh render
+                            self.displayed_sweep_elevation_number = None;
+                            self.state.displayed_sweep_elevation_number = None;
+                            self.last_render_params = None;
+                            self.request_worker_render();
+                        } else if !had_elevations && !self.available_elevation_numbers.is_empty() {
+                            // First elevation arrived — we can render something now
+                            log::info!("Realtime: first elevation available, triggering initial render");
+                            self.last_render_params = None;
+                            self.request_worker_render();
+                        }
                     }
                     nexrad::WorkerOutcome::Decoded(result) => {
                         // Processing complete → transition to rendering.

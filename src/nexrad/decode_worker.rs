@@ -52,6 +52,38 @@ pub struct IngestResult {
     pub index_ms: f64,
 }
 
+/// Context for a per-chunk ingest request (real-time streaming).
+pub struct ChunkIngestContext {
+    #[allow(dead_code)]
+    pub site_id: String,
+    pub timestamp_secs: i64,
+    #[allow(dead_code)]
+    pub chunk_index: u32,
+    #[allow(dead_code)]
+    pub is_end: bool,
+}
+
+/// Successful per-chunk ingest result from the worker.
+pub struct ChunkIngestResult {
+    pub context: ChunkIngestContext,
+    /// Scan storage key (e.g., "KDMX|1700000000000")
+    pub scan_key: String,
+    /// Elevation numbers that became complete with this chunk.
+    pub elevations_completed: Vec<u8>,
+    /// Number of sweep blobs written to IDB.
+    pub sweeps_stored: u32,
+    /// Whether this was the final chunk in the volume.
+    pub is_end: bool,
+    /// Per-sweep metadata for all completed elevations so far.
+    #[allow(dead_code)]
+    pub sweeps: Vec<crate::data::SweepMeta>,
+    /// VCP pattern if extracted.
+    #[allow(dead_code)]
+    pub vcp: Option<crate::data::keys::ExtractedVcp>,
+    /// Total processing time in worker (ms).
+    pub total_ms: f64,
+}
+
 /// Context for a render/decode request.
 pub struct RenderContext {
     /// Scan storage key.
@@ -101,6 +133,8 @@ pub struct DecodeResult {
 pub enum WorkerOutcome {
     /// Archive ingest completed.
     Ingested(IngestResult),
+    /// Per-chunk ingest completed (real-time streaming).
+    ChunkIngested(ChunkIngestResult),
     /// Decode completed (raw data for GPU rendering).
     Decoded(DecodeResult),
     /// Error from any operation.
@@ -120,6 +154,7 @@ pub struct DecodeWorker {
     next_id: u64,
     ready: Rc<RefCell<bool>>,
     pending_ingest: Rc<RefCell<HashMap<RequestId, IngestContext>>>,
+    pending_chunk_ingest: Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     results: Rc<RefCell<Vec<WorkerOutcome>>>,
     /// Requests queued before the worker was ready.
@@ -129,6 +164,7 @@ pub struct DecodeWorker {
 /// A request queued before the worker was ready.
 enum QueuedRequest {
     Ingest(RequestId, Vec<u8>, String, i64, String),
+    IngestChunk(RequestId, Vec<u8>, String, i64, u32, bool, bool, String),
     Render(RequestId, String, u8, String),
 }
 
@@ -161,6 +197,8 @@ impl DecodeWorker {
         let ready = Rc::new(RefCell::new(false));
         let pending_ingest: Rc<RefCell<HashMap<RequestId, IngestContext>>> =
             Rc::new(RefCell::new(HashMap::new()));
+        let pending_chunk_ingest: Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>> =
+            Rc::new(RefCell::new(HashMap::new()));
         let pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let results: Rc<RefCell<Vec<WorkerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
@@ -169,6 +207,7 @@ impl DecodeWorker {
         {
             let ready_c = ready.clone();
             let pending_ingest_c = pending_ingest.clone();
+            let pending_chunk_ingest_c = pending_chunk_ingest.clone();
             let pending_render_c = pending_render.clone();
             let results_c = results.clone();
             let ctx_c = ctx.clone();
@@ -186,6 +225,14 @@ impl DecodeWorker {
                     }
                     Some("ingested") => {
                         handle_ingested_message(&data, &pending_ingest_c, &results_c);
+                        ctx_c.request_repaint();
+                    }
+                    Some("chunk_ingested") => {
+                        handle_chunk_ingested_message(
+                            &data,
+                            &pending_chunk_ingest_c,
+                            &results_c,
+                        );
                         ctx_c.request_repaint();
                     }
                     Some("decoded") => {
@@ -237,6 +284,7 @@ impl DecodeWorker {
             next_id: 1,
             ready,
             pending_ingest,
+            pending_chunk_ingest,
             pending_render,
             results,
             queue: Vec::new(),
@@ -322,6 +370,47 @@ impl DecodeWorker {
         }
     }
 
+    /// Submit a single real-time chunk for incremental ingest.
+    pub fn ingest_chunk(
+        &mut self,
+        data: Vec<u8>,
+        site_id: String,
+        timestamp_secs: i64,
+        chunk_index: u32,
+        is_start: bool,
+        is_end: bool,
+        file_name: String,
+    ) {
+        let id = self.next_request_id();
+        self.pending_chunk_ingest.borrow_mut().insert(
+            id,
+            ChunkIngestContext {
+                site_id: site_id.clone(),
+                timestamp_secs,
+                chunk_index,
+                is_end,
+            },
+        );
+
+        if *self.ready.borrow() {
+            send_ingest_chunk_request(
+                &self.worker,
+                id,
+                &data,
+                &site_id,
+                timestamp_secs,
+                chunk_index,
+                is_start,
+                is_end,
+                &file_name,
+            );
+        } else {
+            self.queue.push(QueuedRequest::IngestChunk(
+                id, data, site_id, timestamp_secs, chunk_index, is_start, is_end, file_name,
+            ));
+        }
+    }
+
     /// Flush any queued requests if the worker has become ready.
     pub fn flush_queue(&mut self) {
         if *self.ready.borrow() && !self.queue.is_empty() {
@@ -331,6 +420,21 @@ impl DecodeWorker {
                 match request {
                     QueuedRequest::Ingest(id, data, site_id, ts, file_name) => {
                         send_ingest_request(&self.worker, id, &data, &site_id, ts, &file_name);
+                    }
+                    QueuedRequest::IngestChunk(
+                        id, data, site_id, ts, chunk_index, is_start, is_end, file_name,
+                    ) => {
+                        send_ingest_chunk_request(
+                            &self.worker,
+                            id,
+                            &data,
+                            &site_id,
+                            ts,
+                            chunk_index,
+                            is_start,
+                            is_end,
+                            &file_name,
+                        );
                     }
                     QueuedRequest::Render(id, scan_key, elev, product) => {
                         send_render_request(&self.worker, id, &scan_key, elev, &product);
@@ -469,6 +573,89 @@ fn handle_ingested_message(
             extract_ms,
             store_ms,
             index_ms,
+        }));
+}
+
+/// Handle a "chunk_ingested" message from the worker.
+fn handle_chunk_ingested_message(
+    data: &JsValue,
+    pending: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
+) {
+    let id = js_sys::Reflect::get(data, &"id".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u64;
+
+    let context = match pending.borrow_mut().remove(&id) {
+        Some(ctx) => ctx,
+        None => {
+            log::warn!("Received chunk_ingested message for unknown request {}", id);
+            return;
+        }
+    };
+
+    let result_obj = js_sys::Reflect::get(data, &"result".into()).unwrap_or(JsValue::NULL);
+
+    let scan_key = js_sys::Reflect::get(&result_obj, &"scanKey".into())
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+
+    let sweeps_stored = js_sys::Reflect::get(&result_obj, &"sweepsStored".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
+
+    let is_end = js_sys::Reflect::get(&result_obj, &"isEnd".into())
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let total_ms = js_sys::Reflect::get(&result_obj, &"totalMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    // Parse elevations completed
+    let mut elevations_completed: Vec<u8> = Vec::new();
+    if let Ok(arr) = js_sys::Reflect::get(&result_obj, &"elevationsCompleted".into()) {
+        if !arr.is_undefined() && !arr.is_null() {
+            let arr: js_sys::Array = arr.unchecked_into();
+            for i in 0..arr.length() {
+                if let Some(n) = arr.get(i).as_f64() {
+                    elevations_completed.push(n as u8);
+                }
+            }
+        }
+    }
+
+    // Parse sweep metadata
+    let sweeps: Vec<crate::data::SweepMeta> =
+        js_sys::Reflect::get(&result_obj, &"sweepsJson".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+    // Parse VCP
+    let vcp: Option<crate::data::keys::ExtractedVcp> =
+        js_sys::Reflect::get(&result_obj, &"vcpJson".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .and_then(|s| serde_json::from_str(&s).ok());
+
+    results
+        .borrow_mut()
+        .push(WorkerOutcome::ChunkIngested(ChunkIngestResult {
+            context,
+            scan_key,
+            elevations_completed,
+            sweeps_stored,
+            is_end,
+            sweeps,
+            vcp,
+            total_ms,
         }));
 }
 
@@ -614,6 +801,50 @@ fn send_ingest_request(
 
     if let Err(e) = worker.post_message_with_transfer(&msg, &transfer) {
         log::error!("Failed to send ingest request {}: {:?}", id, e);
+    }
+}
+
+/// Send a chunk ingest request to the worker.
+fn send_ingest_chunk_request(
+    worker: &Worker,
+    id: u64,
+    data: &[u8],
+    site_id: &str,
+    timestamp_secs: i64,
+    chunk_index: u32,
+    is_start: bool,
+    is_end: bool,
+    file_name: &str,
+) {
+    let array = js_sys::Uint8Array::from(data);
+    let buffer = array.buffer();
+
+    let msg = js_sys::Object::new();
+    js_sys::Reflect::set(&msg, &"type".into(), &"ingest_chunk".into()).ok();
+    js_sys::Reflect::set(&msg, &"id".into(), &JsValue::from(id as f64)).ok();
+    js_sys::Reflect::set(&msg, &"data".into(), &buffer).ok();
+    js_sys::Reflect::set(&msg, &"siteId".into(), &JsValue::from_str(site_id)).ok();
+    js_sys::Reflect::set(
+        &msg,
+        &"timestampSecs".into(),
+        &JsValue::from(timestamp_secs as f64),
+    )
+    .ok();
+    js_sys::Reflect::set(
+        &msg,
+        &"chunkIndex".into(),
+        &JsValue::from(chunk_index as f64),
+    )
+    .ok();
+    js_sys::Reflect::set(&msg, &"isStart".into(), &JsValue::from(is_start)).ok();
+    js_sys::Reflect::set(&msg, &"isEnd".into(), &JsValue::from(is_end)).ok();
+    js_sys::Reflect::set(&msg, &"fileName".into(), &JsValue::from_str(file_name)).ok();
+
+    let transfer = js_sys::Array::new();
+    transfer.push(&buffer);
+
+    if let Err(e) = worker.post_message_with_transfer(&msg, &transfer) {
+        log::error!("Failed to send ingest_chunk request {}: {:?}", id, e);
     }
 }
 
