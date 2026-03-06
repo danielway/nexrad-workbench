@@ -69,10 +69,14 @@ impl Sweep {
 #[derive(Clone, Debug)]
 #[allow(dead_code)] // vcp field is part of data model, used in generate_sample_data
 pub struct Scan {
-    /// Start timestamp (Unix seconds with sub-second precision)
+    /// Start timestamp (Unix seconds with sub-second precision).
+    /// May be adjusted earlier than `key_timestamp` to encompass sweep data.
     pub start_time: f64,
     /// End timestamp
     pub end_time: f64,
+    /// The nominal scan key timestamp (Unix seconds) before sweep adjustments.
+    /// Matches the timestamp encoded in the scan storage key.
+    pub key_timestamp: f64,
     /// Volume Coverage Pattern number (e.g., 215, 35, 212)
     pub vcp: u16,
     /// Full extracted VCP pattern with per-elevation metadata.
@@ -266,6 +270,7 @@ impl RadarTimeline {
             scans.push(Scan {
                 start_time: scan_start,
                 end_time: scan_end,
+                key_timestamp: scan_start,
                 vcp: 215,
                 vcp_pattern: None,
                 sweeps,
@@ -371,6 +376,7 @@ impl RadarTimeline {
                 Scan {
                     start_time,
                     end_time,
+                    key_timestamp: ts_secs as f64,
                     vcp: vcp_number,
                     vcp_pattern: meta.vcp,
                     sweeps,

@@ -1081,6 +1081,7 @@ impl eframe::App for WorkbenchApp {
 
                         // Update scan key and available elevations
                         self.current_render_scan_key = Some(result.scan_key.clone());
+                        self.state.live_mode_state.current_scan_key = Some(result.scan_key.clone());
                         let had_elevations = !self.available_elevation_numbers.is_empty();
                         for elev in &result.elevations_completed {
                             if !self.available_elevation_numbers.contains(elev) {

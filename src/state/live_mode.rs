@@ -125,6 +125,10 @@ pub struct LiveModeState {
     /// Start timestamp of the current in-progress volume (Unix seconds).
     pub current_volume_start: Option<f64>,
 
+    /// Scan key of the current in-progress volume (e.g., "KDMX|1700000000000").
+    /// Used to identify and skip this scan in normal timeline rendering.
+    pub current_scan_key: Option<String>,
+
     /// Elevation number of the sweep currently being accumulated (partial).
     pub current_in_progress_elevation: Option<u8>,
 
@@ -168,6 +172,7 @@ impl Default for LiveModeState {
             current_vcp_number: None,
             last_volume_duration_secs: None,
             current_volume_start: None,
+            current_scan_key: None,
             current_in_progress_elevation: None,
             current_in_progress_radials: None,
             chunk_elev_spans: Vec::new(),
@@ -230,6 +235,7 @@ impl LiveModeState {
         self.last_exit_reason = Some(reason);
         self.elevations_received.clear();
         self.current_volume_start = None;
+        self.current_scan_key = None;
         self.current_in_progress_elevation = None;
         self.current_in_progress_radials = None;
         self.chunk_elev_spans.clear();
@@ -379,6 +385,7 @@ impl LiveModeState {
         self.phase_started_at = Some(now);
         self.elevations_received.clear();
         self.current_volume_start = None;
+        self.current_scan_key = None;
         self.current_in_progress_elevation = None;
         self.current_in_progress_radials = None;
         self.chunk_elev_spans.clear();

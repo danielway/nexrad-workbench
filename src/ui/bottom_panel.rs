@@ -33,7 +33,7 @@ fn render_scan_track(
     view_end: f64,
     zoom: f64,
     detail_level: DetailLevel,
-    active_volume_start: Option<f64>,
+    active_scan_key_ts: Option<f64>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
@@ -67,8 +67,8 @@ fn render_scan_track(
             for scan in timeline.scans_in_range(view_start, view_end) {
                 // Skip the scan that corresponds to the active real-time volume —
                 // render_realtime_progress draws it with received/projected styling.
-                if let Some(vol_start) = active_volume_start {
-                    if (scan.start_time - vol_start).abs() < 1.0 {
+                if let Some(key_ts) = active_scan_key_ts {
+                    if (scan.key_timestamp - key_ts).abs() < 0.5 {
                         continue;
                     }
                 }
@@ -172,15 +172,15 @@ fn render_sweep_track(
     zoom: f64,
     active_sweep: Option<(i64, u8)>,
     target_elevation: f32,
-    active_volume_start: Option<f64>,
+    active_scan_key_ts: Option<f64>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
     for scan in timeline.scans_in_range(view_start, view_end) {
         // Skip the scan that corresponds to the active real-time volume —
         // render_realtime_progress owns all sweeps for the in-progress volume.
-        if let Some(vol_start) = active_volume_start {
-            if (scan.start_time - vol_start).abs() < 1.0 {
+        if let Some(key_ts) = active_scan_key_ts {
+            if (scan.key_timestamp - key_ts).abs() < 0.5 {
                 continue;
             }
         }
@@ -663,14 +663,19 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     };
 
     // ── Render scan track ─────────────────────────────────────────────
-    let active_volume_start = if state.live_mode_state.is_active() {
-        state.live_mode_state.current_volume_start
+    // Extract the scan key timestamp (seconds) for the active real-time volume
+    // so we can skip it in normal timeline rendering.
+    let active_scan_key_ts: Option<f64> = if state.live_mode_state.is_active() {
+        state.live_mode_state.current_scan_key.as_ref().and_then(|key| {
+            // Scan key format: "SITE|TIMESTAMP_MS"
+            key.split('|').nth(1)?.parse::<i64>().ok().map(|ms| ms as f64 / 1000.0)
+        })
     } else {
         None
     };
     render_scan_track(
         &painter, &scan_rect, &state.radar_timeline,
-        view_start, view_end, zoom, detail_level, active_volume_start,
+        view_start, view_end, zoom, detail_level, active_scan_key_ts,
     );
 
     // ── Render sweep track (only at Sweeps detail) ────────────────────
@@ -678,7 +683,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         render_sweep_track(
             &painter, &sweep_rect, &state.radar_timeline,
             view_start, view_end, zoom, active_sweep,
-            state.viz_state.target_elevation, active_volume_start,
+            state.viz_state.target_elevation, active_scan_key_ts,
         );
         render_connector_lines(
             &painter, &scan_rect, &sweep_rect, &state.radar_timeline,
