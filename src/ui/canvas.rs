@@ -331,52 +331,59 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
     }
 
     let ts = state.playback_state.playback_position();
-    let scan = state.radar_timeline.find_scan_at_timestamp(ts)?;
-    let (_, sweep) = scan.find_sweep_at_timestamp(ts)?;
 
-    let duration = sweep.end_time - sweep.start_time;
-    if duration <= 0.0 {
-        return None;
-    }
+    // Try to find azimuth from persisted scan/sweep data first
+    if let Some(scan) = state.radar_timeline.find_scan_at_timestamp(ts) {
+        if let Some((_, sweep)) = scan.find_sweep_at_timestamp(ts) {
+            let duration = sweep.end_time - sweep.start_time;
+            if duration > 0.0 {
+                // If per-radial azimuth data is available, interpolate from actual azimuths
+                if !sweep.radials.is_empty() {
+                    let mut last_az = 0.0f32;
+                    let mut last_time = sweep.start_time;
+                    let mut next_az = 360.0f32;
+                    let mut next_time = sweep.end_time;
 
-    // If per-radial azimuth data is available, interpolate from actual azimuths
-    if !sweep.radials.is_empty() {
-        // Find the radial at or just before this timestamp
-        let mut last_az = 0.0f32;
-        let mut last_time = sweep.start_time;
-        let mut next_az = 360.0f32;
-        let mut next_time = sweep.end_time;
+                    for radial in &sweep.radials {
+                        if radial.start_time <= ts {
+                            last_az = radial.azimuth;
+                            last_time = radial.start_time;
+                        } else {
+                            next_az = radial.azimuth;
+                            next_time = radial.start_time;
+                            break;
+                        }
+                    }
 
-        for radial in &sweep.radials {
-            if radial.start_time <= ts {
-                last_az = radial.azimuth;
-                last_time = radial.start_time;
-            } else {
-                next_az = radial.azimuth;
-                next_time = radial.start_time;
-                break;
+                    let mut delta_az = next_az - last_az;
+                    if delta_az < -180.0 {
+                        delta_az += 360.0;
+                    } else if delta_az > 180.0 {
+                        delta_az -= 360.0;
+                    }
+
+                    let dt = next_time - last_time;
+                    if dt > 0.0 {
+                        let frac = (ts - last_time) / dt;
+                        return Some(((last_az + delta_az * frac as f32) % 360.0 + 360.0) % 360.0);
+                    }
+                    return Some(last_az);
+                }
+
+                // Fallback: linear interpolation assuming uniform rotation
+                let progress = (ts - sweep.start_time) / duration;
+                return Some(((progress * 360.0) as f32) % 360.0);
             }
         }
-
-        // Handle wrap-around (e.g., from 359 to 1)
-        let mut delta_az = next_az - last_az;
-        if delta_az < -180.0 {
-            delta_az += 360.0;
-        } else if delta_az > 180.0 {
-            delta_az -= 360.0;
-        }
-
-        let dt = next_time - last_time;
-        if dt > 0.0 {
-            let frac = (ts - last_time) / dt;
-            return Some(((last_az + delta_az * frac as f32) % 360.0 + 360.0) % 360.0);
-        }
-        return Some(last_az);
     }
 
-    // Fallback: linear interpolation assuming uniform rotation
-    let progress = (ts - sweep.start_time) / duration;
-    Some(((progress * 360.0) as f32) % 360.0)
+    // In live mode, extrapolate from the last known radial azimuth/time
+    if state.live_mode_state.is_active() {
+        let now = js_sys::Date::now() / 1000.0;
+        return state.live_mode_state.estimated_azimuth(now);
+    }
+
+    None
 }
 
 fn render_radar_sweep(

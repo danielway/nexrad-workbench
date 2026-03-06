@@ -172,10 +172,18 @@ fn render_sweep_track(
     zoom: f64,
     active_sweep: Option<(i64, u8)>,
     target_elevation: f32,
+    active_volume_start: Option<f64>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
     for scan in timeline.scans_in_range(view_start, view_end) {
+        // Skip the scan that corresponds to the active real-time volume —
+        // render_realtime_progress owns all sweeps for the in-progress volume.
+        if let Some(vol_start) = active_volume_start {
+            if (scan.start_time - vol_start).abs() < 1.0 {
+                continue;
+            }
+        }
         if scan.sweeps.is_empty() {
             continue;
         }
@@ -670,7 +678,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         render_sweep_track(
             &painter, &sweep_rect, &state.radar_timeline,
             view_start, view_end, zoom, active_sweep,
-            state.viz_state.target_elevation,
+            state.viz_state.target_elevation, active_volume_start,
         );
         render_connector_lines(
             &painter, &scan_rect, &sweep_rect, &state.radar_timeline,
@@ -698,7 +706,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             &painter, &scan_rect,
             if detail_level == DetailLevel::Sweeps { Some(&sweep_rect) } else { None },
             &state.live_mode_state, view_start, view_end, zoom, anim_time,
-            frame_now_secs,
+            frame_now_secs, state.viz_state.target_elevation,
         );
         ui.ctx().request_repaint();
     }
@@ -1687,7 +1695,18 @@ fn render_download_ghosts(
     }
 }
 
-/// Render real-time partial scan progress on the timeline.
+/// Render real-time streaming progress on the timeline.
+///
+/// Draws a unified view of the in-progress volume:
+/// - **Scan track**: Single VCP-colored block spanning vol_start → expected_end,
+///   with solid fill for elapsed time and dashed outline for projected remainder.
+/// - **Sweep track**: All elevation sweeps with per-sweep state:
+///   - Complete (downloaded & persisted): filled with cool elevation colors
+///   - Downloading (in-progress): outline with chunk subdivision inside
+///   - Being collected by radar: distinct highlight
+///   - Future (not yet collected): dashed outline
+///   Each non-complete sweep shows chunk subdivision where downloaded chunks
+///   are clipped to the sweep's time range.
 fn render_realtime_progress(
     painter: &Painter,
     scan_rect: &Rect,
@@ -1698,287 +1717,340 @@ fn render_realtime_progress(
     zoom: f64,
     anim_time: f64,
     now_secs: f64,
+    target_elevation: f32,
 ) {
     let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
+    let now = now_secs;
+    let pulse = (0.5 + 0.5 * (anim_time * 2.0).sin()) as f32;
 
-    // Projected future scan boundaries (subtle dashed lines)
-    if let (Some(vol_start), Some(vol_dur)) = (live_state.current_volume_start, live_state.last_volume_duration_secs) {
-        if vol_dur > 30.0 {
-            for i in 1..=2 {
-                let projected_ts = vol_start + vol_dur * i as f64;
-                let x = ts_to_x(projected_ts);
-                if x >= scan_rect.left() && x <= scan_rect.right() {
-                    // Dashed line: draw short segments
-                    let mut y = scan_rect.top();
-                    while y < scan_rect.bottom() {
-                        let y_end = (y + 3.0).min(scan_rect.bottom());
-                        painter.line_segment(
-                            [Pos2::new(x, y), Pos2::new(x, y_end)],
-                            Stroke::new(0.5, tl_colors::estimated_boundary()),
-                        );
-                        y += 6.0; // 3px on, 3px off
-                    }
-                    // "est." label
-                    painter.text(
-                        Pos2::new(x + 2.0, scan_rect.top() + 2.0),
-                        egui::Align2::LEFT_TOP,
-                        "est.",
-                        egui::FontId::monospace(6.0),
-                        tl_colors::estimated_boundary(),
-                    );
-                }
-            }
+    let vol_start = match live_state.current_volume_start {
+        Some(v) => v,
+        None => return, // No volume in progress yet
+    };
+    let vcp = live_state.current_vcp_number.unwrap_or(0);
+    let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
+    let expected_end = vol_start + expected_dur;
+    let expected_count = live_state.expected_elevation_count.unwrap_or(0) as usize;
+
+    let x_vol_start = ts_to_x(vol_start).max(scan_rect.left());
+    let x_vol_end = ts_to_x(expected_end).min(scan_rect.right());
+    let x_now = ts_to_x(now).min(scan_rect.right());
+
+    if x_vol_end <= x_vol_start || expected_end < view_start || vol_start > view_end {
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SCAN TRACK — single in-progress block (vol_start → expected_end)
+    // ═══════════════════════════════════════════════════════════════════
+
+    let scan_block = Rect::from_min_max(
+        Pos2::new(x_vol_start, scan_rect.top() + 2.0),
+        Pos2::new(x_vol_end, scan_rect.bottom() - 2.0),
+    );
+
+    // VCP-colored fill — use the same warm palette as completed scans but
+    // with reduced alpha to indicate in-progress.
+    let (vr, vg, vb) = tl_colors::vcp_base_rgb(vcp);
+
+    // Elapsed portion: solid fill
+    if x_now > x_vol_start {
+        let elapsed_rect = Rect::from_min_max(
+            scan_block.min,
+            Pos2::new(x_now.min(x_vol_end), scan_block.max.y),
+        );
+        painter.rect_filled(elapsed_rect, 2.0,
+            Color32::from_rgba_unmultiplied(vr, vg, vb, 160));
+    }
+
+    // Projected remainder: very subtle fill
+    if x_vol_end > x_now && x_now >= scan_rect.left() {
+        let future_rect = Rect::from_min_max(
+            Pos2::new(x_now, scan_block.min.y),
+            scan_block.max,
+        );
+        painter.rect_filled(future_rect, 2.0,
+            Color32::from_rgba_unmultiplied(vr, vg, vb, 40));
+    }
+
+    // Border: solid on elapsed side, dashed on projected side
+    // Left + top/bottom edges for elapsed portion
+    if x_now > x_vol_start {
+        let elapsed_rect = Rect::from_min_max(
+            scan_block.min,
+            Pos2::new(x_now.min(x_vol_end), scan_block.max.y),
+        );
+        painter.rect_stroke(elapsed_rect, 2.0,
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(vr, vg, vb, 180)),
+            StrokeKind::Inside);
+    }
+    // Dashed border for projected remainder
+    if x_vol_end > x_now && x_now >= scan_rect.left() {
+        let dash_color = Color32::from_rgba_unmultiplied(vr, vg, vb, 60);
+        // Dashed right edge
+        let mut y = scan_block.min.y;
+        while y < scan_block.max.y {
+            let y_end = (y + 3.0).min(scan_block.max.y);
+            painter.line_segment(
+                [Pos2::new(x_vol_end, y), Pos2::new(x_vol_end, y_end)],
+                Stroke::new(0.5, dash_color),
+            );
+            y += 6.0;
+        }
+        // Dashed top and bottom
+        let mut x = x_now;
+        while x < x_vol_end {
+            let x_seg_end = (x + 4.0).min(x_vol_end);
+            painter.line_segment(
+                [Pos2::new(x, scan_block.min.y), Pos2::new(x_seg_end, scan_block.min.y)],
+                Stroke::new(0.5, dash_color),
+            );
+            painter.line_segment(
+                [Pos2::new(x, scan_block.max.y), Pos2::new(x_seg_end, scan_block.max.y)],
+                Stroke::new(0.5, dash_color),
+            );
+            x += 8.0;
         }
     }
 
-    // Chunk data blocks — show each received chunk as a small block spanning
-    // its actual radial collection time range on the scan track. Visible even
-    // before any sweep completes, so the user sees data arriving.
-    if !live_state.chunk_time_spans.is_empty() && live_state.current_volume_start.is_some() {
-        for (i, &(chunk_start, chunk_end)) in live_state.chunk_time_spans.iter().enumerate() {
-            let x0 = ts_to_x(chunk_start).max(scan_rect.left());
-            let x1 = ts_to_x(chunk_end).min(scan_rect.right());
-            // Ensure minimum 2px width so thin chunks are still visible
-            let x1 = if x1 - x0 < 2.0 { (x0 + 2.0).min(scan_rect.right()) } else { x1 };
+    // Unified label centered across the full scan block
+    let full_width = x_vol_end - x_vol_start;
+    if full_width > 40.0 {
+        let received = live_state.elevations_received.len();
 
-            if x1 > x0 && chunk_end > view_start && chunk_start < view_end {
-                let is_latest = i == live_state.chunk_time_spans.len() - 1;
-                let alpha = if is_latest { 60u8 } else { 35 };
-                let border_alpha = if is_latest { 100u8 } else { 55 };
-
-                let block = Rect::from_min_max(
-                    Pos2::new(x0, scan_rect.top() + 3.0),
-                    Pos2::new(x1, scan_rect.bottom() - 3.0),
-                );
-                painter.rect_filled(block, 1.0,
-                    Color32::from_rgba_unmultiplied(100, 180, 255, alpha));
-                painter.rect_stroke(block, 1.0,
-                    Stroke::new(0.5, Color32::from_rgba_unmultiplied(100, 180, 255, border_alpha)),
-                    StrokeKind::Inside);
+        let label = if vcp > 0 && expected_count > 0 {
+            if full_width > 120.0 {
+                format!("VCP {} {}/{}", vcp, received, expected_count)
+            } else if full_width > 70.0 {
+                format!("{} {}/{}", vcp, received, expected_count)
+            } else {
+                format!("{}/{}", received, expected_count)
             }
+        } else if vcp > 0 {
+            format!("{}", vcp)
+        } else if expected_count > 0 {
+            format!("{}/{}", received, expected_count)
+        } else {
+            String::new()
+        };
+
+        if !label.is_empty() {
+            painter.text(
+                scan_block.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::monospace(7.0),
+                Color32::from_rgba_unmultiplied(220, 240, 220, 180),
+            );
         }
     }
 
-    // Growing active scan block — unified block from vol_start → expected_end
-    // with distinct received/projected styling and a single centered label.
-    if let Some(vol_start) = live_state.current_volume_start {
-        let now = now_secs;
-        let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
-        let expected_end = vol_start + expected_dur;
-
-        let x_start = ts_to_x(vol_start).max(scan_rect.left());
-        let x_now = ts_to_x(now).min(scan_rect.right());
-        let x_expected_end = ts_to_x(expected_end).min(scan_rect.right());
-
-        let pulse = (0.5 + 0.5 * (anim_time * 2.0).sin()) as f32;
-
-        if x_expected_end > x_start && vol_start < view_end && expected_end > view_start {
-            // ── Received portion (vol_start → now): solid fill ──
-            if x_now > x_start {
-                let block_rect = Rect::from_min_max(
-                    Pos2::new(x_start, scan_rect.top() + 2.0),
-                    Pos2::new(x_now, scan_rect.bottom() - 2.0),
-                );
-
-                let edge_alpha = (30.0 + 20.0 * pulse) as u8;
-                painter.rect_filled(block_rect, 2.0,
-                    Color32::from_rgba_unmultiplied(55, 130, 75, edge_alpha));
-                painter.rect_stroke(block_rect, 2.0,
-                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(55, 130, 75, (edge_alpha as u16 + 40).min(255) as u8)),
-                    StrokeKind::Inside);
-            }
-
-            // ── Future/projected portion (now → expected end): dashed outline ──
-            if x_expected_end > x_now && x_now >= scan_rect.left() {
-                let future_rect = Rect::from_min_max(
-                    Pos2::new(x_now, scan_rect.top() + 2.0),
-                    Pos2::new(x_expected_end, scan_rect.bottom() - 2.0),
-                );
-                let future_alpha = (15.0 + 10.0 * pulse) as u8;
-                painter.rect_filled(future_rect, 2.0,
-                    Color32::from_rgba_unmultiplied(55, 130, 75, future_alpha));
-                // Dashed right edge
-                let mut y = future_rect.top();
-                while y < future_rect.bottom() {
-                    let y_end = (y + 3.0).min(future_rect.bottom());
+    // ── Projected future scan boundaries (dashed lines) ──
+    if expected_dur > 30.0 {
+        for i in 1..=2 {
+            let projected_ts = vol_start + expected_dur * i as f64;
+            let x = ts_to_x(projected_ts);
+            if x >= scan_rect.left() && x <= scan_rect.right() {
+                let mut y = scan_rect.top();
+                while y < scan_rect.bottom() {
+                    let y_end = (y + 3.0).min(scan_rect.bottom());
                     painter.line_segment(
-                        [Pos2::new(x_expected_end, y), Pos2::new(x_expected_end, y_end)],
-                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(55, 130, 75, 50)),
+                        [Pos2::new(x, y), Pos2::new(x, y_end)],
+                        Stroke::new(0.5, tl_colors::estimated_boundary()),
                     );
                     y += 6.0;
                 }
-                // Dashed top and bottom edges
-                let mut x = x_now;
-                while x < x_expected_end {
-                    let x_seg_end = (x + 4.0).min(x_expected_end);
-                    painter.line_segment(
-                        [Pos2::new(x, future_rect.top()), Pos2::new(x_seg_end, future_rect.top())],
-                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(55, 130, 75, 40)),
-                    );
-                    painter.line_segment(
-                        [Pos2::new(x, future_rect.bottom()), Pos2::new(x_seg_end, future_rect.bottom())],
-                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(55, 130, 75, 40)),
-                    );
-                    x += 8.0;
-                }
-            }
-
-            // ── Single unified label centered across the full block (vol_start → expected_end) ──
-            let full_width = x_expected_end - x_start;
-            if full_width > 40.0 {
-                let vcp = live_state.current_vcp_number.unwrap_or(0);
-                let received = live_state.elevations_received.len();
-                let expected = live_state.expected_elevation_count.unwrap_or(0) as usize;
-
-                let label = if vcp > 0 && expected > 0 {
-                    if full_width > 120.0 {
-                        format!("VCP {} {}/{}", vcp, received, expected)
-                    } else if full_width > 70.0 {
-                        format!("{} {}/{}", vcp, received, expected)
-                    } else {
-                        format!("{}/{}", received, expected)
-                    }
-                } else if vcp > 0 && received > 0 {
-                    if full_width > 80.0 {
-                        format!("VCP {} ({})", vcp, received)
-                    } else {
-                        format!("{}", vcp)
-                    }
-                } else if expected > 0 {
-                    format!("{}/{}", received, expected)
-                } else if received > 0 {
-                    format!("{} elev", received)
-                } else if vcp > 0 {
-                    format!("{}", vcp)
-                } else {
-                    String::new()
-                };
-
-                if !label.is_empty() {
-                    let full_center = Pos2::new(
-                        (x_start + x_expected_end) / 2.0,
-                        scan_rect.top() + 2.0 + (scan_rect.bottom() - 2.0 - scan_rect.top() - 2.0) / 2.0,
-                    );
-                    painter.text(
-                        full_center,
-                        egui::Align2::CENTER_CENTER,
-                        label,
-                        egui::FontId::monospace(7.0),
-                        Color32::from_rgba_unmultiplied(220, 240, 220, 180),
-                    );
-                }
-            }
-
-            // Projected next-chunk block — shows where the next chunk's data
-            // is expected on the timeline, with countdown label.
-            if let Some(remaining) = live_state.countdown_remaining_secs(now) {
-                // Estimate next chunk's data time range: starts after last chunk ended,
-                // spans roughly one chunk interval of data.
-                let next_start = live_state.chunk_time_spans.last()
-                    .map(|&(_, end)| end)
-                    .unwrap_or(now);
-                let chunk_dur = live_state.chunk_interval_secs;
-                let next_end = next_start + chunk_dur;
-
-                let nx0 = ts_to_x(next_start).max(scan_rect.left());
-                let nx1 = ts_to_x(next_end).min(scan_rect.right());
-                let nx1 = if nx1 - nx0 < 4.0 { (nx0 + 4.0).min(scan_rect.right()) } else { nx1 };
-
-                if nx1 > nx0 && next_start < view_end && next_end > view_start {
-                    let next_block = Rect::from_min_max(
-                        Pos2::new(nx0, scan_rect.top() + 3.0),
-                        Pos2::new(nx1, scan_rect.bottom() - 3.0),
-                    );
-                    // Dashed outline, pulsing
-                    let border_alpha = (50.0 + 40.0 * pulse) as u8;
-                    painter.rect_stroke(next_block, 1.0,
-                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(180, 200, 255, border_alpha)),
-                        StrokeKind::Inside);
-
-                    // Countdown label centered in the block
-                    let block_w = nx1 - nx0;
-                    let label = format!("~{}s", remaining.ceil() as i32);
-                    if block_w > 20.0 {
-                        painter.text(
-                            next_block.center(),
-                            egui::Align2::CENTER_CENTER,
-                            label,
-                            egui::FontId::monospace(6.0),
-                            Color32::from_rgba_unmultiplied(180, 200, 255, (140.0 + 60.0 * pulse) as u8),
-                        );
-                    }
-                }
+                painter.text(
+                    Pos2::new(x + 2.0, scan_rect.top() + 2.0),
+                    egui::Align2::LEFT_TOP,
+                    "est.",
+                    egui::FontId::monospace(6.0),
+                    tl_colors::estimated_boundary(),
+                );
             }
         }
+    }
 
-        // Pending sweep placeholders + in-progress sweep in sweep track
-        if let (Some(sweep_rect), Some(expected_count)) = (sweep_rect, live_state.expected_elevation_count) {
-            let received = &live_state.elevations_received;
-            let in_progress_elev = live_state.current_in_progress_elevation;
-            let in_progress_radials = live_state.current_in_progress_radials.unwrap_or(0);
+    // ═══════════════════════════════════════════════════════════════════
+    // SWEEP TRACK — all elevation sweeps with per-sweep state + chunks
+    // ═══════════════════════════════════════════════════════════════════
 
-            for elev_num in 1..=expected_count {
-                if received.contains(&elev_num) {
-                    continue; // Already complete — rendered by normal sweep track
-                }
+    let sweep_rect = match sweep_rect {
+        Some(r) => r,
+        None => return,
+    };
+    if expected_count == 0 {
+        return;
+    }
 
-                // Estimate position: distribute evenly across the volume duration
-                let vol_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
-                let frac = (elev_num as f64 - 0.5) / expected_count as f64;
-                let sweep_start = vol_start + frac * vol_dur - vol_dur / expected_count as f64 / 2.0;
-                let sweep_end = sweep_start + vol_dur / expected_count as f64;
+    // Look up elevation angles from VCP definition (for coloring)
+    let vcp_def = crate::state::get_vcp_definition(vcp);
+    let elev_angle_for = |elev_num: u8| -> f32 {
+        vcp_def
+            .and_then(|d| d.elevations.get(elev_num.saturating_sub(1) as usize))
+            .map(|e| e.angle)
+            .unwrap_or(0.5 * elev_num as f32) // rough fallback
+    };
 
-                let x_start = ts_to_x(sweep_start).max(sweep_rect.left());
-                let x_end = ts_to_x(sweep_end).min(sweep_rect.right());
-                if x_end <= x_start || (x_end - x_start) <= 2.0 {
-                    continue;
-                }
+    // Estimated sweep duration (for non-completed sweeps that lack real timestamps)
+    let sweep_dur = expected_dur / expected_count as f64;
 
-                let placeholder = Rect::from_min_max(
-                    Pos2::new(x_start, sweep_rect.top() + 2.0),
-                    Pos2::new(x_end, sweep_rect.bottom() - 2.0),
-                );
+    // Estimate which elevation the radar is currently collecting
+    let radar_elev_idx = live_state.estimated_elevation_index(now);
 
-                let is_in_progress = in_progress_elev == Some(elev_num);
+    let received = &live_state.elevations_received;
+    let in_progress_elev = live_state.current_in_progress_elevation;
+    let in_progress_radials = live_state.current_in_progress_radials.unwrap_or(0);
+    let countdown = live_state.countdown_remaining_secs(now);
 
-                if is_in_progress && in_progress_radials > 0 {
-                    // This elevation is actively accumulating — show partial fill
-                    // Typical sweep has ~720 radials (0.5° spacing) or ~360 (1° spacing)
-                    let estimated_total = 360u32; // conservative estimate
-                    let fill_frac = (in_progress_radials as f32 / estimated_total as f32).clamp(0.0, 1.0);
-                    let fill_width = (x_end - x_start) * fill_frac;
+    for elev_idx in 0..expected_count {
+        let elev_num = (elev_idx + 1) as u8;
+        let is_complete = received.contains(&elev_num);
 
-                    // Partial fill (growing from left) — steady, no pulse
-                    let fill_rect = Rect::from_min_max(
-                        placeholder.min,
-                        Pos2::new(x_start + fill_width, placeholder.max.y),
-                    );
-                    painter.rect_filled(fill_rect, 1.0,
-                        Color32::from_rgba_unmultiplied(60, 140, 200, 50));
+        // Use actual timestamps from sweep metadata for completed sweeps,
+        // fall back to even-distribution estimate for non-completed ones.
+        let (sw_start, sw_end) = if is_complete {
+            if let Some(meta) = live_state.completed_sweep_metas.iter()
+                .find(|m| m.elevation_number == elev_num)
+            {
+                (meta.start, meta.end)
+            } else {
+                // Completed but no metadata yet — use estimate
+                (vol_start + elev_idx as f64 * sweep_dur, vol_start + (elev_idx + 1) as f64 * sweep_dur)
+            }
+        } else {
+            // For non-completed sweeps, use the last completed sweep's end as
+            // anchor if available, otherwise use even distribution from vol_start
+            let last_completed_end = live_state.completed_sweep_metas.iter()
+                .filter(|m| (m.elevation_number as usize) < elev_num as usize)
+                .map(|m| m.end)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if last_completed_end > f64::NEG_INFINITY {
+                // Distribute remaining sweeps evenly from last completed end to expected vol end
+                let remaining_count = expected_count - (elev_num as usize - 1);
+                let remaining_dur = (vol_start + expected_dur) - last_completed_end;
+                let est_dur = if remaining_count > 0 { remaining_dur / remaining_count as f64 } else { sweep_dur };
+                let offset_in_remaining = (elev_num as usize - 1) - live_state.completed_sweep_metas.len();
+                let est_start = last_completed_end + offset_in_remaining as f64 * est_dur;
+                (est_start, est_start + est_dur)
+            } else {
+                (vol_start + elev_idx as f64 * sweep_dur, vol_start + (elev_idx + 1) as f64 * sweep_dur)
+            }
+        };
 
-                    // Steady outline (no pulsing — avoids visual flicker)
-                    painter.rect_stroke(placeholder, 1.0,
-                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(60, 140, 200, 70)),
-                        StrokeKind::Inside);
+        let x_start = ts_to_x(sw_start).max(sweep_rect.left());
+        let x_end = ts_to_x(sw_end).min(sweep_rect.right());
+        if x_end - x_start < 1.0 || sw_end < view_start || sw_start > view_end {
+            continue;
+        }
 
-                    // Radial count label if wide enough
-                    let width = x_end - x_start;
-                    if width > 30.0 {
-                        painter.text(
-                            placeholder.center(),
-                            egui::Align2::CENTER_CENTER,
-                            format!("{}", in_progress_radials),
-                            egui::FontId::monospace(6.0),
-                            Color32::from_rgba_unmultiplied(140, 200, 255, 160),
+        let elev_angle = elev_angle_for(elev_num);
+        let matches_target = (elev_angle - target_elevation).abs() < 0.3;
+        let is_downloading = !is_complete && in_progress_elev == Some(elev_num);
+        let is_radar_here = !is_complete && radar_elev_idx == Some(elev_idx);
+        let is_future = !is_complete && !is_downloading && !is_radar_here;
+
+        let block = Rect::from_min_max(
+            Pos2::new(x_start, sweep_rect.top() + 2.0),
+            Pos2::new(x_end, sweep_rect.bottom() - 2.0),
+        );
+        let width = x_end - x_start;
+
+        if is_complete {
+            // ── Complete: filled with cool elevation colors ──
+            let fill = tl_colors::sweep_fill(elev_angle, matches_target);
+            let border = tl_colors::sweep_border(elev_angle, false);
+            painter.rect_filled(block, 1.0, fill);
+            if width > 3.0 {
+                painter.rect_stroke(block, 1.0, Stroke::new(0.5, border), StrokeKind::Inside);
+            }
+        } else if is_downloading {
+            // ── Downloading: outline with chunk subdivision ──
+            let border_color = Color32::from_rgba_unmultiplied(60, 140, 200, 100);
+            painter.rect_stroke(block, 1.0, Stroke::new(1.0, border_color), StrokeKind::Inside);
+
+            // Draw downloaded chunks clipped to this sweep's time range
+            for &(chunk_start, chunk_end) in &live_state.chunk_time_spans {
+                let cs = chunk_start.max(sw_start);
+                let ce = chunk_end.min(sw_end);
+                if ce > cs {
+                    let cx0 = ts_to_x(cs).max(x_start);
+                    let cx1 = ts_to_x(ce).min(x_end);
+                    if cx1 > cx0 {
+                        let chunk_rect = Rect::from_min_max(
+                            Pos2::new(cx0, block.min.y + 1.0),
+                            Pos2::new(cx1, block.max.y - 1.0),
                         );
+                        painter.rect_filled(chunk_rect, 0.0,
+                            Color32::from_rgba_unmultiplied(60, 140, 200, 55));
                     }
-                } else {
-                    // Pending (not yet started) — dashed outline
-                    painter.rect_stroke(placeholder, 1.0,
-                        Stroke::new(0.5, tl_colors::rt_pending_sweep_border()),
-                        StrokeKind::Inside);
                 }
             }
+
+            // Show radial progress as partial fill overlay
+            if in_progress_radials > 0 {
+                let estimated_total = 360u32;
+                let fill_frac = (in_progress_radials as f32 / estimated_total as f32).clamp(0.0, 1.0);
+                let fill_width = width * fill_frac;
+                let fill_rect = Rect::from_min_max(
+                    block.min,
+                    Pos2::new(x_start + fill_width, block.max.y),
+                );
+                painter.rect_filled(fill_rect, 1.0,
+                    Color32::from_rgba_unmultiplied(60, 140, 200, 35));
+            }
+
+            // Next-chunk countdown if we're waiting
+            if let Some(remaining) = countdown {
+                if width > 20.0 {
+                    painter.text(
+                        block.center(),
+                        egui::Align2::CENTER_CENTER,
+                        format!("~{}s", remaining.ceil() as i32),
+                        egui::FontId::monospace(6.0),
+                        Color32::from_rgba_unmultiplied(140, 200, 255, 160),
+                    );
+                }
+            } else if width > 30.0 {
+                // Show radial count while actively receiving
+                painter.text(
+                    block.center(),
+                    egui::Align2::CENTER_CENTER,
+                    format!("{}", in_progress_radials),
+                    egui::FontId::monospace(6.0),
+                    Color32::from_rgba_unmultiplied(140, 200, 255, 160),
+                );
+            }
+        } else if is_radar_here {
+            // ── Being collected by radar (ahead of download) ──
+            let highlight_alpha = (40.0 + 20.0 * pulse) as u8;
+            painter.rect_filled(block, 1.0,
+                Color32::from_rgba_unmultiplied(120, 200, 100, highlight_alpha));
+            painter.rect_stroke(block, 1.0,
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 200, 100, (highlight_alpha + 40).min(255))),
+                StrokeKind::Inside);
+        } else if is_future {
+            // ── Future: dashed outline ──
+            painter.rect_stroke(block, 1.0,
+                Stroke::new(0.5, tl_colors::rt_pending_sweep_border()),
+                StrokeKind::Inside);
+        }
+
+        // Elevation label (for all states, when wide enough)
+        if width > 25.0 && !is_downloading {
+            let label = if width > 50.0 {
+                format!("{:.1}\u{00B0}", elev_angle)
+            } else {
+                format!("{:.0}", elev_angle)
+            };
+            let label_alpha = if is_complete { 180u8 } else { 100 };
+            painter.text(
+                block.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::monospace(7.0),
+                Color32::from_rgba_unmultiplied(220, 230, 255, label_alpha),
+            );
         }
     }
 }

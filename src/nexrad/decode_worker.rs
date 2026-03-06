@@ -91,6 +91,12 @@ pub struct ChunkIngestResult {
     pub chunk_min_time_secs: Option<f64>,
     /// Max timestamp in Unix seconds.
     pub chunk_max_time_secs: Option<f64>,
+    /// Last radial's azimuth angle in degrees (for sweep line extrapolation).
+    pub last_radial_azimuth: Option<f32>,
+    /// Timestamp of the last radial in Unix seconds (for sweep line extrapolation).
+    pub last_radial_time_secs: Option<f64>,
+    /// Volume header date/time in Unix seconds (authoritative scan start time).
+    pub volume_header_time_secs: Option<f64>,
 }
 
 /// Context for a render/decode request.
@@ -672,6 +678,20 @@ fn handle_chunk_ingested_message(
         .ok()
         .and_then(|v| v.as_f64());
 
+    // Parse last radial azimuth/time for sweep line extrapolation
+    let last_radial_azimuth = js_sys::Reflect::get(&result_obj, &"lastRadialAzimuth".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .map(|v| v as f32);
+    let last_radial_time_secs = js_sys::Reflect::get(&result_obj, &"lastRadialTimeSecs".into())
+        .ok()
+        .and_then(|v| v.as_f64());
+
+    // Parse volume header time (authoritative scan start from Archive II header)
+    let volume_header_time_secs = js_sys::Reflect::get(&result_obj, &"volumeHeaderTimeSecs".into())
+        .ok()
+        .and_then(|v| v.as_f64());
+
     results
         .borrow_mut()
         .push(WorkerOutcome::ChunkIngested(ChunkIngestResult {
@@ -687,6 +707,9 @@ fn handle_chunk_ingested_message(
             current_elevation_radials,
             chunk_min_time_secs,
             chunk_max_time_secs,
+            last_radial_azimuth,
+            last_radial_time_secs,
+            volume_header_time_secs,
         }));
 }
 

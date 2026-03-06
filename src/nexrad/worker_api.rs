@@ -555,9 +555,20 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let mut chunk_vcp: Option<ExtractedVcp> = None;
         let mut chunk_has_vcp = false;
 
+        // Volume header scan start time (extracted from start chunk only)
+        let mut volume_header_time_secs: Option<f64> = None;
+
         if is_start {
             // Start chunk = volume header + first compressed record
             let file = nexrad_data::volume::File::new(data);
+
+            // Extract the volume scan start time from the Archive II header
+            if let Some(header) = file.header() {
+                if let Some(dt) = header.date_time() {
+                    volume_header_time_secs = Some(dt.timestamp() as f64);
+                }
+            }
+
             let records = file.records().map_err(|e| {
                 wasm_bindgen::JsValue::from_str(&format!("Failed to split start chunk: {}", e))
             })?;
@@ -655,6 +666,13 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let chunk_max_ts_secs: Option<f64> = chunk_radials.iter()
             .map(|r| r.collection_timestamp() as f64 / 1000.0)
             .reduce(f64::max);
+
+        // Last radial's azimuth and timestamp — used to extrapolate sweep line position
+        // between chunks during real-time streaming.
+        let last_radial_azimuth: Option<f32> = chunk_radials.last()
+            .map(|r| r.azimuth_angle_degrees());
+        let last_radial_time_secs: Option<f64> = chunk_radials.last()
+            .map(|r| r.collection_timestamp() as f64 / 1000.0);
 
         CHUNK_ACCUM.with(|cell| {
             let mut borrow = cell.borrow_mut();
@@ -929,6 +947,19 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         }
         if let Some(max_ts) = chunk_max_ts_secs {
             js_sys::Reflect::set(&result, &"chunkMaxTimeSecs".into(), &wasm_bindgen::JsValue::from(max_ts)).ok();
+        }
+
+        // Volume header scan start time (only present for start chunks)
+        if let Some(t) = volume_header_time_secs {
+            js_sys::Reflect::set(&result, &"volumeHeaderTimeSecs".into(), &wasm_bindgen::JsValue::from(t)).ok();
+        }
+
+        // Last radial azimuth and time for sweep line extrapolation
+        if let Some(az) = last_radial_azimuth {
+            js_sys::Reflect::set(&result, &"lastRadialAzimuth".into(), &wasm_bindgen::JsValue::from(az)).ok();
+        }
+        if let Some(t) = last_radial_time_secs {
+            js_sys::Reflect::set(&result, &"lastRadialTimeSecs".into(), &wasm_bindgen::JsValue::from(t)).ok();
         }
 
         // Current in-progress elevation number (for partial sweep visualization)

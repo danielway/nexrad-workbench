@@ -121,14 +121,50 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                 scan: Some(scan),
             }
         }
-        None => RadarStateAtTimestamp {
-            azimuth: None,
-            elevation: None,
-            vcp: None,
-            sweep_index: None,
-            scan_progress: None,
-            scan: None,
-        },
+        None => {
+            // In live mode, use estimated position from live state even when
+            // no persisted scan exists at the current timestamp yet.
+            let live = &state.live_mode_state;
+            if live.is_active() && live.current_vcp_number.is_some() {
+                let now = js_sys::Date::now() / 1000.0;
+                let vcp = live.current_vcp_number;
+                let azimuth = live.estimated_azimuth(now);
+                let sweep_index = live.estimated_elevation_index(now)
+                    .or_else(|| {
+                        // Fall back to the actual in-progress elevation number (1-based → 0-based)
+                        live.current_in_progress_elevation.map(|e| e.saturating_sub(1) as usize)
+                    });
+                let scan_progress = live.current_volume_start.and_then(|start| {
+                    live.last_volume_duration_secs.map(|dur| {
+                        if dur > 0.0 { ((now - start) / dur).clamp(0.0, 1.0) as f32 } else { 0.0 }
+                    })
+                });
+                // Derive elevation angle from VCP definition + estimated index
+                let elevation = sweep_index.and_then(|idx| {
+                    vcp.and_then(|v| get_vcp_definition(v))
+                        .and_then(|def| def.elevations.get(idx))
+                        .map(|e| e.angle)
+                });
+
+                RadarStateAtTimestamp {
+                    azimuth,
+                    elevation,
+                    vcp,
+                    sweep_index,
+                    scan_progress,
+                    scan: None,
+                }
+            } else {
+                RadarStateAtTimestamp {
+                    azimuth: None,
+                    elevation: None,
+                    vcp: None,
+                    sweep_index: None,
+                    scan_progress: None,
+                    scan: None,
+                }
+            }
+        }
     }
 }
 
@@ -489,17 +525,19 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                         }
                     });
             } else if let Some(def) = vcp_def {
-                // Fall back to static VCP definitions
+                // Fall back to static VCP definitions — use sweep_index from
+                // live mode estimation to highlight the current elevation.
                 egui::ScrollArea::vertical()
                     .max_height(200.0)
                     .show(ui, |ui| {
                         ui.set_min_width(available_width);
-                        for elev in def.elevations.iter() {
+                        for (idx, elev) in def.elevations.iter().enumerate() {
+                            let is_current = radar_state.sweep_index == Some(idx);
                             render_elevation_row(
                                 ui,
                                 elev.angle,
                                 Some(static_vcp_meta(elev)),
-                                false,
+                                is_current,
                                 available_width,
                             );
                         }

@@ -670,6 +670,32 @@ impl WorkbenchApp {
     }
 
     /// Send a decode request to the worker for the current scan + settings.
+    /// Estimate the actual volume start time by back-calculating from a chunk's
+    /// data time and which elevation it contains.
+    ///
+    /// If we join mid-volume at elevation N, the data time represents the time
+    /// of that elevation's radials, not the volume start. We subtract the
+    /// estimated time for the preceding N-1 elevations.
+    fn estimate_volume_start(
+        chunk_data_time: f64,
+        current_elevation: Option<u8>,
+        expected_elevation_count: Option<u8>,
+        last_volume_duration_secs: Option<f64>,
+    ) -> f64 {
+        let elev = match current_elevation {
+            Some(e) if e > 1 => e,
+            _ => return chunk_data_time, // Elevation 1 or unknown — data IS the start
+        };
+        let count = expected_elevation_count.unwrap_or(0) as f64;
+        let dur = last_volume_duration_secs.unwrap_or(300.0);
+        if count <= 0.0 || dur <= 0.0 {
+            return chunk_data_time;
+        }
+        let sweep_dur = dur / count;
+        // Elevation numbers are 1-based; subtract time for preceding elevations
+        chunk_data_time - (elev as f64 - 1.0) * sweep_dur
+    }
+
     fn request_worker_render(&mut self) {
         let Some(ref scan_key) = self.current_render_scan_key else {
             return;
@@ -1072,11 +1098,39 @@ impl eframe::App for WorkbenchApp {
                             self.state.live_mode_state.record_chunk_time_span(min_t, max_t);
                         }
 
-                        // Update live mode partial scan tracking
+                        // Update live mode partial scan tracking — always set volume
+                        // start on first chunk so the timeline block appears immediately,
+                        // even before a full sweep/elevation completes.
+                        //
+                        // Set the volume start time. Prefer the authoritative volume
+                        // header time from the Archive II header. Fall back to
+                        // back-calculating from chunk data time + elevation number.
+                        if self.state.live_mode_state.current_volume_start.is_none() {
+                            let vol_start = if let Some(header_time) = result.volume_header_time_secs {
+                                header_time
+                            } else {
+                                let chunk_data_time = result.chunk_min_time_secs
+                                    .unwrap_or(result.context.timestamp_secs as f64);
+                                Self::estimate_volume_start(
+                                    chunk_data_time,
+                                    result.current_elevation,
+                                    self.state.live_mode_state.expected_elevation_count,
+                                    self.state.live_mode_state.last_volume_duration_secs,
+                                )
+                            };
+                            self.state.live_mode_state.current_volume_start = Some(vol_start);
+                        } else if let Some(header_time) = result.volume_header_time_secs {
+                            // If we already have a volume start but now get the
+                            // authoritative header time, prefer the header.
+                            self.state.live_mode_state.current_volume_start = Some(header_time);
+                        }
                         if !result.elevations_completed.is_empty() {
+                            // Use the already-estimated volume start for consistency
+                            let vol_start_ts = self.state.live_mode_state.current_volume_start
+                                .unwrap_or(result.context.timestamp_secs as f64);
                             self.state.live_mode_state.record_elevations(
                                 &result.elevations_completed,
-                                result.context.timestamp_secs as f64,
+                                vol_start_ts,
                             );
                         }
                         if let Some(ref vcp) = result.vcp {
@@ -1090,6 +1144,17 @@ impl eframe::App for WorkbenchApp {
                         self.state.live_mode_state.record_in_progress_elevation(
                             result.current_elevation,
                             result.current_elevation_radials,
+                        );
+
+                        // Store actual sweep timing metadata for accurate timeline positioning
+                        if !result.sweeps.is_empty() {
+                            self.state.live_mode_state.update_sweep_metas(result.sweeps.clone());
+                        }
+
+                        // Track last radial position for sweep line extrapolation
+                        self.state.live_mode_state.record_last_radial(
+                            result.last_radial_azimuth,
+                            result.last_radial_time_secs,
                         );
 
                         // Refresh timeline when new elevations are written to cache
