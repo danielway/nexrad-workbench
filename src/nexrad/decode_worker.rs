@@ -86,17 +86,17 @@ pub struct ChunkIngestResult {
     pub current_elevation: Option<u8>,
     /// Number of radials received so far for the current in-progress elevation.
     pub current_elevation_radials: Option<u32>,
-    /// Actual data time range of this chunk (from radial collection timestamps).
-    /// Min timestamp in Unix seconds.
+    /// Min data timestamp in this chunk (Unix seconds, from radial collection timestamps).
     pub chunk_min_time_secs: Option<f64>,
-    /// Max timestamp in Unix seconds.
-    pub chunk_max_time_secs: Option<f64>,
     /// Last radial's azimuth angle in degrees (for sweep line extrapolation).
     pub last_radial_azimuth: Option<f32>,
     /// Timestamp of the last radial in Unix seconds (for sweep line extrapolation).
     pub last_radial_time_secs: Option<f64>,
     /// Volume header date/time in Unix seconds (authoritative scan start time).
     pub volume_header_time_secs: Option<f64>,
+    /// Per-elevation time spans within this chunk:
+    /// (elevation_number, start_secs, end_secs, radial_count).
+    pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
 }
 
 /// Context for a render/decode request.
@@ -674,9 +674,6 @@ fn handle_chunk_ingested_message(
     let chunk_min_time_secs = js_sys::Reflect::get(&result_obj, &"chunkMinTimeSecs".into())
         .ok()
         .and_then(|v| v.as_f64());
-    let chunk_max_time_secs = js_sys::Reflect::get(&result_obj, &"chunkMaxTimeSecs".into())
-        .ok()
-        .and_then(|v| v.as_f64());
 
     // Parse last radial azimuth/time for sweep line extrapolation
     let last_radial_azimuth = js_sys::Reflect::get(&result_obj, &"lastRadialAzimuth".into())
@@ -692,6 +689,14 @@ fn handle_chunk_ingested_message(
         .ok()
         .and_then(|v| v.as_f64());
 
+    // Parse per-elevation chunk time spans
+    let chunk_elev_spans: Vec<(u8, f64, f64, u32)> =
+        js_sys::Reflect::get(&result_obj, &"chunkElevSpansJson".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
     results
         .borrow_mut()
         .push(WorkerOutcome::ChunkIngested(ChunkIngestResult {
@@ -706,10 +711,10 @@ fn handle_chunk_ingested_message(
             current_elevation,
             current_elevation_radials,
             chunk_min_time_secs,
-            chunk_max_time_secs,
             last_radial_azimuth,
             last_radial_time_secs,
             volume_header_time_secs,
+            chunk_elev_spans,
         }));
 }
 

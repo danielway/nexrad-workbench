@@ -131,11 +131,11 @@ pub struct LiveModeState {
     /// Number of radials received for the current in-progress elevation.
     pub current_in_progress_radials: Option<u32>,
 
-    /// Data collection time spans (start_secs, end_secs) of chunks in the
-    /// current volume. Derived from actual radial collection timestamps in
-    /// each chunk. Used to show chunk blocks on the timeline before sweeps
-    /// complete.
-    pub chunk_time_spans: Vec<(f64, f64)>,
+    /// Per-elevation chunk time spans in the current volume. Each entry is
+    /// (elevation_number, start_secs, end_secs, radial_count) derived from
+    /// actual radial collection timestamps. A single chunk that spans two
+    /// elevations produces two entries.
+    pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
 
     /// Actual sweep metadata (with real timestamps) for completed elevations
     /// in the current volume. Used for accurate sweep positioning on the timeline
@@ -170,7 +170,7 @@ impl Default for LiveModeState {
             current_volume_start: None,
             current_in_progress_elevation: None,
             current_in_progress_radials: None,
-            chunk_time_spans: Vec::new(),
+            chunk_elev_spans: Vec::new(),
             completed_sweep_metas: Vec::new(),
             last_radial_azimuth: None,
             last_radial_time_secs: None,
@@ -232,7 +232,7 @@ impl LiveModeState {
         self.current_volume_start = None;
         self.current_in_progress_elevation = None;
         self.current_in_progress_radials = None;
-        self.chunk_time_spans.clear();
+        self.chunk_elev_spans.clear();
         self.completed_sweep_metas.clear();
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
@@ -381,7 +381,7 @@ impl LiveModeState {
         self.current_volume_start = None;
         self.current_in_progress_elevation = None;
         self.current_in_progress_radials = None;
-        self.chunk_time_spans.clear();
+        self.chunk_elev_spans.clear();
         self.completed_sweep_metas.clear();
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
@@ -400,9 +400,9 @@ impl LiveModeState {
         self.elevations_received.sort_unstable();
     }
 
-    /// Record a chunk's actual data time span (from radial collection timestamps).
-    pub fn record_chunk_time_span(&mut self, start_secs: f64, end_secs: f64) {
-        self.chunk_time_spans.push((start_secs, end_secs));
+    /// Record a chunk's per-elevation time spans (from radial collection timestamps).
+    pub fn record_chunk_elev_spans(&mut self, spans: &[(u8, f64, f64, u32)]) {
+        self.chunk_elev_spans.extend_from_slice(spans);
     }
 
     /// Update completed sweep metadata from the worker's ingest result.

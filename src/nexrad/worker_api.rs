@@ -667,6 +667,24 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             .map(|r| r.collection_timestamp() as f64 / 1000.0)
             .reduce(f64::max);
 
+        // Compute per-elevation time spans within this chunk.
+        // Each entry: (elevation_number, min_time_secs, max_time_secs, radial_count)
+        let chunk_elev_spans: Vec<(u8, f64, f64, u32)> = {
+            let mut map: std::collections::BTreeMap<u8, (f64, f64, u32)> = std::collections::BTreeMap::new();
+            for r in &chunk_radials {
+                let elev = r.elevation_number();
+                let t = r.collection_timestamp() as f64 / 1000.0;
+                map.entry(elev)
+                    .and_modify(|(min, max, count)| {
+                        if t < *min { *min = t; }
+                        if t > *max { *max = t; }
+                        *count += 1;
+                    })
+                    .or_insert((t, t, 1));
+            }
+            map.into_iter().map(|(elev, (min, max, count))| (elev, min, max, count)).collect()
+        };
+
         // Last radial's azimuth and timestamp — used to extrapolate sweep line position
         // between chunks during real-time streaming.
         let last_radial_azimuth: Option<f32> = chunk_radials.last()
@@ -947,6 +965,12 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         }
         if let Some(max_ts) = chunk_max_ts_secs {
             js_sys::Reflect::set(&result, &"chunkMaxTimeSecs".into(), &wasm_bindgen::JsValue::from(max_ts)).ok();
+        }
+
+        // Per-elevation time spans within this chunk
+        if !chunk_elev_spans.is_empty() {
+            let spans_json = serde_json::to_string(&chunk_elev_spans).unwrap_or_else(|_| "[]".to_string());
+            js_sys::Reflect::set(&result, &"chunkElevSpansJson".into(), &wasm_bindgen::JsValue::from_str(&spans_json)).ok();
         }
 
         // Volume header scan start time (only present for start chunks)

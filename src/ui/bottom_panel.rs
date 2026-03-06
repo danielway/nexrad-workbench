@@ -1907,35 +1907,63 @@ fn render_realtime_progress(
         let elev_num = (elev_idx + 1) as u8;
         let is_complete = received.contains(&elev_num);
 
-        // Use actual timestamps from sweep metadata for completed sweeps,
-        // fall back to even-distribution estimate for non-completed ones.
+        // Use actual timestamps where available:
+        // 1. Completed sweep → use SweepMeta start/end
+        // 2. In-progress sweep with chunk data → derive bounds from chunk spans
+        // 3. Future sweep → estimate from last known anchor point
         let (sw_start, sw_end) = if is_complete {
             if let Some(meta) = live_state.completed_sweep_metas.iter()
                 .find(|m| m.elevation_number == elev_num)
             {
                 (meta.start, meta.end)
             } else {
-                // Completed but no metadata yet — use estimate
                 (vol_start + elev_idx as f64 * sweep_dur, vol_start + (elev_idx + 1) as f64 * sweep_dur)
             }
         } else {
-            // For non-completed sweeps, use the last completed sweep's end as
-            // anchor if available, otherwise use even distribution from vol_start
-            let last_completed_end = live_state.completed_sweep_metas.iter()
-                .filter(|m| (m.elevation_number as usize) < elev_num as usize)
-                .map(|m| m.end)
-                .fold(f64::NEG_INFINITY, f64::max);
-            if last_completed_end > f64::NEG_INFINITY {
-                // Distribute remaining sweeps evenly from last completed end to expected vol end
-                let remaining_count = expected_count - (elev_num as usize - 1);
-                let remaining_dur = (vol_start + expected_dur) - last_completed_end;
-                let est_dur = if remaining_count > 0 { remaining_dur / remaining_count as f64 } else { sweep_dur };
-                let offset_in_remaining = (elev_num as usize - 1) - live_state.completed_sweep_metas.len();
-                let est_start = last_completed_end + offset_in_remaining as f64 * est_dur;
-                (est_start, est_start + est_dur)
-            } else {
-                (vol_start + elev_idx as f64 * sweep_dur, vol_start + (elev_idx + 1) as f64 * sweep_dur)
-            }
+            // For non-completed sweeps, find the best anchor: the end time of
+            // the highest completed sweep below this one.
+            let anchor_end = live_state.completed_sweep_metas.iter()
+                .filter(|m| m.elevation_number < elev_num)
+                .max_by_key(|m| m.elevation_number)
+                .map(|m| m.end);
+
+            // Also check if we have actual chunk data for this elevation
+            let chunk_min = live_state.chunk_elev_spans.iter()
+                .filter(|&&(e, _, _, _)| e == elev_num)
+                .map(|&(_, s, _, _)| s)
+                .reduce(f64::min);
+            let chunk_max = live_state.chunk_elev_spans.iter()
+                .filter(|&&(e, _, _, _)| e == elev_num)
+                .map(|&(_, _, e, _)| e)
+                .reduce(f64::max);
+
+            let sw_start_actual = match (chunk_min, anchor_end) {
+                // Have chunk data: use actual chunk start as sweep start
+                (Some(cm), _) => cm,
+                // No chunk data but have anchor: estimate from anchor
+                (None, Some(ae)) => {
+                    let completed_count = live_state.completed_sweep_metas.iter()
+                        .filter(|m| m.elevation_number < elev_num)
+                        .count();
+                    let steps = elev_idx - completed_count;
+                    let remaining_count = expected_count - completed_count;
+                    let remaining_dur = (vol_start + expected_dur) - ae;
+                    let est_dur = if remaining_count > 0 { remaining_dur / remaining_count as f64 } else { sweep_dur };
+                    ae + steps as f64 * est_dur
+                }
+                // No data at all: even distribution
+                (None, None) => vol_start + elev_idx as f64 * sweep_dur,
+            };
+
+            let est_sweep_end = sw_start_actual + sweep_dur;
+            let sw_end_actual = match chunk_max {
+                // If we have chunk data, extend sweep end to at least cover it,
+                // but also estimate further since we may not have all radials yet
+                Some(cm) => cm.max(est_sweep_end),
+                None => est_sweep_end,
+            };
+
+            (sw_start_actual, sw_end_actual)
         };
 
         let x_start = ts_to_x(sw_start).max(sweep_rect.left());
@@ -1969,35 +1997,21 @@ fn render_realtime_progress(
             let border_color = Color32::from_rgba_unmultiplied(60, 140, 200, 100);
             painter.rect_stroke(block, 1.0, Stroke::new(1.0, border_color), StrokeKind::Inside);
 
-            // Draw downloaded chunks clipped to this sweep's time range
-            for &(chunk_start, chunk_end) in &live_state.chunk_time_spans {
-                let cs = chunk_start.max(sw_start);
-                let ce = chunk_end.min(sw_end);
-                if ce > cs {
-                    let cx0 = ts_to_x(cs).max(x_start);
-                    let cx1 = ts_to_x(ce).min(x_end);
-                    if cx1 > cx0 {
-                        let chunk_rect = Rect::from_min_max(
-                            Pos2::new(cx0, block.min.y + 1.0),
-                            Pos2::new(cx1, block.max.y - 1.0),
-                        );
-                        painter.rect_filled(chunk_rect, 0.0,
-                            Color32::from_rgba_unmultiplied(60, 140, 200, 55));
-                    }
+            // Draw downloaded chunks that belong to this elevation
+            for &(span_elev, span_start, span_end, _) in &live_state.chunk_elev_spans {
+                if span_elev != elev_num {
+                    continue;
                 }
-            }
-
-            // Show radial progress as partial fill overlay
-            if in_progress_radials > 0 {
-                let estimated_total = 360u32;
-                let fill_frac = (in_progress_radials as f32 / estimated_total as f32).clamp(0.0, 1.0);
-                let fill_width = width * fill_frac;
-                let fill_rect = Rect::from_min_max(
-                    block.min,
-                    Pos2::new(x_start + fill_width, block.max.y),
-                );
-                painter.rect_filled(fill_rect, 1.0,
-                    Color32::from_rgba_unmultiplied(60, 140, 200, 35));
+                let cx0 = ts_to_x(span_start).max(sweep_rect.left());
+                let cx1 = ts_to_x(span_end).min(sweep_rect.right());
+                if cx1 > cx0 {
+                    let chunk_rect = Rect::from_min_max(
+                        Pos2::new(cx0, block.min.y + 1.0),
+                        Pos2::new(cx1, block.max.y - 1.0),
+                    );
+                    painter.rect_filled(chunk_rect, 0.0,
+                        Color32::from_rgba_unmultiplied(60, 140, 200, 55));
+                }
             }
 
             // Next-chunk countdown if we're waiting
