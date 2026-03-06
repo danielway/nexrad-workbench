@@ -1067,10 +1067,10 @@ impl eframe::App for WorkbenchApp {
                         self.displayed_scan_timestamp = Some(result.context.timestamp_secs);
                         self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
 
-                        // Record chunk data timestamp for timeline tick marks
-                        self.state.live_mode_state.record_chunk_time(
-                            result.context.timestamp_secs as f64,
-                        );
+                        // Record chunk's actual data time span for timeline visualization
+                        if let (Some(min_t), Some(max_t)) = (result.chunk_min_time_secs, result.chunk_max_time_secs) {
+                            self.state.live_mode_state.record_chunk_time_span(min_t, max_t);
+                        }
 
                         // Update live mode partial scan tracking
                         if !result.elevations_completed.is_empty() {

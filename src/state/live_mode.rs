@@ -131,11 +131,11 @@ pub struct LiveModeState {
     /// Number of radials received for the current in-progress elevation.
     pub current_in_progress_radials: Option<u32>,
 
-    /// Data collection timestamps (Unix secs) of chunks in the current volume.
-    /// Used to show chunk tick marks on the timeline before sweeps complete.
-    /// These use the radar data's timestamp so marks appear at the correct
-    /// timeline position, not when the chunk arrived at the browser.
-    pub chunk_data_times: Vec<f64>,
+    /// Data collection time spans (start_secs, end_secs) of chunks in the
+    /// current volume. Derived from actual radial collection timestamps in
+    /// each chunk. Used to show chunk blocks on the timeline before sweeps
+    /// complete.
+    pub chunk_time_spans: Vec<(f64, f64)>,
 }
 
 impl Default for LiveModeState {
@@ -157,7 +157,7 @@ impl Default for LiveModeState {
             current_volume_start: None,
             current_in_progress_elevation: None,
             current_in_progress_radials: None,
-            chunk_data_times: Vec::new(),
+            chunk_time_spans: Vec::new(),
         }
     }
 }
@@ -216,7 +216,7 @@ impl LiveModeState {
         self.current_volume_start = None;
         self.current_in_progress_elevation = None;
         self.current_in_progress_radials = None;
-        self.chunk_data_times.clear();
+        self.chunk_time_spans.clear();
     }
 
     /// Set error state with message.
@@ -362,7 +362,7 @@ impl LiveModeState {
         self.current_volume_start = None;
         self.current_in_progress_elevation = None;
         self.current_in_progress_radials = None;
-        self.chunk_data_times.clear();
+        self.chunk_time_spans.clear();
     }
 
     /// Record that new elevation cuts were received in the current volume.
@@ -378,9 +378,9 @@ impl LiveModeState {
         self.elevations_received.sort_unstable();
     }
 
-    /// Record that a chunk was received with the given data collection timestamp.
-    pub fn record_chunk_time(&mut self, data_timestamp_secs: f64) {
-        self.chunk_data_times.push(data_timestamp_secs);
+    /// Record a chunk's actual data time span (from radial collection timestamps).
+    pub fn record_chunk_time_span(&mut self, start_secs: f64, end_secs: f64) {
+        self.chunk_time_spans.push((start_secs, end_secs));
     }
 
     /// Record which elevation is currently being accumulated (partial sweep).

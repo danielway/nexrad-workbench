@@ -648,6 +648,14 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let chunk_elev_numbers = extract_elevation_numbers(&chunk_radials);
         let mut newly_completed: Vec<u8> = Vec::new();
 
+        // Compute the actual data time range of this chunk from radial timestamps (ms → secs).
+        let chunk_min_ts_secs: Option<f64> = chunk_radials.iter()
+            .map(|r| r.collection_timestamp() as f64 / 1000.0)
+            .reduce(f64::min);
+        let chunk_max_ts_secs: Option<f64> = chunk_radials.iter()
+            .map(|r| r.collection_timestamp() as f64 / 1000.0)
+            .reduce(f64::max);
+
         CHUNK_ACCUM.with(|cell| {
             let mut borrow = cell.borrow_mut();
             let accum = borrow.as_mut().ok_or_else(|| {
@@ -913,6 +921,14 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         if let Some(vj) = vcp_json {
             js_sys::Reflect::set(&result, &"vcpJson".into(), &wasm_bindgen::JsValue::from_str(&vj)).ok();
+        }
+
+        // Actual data time range of this chunk (from radial collection timestamps)
+        if let Some(min_ts) = chunk_min_ts_secs {
+            js_sys::Reflect::set(&result, &"chunkMinTimeSecs".into(), &wasm_bindgen::JsValue::from(min_ts)).ok();
+        }
+        if let Some(max_ts) = chunk_max_ts_secs {
+            js_sys::Reflect::set(&result, &"chunkMaxTimeSecs".into(), &wasm_bindgen::JsValue::from(max_ts)).ok();
         }
 
         // Current in-progress elevation number (for partial sweep visualization)

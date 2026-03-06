@@ -338,7 +338,7 @@ impl RadarTimeline {
                     as f64;
 
                 // Convert persisted sweep metadata to timeline Sweep structs
-                let sweeps = meta
+                let sweeps: Vec<Sweep> = meta
                     .sweeps
                     .unwrap_or_default()
                     .into_iter()
@@ -352,6 +352,21 @@ impl RadarTimeline {
                     .collect();
 
                 let vcp_number = meta.vcp.as_ref().map(|v| v.number).unwrap_or(0);
+
+                // Adjust scan bounds to encompass all sweep times.
+                // Sweep times come from actual radial collection timestamps, which
+                // can precede the nominal scan key timestamp or extend past the
+                // computed end. Ensure the scan fully contains its sweeps.
+                let sweep_min: Option<f64> = sweeps.iter().map(|s| s.start_time).reduce(f64::min);
+                let sweep_max: Option<f64> = sweeps.iter().map(|s| s.end_time).reduce(f64::max);
+                let start_time = match sweep_min {
+                    Some(sm) if sm < start_time => sm,
+                    _ => start_time,
+                };
+                let end_time = match sweep_max {
+                    Some(sm) if sm > end_time => sm,
+                    _ => end_time,
+                };
 
                 Scan {
                     start_time,

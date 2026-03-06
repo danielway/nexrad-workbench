@@ -86,6 +86,11 @@ pub struct ChunkIngestResult {
     pub current_elevation: Option<u8>,
     /// Number of radials received so far for the current in-progress elevation.
     pub current_elevation_radials: Option<u32>,
+    /// Actual data time range of this chunk (from radial collection timestamps).
+    /// Min timestamp in Unix seconds.
+    pub chunk_min_time_secs: Option<f64>,
+    /// Max timestamp in Unix seconds.
+    pub chunk_max_time_secs: Option<f64>,
 }
 
 /// Context for a render/decode request.
@@ -659,6 +664,14 @@ fn handle_chunk_ingested_message(
         .and_then(|v| v.as_f64())
         .map(|v| v as u32);
 
+    // Parse chunk data time range
+    let chunk_min_time_secs = js_sys::Reflect::get(&result_obj, &"chunkMinTimeSecs".into())
+        .ok()
+        .and_then(|v| v.as_f64());
+    let chunk_max_time_secs = js_sys::Reflect::get(&result_obj, &"chunkMaxTimeSecs".into())
+        .ok()
+        .and_then(|v| v.as_f64());
+
     results
         .borrow_mut()
         .push(WorkerOutcome::ChunkIngested(ChunkIngestResult {
@@ -672,6 +685,8 @@ fn handle_chunk_ingested_message(
             total_ms,
             current_elevation,
             current_elevation_radials,
+            chunk_min_time_secs,
+            chunk_max_time_secs,
         }));
 }
 

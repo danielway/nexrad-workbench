@@ -327,7 +327,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     }
 
     egui::TopBottomPanel::bottom("bottom_panel")
-        .exact_height(116.0)
+        .exact_height(122.0)
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 // Mode and acquisition status bar
@@ -572,7 +572,8 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     };
 
     // Track heights — sweep track only shown at Sweeps detail level
-    let scan_track_h: f32 = if detail_level == DetailLevel::Sweeps { 18.0 } else { 36.0 };
+    // Scan track needs enough room for: block fills (top) + time tick labels (bottom)
+    let scan_track_h: f32 = if detail_level == DetailLevel::Sweeps { 24.0 } else { 40.0 };
     let sweep_track_h: f32 = if detail_level == DetailLevel::Sweeps { 22.0 } else { 0.0 };
     let separator_h: f32 = if detail_level == DetailLevel::Sweeps { 1.0 } else { 0.0 };
     let vcp_track_h: f32 = 6.0;
@@ -1717,41 +1718,30 @@ fn render_realtime_progress(
         }
     }
 
-    // Chunk arrival tick marks — show each received chunk as a small vertical line
-    // on the scan track, visible even before any sweep completes.
-    if !live_state.chunk_data_times.is_empty() {
-        if live_state.current_volume_start.is_some() {
-            let pulse = (0.5 + 0.5 * (anim_time * 2.0).sin()) as f32;
-            for (i, &chunk_ts) in live_state.chunk_data_times.iter().enumerate() {
-                let x = ts_to_x(chunk_ts);
-                if x >= scan_rect.left() && x <= scan_rect.right() {
-                    let is_latest = i == live_state.chunk_data_times.len() - 1;
-                    let alpha = if is_latest {
-                        (140.0 + 80.0 * pulse) as u8
-                    } else {
-                        120u8
-                    };
-                    // Small upward tick from bottom of scan track
-                    let tick_h = if is_latest { 8.0 } else { 5.0 };
-                    painter.line_segment(
-                        [
-                            Pos2::new(x, scan_rect.bottom() - 2.0 - tick_h),
-                            Pos2::new(x, scan_rect.bottom() - 2.0),
-                        ],
-                        Stroke::new(
-                            if is_latest { 1.5 } else { 1.0 },
-                            Color32::from_rgba_unmultiplied(100, 180, 255, alpha),
-                        ),
-                    );
-                    // Small dot at the top of the tick for the latest chunk
-                    if is_latest {
-                        painter.circle_filled(
-                            Pos2::new(x, scan_rect.bottom() - 2.0 - tick_h),
-                            1.5,
-                            Color32::from_rgba_unmultiplied(100, 180, 255, alpha),
-                        );
-                    }
-                }
+    // Chunk data blocks — show each received chunk as a small block spanning
+    // its actual radial collection time range on the scan track. Visible even
+    // before any sweep completes, so the user sees data arriving.
+    if !live_state.chunk_time_spans.is_empty() && live_state.current_volume_start.is_some() {
+        for (i, &(chunk_start, chunk_end)) in live_state.chunk_time_spans.iter().enumerate() {
+            let x0 = ts_to_x(chunk_start).max(scan_rect.left());
+            let x1 = ts_to_x(chunk_end).min(scan_rect.right());
+            // Ensure minimum 2px width so thin chunks are still visible
+            let x1 = if x1 - x0 < 2.0 { (x0 + 2.0).min(scan_rect.right()) } else { x1 };
+
+            if x1 > x0 && chunk_end > view_start && chunk_start < view_end {
+                let is_latest = i == live_state.chunk_time_spans.len() - 1;
+                let alpha = if is_latest { 60u8 } else { 35 };
+                let border_alpha = if is_latest { 100u8 } else { 55 };
+
+                let block = Rect::from_min_max(
+                    Pos2::new(x0, scan_rect.top() + 3.0),
+                    Pos2::new(x1, scan_rect.bottom() - 3.0),
+                );
+                painter.rect_filled(block, 1.0,
+                    Color32::from_rgba_unmultiplied(100, 180, 255, alpha));
+                painter.rect_stroke(block, 1.0,
+                    Stroke::new(0.5, Color32::from_rgba_unmultiplied(100, 180, 255, border_alpha)),
+                    StrokeKind::Inside);
             }
         }
     }
