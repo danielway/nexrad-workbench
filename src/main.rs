@@ -586,6 +586,15 @@ impl WorkbenchApp {
             .unwrap_or(1)
     }
 
+    /// Pick the closest available elevation to the requested one.
+    fn best_available_elevation(&self, requested: u8) -> u8 {
+        self.available_elevation_numbers
+            .iter()
+            .copied()
+            .min_by_key(|&e| (e as i16 - requested as i16).unsigned_abs())
+            .unwrap_or(requested)
+    }
+
     /// Find the best elevation number for a scan given the playback position.
     ///
     /// In FixedTilt mode, finds the most recent sweep at the target elevation
@@ -704,9 +713,19 @@ impl WorkbenchApp {
             return;
         }
 
-        let elevation_number = self
+        let mut elevation_number = self
             .displayed_sweep_elevation_number
             .unwrap_or_else(|| self.best_elevation_number());
+
+        // During real-time streaming, best_elevation_number() may return an
+        // elevation from a previous completed scan that doesn't exist yet in the
+        // in-progress scan. Constrain to what's actually available.
+        if self.state.live_mode_state.is_active()
+            && !self.available_elevation_numbers.is_empty()
+            && !self.available_elevation_numbers.contains(&elevation_number)
+        {
+            elevation_number = self.best_available_elevation(elevation_number);
+        }
         let product = self.state.viz_state.product.to_worker_string().to_string();
 
         let params = (
@@ -1488,7 +1507,7 @@ impl eframe::App for WorkbenchApp {
                 .radar_timeline
                 .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
                 .map(|scan| {
-                    let scan_ts = scan.start_time as i64;
+                    let scan_ts = scan.key_timestamp as i64;
                     let target_elev_num = match self.state.viz_state.render_mode {
                         crate::state::RenderMode::FixedTilt => {
                             self.best_elevation_at_playback(scan, playback_ts)
