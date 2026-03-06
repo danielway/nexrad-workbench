@@ -1847,34 +1847,44 @@ fn render_realtime_progress(
                 }
             }
 
-            // Next chunk countdown indicator at the "now" line
+            // Projected next-chunk block — shows where the next chunk's data
+            // is expected on the timeline, with countdown label.
             if let Some(remaining) = live_state.countdown_remaining_secs(now) {
-                let indicator_x = x_now.min(scan_rect.right() - 2.0);
-                let indicator_y = scan_rect.bottom() - 2.0;
+                // Estimate next chunk's data time range: starts after last chunk ended,
+                // spans roughly one chunk interval of data.
+                let next_start = live_state.chunk_time_spans.last()
+                    .map(|&(_, end)| end)
+                    .unwrap_or(now);
+                let chunk_dur = live_state.chunk_interval_secs;
+                let next_end = next_start + chunk_dur;
 
-                let d = 2.5;
-                let diamond = vec![
-                    Pos2::new(indicator_x, indicator_y - d),
-                    Pos2::new(indicator_x + d, indicator_y),
-                    Pos2::new(indicator_x, indicator_y + d),
-                    Pos2::new(indicator_x - d, indicator_y),
-                ];
-                let pulse_alpha = (128.0 + 127.0 * pulse) as u8;
-                painter.add(egui::Shape::convex_polygon(
-                    diamond,
-                    Color32::from_rgba_unmultiplied(180, 200, 255, pulse_alpha),
-                    Stroke::NONE,
-                ));
+                let nx0 = ts_to_x(next_start).max(scan_rect.left());
+                let nx1 = ts_to_x(next_end).min(scan_rect.right());
+                let nx1 = if nx1 - nx0 < 4.0 { (nx0 + 4.0).min(scan_rect.right()) } else { nx1 };
 
-                let total_width = x_expected_end - x_start;
-                if total_width > 60.0 {
-                    painter.text(
-                        Pos2::new(indicator_x - 4.0, indicator_y - 1.0),
-                        egui::Align2::RIGHT_CENTER,
-                        format!("~{}s", remaining.ceil() as i32),
-                        egui::FontId::monospace(6.0),
-                        tl_colors::rt_next_chunk(),
+                if nx1 > nx0 && next_start < view_end && next_end > view_start {
+                    let next_block = Rect::from_min_max(
+                        Pos2::new(nx0, scan_rect.top() + 3.0),
+                        Pos2::new(nx1, scan_rect.bottom() - 3.0),
                     );
+                    // Dashed outline, pulsing
+                    let border_alpha = (50.0 + 40.0 * pulse) as u8;
+                    painter.rect_stroke(next_block, 1.0,
+                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(180, 200, 255, border_alpha)),
+                        StrokeKind::Inside);
+
+                    // Countdown label centered in the block
+                    let block_w = nx1 - nx0;
+                    let label = format!("~{}s", remaining.ceil() as i32);
+                    if block_w > 20.0 {
+                        painter.text(
+                            next_block.center(),
+                            egui::Align2::CENTER_CENTER,
+                            label,
+                            egui::FontId::monospace(6.0),
+                            Color32::from_rgba_unmultiplied(180, 200, 255, (140.0 + 60.0 * pulse) as u8),
+                        );
+                    }
                 }
             }
         }

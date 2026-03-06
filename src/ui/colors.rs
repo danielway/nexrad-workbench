@@ -209,8 +209,6 @@ pub mod timeline {
 
     /// Pending (expected but not yet received) sweep placeholder.
     pub fn rt_pending_sweep_border() -> Color32 { Color32::from_rgba_unmultiplied(80, 120, 180, 60) }
-    /// Next-chunk indicator.
-    pub fn rt_next_chunk() -> Color32 { Color32::from_rgba_unmultiplied(180, 200, 255, 180) }
 }
 
 /// Colors for the map canvas.
