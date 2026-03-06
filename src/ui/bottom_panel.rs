@@ -33,6 +33,7 @@ fn render_scan_track(
     view_end: f64,
     zoom: f64,
     detail_level: DetailLevel,
+    active_volume_start: Option<f64>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
@@ -64,6 +65,13 @@ fn render_scan_track(
         }
         DetailLevel::Scans | DetailLevel::Sweeps => {
             for scan in timeline.scans_in_range(view_start, view_end) {
+                // Skip the scan that corresponds to the active real-time volume —
+                // render_realtime_progress draws it with received/projected styling.
+                if let Some(vol_start) = active_volume_start {
+                    if (scan.start_time - vol_start).abs() < 1.0 {
+                        continue;
+                    }
+                }
                 let x_start = ts_to_x(scan.start_time).max(rect.left());
                 let x_end = ts_to_x(scan.end_time).min(rect.right());
                 let width = x_end - x_start;
@@ -647,9 +655,14 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     };
 
     // ── Render scan track ─────────────────────────────────────────────
+    let active_volume_start = if state.live_mode_state.is_active() {
+        state.live_mode_state.current_volume_start
+    } else {
+        None
+    };
     render_scan_track(
         &painter, &scan_rect, &state.radar_timeline,
-        view_start, view_end, zoom, detail_level,
+        view_start, view_end, zoom, detail_level, active_volume_start,
     );
 
     // ── Render sweep track (only at Sweeps detail) ────────────────────
@@ -1746,7 +1759,8 @@ fn render_realtime_progress(
         }
     }
 
-    // Growing active scan block — extends to expected end, not just "now"
+    // Growing active scan block — unified block from vol_start → expected_end
+    // with distinct received/projected styling and a single centered label.
     if let Some(vol_start) = live_state.current_volume_start {
         let now = now_secs;
         let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
@@ -1759,13 +1773,27 @@ fn render_realtime_progress(
         let pulse = (0.5 + 0.5 * (anim_time * 2.0).sin()) as f32;
 
         if x_expected_end > x_start && vol_start < view_end && expected_end > view_start {
-            // Future portion (now → expected end): dashed outline, very subtle
+            // ── Received portion (vol_start → now): solid fill ──
+            if x_now > x_start {
+                let block_rect = Rect::from_min_max(
+                    Pos2::new(x_start, scan_rect.top() + 2.0),
+                    Pos2::new(x_now, scan_rect.bottom() - 2.0),
+                );
+
+                let edge_alpha = (30.0 + 20.0 * pulse) as u8;
+                painter.rect_filled(block_rect, 2.0,
+                    Color32::from_rgba_unmultiplied(55, 130, 75, edge_alpha));
+                painter.rect_stroke(block_rect, 2.0,
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(55, 130, 75, (edge_alpha as u16 + 40).min(255) as u8)),
+                    StrokeKind::Inside);
+            }
+
+            // ── Future/projected portion (now → expected end): dashed outline ──
             if x_expected_end > x_now && x_now >= scan_rect.left() {
                 let future_rect = Rect::from_min_max(
                     Pos2::new(x_now, scan_rect.top() + 2.0),
                     Pos2::new(x_expected_end, scan_rect.bottom() - 2.0),
                 );
-                // Subtle dashed border for the projected remainder
                 let future_alpha = (15.0 + 10.0 * pulse) as u8;
                 painter.rect_filled(future_rect, 2.0,
                     Color32::from_rgba_unmultiplied(55, 130, 75, future_alpha));
@@ -1779,7 +1807,7 @@ fn render_realtime_progress(
                     );
                     y += 6.0;
                 }
-                // Dashed top and bottom edges for future portion
+                // Dashed top and bottom edges
                 let mut x = x_now;
                 while x < x_expected_end {
                     let x_seg_end = (x + 4.0).min(x_expected_end);
@@ -1793,52 +1821,46 @@ fn render_realtime_progress(
                     );
                     x += 8.0;
                 }
-
-                // "est. end" label on the future portion if wide enough
-                let future_width = x_expected_end - x_now;
-                if future_width > 50.0 {
-                    let remaining_secs = expected_end - now;
-                    let remaining_label = if remaining_secs < 60.0 {
-                        format!("~{:.0}s left", remaining_secs)
-                    } else {
-                        format!("~{:.0}m left", remaining_secs / 60.0)
-                    };
-                    painter.text(
-                        Pos2::new((x_now + x_expected_end) / 2.0, scan_rect.center().y),
-                        egui::Align2::CENTER_CENTER,
-                        remaining_label,
-                        egui::FontId::monospace(6.0),
-                        Color32::from_rgba_unmultiplied(180, 210, 180, 120),
-                    );
-                }
             }
 
-            // Received portion (vol_start → now): solid fill
-            if x_now > x_start {
-                let block_rect = Rect::from_min_max(
-                    Pos2::new(x_start, scan_rect.top() + 2.0),
-                    Pos2::new(x_now, scan_rect.bottom() - 2.0),
-                );
-
-                let edge_alpha = (30.0 + 20.0 * pulse) as u8;
-                painter.rect_filled(block_rect, 2.0,
-                    Color32::from_rgba_unmultiplied(55, 130, 75, edge_alpha));
-                painter.rect_stroke(block_rect, 2.0,
-                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(55, 130, 75, (edge_alpha as u16 + 40).min(255) as u8)),
-                    StrokeKind::Inside);
-
-                // Elevation progress label
+            // ── Single unified label centered across the full block (vol_start → expected_end) ──
+            let full_width = x_expected_end - x_start;
+            if full_width > 40.0 {
+                let vcp = live_state.current_vcp_number.unwrap_or(0);
                 let received = live_state.elevations_received.len();
                 let expected = live_state.expected_elevation_count.unwrap_or(0) as usize;
-                let width = x_now - x_start;
-                if width > 40.0 && (received > 0 || expected > 0) {
-                    let label = if expected > 0 {
-                        format!("{}/{} elev", received, expected)
+
+                let label = if vcp > 0 && expected > 0 {
+                    if full_width > 120.0 {
+                        format!("VCP {} {}/{}", vcp, received, expected)
+                    } else if full_width > 70.0 {
+                        format!("{} {}/{}", vcp, received, expected)
                     } else {
-                        format!("{} elev", received)
-                    };
+                        format!("{}/{}", received, expected)
+                    }
+                } else if vcp > 0 && received > 0 {
+                    if full_width > 80.0 {
+                        format!("VCP {} ({})", vcp, received)
+                    } else {
+                        format!("{}", vcp)
+                    }
+                } else if expected > 0 {
+                    format!("{}/{}", received, expected)
+                } else if received > 0 {
+                    format!("{} elev", received)
+                } else if vcp > 0 {
+                    format!("{}", vcp)
+                } else {
+                    String::new()
+                };
+
+                if !label.is_empty() {
+                    let full_center = Pos2::new(
+                        (x_start + x_expected_end) / 2.0,
+                        scan_rect.top() + 2.0 + (scan_rect.bottom() - 2.0 - scan_rect.top() - 2.0) / 2.0,
+                    );
                     painter.text(
-                        block_rect.center(),
+                        full_center,
                         egui::Align2::CENTER_CENTER,
                         label,
                         egui::FontId::monospace(7.0),
