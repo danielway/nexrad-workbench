@@ -201,7 +201,7 @@ fn render_sweep_track(
 
             let matches_elevation = (sweep.elevation - target_elevation).abs() < 0.3;
             let is_active = active_sweep.is_some_and(|(scan_ts, elev_num)| {
-                scan.start_time as i64 == scan_ts && sweep.elevation_number == elev_num
+                scan.key_timestamp as i64 == scan_ts && sweep.elevation_number == elev_num
             });
 
             let fill = tl_colors::sweep_fill(sweep.elevation, matches_elevation);
@@ -711,7 +711,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             &painter, &scan_rect,
             if detail_level == DetailLevel::Sweeps { Some(&sweep_rect) } else { None },
             &state.live_mode_state, view_start, view_end, zoom, anim_time,
-            frame_now_secs, state.viz_state.target_elevation,
+            frame_now_secs, state.viz_state.target_elevation, active_sweep,
         );
         ui.ctx().request_repaint();
     }
@@ -1723,6 +1723,7 @@ fn render_realtime_progress(
     anim_time: f64,
     now_secs: f64,
     target_elevation: f32,
+    active_sweep: Option<(i64, u8)>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
     let now = now_secs;
@@ -1991,11 +1992,14 @@ fn render_realtime_progress(
 
         if is_complete {
             // ── Complete: filled with cool elevation colors ──
+            let is_active = active_sweep.is_some_and(|(_, active_en)| active_en == elev_num);
             let fill = tl_colors::sweep_fill(elev_angle, matches_target);
-            let border = tl_colors::sweep_border(elev_angle, false);
+            let border = tl_colors::sweep_border(elev_angle, is_active);
             painter.rect_filled(block, 1.0, fill);
             if width > 3.0 {
-                painter.rect_stroke(block, 1.0, Stroke::new(0.5, border), StrokeKind::Inside);
+                let stroke_width = if is_active { 2.0 } else { 0.5 };
+                let stroke_kind = if is_active { StrokeKind::Outside } else { StrokeKind::Inside };
+                painter.rect_stroke(block, 1.0, Stroke::new(stroke_width, border), stroke_kind);
             }
         } else if is_downloading {
             // ── Downloading: outline with chunk subdivision ──
