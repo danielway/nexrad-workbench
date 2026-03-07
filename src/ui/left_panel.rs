@@ -454,7 +454,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
 
             if let Some(scan) = radar_state.scan {
                 egui::ScrollArea::vertical()
-                    .max_height(200.0)
+                    .max_height(f32::INFINITY)
                     .show(ui, |ui| {
                         ui.set_min_width(available_width);
                         if let Some(pattern) = extracted_pattern {
@@ -505,7 +505,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
             } else if let Some(pattern) = extracted_pattern {
                 // No scan reference but have VCP pattern
                 egui::ScrollArea::vertical()
-                    .max_height(200.0)
+                    .max_height(f32::INFINITY)
                     .show(ui, |ui| {
                         ui.set_min_width(available_width);
                         for elev in &pattern.elevations {
@@ -528,7 +528,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                 // Fall back to static VCP definitions — use sweep_index from
                 // live mode estimation to highlight the current elevation.
                 egui::ScrollArea::vertical()
-                    .max_height(200.0)
+                    .max_height(f32::INFINITY)
                     .show(ui, |ui| {
                         ui.set_min_width(available_width);
                         for (idx, elev) in def.elevations.iter().enumerate() {

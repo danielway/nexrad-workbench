@@ -870,7 +870,11 @@ impl eframe::App for WorkbenchApp {
         // Resolve theme and apply egui visuals
         self.state.is_dark = self.state.theme_mode.is_dark();
         if self.state.is_dark {
-            ctx.set_visuals(egui::Visuals::dark());
+            let mut visuals = egui::Visuals::dark();
+            visuals.panel_fill = egui::Color32::BLACK;
+            visuals.window_fill = egui::Color32::BLACK;
+            visuals.extreme_bg_color = egui::Color32::BLACK;
+            ctx.set_visuals(visuals);
         } else {
             ctx.set_visuals(egui::Visuals::light());
         }

@@ -343,7 +343,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     }
 
     egui::TopBottomPanel::bottom("bottom_panel")
-        .exact_height(122.0)
+        .exact_height(104.0)
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 // Mode and acquisition status bar

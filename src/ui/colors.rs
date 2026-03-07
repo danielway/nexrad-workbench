@@ -59,7 +59,7 @@ pub mod timeline {
 
     pub fn background(dark: bool) -> Color32 {
         if dark {
-            Color32::from_rgb(30, 30, 40)
+            Color32::from_rgb(10, 10, 14)
         } else {
             Color32::from_rgb(230, 230, 235)
         }
@@ -217,7 +217,7 @@ pub mod canvas {
 
     pub fn background(dark: bool) -> Color32 {
         if dark {
-            Color32::from_rgb(20, 20, 35)
+            Color32::BLACK
         } else {
             Color32::from_rgb(235, 235, 240)
         }
