@@ -170,13 +170,13 @@ pub struct RenderProcessing {
 impl Default for RenderProcessing {
     fn default() -> Self {
         Self {
-            interpolation: InterpolationMode::Bilinear,
+            interpolation: InterpolationMode::Nearest,
             smoothing_enabled: false,
             smoothing_radius: 2.0,
             despeckle_enabled: false,
             despeckle_threshold: 3,
             opacity: 1.0,
-            edge_softening: true,
+            edge_softening: false,
         }
     }
 }
