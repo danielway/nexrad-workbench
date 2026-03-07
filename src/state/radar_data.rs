@@ -316,6 +316,53 @@ impl RadarTimeline {
         best
     }
 
+    /// Find the end time of the next matching sweep after the given timestamp.
+    ///
+    /// "Matching" means the sweep's elevation is within `elev_tolerance` of
+    /// `target_elevation`. Returns the sweep's end_time so the cursor lands
+    /// at the completion of that sweep.
+    pub fn next_matching_sweep_end(&self, ts: f64, target_elevation: f32, elev_tolerance: f32) -> Option<f64> {
+        for scan in &self.scans {
+            for sweep in &scan.sweeps {
+                if (sweep.elevation - target_elevation).abs() < elev_tolerance
+                    && sweep.end_time > ts + 0.5
+                {
+                    return Some(sweep.end_time);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the end time of the previous matching sweep before the given timestamp.
+    ///
+    /// Searches backward through sweeps to find the most recent matching sweep
+    /// whose end_time is before the current position.
+    pub fn prev_matching_sweep_end(&self, ts: f64, target_elevation: f32, elev_tolerance: f32) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        for scan in self.scans.iter().rev() {
+            for sweep in scan.sweeps.iter().rev() {
+                if (sweep.elevation - target_elevation).abs() < elev_tolerance
+                    && sweep.end_time < ts - 0.5
+                {
+                    // First match scanning backward is the most recent
+                    match best {
+                        None => best = Some(sweep.end_time),
+                        Some(b) if sweep.end_time > b => best = Some(sweep.end_time),
+                        _ => {}
+                    }
+                }
+            }
+            // If we found one and this scan ends before what we found, no need to keep looking
+            if let Some(b) = best {
+                if scan.end_time < b {
+                    break;
+                }
+            }
+        }
+        best
+    }
+
     /// Find scans that overlap with the given time range
     pub fn scans_in_range(&self, start: f64, end: f64) -> impl Iterator<Item = &Scan> {
         self.scans

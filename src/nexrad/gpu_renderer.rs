@@ -209,16 +209,19 @@ pub fn continuous_color_scale(product: Product) -> ColorScale {
             ColorStop::new(75.0, NrColor::rgb(0.88, 0.65, 0.80)),
         ],
         Product::Velocity => vec![
-            ColorStop::new(-64.0, NrColor::rgb(0.0000, 0.3922, 0.0000)),
-            ColorStop::new(-48.0, NrColor::rgb(0.0000, 0.5451, 0.0000)),
-            ColorStop::new(-32.0, NrColor::rgb(0.0000, 0.8039, 0.0000)),
-            ColorStop::new(-16.0, NrColor::rgb(0.5647, 0.9333, 0.5647)),
-            ColorStop::new(-4.0, NrColor::rgb(0.6627, 0.6627, 0.6627)),
-            ColorStop::new(4.0, NrColor::rgb(0.6627, 0.6627, 0.6627)),
-            ColorStop::new(16.0, NrColor::rgb(1.0000, 0.7529, 0.7961)),
-            ColorStop::new(32.0, NrColor::rgb(1.0000, 0.4118, 0.4118)),
-            ColorStop::new(48.0, NrColor::rgb(0.8039, 0.0000, 0.0000)),
-            ColorStop::new(64.0, NrColor::rgb(0.5451, 0.0000, 0.0000)),
+            ColorStop::new(-64.0, NrColor::rgb(0.00, 0.15, 0.00)),  // very dark green
+            ColorStop::new(-50.0, NrColor::rgb(0.00, 0.38, 0.00)),  // dark green
+            ColorStop::new(-36.0, NrColor::rgb(0.00, 0.65, 0.00)),  // medium green
+            ColorStop::new(-26.0, NrColor::rgb(0.00, 0.90, 0.00)),  // bright green
+            ColorStop::new(-16.0, NrColor::rgb(0.45, 0.95, 0.35)),  // light green
+            ColorStop::new( -5.0, NrColor::rgb(0.68, 0.78, 0.68)),  // gray-green
+            ColorStop::new(  0.0, NrColor::rgb(0.60, 0.60, 0.60)),  // neutral gray
+            ColorStop::new(  5.0, NrColor::rgb(0.78, 0.68, 0.68)),  // gray-red
+            ColorStop::new( 16.0, NrColor::rgb(0.95, 0.40, 0.35)),  // light red
+            ColorStop::new( 26.0, NrColor::rgb(0.90, 0.00, 0.00)),  // bright red
+            ColorStop::new( 36.0, NrColor::rgb(0.65, 0.00, 0.00)),  // medium red
+            ColorStop::new( 50.0, NrColor::rgb(0.40, 0.00, 0.00)),  // dark red
+            ColorStop::new( 64.0, NrColor::rgb(0.18, 0.00, 0.00)),  // very dark red
         ],
         Product::SpectrumWidth => vec![
             ColorStop::new(0.0, NrColor::rgb(0.5020, 0.5020, 0.5020)),

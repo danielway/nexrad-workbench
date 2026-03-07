@@ -105,20 +105,26 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
         return;
     }
 
-    let jog_amount = state
-        .playback_state
-        .speed
-        .timeline_seconds_per_real_second();
+    let current_pos = state.playback_state.playback_position();
+    let target_elev = state.viz_state.target_elevation;
+    let jog_fallback = state.playback_state.speed.timeline_seconds_per_real_second();
+    const ELEV_TOLERANCE: f32 = 0.3;
 
     if step_back {
         exit_live_if_active(state, LiveExitReason::UserJogged);
-        let new_pos = state.playback_state.playback_position() - jog_amount;
+        let new_pos = state
+            .radar_timeline
+            .prev_matching_sweep_end(current_pos, target_elev, ELEV_TOLERANCE)
+            .unwrap_or(current_pos - jog_fallback);
         state.playback_state.set_playback_position(new_pos);
     }
 
     if step_fwd {
         exit_live_if_active(state, LiveExitReason::UserJogged);
-        let new_pos = state.playback_state.playback_position() + jog_amount;
+        let new_pos = state
+            .radar_timeline
+            .next_matching_sweep_end(current_pos, target_elev, ELEV_TOLERANCE)
+            .unwrap_or(current_pos + jog_fallback);
         state.playback_state.set_playback_position(new_pos);
     }
 

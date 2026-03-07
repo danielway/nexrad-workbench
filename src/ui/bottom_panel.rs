@@ -99,7 +99,9 @@ fn render_scan_track(
                     if scan.completeness == Some(ScanCompleteness::PartialWithVcp) {
                         let hatch_color = tl_colors::scan_hatch(scan.vcp);
                         let spacing = 6.0;
-                        let mut offset = 0.0;
+                        // Use global x-coordinate phase so hatch lines are parallel across all blocks
+                        let phase = scan_rect.left() % spacing;
+                        let mut offset = -phase;
                         while offset < width + scan_rect.height() {
                             let x0 = scan_rect.left() + offset;
                             let y0 = scan_rect.top();
@@ -1288,11 +1290,10 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
 
-    // Jog amount: skip by the playback speed amount (1 second worth of playback)
-    let jog_amount = state
-        .playback_state
-        .speed
-        .timeline_seconds_per_real_second();
+    // Jog: jump to end of next/previous matching sweep for current elevation
+    let current_pos = state.playback_state.playback_position();
+    let target_elev = state.viz_state.target_elevation;
+    const ELEV_TOLERANCE: f32 = 0.3;
 
     // Step backward
     if ui.button(RichText::new("\u{25C0}").size(14.0)).clicked() {
@@ -1307,7 +1308,10 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
         }
-        let new_pos = state.playback_state.playback_position() - jog_amount;
+        let new_pos = state
+            .radar_timeline
+            .prev_matching_sweep_end(current_pos, target_elev, ELEV_TOLERANCE)
+            .unwrap_or(current_pos - state.playback_state.speed.timeline_seconds_per_real_second());
         state.playback_state.set_playback_position(new_pos);
     }
 
@@ -1324,7 +1328,10 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
         }
-        let new_pos = state.playback_state.playback_position() + jog_amount;
+        let new_pos = state
+            .radar_timeline
+            .next_matching_sweep_end(current_pos, target_elev, ELEV_TOLERANCE)
+            .unwrap_or(current_pos + state.playback_state.speed.timeline_seconds_per_real_second());
         state.playback_state.set_playback_position(new_pos);
     }
 

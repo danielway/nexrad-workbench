@@ -215,6 +215,10 @@ pub struct VizState {
 
     /// Staleness of the currently displayed data in seconds (for fixed-tilt mode).
     pub data_staleness_secs: Option<f64>,
+
+    /// End timestamp (Unix seconds) of the currently rendered sweep.
+    /// Used to recompute `data_staleness_secs` every frame so the age counter ticks.
+    pub rendered_sweep_end_secs: Option<f64>,
 }
 
 impl Default for VizState {
@@ -231,6 +235,7 @@ impl Default for VizState {
             center_lat: 41.7312,
             center_lon: -93.7229,
             data_staleness_secs: None,
+            rendered_sweep_end_secs: None,
         }
     }
 }

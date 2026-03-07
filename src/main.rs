@@ -669,8 +669,15 @@ impl WorkbenchApp {
             );
         }
 
-        // Staleness = now - sweep end
-        let staleness = js_sys::Date::now() / 1000.0 - end;
+        // Store sweep end time so staleness can be recomputed each frame
+        self.state.viz_state.rendered_sweep_end_secs = Some(end);
+        // Staleness is recomputed per-frame in update(); seed it here for immediate display
+        let reference_time = if self.state.playback_state.time_model.locked_to_realtime {
+            js_sys::Date::now() / 1000.0
+        } else {
+            self.state.playback_state.playback_position()
+        };
+        let staleness = reference_time - end;
         self.state.viz_state.data_staleness_secs = if staleness >= 0.0 {
             Some(staleness)
         } else {
@@ -877,6 +884,24 @@ impl eframe::App for WorkbenchApp {
             ctx.set_visuals(visuals);
         } else {
             ctx.set_visuals(egui::Visuals::light());
+        }
+
+        // Recompute data staleness every frame.
+        // In live/real-time mode, measure against wall-clock time.
+        // In archive playback, measure against the playback position so the age
+        // stays steady while scrubbing through data rather than counting up.
+        if let Some(sweep_end) = self.state.viz_state.rendered_sweep_end_secs {
+            let reference_time = if self.state.playback_state.time_model.locked_to_realtime {
+                js_sys::Date::now() / 1000.0
+            } else {
+                self.state.playback_state.playback_position()
+            };
+            let staleness = reference_time - sweep_end;
+            self.state.viz_state.data_staleness_secs = if staleness >= 0.0 {
+                Some(staleness)
+            } else {
+                None
+            };
         }
 
         // Run storm cell detection on demand when toggled on with existing data
@@ -1573,6 +1598,24 @@ impl eframe::App for WorkbenchApp {
                     self.last_render_params = None; // Force fresh render
                     self.request_worker_render();
                 }
+            } else if self.displayed_scan_timestamp.is_some() {
+                // No scan found within range — clear stale render
+                log::debug!("No scan within {}s of playback at {}, clearing render", MAX_SCAN_AGE_SECS, playback_ts as i64);
+                if let Some(ref renderer) = self.gpu_renderer {
+                    if let Ok(mut r) = renderer.lock() {
+                        r.clear_data();
+                    }
+                }
+                self.displayed_scan_timestamp = None;
+                self.displayed_sweep_elevation_number = None;
+                self.state.displayed_scan_timestamp = None;
+                self.state.displayed_sweep_elevation_number = None;
+                self.current_render_scan_key = None;
+                self.last_render_params = None;
+                self.state.viz_state.data_staleness_secs = None;
+                self.state.viz_state.rendered_sweep_end_secs = None;
+                self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
+                self.state.viz_state.elevation = "-- deg".to_string();
             }
         }
 
