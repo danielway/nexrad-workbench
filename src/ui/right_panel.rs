@@ -192,6 +192,11 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.add_space(4.0);
 
+            // Edge softening
+            ui.checkbox(&mut proc.edge_softening, "Edge Softening");
+
+            ui.add_space(4.0);
+
             // Opacity
             let mut opacity_pct = proc.opacity * 100.0;
             if ui

@@ -163,17 +163,20 @@ pub struct RenderProcessing {
     pub despeckle_threshold: u32,
     /// Global opacity for radar data (0.0..1.0).
     pub opacity: f32,
+    /// Whether edge softening is enabled (smooth alpha falloff at echo boundaries).
+    pub edge_softening: bool,
 }
 
 impl Default for RenderProcessing {
     fn default() -> Self {
         Self {
-            interpolation: InterpolationMode::Nearest,
+            interpolation: InterpolationMode::Bilinear,
             smoothing_enabled: false,
             smoothing_radius: 2.0,
             despeckle_enabled: false,
             despeckle_threshold: 3,
             opacity: 1.0,
+            edge_softening: true,
         }
     }
 }

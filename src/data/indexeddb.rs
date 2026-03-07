@@ -535,6 +535,72 @@ impl IndexedDbRecordStore {
         Ok(())
     }
 
+    /// Deletes all existing scans for a site whose time range overlaps with the
+    /// given archive scan. Returns the number of scans deleted.
+    ///
+    /// A scan overlaps if its [start, end] range intersects the archive scan's
+    /// range. Scans without an end timestamp use start as the end.
+    /// The scan matching `exclude_key` (the archive scan itself) is skipped.
+    pub async fn delete_overlapping_scans(
+        &self,
+        site: &SiteId,
+        archive_start: UnixMillis,
+        archive_end_ms: i64,
+        exclude_key: &ScanKey,
+    ) -> Result<u32, String> {
+        self.ensure_open().await?;
+        let db = self.get_db()?;
+
+        // Read all scan index entries
+        let tx = db
+            .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readonly)
+            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
+        let store = tx
+            .object_store(STORE_SCAN_INDEX)
+            .map_err(|e| format!("Failed to get store: {:?}", e))?;
+        let request = store
+            .get_all()
+            .map_err(|e| format!("Failed to get all: {:?}", e))?;
+        let result = wait_for_request(&request).await?;
+        let array = Array::from(&result);
+
+        // Find overlapping scans for this site
+        let mut to_delete: Vec<ScanKey> = Vec::new();
+        for i in 0..array.length() {
+            let value = array.get(i);
+            if let Some(entry) = deserialize_js_value::<ScanIndexEntry>(&value) {
+                if entry.scan.site.0 != site.0 {
+                    continue;
+                }
+                if entry.scan == *exclude_key {
+                    continue;
+                }
+                let existing_start = entry.scan.scan_start.0;
+                let existing_end = entry
+                    .end_timestamp_secs
+                    .map(|s| s * 1000)
+                    .unwrap_or(existing_start);
+
+                // Two ranges overlap if start_a <= end_b AND start_b <= end_a
+                if archive_start.0 <= existing_end && existing_start <= archive_end_ms {
+                    to_delete.push(entry.scan.clone());
+                }
+            }
+        }
+
+        if to_delete.is_empty() {
+            return Ok(0);
+        }
+
+        let count = to_delete.len() as u32;
+        for scan in &to_delete {
+            log::info!("Deleting overlapping scan {} (replaced by archive)", scan);
+            self.delete_scan(scan).await?;
+        }
+
+        Ok(count)
+    }
+
     /// Clears all data from all stores.
     pub async fn clear_all(&self) -> Result<(), String> {
         // Clear each object store rather than deleting the database.

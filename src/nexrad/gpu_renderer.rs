@@ -5,7 +5,7 @@
 
 use crate::state::RenderProcessing;
 use glow::HasContext;
-use nexrad_render::Product;
+use nexrad_render::{Color as NrColor, ColorScale, ColorStop, ContinuousColorScale, Product};
 use std::sync::Arc;
 
 /// Sentinel value used to mark no-data gates in the data texture.
@@ -35,6 +35,93 @@ fn product_from_str(s: &str) -> Product {
         "clutter_filter_power" => Product::ClutterFilterPower,
         _ => Product::Reflectivity,
     }
+}
+
+/// Build a continuous (linearly-interpolated) color scale for the given product.
+/// Uses the same color stops as the discrete NWS scales from the nexrad_render crate,
+/// but interpolates smoothly between them for a commercial-quality appearance.
+fn continuous_color_scale(product: Product) -> ColorScale {
+    let stops = match product {
+        Product::Reflectivity => vec![
+            ColorStop::new(0.0, NrColor::rgb(0.0000, 0.0000, 0.0000)),
+            ColorStop::new(5.0, NrColor::rgb(0.0000, 1.0000, 1.0000)),
+            ColorStop::new(10.0, NrColor::rgb(0.5294, 0.8078, 0.9216)),
+            ColorStop::new(15.0, NrColor::rgb(0.0000, 0.0000, 1.0000)),
+            ColorStop::new(20.0, NrColor::rgb(0.0000, 1.0000, 0.0000)),
+            ColorStop::new(25.0, NrColor::rgb(0.1961, 0.8039, 0.1961)),
+            ColorStop::new(30.0, NrColor::rgb(0.1333, 0.5451, 0.1333)),
+            ColorStop::new(35.0, NrColor::rgb(0.9333, 0.9333, 0.0000)),
+            ColorStop::new(40.0, NrColor::rgb(0.9333, 0.8627, 0.5098)),
+            ColorStop::new(45.0, NrColor::rgb(0.9333, 0.4627, 0.1294)),
+            ColorStop::new(50.0, NrColor::rgb(1.0000, 0.1882, 0.1882)),
+            ColorStop::new(55.0, NrColor::rgb(0.6902, 0.1882, 0.3765)),
+            ColorStop::new(60.0, NrColor::rgb(0.6902, 0.1882, 0.3765)),
+            ColorStop::new(65.0, NrColor::rgb(0.7294, 0.3333, 0.8275)),
+            ColorStop::new(70.0, NrColor::rgb(1.0000, 0.0000, 1.0000)),
+            ColorStop::new(75.0, NrColor::rgb(1.0000, 1.0000, 1.0000)),
+        ],
+        Product::Velocity => vec![
+            ColorStop::new(-64.0, NrColor::rgb(0.0000, 0.3922, 0.0000)),
+            ColorStop::new(-48.0, NrColor::rgb(0.0000, 0.5451, 0.0000)),
+            ColorStop::new(-32.0, NrColor::rgb(0.0000, 0.8039, 0.0000)),
+            ColorStop::new(-16.0, NrColor::rgb(0.5647, 0.9333, 0.5647)),
+            ColorStop::new(-4.0, NrColor::rgb(0.6627, 0.6627, 0.6627)),
+            ColorStop::new(4.0, NrColor::rgb(0.6627, 0.6627, 0.6627)),
+            ColorStop::new(16.0, NrColor::rgb(1.0000, 0.7529, 0.7961)),
+            ColorStop::new(32.0, NrColor::rgb(1.0000, 0.4118, 0.4118)),
+            ColorStop::new(48.0, NrColor::rgb(0.8039, 0.0000, 0.0000)),
+            ColorStop::new(64.0, NrColor::rgb(0.5451, 0.0000, 0.0000)),
+        ],
+        Product::SpectrumWidth => vec![
+            ColorStop::new(0.0, NrColor::rgb(0.5020, 0.5020, 0.5020)),
+            ColorStop::new(4.0, NrColor::rgb(0.0000, 0.0000, 0.8039)),
+            ColorStop::new(8.0, NrColor::rgb(0.0000, 0.8039, 0.8039)),
+            ColorStop::new(12.0, NrColor::rgb(0.0000, 0.8039, 0.0000)),
+            ColorStop::new(16.0, NrColor::rgb(0.9333, 0.9333, 0.0000)),
+            ColorStop::new(20.0, NrColor::rgb(1.0000, 0.6471, 0.0000)),
+            ColorStop::new(25.0, NrColor::rgb(1.0000, 0.0000, 0.0000)),
+        ],
+        Product::DifferentialReflectivity => vec![
+            ColorStop::new(-2.0, NrColor::rgb(0.5020, 0.0000, 0.5020)),
+            ColorStop::new(-1.0, NrColor::rgb(0.0000, 0.0000, 0.8039)),
+            ColorStop::new(0.0, NrColor::rgb(0.6627, 0.6627, 0.6627)),
+            ColorStop::new(0.5, NrColor::rgb(0.5647, 0.9333, 0.5647)),
+            ColorStop::new(1.5, NrColor::rgb(0.9333, 0.9333, 0.0000)),
+            ColorStop::new(2.5, NrColor::rgb(1.0000, 0.6471, 0.0000)),
+            ColorStop::new(4.0, NrColor::rgb(1.0000, 0.0000, 0.0000)),
+        ],
+        Product::CorrelationCoefficient => vec![
+            ColorStop::new(0.0, NrColor::rgb(0.0000, 0.0000, 0.0000)),
+            ColorStop::new(0.2, NrColor::rgb(0.3922, 0.0000, 0.5882)),
+            ColorStop::new(0.5, NrColor::rgb(0.0000, 0.0000, 0.8039)),
+            ColorStop::new(0.7, NrColor::rgb(0.0000, 0.5451, 0.5451)),
+            ColorStop::new(0.85, NrColor::rgb(0.0000, 0.8039, 0.4000)),
+            ColorStop::new(0.92, NrColor::rgb(0.0000, 0.8039, 0.0000)),
+            ColorStop::new(0.96, NrColor::rgb(0.9333, 0.9333, 0.0000)),
+            ColorStop::new(0.98, NrColor::rgb(0.9020, 0.9020, 0.9020)),
+        ],
+        Product::DifferentialPhase => vec![
+            ColorStop::new(0.0, NrColor::rgb(0.5020, 0.0000, 0.5020)),
+            ColorStop::new(45.0, NrColor::rgb(0.0000, 0.0000, 0.8039)),
+            ColorStop::new(90.0, NrColor::rgb(0.0000, 0.8039, 0.8039)),
+            ColorStop::new(135.0, NrColor::rgb(0.0000, 0.8039, 0.0000)),
+            ColorStop::new(180.0, NrColor::rgb(0.9333, 0.9333, 0.0000)),
+            ColorStop::new(225.0, NrColor::rgb(1.0000, 0.6471, 0.0000)),
+            ColorStop::new(270.0, NrColor::rgb(1.0000, 0.0000, 0.0000)),
+            ColorStop::new(315.0, NrColor::rgb(1.0000, 0.0000, 1.0000)),
+        ],
+        Product::ClutterFilterPower => vec![
+            ColorStop::new(-20.0, NrColor::rgb(0.0000, 0.0000, 0.5451)),
+            ColorStop::new(-10.0, NrColor::rgb(0.0000, 0.0000, 0.8039)),
+            ColorStop::new(-5.0, NrColor::rgb(0.6784, 0.8471, 0.9020)),
+            ColorStop::new(-1.0, NrColor::rgb(0.6627, 0.6627, 0.6627)),
+            ColorStop::new(1.0, NrColor::rgb(0.6627, 0.6627, 0.6627)),
+            ColorStop::new(5.0, NrColor::rgb(1.0000, 0.7529, 0.7961)),
+            ColorStop::new(10.0, NrColor::rgb(1.0000, 0.4118, 0.4118)),
+            ColorStop::new(20.0, NrColor::rgb(0.8039, 0.0000, 0.0000)),
+        ],
+    };
+    ColorScale::Continuous(ContinuousColorScale::new(stops))
 }
 
 const VERTEX_SHADER: &str = r#"#version 300 es
@@ -82,6 +169,7 @@ uniform float u_smoothing_radius;  // kernel radius in samples
 uniform int u_despeckle_enabled;   // 0 or 1
 uniform int u_despeckle_threshold; // min valid neighbors to keep
 uniform float u_opacity;           // global alpha multiplier
+uniform int u_edge_softening;     // 0 or 1: smooth alpha falloff at echo boundaries
 
 // Raw-to-physical conversion: physical = (raw - u_offset) / u_scale
 uniform float u_offset;            // moment offset
@@ -209,6 +297,7 @@ void main() {
     }
 
     float value;
+    float edge_alpha = 1.0;
 
     if (u_interpolation == 1) {
         // ---- Bilinear interpolation ----
@@ -245,6 +334,11 @@ void main() {
             return;
         }
         value = sum / wsum;
+
+        // Edge softening: fade alpha at echo boundaries where some neighbors are invalid
+        if (u_edge_softening == 1) {
+            edge_alpha = clamp(wsum * 1.5, 0.0, 1.0);
+        }
     } else {
         // ---- Nearest neighbor (original) ----
         float dummy_az;
@@ -302,7 +396,10 @@ void main() {
                     float na = mod(center_az + float(da), u_azimuth_count);
                     float sv = sample_data(ng, na);
                     if (is_valid(sv)) {
-                        float d2 = float(dg * dg + da * da);
+                        // Range-aware: scale azimuthal distance by normalized range
+                        // so smoothing is spatially uniform (azimuths are wider at far range)
+                        float range_norm = max(center_g / u_gate_count, 0.1);
+                        float d2 = float(dg * dg) + float(da * da) * (range_norm * range_norm);
                         float w = exp(-d2 / sigma2);
                         vsum += sv * w;
                         wsum += w;
@@ -327,8 +424,8 @@ void main() {
     float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
     vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
 
-    // Apply opacity and output premultiplied alpha (egui requirement)
-    float a = color.a * u_opacity;
+    // Apply opacity, edge softening, and output premultiplied alpha (egui requirement)
+    float a = color.a * u_opacity * edge_alpha;
     fragColor = vec4(color.rgb * a, a);
 }
 "#;
@@ -363,6 +460,7 @@ pub struct RadarGpuRenderer {
     u_despeckle_enabled: glow::UniformLocation,
     u_despeckle_threshold: glow::UniformLocation,
     u_opacity: glow::UniformLocation,
+    u_edge_softening: glow::UniformLocation,
 
     // Raw-to-physical conversion uniform locations
     u_offset: glow::UniformLocation,
@@ -479,6 +577,7 @@ impl RadarGpuRenderer {
             let u_despeckle_enabled = gl.get_uniform_location(program, "u_despeckle_enabled").expect("Missing u_despeckle_enabled");
             let u_despeckle_threshold = gl.get_uniform_location(program, "u_despeckle_threshold").expect("Missing u_despeckle_threshold");
             let u_opacity = gl.get_uniform_location(program, "u_opacity").expect("Missing u_opacity");
+            let u_edge_softening = gl.get_uniform_location(program, "u_edge_softening").expect("Missing u_edge_softening");
 
             // Raw-to-physical conversion uniforms
             let u_offset = gl.get_uniform_location(program, "u_offset").expect("Missing u_offset");
@@ -509,6 +608,7 @@ impl RadarGpuRenderer {
                 u_despeckle_enabled,
                 u_despeckle_threshold,
                 u_opacity,
+                u_edge_softening,
                 u_offset,
                 u_scale,
                 azimuth_count: 0,
@@ -611,10 +711,10 @@ impl RadarGpuRenderer {
         self.value_range = max_val - min_val;
 
         let t_build = web_time::Instant::now();
-        let color_scale = nexrad_render::default_color_scale(product);
+        let color_scale = continuous_color_scale(product);
 
-        // Build 256-entry RGBA LUT
-        let lut_size = 256usize;
+        // Build 1024-entry RGBA LUT (continuous gradient + GL_LINEAR = zero visible quantization)
+        let lut_size = 1024usize;
         let mut lut_data = Vec::with_capacity(lut_size * 4);
         for i in 0..lut_size {
             let t = i as f32 / (lut_size - 1) as f32;
@@ -787,6 +887,7 @@ impl RadarGpuRenderer {
             gl.uniform_1_i32(Some(&self.u_despeckle_enabled), processing.despeckle_enabled as i32);
             gl.uniform_1_i32(Some(&self.u_despeckle_threshold), processing.despeckle_threshold as i32);
             gl.uniform_1_f32(Some(&self.u_opacity), processing.opacity);
+            gl.uniform_1_i32(Some(&self.u_edge_softening), processing.edge_softening as i32);
 
             // Raw-to-physical conversion
             gl.uniform_1_f32(Some(&self.u_offset), self.data_offset);

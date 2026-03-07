@@ -255,6 +255,26 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             extract_ms,
         );
 
+        // --- Phase 2.5: Delete any overlapping scans from IDB ---
+        let archive_end_ms = end_timestamp_secs * 1000;
+        let deleted = store
+            .delete_overlapping_scans(
+                &SiteId(site_id.clone()),
+                scan_key.scan_start,
+                archive_end_ms,
+                &scan_key,
+            )
+            .await
+            .map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!(
+                    "Failed to delete overlapping scans: {}",
+                    e
+                ))
+            })?;
+        if deleted > 0 {
+            log::info!("ingest: replaced {} overlapping scan(s)", deleted);
+        }
+
         // --- Phase 3: Store sweep blobs in IDB ---
         let t_store = web_time::Instant::now();
         store.put_sweeps_batch(&sweep_blobs).await.map_err(|e| {
