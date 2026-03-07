@@ -43,12 +43,12 @@ fn product_from_str(s: &str) -> Product {
 fn continuous_color_scale(product: Product) -> ColorScale {
     let stops = match product {
         Product::Reflectivity => vec![
-            ColorStop::new(0.0, NrColor::rgb(0.0000, 0.0000, 0.0000)),
-            ColorStop::new(5.0, NrColor::rgb(0.0000, 1.0000, 1.0000)),
-            ColorStop::new(10.0, NrColor::rgb(0.5294, 0.8078, 0.9216)),
-            ColorStop::new(15.0, NrColor::rgb(0.0000, 0.0000, 1.0000)),
-            ColorStop::new(20.0, NrColor::rgb(0.0000, 1.0000, 0.0000)),
-            ColorStop::new(25.0, NrColor::rgb(0.1961, 0.8039, 0.1961)),
+            ColorStop::new(0.0, NrColor::rgba(0.0000, 0.0000, 0.0000, 0.0)),
+            ColorStop::new(5.0, NrColor::rgba(0.0000, 1.0000, 1.0000, 0.3)),
+            ColorStop::new(10.0, NrColor::rgba(0.5294, 0.8078, 0.9216, 0.5)),
+            ColorStop::new(15.0, NrColor::rgba(0.0000, 0.0000, 1.0000, 0.7)),
+            ColorStop::new(20.0, NrColor::rgba(0.0000, 1.0000, 0.0000, 0.85)),
+            ColorStop::new(25.0, NrColor::rgba(0.1961, 0.8039, 0.1961, 0.95)),
             ColorStop::new(30.0, NrColor::rgb(0.1333, 0.5451, 0.1333)),
             ColorStop::new(35.0, NrColor::rgb(0.9333, 0.9333, 0.0000)),
             ColorStop::new(40.0, NrColor::rgb(0.9333, 0.8627, 0.5098)),

@@ -1901,9 +1901,6 @@ fn render_realtime_progress(
     // Estimated sweep duration (for non-completed sweeps that lack real timestamps)
     let sweep_dur = expected_dur / expected_count as f64;
 
-    // Estimate which elevation the radar is currently collecting
-    let radar_elev_idx = live_state.estimated_elevation_index(now);
-
     let received = &live_state.elevations_received;
     let in_progress_elev = live_state.current_in_progress_elevation;
     let in_progress_radials = live_state.current_in_progress_radials.unwrap_or(0);
@@ -1981,8 +1978,7 @@ fn render_realtime_progress(
         let elev_angle = elev_angle_for(elev_num);
         let matches_target = (elev_angle - target_elevation).abs() < 0.3;
         let is_downloading = !is_complete && in_progress_elev == Some(elev_num);
-        let is_radar_here = !is_complete && radar_elev_idx == Some(elev_idx);
-        let is_future = !is_complete && !is_downloading && !is_radar_here;
+        let is_future = !is_complete && !is_downloading;
 
         let block = Rect::from_min_max(
             Pos2::new(x_start, sweep_rect.top() + 2.0),
