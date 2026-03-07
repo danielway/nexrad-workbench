@@ -1708,7 +1708,6 @@ fn render_download_ghosts(
 /// - **Sweep track**: All elevation sweeps with per-sweep state:
 ///   - Complete (downloaded & persisted): filled with cool elevation colors
 ///   - Downloading (in-progress): outline with chunk subdivision inside
-///   - Being collected by radar: distinct highlight
 ///   - Future (not yet collected): dashed outline
 ///   Each non-complete sweep shows chunk subdivision where downloaded chunks
 ///   are clipped to the sweep's time range.
@@ -1720,14 +1719,13 @@ fn render_realtime_progress(
     view_start: f64,
     view_end: f64,
     zoom: f64,
-    anim_time: f64,
+    _anim_time: f64,
     now_secs: f64,
     target_elevation: f32,
     active_sweep: Option<(i64, u8)>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
     let now = now_secs;
-    let pulse = (0.5 + 0.5 * (anim_time * 2.0).sin()) as f32;
 
     let vol_start = match live_state.current_volume_start {
         Some(v) => v,
@@ -2040,14 +2038,6 @@ fn render_realtime_progress(
                     Color32::from_rgba_unmultiplied(140, 200, 255, 160),
                 );
             }
-        } else if is_radar_here {
-            // ── Being collected by radar (ahead of download) ──
-            let highlight_alpha = (40.0 + 20.0 * pulse) as u8;
-            painter.rect_filled(block, 1.0,
-                Color32::from_rgba_unmultiplied(120, 200, 100, highlight_alpha));
-            painter.rect_stroke(block, 1.0,
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 200, 100, (highlight_alpha + 40).min(255))),
-                StrokeKind::Inside);
         } else if is_future {
             // ── Future: dashed outline ──
             painter.rect_stroke(block, 1.0,
