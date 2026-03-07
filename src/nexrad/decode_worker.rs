@@ -34,7 +34,8 @@ pub struct IngestResult {
     /// Per-sweep metadata extracted from radials during ingest.
     pub sweeps: Vec<crate::data::SweepMeta>,
     /// Full extracted VCP pattern (from Message Type 5).
-    #[allow(dead_code)] // Available for direct VCP inspection; primary propagation is via IDB metadata
+    #[allow(dead_code)]
+    // Available for direct VCP inspection; primary propagation is via IDB metadata
     pub vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Total time in worker (ms).
     pub total_ms: f64,
@@ -243,11 +244,7 @@ impl DecodeWorker {
                         ctx_c.request_repaint();
                     }
                     Some("chunk_ingested") => {
-                        handle_chunk_ingested_message(
-                            &data,
-                            &pending_chunk_ingest_c,
-                            &results_c,
-                        );
+                        handle_chunk_ingested_message(&data, &pending_chunk_ingest_c, &results_c);
                         ctx_c.request_repaint();
                     }
                     Some("decoded") => {
@@ -352,12 +349,7 @@ impl DecodeWorker {
     }
 
     /// Submit a decode request: fetch records from IDB, decode target elevation, return raw data.
-    pub fn render(
-        &mut self,
-        scan_key: String,
-        elevation_number: u8,
-        product: String,
-    ) {
+    pub fn render(&mut self, scan_key: String, elevation_number: u8, product: String) {
         let id = self.next_request_id();
         self.pending_render.borrow_mut().insert(
             id,
@@ -368,13 +360,7 @@ impl DecodeWorker {
         );
 
         if *self.ready.borrow() {
-            send_render_request(
-                &self.worker,
-                id,
-                &scan_key,
-                elevation_number,
-                &product,
-            );
+            send_render_request(&self.worker, id, &scan_key, elevation_number, &product);
         } else {
             self.queue.push(QueuedRequest::Render(
                 id,
@@ -386,6 +372,7 @@ impl DecodeWorker {
     }
 
     /// Submit a single real-time chunk for incremental ingest.
+    #[allow(clippy::too_many_arguments)]
     pub fn ingest_chunk(
         &mut self,
         data: Vec<u8>,
@@ -421,7 +408,14 @@ impl DecodeWorker {
             );
         } else {
             self.queue.push(QueuedRequest::IngestChunk(
-                id, data, site_id, timestamp_secs, chunk_index, is_start, is_end, file_name,
+                id,
+                data,
+                site_id,
+                timestamp_secs,
+                chunk_index,
+                is_start,
+                is_end,
+                file_name,
             ));
         }
     }
@@ -437,7 +431,14 @@ impl DecodeWorker {
                         send_ingest_request(&self.worker, id, &data, &site_id, ts, &file_name);
                     }
                     QueuedRequest::IngestChunk(
-                        id, data, site_id, ts, chunk_index, is_start, is_end, file_name,
+                        id,
+                        data,
+                        site_id,
+                        ts,
+                        chunk_index,
+                        is_start,
+                        is_end,
+                        file_name,
                     ) => {
                         send_ingest_chunk_request(
                             &self.worker,
@@ -568,7 +569,9 @@ fn handle_ingested_message(
         records_stored,
         elevation_numbers.len(),
         sweeps.len(),
-        vcp.as_ref().map(|v| v.number.to_string()).unwrap_or_else(|| "none".to_string()),
+        vcp.as_ref()
+            .map(|v| v.number.to_string())
+            .unwrap_or_else(|| "none".to_string()),
         total_ms,
     );
 
@@ -665,10 +668,11 @@ fn handle_chunk_ingested_message(
         .ok()
         .and_then(|v| v.as_f64())
         .map(|v| v as u8);
-    let current_elevation_radials = js_sys::Reflect::get(&result_obj, &"currentElevationRadials".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .map(|v| v as u32);
+    let current_elevation_radials =
+        js_sys::Reflect::get(&result_obj, &"currentElevationRadials".into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .map(|v| v as u32);
 
     // Parse chunk data time range
     let chunk_min_time_secs = js_sys::Reflect::get(&result_obj, &"chunkMinTimeSecs".into())
@@ -744,42 +748,79 @@ fn handle_decoded_message(
     let gate_values = js_sys::Float32Array::new(&val_buffer).to_vec();
 
     let azimuth_count = js_sys::Reflect::get(data, &"azimuthCount".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
     let gate_count = js_sys::Reflect::get(data, &"gateCount".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
     let first_gate_range_km = js_sys::Reflect::get(data, &"firstGateRangeKm".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let gate_interval_km = js_sys::Reflect::get(data, &"gateIntervalKm".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let max_range_km = js_sys::Reflect::get(data, &"maxRangeKm".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let product = js_sys::Reflect::get(data, &"product".into())
-        .ok().and_then(|v| v.as_string()).unwrap_or_else(|| "reflectivity".to_string());
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_else(|| "reflectivity".to_string());
     let radial_count = js_sys::Reflect::get(data, &"radialCount".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as u32;
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u32;
     let fetch_ms = js_sys::Reflect::get(data, &"fetchMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let deser_ms = js_sys::Reflect::get(data, &"deserMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let total_ms = js_sys::Reflect::get(data, &"totalMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let marshal_ms = js_sys::Reflect::get(data, &"marshalMs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let scale = js_sys::Reflect::get(data, &"scale".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1.0) as f32;
     let offset = js_sys::Reflect::get(data, &"offset".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as f32;
     let mean_elevation = js_sys::Reflect::get(data, &"meanElevation".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as f32;
     let sweep_start_secs = js_sys::Reflect::get(data, &"sweepStartSecs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let sweep_end_secs = js_sys::Reflect::get(data, &"sweepEndSecs".into())
-        .ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
 
     log::info!(
         "Worker decode: {}x{}, {} radials, {}, {:.0}ms (fetch: {:.1}, marshal: {:.1})",
-        azimuth_count, gate_count, radial_count, product, total_ms,
-        fetch_ms, marshal_ms,
+        azimuth_count,
+        gate_count,
+        radial_count,
+        product,
+        total_ms,
+        fetch_ms,
+        marshal_ms,
     );
 
     results
@@ -864,6 +905,7 @@ fn send_ingest_request(
 }
 
 /// Send a chunk ingest request to the worker.
+#[allow(clippy::too_many_arguments)]
 fn send_ingest_chunk_request(
     worker: &Worker,
     id: u64,

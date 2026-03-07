@@ -324,8 +324,7 @@ impl WorkbenchApp {
 
             // Start the next download if there are more items
             if !self.selection_download_queue.is_empty() {
-                let (next_date, next_name, next_ts, next_end) =
-                    &self.selection_download_queue[0];
+                let (next_date, next_name, next_ts, next_end) = &self.selection_download_queue[0];
                 self.state.status_message = format!(
                     "Downloading {} ({} remaining)",
                     next_name,
@@ -333,8 +332,7 @@ impl WorkbenchApp {
                 );
                 // Update download progress for next file
                 self.state.download_progress.active_scan = Some((*next_ts, *next_end));
-                self.state.download_progress.phase =
-                    crate::state::DownloadPhase::Downloading;
+                self.state.download_progress.phase = crate::state::DownloadPhase::Downloading;
                 self.state.download_progress.batch_completed += 1;
                 self.download_channel.download_file(
                     ctx.clone(),
@@ -415,9 +413,7 @@ impl WorkbenchApp {
             if let Some(listing) = self.archive_index.get(&site_id, &current_date) {
                 if is_position_download {
                     // Single-position: find the exact scan containing the playback position
-                    if let Some((file, boundary)) =
-                        listing.find_scan_containing(sel_start_i64)
-                    {
+                    if let Some((file, boundary)) = listing.find_scan_containing(sel_start_i64) {
                         let is_cached = self
                             .state
                             .radar_timeline
@@ -435,9 +431,7 @@ impl WorkbenchApp {
                     }
                 } else {
                     // Range selection: find all scans that intersect [sel_start, sel_end]
-                    for (file, boundary) in
-                        listing.scans_intersecting(sel_start_i64, sel_end_i64)
-                    {
+                    for (file, boundary) in listing.scans_intersecting(sel_start_i64, sel_end_i64) {
                         let is_cached = self
                             .state
                             .radar_timeline
@@ -600,7 +594,11 @@ impl WorkbenchApp {
     /// In FixedTilt mode, finds the most recent sweep at the target elevation
     /// whose start_time <= playback_ts. A scan may contain multiple sweeps at the
     /// same elevation (e.g. VCP 215 has 0.5° at elevation_number 1 and 3).
-    fn best_elevation_at_playback(&self, scan: &crate::state::radar_data::Scan, playback_ts: f64) -> u8 {
+    fn best_elevation_at_playback(
+        &self,
+        scan: &crate::state::radar_data::Scan,
+        playback_ts: f64,
+    ) -> u8 {
         let target = self.state.viz_state.target_elevation;
 
         // Filter sweeps matching target elevation (within 0.15° tolerance)
@@ -846,7 +844,9 @@ impl WorkbenchApp {
                     }
                     log::info!(
                         "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={})",
-                        chunk_index, site_id, timestamp
+                        chunk_index,
+                        site_id,
+                        timestamp
                     );
                     worker.ingest_chunk(
                         data,
@@ -1066,8 +1066,7 @@ impl eframe::App for WorkbenchApp {
                         // yet — it stays visible until the timeline refreshes
                         // and a real scan block replaces it (the ghost renderer's
                         // overlap check handles the visual transition).
-                        self.state.download_progress.phase =
-                            crate::state::DownloadPhase::Decoding;
+                        self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
                         log::info!(
                             "Ingest complete: {} ({} records, {} elevations, {} sweeps, {:.0}ms, fetch: {:.0}ms)",
                             result.scan_key,
@@ -1081,7 +1080,9 @@ impl eframe::App for WorkbenchApp {
                         self.state
                             .session_stats
                             .record_fetch_latency(result.context.fetch_latency_ms);
-                        self.state.session_stats.record_processing_time(result.total_ms);
+                        self.state
+                            .session_stats
+                            .record_processing_time(result.total_ms);
 
                         // Store detailed ingest timing for the detail modal.
                         self.state.session_stats.last_ingest_detail =
@@ -1144,7 +1145,9 @@ impl eframe::App for WorkbenchApp {
 
                         // Record per-elevation chunk time spans for timeline visualization
                         if !result.chunk_elev_spans.is_empty() {
-                            self.state.live_mode_state.record_chunk_elev_spans(&result.chunk_elev_spans);
+                            self.state
+                                .live_mode_state
+                                .record_chunk_elev_spans(&result.chunk_elev_spans);
                         }
 
                         // Update live mode partial scan tracking — always set volume
@@ -1155,18 +1158,20 @@ impl eframe::App for WorkbenchApp {
                         // header time from the Archive II header. Fall back to
                         // back-calculating from chunk data time + elevation number.
                         if self.state.live_mode_state.current_volume_start.is_none() {
-                            let vol_start = if let Some(header_time) = result.volume_header_time_secs {
-                                header_time
-                            } else {
-                                let chunk_data_time = result.chunk_min_time_secs
-                                    .unwrap_or(result.context.timestamp_secs as f64);
-                                Self::estimate_volume_start(
-                                    chunk_data_time,
-                                    result.current_elevation,
-                                    self.state.live_mode_state.expected_elevation_count,
-                                    self.state.live_mode_state.last_volume_duration_secs,
-                                )
-                            };
+                            let vol_start =
+                                if let Some(header_time) = result.volume_header_time_secs {
+                                    header_time
+                                } else {
+                                    let chunk_data_time = result
+                                        .chunk_min_time_secs
+                                        .unwrap_or(result.context.timestamp_secs as f64);
+                                    Self::estimate_volume_start(
+                                        chunk_data_time,
+                                        result.current_elevation,
+                                        self.state.live_mode_state.expected_elevation_count,
+                                        self.state.live_mode_state.last_volume_duration_secs,
+                                    )
+                                };
                             self.state.live_mode_state.current_volume_start = Some(vol_start);
                         } else if let Some(header_time) = result.volume_header_time_secs {
                             // If we already have a volume start but now get the
@@ -1175,18 +1180,19 @@ impl eframe::App for WorkbenchApp {
                         }
                         if !result.elevations_completed.is_empty() {
                             // Use the already-estimated volume start for consistency
-                            let vol_start_ts = self.state.live_mode_state.current_volume_start
+                            let vol_start_ts = self
+                                .state
+                                .live_mode_state
+                                .current_volume_start
                                 .unwrap_or(result.context.timestamp_secs as f64);
-                            self.state.live_mode_state.record_elevations(
-                                &result.elevations_completed,
-                                vol_start_ts,
-                            );
+                            self.state
+                                .live_mode_state
+                                .record_elevations(&result.elevations_completed, vol_start_ts);
                         }
                         if let Some(ref vcp) = result.vcp {
-                            self.state.live_mode_state.record_vcp(
-                                vcp.number,
-                                vcp.elevations.len() as u8,
-                            );
+                            self.state
+                                .live_mode_state
+                                .record_vcp(vcp.number, vcp.elevations.len() as u8);
                         }
 
                         // Track in-progress elevation for partial sweep visualization
@@ -1197,7 +1203,9 @@ impl eframe::App for WorkbenchApp {
 
                         // Store actual sweep timing metadata for accurate timeline positioning
                         if !result.sweeps.is_empty() {
-                            self.state.live_mode_state.update_sweep_metas(result.sweeps.clone());
+                            self.state
+                                .live_mode_state
+                                .update_sweep_metas(result.sweeps.clone());
                         }
 
                         // Track last radial position for sweep line extrapolation
@@ -1245,7 +1253,9 @@ impl eframe::App for WorkbenchApp {
                             self.request_worker_render();
                         } else if !had_elevations && !self.available_elevation_numbers.is_empty() {
                             // First elevation arrived — we can render something now
-                            log::info!("Realtime: first elevation available, triggering initial render");
+                            log::info!(
+                                "Realtime: first elevation available, triggering initial render"
+                            );
                             self.last_render_params = None;
                             self.request_worker_render();
                         }
@@ -1264,9 +1274,7 @@ impl eframe::App for WorkbenchApp {
                             result.total_ms,
                         );
 
-                        self.state
-                            .session_stats
-                            .record_render_time(result.total_ms);
+                        self.state.session_stats.record_render_time(result.total_ms);
 
                         // Upload decoded data to GPU renderer
                         let t_gpu = web_time::Instant::now();
@@ -1298,8 +1306,7 @@ impl eframe::App for WorkbenchApp {
                                 }
                             }
                         }
-                        let gpu_upload_ms =
-                            t_gpu.elapsed().as_secs_f64() * 1000.0;
+                        let gpu_upload_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
 
                         // Store detailed render timing for the detail modal.
                         self.state.session_stats.last_render_detail =
@@ -1413,8 +1420,7 @@ impl eframe::App for WorkbenchApp {
 
                     // Cache hit: skip ingest, go straight to decode.
                     // Ghost stays until timeline refresh shows the real scan.
-                    self.state.download_progress.phase =
-                        crate::state::DownloadPhase::Decoding;
+                    self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
 
                     // Cache hit: records already in IDB. Send render request directly.
                     self.current_render_scan_key = Some(scan.key.to_storage_key());
@@ -1427,8 +1433,7 @@ impl eframe::App for WorkbenchApp {
                         format!("Downloaded: {} ({} bytes)", scan.file_name, scan.data.len());
 
                     // Transition to ingesting phase
-                    self.state.download_progress.phase =
-                        crate::state::DownloadPhase::Ingesting;
+                    self.state.download_progress.phase = crate::state::DownloadPhase::Ingesting;
 
                     // Fresh download: send raw bytes to worker for ingest.
                     // Worker splits records, probes elevations, stores in IDB,
@@ -1560,11 +1565,22 @@ impl eframe::App for WorkbenchApp {
                         .find(|s| s.elevation_number == target_elev_num)
                         .map(|s| (s.start_time, s.end_time, s.elevation));
 
-                    (scan_ts, target_elev_num, needs_new_scan, needs_new_sweep, sweep_overlay)
+                    (
+                        scan_ts,
+                        target_elev_num,
+                        needs_new_scan,
+                        needs_new_sweep,
+                        sweep_overlay,
+                    )
                 });
 
-            if let Some((scan_ts, target_elev_num, needs_new_scan, needs_new_sweep, sweep_overlay)) =
-                scrub_action
+            if let Some((
+                scan_ts,
+                target_elev_num,
+                needs_new_scan,
+                needs_new_sweep,
+                sweep_overlay,
+            )) = scrub_action
             {
                 if (needs_new_scan || needs_new_sweep) && self.decode_worker.is_some() {
                     if needs_new_scan {
@@ -1600,7 +1616,11 @@ impl eframe::App for WorkbenchApp {
                 }
             } else if self.displayed_scan_timestamp.is_some() {
                 // No scan found within range — clear stale render
-                log::debug!("No scan within {}s of playback at {}, clearing render", MAX_SCAN_AGE_SECS, playback_ts as i64);
+                log::debug!(
+                    "No scan within {}s of playback at {}, clearing render",
+                    MAX_SCAN_AGE_SECS,
+                    playback_ts as i64
+                );
                 if let Some(ref renderer) = self.gpu_renderer {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_data();
@@ -1622,13 +1642,22 @@ impl eframe::App for WorkbenchApp {
         // Pre-render next sweep: when playing and near the end of the current sweep,
         // preemptively send a render request for the upcoming sweep so the result
         // is ready when the boundary is crossed, reducing perceived stutter.
+        #[allow(clippy::unnecessary_unwrap)]
         if self.state.playback_state.playing && self.decode_worker.is_some() {
             let playback_ts = self.state.playback_state.playback_position();
-            let speed = self.state.playback_state.speed.timeline_seconds_per_real_second();
+            let speed = self
+                .state
+                .playback_state
+                .speed
+                .timeline_seconds_per_real_second();
             // Prefetch threshold: 0.5 real seconds * playback speed = timeline seconds ahead
             let prefetch_lookahead = 0.5 * speed;
 
-            if let Some(scan) = self.state.radar_timeline.find_scan_at_timestamp(playback_ts) {
+            if let Some(scan) = self
+                .state
+                .radar_timeline
+                .find_scan_at_timestamp(playback_ts)
+            {
                 if let Some((sweep_idx, sweep)) = scan.find_sweep_at_timestamp(playback_ts) {
                     let time_to_end = sweep.end_time - playback_ts;
                     if time_to_end > 0.0 && time_to_end < prefetch_lookahead {
@@ -1651,7 +1680,8 @@ impl eframe::App for WorkbenchApp {
                             // Only prefetch if it differs from what we're currently showing
                             if self.displayed_sweep_elevation_number != Some(next_en) {
                                 if let Some(ref scan_key) = self.current_render_scan_key {
-                                    let product = self.state.viz_state.product.to_worker_string().to_string();
+                                    let product =
+                                        self.state.viz_state.product.to_worker_string().to_string();
                                     let prefetch_params = (
                                         scan_key.clone(),
                                         next_en,
@@ -1665,10 +1695,11 @@ impl eframe::App for WorkbenchApp {
                                             time_to_end,
                                         );
                                         self.last_render_params = Some(prefetch_params);
-                                        self.decode_worker
-                                            .as_mut()
-                                            .unwrap()
-                                            .render(scan_key.clone(), next_en, product);
+                                        self.decode_worker.as_mut().unwrap().render(
+                                            scan_key.clone(),
+                                            next_en,
+                                            product,
+                                        );
                                     }
                                 }
                             }

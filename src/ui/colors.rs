@@ -106,11 +106,17 @@ pub mod timeline {
     /// Selection range boundary label color.
     pub const SELECTION_LABEL: Color32 = Color32::from_rgb(140, 180, 255);
     /// Track separator line color.
-    pub fn track_separator() -> Color32 { Color32::from_rgba_unmultiplied(100, 100, 130, 80) }
+    pub fn track_separator() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 100, 130, 80)
+    }
     /// Connector line from scan boundary into sweep track.
-    pub fn connector() -> Color32 { Color32::from_rgba_unmultiplied(120, 120, 150, 60) }
+    pub fn connector() -> Color32 {
+        Color32::from_rgba_unmultiplied(120, 120, 150, 60)
+    }
     /// Estimated future scan boundary (dashed, very subtle).
-    pub fn estimated_boundary() -> Color32 { Color32::from_rgba_unmultiplied(180, 200, 255, 50) }
+    pub fn estimated_boundary() -> Color32 {
+        Color32::from_rgba_unmultiplied(180, 200, 255, 50)
+    }
 
     // ── Scan track colors (warm palette) ──────────────────────────────
 
@@ -201,14 +207,22 @@ pub mod timeline {
     // ── Ghost / process state colors ──────────────────────────────────
 
     /// Ghost block for pending (queued) downloads — blue tint outline.
-    pub fn ghost_pending_fill() -> Color32 { Color32::from_rgba_unmultiplied(100, 150, 255, 30) }
-    pub fn ghost_pending_border() -> Color32 { Color32::from_rgba_unmultiplied(100, 150, 255, 55) }
+    pub fn ghost_pending_fill() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 150, 255, 30)
+    }
+    pub fn ghost_pending_border() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 150, 255, 55)
+    }
 
     /// Ghost block for processing (ingesting after download) — amber.
-    pub fn ghost_processing_border() -> Color32 { Color32::from_rgba_unmultiplied(200, 160, 60, 70) }
+    pub fn ghost_processing_border() -> Color32 {
+        Color32::from_rgba_unmultiplied(200, 160, 60, 70)
+    }
 
     /// Pending (expected but not yet received) sweep placeholder.
-    pub fn rt_pending_sweep_border() -> Color32 { Color32::from_rgba_unmultiplied(80, 120, 180, 60) }
+    pub fn rt_pending_sweep_border() -> Color32 {
+        Color32::from_rgba_unmultiplied(80, 120, 180, 60)
+    }
 }
 
 /// Colors for the map canvas.

@@ -17,7 +17,6 @@ impl SiteId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
-
 }
 
 impl fmt::Display for SiteId {
@@ -57,7 +56,6 @@ impl UnixMillis {
     pub fn as_secs(&self) -> i64 {
         self.0 / 1000
     }
-
 }
 
 impl fmt::Display for UnixMillis {
@@ -143,7 +141,6 @@ impl SweepDataKey {
             self.scan.site.0, self.scan.scan_start.0, self.elevation_number, self.product
         )
     }
-
 }
 
 impl fmt::Display for SweepDataKey {
@@ -225,24 +222,24 @@ impl PrecomputedSweep {
         let ws = self.gate_values.word_size() as usize;
         let size = HEADER_SIZE
             + az * 4             // azimuths (f32)
-            + az * gc * ws;      // gate_values (u8 or u16)
+            + az * gc * ws; // gate_values (u8 or u16)
         let mut buf = Vec::with_capacity(size);
 
         // Header (72 bytes)
-        buf.extend_from_slice(&self.azimuth_count.to_le_bytes());       // 0..4
-        buf.extend_from_slice(&self.gate_count.to_le_bytes());          // 4..8
+        buf.extend_from_slice(&self.azimuth_count.to_le_bytes()); // 0..4
+        buf.extend_from_slice(&self.gate_count.to_le_bytes()); // 4..8
         buf.extend_from_slice(&self.first_gate_range_km.to_le_bytes()); // 8..16
-        buf.extend_from_slice(&self.gate_interval_km.to_le_bytes());    // 16..24
-        buf.extend_from_slice(&self.max_range_km.to_le_bytes());        // 24..32
-        buf.extend_from_slice(&self.scale.to_le_bytes());               // 32..36
-        buf.extend_from_slice(&self.offset.to_le_bytes());              // 36..40
-        buf.extend_from_slice(&self.radial_count.to_le_bytes());        // 40..44
-        buf.push(self.gate_values.word_size());                         // 44
-        buf.extend_from_slice(&[0u8; 3]);                               // 45..48 reserved
-        buf.extend_from_slice(&self.mean_elevation.to_le_bytes());      // 48..52
-        buf.extend_from_slice(&[0u8; 4]);                               // 52..56 alignment pad
-        buf.extend_from_slice(&self.sweep_start_secs.to_le_bytes());    // 56..64
-        buf.extend_from_slice(&self.sweep_end_secs.to_le_bytes());      // 64..72
+        buf.extend_from_slice(&self.gate_interval_km.to_le_bytes()); // 16..24
+        buf.extend_from_slice(&self.max_range_km.to_le_bytes()); // 24..32
+        buf.extend_from_slice(&self.scale.to_le_bytes()); // 32..36
+        buf.extend_from_slice(&self.offset.to_le_bytes()); // 36..40
+        buf.extend_from_slice(&self.radial_count.to_le_bytes()); // 40..44
+        buf.push(self.gate_values.word_size()); // 44
+        buf.extend_from_slice(&[0u8; 3]); // 45..48 reserved
+        buf.extend_from_slice(&self.mean_elevation.to_le_bytes()); // 48..52
+        buf.extend_from_slice(&[0u8; 4]); // 52..56 alignment pad
+        buf.extend_from_slice(&self.sweep_start_secs.to_le_bytes()); // 56..64
+        buf.extend_from_slice(&self.sweep_end_secs.to_le_bytes()); // 64..72
 
         // Azimuths
         for &a in &self.azimuths {
@@ -263,7 +260,6 @@ impl PrecomputedSweep {
 
         buf
     }
-
 }
 
 /// Parsed header from a serialized sweep blob, with byte offsets for zero-copy access.
@@ -500,10 +496,7 @@ mod tests {
     fn test_sweep_data_key_storage_format() {
         let scan = ScanKey::new("KDMX", UnixMillis(1700000000000));
         let key = SweepDataKey::new(scan, 1, "reflectivity");
-        assert_eq!(
-            key.to_storage_key(),
-            "KDMX|1700000000000|1|reflectivity"
-        );
+        assert_eq!(key.to_storage_key(), "KDMX|1700000000000|1|reflectivity");
     }
 
     #[test]
@@ -538,5 +531,4 @@ mod tests {
             ScanCompleteness::Complete
         );
     }
-
 }

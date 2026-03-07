@@ -302,7 +302,7 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::state::Rada
     let margin = 14.0f32;
     let top_margin = 20.0f32;
     let bottom_margin = 20.0f32;
-    let bar_height = (rect.height() - top_margin - bottom_margin).min(320.0).max(100.0);
+    let bar_height = (rect.height() - top_margin - bottom_margin).clamp(100.0, 320.0);
 
     let bar_left = rect.right() - margin - bar_width;
     let bar_top = rect.top() + top_margin;
@@ -327,8 +327,16 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::state::Rada
     }
 
     // Outline
-    let bar_rect = Rect::from_min_size(Pos2::new(bar_left, bar_top), Vec2::new(bar_width, bar_height));
-    painter.rect_stroke(bar_rect, 0.0, Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 120, 130, 180)), StrokeKind::Outside);
+    let bar_rect = Rect::from_min_size(
+        Pos2::new(bar_left, bar_top),
+        Vec2::new(bar_width, bar_height),
+    );
+    painter.rect_stroke(
+        bar_rect,
+        0.0,
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 120, 130, 180)),
+        StrokeKind::Outside,
+    );
 
     // Tick labels
     let range = max_val - min_val;
@@ -447,7 +455,12 @@ fn handle_canvas_interaction(
 /// different elevation cuts. If per-radial azimuth data is available, we use it
 /// for more accurate positioning.
 fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
-    if state.playback_state.speed.timeline_seconds_per_real_second() > 30.0 {
+    if state
+        .playback_state
+        .speed
+        .timeline_seconds_per_real_second()
+        > 30.0
+    {
         return None;
     }
 
@@ -687,6 +700,7 @@ fn render_nexrad_sites(
 }
 
 /// Render inspector tooltip showing lat/lon and data value at hover position.
+#[allow(clippy::too_many_arguments)]
 fn render_inspector(
     ui: &mut egui::Ui,
     painter: &Painter,
@@ -734,13 +748,19 @@ fn render_inspector(
     let tooltip_size = galley.size();
     let padding = Vec2::new(6.0, 4.0);
     let tooltip_pos = hover_pos + Vec2::new(16.0, -tooltip_size.y - 8.0);
-    let bg_rect = Rect::from_min_size(
-        tooltip_pos - padding,
-        tooltip_size + padding * 2.0,
-    );
+    let bg_rect = Rect::from_min_size(tooltip_pos - padding, tooltip_size + padding * 2.0);
 
-    painter.rect_filled(bg_rect, 4.0, Color32::from_rgba_unmultiplied(20, 20, 30, 220));
-    painter.rect_stroke(bg_rect, 4.0, Stroke::new(1.0, Color32::from_rgb(80, 80, 100)), StrokeKind::Outside);
+    painter.rect_filled(
+        bg_rect,
+        4.0,
+        Color32::from_rgba_unmultiplied(20, 20, 30, 220),
+    );
+    painter.rect_stroke(
+        bg_rect,
+        4.0,
+        Stroke::new(1.0, Color32::from_rgb(80, 80, 100)),
+        StrokeKind::Outside,
+    );
     painter.galley(tooltip_pos, galley, Color32::WHITE);
 
     // Draw crosshair at hover position
@@ -783,11 +803,7 @@ fn render_distance_measurement(
 
     // Draw start marker
     painter.circle_filled(start_screen, 5.0, Color32::from_rgb(255, 100, 100));
-    painter.circle_stroke(
-        start_screen,
-        5.0,
-        Stroke::new(1.5, Color32::WHITE),
-    );
+    painter.circle_stroke(start_screen, 5.0, Stroke::new(1.5, Color32::WHITE));
 
     if let Some((end_lat, end_lon)) = end {
         let end_screen = projection.geo_to_screen(Coord {
@@ -803,11 +819,7 @@ fn render_distance_measurement(
 
         // Draw end marker
         painter.circle_filled(end_screen, 5.0, Color32::from_rgb(255, 100, 100));
-        painter.circle_stroke(
-            end_screen,
-            5.0,
-            Stroke::new(1.5, Color32::WHITE),
-        );
+        painter.circle_stroke(end_screen, 5.0, Stroke::new(1.5, Color32::WHITE));
 
         // Compute great-circle distance using Haversine formula
         let distance_km = haversine_km(start_lat, start_lon, end_lat, end_lon);
@@ -819,20 +831,29 @@ fn render_distance_measurement(
             (start_screen.x + end_screen.x) / 2.0,
             (start_screen.y + end_screen.y) / 2.0,
         );
-        let label = format!("{:.1} km / {:.1} nm / {:.1} mi", distance_km, distance_nm, distance_mi);
+        let label = format!(
+            "{:.1} km / {:.1} nm / {:.1} mi",
+            distance_km, distance_nm, distance_mi
+        );
 
         let font_id = egui::FontId::monospace(11.0);
         let galley = painter.layout_no_wrap(label, font_id, Color32::WHITE);
         let label_size = galley.size();
         let padding = Vec2::new(5.0, 3.0);
         let label_pos = mid - Vec2::new(label_size.x / 2.0, label_size.y + 8.0);
-        let bg_rect = Rect::from_min_size(
-            label_pos - padding,
-            label_size + padding * 2.0,
-        );
+        let bg_rect = Rect::from_min_size(label_pos - padding, label_size + padding * 2.0);
 
-        painter.rect_filled(bg_rect, 3.0, Color32::from_rgba_unmultiplied(30, 20, 20, 220));
-        painter.rect_stroke(bg_rect, 3.0, Stroke::new(1.0, Color32::from_rgb(255, 100, 100)), StrokeKind::Outside);
+        painter.rect_filled(
+            bg_rect,
+            3.0,
+            Color32::from_rgba_unmultiplied(30, 20, 20, 220),
+        );
+        painter.rect_stroke(
+            bg_rect,
+            3.0,
+            Stroke::new(1.0, Color32::from_rgb(255, 100, 100)),
+            StrokeKind::Outside,
+        );
         painter.galley(label_pos, galley, Color32::WHITE);
     }
 }
@@ -881,7 +902,12 @@ fn render_storm_cells(
             y: min_lat,
         });
         let bounds_rect = Rect::from_two_pos(tl, br);
-        painter.rect_stroke(bounds_rect, 2.0, Stroke::new(1.5, color), StrokeKind::Outside);
+        painter.rect_stroke(
+            bounds_rect,
+            2.0,
+            Stroke::new(1.5, color),
+            StrokeKind::Outside,
+        );
 
         // Draw centroid marker
         painter.circle_stroke(center, 6.0, Stroke::new(2.0, color));

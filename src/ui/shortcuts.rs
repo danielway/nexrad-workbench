@@ -107,7 +107,10 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
 
     let current_pos = state.playback_state.playback_position();
     let target_elev = state.viz_state.target_elevation;
-    let jog_fallback = state.playback_state.speed.timeline_seconds_per_real_second();
+    let jog_fallback = state
+        .playback_state
+        .speed
+        .timeline_seconds_per_real_second();
     const ELEV_TOLERANCE: f32 = 0.3;
 
     if step_back {

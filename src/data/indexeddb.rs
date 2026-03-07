@@ -82,10 +82,7 @@ impl IndexedDbRecordStore {
     /// Batches all writes into one readwrite transaction to avoid per-transaction
     /// disk-flush overhead. Critical: no await between puts — IDB transactions
     /// auto-commit when the event loop yields in WASM.
-    pub async fn put_sweeps_batch(
-        &self,
-        items: &[(String, Vec<u8>)],
-    ) -> Result<(), String> {
+    pub async fn put_sweeps_batch(&self, items: &[(String, Vec<u8>)]) -> Result<(), String> {
         if items.is_empty() {
             return Ok(());
         }
@@ -116,10 +113,7 @@ impl IndexedDbRecordStore {
 
     /// Gets a pre-computed sweep blob by key, returning the raw JS ArrayBuffer.
     /// Avoids the 5MB+ copy from JS to Rust that `get_sweep` performs.
-    pub async fn get_sweep_as_js(
-        &self,
-        key: &str,
-    ) -> Result<Option<ArrayBuffer>, String> {
+    pub async fn get_sweep_as_js(&self, key: &str) -> Result<Option<ArrayBuffer>, String> {
         self.ensure_open().await?;
         let db = self.get_db()?;
 
@@ -341,11 +335,7 @@ impl IndexedDbRecordStore {
                 let mut keys = Vec::new();
                 for sweep in sweeps {
                     for product in ALL_PRODUCTS {
-                        let key = SweepDataKey::new(
-                            scan.clone(),
-                            sweep.elevation_number,
-                            *product,
-                        );
+                        let key = SweepDataKey::new(scan.clone(), sweep.elevation_number, *product);
                         keys.push(key.to_storage_key());
                     }
                 }
@@ -523,10 +513,9 @@ impl IndexedDbRecordStore {
             .object_store(STORE_SCAN_INDEX)
             .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
 
-        let json = serde_json::to_string(&merged)
-            .map_err(|e| format!("Serialization error: {}", e))?;
-        let js = js_sys::JSON::parse(&json)
-            .map_err(|e| format!("JSON parse error: {:?}", e))?;
+        let json =
+            serde_json::to_string(&merged).map_err(|e| format!("Serialization error: {}", e))?;
+        let js = js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
         store
             .put_with_key(&js, &JsValue::from_str(&storage_key))
             .map_err(|e| format!("Failed to put scan index: {:?}", e))?;

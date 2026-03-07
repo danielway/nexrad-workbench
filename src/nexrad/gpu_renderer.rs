@@ -56,6 +56,7 @@ fn linear_to_srgb(c: f32) -> f32 {
 }
 
 /// Convert sRGB (0-1) to OKLab (L, a, b).
+#[allow(clippy::excessive_precision)]
 fn srgb_to_oklab(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     let lr = srgb_to_linear(r);
     let lg = srgb_to_linear(g);
@@ -77,6 +78,7 @@ fn srgb_to_oklab(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 }
 
 /// Convert OKLab (L, a, b) to sRGB (0-1), clamped.
+#[allow(clippy::excessive_precision)]
 fn oklab_to_srgb(ol: f32, oa: f32, ob: f32) -> (f32, f32, f32) {
     let l_ = ol + 0.3963377774 * oa + 0.2158037573 * ob;
     let m_ = ol - 0.1055613458 * oa - 0.0638541728 * ob;
@@ -108,24 +110,24 @@ pub fn build_reflectivity_lut(min_val: f32, max_val: f32) -> Vec<u8> {
     // Anchor colors: (dBZ, r, g, b, a) in sRGB 0-1.
     // Designed for black background with increasing luminance.
     let anchors: &[(f32, f32, f32, f32, f32)] = &[
-        (0.0,  0.00, 0.00, 0.00, 0.00),         // black
-        (5.0,  0.10, 0.10, 0.14, 0.15),         // near-black, faint
-        (10.0, 0.20, 0.22, 0.32, 0.40),         // dim blue-grey
-        (15.0, 0.35, 0.40, 0.58, 0.75),         // slate blue
-        (20.0, 0.15, 0.72, 0.15, 0.90),         // SHARP bright green
-        (28.0, 0.05, 0.35, 0.08, 1.00),         // dark green
-        (32.0, 0.90, 0.88, 0.10, 1.00),         // SHARP bright yellow
-        (37.0, 0.68, 0.64, 0.10, 1.00),         // duller yellow
-        (40.0, 0.92, 0.58, 0.08, 1.00),         // SHARP bright orange
-        (45.0, 0.70, 0.45, 0.06, 1.00),         // warm dark yellow-orange
-        (50.0, 0.85, 0.12, 0.10, 1.00),         // SHARP bright red
-        (55.0, 0.52, 0.10, 0.08, 1.00),         // dark red
-        (60.0, 0.92, 0.68, 0.72, 1.00),         // SHARP blush
-        (65.0, 0.95, 0.25, 0.55, 1.00),         // hot pink
-        (70.0, 0.68, 0.20, 0.85, 1.00),         // SHARP bright purple
-        (75.0, 0.28, 0.08, 0.40, 1.00),         // dark purple
-        (80.0, 0.20, 0.82, 0.85, 1.00),         // SHARP bright cyan
-        (90.0, 0.08, 0.30, 0.34, 1.00),         // dark cyan
+        (0.0, 0.00, 0.00, 0.00, 0.00),  // black
+        (5.0, 0.10, 0.10, 0.14, 0.15),  // near-black, faint
+        (10.0, 0.20, 0.22, 0.32, 0.40), // dim blue-grey
+        (15.0, 0.35, 0.40, 0.58, 0.75), // slate blue
+        (20.0, 0.15, 0.72, 0.15, 0.90), // SHARP bright green
+        (28.0, 0.05, 0.35, 0.08, 1.00), // dark green
+        (32.0, 0.90, 0.88, 0.10, 1.00), // SHARP bright yellow
+        (37.0, 0.68, 0.64, 0.10, 1.00), // duller yellow
+        (40.0, 0.92, 0.58, 0.08, 1.00), // SHARP bright orange
+        (45.0, 0.70, 0.45, 0.06, 1.00), // warm dark yellow-orange
+        (50.0, 0.85, 0.12, 0.10, 1.00), // SHARP bright red
+        (55.0, 0.52, 0.10, 0.08, 1.00), // dark red
+        (60.0, 0.92, 0.68, 0.72, 1.00), // SHARP blush
+        (65.0, 0.95, 0.25, 0.55, 1.00), // hot pink
+        (70.0, 0.68, 0.20, 0.85, 1.00), // SHARP bright purple
+        (75.0, 0.28, 0.08, 0.40, 1.00), // dark purple
+        (80.0, 0.20, 0.82, 0.85, 1.00), // SHARP bright cyan
+        (90.0, 0.08, 0.30, 0.34, 1.00), // dark cyan
     ];
 
     // Pre-convert anchors to OKLab
@@ -149,6 +151,7 @@ pub fn build_reflectivity_lut(min_val: f32, max_val: f32) -> Vec<u8> {
 
         // Find bracketing anchors
         let mut seg = 0usize;
+        #[allow(clippy::needless_range_loop)]
         for j in 1..oklab_anchors.len() {
             if oklab_anchors[j].0 >= dbz {
                 seg = j - 1;
@@ -209,19 +212,19 @@ pub fn continuous_color_scale(product: Product) -> ColorScale {
             ColorStop::new(75.0, NrColor::rgb(0.88, 0.65, 0.80)),
         ],
         Product::Velocity => vec![
-            ColorStop::new(-64.0, NrColor::rgb(0.00, 0.15, 0.00)),  // very dark green
-            ColorStop::new(-50.0, NrColor::rgb(0.00, 0.38, 0.00)),  // dark green
-            ColorStop::new(-36.0, NrColor::rgb(0.00, 0.65, 0.00)),  // medium green
-            ColorStop::new(-26.0, NrColor::rgb(0.00, 0.90, 0.00)),  // bright green
-            ColorStop::new(-16.0, NrColor::rgb(0.45, 0.95, 0.35)),  // light green
-            ColorStop::new( -5.0, NrColor::rgb(0.68, 0.78, 0.68)),  // gray-green
-            ColorStop::new(  0.0, NrColor::rgb(0.60, 0.60, 0.60)),  // neutral gray
-            ColorStop::new(  5.0, NrColor::rgb(0.78, 0.68, 0.68)),  // gray-red
-            ColorStop::new( 16.0, NrColor::rgb(0.95, 0.40, 0.35)),  // light red
-            ColorStop::new( 26.0, NrColor::rgb(0.90, 0.00, 0.00)),  // bright red
-            ColorStop::new( 36.0, NrColor::rgb(0.65, 0.00, 0.00)),  // medium red
-            ColorStop::new( 50.0, NrColor::rgb(0.40, 0.00, 0.00)),  // dark red
-            ColorStop::new( 64.0, NrColor::rgb(0.18, 0.00, 0.00)),  // very dark red
+            ColorStop::new(-64.0, NrColor::rgb(0.00, 0.15, 0.00)), // very dark green
+            ColorStop::new(-50.0, NrColor::rgb(0.00, 0.38, 0.00)), // dark green
+            ColorStop::new(-36.0, NrColor::rgb(0.00, 0.65, 0.00)), // medium green
+            ColorStop::new(-26.0, NrColor::rgb(0.00, 0.90, 0.00)), // bright green
+            ColorStop::new(-16.0, NrColor::rgb(0.45, 0.95, 0.35)), // light green
+            ColorStop::new(-5.0, NrColor::rgb(0.68, 0.78, 0.68)),  // gray-green
+            ColorStop::new(0.0, NrColor::rgb(0.60, 0.60, 0.60)),   // neutral gray
+            ColorStop::new(5.0, NrColor::rgb(0.78, 0.68, 0.68)),   // gray-red
+            ColorStop::new(16.0, NrColor::rgb(0.95, 0.40, 0.35)),  // light red
+            ColorStop::new(26.0, NrColor::rgb(0.90, 0.00, 0.00)),  // bright red
+            ColorStop::new(36.0, NrColor::rgb(0.65, 0.00, 0.00)),  // medium red
+            ColorStop::new(50.0, NrColor::rgb(0.40, 0.00, 0.00)),  // dark red
+            ColorStop::new(64.0, NrColor::rgb(0.18, 0.00, 0.00)),  // very dark red
         ],
         Product::SpectrumWidth => vec![
             ColorStop::new(0.0, NrColor::rgb(0.5020, 0.5020, 0.5020)),
@@ -642,7 +645,9 @@ impl RadarGpuRenderer {
         unsafe {
             let program = gl.create_program().expect("Cannot create program");
 
-            let vert = gl.create_shader(glow::VERTEX_SHADER).expect("Cannot create vertex shader");
+            let vert = gl
+                .create_shader(glow::VERTEX_SHADER)
+                .expect("Cannot create vertex shader");
             gl.shader_source(vert, VERTEX_SHADER);
             gl.compile_shader(vert);
             if !gl.get_shader_compile_status(vert) {
@@ -650,7 +655,9 @@ impl RadarGpuRenderer {
                 log::error!("Vertex shader compile error: {}", info);
             }
 
-            let frag = gl.create_shader(glow::FRAGMENT_SHADER).expect("Cannot create fragment shader");
+            let frag = gl
+                .create_shader(glow::FRAGMENT_SHADER)
+                .expect("Cannot create fragment shader");
             gl.shader_source(frag, FRAGMENT_SHADER);
             gl.compile_shader(frag);
             if !gl.get_shader_compile_status(frag) {
@@ -672,12 +679,7 @@ impl RadarGpuRenderer {
 
             // Fullscreen quad (two triangles)
             let vertices: [f32; 12] = [
-                -1.0, -1.0,
-                 1.0, -1.0,
-                 1.0,  1.0,
-                -1.0, -1.0,
-                 1.0,  1.0,
-                -1.0,  1.0,
+                -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
             ];
 
             let vbo = gl.create_buffer().expect("Cannot create VBO");
@@ -690,7 +692,9 @@ impl RadarGpuRenderer {
 
             let vao = gl.create_vertex_array().expect("Cannot create VAO");
             gl.bind_vertex_array(Some(vao));
-            let a_position = gl.get_attrib_location(program, "a_position").expect("Missing a_position");
+            let a_position = gl
+                .get_attrib_location(program, "a_position")
+                .expect("Missing a_position");
             gl.enable_vertex_attrib_array(a_position);
             gl.vertex_attrib_pointer_f32(a_position, 2, glow::FLOAT, false, 8, 0);
             gl.bind_vertex_array(None);
@@ -703,36 +707,80 @@ impl RadarGpuRenderer {
             // Bind texture units to sampler uniforms
             gl.use_program(Some(program));
 
-            let u_data_tex = gl.get_uniform_location(program, "u_data_tex").expect("Missing u_data_tex");
+            let u_data_tex = gl
+                .get_uniform_location(program, "u_data_tex")
+                .expect("Missing u_data_tex");
             gl.uniform_1_i32(Some(&u_data_tex), 0);
-            let u_lut_tex = gl.get_uniform_location(program, "u_lut_tex").expect("Missing u_lut_tex");
+            let u_lut_tex = gl
+                .get_uniform_location(program, "u_lut_tex")
+                .expect("Missing u_lut_tex");
             gl.uniform_1_i32(Some(&u_lut_tex), 1);
-            let u_azimuth_tex = gl.get_uniform_location(program, "u_azimuth_tex").expect("Missing u_azimuth_tex");
+            let u_azimuth_tex = gl
+                .get_uniform_location(program, "u_azimuth_tex")
+                .expect("Missing u_azimuth_tex");
             gl.uniform_1_i32(Some(&u_azimuth_tex), 2);
 
-            let u_radar_center = gl.get_uniform_location(program, "u_radar_center").expect("Missing u_radar_center");
-            let u_radar_radius = gl.get_uniform_location(program, "u_radar_radius").expect("Missing u_radar_radius");
-            let u_gate_count = gl.get_uniform_location(program, "u_gate_count").expect("Missing u_gate_count");
-            let u_azimuth_count = gl.get_uniform_location(program, "u_azimuth_count").expect("Missing u_azimuth_count");
-            let u_first_gate_km = gl.get_uniform_location(program, "u_first_gate_km").expect("Missing u_first_gate_km");
-            let u_gate_interval_km = gl.get_uniform_location(program, "u_gate_interval_km").expect("Missing u_gate_interval_km");
-            let u_max_range_km = gl.get_uniform_location(program, "u_max_range_km").expect("Missing u_max_range_km");
-            let u_value_min = gl.get_uniform_location(program, "u_value_min").expect("Missing u_value_min");
-            let u_value_range = gl.get_uniform_location(program, "u_value_range").expect("Missing u_value_range");
-            let u_viewport_size = gl.get_uniform_location(program, "u_viewport_size").expect("Missing u_viewport_size");
+            let u_radar_center = gl
+                .get_uniform_location(program, "u_radar_center")
+                .expect("Missing u_radar_center");
+            let u_radar_radius = gl
+                .get_uniform_location(program, "u_radar_radius")
+                .expect("Missing u_radar_radius");
+            let u_gate_count = gl
+                .get_uniform_location(program, "u_gate_count")
+                .expect("Missing u_gate_count");
+            let u_azimuth_count = gl
+                .get_uniform_location(program, "u_azimuth_count")
+                .expect("Missing u_azimuth_count");
+            let u_first_gate_km = gl
+                .get_uniform_location(program, "u_first_gate_km")
+                .expect("Missing u_first_gate_km");
+            let u_gate_interval_km = gl
+                .get_uniform_location(program, "u_gate_interval_km")
+                .expect("Missing u_gate_interval_km");
+            let u_max_range_km = gl
+                .get_uniform_location(program, "u_max_range_km")
+                .expect("Missing u_max_range_km");
+            let u_value_min = gl
+                .get_uniform_location(program, "u_value_min")
+                .expect("Missing u_value_min");
+            let u_value_range = gl
+                .get_uniform_location(program, "u_value_range")
+                .expect("Missing u_value_range");
+            let u_viewport_size = gl
+                .get_uniform_location(program, "u_viewport_size")
+                .expect("Missing u_viewport_size");
 
             // Processing uniforms
-            let u_interpolation = gl.get_uniform_location(program, "u_interpolation").expect("Missing u_interpolation");
-            let u_smoothing_enabled = gl.get_uniform_location(program, "u_smoothing_enabled").expect("Missing u_smoothing_enabled");
-            let u_smoothing_radius = gl.get_uniform_location(program, "u_smoothing_radius").expect("Missing u_smoothing_radius");
-            let u_despeckle_enabled = gl.get_uniform_location(program, "u_despeckle_enabled").expect("Missing u_despeckle_enabled");
-            let u_despeckle_threshold = gl.get_uniform_location(program, "u_despeckle_threshold").expect("Missing u_despeckle_threshold");
-            let u_opacity = gl.get_uniform_location(program, "u_opacity").expect("Missing u_opacity");
-            let u_edge_softening = gl.get_uniform_location(program, "u_edge_softening").expect("Missing u_edge_softening");
+            let u_interpolation = gl
+                .get_uniform_location(program, "u_interpolation")
+                .expect("Missing u_interpolation");
+            let u_smoothing_enabled = gl
+                .get_uniform_location(program, "u_smoothing_enabled")
+                .expect("Missing u_smoothing_enabled");
+            let u_smoothing_radius = gl
+                .get_uniform_location(program, "u_smoothing_radius")
+                .expect("Missing u_smoothing_radius");
+            let u_despeckle_enabled = gl
+                .get_uniform_location(program, "u_despeckle_enabled")
+                .expect("Missing u_despeckle_enabled");
+            let u_despeckle_threshold = gl
+                .get_uniform_location(program, "u_despeckle_threshold")
+                .expect("Missing u_despeckle_threshold");
+            let u_opacity = gl
+                .get_uniform_location(program, "u_opacity")
+                .expect("Missing u_opacity");
+            let u_edge_softening = gl
+                .get_uniform_location(program, "u_edge_softening")
+                .expect("Missing u_edge_softening");
 
             // Raw-to-physical conversion uniforms
-            let u_offset = gl.get_uniform_location(program, "u_offset").expect("Missing u_offset");
-            let u_scale = gl.get_uniform_location(program, "u_scale").expect("Missing u_scale");
+            let u_offset = gl
+                .get_uniform_location(program, "u_offset")
+                .expect("Missing u_offset");
+            let u_scale = gl
+                .get_uniform_location(program, "u_scale")
+                .expect("Missing u_scale");
 
             gl.use_program(None);
 
@@ -783,6 +831,7 @@ impl RadarGpuRenderer {
     /// `gate_values` contains raw u16 values cast to f32.
     /// Sentinels: 0 = below threshold, 1 = range folded.
     /// Physical value = (raw - offset) / scale.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_data(
         &mut self,
         gl: &glow::Context,
@@ -821,21 +870,12 @@ impl RadarGpuRenderer {
         unsafe {
             // Re-create data texture (gates x azimuths, R32F)
             gl.delete_texture(self.data_texture);
-            self.data_texture = create_r32f_texture(
-                gl,
-                gate_count as i32,
-                azimuth_count as i32,
-                gate_values,
-            );
+            self.data_texture =
+                create_r32f_texture(gl, gate_count as i32, azimuth_count as i32, gate_values);
 
             // Re-create azimuth texture (Nx1, R32F)
             gl.delete_texture(self.azimuth_texture);
-            self.azimuth_texture = create_r32f_texture(
-                gl,
-                azimuth_count as i32,
-                1,
-                azimuths,
-            );
+            self.azimuth_texture = create_r32f_texture(gl, azimuth_count as i32, 1, azimuths);
         }
         let upload_ms = t_upload.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
@@ -954,8 +994,7 @@ impl RadarGpuRenderer {
         }
 
         // Compute gate index
-        let gate_idx =
-            ((range_km - self.first_gate_km) / self.gate_interval_km).floor() as usize;
+        let gate_idx = ((range_km - self.first_gate_km) / self.gate_interval_km).floor() as usize;
         if gate_idx >= gate_count {
             return None;
         }
@@ -1031,7 +1070,11 @@ impl RadarGpuRenderer {
             gl.uniform_1_f32(Some(&self.u_max_range_km), self.max_range_km as f32);
             gl.uniform_1_f32(Some(&self.u_value_min), self.value_min);
             gl.uniform_1_f32(Some(&self.u_value_range), self.value_range);
-            gl.uniform_2_f32(Some(&self.u_viewport_size), viewport_size[0], viewport_size[1]);
+            gl.uniform_2_f32(
+                Some(&self.u_viewport_size),
+                viewport_size[0],
+                viewport_size[1],
+            );
 
             // Processing uniforms
             let interp_mode = match processing.interpolation {
@@ -1039,12 +1082,24 @@ impl RadarGpuRenderer {
                 crate::state::InterpolationMode::Bilinear => 1,
             };
             gl.uniform_1_i32(Some(&self.u_interpolation), interp_mode);
-            gl.uniform_1_i32(Some(&self.u_smoothing_enabled), processing.smoothing_enabled as i32);
+            gl.uniform_1_i32(
+                Some(&self.u_smoothing_enabled),
+                processing.smoothing_enabled as i32,
+            );
             gl.uniform_1_f32(Some(&self.u_smoothing_radius), processing.smoothing_radius);
-            gl.uniform_1_i32(Some(&self.u_despeckle_enabled), processing.despeckle_enabled as i32);
-            gl.uniform_1_i32(Some(&self.u_despeckle_threshold), processing.despeckle_threshold as i32);
+            gl.uniform_1_i32(
+                Some(&self.u_despeckle_enabled),
+                processing.despeckle_enabled as i32,
+            );
+            gl.uniform_1_i32(
+                Some(&self.u_despeckle_threshold),
+                processing.despeckle_threshold as i32,
+            );
             gl.uniform_1_f32(Some(&self.u_opacity), processing.opacity);
-            gl.uniform_1_i32(Some(&self.u_edge_softening), processing.edge_softening as i32);
+            gl.uniform_1_i32(
+                Some(&self.u_edge_softening),
+                processing.edge_softening as i32,
+            );
 
             // Raw-to-physical conversion
             gl.uniform_1_f32(Some(&self.u_offset), self.data_offset);
@@ -1121,16 +1176,16 @@ impl RadarGpuRenderer {
         let field_ms = t_field.elapsed().as_secs_f64() * 1000.0;
 
         // Build coordinate system from site location
-        use nexrad_model::meta::Site;
         use nexrad_model::geo::RadarCoordinateSystem;
+        use nexrad_model::meta::Site;
         use nexrad_process::detection::StormCellDetector;
 
         let site = Site::new(
             *b"SITE",
             radar_lat as f32,
             radar_lon as f32,
-            0,  // altitude (not critical for 2D detection)
-            0,  // tower height
+            0, // altitude (not critical for 2D detection)
+            0, // tower height
         );
         let coord_system = RadarCoordinateSystem::new(&site);
 
@@ -1215,9 +1270,7 @@ impl RadarGpuRenderer {
 
 /// Cast an `&[f32]` to `&[u8]` for GL upload.
 fn bytemuck_cast_slice(data: &[f32]) -> &[u8] {
-    unsafe {
-        std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4)
-    }
+    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) }
 }
 
 /// Create an R32F texture with the given dimensions and data.
@@ -1229,10 +1282,26 @@ unsafe fn create_r32f_texture(
 ) -> glow::Texture {
     let texture = gl.create_texture().expect("Cannot create texture");
     gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_MIN_FILTER,
+        glow::NEAREST as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_MAG_FILTER,
+        glow::NEAREST as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_WRAP_S,
+        glow::CLAMP_TO_EDGE as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_WRAP_T,
+        glow::CLAMP_TO_EDGE as i32,
+    );
     gl.tex_image_2d(
         glow::TEXTURE_2D,
         0,
@@ -1257,10 +1326,26 @@ unsafe fn create_rgba8_texture(
 ) -> glow::Texture {
     let texture = gl.create_texture().expect("Cannot create texture");
     gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-    gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_MIN_FILTER,
+        glow::LINEAR as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_MAG_FILTER,
+        glow::LINEAR as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_WRAP_S,
+        glow::CLAMP_TO_EDGE as i32,
+    );
+    gl.tex_parameter_i32(
+        glow::TEXTURE_2D,
+        glow::TEXTURE_WRAP_T,
+        glow::CLAMP_TO_EDGE as i32,
+    );
     gl.tex_image_2d(
         glow::TEXTURE_2D,
         0,

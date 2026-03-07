@@ -255,11 +255,9 @@ async fn streaming_loop(
         // Wait for expected chunk time
         if let Some(wait_duration) = iter.time_until_next().and_then(|d| d.to_std().ok()) {
             let wait_ms = wait_duration.as_millis() as u32;
-            if wait_ms > 0 {
-                if !interruptible_sleep(&state, &ctx, wait_ms).await {
-                    log::info!("Realtime streaming stopped");
-                    break;
-                }
+            if wait_ms > 0 && !interruptible_sleep(&state, &ctx, wait_ms).await {
+                log::info!("Realtime streaming stopped");
+                break;
             }
         }
 

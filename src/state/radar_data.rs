@@ -321,7 +321,12 @@ impl RadarTimeline {
     /// "Matching" means the sweep's elevation is within `elev_tolerance` of
     /// `target_elevation`. Returns the sweep's end_time so the cursor lands
     /// at the completion of that sweep.
-    pub fn next_matching_sweep_end(&self, ts: f64, target_elevation: f32, elev_tolerance: f32) -> Option<f64> {
+    pub fn next_matching_sweep_end(
+        &self,
+        ts: f64,
+        target_elevation: f32,
+        elev_tolerance: f32,
+    ) -> Option<f64> {
         for scan in &self.scans {
             for sweep in &scan.sweeps {
                 if (sweep.elevation - target_elevation).abs() < elev_tolerance
@@ -338,7 +343,12 @@ impl RadarTimeline {
     ///
     /// Searches backward through sweeps to find the most recent matching sweep
     /// whose end_time is before the current position.
-    pub fn prev_matching_sweep_end(&self, ts: f64, target_elevation: f32, elev_tolerance: f32) -> Option<f64> {
+    pub fn prev_matching_sweep_end(
+        &self,
+        ts: f64,
+        target_elevation: f32,
+        elev_tolerance: f32,
+    ) -> Option<f64> {
         let mut best: Option<f64> = None;
         for scan in self.scans.iter().rev() {
             for sweep in scan.sweeps.iter().rev() {
@@ -384,10 +394,9 @@ impl RadarTimeline {
             .map(|meta| {
                 let ts_secs = meta.key.scan_start.as_secs();
                 let start_time = ts_secs as f64;
-                let end_time = meta
-                    .end_timestamp
-                    .unwrap_or(ts_secs + DEFAULT_SCAN_DURATION_SECS)
-                    as f64;
+                let end_time =
+                    meta.end_timestamp
+                        .unwrap_or(ts_secs + DEFAULT_SCAN_DURATION_SECS) as f64;
 
                 // Convert persisted sweep metadata to timeline Sweep structs
                 let sweeps: Vec<Sweep> = meta

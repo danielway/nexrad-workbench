@@ -154,10 +154,7 @@ impl GeoLayer {
     }
 }
 
-fn convert_shapefile_shape(
-    shape: &shapefile::Shape,
-    label: Option<String>,
-) -> Option<GeoFeature> {
+fn convert_shapefile_shape(shape: &shapefile::Shape, label: Option<String>) -> Option<GeoFeature> {
     match shape {
         shapefile::Shape::Point(p) => {
             let coord = Coord { x: p.x, y: p.y };

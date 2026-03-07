@@ -117,10 +117,7 @@ impl ArchiveListing {
     }
 
     /// Find the single scan containing the given timestamp.
-    pub fn find_scan_containing(
-        &self,
-        timestamp: i64,
-    ) -> Option<(&ArchiveFileMeta, ScanBoundary)> {
+    pub fn find_scan_containing(&self, timestamp: i64) -> Option<(&ArchiveFileMeta, ScanBoundary)> {
         let boundaries = self.scan_boundaries();
         self.files
             .iter()

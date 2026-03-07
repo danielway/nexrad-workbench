@@ -90,9 +90,8 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                         }
                     }
                     // Fall back to static VCP definition
-                    get_vcp_definition(scan.vcp).map(|def| {
-                        def.elevations.iter().map(|e| e.angle).collect()
-                    })
+                    get_vcp_definition(scan.vcp)
+                        .map(|def| def.elevations.iter().map(|e| e.angle).collect())
                 });
 
                 // Slider for elevation selection; snaps to known VCP
@@ -103,12 +102,10 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                     .unwrap_or(19.5)
                     .max(19.5);
 
-                let slider = egui::Slider::new(
-                    &mut state.viz_state.target_elevation,
-                    0.5..=max_elev,
-                )
-                .suffix("\u{00B0}")
-                .step_by(0.1);
+                let slider =
+                    egui::Slider::new(&mut state.viz_state.target_elevation, 0.5..=max_elev)
+                        .suffix("\u{00B0}")
+                        .step_by(0.1);
 
                 let resp = ui.add(slider);
 
@@ -116,14 +113,11 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                 if resp.drag_stopped() || resp.lost_focus() {
                     if let Some(ref angles) = elevation_angles {
                         let current = state.viz_state.target_elevation;
-                        if let Some(closest) = angles
-                            .iter()
-                            .min_by(|a, b| {
-                                ((**a - current).abs())
-                                    .partial_cmp(&((**b - current).abs()))
-                                    .unwrap_or(std::cmp::Ordering::Equal)
-                            })
-                        {
+                        if let Some(closest) = angles.iter().min_by(|a, b| {
+                            ((**a - current).abs())
+                                .partial_cmp(&((**b - current).abs()))
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        }) {
                             state.viz_state.target_elevation = *closest;
                         }
                     }

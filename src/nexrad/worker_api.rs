@@ -211,7 +211,10 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             (Product::Reflectivity, "reflectivity"),
             (Product::Velocity, "velocity"),
             (Product::SpectrumWidth, "spectrum_width"),
-            (Product::DifferentialReflectivity, "differential_reflectivity"),
+            (
+                Product::DifferentialReflectivity,
+                "differential_reflectivity",
+            ),
             (Product::CorrelationCoefficient, "correlation_coefficient"),
             (Product::DifferentialPhase, "differential_phase"),
         ];
@@ -311,23 +314,78 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // --- Build JS response ---
         let result = js_sys::Object::new();
-        js_sys::Reflect::set(&result, &"recordsStored".into(), &wasm_bindgen::JsValue::from(sweep_count)).ok();
-        js_sys::Reflect::set(&result, &"scanKey".into(), &wasm_bindgen::JsValue::from_str(&scan_key.to_storage_key())).ok();
+        js_sys::Reflect::set(
+            &result,
+            &"recordsStored".into(),
+            &wasm_bindgen::JsValue::from(sweep_count),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"scanKey".into(),
+            &wasm_bindgen::JsValue::from_str(&scan_key.to_storage_key()),
+        )
+        .ok();
         js_sys::Reflect::set(&result, &"elevationMap".into(), &elevation_map).ok();
-        js_sys::Reflect::set(&result, &"totalMs".into(), &wasm_bindgen::JsValue::from(total_ms)).ok();
-        js_sys::Reflect::set(&result, &"splitMs".into(), &wasm_bindgen::JsValue::from(split_ms)).ok();
-        js_sys::Reflect::set(&result, &"decompressMs".into(), &wasm_bindgen::JsValue::from(decompress_ms_total)).ok();
-        js_sys::Reflect::set(&result, &"decodeMs".into(), &wasm_bindgen::JsValue::from(decode_only_ms)).ok();
-        js_sys::Reflect::set(&result, &"extractMs".into(), &wasm_bindgen::JsValue::from(extract_ms)).ok();
-        js_sys::Reflect::set(&result, &"storeMs".into(), &wasm_bindgen::JsValue::from(store_ms)).ok();
-        js_sys::Reflect::set(&result, &"indexMs".into(), &wasm_bindgen::JsValue::from(index_ms)).ok();
+        js_sys::Reflect::set(
+            &result,
+            &"totalMs".into(),
+            &wasm_bindgen::JsValue::from(total_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"splitMs".into(),
+            &wasm_bindgen::JsValue::from(split_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"decompressMs".into(),
+            &wasm_bindgen::JsValue::from(decompress_ms_total),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"decodeMs".into(),
+            &wasm_bindgen::JsValue::from(decode_only_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"extractMs".into(),
+            &wasm_bindgen::JsValue::from(extract_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"storeMs".into(),
+            &wasm_bindgen::JsValue::from(store_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"indexMs".into(),
+            &wasm_bindgen::JsValue::from(index_ms),
+        )
+        .ok();
 
         let sweeps_json = serde_json::to_string(&sweeps).unwrap_or_else(|_| "[]".to_string());
-        js_sys::Reflect::set(&result, &"sweepsJson".into(), &wasm_bindgen::JsValue::from_str(&sweeps_json)).ok();
+        js_sys::Reflect::set(
+            &result,
+            &"sweepsJson".into(),
+            &wasm_bindgen::JsValue::from_str(&sweeps_json),
+        )
+        .ok();
 
         if let Some(ref vcp) = extracted_vcp {
             let vcp_json = serde_json::to_string(vcp).unwrap_or_else(|_| "null".to_string());
-            js_sys::Reflect::set(&result, &"vcpJson".into(), &wasm_bindgen::JsValue::from_str(&vcp_json)).ok();
+            js_sys::Reflect::set(
+                &result,
+                &"vcpJson".into(),
+                &wasm_bindgen::JsValue::from_str(&vcp_json),
+            )
+            .ok();
         }
 
         Ok(result.into())
@@ -412,7 +470,9 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let t_marshal = web_time::Instant::now();
 
         let az_view = js_sys::Float32Array::new_with_byte_offset_and_length(
-            &blob_buffer, header.azimuths_offset, header.azimuth_count,
+            &blob_buffer,
+            header.azimuths_offset,
+            header.azimuth_count,
         );
         let az_buf = az_view.slice(0, header.azimuth_count).buffer();
 
@@ -420,12 +480,16 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let gate_count_total = header.azimuth_count * header.gate_count;
         let val_buf = if header.data_word_size == 1 {
             let u8_view = js_sys::Uint8Array::new_with_byte_offset_and_length(
-                &blob_buffer, header.gate_values_offset, gate_count_total,
+                &blob_buffer,
+                header.gate_values_offset,
+                gate_count_total,
             );
             js_sys::Float32Array::new(&u8_view).buffer()
         } else {
             let u16_view = js_sys::Uint16Array::new_with_byte_offset_and_length(
-                &blob_buffer, header.gate_values_offset, gate_count_total,
+                &blob_buffer,
+                header.gate_values_offset,
+                gate_count_total,
             );
             js_sys::Float32Array::new(&u16_view).buffer()
         };
@@ -433,18 +497,78 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let result = js_sys::Object::new();
         js_sys::Reflect::set(&result, &"azimuths".into(), &az_buf).ok();
         js_sys::Reflect::set(&result, &"gateValues".into(), &val_buf).ok();
-        js_sys::Reflect::set(&result, &"azimuthCount".into(), &wasm_bindgen::JsValue::from(header.azimuth_count)).ok();
-        js_sys::Reflect::set(&result, &"gateCount".into(), &wasm_bindgen::JsValue::from(header.gate_count)).ok();
-        js_sys::Reflect::set(&result, &"firstGateRangeKm".into(), &wasm_bindgen::JsValue::from(header.first_gate_range_km)).ok();
-        js_sys::Reflect::set(&result, &"gateIntervalKm".into(), &wasm_bindgen::JsValue::from(header.gate_interval_km)).ok();
-        js_sys::Reflect::set(&result, &"maxRangeKm".into(), &wasm_bindgen::JsValue::from(header.max_range_km)).ok();
-        js_sys::Reflect::set(&result, &"product".into(), &wasm_bindgen::JsValue::from_str(&product_str)).ok();
-        js_sys::Reflect::set(&result, &"radialCount".into(), &wasm_bindgen::JsValue::from(header.radial_count)).ok();
-        js_sys::Reflect::set(&result, &"scale".into(), &wasm_bindgen::JsValue::from(header.scale as f64)).ok();
-        js_sys::Reflect::set(&result, &"offset".into(), &wasm_bindgen::JsValue::from(header.offset as f64)).ok();
-        js_sys::Reflect::set(&result, &"meanElevation".into(), &wasm_bindgen::JsValue::from(header.mean_elevation as f64)).ok();
-        js_sys::Reflect::set(&result, &"sweepStartSecs".into(), &wasm_bindgen::JsValue::from(header.sweep_start_secs)).ok();
-        js_sys::Reflect::set(&result, &"sweepEndSecs".into(), &wasm_bindgen::JsValue::from(header.sweep_end_secs)).ok();
+        js_sys::Reflect::set(
+            &result,
+            &"azimuthCount".into(),
+            &wasm_bindgen::JsValue::from(header.azimuth_count),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"gateCount".into(),
+            &wasm_bindgen::JsValue::from(header.gate_count),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"firstGateRangeKm".into(),
+            &wasm_bindgen::JsValue::from(header.first_gate_range_km),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"gateIntervalKm".into(),
+            &wasm_bindgen::JsValue::from(header.gate_interval_km),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"maxRangeKm".into(),
+            &wasm_bindgen::JsValue::from(header.max_range_km),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"product".into(),
+            &wasm_bindgen::JsValue::from_str(&product_str),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"radialCount".into(),
+            &wasm_bindgen::JsValue::from(header.radial_count),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"scale".into(),
+            &wasm_bindgen::JsValue::from(header.scale as f64),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"offset".into(),
+            &wasm_bindgen::JsValue::from(header.offset as f64),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"meanElevation".into(),
+            &wasm_bindgen::JsValue::from(header.mean_elevation as f64),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"sweepStartSecs".into(),
+            &wasm_bindgen::JsValue::from(header.sweep_start_secs),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"sweepEndSecs".into(),
+            &wasm_bindgen::JsValue::from(header.sweep_end_secs),
+        )
+        .ok();
 
         let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
@@ -457,10 +581,30 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             total_ms, fetch_ms, deser_ms, marshal_ms,
         );
 
-        js_sys::Reflect::set(&result, &"fetchMs".into(), &wasm_bindgen::JsValue::from(fetch_ms)).ok();
-        js_sys::Reflect::set(&result, &"deserMs".into(), &wasm_bindgen::JsValue::from(deser_ms)).ok();
-        js_sys::Reflect::set(&result, &"totalMs".into(), &wasm_bindgen::JsValue::from(total_ms)).ok();
-        js_sys::Reflect::set(&result, &"marshalMs".into(), &wasm_bindgen::JsValue::from(marshal_ms)).ok();
+        js_sys::Reflect::set(
+            &result,
+            &"fetchMs".into(),
+            &wasm_bindgen::JsValue::from(fetch_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"deserMs".into(),
+            &wasm_bindgen::JsValue::from(deser_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"totalMs".into(),
+            &wasm_bindgen::JsValue::from(total_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"marshalMs".into(),
+            &wasm_bindgen::JsValue::from(marshal_ms),
+        )
+        .ok();
 
         Ok(result.into())
     })
@@ -606,16 +750,12 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     match record.decompress() {
                         Ok(decompressed) => {
                             if !accum_has_vcp && chunk_vcp.is_none() {
-                                match decompressed.messages() {
-                                    Ok(msgs) => {
-                                        let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
-                                        chunk_radials.extend(r);
-                                    }
-                                    Err(_) => {}
+                                if let Ok(msgs) = decompressed.messages() {
+                                    let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
+                                    chunk_radials.extend(r);
                                 }
                             } else {
-                                chunk_radials
-                                    .extend(decompressed.radials().unwrap_or_default());
+                                chunk_radials.extend(decompressed.radials().unwrap_or_default());
                             }
                         }
                         Err(e) => {
@@ -648,29 +788,21 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 match record.decompress() {
                     Ok(decompressed) => {
                         if !accum_has_vcp {
-                            match decompressed.messages() {
-                                Ok(msgs) => {
-                                    let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
-                                    chunk_radials.extend(r);
-                                }
-                                Err(_) => {}
+                            if let Ok(msgs) = decompressed.messages() {
+                                let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
+                                chunk_radials.extend(r);
                             }
                         } else {
                             chunk_radials.extend(decompressed.radials().unwrap_or_default());
                         }
                     }
                     Err(e) => {
-                        log::warn!(
-                            "Failed to decompress chunk {}: {}",
-                            chunk_index,
-                            e
-                        );
+                        log::warn!("Failed to decompress chunk {}: {}", chunk_index, e);
                     }
                 }
             } else {
                 use crate::nexrad::record_decode::decode_record_to_radials;
-                chunk_radials
-                    .extend(decode_record_to_radials(record.data()).unwrap_or_default());
+                chunk_radials.extend(decode_record_to_radials(record.data()).unwrap_or_default());
             }
         }
 
@@ -680,36 +812,46 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let mut newly_completed: Vec<u8> = Vec::new();
 
         // Compute the actual data time range of this chunk from radial timestamps (ms → secs).
-        let chunk_min_ts_secs: Option<f64> = chunk_radials.iter()
+        let chunk_min_ts_secs: Option<f64> = chunk_radials
+            .iter()
             .map(|r| r.collection_timestamp() as f64 / 1000.0)
             .reduce(f64::min);
-        let chunk_max_ts_secs: Option<f64> = chunk_radials.iter()
+        let chunk_max_ts_secs: Option<f64> = chunk_radials
+            .iter()
             .map(|r| r.collection_timestamp() as f64 / 1000.0)
             .reduce(f64::max);
 
         // Compute per-elevation time spans within this chunk.
         // Each entry: (elevation_number, min_time_secs, max_time_secs, radial_count)
         let chunk_elev_spans: Vec<(u8, f64, f64, u32)> = {
-            let mut map: std::collections::BTreeMap<u8, (f64, f64, u32)> = std::collections::BTreeMap::new();
+            let mut map: std::collections::BTreeMap<u8, (f64, f64, u32)> =
+                std::collections::BTreeMap::new();
             for r in &chunk_radials {
                 let elev = r.elevation_number();
                 let t = r.collection_timestamp() as f64 / 1000.0;
                 map.entry(elev)
                     .and_modify(|(min, max, count)| {
-                        if t < *min { *min = t; }
-                        if t > *max { *max = t; }
+                        if t < *min {
+                            *min = t;
+                        }
+                        if t > *max {
+                            *max = t;
+                        }
                         *count += 1;
                     })
                     .or_insert((t, t, 1));
             }
-            map.into_iter().map(|(elev, (min, max, count))| (elev, min, max, count)).collect()
+            map.into_iter()
+                .map(|(elev, (min, max, count))| (elev, min, max, count))
+                .collect()
         };
 
         // Last radial's azimuth and timestamp — used to extrapolate sweep line position
         // between chunks during real-time streaming.
-        let last_radial_azimuth: Option<f32> = chunk_radials.last()
-            .map(|r| r.azimuth_angle_degrees());
-        let last_radial_time_secs: Option<f64> = chunk_radials.last()
+        let last_radial_azimuth: Option<f32> =
+            chunk_radials.last().map(|r| r.azimuth_angle_degrees());
+        let last_radial_time_secs: Option<f64> = chunk_radials
+            .last()
             .map(|r| r.collection_timestamp() as f64 / 1000.0);
 
         CHUNK_ACCUM.with(|cell| {
@@ -790,7 +932,10 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 (Product::Reflectivity, "reflectivity"),
                 (Product::Velocity, "velocity"),
                 (Product::SpectrumWidth, "spectrum_width"),
-                (Product::DifferentialReflectivity, "differential_reflectivity"),
+                (
+                    Product::DifferentialReflectivity,
+                    "differential_reflectivity",
+                ),
                 (Product::CorrelationCoefficient, "correlation_coefficient"),
                 (Product::DifferentialPhase, "differential_phase"),
             ];
@@ -844,8 +989,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                         if !elev_metas.is_empty() {
                             let min_ts = elev_metas.iter().map(|(t, _, _)| *t).min().unwrap();
                             let max_ts = elev_metas.iter().map(|(t, _, _)| *t).max().unwrap();
-                            let angle_sum: f64 =
-                                elev_metas.iter().map(|(_, _, a)| *a as f64).sum();
+                            let angle_sum: f64 = elev_metas.iter().map(|(_, _, a)| *a as f64).sum();
                             let count = elev_metas.len();
                             metas.push(SweepMeta {
                                 start: min_ts as f64 / 1000.0,
@@ -902,10 +1046,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 )
                 .await
                 .map_err(|e| {
-                    wasm_bindgen::JsValue::from_str(&format!(
-                        "Failed to merge scan index: {}",
-                        e
-                    ))
+                    wasm_bindgen::JsValue::from_str(&format!("Failed to merge scan index: {}", e))
                 })?;
         }
 
@@ -940,9 +1081,16 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
         let accum_info = CHUNK_ACCUM.with(|c| {
-            c.borrow().as_ref().map(|a| {
-                (a.all_radials.len(), a.has_vcp, a.vcp.as_ref().map(|v| v.number))
-            }).unwrap_or((0, false, None))
+            c.borrow()
+                .as_ref()
+                .map(|a| {
+                    (
+                        a.all_radials.len(),
+                        a.has_vcp,
+                        a.vcp.as_ref().map(|v| v.number),
+                    )
+                })
+                .unwrap_or((0, false, None))
         });
         log::info!(
             "ingest_chunk: chunk={} is_start={} is_end={} radials={} vcp={:?} has_vcp={} completed_elevs={:?} sweeps_stored={} {:.1}ms",
@@ -960,13 +1108,48 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // --- Build JS response ---
         let result = js_sys::Object::new();
-        js_sys::Reflect::set(&result, &"chunkIndex".into(), &wasm_bindgen::JsValue::from(chunk_index)).ok();
-        js_sys::Reflect::set(&result, &"radialsDecoded".into(), &wasm_bindgen::JsValue::from(chunk_elev_numbers.len() as u32)).ok();
-        js_sys::Reflect::set(&result, &"sweepsStored".into(), &wasm_bindgen::JsValue::from(sweeps_stored)).ok();
-        js_sys::Reflect::set(&result, &"scanKey".into(), &wasm_bindgen::JsValue::from_str(&scan_key_str)).ok();
-        js_sys::Reflect::set(&result, &"isEnd".into(), &wasm_bindgen::JsValue::from(is_end)).ok();
-        js_sys::Reflect::set(&result, &"totalMs".into(), &wasm_bindgen::JsValue::from(total_ms)).ok();
-        js_sys::Reflect::set(&result, &"sweepsJson".into(), &wasm_bindgen::JsValue::from_str(&all_sweeps_json)).ok();
+        js_sys::Reflect::set(
+            &result,
+            &"chunkIndex".into(),
+            &wasm_bindgen::JsValue::from(chunk_index),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"radialsDecoded".into(),
+            &wasm_bindgen::JsValue::from(chunk_elev_numbers.len() as u32),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"sweepsStored".into(),
+            &wasm_bindgen::JsValue::from(sweeps_stored),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"scanKey".into(),
+            &wasm_bindgen::JsValue::from_str(&scan_key_str),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"isEnd".into(),
+            &wasm_bindgen::JsValue::from(is_end),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"totalMs".into(),
+            &wasm_bindgen::JsValue::from(total_ms),
+        )
+        .ok();
+        js_sys::Reflect::set(
+            &result,
+            &"sweepsJson".into(),
+            &wasm_bindgen::JsValue::from_str(&all_sweeps_json),
+        )
+        .ok();
 
         // Elevations completed array
         let completed_arr = js_sys::Array::new();
@@ -976,54 +1159,98 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         js_sys::Reflect::set(&result, &"elevationsCompleted".into(), &completed_arr).ok();
 
         if let Some(vj) = vcp_json {
-            js_sys::Reflect::set(&result, &"vcpJson".into(), &wasm_bindgen::JsValue::from_str(&vj)).ok();
+            js_sys::Reflect::set(
+                &result,
+                &"vcpJson".into(),
+                &wasm_bindgen::JsValue::from_str(&vj),
+            )
+            .ok();
         }
 
         // Actual data time range of this chunk (from radial collection timestamps)
         if let Some(min_ts) = chunk_min_ts_secs {
-            js_sys::Reflect::set(&result, &"chunkMinTimeSecs".into(), &wasm_bindgen::JsValue::from(min_ts)).ok();
+            js_sys::Reflect::set(
+                &result,
+                &"chunkMinTimeSecs".into(),
+                &wasm_bindgen::JsValue::from(min_ts),
+            )
+            .ok();
         }
         if let Some(max_ts) = chunk_max_ts_secs {
-            js_sys::Reflect::set(&result, &"chunkMaxTimeSecs".into(), &wasm_bindgen::JsValue::from(max_ts)).ok();
+            js_sys::Reflect::set(
+                &result,
+                &"chunkMaxTimeSecs".into(),
+                &wasm_bindgen::JsValue::from(max_ts),
+            )
+            .ok();
         }
 
         // Per-elevation time spans within this chunk
         if !chunk_elev_spans.is_empty() {
-            let spans_json = serde_json::to_string(&chunk_elev_spans).unwrap_or_else(|_| "[]".to_string());
-            js_sys::Reflect::set(&result, &"chunkElevSpansJson".into(), &wasm_bindgen::JsValue::from_str(&spans_json)).ok();
+            let spans_json =
+                serde_json::to_string(&chunk_elev_spans).unwrap_or_else(|_| "[]".to_string());
+            js_sys::Reflect::set(
+                &result,
+                &"chunkElevSpansJson".into(),
+                &wasm_bindgen::JsValue::from_str(&spans_json),
+            )
+            .ok();
         }
 
         // Volume header scan start time (only present for start chunks)
         if let Some(t) = volume_header_time_secs {
-            js_sys::Reflect::set(&result, &"volumeHeaderTimeSecs".into(), &wasm_bindgen::JsValue::from(t)).ok();
+            js_sys::Reflect::set(
+                &result,
+                &"volumeHeaderTimeSecs".into(),
+                &wasm_bindgen::JsValue::from(t),
+            )
+            .ok();
         }
 
         // Last radial azimuth and time for sweep line extrapolation
         if let Some(az) = last_radial_azimuth {
-            js_sys::Reflect::set(&result, &"lastRadialAzimuth".into(), &wasm_bindgen::JsValue::from(az)).ok();
+            js_sys::Reflect::set(
+                &result,
+                &"lastRadialAzimuth".into(),
+                &wasm_bindgen::JsValue::from(az),
+            )
+            .ok();
         }
         if let Some(t) = last_radial_time_secs {
-            js_sys::Reflect::set(&result, &"lastRadialTimeSecs".into(), &wasm_bindgen::JsValue::from(t)).ok();
+            js_sys::Reflect::set(
+                &result,
+                &"lastRadialTimeSecs".into(),
+                &wasm_bindgen::JsValue::from(t),
+            )
+            .ok();
         }
 
         // Current in-progress elevation number (for partial sweep visualization)
-        let current_elev = CHUNK_ACCUM.with(|c| {
-            c.borrow().as_ref().and_then(|a| a.last_elevation_number)
-        });
+        let current_elev =
+            CHUNK_ACCUM.with(|c| c.borrow().as_ref().and_then(|a| a.last_elevation_number));
         if let Some(elev) = current_elev {
-            js_sys::Reflect::set(&result, &"currentElevation".into(), &wasm_bindgen::JsValue::from(elev)).ok();
+            js_sys::Reflect::set(
+                &result,
+                &"currentElevation".into(),
+                &wasm_bindgen::JsValue::from(elev),
+            )
+            .ok();
         }
 
         // Radial count for the current in-progress elevation
         let current_elev_radials = CHUNK_ACCUM.with(|c| {
             c.borrow().as_ref().and_then(|a| {
-                a.last_elevation_number.map(|elev| {
-                    a.radial_metas.iter().filter(|m| m.1 == elev).count() as u32
-                })
+                a.last_elevation_number
+                    .map(|elev| a.radial_metas.iter().filter(|m| m.1 == elev).count() as u32)
             })
         });
         if let Some(count) = current_elev_radials {
-            js_sys::Reflect::set(&result, &"currentElevationRadials".into(), &wasm_bindgen::JsValue::from(count)).ok();
+            js_sys::Reflect::set(
+                &result,
+                &"currentElevationRadials".into(),
+                &wasm_bindgen::JsValue::from(count),
+            )
+            .ok();
         }
 
         Ok(result.into())
@@ -1049,53 +1276,53 @@ fn decode_with_vcp_extraction<'a>(
     for msg in messages {
         if extracted_vcp.is_none() {
             match msg.contents() {
-                        MessageContents::VolumeCoveragePattern(ref vcp_msg) => {
-                            let header = vcp_msg.header();
-                            let elevations: Vec<ExtractedVcpElevation> = vcp_msg
-                                .elevations()
-                                .iter()
-                                .map(|e| ExtractedVcpElevation {
-                                    angle: e.elevation_angle() as f32,
-                                    waveform: format!("{:?}", e.waveform_type()),
-                                    prf_number: e.surveillance_prf_number(),
-                                    is_sails: e.is_sails_cut(),
-                                    is_mrle: e.is_mrle_cut(),
-                                    is_base_tilt: e.is_base_tilt_cut(),
-                                })
-                                .collect();
+                MessageContents::VolumeCoveragePattern(ref vcp_msg) => {
+                    let header = vcp_msg.header();
+                    let elevations: Vec<ExtractedVcpElevation> = vcp_msg
+                        .elevations()
+                        .iter()
+                        .map(|e| ExtractedVcpElevation {
+                            angle: e.elevation_angle() as f32,
+                            waveform: format!("{:?}", e.waveform_type()),
+                            prf_number: e.surveillance_prf_number(),
+                            is_sails: e.is_sails_cut(),
+                            is_mrle: e.is_mrle_cut(),
+                            is_base_tilt: e.is_base_tilt_cut(),
+                        })
+                        .collect();
+                    *extracted_vcp = Some(ExtractedVcp {
+                        number: header.pattern_number(),
+                        elevations,
+                    });
+                }
+                MessageContents::DigitalRadarData(ref m) => {
+                    if let Some(vol_block) = m.volume_data_block() {
+                        let raw = vol_block.volume_coverage_pattern_number();
+                        if raw > 0 {
                             *extracted_vcp = Some(ExtractedVcp {
-                                number: header.pattern_number(),
-                                elevations,
+                                number: raw,
+                                elevations: Vec::new(),
                             });
                         }
-                        MessageContents::DigitalRadarData(ref m) => {
-                            if let Some(vol_block) = m.volume_data_block() {
-                                let raw = vol_block.volume_coverage_pattern_number();
-                                if raw > 0 {
-                                    *extracted_vcp = Some(ExtractedVcp {
-                                        number: raw,
-                                        elevations: Vec::new(),
-                                    });
-                                }
-                            }
-                        }
-                        _ => {}
                     }
                 }
-                match msg.into_contents() {
-                    MessageContents::DigitalRadarData(m) => {
-                        if let Ok(radial) = m.into_radial() {
-                            radials.push(radial);
-                        }
-                    }
-                    MessageContents::DigitalRadarDataLegacy(m) => {
-                        if let Ok(radial) = m.into_radial() {
-                            radials.push(radial);
-                        }
-                    }
-                    _ => {}
+                _ => {}
+            }
+        }
+        match msg.into_contents() {
+            MessageContents::DigitalRadarData(m) => {
+                if let Ok(radial) = m.into_radial() {
+                    radials.push(radial);
                 }
             }
+            MessageContents::DigitalRadarDataLegacy(m) => {
+                if let Ok(radial) = m.into_radial() {
+                    radials.push(radial);
+                }
+            }
+            _ => {}
+        }
+    }
     radials
 }
 

@@ -16,7 +16,7 @@ pub struct StorageSettings {
 impl Default for StorageSettings {
     fn default() -> Self {
         Self {
-            quota_bytes: 2 * 1024 * 1024 * 1024,           // 2 GB
+            quota_bytes: 2 * 1024 * 1024 * 1024,       // 2 GB
             eviction_target_bytes: 1600 * 1024 * 1024, // 1.6 GB (80% of quota)
         }
     }

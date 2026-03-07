@@ -68,7 +68,8 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                     if state.status_message_set_ms > 0.0 && age_ms >= DISMISS_MS {
                         state.status_message.clear();
                     } else {
-                        let alpha = if state.status_message_set_ms <= 0.0 || age_ms < FADE_START_MS {
+                        let alpha = if state.status_message_set_ms <= 0.0 || age_ms < FADE_START_MS
+                        {
                             255u8
                         } else {
                             let t = 1.0 - (age_ms - FADE_START_MS) / (DISMISS_MS - FADE_START_MS);

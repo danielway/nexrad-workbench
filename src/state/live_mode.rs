@@ -109,7 +109,6 @@ pub struct LiveModeState {
     pub auto_scroll_enabled: bool,
 
     // ── Real-time partial scan tracking for timeline visualization ────
-
     /// Elevation numbers received in the current in-progress volume.
     pub elevations_received: Vec<u8>,
 

@@ -234,7 +234,9 @@ impl DateTimePickerState {
             d.set_seconds(second);
             d.set_milliseconds(0);
             let ts = d.get_time(); // UTC milliseconds
-            if ts.is_nan() { return None; }
+            if ts.is_nan() {
+                return None;
+            }
             Some(ts / 1000.0)
         } else {
             use chrono::{TimeZone, Utc};

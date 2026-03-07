@@ -3,8 +3,8 @@
 //! Opened by clicking the pipeline indicator in the bottom status bar.
 //! Shows sub-phase timings for Download, Processing, and Rendering.
 
-use crate::state::AppState;
 use super::colors::ui as ui_colors;
+use crate::state::AppState;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Render the performance detail modal if open.
@@ -19,8 +19,7 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             let screen_rect = ctx.input(|i| i.viewport_rect());
-            let (response, painter) =
-                ui.allocate_painter(screen_rect.size(), egui::Sense::click());
+            let (response, painter) = ui.allocate_painter(screen_rect.size(), egui::Sense::click());
             painter.rect_filled(
                 screen_rect,
                 0.0,
@@ -47,7 +46,12 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
 
             // --- Download section ---
             ui.add_space(4.0);
-            ui.label(RichText::new("Download").size(12.0).strong().color(heading_color));
+            ui.label(
+                RichText::new("Download")
+                    .size(12.0)
+                    .strong()
+                    .color(heading_color),
+            );
             ui.indent("dl_section", |ui| {
                 stat_row(
                     ui,
@@ -86,7 +90,13 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
             );
             ui.indent("proc_section", |ui| {
                 if let Some(ref d) = stats.last_ingest_detail {
-                    stat_row(ui, "Split", &format_ms(d.split_ms), label_color, value_color);
+                    stat_row(
+                        ui,
+                        "Split",
+                        &format_ms(d.split_ms),
+                        label_color,
+                        value_color,
+                    );
                     stat_row(
                         ui,
                         "Decompress",
@@ -94,7 +104,13 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
                         label_color,
                         value_color,
                     );
-                    stat_row(ui, "Decode", &format_ms(d.decode_ms), label_color, value_color);
+                    stat_row(
+                        ui,
+                        "Decode",
+                        &format_ms(d.decode_ms),
+                        label_color,
+                        value_color,
+                    );
                     stat_row(
                         ui,
                         "Extract",
@@ -109,7 +125,13 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
                         label_color,
                         value_color,
                     );
-                    stat_row(ui, "Index", &format_ms(d.index_ms), label_color, value_color);
+                    stat_row(
+                        ui,
+                        "Index",
+                        &format_ms(d.index_ms),
+                        label_color,
+                        value_color,
+                    );
                 }
                 stat_row(
                     ui,

@@ -67,7 +67,13 @@ pub fn decode_record_to_radials_timed(
         .map_err(|e| format!("Failed to decode record radials: {}", e))?;
     let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
-    Ok((radials, DecodeTimings { decompress_ms, decode_ms }))
+    Ok((
+        radials,
+        DecodeTimings {
+            decompress_ms,
+            decode_ms,
+        },
+    ))
 }
 
 /// Extract sorted, deduplicated elevation numbers from already-decoded radials.
@@ -142,9 +148,25 @@ pub fn extract_sweep_data_from_sorted(
 /// Returns (first_gate_range_km, gate_interval_km, gate_count, scale, offset, data_word_size).
 fn moment_params(product: Product, radial: &Radial) -> Option<(f64, f64, usize, f32, f32, u8)> {
     if let Some(m) = product.moment_data(radial) {
-        Some((m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset(), m.data_word_size()))
+        Some((
+            m.first_gate_range_km(),
+            m.gate_interval_km(),
+            m.gate_count() as usize,
+            m.scale(),
+            m.offset(),
+            m.data_word_size(),
+        ))
     } else {
-        product.cfp_moment_data(radial).map(|m| (m.first_gate_range_km(), m.gate_interval_km(), m.gate_count() as usize, m.scale(), m.offset(), m.data_word_size()))
+        product.cfp_moment_data(radial).map(|m| {
+            (
+                m.first_gate_range_km(),
+                m.gate_interval_km(),
+                m.gate_count() as usize,
+                m.scale(),
+                m.offset(),
+                m.data_word_size(),
+            )
+        })
     }
 }
 
@@ -160,10 +182,7 @@ fn moment_raw_values(product: Product, radial: &Radial) -> Option<&[u8]> {
 }
 
 /// Build a PrecomputedSweep from a filtered, sorted list of radials.
-fn build_precomputed_sweep(
-    target: &[&Radial],
-    product: Product,
-) -> Option<PrecomputedSweep> {
+fn build_precomputed_sweep(target: &[&Radial], product: Product) -> Option<PrecomputedSweep> {
     let (first_gate_range_km, gate_interval_km, gate_count, scale, offset, data_word_size) =
         moment_params(product, target[0])?;
 
@@ -179,8 +198,12 @@ fn build_precomputed_sweep(
         for (row, radial) in target.iter().enumerate() {
             azimuths.push(radial.azimuth_angle_degrees());
             let ts = radial.collection_timestamp() as f64;
-            if ts < min_ts { min_ts = ts; }
-            if ts > max_ts { max_ts = ts; }
+            if ts < min_ts {
+                min_ts = ts;
+            }
+            if ts > max_ts {
+                max_ts = ts;
+            }
             elev_sum += radial.elevation_angle_degrees() as f64;
 
             if let Some(bytes) = moment_raw_values(product, radial) {
@@ -197,8 +220,12 @@ fn build_precomputed_sweep(
         for (row, radial) in target.iter().enumerate() {
             azimuths.push(radial.azimuth_angle_degrees());
             let ts = radial.collection_timestamp() as f64;
-            if ts < min_ts { min_ts = ts; }
-            if ts > max_ts { max_ts = ts; }
+            if ts < min_ts {
+                min_ts = ts;
+            }
+            if ts > max_ts {
+                max_ts = ts;
+            }
             elev_sum += radial.elevation_angle_degrees() as f64;
 
             if let Some(bytes) = moment_raw_values(product, radial) {

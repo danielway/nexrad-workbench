@@ -129,19 +129,23 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                 let now = js_sys::Date::now() / 1000.0;
                 let vcp = live.current_vcp_number;
                 let azimuth = live.estimated_azimuth(now);
-                let sweep_index = live.estimated_elevation_index(now)
-                    .or_else(|| {
-                        // Fall back to the actual in-progress elevation number (1-based → 0-based)
-                        live.current_in_progress_elevation.map(|e| e.saturating_sub(1) as usize)
-                    });
+                let sweep_index = live.estimated_elevation_index(now).or_else(|| {
+                    // Fall back to the actual in-progress elevation number (1-based → 0-based)
+                    live.current_in_progress_elevation
+                        .map(|e| e.saturating_sub(1) as usize)
+                });
                 let scan_progress = live.current_volume_start.and_then(|start| {
                     live.last_volume_duration_secs.map(|dur| {
-                        if dur > 0.0 { ((now - start) / dur).clamp(0.0, 1.0) as f32 } else { 0.0 }
+                        if dur > 0.0 {
+                            ((now - start) / dur).clamp(0.0, 1.0) as f32
+                        } else {
+                            0.0
+                        }
                     })
                 });
                 // Derive elevation angle from VCP definition + estimated index
                 let elevation = sweep_index.and_then(|idx| {
-                    vcp.and_then(|v| get_vcp_definition(v))
+                    vcp.and_then(get_vcp_definition)
                         .and_then(|def| def.elevations.get(idx))
                         .map(|e| e.angle)
                 });
@@ -521,7 +525,13 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                                 prf_short: prf_number_to_short(elev.prf_number),
                                 waveform_raw: &elev.waveform,
                             };
-                            render_elevation_row(ui, elev.angle, Some(meta), false, available_width);
+                            render_elevation_row(
+                                ui,
+                                elev.angle,
+                                Some(meta),
+                                false,
+                                available_width,
+                            );
                         }
                     });
             } else if let Some(def) = vcp_def {
