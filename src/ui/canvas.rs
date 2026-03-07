@@ -193,16 +193,34 @@ fn format_age(secs: f64) -> String {
         let m = (secs / 60.0) as u32;
         let s = (secs % 60.0) as u32;
         format!("{}m{}s", m, s)
-    } else {
+    } else if secs < 86400.0 {
         let h = (secs / 3600.0) as u32;
         let m = ((secs % 3600.0) / 60.0) as u32;
         format!("{}h{}m", h, m)
+    } else if secs < 86400.0 * 365.0 {
+        let d = (secs / 86400.0) as u32;
+        let h = ((secs % 86400.0) / 3600.0) as u32;
+        if d == 1 {
+            format!("1 day {}h", h)
+        } else {
+            format!("{} days", d)
+        }
+    } else {
+        let y = (secs / (86400.0 * 365.25)) as u32;
+        let remaining_days = ((secs % (86400.0 * 365.25)) / 86400.0) as u32;
+        if y == 1 {
+            format!("1 year {} days", remaining_days)
+        } else {
+            format!("{} years", y)
+        }
     }
 }
 
 /// Color for age label based on data age.
 fn age_color(secs: f64) -> Color32 {
-    if secs > 300.0 {
+    if secs > ARCHIVE_AGE_THRESHOLD_SECS {
+        Color32::from_rgb(255, 160, 40) // orange for archive data
+    } else if secs > 300.0 {
         Color32::from_rgb(255, 80, 80)
     } else if secs > 60.0 {
         Color32::from_rgb(255, 200, 60)
@@ -221,16 +239,43 @@ fn filter_geo_layers(layers: &GeoLayerSet, visibility: &GeoLayerVisibility) -> G
     if let Some(ref mut layer) = filtered.counties {
         layer.visible = visibility.counties;
     }
+    if let Some(ref mut layer) = filtered.cities {
+        layer.visible = visibility.cities;
+    }
+    if let Some(ref mut layer) = filtered.highways {
+        layer.visible = visibility.highways;
+    }
+    if let Some(ref mut layer) = filtered.lakes {
+        layer.visible = visibility.lakes;
+    }
 
     filtered
 }
 
+/// Threshold in seconds above which data is considered "archive" (1 hour).
+const ARCHIVE_AGE_THRESHOLD_SECS: f64 = 3600.0;
+
 fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
     let overlay_pos = rect.left_top() + Vec2::new(10.0, 10.0);
-    let overlay_rect = Rect::from_min_size(overlay_pos, Vec2::new(150.0, 70.0));
+    let overlay_rect = Rect::from_min_size(overlay_pos, Vec2::new(260.0, 90.0));
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(overlay_rect), |ui| {
         ui.vertical(|ui| {
+            // Show loud "ARCHIVE DATA" banner when data is old enough to be confusable
+            let is_archive = state
+                .viz_state
+                .data_staleness_secs
+                .map_or(false, |s| s > ARCHIVE_AGE_THRESHOLD_SECS);
+            if is_archive {
+                ui.label(
+                    RichText::new("ARCHIVE DATA")
+                        .monospace()
+                        .size(14.0)
+                        .strong()
+                        .color(Color32::from_rgb(255, 160, 40)),
+                );
+            }
+
             ui.label(
                 RichText::new(format!("Site: {}", state.viz_state.site_id))
                     .monospace()
@@ -249,16 +294,14 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
                     .size(12.0)
                     .color(Color32::from_rgb(200, 200, 220)),
             );
-            if state.viz_state.render_mode == crate::state::RenderMode::FixedTilt {
-                if let Some(secs) = state.viz_state.data_staleness_secs {
-                    let color = age_color(secs);
-                    ui.label(
-                        RichText::new(format!("Age: {}", format_age(secs)))
-                            .monospace()
-                            .size(12.0)
-                            .color(color),
-                    );
-                }
+            if let Some(secs) = state.viz_state.data_staleness_secs {
+                let color = age_color(secs);
+                ui.label(
+                    RichText::new(format!("Age: {}", format_age(secs)))
+                        .monospace()
+                        .size(12.0)
+                        .color(color),
+                );
             }
         });
     });

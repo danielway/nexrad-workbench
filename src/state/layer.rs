@@ -18,6 +18,12 @@ pub struct GeoLayerVisibility {
     pub labels: bool,
     /// Show NEXRAD radar sites (other sites, not current)
     pub nexrad_sites: bool,
+    /// Show major cities
+    pub cities: bool,
+    /// Show major highways
+    pub highways: bool,
+    /// Show lakes and water bodies
+    pub lakes: bool,
 }
 
 impl Default for GeoLayerVisibility {
@@ -27,6 +33,9 @@ impl Default for GeoLayerVisibility {
             counties: true,
             labels: true,
             nexrad_sites: false,
+            cities: true,
+            highways: false,
+            lakes: false,
         }
     }
 }

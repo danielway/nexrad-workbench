@@ -7,9 +7,13 @@ use std::io::Cursor;
 
 /// Type of geographic layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Highways and Lakes reserved for future data sources
 pub enum GeoLayerType {
     States,
     Counties,
+    Cities,
+    Highways,
+    Lakes,
 }
 
 impl GeoLayerType {
@@ -18,6 +22,9 @@ impl GeoLayerType {
         match self {
             GeoLayerType::States => Color32::from_rgb(100, 100, 120),
             GeoLayerType::Counties => Color32::from_rgb(70, 70, 90),
+            GeoLayerType::Cities => Color32::from_rgb(180, 180, 200),
+            GeoLayerType::Highways => Color32::from_rgb(100, 80, 60),
+            GeoLayerType::Lakes => Color32::from_rgb(60, 80, 120),
         }
     }
 
@@ -26,6 +33,9 @@ impl GeoLayerType {
         match self {
             GeoLayerType::States => 1.5,
             GeoLayerType::Counties => 0.8,
+            GeoLayerType::Cities => 0.0, // Points, not lines
+            GeoLayerType::Highways => 1.0,
+            GeoLayerType::Lakes => 0.8,
         }
     }
 
@@ -34,6 +44,9 @@ impl GeoLayerType {
         match self {
             GeoLayerType::States => 0.0,
             GeoLayerType::Counties => 1.5,
+            GeoLayerType::Cities => 0.0,
+            GeoLayerType::Highways => 1.0,
+            GeoLayerType::Lakes => 0.5,
         }
     }
 
@@ -42,6 +55,9 @@ impl GeoLayerType {
         match self {
             GeoLayerType::States => 0.0,
             GeoLayerType::Counties => 3.0,
+            GeoLayerType::Cities => 0.0,
+            GeoLayerType::Highways => 2.0,
+            GeoLayerType::Lakes => 2.0,
         }
     }
 }
@@ -228,6 +244,9 @@ fn convert_shapefile_shape(shape: &shapefile::Shape, label: Option<String>) -> O
 pub struct GeoLayerSet {
     pub states: Option<GeoLayer>,
     pub counties: Option<GeoLayer>,
+    pub cities: Option<GeoLayer>,
+    pub highways: Option<GeoLayer>,
+    pub lakes: Option<GeoLayer>,
 }
 
 impl GeoLayerSet {
@@ -238,9 +257,15 @@ impl GeoLayerSet {
 
     /// Returns an iterator over all loaded layers.
     pub fn iter(&self) -> impl Iterator<Item = &GeoLayer> {
-        [self.states.as_ref(), self.counties.as_ref()]
-            .into_iter()
-            .flatten()
+        [
+            self.states.as_ref(),
+            self.counties.as_ref(),
+            self.lakes.as_ref(),
+            self.highways.as_ref(),
+            self.cities.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
     }
 
     /// Loads a layer from shapefile bytes.
@@ -255,7 +280,21 @@ impl GeoLayerSet {
         match layer_type {
             GeoLayerType::States => self.states = Some(layer),
             GeoLayerType::Counties => self.counties = Some(layer),
+            GeoLayerType::Cities => self.cities = Some(layer),
+            GeoLayerType::Highways => self.highways = Some(layer),
+            GeoLayerType::Lakes => self.lakes = Some(layer),
         }
         Ok(())
+    }
+
+    /// Load a pre-built layer directly.
+    pub fn set_layer(&mut self, layer: GeoLayer) {
+        match layer.layer_type {
+            GeoLayerType::States => self.states = Some(layer),
+            GeoLayerType::Counties => self.counties = Some(layer),
+            GeoLayerType::Cities => self.cities = Some(layer),
+            GeoLayerType::Highways => self.highways = Some(layer),
+            GeoLayerType::Lakes => self.lakes = Some(layer),
+        }
     }
 }

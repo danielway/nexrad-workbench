@@ -62,7 +62,7 @@ fn render_feature(
 ) {
     match feature {
         GeoFeature::Point(coord, label) => {
-            render_point(painter, coord, projection, color, label.as_deref());
+            render_point(painter, coord, projection, color, label.as_deref(), show_labels, zoom);
         }
         GeoFeature::LineString(coords) => {
             render_line_string(painter, coords, projection, stroke);
@@ -216,6 +216,9 @@ fn render_polygon_label(
     let (base_size, color) = match layer_type {
         GeoLayerType::States => (12.0, Color32::from_rgb(220, 220, 240)),
         GeoLayerType::Counties => (8.0, Color32::from_rgb(100, 100, 115)),
+        GeoLayerType::Cities => (10.0, Color32::from_rgb(200, 200, 220)),
+        GeoLayerType::Highways => (8.0, Color32::from_rgb(130, 110, 90)),
+        GeoLayerType::Lakes => (9.0, Color32::from_rgb(100, 130, 180)),
     };
 
     // Scale font size with zoom, clamped to reasonable range
@@ -237,6 +240,8 @@ fn render_point(
     projection: &MapProjection,
     color: Color32,
     label: Option<&str>,
+    show_labels: bool,
+    zoom: f32,
 ) {
     // Skip if outside visible bounds
     if !projection.is_visible(*coord, 0.5) {
@@ -246,18 +251,22 @@ fn render_point(
     let pos = projection.geo_to_screen(*coord);
 
     // Draw a small circle for the point
-    painter.circle_filled(pos, 3.0, color);
+    let radius = (2.5 * zoom.sqrt()).clamp(2.0, 5.0);
+    painter.circle_filled(pos, radius, color);
 
-    // Draw label if present
-    if let Some(text) = label {
-        let label_pos = Pos2::new(pos.x + 5.0, pos.y - 5.0);
-        painter.text(
-            label_pos,
-            eframe::egui::Align2::LEFT_BOTTOM,
-            text,
-            FontId::proportional(10.0),
-            color,
-        );
+    // Draw label if present and labels are enabled
+    if show_labels {
+        if let Some(text) = label {
+            let font_size = (9.0 * zoom.sqrt()).clamp(8.0, 13.0);
+            let label_pos = Pos2::new(pos.x + radius + 2.0, pos.y - 2.0);
+            painter.text(
+                label_pos,
+                eframe::egui::Align2::LEFT_CENTER,
+                text,
+                FontId::proportional(font_size),
+                color,
+            );
+        }
     }
 }
 

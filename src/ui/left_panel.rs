@@ -615,7 +615,7 @@ fn render_elevation_row(
 
         // Current indicator
         if is_current {
-            ui.label(RichText::new("\u{25B6}").color(text_color).small());
+            ui.label(RichText::new(egui_phosphor::regular::CARET_RIGHT).color(text_color).small());
         } else {
             ui.label(RichText::new(" ").monospace().small());
         }

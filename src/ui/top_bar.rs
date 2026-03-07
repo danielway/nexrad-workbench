@@ -20,13 +20,8 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
                 // Left panel toggle
-                let left_icon = if state.left_sidebar_visible {
-                    "\u{25C0}"
-                } else {
-                    "\u{25B6}"
-                };
                 if ui
-                    .button(RichText::new(left_icon).size(12.0))
+                    .button(RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE).size(14.0))
                     .on_hover_text("Toggle left panel")
                     .clicked()
                 {
@@ -91,13 +86,8 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
 
                 // Right-aligned: right panel toggle
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let right_icon = if state.right_sidebar_visible {
-                        "\u{25B6}"
-                    } else {
-                        "\u{25C0}"
-                    };
                     if ui
-                        .button(RichText::new(right_icon).size(12.0))
+                        .button(RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE).size(14.0))
                         .on_hover_text("Toggle right panel")
                         .clicked()
                     {
@@ -123,7 +113,7 @@ fn render_live_status(ui: &mut egui::Ui, state: &AppState) {
                 live::ACQUIRING.b(),
                 (128.0 + 127.0 * pulse_alpha) as u8,
             );
-            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color));
+            ui.label(RichText::new(egui_phosphor::regular::BROADCAST).size(16.0).color(pulsed_color));
 
             let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
             ui.label(
@@ -139,7 +129,7 @@ fn render_live_status(ui: &mut egui::Ui, state: &AppState) {
                 live::STREAMING.b(),
                 (128.0 + 127.0 * pulse_alpha) as u8,
             );
-            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color));
+            ui.label(RichText::new(egui_phosphor::regular::BROADCAST).size(16.0).color(pulsed_color));
             ui.label(
                 RichText::new("LIVE")
                     .size(13.0)

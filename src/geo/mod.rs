@@ -1,8 +1,9 @@
 //! Geographic layer system for map overlays.
 //!
 //! This module provides functionality for loading and rendering geographic
-//! features such as state boundaries and county lines.
+//! features such as state boundaries, county lines, and city markers.
 
+pub(crate) mod cities;
 mod layer;
 mod projection;
 mod renderer;

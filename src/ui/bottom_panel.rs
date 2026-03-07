@@ -411,8 +411,12 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
                             format!("{:.0}s old", staleness)
                         } else if staleness < 3600.0 {
                             format!("{:.0}m old", staleness / 60.0)
-                        } else {
+                        } else if staleness < 86400.0 {
                             format!("{:.1}h old", staleness / 3600.0)
+                        } else if staleness < 86400.0 * 365.0 {
+                            format!("{:.0}d old", staleness / 86400.0)
+                        } else {
+                            format!("{:.1}y old", staleness / (86400.0 * 365.25))
                         };
                         let age_color = if staleness < 60.0 {
                             ui_colors::SUCCESS
@@ -1425,7 +1429,7 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
     if !state.live_mode_state.is_active() {
         if ui
             .button(
-                RichText::new("\u{2022} Live")
+                RichText::new(format!("{} Live", egui_phosphor::regular::BROADCAST))
                     .size(12.0)
                     .color(Color32::from_rgb(150, 150, 150)),
             )
@@ -1440,9 +1444,9 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
 
     // Play/Stop button
     let play_text = if state.playback_state.playing {
-        "\u{25A0}" // ■ Stop
+        egui_phosphor::regular::STOP
     } else {
-        "\u{25B6}" // ▶ Play
+        egui_phosphor::regular::PLAY
     };
 
     if ui.button(RichText::new(play_text).size(14.0)).clicked() {
@@ -1470,8 +1474,7 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
     const ELEV_TOLERANCE: f32 = 0.3;
 
     // Step backward
-    if ui.button(RichText::new("\u{25C0}").size(14.0)).clicked() {
-        // ◀
+    if ui.button(RichText::new(egui_phosphor::regular::SKIP_BACK).size(14.0)).clicked() {
         // Exit live mode when jogging
         if state.live_mode_state.is_active() {
             state.live_mode_state.stop(LiveExitReason::UserJogged);
@@ -1496,8 +1499,7 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
     }
 
     // Step forward
-    if ui.button(RichText::new("\u{25B6}").size(14.0)).clicked() {
-        // ▶
+    if ui.button(RichText::new(egui_phosphor::regular::SKIP_FORWARD).size(14.0)).clicked() {
         // Exit live mode when jogging
         if state.live_mode_state.is_active() {
             state.live_mode_state.stop(LiveExitReason::UserJogged);
@@ -1553,7 +1555,7 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
 
         // Clear selection button
         if ui
-            .small_button("\u{2715}") // ×
+            .small_button(egui_phosphor::regular::X)
             .on_hover_text("Clear selection and playback bounds")
             .clicked()
         {
@@ -1581,14 +1583,14 @@ fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_enabled(false, egui::Button::new(RichText::new(label).size(11.0)));
     } else if has_selection {
         if ui
-            .button(RichText::new("Download Selection").size(11.0))
+            .button(RichText::new(format!("{} Download Selection", egui_phosphor::regular::DOWNLOAD_SIMPLE)).size(11.0))
             .on_hover_text("Download all scans in the selected time range")
             .clicked()
         {
             state.download_selection_requested = true;
         }
     } else if ui
-        .button(RichText::new("\u{2B07} Download").size(11.0))
+        .button(RichText::new(format!("{} Download", egui_phosphor::regular::DOWNLOAD_SIMPLE)).size(11.0))
         .on_hover_text("Download the scan at the current playback position")
         .clicked()
     {
@@ -1632,7 +1634,7 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
                 live::ACQUIRING.b(),
                 (128.0 + 127.0 * pulse_alpha) as u8,
             );
-            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color));
+            ui.label(RichText::new(egui_phosphor::regular::BROADCAST).size(16.0).color(pulsed_color));
 
             let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
             ui.label(
@@ -1650,7 +1652,7 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
                 live::STREAMING.b(),
                 (128.0 + 127.0 * pulse_alpha) as u8,
             );
-            ui.label(RichText::new("\u{2022}").size(16.0).color(pulsed_color));
+            ui.label(RichText::new(egui_phosphor::regular::BROADCAST).size(16.0).color(pulsed_color));
             ui.label(
                 RichText::new("LIVE")
                     .size(11.0)

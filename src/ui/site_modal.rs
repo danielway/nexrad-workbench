@@ -113,7 +113,7 @@ pub fn render_site_modal(
                         let label = site.display_label();
 
                         let text = if is_current {
-                            RichText::new(format!("{} \u{2713}", label))
+                            RichText::new(format!("{} {}", label, egui_phosphor::regular::CHECK))
                                 .color(Color32::from_rgb(100, 200, 255))
                         } else {
                             RichText::new(label)

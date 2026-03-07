@@ -59,6 +59,7 @@ web-sys = { version = "0.3", features = [
     "NodeList",
 ] }
 js-sys = "0.3"
+egui-phosphor = { version = "0.11.0", features = ["regular"] }
 
 [profile.release]
 opt-level = "s"

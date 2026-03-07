@@ -22,6 +22,8 @@ pub struct UserPreferences {
     pub layer_labels: bool,
     #[serde(default)]
     pub layer_nexrad_sites: bool,
+    #[serde(default = "default_true")]
+    pub layer_cities: bool,
     #[serde(default)]
     pub use_local_time: bool,
 }
@@ -39,6 +41,7 @@ impl Default for UserPreferences {
             layer_counties: true,
             layer_labels: true,
             layer_nexrad_sites: false,
+            layer_cities: true,
             use_local_time: false,
         }
     }
@@ -56,6 +59,7 @@ impl UserPreferences {
             layer_counties: state.layer_state.geo.counties,
             layer_labels: state.layer_state.geo.labels,
             layer_nexrad_sites: state.layer_state.geo.nexrad_sites,
+            layer_cities: state.layer_state.geo.cities,
             use_local_time: state.use_local_time,
         }
     }
@@ -68,6 +72,7 @@ impl UserPreferences {
         state.layer_state.geo.counties = self.layer_counties;
         state.layer_state.geo.labels = self.layer_labels;
         state.layer_state.geo.nexrad_sites = self.layer_nexrad_sites;
+        state.layer_state.geo.cities = self.layer_cities;
         state.use_local_time = self.use_local_time;
     }
 

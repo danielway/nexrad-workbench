@@ -216,7 +216,7 @@ pub fn render_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
                     ui.horizontal(|ui| {
                         ui.heading("Keyboard Shortcuts");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("\u{2715}").clicked() {
+                            if ui.small_button(egui_phosphor::regular::X).clicked() {
                                 state.shortcuts_help_visible = false;
                             }
                         });

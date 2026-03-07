@@ -160,6 +160,11 @@ static COUNTIES_DBF: &[u8] =
 impl WorkbenchApp {
     /// Creates a new WorkbenchApp instance.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Initialize Phosphor icon font
+        let mut fonts = egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        cc.egui_ctx.set_fonts(fonts);
+
         let mut geo_layers = geo::GeoLayerSet::new();
 
         // Load embedded geographic data
@@ -179,8 +184,11 @@ impl WorkbenchApp {
             log::error!("Failed to load counties layer: {}", e);
         }
 
+        // Load built-in cities layer
+        geo_layers.set_layer(geo::cities::build_cities_layer());
+
         log::info!(
-            "Loaded geo layers: {} states, {} counties",
+            "Loaded geo layers: {} states, {} counties, {} cities",
             geo_layers
                 .states
                 .as_ref()
@@ -188,6 +196,11 @@ impl WorkbenchApp {
                 .unwrap_or(0),
             geo_layers
                 .counties
+                .as_ref()
+                .map(|l| l.features.len())
+                .unwrap_or(0),
+            geo_layers
+                .cities
                 .as_ref()
                 .map(|l| l.features.len())
                 .unwrap_or(0),
@@ -648,19 +661,25 @@ impl WorkbenchApp {
     fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
         self.state.viz_state.elevation = format!("{:.1}\u{00B0}", elevation_deg);
 
-        // Format midpoint timestamp as HH:MM:SS in selected timezone
+        // Format midpoint timestamp with full date and time
         let mid_ms = ((start + end) / 2.0) * 1000.0;
         let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(mid_ms));
         if self.state.use_local_time {
             self.state.viz_state.timestamp = format!(
-                "{:02}:{:02}:{:02}",
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                date.get_full_year(),
+                date.get_month() + 1, // JS months are 0-indexed
+                date.get_date(),
                 date.get_hours(),
                 date.get_minutes(),
                 date.get_seconds()
             );
         } else {
             self.state.viz_state.timestamp = format!(
-                "{:02}:{:02}:{:02} UTC",
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+                date.get_utc_full_year(),
+                date.get_utc_month() + 1, // JS months are 0-indexed
+                date.get_utc_date(),
                 date.get_utc_hours(),
                 date.get_utc_minutes(),
                 date.get_utc_seconds()
@@ -670,12 +689,8 @@ impl WorkbenchApp {
         // Store sweep end time so staleness can be recomputed each frame
         self.state.viz_state.rendered_sweep_end_secs = Some(end);
         // Staleness is recomputed per-frame in update(); seed it here for immediate display
-        let reference_time = if self.state.playback_state.time_model.locked_to_realtime {
-            js_sys::Date::now() / 1000.0
-        } else {
-            self.state.playback_state.playback_position()
-        };
-        let staleness = reference_time - end;
+        let now = js_sys::Date::now() / 1000.0;
+        let staleness = now - end;
         self.state.viz_state.data_staleness_secs = if staleness >= 0.0 {
             Some(staleness)
         } else {
@@ -886,17 +901,12 @@ impl eframe::App for WorkbenchApp {
             ctx.set_visuals(egui::Visuals::light());
         }
 
-        // Recompute data staleness every frame.
-        // In live/real-time mode, measure against wall-clock time.
-        // In archive playback, measure against the playback position so the age
-        // stays steady while scrubbing through data rather than counting up.
+        // Recompute data staleness every frame against wall-clock time.
+        // This ensures archive data correctly shows its true age (days/years)
+        // rather than a misleading "few minutes" relative to playback position.
         if let Some(sweep_end) = self.state.viz_state.rendered_sweep_end_secs {
-            let reference_time = if self.state.playback_state.time_model.locked_to_realtime {
-                js_sys::Date::now() / 1000.0
-            } else {
-                self.state.playback_state.playback_position()
-            };
-            let staleness = reference_time - sweep_end;
+            let now = js_sys::Date::now() / 1000.0;
+            let staleness = now - sweep_end;
             self.state.viz_state.data_staleness_secs = if staleness >= 0.0 {
                 Some(staleness)
             } else {
