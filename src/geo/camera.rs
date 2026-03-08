@@ -1,7 +1,12 @@
 //! Orbital camera for 3D globe rendering.
 //!
-//! Uses a lat/lon-based model so North always stays up. Supports three
-//! camera modes: planet orbit, site orbit, and free look.
+//! Supports four camera modes: 2D top-down, planet orbit, site orbit, and free look.
+//! Each mode has distinct mouse/keyboard controls following a consistent paradigm:
+//! - Left mouse: primary navigation
+//! - Right mouse: orientation adjustment
+//! - Middle mouse / Shift+left: pan/translate
+//! - Scroll: zoom or speed
+//! - WASD / arrows: directional movement
 
 use eframe::egui::{Pos2, Rect};
 use glam::{Mat4, Vec3, Vec4};
@@ -14,10 +19,11 @@ pub enum CameraMode {
     PlanetOrbit,
     /// Orbit around the radar site, always facing it.
     SiteOrbit,
-    /// Free look: unconstrained pan and zoom.
+    /// Free look: first-person flying camera.
     FreeLook,
 }
 
+#[allow(dead_code)]
 impl CameraMode {
     pub fn label(&self) -> &'static str {
         match self {
@@ -34,10 +40,19 @@ impl CameraMode {
             CameraMode::FreeLook => CameraMode::PlanetOrbit,
         }
     }
+
+    /// Key label for the mode (shown in UI).
+    pub fn key_hint(&self) -> &'static str {
+        match self {
+            CameraMode::PlanetOrbit => "2",
+            CameraMode::SiteOrbit => "3",
+            CameraMode::FreeLook => "4",
+        }
+    }
 }
 
 /// Orbital camera looking at a unit-sphere globe centered at the origin.
-/// Uses (center_lat, center_lon) so North is always up.
+/// Uses (center_lat, center_lon) so North is always up in orbit modes.
 #[derive(Clone)]
 pub struct GlobeCamera {
     /// Latitude the camera is looking at (degrees, -90..90).
@@ -69,10 +84,20 @@ pub struct GlobeCamera {
     pub orbit_elevation: f32,
 
     /// Camera tilt (pitch) in degrees. 0 = looking at globe center, positive = tilted up.
-    /// Used in Free Look mode, or via Shift+drag in any mode.
+    /// Used in orbit modes via right-drag.
     pub tilt: f32,
     /// Camera rotation (yaw offset) in degrees. 0 = North up, positive = CW.
     pub rotation: f32,
+
+    // ── Free Look state ──
+    /// Camera position in world space (Free Look mode).
+    pub free_pos: Vec3,
+    /// Yaw angle in degrees (0 = looking along +Z, 90 = looking along +X).
+    pub free_yaw: f32,
+    /// Pitch angle in degrees (0 = level, positive = looking up).
+    pub free_pitch: f32,
+    /// Movement speed in Earth radii per second (Free Look mode).
+    pub free_speed: f32,
 }
 
 impl Default for GlobeCamera {
@@ -90,6 +115,10 @@ impl Default for GlobeCamera {
             orbit_elevation: 45.0,
             tilt: 0.0,
             rotation: 0.0,
+            free_pos: Vec3::new(0.0, 0.0, 3.0),
+            free_yaw: 0.0,
+            free_pitch: 0.0,
+            free_speed: 0.5,
         }
     }
 }
@@ -99,6 +128,7 @@ impl Default for GlobeCamera {
 const MIN_DISTANCE: f32 = 1.005;
 const MAX_DISTANCE: f32 = 20.0;
 
+#[allow(dead_code)]
 impl GlobeCamera {
     /// Create a camera centered on the given geographic coordinates.
     pub fn centered_on(lat_deg: f64, lon_deg: f64) -> Self {
@@ -123,13 +153,12 @@ impl GlobeCamera {
     /// View matrix (world → eye).
     pub fn view_matrix(&self) -> Mat4 {
         match self.mode {
-            CameraMode::PlanetOrbit | CameraMode::FreeLook => {
+            CameraMode::PlanetOrbit => {
                 let eye = Vec3::new(0.0, 0.0, self.distance);
                 let look_at = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
                 let base = look_at * self.globe_rotation_matrix();
 
-                // Apply tilt (pitch) and rotation (yaw) for Free Look.
-                // These are also set via Shift+drag in any mode.
+                // Apply tilt (pitch) and rotation (yaw) from right-drag.
                 if self.tilt != 0.0 || self.rotation != 0.0 {
                     let tilt_mat = Mat4::from_rotation_x(self.tilt.to_radians());
                     let rot_mat = Mat4::from_rotation_z(self.rotation.to_radians());
@@ -139,6 +168,7 @@ impl GlobeCamera {
                 }
             }
             CameraMode::SiteOrbit => self.site_orbit_view_matrix(),
+            CameraMode::FreeLook => self.free_look_view_matrix(),
         }
     }
 
@@ -168,10 +198,30 @@ impl GlobeCamera {
         Mat4::look_at_rh(eye, site_pos, north)
     }
 
+    /// View matrix for FreeLook mode — first-person flying camera.
+    fn free_look_view_matrix(&self) -> Mat4 {
+        let yaw = self.free_yaw.to_radians();
+        let pitch = self.free_pitch.to_radians();
+
+        // Forward direction from yaw and pitch
+        let forward = Vec3::new(
+            yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        );
+
+        let target = self.free_pos + forward;
+        Mat4::look_at_rh(self.free_pos, target, Vec3::Y)
+    }
+
     /// Perspective projection matrix.
     pub fn projection_matrix(&self) -> Mat4 {
         // Adjust near plane based on distance — when very close, use tighter near plane
-        let near = if self.distance < 1.1 { 0.0001 } else { 0.01 };
+        let effective_dist = match self.mode {
+            CameraMode::FreeLook => self.free_pos.length(),
+            _ => self.distance,
+        };
+        let near = if effective_dist < 1.1 { 0.0001 } else { 0.01 };
         Mat4::perspective_rh_gl(self.fov_y, self.aspect, near, 100.0)
     }
 
@@ -190,9 +240,9 @@ impl GlobeCamera {
     }
 
     /// Camera position in world space.
-    fn camera_world_pos(&self) -> Vec3 {
+    pub fn camera_world_pos(&self) -> Vec3 {
         match self.mode {
-            CameraMode::PlanetOrbit | CameraMode::FreeLook => {
+            CameraMode::PlanetOrbit => {
                 // Camera sits at (0,0,distance) in view space; invert the globe rotation
                 let inv_rot = self.globe_rotation_matrix().inverse();
                 (inv_rot * Vec4::new(0.0, 0.0, self.distance, 1.0)).truncate()
@@ -210,6 +260,7 @@ impl GlobeCamera {
                 let offset_dir = (horiz * elev_rad.cos() + up * elev_rad.sin()).normalize();
                 site_pos + offset_dir * site_dist
             }
+            CameraMode::FreeLook => self.free_pos,
         }
     }
 
@@ -281,12 +332,12 @@ impl GlobeCamera {
     // ── Controls ────────────────────────────────────────────────
 
     /// Orbit the globe by screen-space delta (pixels).
-    /// Behavior depends on the active camera mode.
+    /// Planet Orbit: rotates the globe. Site Orbit: changes bearing/elevation.
     pub fn orbit(&mut self, dx: f32, dy: f32, viewport_height: f32) {
         let sensitivity = self.fov_y / viewport_height;
 
         match self.mode {
-            CameraMode::PlanetOrbit | CameraMode::FreeLook => {
+            CameraMode::PlanetOrbit => {
                 // Grab-and-drag: dragging right moves the globe right (center goes west).
                 // Scale sensitivity by distance so close-up panning feels natural.
                 let dist_scale = (self.distance - 1.0).max(0.01);
@@ -317,11 +368,14 @@ impl GlobeCamera {
                 }
                 self.orbit_elevation = (self.orbit_elevation + delevation).clamp(5.0, 175.0);
             }
+            CameraMode::FreeLook => {
+                // In free look, orbit doesn't apply — use look() instead
+            }
         }
     }
 
     /// Adjust camera tilt (pitch) and rotation (yaw) by screen-space delta.
-    /// Available via Shift+drag in any mode, or primary drag in Free Look.
+    /// Used by right-drag in orbit modes.
     pub fn tilt_rotate(&mut self, dx: f32, dy: f32, viewport_height: f32) {
         let sensitivity = self.fov_y / viewport_height;
         let deg_per_rad = 180.0 / std::f32::consts::PI;
@@ -340,9 +394,89 @@ impl GlobeCamera {
         }
     }
 
+    /// Adjust free look direction (yaw/pitch) by screen-space delta.
+    /// Used by left-drag in Free Look mode and right-drag (orientation) in Free Look.
+    pub fn free_look(&mut self, dx: f32, dy: f32, viewport_height: f32) {
+        let sensitivity = self.fov_y / viewport_height;
+        let deg_per_rad = 180.0 / std::f32::consts::PI;
+
+        self.free_yaw += dx * sensitivity * deg_per_rad;
+        self.free_pitch -= dy * sensitivity * deg_per_rad;
+
+        self.free_pitch = self.free_pitch.clamp(-89.0, 89.0);
+        // Wrap yaw
+        if self.free_yaw > 180.0 {
+            self.free_yaw -= 360.0;
+        }
+        if self.free_yaw < -180.0 {
+            self.free_yaw += 360.0;
+        }
+    }
+
+    /// Move the free look camera by a directional vector relative to the camera.
+    /// `forward` = along look direction, `right` = perpendicular, `up` = world up.
+    /// `dt` is frame delta time in seconds.
+    pub fn free_move(&mut self, forward: f32, right: f32, up: f32, dt: f32) {
+        let yaw = self.free_yaw.to_radians();
+        let pitch = self.free_pitch.to_radians();
+
+        let fwd = Vec3::new(
+            yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        );
+        let world_up = Vec3::Y;
+        let right_dir = fwd.cross(world_up).normalize();
+        // Camera-relative up (perpendicular to forward and right)
+        let up_dir = right_dir.cross(fwd).normalize();
+
+        let velocity = self.free_speed * dt;
+        self.free_pos += fwd * forward * velocity;
+        self.free_pos += right_dir * right * velocity;
+        self.free_pos += up_dir * up * velocity;
+    }
+
+    /// Pan the orbit pivot by screen-space delta (middle mouse drag).
+    /// In Planet Orbit, this shifts the center lat/lon.
+    /// In Site Orbit, this shifts the orbit pivot slightly.
+    pub fn pan_pivot(&mut self, dx: f32, dy: f32, viewport_height: f32) {
+        // Same as orbit for now — middle-drag shifts the center
+        self.orbit(dx, dy, viewport_height);
+    }
+
+    /// Translate the free look camera sideways relative to the screen plane.
+    /// Used by middle-drag in Free Look mode.
+    pub fn free_translate(&mut self, dx: f32, dy: f32, viewport_height: f32) {
+        let yaw = self.free_yaw.to_radians();
+        let pitch = self.free_pitch.to_radians();
+
+        let fwd = Vec3::new(
+            yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        );
+        let world_up = Vec3::Y;
+        let right_dir = fwd.cross(world_up).normalize();
+        let up_dir = right_dir.cross(fwd).normalize();
+
+        let sensitivity = self.fov_y / viewport_height;
+        let dist_scale = (self.free_pos.length() - 1.0).max(0.01);
+        let scale = sensitivity * dist_scale;
+
+        self.free_pos -= right_dir * dx * scale;
+        self.free_pos += up_dir * dy * scale;
+    }
+
     /// Zoom by scroll delta. Positive = zoom in (closer).
     /// Uses exponential scaling so zooming feels consistent at all distances.
     pub fn zoom(&mut self, delta: f32) {
+        if self.mode == CameraMode::FreeLook {
+            // In free look, scroll adjusts movement speed
+            let factor = 1.0 + delta * 0.003;
+            self.free_speed = (self.free_speed * factor).clamp(0.01, 50.0);
+            return;
+        }
+
         // Convert distance to log space, shift, convert back.
         // This makes each scroll tick a consistent percentage change.
         let log_dist = self.distance.ln();
@@ -365,6 +499,11 @@ impl GlobeCamera {
         self.orbit_elevation = 45.0;
         self.tilt = 0.0;
         self.rotation = 0.0;
+        // Initialize free look at a reasonable position
+        let pos = Self::geo_to_world(lat_deg, lon_deg) * 3.0;
+        self.free_pos = pos;
+        self.free_yaw = (-lon_deg as f32 + 180.0) % 360.0 - 180.0;
+        self.free_pitch = -(lat_deg as f32);
     }
 
     /// Re-center on the site without changing distance or zoom level.
@@ -375,6 +514,198 @@ impl GlobeCamera {
         self.orbit_elevation = 45.0;
         self.tilt = 0.0;
         self.rotation = 0.0;
+    }
+
+    /// Reset camera to a safe default for the current mode.
+    /// R key handler.
+    pub fn reset(&mut self) {
+        match self.mode {
+            CameraMode::PlanetOrbit => {
+                self.center_lat = self.site_lat;
+                self.center_lon = self.site_lon;
+                self.distance = 3.0;
+                self.tilt = 0.0;
+                self.rotation = 0.0;
+            }
+            CameraMode::SiteOrbit => {
+                self.orbit_bearing = 0.0;
+                self.orbit_elevation = 45.0;
+                self.distance = 3.0;
+                self.tilt = 0.0;
+                self.rotation = 0.0;
+            }
+            CameraMode::FreeLook => {
+                // Reset to a default vantage point above the radar site
+                let pos = Self::geo_to_world(self.site_lat as f64, self.site_lon as f64) * 3.0;
+                self.free_pos = pos;
+                // Look toward the globe center
+                let dir = -pos.normalize();
+                self.free_yaw = dir.x.atan2(dir.z).to_degrees();
+                self.free_pitch = dir.y.asin().to_degrees();
+                self.free_speed = 0.5;
+            }
+        }
+    }
+
+    /// Focus camera on the radar site. F key handler.
+    pub fn focus_site(&mut self) {
+        match self.mode {
+            CameraMode::PlanetOrbit => {
+                self.center_lat = self.site_lat;
+                self.center_lon = self.site_lon;
+            }
+            CameraMode::SiteOrbit => {
+                // Already orbiting the site; just snap bearing to north
+                self.orbit_bearing = 0.0;
+            }
+            CameraMode::FreeLook => {
+                // Move camera near the site and point toward it
+                let site_pos = Self::geo_to_world(self.site_lat as f64, self.site_lon as f64);
+                self.free_pos = site_pos * 2.0;
+                let dir = (site_pos - self.free_pos).normalize();
+                self.free_yaw = dir.x.atan2(dir.z).to_degrees();
+                self.free_pitch = dir.y.asin().to_degrees();
+            }
+        }
+    }
+
+    /// Align camera so North is up. N key handler.
+    pub fn align_north(&mut self) {
+        self.rotation = 0.0;
+        if self.mode == CameraMode::SiteOrbit {
+            // Keep current bearing but remove tilt
+            self.tilt = 0.0;
+        }
+    }
+
+    /// Level the horizon. L key handler.
+    pub fn level_horizon(&mut self) {
+        self.tilt = 0.0;
+        if self.mode == CameraMode::FreeLook {
+            self.free_pitch = 0.0;
+        }
+    }
+
+    /// Move pivot/center to a specific geographic point. Used for double-click.
+    pub fn move_pivot_to(&mut self, lat_deg: f64, lon_deg: f64) {
+        match self.mode {
+            CameraMode::PlanetOrbit => {
+                self.center_lat = lat_deg as f32;
+                self.center_lon = lon_deg as f32;
+            }
+            CameraMode::SiteOrbit => {
+                // In site orbit, double-click moves the orbit pivot
+                self.site_lat = lat_deg as f32;
+                self.site_lon = lon_deg as f32;
+            }
+            CameraMode::FreeLook => {
+                // In free look, move to the clicked point
+                let target = Self::geo_to_world(lat_deg, lon_deg);
+                // Position camera at current distance from the clicked point
+                let dist = self.free_pos.length();
+                self.free_pos = target * dist;
+                let dir = (target - self.free_pos).normalize();
+                self.free_yaw = dir.x.atan2(dir.z).to_degrees();
+                self.free_pitch = dir.y.asin().to_degrees();
+            }
+        }
+    }
+
+    /// Handle WASD/arrow key movement. Returns true if any movement occurred.
+    /// `forward`: +1 = W/Up, -1 = S/Down
+    /// `right`: +1 = D/Right, -1 = A/Left
+    /// `up_down`: +1 = E, -1 = Q
+    /// `speed_mult`: 2.0 for Shift, 0.25 for Ctrl, 1.0 otherwise.
+    /// `dt`: frame delta time in seconds.
+    pub fn keyboard_move(
+        &mut self,
+        forward: f32,
+        right: f32,
+        up_down: f32,
+        speed_mult: f32,
+        dt: f32,
+    ) -> bool {
+        if forward == 0.0 && right == 0.0 && up_down == 0.0 {
+            return false;
+        }
+
+        let base_speed = 60.0; // degrees per second for orbit, or distance per second
+
+        match self.mode {
+            CameraMode::PlanetOrbit => {
+                // WASD/arrows pan the globe (same as lat/lon drag)
+                let speed = base_speed * speed_mult * dt;
+                // W = camera looks further north → center_lat increases
+                self.center_lat += forward * speed * 0.5;
+                // D = camera looks further east → center_lon increases
+                self.center_lon += right * speed * 0.5;
+
+                self.center_lat = self.center_lat.clamp(-89.9, 89.9);
+                if self.center_lon > 180.0 {
+                    self.center_lon -= 360.0;
+                }
+                if self.center_lon < -180.0 {
+                    self.center_lon += 360.0;
+                }
+
+                // W/S also zoom in Planet Orbit per the spec
+                if forward != 0.0 {
+                    let zoom_speed = 1.0 * speed_mult * dt;
+                    let log_dist = self.distance.ln();
+                    let new_log = log_dist - forward * zoom_speed;
+                    self.distance = new_log.clamp(MIN_DISTANCE.ln(), MAX_DISTANCE.ln()).exp();
+                }
+            }
+            CameraMode::SiteOrbit => {
+                // A/D rotate horizontally around site, W/S adjust distance
+                let speed = base_speed * speed_mult * dt;
+                self.orbit_bearing = (self.orbit_bearing + right * speed) % 360.0;
+                if self.orbit_bearing < 0.0 {
+                    self.orbit_bearing += 360.0;
+                }
+
+                // W/S adjust distance
+                if forward != 0.0 {
+                    let zoom_speed = 1.0 * speed_mult * dt;
+                    let log_dist = self.distance.ln();
+                    let new_log = log_dist - forward * zoom_speed;
+                    self.distance = new_log.clamp(MIN_DISTANCE.ln(), MAX_DISTANCE.ln()).exp();
+                }
+
+                // Q/E roll the camera
+                if up_down != 0.0 {
+                    self.rotation += up_down * speed * 0.5;
+                    if self.rotation > 180.0 {
+                        self.rotation -= 360.0;
+                    }
+                    if self.rotation < -180.0 {
+                        self.rotation += 360.0;
+                    }
+                }
+            }
+            CameraMode::FreeLook => {
+                // WASD = standard FPS movement
+                self.free_move(forward, right, up_down, dt * speed_mult);
+            }
+        }
+        true
+    }
+
+    /// Reset pivot to default (Home key). Earth center for planet orbit, site for site orbit.
+    pub fn reset_pivot(&mut self) {
+        match self.mode {
+            CameraMode::PlanetOrbit => {
+                self.center_lat = self.site_lat;
+                self.center_lon = self.site_lon;
+            }
+            CameraMode::SiteOrbit => {
+                // Reset orbit pivot to site location
+                // (site_lat/site_lon already point to the site)
+            }
+            CameraMode::FreeLook => {
+                self.focus_site();
+            }
+        }
     }
 
     /// Update the site position (for SiteOrbit mode) without moving the camera view.
@@ -390,5 +721,46 @@ impl GlobeCamera {
         if h > 0.0 {
             self.aspect = w / h;
         }
+    }
+
+    /// Switch to a specific camera mode, preserving reasonable state.
+    pub fn switch_mode(&mut self, new_mode: CameraMode) {
+        if self.mode == new_mode {
+            return;
+        }
+
+        // When entering Free Look from an orbit mode, initialize free look state
+        // from the current orbit camera position and look direction.
+        if new_mode == CameraMode::FreeLook {
+            let cam_pos = self.camera_world_pos();
+            self.free_pos = cam_pos;
+
+            // Look direction: toward the orbit center (globe center for planet, site for site)
+            let look_target = match self.mode {
+                CameraMode::SiteOrbit => {
+                    Self::geo_to_world(self.site_lat as f64, self.site_lon as f64)
+                }
+                _ => Self::geo_to_world(self.center_lat as f64, self.center_lon as f64),
+            };
+            let dir = (look_target - cam_pos).normalize();
+            self.free_yaw = dir.x.atan2(dir.z).to_degrees();
+            self.free_pitch = dir.y.asin().to_degrees();
+        }
+
+        // When leaving Free Look, set orbit parameters from current free look position
+        if self.mode == CameraMode::FreeLook && new_mode != CameraMode::FreeLook {
+            self.distance = self.free_pos.length().clamp(MIN_DISTANCE, MAX_DISTANCE);
+
+            // Convert position to lat/lon for orbit center
+            let pos = self.free_pos.normalize();
+            let lat = pos.y.asin().to_degrees();
+            let lon = pos.x.atan2(pos.z).to_degrees();
+            self.center_lat = lat;
+            self.center_lon = lon;
+            self.tilt = 0.0;
+            self.rotation = 0.0;
+        }
+
+        self.mode = new_mode;
     }
 }

@@ -1,5 +1,6 @@
 //! Centralized keyboard shortcut handling and help overlay.
 
+use crate::geo::camera::CameraMode;
 use crate::state::{AppState, LiveExitReason, PlaybackSpeed, RadarProduct, ViewMode};
 use eframe::egui::{self, RichText};
 
@@ -9,7 +10,13 @@ struct Shortcut {
     description: &'static str,
 }
 
-const SHORTCUTS: &[Shortcut] = &[
+/// Section header in the shortcuts help overlay.
+struct ShortcutSection {
+    title: &'static str,
+    shortcuts: &'static [Shortcut],
+}
+
+const PLAYBACK_SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         key: "Space",
         description: "Play / Pause",
@@ -31,16 +38,8 @@ const SHORTCUTS: &[Shortcut] = &[
         description: "Increase playback speed",
     },
     Shortcut {
-        key: "L",
+        key: "Ctrl+L",
         description: "Toggle live mode",
-    },
-    Shortcut {
-        key: "1",
-        description: "Toggle left sidebar",
-    },
-    Shortcut {
-        key: "2",
-        description: "Toggle right sidebar",
     },
     Shortcut {
         key: "P",
@@ -54,21 +53,74 @@ const SHORTCUTS: &[Shortcut] = &[
         key: "S",
         description: "Open site selection",
     },
+];
+
+const VIEW_SHORTCUTS: &[Shortcut] = &[
     Shortcut {
-        key: "G",
-        description: "Toggle globe / flat map",
+        key: "1",
+        description: "2D top-down mode",
     },
     Shortcut {
-        key: "C",
-        description: "Cycle camera mode (3D)",
+        key: "2",
+        description: "3D planet orbit mode",
+    },
+    Shortcut {
+        key: "3",
+        description: "3D site orbit mode",
+    },
+    Shortcut {
+        key: "4",
+        description: "Free look mode",
+    },
+    Shortcut {
+        key: "T",
+        description: "Toggle last 2D / 3D mode",
+    },
+];
+
+const CAMERA_SHORTCUTS: &[Shortcut] = &[
+    Shortcut {
+        key: "WASD",
+        description: "Move / pan camera",
+    },
+    Shortcut {
+        key: "Q / E",
+        description: "Move down / up (3D)",
+    },
+    Shortcut {
+        key: "R",
+        description: "Reset camera to default",
+    },
+    Shortcut {
+        key: "F",
+        description: "Focus on radar site",
     },
     Shortcut {
         key: "N",
-        description: "Reset view (re-center, level, North up)",
+        description: "Align North up",
+    },
+    Shortcut {
+        key: "Home",
+        description: "Reset pivot to default",
     },
     Shortcut {
         key: "?",
         description: "Toggle this help overlay",
+    },
+];
+
+const SHORTCUT_SECTIONS: &[ShortcutSection] = &[
+    ShortcutSection {
+        title: "Playback",
+        shortcuts: PLAYBACK_SHORTCUTS,
+    },
+    ShortcutSection {
+        title: "View Modes",
+        shortcuts: VIEW_SHORTCUTS,
+    },
+    ShortcutSection {
+        title: "Camera",
+        shortcuts: CAMERA_SHORTCUTS,
     },
 ];
 
@@ -80,42 +132,50 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
         return;
     }
 
-    ctx.input(|i| {
-        // Note: Space is handled directly in bottom_panel.rs for play/pause
-        // to keep the existing integration with live mode logic.
-
-        // [ — Step backward
-        if i.key_pressed(egui::Key::OpenBracket) && !i.modifiers.any() {
-            // Will be applied below
-        }
-
-        // ] — Step forward
-        if i.key_pressed(egui::Key::CloseBracket) && !i.modifiers.any() {
-            // Will be applied below
-        }
-    });
-
     // Re-read input for actual state mutations (can't mutate state inside ctx.input closure)
     let step_back = ctx.input(|i| i.key_pressed(egui::Key::OpenBracket) && !i.modifiers.any());
     let step_fwd = ctx.input(|i| i.key_pressed(egui::Key::CloseBracket) && !i.modifiers.any());
     let speed_down = ctx.input(|i| i.key_pressed(egui::Key::Minus) && !i.modifiers.any());
     let speed_up = ctx.input(|i| i.key_pressed(egui::Key::Equals) && !i.modifiers.any());
-    let toggle_live = ctx.input(|i| i.key_pressed(egui::Key::L) && !i.modifiers.any());
-    let toggle_left = ctx.input(|i| i.key_pressed(egui::Key::Num1) && !i.modifiers.any());
-    let toggle_right = ctx.input(|i| i.key_pressed(egui::Key::Num2) && !i.modifiers.any());
+    let toggle_live = ctx.input(|i| i.key_pressed(egui::Key::L) && i.modifiers.command);
     let cycle_product = ctx.input(|i| i.key_pressed(egui::Key::P) && !i.modifiers.any());
     let cycle_elevation = ctx.input(|i| i.key_pressed(egui::Key::E) && !i.modifiers.any());
     let open_site = ctx.input(|i| i.key_pressed(egui::Key::S) && !i.modifiers.any());
-    let toggle_globe = ctx.input(|i| i.key_pressed(egui::Key::G) && !i.modifiers.any());
-    let cycle_camera = ctx.input(|i| i.key_pressed(egui::Key::C) && !i.modifiers.any());
-    let reset_north = ctx.input(|i| i.key_pressed(egui::Key::N) && !i.modifiers.any());
     let toggle_help = ctx.input(|i| {
         // ? requires Shift on most layouts
         i.key_pressed(egui::Key::Questionmark)
             || (i.key_pressed(egui::Key::Slash) && i.modifiers.shift)
     });
 
-    // Skip if focus is held
+    // View mode switching (1-4 keys)
+    let mode_1 = ctx.input(|i| i.key_pressed(egui::Key::Num1) && !i.modifiers.any());
+    let mode_2 = ctx.input(|i| i.key_pressed(egui::Key::Num2) && !i.modifiers.any());
+    let mode_3 = ctx.input(|i| i.key_pressed(egui::Key::Num3) && !i.modifiers.any());
+    let mode_4 = ctx.input(|i| i.key_pressed(egui::Key::Num4) && !i.modifiers.any());
+    let toggle_2d_3d = ctx.input(|i| i.key_pressed(egui::Key::T) && !i.modifiers.any());
+
+    // Camera controls
+    let reset_camera = ctx.input(|i| i.key_pressed(egui::Key::R) && !i.modifiers.any());
+    let focus_site = ctx.input(|i| i.key_pressed(egui::Key::F) && !i.modifiers.any());
+    let align_north = ctx.input(|i| i.key_pressed(egui::Key::N) && !i.modifiers.any());
+    let reset_pivot = ctx.input(|i| i.key_pressed(egui::Key::Home) && !i.modifiers.any());
+
+    // WASD continuous movement (held keys)
+    let dt = ctx.input(|i| i.stable_dt).min(0.1); // cap to avoid jumps
+    let w_held = ctx.input(|i| i.key_down(egui::Key::W));
+    let a_held = ctx.input(|i| i.key_down(egui::Key::A));
+    let s_held = ctx.input(|i| i.key_down(egui::Key::S));
+    let d_held = ctx.input(|i| i.key_down(egui::Key::D));
+    let q_held = ctx.input(|i| i.key_down(egui::Key::Q));
+    let e_held = ctx.input(|i| i.key_down(egui::Key::E));
+    let up_held = ctx.input(|i| i.key_down(egui::Key::ArrowUp));
+    let down_held = ctx.input(|i| i.key_down(egui::Key::ArrowDown));
+    let left_held = ctx.input(|i| i.key_down(egui::Key::ArrowLeft));
+    let right_held = ctx.input(|i| i.key_down(egui::Key::ArrowRight));
+    let shift_held = ctx.input(|i| i.modifiers.shift);
+    let ctrl_held = ctx.input(|i| i.modifiers.command);
+
+    // Skip if focus is held (re-check after reading inputs)
     if ctx.memory(|m| m.focused().is_some()) {
         return;
     }
@@ -180,14 +240,6 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
         }
     }
 
-    if toggle_left {
-        state.left_sidebar_visible = !state.left_sidebar_visible;
-    }
-
-    if toggle_right {
-        state.right_sidebar_visible = !state.right_sidebar_visible;
-    }
-
     if cycle_product {
         let products = RadarProduct::all();
         if let Some(idx) = products.iter().position(|p| *p == state.viz_state.product) {
@@ -195,8 +247,9 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
         }
     }
 
-    if cycle_elevation {
-        // Increment target elevation by one step (0.5 degrees), wrapping
+    // E cycles elevation only when not held continuously (avoid conflict with WASD movement)
+    // Only trigger on press, not hold, and only if Q/W/A/S/D aren't also held (disambiguation)
+    if cycle_elevation && !w_held && !a_held && !s_held && !d_held && !q_held {
         let new_elev = state.viz_state.target_elevation + 0.5;
         state.viz_state.target_elevation = if new_elev > 19.5 { 0.5 } else { new_elev };
     }
@@ -205,19 +258,103 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
         state.site_modal_open = true;
     }
 
-    if toggle_globe {
+    // ── View mode switching ──
+
+    if mode_1 {
+        state.viz_state.view_mode = ViewMode::Flat2D;
+    }
+
+    if mode_2 {
+        state.viz_state.view_mode = ViewMode::Globe3D;
+        state.viz_state.camera.switch_mode(CameraMode::PlanetOrbit);
+    }
+
+    if mode_3 {
+        state.viz_state.view_mode = ViewMode::Globe3D;
+        state.viz_state.camera.switch_mode(CameraMode::SiteOrbit);
+    }
+
+    if mode_4 {
+        state.viz_state.view_mode = ViewMode::Globe3D;
+        state.viz_state.camera.switch_mode(CameraMode::FreeLook);
+    }
+
+    if toggle_2d_3d {
         state.viz_state.view_mode = match state.viz_state.view_mode {
             ViewMode::Flat2D => ViewMode::Globe3D,
             ViewMode::Globe3D => ViewMode::Flat2D,
         };
     }
 
-    if cycle_camera && state.viz_state.view_mode == ViewMode::Globe3D {
-        state.viz_state.camera.mode = state.viz_state.camera.mode.next();
+    // ── Camera controls ──
+
+    if reset_camera {
+        if state.viz_state.view_mode == ViewMode::Flat2D {
+            state.viz_state.zoom = 1.0;
+            state.viz_state.pan_offset = eframe::egui::Vec2::ZERO;
+        } else {
+            state.viz_state.camera.reset();
+        }
     }
 
-    if reset_north && state.viz_state.view_mode == ViewMode::Globe3D {
-        state.viz_state.camera.recenter();
+    if focus_site {
+        if state.viz_state.view_mode == ViewMode::Flat2D {
+            state.viz_state.pan_offset = eframe::egui::Vec2::ZERO;
+        } else {
+            state.viz_state.camera.focus_site();
+        }
+    }
+
+    if align_north && state.viz_state.view_mode == ViewMode::Globe3D {
+        state.viz_state.camera.align_north();
+    }
+
+    if reset_pivot {
+        if state.viz_state.view_mode == ViewMode::Globe3D {
+            state.viz_state.camera.reset_pivot();
+        }
+    }
+
+    // ── WASD / Arrow key movement ──
+    // S is overloaded: site selection (press) vs camera movement (hold).
+    // We handle this by: S opens site modal only on press when no other WASD keys are held.
+    // For camera movement, S is only processed as movement if other movement keys are also active
+    // or if in 3D mode where it naturally means "backward".
+
+    let forward = if w_held || up_held { 1.0f32 } else { 0.0 }
+        - if (s_held && state.viz_state.view_mode == ViewMode::Globe3D) || down_held {
+            1.0
+        } else {
+            0.0
+        };
+    let right_move = if d_held || right_held { 1.0f32 } else { 0.0 }
+        - if a_held || left_held { 1.0 } else { 0.0 };
+    let up_move = if e_held { 1.0f32 } else { 0.0 } - if q_held { 1.0 } else { 0.0 };
+
+    let speed_mult = if shift_held {
+        2.0
+    } else if ctrl_held {
+        0.25
+    } else {
+        1.0
+    };
+
+    if forward != 0.0 || right_move != 0.0 || up_move != 0.0 {
+        if state.viz_state.view_mode == ViewMode::Globe3D {
+            let moved = state
+                .viz_state
+                .camera
+                .keyboard_move(forward, right_move, up_move, speed_mult, dt);
+            if moved {
+                ctx.request_repaint();
+            }
+        } else {
+            // 2D mode: WASD/arrows pan the map
+            let pan_speed = 200.0 * speed_mult * dt;
+            state.viz_state.pan_offset.x -= right_move * pan_speed;
+            state.viz_state.pan_offset.y += forward * pan_speed;
+            ctx.request_repaint();
+        }
     }
 
     if toggle_help {
@@ -240,8 +377,8 @@ pub fn render_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
             egui::Frame::popup(ui.style())
                 .inner_margin(16.0)
                 .show(ui, |ui| {
-                    ui.set_min_width(300.0);
-                    ui.set_max_width(400.0);
+                    ui.set_min_width(320.0);
+                    ui.set_max_width(420.0);
 
                     ui.horizontal(|ui| {
                         ui.heading("Keyboard Shortcuts");
@@ -254,16 +391,27 @@ pub fn render_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
 
                     ui.separator();
 
-                    egui::Grid::new("shortcuts_grid")
-                        .num_columns(2)
-                        .spacing([20.0, 6.0])
-                        .show(ui, |ui| {
-                            for shortcut in SHORTCUTS {
-                                ui.label(RichText::new(shortcut.key).monospace().strong());
-                                ui.label(shortcut.description);
-                                ui.end_row();
-                            }
-                        });
+                    for section in SHORTCUT_SECTIONS {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(section.title)
+                                .strong()
+                                .size(12.0)
+                                .color(ui.visuals().strong_text_color()),
+                        );
+                        ui.add_space(2.0);
+
+                        egui::Grid::new(format!("shortcuts_grid_{}", section.title))
+                            .num_columns(2)
+                            .spacing([20.0, 4.0])
+                            .show(ui, |ui| {
+                                for shortcut in section.shortcuts.iter() {
+                                    ui.label(RichText::new(shortcut.key).monospace().strong());
+                                    ui.label(shortcut.description);
+                                    ui.end_row();
+                                }
+                            });
+                    }
                 });
         });
 }

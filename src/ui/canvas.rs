@@ -202,8 +202,15 @@ fn draw_globe(
     ui.painter().add(callback);
 }
 
-/// Handle orbit/zoom interactions for globe mode.
-fn handle_globe_interaction(response: &egui::Response, _rect: &Rect, state: &mut AppState) {
+/// Handle mouse interactions for globe mode.
+///
+/// Controls paradigm:
+/// - Left mouse: primary navigation (orbit in orbit modes, look in free look)
+/// - Right mouse: orientation adjustment (tilt/rotate in orbit, look in free look)
+/// - Middle mouse / Shift+left: pan pivot
+/// - Scroll: zoom (orbit) or movement speed (free look)
+/// - Double-click: move pivot to clicked surface point
+fn handle_globe_interaction(response: &egui::Response, rect: &Rect, state: &mut AppState) {
     use crate::geo::camera::CameraMode;
 
     if response.dragged() {
@@ -211,27 +218,48 @@ fn handle_globe_interaction(response: &egui::Response, _rect: &Rect, state: &mut
         let viewport_h = response.rect.height();
         let shift_held = response.ctx.input(|i| i.modifiers.shift);
         let right_button = response.dragged_by(egui::PointerButton::Secondary);
+        let middle_button = response.dragged_by(egui::PointerButton::Middle);
 
-        if shift_held || right_button {
-            // Shift+drag or right-drag: tilt/rotate camera (any mode)
-            state
-                .viz_state
-                .camera
-                .tilt_rotate(delta.x, delta.y, viewport_h);
-        } else if state.viz_state.camera.mode == CameraMode::FreeLook {
-            // Free Look: left-drag tilts/rotates, Ctrl+drag orbits
-            let ctrl_held = response.ctx.input(|i| i.modifiers.command);
-            if ctrl_held {
-                state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
-            } else {
-                state
-                    .viz_state
-                    .camera
-                    .tilt_rotate(delta.x, delta.y, viewport_h);
+        match state.viz_state.camera.mode {
+            CameraMode::FreeLook => {
+                if middle_button || (shift_held && !right_button) {
+                    // Middle-drag or Shift+left: translate camera sideways
+                    state
+                        .viz_state
+                        .camera
+                        .free_translate(delta.x, delta.y, viewport_h);
+                } else if right_button {
+                    // Right-drag: look around without moving
+                    state
+                        .viz_state
+                        .camera
+                        .free_look(delta.x, delta.y, viewport_h);
+                } else {
+                    // Left-drag: look around (primary control in free look)
+                    state
+                        .viz_state
+                        .camera
+                        .free_look(delta.x, delta.y, viewport_h);
+                }
             }
-        } else {
-            // Planet Orbit / Site Orbit: left-drag orbits
-            state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
+            CameraMode::PlanetOrbit | CameraMode::SiteOrbit => {
+                if middle_button || (shift_held && !right_button) {
+                    // Middle-drag or Shift+left: pan pivot
+                    state
+                        .viz_state
+                        .camera
+                        .pan_pivot(delta.x, delta.y, viewport_h);
+                } else if right_button {
+                    // Right-drag: tilt/rotate camera orientation
+                    state
+                        .viz_state
+                        .camera
+                        .tilt_rotate(delta.x, delta.y, viewport_h);
+                } else {
+                    // Left-drag: orbit
+                    state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
+                }
+            }
         }
     }
 
@@ -242,9 +270,16 @@ fn handle_globe_interaction(response: &egui::Response, _rect: &Rect, state: &mut
         }
     }
 
-    // Double-click re-centers on site without resetting zoom
+    // Double-click: move pivot to clicked surface point
     if response.double_clicked() {
-        state.viz_state.camera.recenter();
+        if let Some(click_pos) = response.interact_pointer_pos() {
+            if let Some((lat, lon)) = state.viz_state.camera.screen_to_geo(click_pos, *rect) {
+                state.viz_state.camera.move_pivot_to(lat, lon);
+            } else {
+                // Clicked off-globe: recenter on site
+                state.viz_state.camera.recenter();
+            }
+        }
     }
 }
 

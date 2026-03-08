@@ -96,45 +96,48 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
 
                     ui.separator();
 
-                    // View mode indicator (clickable to toggle)
-                    let view_label = match state.viz_state.view_mode {
-                        ViewMode::Globe3D => "3D",
-                        ViewMode::Flat2D => "2D",
+                    // View mode indicator with camera mode
+                    let (view_label, view_hint) = match state.viz_state.view_mode {
+                        ViewMode::Flat2D => ("2D", "1"),
+                        ViewMode::Globe3D => match state.viz_state.camera.mode {
+                            CameraMode::PlanetOrbit => ("3D Planet", "2"),
+                            CameraMode::SiteOrbit => ("3D Site", "3"),
+                            CameraMode::FreeLook => ("3D Free", "4"),
+                        },
+                    };
+                    let mode_color = match state.viz_state.view_mode {
+                        ViewMode::Flat2D => Color32::from_rgb(100, 180, 255),
+                        ViewMode::Globe3D => match state.viz_state.camera.mode {
+                            CameraMode::PlanetOrbit => Color32::from_rgb(120, 200, 120),
+                            CameraMode::SiteOrbit => Color32::from_rgb(255, 200, 80),
+                            CameraMode::FreeLook => Color32::from_rgb(200, 140, 255),
+                        },
                     };
                     if ui
                         .button(
                             RichText::new(view_label)
                                 .size(13.0)
                                 .strong()
-                                .color(Color32::from_rgb(100, 180, 255)),
+                                .color(mode_color),
                         )
-                        .on_hover_text("Toggle view mode (G)")
+                        .on_hover_text(format!("View mode ({}) — T to toggle 2D/3D, 1-4 to switch", view_hint))
                         .clicked()
                     {
-                        state.viz_state.view_mode = match state.viz_state.view_mode {
-                            ViewMode::Flat2D => ViewMode::Globe3D,
-                            ViewMode::Globe3D => ViewMode::Flat2D,
-                        };
-                    }
-
-                    // Camera mode indicator (only in 3D mode)
-                    if state.viz_state.view_mode == ViewMode::Globe3D {
-                        let mode = state.viz_state.camera.mode;
-                        let mode_color = match mode {
-                            CameraMode::PlanetOrbit => Color32::from_rgb(120, 200, 120),
-                            CameraMode::SiteOrbit => Color32::from_rgb(255, 200, 80),
-                            CameraMode::FreeLook => Color32::from_rgb(200, 140, 255),
-                        };
-                        if ui
-                            .button(
-                                RichText::new(mode.label())
-                                    .size(12.0)
-                                    .color(mode_color),
-                            )
-                            .on_hover_text("Cycle camera mode (C)")
-                            .clicked()
-                        {
-                            state.viz_state.camera.mode = mode.next();
+                        // Click cycles through modes: 2D → Planet → Site → Free → 2D
+                        match state.viz_state.view_mode {
+                            ViewMode::Flat2D => {
+                                state.viz_state.view_mode = ViewMode::Globe3D;
+                                state.viz_state.camera.switch_mode(CameraMode::PlanetOrbit);
+                            }
+                            ViewMode::Globe3D => {
+                                let next = state.viz_state.camera.mode.next();
+                                if next == CameraMode::PlanetOrbit {
+                                    // Wrapped around → go to 2D
+                                    state.viz_state.view_mode = ViewMode::Flat2D;
+                                } else {
+                                    state.viz_state.camera.switch_mode(next);
+                                }
+                            }
                         }
                     }
                 });
