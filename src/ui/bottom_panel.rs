@@ -2098,7 +2098,7 @@ fn render_realtime_progress(
                 scan_block.center(),
                 egui::Align2::CENTER_CENTER,
                 label,
-                egui::FontId::monospace(7.0),
+                egui::FontId::monospace(8.0),
                 Color32::from_rgba_unmultiplied(220, 240, 220, 180),
             );
         }
@@ -2123,7 +2123,7 @@ fn render_realtime_progress(
                     Pos2::new(x + 2.0, scan_rect.top() + 2.0),
                     egui::Align2::LEFT_TOP,
                     "est.",
-                    egui::FontId::monospace(6.0),
+                    egui::FontId::monospace(8.0),
                     tl_colors::estimated_boundary(),
                 );
             }
@@ -2272,8 +2272,36 @@ fn render_realtime_progress(
                 painter.rect_stroke(block, 1.0, Stroke::new(stroke_width, border), stroke_kind);
             }
         } else if is_downloading {
-            // ── Downloading: outline with chunk subdivision ──
+            // ── Downloading: outline with chunk subdivision + progress bar ──
             let border_color = Color32::from_rgba_unmultiplied(60, 140, 200, 100);
+
+            // Total radials accumulated for this elevation across all chunks
+            let total_radials: u32 = live_state
+                .chunk_elev_spans
+                .iter()
+                .filter(|&&(e, _, _, _)| e == elev_num)
+                .map(|&(_, _, _, r)| r)
+                .sum::<u32>()
+                + in_progress_radials;
+            let expected_radials = 360u32; // NEXRAD standard full rotation
+
+            // Progress fill: fraction of block width based on radials collected
+            let frac = (total_radials as f32 / expected_radials as f32).clamp(0.0, 1.0);
+            if frac > 0.0 {
+                let progress_rect = Rect::from_min_max(
+                    Pos2::new(block.min.x, block.min.y),
+                    Pos2::new(
+                        block.min.x + (block.width() * frac),
+                        block.max.y,
+                    ),
+                );
+                painter.rect_filled(
+                    progress_rect,
+                    1.0,
+                    Color32::from_rgba_unmultiplied(60, 140, 200, 45),
+                );
+            }
+
             painter.rect_stroke(
                 block,
                 1.0,
@@ -2308,18 +2336,23 @@ fn render_realtime_progress(
                         block.center(),
                         egui::Align2::CENTER_CENTER,
                         format!("~{}s", remaining.ceil() as i32),
-                        egui::FontId::monospace(6.0),
-                        Color32::from_rgba_unmultiplied(140, 200, 255, 160),
+                        egui::FontId::monospace(8.0),
+                        Color32::from_rgba_unmultiplied(140, 200, 255, 180),
                     );
                 }
             } else if width > 30.0 {
-                // Show radial count while actively receiving
+                // Show radial progress as fraction while actively receiving
+                let label = if width > 55.0 {
+                    format!("{}/{}", total_radials, expected_radials)
+                } else {
+                    format!("{}", total_radials)
+                };
                 painter.text(
                     block.center(),
                     egui::Align2::CENTER_CENTER,
-                    format!("{}", in_progress_radials),
-                    egui::FontId::monospace(6.0),
-                    Color32::from_rgba_unmultiplied(140, 200, 255, 160),
+                    label,
+                    egui::FontId::monospace(8.0),
+                    Color32::from_rgba_unmultiplied(140, 200, 255, 180),
                 );
             }
         } else if is_future {
@@ -2344,7 +2377,7 @@ fn render_realtime_progress(
                 block.center(),
                 egui::Align2::CENTER_CENTER,
                 label,
-                egui::FontId::monospace(7.0),
+                egui::FontId::monospace(8.0),
                 Color32::from_rgba_unmultiplied(220, 230, 255, label_alpha),
             );
         }
