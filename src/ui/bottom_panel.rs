@@ -643,15 +643,16 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         DetailLevel::Sweeps
     };
 
-    // Track heights — sweep track only shown at Sweeps detail level
-    // Scan track needs enough room for: block fills (top) + time tick labels (bottom)
+    // Track heights — timestamp lane sits above the scan track so labels
+    // never overlap scan block content.  Sweep track only at Sweeps detail.
+    let tick_lane_h: f32 = 12.0; // dedicated lane for time tick labels
     let scan_track_h: f32 = if detail_level == DetailLevel::Sweeps {
-        24.0
+        20.0
     } else {
-        40.0
+        24.0
     };
     let sweep_track_h: f32 = if detail_level == DetailLevel::Sweeps {
-        22.0
+        20.0
     } else {
         0.0
     };
@@ -660,8 +661,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         0.0
     };
-    let vcp_track_h: f32 = 6.0;
-    let timeline_height = scan_track_h + separator_h + sweep_track_h + vcp_track_h;
+    let timeline_height = tick_lane_h + scan_track_h + separator_h + sweep_track_h;
 
     let (response, painter) = ui.allocate_painter(
         Vec2::new(available_width as f32, timeline_height),
@@ -669,10 +669,14 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     );
     let full_rect = response.rect;
 
-    // Sub-rects for each track
-    let scan_rect = Rect::from_min_max(
+    // Sub-rects for each track: tick lane → scan track → sweep track
+    let tick_rect = Rect::from_min_max(
         full_rect.min,
-        Pos2::new(full_rect.max.x, full_rect.min.y + scan_track_h),
+        Pos2::new(full_rect.max.x, full_rect.min.y + tick_lane_h),
+    );
+    let scan_rect = Rect::from_min_max(
+        Pos2::new(full_rect.min.x, tick_rect.max.y),
+        Pos2::new(full_rect.max.x, tick_rect.max.y + scan_track_h),
     );
     let sweep_rect = if detail_level == DetailLevel::Sweeps {
         Rect::from_min_max(
@@ -685,10 +689,6 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         Rect::NOTHING // not used
     };
-    let vcp_rect = Rect::from_min_max(
-        Pos2::new(full_rect.min.x, full_rect.max.y - vcp_track_h),
-        full_rect.max,
-    );
 
     let dark = state.is_dark;
 
@@ -839,51 +839,7 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         ui.ctx().request_repaint();
     }
 
-    // ── VCP info track ────────────────────────────────────────────────
-    {
-        let vcp_color = |vcp: u16| -> Color32 {
-            let (r, g, b) = tl_colors::vcp_base_rgb(vcp);
-            Color32::from_rgb(r, g, b)
-        };
-
-        painter.rect_filled(vcp_rect, 0.0, Color32::from_rgb(22, 22, 30));
-
-        for scan in state.radar_timeline.scans_in_range(view_start, view_end) {
-            let x_start = ts_to_x(scan.start_time).max(vcp_rect.left());
-            let x_end = ts_to_x(scan.end_time).min(vcp_rect.right());
-
-            if x_end > x_start {
-                let bar_rect = Rect::from_min_max(
-                    Pos2::new(x_start, vcp_rect.top() + 1.0),
-                    Pos2::new(x_end, vcp_rect.bottom() - 1.0),
-                );
-                painter.rect_filled(bar_rect, 0.0, vcp_color(scan.vcp));
-            }
-        }
-
-        if detail_level != DetailLevel::Solid {
-            let mut last_vcp = 0u16;
-            for scan in state.radar_timeline.scans_in_range(view_start, view_end) {
-                if scan.vcp != last_vcp && scan.vcp > 0 {
-                    last_vcp = scan.vcp;
-                    let x = ts_to_x(scan.start_time);
-                    if x >= vcp_rect.left() && x <= vcp_rect.right() - 30.0 {
-                        painter.text(
-                            Pos2::new(x + 2.0, vcp_rect.center().y),
-                            egui::Align2::LEFT_CENTER,
-                            format!("{}", scan.vcp),
-                            egui::FontId::monospace(7.0),
-                            Color32::from_rgba_unmultiplied(220, 220, 240, 180),
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    // Track headers removed — the tracks are self-evident from content and
-    // color palette, and the headers overlapped with scan/sweep block labels.
-    // Hover tooltips provide the educational labeling instead.
+    // VCP track removed — the scan lane already represents VCP via color.
 
     // Select appropriate tick configuration
     let tick_config = select_tick_config(zoom);
@@ -909,38 +865,38 @@ fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     let first_tick = (local_start / minor_interval) * minor_interval - tz_offset_secs;
     let last_tick = ((local_end / minor_interval) + 1) * minor_interval - tz_offset_secs;
 
-    // Draw tick marks on scan track
+    // Draw tick marks and labels in the dedicated tick lane above the scan track
     let mut tick = first_tick;
     while tick <= last_tick {
         let x = ts_to_x(tick as f64);
 
-        if x >= scan_rect.left() && x <= scan_rect.right() {
+        if x >= tick_rect.left() && x <= tick_rect.right() {
             let local_tick = tick + tz_offset_secs;
             let is_major = local_tick % major_interval == 0;
-            let tick_height = if is_major { 10.0 } else { 5.0 };
+            let tick_height = if is_major { 4.0 } else { 2.0 };
             let tick_color = if is_major {
                 tl_colors::tick_major(dark)
             } else {
                 tl_colors::tick_minor(dark)
             };
 
+            // Tick mark hangs down from the bottom of the tick lane
             painter.line_segment(
                 [
-                    Pos2::new(x, scan_rect.bottom() - tick_height),
-                    Pos2::new(x, scan_rect.bottom()),
+                    Pos2::new(x, tick_rect.bottom() - tick_height),
+                    Pos2::new(x, tick_rect.bottom()),
                 ],
                 Stroke::new(1.0, tick_color),
             );
 
-            // Draw label for major ticks — positioned at bottom of scan track
-            // to avoid overlapping with scan block content (VCP labels, fraction labels)
+            // Label for major ticks — above tick marks
             if is_major {
                 let label = format_timestamp(tick, tick_config, use_local);
                 painter.text(
-                    Pos2::new(x, scan_rect.bottom() - tick_height - 1.0),
+                    Pos2::new(x, tick_rect.bottom() - tick_height),
                     egui::Align2::CENTER_BOTTOM,
                     label,
-                    egui::FontId::monospace(9.0),
+                    egui::FontId::monospace(8.0),
                     tl_colors::tick_label(dark),
                 );
             }
