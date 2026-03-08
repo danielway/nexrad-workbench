@@ -110,27 +110,31 @@ fn render_scan_track(
                     if scan.completeness == Some(ScanCompleteness::PartialWithVcp) {
                         let hatch_color = tl_colors::scan_hatch(scan.vcp);
                         let spacing = 6.0;
+                        let h = scan_rect.height();
                         // Use global x-coordinate phase so hatch lines are parallel across all blocks
                         let phase = scan_rect.left() % spacing;
                         let mut offset = -phase;
-                        while offset < width + scan_rect.height() {
+                        while offset < width + h {
+                            // Unclipped 45° diagonal: top to bottom, shifting left by h
                             let x0 = scan_rect.left() + offset;
-                            let y0 = scan_rect.top();
-                            let x1 = x0 - scan_rect.height();
-                            let y1 = scan_rect.bottom();
-                            painter.line_segment(
-                                [
-                                    Pos2::new(
-                                        x0.max(scan_rect.left()).min(scan_rect.right()),
-                                        y0.max(scan_rect.top()),
-                                    ),
-                                    Pos2::new(
-                                        x1.max(scan_rect.left()).min(scan_rect.right()),
-                                        y1.min(scan_rect.bottom()),
-                                    ),
-                                ],
-                                Stroke::new(0.5, hatch_color),
-                            );
+                            let x1 = x0 - h;
+                            // Clip to rect: adjust y when x is clamped to preserve angle
+                            let (cx0, cy0) = if x0 > scan_rect.right() {
+                                (scan_rect.right(), scan_rect.top() + (x0 - scan_rect.right()))
+                            } else {
+                                (x0, scan_rect.top())
+                            };
+                            let (cx1, cy1) = if x1 < scan_rect.left() {
+                                (scan_rect.left(), scan_rect.bottom() - (scan_rect.left() - x1))
+                            } else {
+                                (x1, scan_rect.bottom())
+                            };
+                            if cy0 < cy1 {
+                                painter.line_segment(
+                                    [Pos2::new(cx0, cy0), Pos2::new(cx1, cy1)],
+                                    Stroke::new(0.5, hatch_color),
+                                );
+                            }
                             offset += spacing;
                         }
                     }
@@ -1895,21 +1899,28 @@ fn render_download_ghosts(
             );
             // Diagonal stripes
             let width = x_end - x_start;
-            let height = ghost_rect.height();
+            let h = ghost_rect.height();
             let spacing = 8.0;
             let mut offset = 0.0;
-            while offset < width + height {
+            while offset < width + h {
                 let x0 = ghost_rect.left() + offset;
-                let y0 = ghost_rect.top();
-                let x1 = x0 - height;
-                let y1 = ghost_rect.bottom();
-                painter.line_segment(
-                    [
-                        Pos2::new(x0.max(ghost_rect.left()).min(ghost_rect.right()), y0),
-                        Pos2::new(x1.max(ghost_rect.left()).min(ghost_rect.right()), y1),
-                    ],
-                    Stroke::new(0.5, tl_colors::ghost_pending_fill()),
-                );
+                let x1 = x0 - h;
+                let (cx0, cy0) = if x0 > ghost_rect.right() {
+                    (ghost_rect.right(), ghost_rect.top() + (x0 - ghost_rect.right()))
+                } else {
+                    (x0, ghost_rect.top())
+                };
+                let (cx1, cy1) = if x1 < ghost_rect.left() {
+                    (ghost_rect.left(), ghost_rect.bottom() - (ghost_rect.left() - x1))
+                } else {
+                    (x1, ghost_rect.bottom())
+                };
+                if cy0 < cy1 {
+                    painter.line_segment(
+                        [Pos2::new(cx0, cy0), Pos2::new(cx1, cy1)],
+                        Stroke::new(0.5, tl_colors::ghost_pending_fill()),
+                    );
+                }
                 offset += spacing;
             }
         }

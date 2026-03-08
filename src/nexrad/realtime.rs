@@ -120,7 +120,7 @@ async fn streaming_loop(
     stats: NetworkStats,
     _facade: DataFacade,
 ) {
-    use nexrad_data::aws::realtime::{ChunkIterator, ChunkType};
+    use nexrad_data::aws::realtime::{download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType};
 
     log::info!("Starting realtime streaming for site: {}", site_id);
 
@@ -165,7 +165,7 @@ async fn streaming_loop(
     // If start_chunk is Some, we joined mid-volume: emit start chunk + latest chunk.
     // If start_chunk is None, latest_chunk IS the start chunk.
     if let Some(start_chunk) = init_result.start_chunk {
-        // Joined mid-volume: emit the start chunk first
+        // Joined mid-volume: emit the start chunk, backfill intermediates, then latest
         let start_data = start_chunk.chunk.data().to_vec();
         current_scan_start_secs = current_timestamp();
 
@@ -183,15 +183,85 @@ async fn streaming_loop(
                 timestamp: current_scan_start_secs,
             });
         }
+        ctx.request_repaint();
 
-        // Then emit the latest chunk (where we actually joined)
+        // Backfill: download all intermediate chunks between start and latest
+        let latest_seq = init_result.latest_chunk.identifier.sequence();
+        let volume = *init_result.latest_chunk.identifier.volume();
+        chunks_in_volume = 1; // start chunk already emitted
+
+        if latest_seq > 2 {
+            // List all chunks in the volume to get their identifiers
+            match list_chunks_in_volume(&site_id, volume, 100).await {
+                Ok(chunk_ids) => {
+                    // Filter to intermediate chunks (after start, before latest)
+                    let intermediates: Vec<_> = chunk_ids
+                        .into_iter()
+                        .filter(|id| id.sequence() > 1 && id.sequence() < latest_seq)
+                        .collect();
+
+                    let total_backfill = intermediates.len();
+                    log::info!(
+                        "Backfill: downloading {} intermediate chunks (seq 2..{})",
+                        total_backfill,
+                        latest_seq - 1
+                    );
+
+                    for chunk_id in &intermediates {
+                        if state.borrow().stop_requested {
+                            break;
+                        }
+
+                        match download_chunk(&site_id, chunk_id).await {
+                            Ok((_id, chunk)) => {
+                                chunks_in_volume += 1;
+                                let chunk_data = chunk.data().to_vec();
+                                let chunk_type = chunk_id.chunk_type();
+                                log::debug!(
+                                    "Backfill: chunk seq {} ({} bytes, {:?})",
+                                    chunk_id.sequence(),
+                                    chunk_data.len(),
+                                    chunk_type
+                                );
+                                {
+                                    let mut s = state.borrow_mut();
+                                    s.results.push(RealtimeResult::ChunkData {
+                                        data: chunk_data,
+                                        chunk_index: chunks_in_volume - 1,
+                                        is_start: false,
+                                        is_end: false,
+                                        timestamp: current_scan_start_secs,
+                                    });
+                                }
+                                ctx.request_repaint();
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Backfill: failed to download chunk seq {}: {}",
+                                    chunk_id.sequence(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+
+                    log::info!("Backfill: completed, {} chunks downloaded", chunks_in_volume - 1);
+                }
+                Err(e) => {
+                    log::warn!("Backfill: failed to list chunks: {}, skipping backfill", e);
+                }
+            }
+        }
+
+        // Emit the latest chunk (where the iterator is positioned)
         let latest_data = init_result.latest_chunk.chunk.data().to_vec();
         let latest_type = init_result.latest_chunk.identifier.chunk_type();
         let latest_is_end = latest_type == ChunkType::End;
-        chunks_in_volume = 2; // start + latest
+        chunks_in_volume += 1;
 
         log::info!(
-            "Init: emitting latest_chunk ({} bytes, is_end={})",
+            "Init: emitting latest_chunk seq {} ({} bytes, is_end={})",
+            latest_seq,
             latest_data.len(),
             latest_is_end
         );
@@ -199,7 +269,7 @@ async fn streaming_loop(
             let mut s = state.borrow_mut();
             s.results.push(RealtimeResult::ChunkData {
                 data: latest_data,
-                chunk_index: 1,
+                chunk_index: chunks_in_volume - 1,
                 is_start: false,
                 is_end: latest_is_end,
                 timestamp: current_scan_start_secs,
