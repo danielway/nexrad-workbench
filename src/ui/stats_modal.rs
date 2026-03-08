@@ -13,6 +13,11 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
         return;
     }
 
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.stats_detail_open = false;
+        return;
+    }
+
     // Semi-transparent backdrop
     egui::Area::new(egui::Id::new("stats_modal_backdrop"))
         .fixed_pos(egui::Pos2::ZERO)

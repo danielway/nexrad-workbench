@@ -26,6 +26,11 @@ pub fn render_site_modal(
         return false;
     }
 
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.site_modal_open = false;
+        return false;
+    }
+
     let mut selected = false;
 
     // Semi-transparent backdrop

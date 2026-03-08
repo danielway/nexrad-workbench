@@ -47,11 +47,11 @@ const PLAYBACK_SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         key: "E",
-        description: "Cycle elevation up",
+        description: "Cycle elevation up (2D)",
     },
     Shortcut {
         key: "S",
-        description: "Open site selection",
+        description: "Open site selection (2D)",
     },
 ];
 
@@ -80,12 +80,20 @@ const VIEW_SHORTCUTS: &[Shortcut] = &[
 
 const CAMERA_SHORTCUTS: &[Shortcut] = &[
     Shortcut {
-        key: "WASD",
+        key: "WASD / Arrows",
         description: "Move / pan camera",
     },
     Shortcut {
         key: "Q / E",
         description: "Move down / up (3D)",
+    },
+    Shortcut {
+        key: "Shift",
+        description: "2× camera speed",
+    },
+    Shortcut {
+        key: "Ctrl",
+        description: "¼× camera speed",
     },
     Shortcut {
         key: "R",
@@ -97,15 +105,22 @@ const CAMERA_SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         key: "N",
-        description: "Align North up",
+        description: "Align North up (3D)",
     },
     Shortcut {
         key: "Home",
-        description: "Reset pivot to default",
+        description: "Reset pivot to default (3D)",
     },
+];
+
+const GENERAL_SHORTCUTS: &[Shortcut] = &[
     Shortcut {
         key: "?",
         description: "Toggle this help overlay",
+    },
+    Shortcut {
+        key: "Esc",
+        description: "Close open modal / overlay",
     },
 ];
 
@@ -121,6 +136,10 @@ const SHORTCUT_SECTIONS: &[ShortcutSection] = &[
     ShortcutSection {
         title: "Camera",
         shortcuts: CAMERA_SHORTCUTS,
+    },
+    ShortcutSection {
+        title: "General",
+        shortcuts: GENERAL_SHORTCUTS,
     },
 ];
 
@@ -247,14 +266,15 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
         }
     }
 
-    // E cycles elevation only when not held continuously (avoid conflict with WASD movement)
-    // Only trigger on press, not hold, and only if Q/W/A/S/D aren't also held (disambiguation)
-    if cycle_elevation && !w_held && !a_held && !s_held && !d_held && !q_held {
+    // E cycles elevation in 2D mode (where Q/E vertical movement doesn't apply).
+    // In 3D mode, E is reserved for upward camera movement.
+    if cycle_elevation && state.viz_state.view_mode == ViewMode::Flat2D {
         let new_elev = state.viz_state.target_elevation + 0.5;
         state.viz_state.target_elevation = if new_elev > 19.5 { 0.5 } else { new_elev };
     }
 
-    if open_site {
+    // S opens site modal only in 2D mode. In 3D, S is reserved for backward movement.
+    if open_site && state.viz_state.view_mode == ViewMode::Flat2D {
         state.site_modal_open = true;
     }
 
@@ -316,17 +336,11 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
     }
 
     // ── WASD / Arrow key movement ──
-    // S is overloaded: site selection (press) vs camera movement (hold).
-    // We handle this by: S opens site modal only on press when no other WASD keys are held.
-    // For camera movement, S is only processed as movement if other movement keys are also active
-    // or if in 3D mode where it naturally means "backward".
+    // S and E are mode-split: in 2D they trigger site selection / elevation cycling,
+    // in 3D they are reserved for camera movement (backward / up).
 
     let forward = if w_held || up_held { 1.0f32 } else { 0.0 }
-        - if (s_held && state.viz_state.view_mode == ViewMode::Globe3D) || down_held {
-            1.0
-        } else {
-            0.0
-        };
+        - if s_held || down_held { 1.0 } else { 0.0 };
     let right_move = if d_held || right_held { 1.0f32 } else { 0.0 }
         - if a_held || left_held { 1.0 } else { 0.0 };
     let up_move = if e_held { 1.0f32 } else { 0.0 } - if q_held { 1.0 } else { 0.0 };
@@ -365,6 +379,13 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
 /// Render the keyboard shortcut help overlay.
 pub fn render_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
     if !state.shortcuts_help_visible {
+        return;
+    }
+
+    // Close on Escape (checked here because the overlay area may consume the key
+    // event before handle_shortcuts sees it)
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.shortcuts_help_visible = false;
         return;
     }
 

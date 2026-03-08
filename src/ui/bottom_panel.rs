@@ -1226,6 +1226,11 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
         return;
     }
 
+    if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.datetime_picker.close();
+        return;
+    }
+
     let use_local = state.use_local_time;
     let tz_label = if use_local { "Local" } else { "UTC" };
     let popup_id = ui.make_persistent_id("datetime_picker_popup");

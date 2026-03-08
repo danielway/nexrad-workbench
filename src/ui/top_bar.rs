@@ -84,7 +84,7 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                     }
                 }
 
-                // Right-aligned: right panel toggle + view/camera mode
+                // Right-aligned: right panel toggle + help + view/camera mode
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .button(RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE).size(14.0))
@@ -92,6 +92,15 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                         .clicked()
                     {
                         state.right_sidebar_visible = !state.right_sidebar_visible;
+                    }
+
+                    // Help button — toggles keyboard shortcut overlay
+                    if ui
+                        .button(RichText::new(egui_phosphor::regular::QUESTION).size(14.0))
+                        .on_hover_text("Keyboard shortcuts (?)")
+                        .clicked()
+                    {
+                        state.shortcuts_help_visible = !state.shortcuts_help_visible;
                     }
 
                     ui.separator();
