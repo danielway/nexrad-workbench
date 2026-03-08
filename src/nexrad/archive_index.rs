@@ -218,6 +218,12 @@ impl ArchiveIndex {
         self.get(site_id, date).is_some()
     }
 
+    /// Remove a specific cached listing (e.g. to force a re-fetch).
+    pub fn remove(&mut self, site_id: &str, date: &NaiveDate) {
+        let key = ArchiveIndexKey::new(site_id, *date);
+        self.listings.remove(&key);
+    }
+
     /// Clear all cached listings.
     #[allow(dead_code)]
     pub fn clear(&mut self) {

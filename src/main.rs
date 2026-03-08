@@ -441,6 +441,31 @@ impl WorkbenchApp {
                                 boundary.end,
                             ));
                         }
+                    } else {
+                        // No scan covers this time in the cached listing.
+                        // The listing may be stale (e.g. archives created after
+                        // it was cached), so invalidate and re-fetch.
+                        log::info!(
+                            "No scan at {} in cached listing for {}/{}; re-fetching",
+                            sel_start_i64,
+                            site_id,
+                            current_date
+                        );
+                        self.archive_index.remove(&site_id, &current_date);
+                        if !self
+                            .download_channel
+                            .is_listing_pending(&site_id, &current_date)
+                        {
+                            self.download_channel.fetch_listing(
+                                ctx.clone(),
+                                site_id.clone(),
+                                current_date,
+                            );
+                        }
+                        self.state.download_at_position_requested = true;
+                        self.state.status_message =
+                            format!("Re-fetching archive listing for {}...", current_date);
+                        return;
                     }
                 } else {
                     // Range selection: find all scans that intersect [sel_start, sel_end]

@@ -694,26 +694,6 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         let data_len = data.len();
 
-        // --- Reset accumulator on Start ---
-        if is_start {
-            CHUNK_ACCUM.with(|cell| {
-                *cell.borrow_mut() = Some(ChunkAccumulator {
-                    scan_key: ScanKey::new(site_id.as_str(), UnixMillis::from_secs(timestamp_secs)),
-                    site_id: site_id.clone(),
-                    all_radials: Vec::new(),
-                    radial_metas: Vec::new(),
-                    completed_elevations: std::collections::HashSet::new(),
-                    last_elevation_number: None,
-                    vcp: None,
-                    has_vcp: false,
-                    total_chunks: 0,
-                    total_size_bytes: 0,
-                    file_name: file_name.clone(),
-                    timestamp_secs,
-                });
-            });
-        }
-
         // --- Decode the chunk's record(s) into radials ---
         let mut chunk_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
         let mut chunk_vcp: Option<ExtractedVcp> = None;
@@ -732,6 +712,57 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     volume_header_time_secs = Some(dt.timestamp() as f64);
                 }
             }
+
+            // --- Delete any overlapping scans so we don't double-store ---
+            // Use the radar's actual volume header time (if available) for
+            // accurate range-based overlap detection against archive scans
+            // which are keyed by the filename timestamp, not wall-clock time.
+            // Typical VCP duration is 4–6 min; 600s is a safe upper bound.
+            let scan_key = ScanKey::new(site_id.as_str(), UnixMillis::from_secs(timestamp_secs));
+            let overlap_start_secs = volume_header_time_secs
+                .map(|t| t as i64)
+                .unwrap_or(timestamp_secs);
+            let overlap_start_ms = overlap_start_secs * 1000;
+            let overlap_end_ms = (overlap_start_secs + 600) * 1000;
+            let store = idb_store().await?;
+            let deleted = store
+                .delete_overlapping_scans(
+                    &SiteId(site_id.clone()),
+                    UnixMillis(overlap_start_ms),
+                    overlap_end_ms,
+                    &scan_key,
+                )
+                .await
+                .map_err(|e| {
+                    wasm_bindgen::JsValue::from_str(&format!(
+                        "Failed to delete overlapping scans: {}",
+                        e
+                    ))
+                })?;
+            if deleted > 0 {
+                log::info!(
+                    "ingest_chunk: replaced {} overlapping scan(s) before real-time ingest",
+                    deleted
+                );
+            }
+
+            // --- Reset accumulator ---
+            CHUNK_ACCUM.with(|cell| {
+                *cell.borrow_mut() = Some(ChunkAccumulator {
+                    scan_key,
+                    site_id: site_id.clone(),
+                    all_radials: Vec::new(),
+                    radial_metas: Vec::new(),
+                    completed_elevations: std::collections::HashSet::new(),
+                    last_elevation_number: None,
+                    vcp: None,
+                    has_vcp: false,
+                    total_chunks: 0,
+                    total_size_bytes: 0,
+                    file_name: file_name.clone(),
+                    timestamp_secs,
+                });
+            });
 
             let records = file.records().map_err(|e| {
                 wasm_bindgen::JsValue::from_str(&format!("Failed to split start chunk: {}", e))
