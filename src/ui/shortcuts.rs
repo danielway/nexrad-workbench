@@ -1,6 +1,6 @@
 //! Centralized keyboard shortcut handling and help overlay.
 
-use crate::state::{AppState, LiveExitReason, PlaybackSpeed, RadarProduct};
+use crate::state::{AppState, LiveExitReason, PlaybackSpeed, RadarProduct, ViewMode};
 use eframe::egui::{self, RichText};
 
 /// Shortcut definition for display in the help overlay.
@@ -55,6 +55,10 @@ const SHORTCUTS: &[Shortcut] = &[
         description: "Open site selection",
     },
     Shortcut {
+        key: "G",
+        description: "Toggle globe / flat map",
+    },
+    Shortcut {
         key: "?",
         description: "Toggle this help overlay",
     },
@@ -94,6 +98,7 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
     let cycle_product = ctx.input(|i| i.key_pressed(egui::Key::P) && !i.modifiers.any());
     let cycle_elevation = ctx.input(|i| i.key_pressed(egui::Key::E) && !i.modifiers.any());
     let open_site = ctx.input(|i| i.key_pressed(egui::Key::S) && !i.modifiers.any());
+    let toggle_globe = ctx.input(|i| i.key_pressed(egui::Key::G) && !i.modifiers.any());
     let toggle_help = ctx.input(|i| {
         // ? requires Shift on most layouts
         i.key_pressed(egui::Key::Questionmark)
@@ -188,6 +193,13 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
 
     if open_site {
         state.site_modal_open = true;
+    }
+
+    if toggle_globe {
+        state.viz_state.view_mode = match state.viz_state.view_mode {
+            ViewMode::Flat2D => ViewMode::Globe3D,
+            ViewMode::Globe3D => ViewMode::Flat2D,
+        };
     }
 
     if toggle_help {

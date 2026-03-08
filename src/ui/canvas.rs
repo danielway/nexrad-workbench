@@ -2,11 +2,12 @@
 
 use super::colors::{canvas as canvas_colors, radar, sites as site_colors};
 use crate::data::{get_site, NEXRAD_SITES};
-use crate::geo::{GeoLayerSet, MapProjection};
+use crate::geo::{GeoLayerSet, GeoLineRenderer, GlobeRenderer, MapProjection};
 use crate::nexrad::{RadarGpuRenderer, RADAR_COVERAGE_RANGE_KM};
-use crate::state::{AppState, GeoLayerVisibility, RenderProcessing, StormCellInfo};
+use crate::state::{AppState, GeoLayerVisibility, RenderProcessing, StormCellInfo, ViewMode};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 use geo_types::Coord;
+use glow::HasContext;
 use std::f32::consts::PI;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +17,9 @@ pub fn render_canvas_with_geo(
     state: &mut AppState,
     geo_layers: Option<&GeoLayerSet>,
     gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
+    globe_renderer: Option<&Arc<Mutex<GlobeRenderer>>>,
+    geo_line_renderer: Option<&Arc<Mutex<GeoLineRenderer>>>,
+    globe_radar_renderer: Option<&Arc<Mutex<crate::nexrad::GlobeRadarRenderer>>>,
 ) {
     egui::CentralPanel::default().show(ctx, |ui| {
         let available_size = ui.available_size();
@@ -29,88 +33,195 @@ pub fn render_canvas_with_geo(
         // Draw background
         painter.rect_filled(rect, 0.0, canvas_colors::background(dark));
 
-        // Create projection for geo layers
-        let mut projection =
-            MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
-        projection.update(state.viz_state.zoom, state.viz_state.pan_offset, rect);
+        match state.viz_state.view_mode {
+            ViewMode::Globe3D => {
+                // Update camera aspect ratio
+                state.viz_state.camera.set_aspect(rect);
 
-        // Draw geographic layers BEFORE radar (so radar appears on top)
-        if let Some(layers) = geo_layers {
-            let filtered = filter_geo_layers(layers, &state.layer_state.geo);
-            crate::geo::render_geo_layers(
-                &painter,
-                &filtered,
-                &projection,
-                state.viz_state.zoom,
-                state.layer_state.geo.labels,
-            );
-        }
-
-        // Draw NEXRAD sites layer (always show current site, optionally show all)
-        render_nexrad_sites(
-            &painter,
-            &projection,
-            &state.viz_state.site_id,
-            &state.layer_state.geo,
-        );
-
-        // Render radar data via GPU shader
-        if let Some(renderer) = gpu_renderer {
-            draw_radar_gpu(
-                ui,
-                &projection,
-                renderer,
-                &rect,
-                state.viz_state.center_lat,
-                state.viz_state.center_lon,
-                &state.render_processing,
-            );
-        }
-
-        // Draw storm cell overlays (before sweep lines, after radar data)
-        if state.storm_cells_visible && !state.detected_storm_cells.is_empty() {
-            render_storm_cells(&painter, &projection, &state.detected_storm_cells, dark);
-        }
-
-        // Draw the radar sweep visualization (range rings, radials, labels, sweep line)
-        let sweep_azimuth = compute_sweep_line_azimuth(state);
-        render_radar_sweep(&painter, &projection, state, sweep_azimuth);
-
-        // Draw distance measurement line
-        if state.distance_tool_active || state.distance_start.is_some() {
-            render_distance_measurement(
-                &painter,
-                &projection,
-                state.distance_start,
-                state.distance_end,
-            );
-        }
-
-        // Draw inspector tooltip
-        if state.inspector_enabled {
-            if let Some(hover_pos) = response.hover_pos() {
-                render_inspector(
+                // Draw the 3D globe via PaintCallback
+                draw_globe(
                     ui,
+                    &rect,
+                    state,
+                    globe_renderer,
+                    geo_line_renderer,
+                    gpu_renderer,
+                    globe_radar_renderer,
+                );
+
+                // 2D overlays drawn on top after the GL callback
+                draw_color_scale(ui, &rect, &state.viz_state.product);
+                draw_overlay_info(ui, &rect, state);
+
+                // Handle orbit/zoom interactions
+                handle_globe_interaction(&response, &rect, state);
+            }
+            ViewMode::Flat2D => {
+                // --- Existing flat 2D path ---
+                let mut projection =
+                    MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
+                projection.update(state.viz_state.zoom, state.viz_state.pan_offset, rect);
+
+                if let Some(layers) = geo_layers {
+                    let filtered = filter_geo_layers(layers, &state.layer_state.geo);
+                    crate::geo::render_geo_layers(
+                        &painter,
+                        &filtered,
+                        &projection,
+                        state.viz_state.zoom,
+                        state.layer_state.geo.labels,
+                    );
+                }
+
+                render_nexrad_sites(
                     &painter,
                     &projection,
-                    hover_pos,
-                    state.viz_state.center_lat,
-                    state.viz_state.center_lon,
-                    gpu_renderer,
-                    &state.viz_state.product,
+                    &state.viz_state.site_id,
+                    &state.layer_state.geo,
                 );
+
+                if let Some(renderer) = gpu_renderer {
+                    draw_radar_gpu(
+                        ui,
+                        &projection,
+                        renderer,
+                        &rect,
+                        state.viz_state.center_lat,
+                        state.viz_state.center_lon,
+                        &state.render_processing,
+                    );
+                }
+
+                if state.storm_cells_visible && !state.detected_storm_cells.is_empty() {
+                    render_storm_cells(&painter, &projection, &state.detected_storm_cells, dark);
+                }
+
+                let sweep_azimuth = compute_sweep_line_azimuth(state);
+                render_radar_sweep(&painter, &projection, state, sweep_azimuth);
+
+                if state.distance_tool_active || state.distance_start.is_some() {
+                    render_distance_measurement(
+                        &painter,
+                        &projection,
+                        state.distance_start,
+                        state.distance_end,
+                    );
+                }
+
+                if state.inspector_enabled {
+                    if let Some(hover_pos) = response.hover_pos() {
+                        render_inspector(
+                            ui,
+                            &painter,
+                            &projection,
+                            hover_pos,
+                            state.viz_state.center_lat,
+                            state.viz_state.center_lon,
+                            gpu_renderer,
+                            &state.viz_state.product,
+                        );
+                    }
+                }
+
+                draw_color_scale(ui, &rect, &state.viz_state.product);
+                draw_overlay_info(ui, &rect, state);
+
+                handle_canvas_interaction(&response, &rect, state, &projection);
             }
         }
-
-        // Draw color scale legend on right side of canvas
-        draw_color_scale(ui, &rect, &state.viz_state.product);
-
-        // Draw overlay info in top-left corner
-        draw_overlay_info(ui, &rect, state);
-
-        // Handle zoom/pan interactions
-        handle_canvas_interaction(&response, &rect, state, &projection);
     });
+}
+
+/// Draw the 3D globe with geo overlays via egui PaintCallback.
+fn draw_globe(
+    ui: &mut egui::Ui,
+    rect: &Rect,
+    state: &AppState,
+    globe_renderer: Option<&Arc<Mutex<GlobeRenderer>>>,
+    geo_line_renderer: Option<&Arc<Mutex<GeoLineRenderer>>>,
+    gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
+    globe_radar_renderer: Option<&Arc<Mutex<crate::nexrad::GlobeRadarRenderer>>>,
+) {
+    let Some(globe_r) = globe_renderer.cloned() else {
+        return;
+    };
+    let geo_r = geo_line_renderer.cloned();
+    let radar_r = gpu_renderer.cloned();
+    let globe_rr = globe_radar_renderer.cloned();
+
+    let camera = state.viz_state.camera.clone();
+    let processing = state.render_processing.clone();
+    let radar_lat = state.viz_state.center_lat;
+    let radar_lon = state.viz_state.center_lon;
+    let geo_vis = crate::geo::geo_line_renderer::VisibleLayers {
+        states: state.layer_state.geo.states,
+        counties: state.layer_state.geo.counties,
+        highways: state.layer_state.geo.highways,
+        lakes: state.layer_state.geo.lakes,
+    };
+
+    let callback = egui::PaintCallback {
+        rect: *rect,
+        callback: Arc::new(egui_glow::CallbackFn::new(move |_info, painter| {
+            let gl = painter.gl();
+
+            // 1. Draw globe sphere (sets up depth buffer)
+            if let Ok(gr) = globe_r.lock() {
+                gr.paint(gl, &camera);
+            }
+
+            // 2. Draw geo lines on sphere surface
+            if let Some(ref glr) = geo_r {
+                if let Ok(lr) = glr.lock() {
+                    lr.paint(gl, &camera, &geo_vis);
+                }
+            }
+
+            // 3. Draw radar data on sphere
+            if let (Some(ref rr), Some(ref grr)) = (&radar_r, &globe_rr) {
+                if let (Ok(flat_r), Ok(mut globe_r)) = (rr.lock(), grr.lock()) {
+                    if flat_r.has_data() {
+                        // Rebuild mesh if site changed
+                        globe_r.update_site(gl, radar_lat, radar_lon, flat_r.max_range_km());
+                        // Paint radar on sphere
+                        globe_r.paint(gl, &camera, &flat_r, &processing);
+                    }
+                }
+            }
+
+            // Restore GL state for egui
+            unsafe {
+                gl.disable(glow::DEPTH_TEST);
+                gl.disable(glow::CULL_FACE);
+                gl.depth_mask(false);
+            }
+        })),
+    };
+
+    ui.painter().add(callback);
+}
+
+/// Handle orbit/zoom interactions for globe mode.
+fn handle_globe_interaction(response: &egui::Response, _rect: &Rect, state: &mut AppState) {
+    if response.dragged() {
+        let delta = response.drag_delta();
+        let viewport_h = response.rect.height();
+        state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
+    }
+
+    if response.hovered() {
+        let scroll_delta = response.ctx.input(|i| i.raw_scroll_delta);
+        if scroll_delta.y != 0.0 {
+            state.viz_state.camera.zoom(scroll_delta.y);
+        }
+    }
+
+    if response.double_clicked() {
+        state.viz_state.camera.center_on(
+            state.viz_state.center_lat,
+            state.viz_state.center_lon,
+        );
+    }
 }
 
 /// Draw radar data using a GPU shader via egui PaintCallback.

@@ -951,6 +951,42 @@ impl RadarGpuRenderer {
         self.max_range_km
     }
 
+    // --- Accessors for globe radar renderer ---
+
+    pub fn gate_count(&self) -> u32 {
+        self.gate_count
+    }
+    pub fn azimuth_count(&self) -> u32 {
+        self.azimuth_count
+    }
+    pub fn first_gate_km(&self) -> f64 {
+        self.first_gate_km
+    }
+    pub fn gate_interval_km(&self) -> f64 {
+        self.gate_interval_km
+    }
+    pub fn value_min(&self) -> f32 {
+        self.value_min
+    }
+    pub fn value_range(&self) -> f32 {
+        self.value_range
+    }
+    pub fn data_offset(&self) -> f32 {
+        self.data_offset
+    }
+    pub fn data_scale(&self) -> f32 {
+        self.data_scale
+    }
+    pub fn data_texture(&self) -> glow::Texture {
+        self.data_texture
+    }
+    pub fn lut_texture(&self) -> glow::Texture {
+        self.lut_texture
+    }
+    pub fn azimuth_texture(&self) -> glow::Texture {
+        self.azimuth_texture
+    }
+
     /// Clear all radar data (e.g. on site change).
     pub fn clear_data(&mut self) {
         self.has_data = false;

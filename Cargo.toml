@@ -18,6 +18,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"
 geo-types = "0.7"
+glam = "0.29"
 shapefile = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["std", "wasmbind"] }
 nexrad = { version = "1.0.0-rc.4", default-features = false, features = ["wasm"] }

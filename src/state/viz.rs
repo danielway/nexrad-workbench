@@ -1,5 +1,6 @@
 //! Visualization state (canvas, zoom/pan, product selection).
 
+use crate::geo::GlobeCamera;
 use eframe::egui::Vec2;
 
 /// Available radar products for display.
@@ -181,13 +182,29 @@ impl Default for RenderProcessing {
     }
 }
 
+/// Map view mode.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// Classic flat equirectangular map.
+    Flat2D,
+    /// 3D globe.
+    #[default]
+    Globe3D,
+}
+
 /// Visualization state including view controls.
 pub struct VizState {
-    /// Current zoom level (1.0 = 100%)
+    /// Active view mode (flat 2D or 3D globe).
+    pub view_mode: ViewMode,
+
+    /// Current zoom level (1.0 = 100%) — used in Flat2D mode.
     pub zoom: f32,
 
-    /// Current pan offset from center
+    /// Current pan offset from center — used in Flat2D mode.
     pub pan_offset: Vec2,
+
+    /// Orbital camera for Globe3D mode.
+    pub camera: GlobeCamera,
 
     /// Selected radar product
     pub product: RadarProduct,
@@ -224,8 +241,10 @@ pub struct VizState {
 impl Default for VizState {
     fn default() -> Self {
         Self {
+            view_mode: ViewMode::default(),
             zoom: 1.0,
             pan_offset: Vec2::ZERO,
+            camera: GlobeCamera::centered_on(41.7312, -93.7229),
             product: RadarProduct::default(),
             render_mode: RenderMode::default(),
             target_elevation: 0.5,

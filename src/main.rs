@@ -80,6 +80,15 @@ pub struct WorkbenchApp {
     /// Geographic layer data for map overlays
     geo_layers: geo::GeoLayerSet,
 
+    /// Globe sphere renderer (3D mode).
+    globe_renderer: Option<std::sync::Arc<std::sync::Mutex<geo::GlobeRenderer>>>,
+
+    /// Geographic line renderer for 3D globe.
+    geo_line_renderer: Option<std::sync::Arc<std::sync::Mutex<geo::GeoLineRenderer>>>,
+
+    /// Globe-mode radar renderer (projects radar data onto sphere).
+    globe_radar_renderer: Option<std::sync::Arc<std::sync::Mutex<nexrad::GlobeRadarRenderer>>>,
+
     /// Record-based data facade
     data_facade: DataFacade,
 
@@ -215,6 +224,7 @@ impl WorkbenchApp {
             if let Some(site_info) = data::sites::get_site(site) {
                 state.viz_state.center_lat = site_info.lat;
                 state.viz_state.center_lon = site_info.lon;
+                state.viz_state.camera.center_on(site_info.lat, site_info.lon);
             }
             state.timeline_needs_refresh = true;
             state.auto_position_on_timeline_load = true;
@@ -225,6 +235,11 @@ impl WorkbenchApp {
         if let Some(lon) = url_params.lon {
             state.viz_state.center_lon = lon;
         }
+        // Sync camera with potentially overridden lat/lon
+        state
+            .viz_state
+            .camera
+            .center_on(state.viz_state.center_lat, state.viz_state.center_lon);
         // Apply view state (zoom levels) before centering so the zoom is correct
         if let Some(mz) = url_params.view.mz {
             state.viz_state.zoom = mz;
@@ -290,6 +305,35 @@ impl WorkbenchApp {
             std::sync::Arc::new(std::sync::Mutex::new(renderer))
         });
 
+        // Create globe and geo-line renderers for 3D mode
+        let globe_renderer = cc.gl.as_ref().map(|gl| {
+            let r = geo::GlobeRenderer::new(gl);
+            log::info!("Globe renderer created");
+            std::sync::Arc::new(std::sync::Mutex::new(r))
+        });
+        let geo_line_renderer = cc.gl.as_ref().map(|gl| {
+            let mut r = geo::GeoLineRenderer::new(gl);
+            // Upload all static geo layers now
+            let layers_vec: Vec<&geo::GeoLayer> = [
+                geo_layers.states.as_ref(),
+                geo_layers.counties.as_ref(),
+                geo_layers.highways.as_ref(),
+                geo_layers.lakes.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let owned: Vec<geo::GeoLayer> = layers_vec.into_iter().cloned().collect();
+            r.upload_layers(gl, &owned);
+            log::info!("Geo line renderer created");
+            std::sync::Arc::new(std::sync::Mutex::new(r))
+        });
+        let globe_radar_renderer = cc.gl.as_ref().map(|gl| {
+            let r = nexrad::GlobeRadarRenderer::new(gl);
+            log::info!("Globe radar renderer created");
+            std::sync::Arc::new(std::sync::Mutex::new(r))
+        });
+
         Self {
             state,
             geo_layers,
@@ -300,6 +344,9 @@ impl WorkbenchApp {
             current_scan: None,
             gpu_renderer,
             gpu_renderer_gl,
+            globe_renderer,
+            geo_line_renderer,
+            globe_radar_renderer,
             selection_download_queue: Vec::new(),
             scan_end_times: std::collections::HashMap::new(),
             displayed_scan_timestamp: None,
@@ -1797,6 +1844,9 @@ impl eframe::App for WorkbenchApp {
             &mut self.state,
             Some(&self.geo_layers),
             self.gpu_renderer.as_ref(),
+            self.globe_renderer.as_ref(),
+            self.geo_line_renderer.as_ref(),
+            self.globe_radar_renderer.as_ref(),
         );
 
         // Process keyboard shortcuts

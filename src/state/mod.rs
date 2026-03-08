@@ -27,7 +27,7 @@ pub use stats::{
 };
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
-pub use viz::{InterpolationMode, RadarProduct, RenderMode, RenderProcessing, VizState};
+pub use viz::{InterpolationMode, RadarProduct, RenderMode, RenderProcessing, ViewMode, VizState};
 
 /// Root application state containing all sub-states.
 #[derive(Default)]
