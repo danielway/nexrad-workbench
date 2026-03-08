@@ -1,7 +1,7 @@
 //! Top bar UI: app title, status, and site context.
 
 use super::colors::live;
-use crate::state::{AppState, LivePhase};
+use crate::state::{AppState, CameraMode, LivePhase, ViewMode};
 use eframe::egui::{self, Color32, RichText};
 
 pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
@@ -84,7 +84,7 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                     }
                 }
 
-                // Right-aligned: right panel toggle
+                // Right-aligned: right panel toggle + view/camera mode
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .button(RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE).size(14.0))
@@ -92,6 +92,50 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                         .clicked()
                     {
                         state.right_sidebar_visible = !state.right_sidebar_visible;
+                    }
+
+                    ui.separator();
+
+                    // View mode indicator (clickable to toggle)
+                    let view_label = match state.viz_state.view_mode {
+                        ViewMode::Globe3D => "3D",
+                        ViewMode::Flat2D => "2D",
+                    };
+                    if ui
+                        .button(
+                            RichText::new(view_label)
+                                .size(13.0)
+                                .strong()
+                                .color(Color32::from_rgb(100, 180, 255)),
+                        )
+                        .on_hover_text("Toggle view mode (G)")
+                        .clicked()
+                    {
+                        state.viz_state.view_mode = match state.viz_state.view_mode {
+                            ViewMode::Flat2D => ViewMode::Globe3D,
+                            ViewMode::Globe3D => ViewMode::Flat2D,
+                        };
+                    }
+
+                    // Camera mode indicator (only in 3D mode)
+                    if state.viz_state.view_mode == ViewMode::Globe3D {
+                        let mode = state.viz_state.camera.mode;
+                        let mode_color = match mode {
+                            CameraMode::PlanetOrbit => Color32::from_rgb(120, 200, 120),
+                            CameraMode::SiteOrbit => Color32::from_rgb(255, 200, 80),
+                            CameraMode::FreeLook => Color32::from_rgb(200, 140, 255),
+                        };
+                        if ui
+                            .button(
+                                RichText::new(mode.label())
+                                    .size(12.0)
+                                    .color(mode_color),
+                            )
+                            .on_hover_text("Cycle camera mode (C)")
+                            .clicked()
+                        {
+                            state.viz_state.camera.mode = mode.next();
+                        }
                     }
                 });
             });

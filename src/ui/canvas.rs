@@ -2,7 +2,7 @@
 
 use super::colors::{canvas as canvas_colors, radar, sites as site_colors};
 use crate::data::{get_site, NEXRAD_SITES};
-use crate::geo::{GeoLayerSet, GeoLineRenderer, GlobeRenderer, MapProjection};
+use crate::geo::{GeoLayerSet, GeoLineRenderer, GlobeCamera, GlobeRenderer, MapProjection};
 use crate::nexrad::{RadarGpuRenderer, RADAR_COVERAGE_RANGE_KM};
 use crate::state::{AppState, GeoLayerVisibility, RenderProcessing, StormCellInfo, ViewMode};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
@@ -52,6 +52,7 @@ pub fn render_canvas_with_geo(
                 // 2D overlays drawn on top after the GL callback
                 draw_color_scale(ui, &rect, &state.viz_state.product);
                 draw_overlay_info(ui, &rect, state);
+                draw_compass(ui, &rect, &state.viz_state.camera);
 
                 // Handle orbit/zoom interactions
                 handle_globe_interaction(&response, &rect, state);
@@ -203,10 +204,35 @@ fn draw_globe(
 
 /// Handle orbit/zoom interactions for globe mode.
 fn handle_globe_interaction(response: &egui::Response, _rect: &Rect, state: &mut AppState) {
+    use crate::geo::camera::CameraMode;
+
     if response.dragged() {
         let delta = response.drag_delta();
         let viewport_h = response.rect.height();
-        state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
+        let shift_held = response.ctx.input(|i| i.modifiers.shift);
+        let right_button = response.dragged_by(egui::PointerButton::Secondary);
+
+        if shift_held || right_button {
+            // Shift+drag or right-drag: tilt/rotate camera (any mode)
+            state
+                .viz_state
+                .camera
+                .tilt_rotate(delta.x, delta.y, viewport_h);
+        } else if state.viz_state.camera.mode == CameraMode::FreeLook {
+            // Free Look: left-drag tilts/rotates, Ctrl+drag orbits
+            let ctrl_held = response.ctx.input(|i| i.modifiers.command);
+            if ctrl_held {
+                state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
+            } else {
+                state
+                    .viz_state
+                    .camera
+                    .tilt_rotate(delta.x, delta.y, viewport_h);
+            }
+        } else {
+            // Planet Orbit / Site Orbit: left-drag orbits
+            state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
+        }
     }
 
     if response.hovered() {
@@ -216,11 +242,9 @@ fn handle_globe_interaction(response: &egui::Response, _rect: &Rect, state: &mut
         }
     }
 
+    // Double-click re-centers on site without resetting zoom
     if response.double_clicked() {
-        state.viz_state.camera.center_on(
-            state.viz_state.center_lat,
-            state.viz_state.center_lon,
-        );
+        state.viz_state.camera.recenter();
     }
 }
 
@@ -416,6 +440,80 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
             }
         });
     });
+}
+
+/// Draw a compass rose in the bottom-left of the globe view.
+/// Shows N/S/E/W with the current camera bearing so the user always knows orientation.
+fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera) {
+    let painter = ui.painter();
+    let radius = 28.0f32;
+    let margin = 16.0f32;
+    let center = Pos2::new(rect.left() + margin + radius, rect.bottom() - margin - radius);
+
+    // Background circle
+    painter.circle_filled(
+        center,
+        radius + 4.0,
+        Color32::from_rgba_unmultiplied(15, 15, 25, 180),
+    );
+    painter.circle_stroke(
+        center,
+        radius + 4.0,
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(80, 80, 100, 160)),
+    );
+
+    // Compute compass rotation to match the camera's on-screen orientation.
+    // In SiteOrbit, the bearing rotates the view. In any mode, camera.rotation
+    // (from Shift+drag or Free Look) also rotates the view.
+    let rotation_rad = match camera.mode {
+        crate::geo::camera::CameraMode::SiteOrbit => -camera.orbit_bearing.to_radians(),
+        _ => 0.0,
+    } - camera.rotation.to_radians();
+
+    // Cardinal directions
+    let cardinals = [("N", 0.0), ("E", 90.0), ("S", 180.0), ("W", 270.0)];
+    for (label, bearing_deg) in cardinals {
+        let angle = (bearing_deg as f32).to_radians() + rotation_rad;
+        // angle=0 → up (screen -Y), rotating CW
+        let dir = Vec2::new(angle.sin(), -angle.cos());
+        let label_pos = center + dir * (radius - 2.0);
+
+        let (color, size) = if label == "N" {
+            (Color32::from_rgb(255, 80, 80), 13.0)
+        } else {
+            (Color32::from_rgba_unmultiplied(180, 180, 200, 200), 11.0)
+        };
+
+        painter.text(
+            label_pos,
+            egui::Align2::CENTER_CENTER,
+            label,
+            egui::FontId::proportional(size),
+            color,
+        );
+    }
+
+    // Small tick marks for intercardinals
+    for i in 0..8 {
+        let angle = (i as f32 * 45.0).to_radians() + rotation_rad;
+        if i % 2 == 0 {
+            continue; // skip cardinals, already labeled
+        }
+        let dir = Vec2::new(angle.sin(), -angle.cos());
+        let inner = center + dir * (radius - 8.0);
+        let outer = center + dir * (radius - 2.0);
+        painter.line_segment(
+            [inner, outer],
+            Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 120, 140, 140)),
+        );
+    }
+
+    // Center dot
+    painter.circle_filled(
+        center,
+        2.0,
+        Color32::from_rgba_unmultiplied(150, 150, 170, 160),
+    );
 }
 
 /// Draw a vertical color scale legend on the right side of the canvas.

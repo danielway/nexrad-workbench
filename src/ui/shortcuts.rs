@@ -59,6 +59,14 @@ const SHORTCUTS: &[Shortcut] = &[
         description: "Toggle globe / flat map",
     },
     Shortcut {
+        key: "C",
+        description: "Cycle camera mode (3D)",
+    },
+    Shortcut {
+        key: "N",
+        description: "Reset view (re-center, level, North up)",
+    },
+    Shortcut {
         key: "?",
         description: "Toggle this help overlay",
     },
@@ -99,6 +107,8 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
     let cycle_elevation = ctx.input(|i| i.key_pressed(egui::Key::E) && !i.modifiers.any());
     let open_site = ctx.input(|i| i.key_pressed(egui::Key::S) && !i.modifiers.any());
     let toggle_globe = ctx.input(|i| i.key_pressed(egui::Key::G) && !i.modifiers.any());
+    let cycle_camera = ctx.input(|i| i.key_pressed(egui::Key::C) && !i.modifiers.any());
+    let reset_north = ctx.input(|i| i.key_pressed(egui::Key::N) && !i.modifiers.any());
     let toggle_help = ctx.input(|i| {
         // ? requires Shift on most layouts
         i.key_pressed(egui::Key::Questionmark)
@@ -200,6 +210,14 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
             ViewMode::Flat2D => ViewMode::Globe3D,
             ViewMode::Globe3D => ViewMode::Flat2D,
         };
+    }
+
+    if cycle_camera && state.viz_state.view_mode == ViewMode::Globe3D {
+        state.viz_state.camera.mode = state.viz_state.camera.mode.next();
+    }
+
+    if reset_north && state.viz_state.view_mode == ViewMode::Globe3D {
+        state.viz_state.camera.recenter();
     }
 
     if toggle_help {

@@ -28,6 +28,7 @@ pub use stats::{
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
 pub use viz::{InterpolationMode, RadarProduct, RenderMode, RenderProcessing, ViewMode, VizState};
+pub use crate::geo::camera::CameraMode;
 
 /// Root application state containing all sub-states.
 #[derive(Default)]
