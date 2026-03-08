@@ -30,6 +30,9 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
                 render_rendering_section(ui, state);
                 ui.add_space(5.0);
 
+                render_volume_section(ui, state);
+                ui.add_space(5.0);
+
                 render_tools_section(ui, state);
                 ui.add_space(5.0);
 
@@ -204,6 +207,32 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .changed()
             {
                 proc.opacity = opacity_pct / 100.0;
+            }
+        });
+}
+
+fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
+    use crate::state::ViewMode;
+
+    // Only show volume controls in 3D mode
+    if !matches!(state.viz_state.view_mode, ViewMode::Globe3D) {
+        return;
+    }
+
+    egui::CollapsingHeader::new(RichText::new("3D Volume").strong())
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.checkbox(&mut state.viz_state.volume_3d_enabled, "Enable Volume Rendering")
+                .on_hover_text("Ray-march through all elevation sweeps as a volumetric cloud");
+
+            if state.viz_state.volume_3d_enabled {
+                ui.add_space(4.0);
+                ui.add(
+                    egui::Slider::new(&mut state.viz_state.volume_density_cutoff, 0.0..=30.0)
+                        .text("Min Value")
+                        .step_by(1.0),
+                )
+                .on_hover_text("Minimum physical value to render (e.g. dBZ for reflectivity)");
             }
         });
 }

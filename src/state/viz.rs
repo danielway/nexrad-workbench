@@ -236,6 +236,12 @@ pub struct VizState {
     /// End timestamp (Unix seconds) of the currently rendered sweep.
     /// Used to recompute `data_staleness_secs` every frame so the age counter ticks.
     pub rendered_sweep_end_secs: Option<f64>,
+
+    /// Whether 3D volumetric rendering is enabled (ray-marched volume).
+    pub volume_3d_enabled: bool,
+
+    /// Density cutoff for volume rendering (physical value, e.g. 5.0 dBZ).
+    pub volume_density_cutoff: f32,
 }
 
 impl Default for VizState {
@@ -255,6 +261,8 @@ impl Default for VizState {
             center_lon: -93.7229,
             data_staleness_secs: None,
             rendered_sweep_end_secs: None,
+            volume_3d_enabled: false,
+            volume_density_cutoff: 5.0,
         }
     }
 }

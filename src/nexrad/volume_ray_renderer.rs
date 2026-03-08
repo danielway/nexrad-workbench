@@ -1,0 +1,733 @@
+//! Volumetric ray-march renderer for 3D radar data.
+//!
+//! Renders all elevation sweeps simultaneously as a semi-transparent volume.
+//! A full-screen quad is drawn; the fragment shader fires a ray through each pixel,
+//! steps through the radar volume shell, and samples radar data via trilinear
+//! interpolation across azimuth, range, and elevation dimensions.
+
+use crate::geo::camera::GlobeCamera;
+use crate::nexrad::VolumeSweepMeta;
+use crate::state::RenderProcessing;
+use glow::HasContext;
+use std::sync::Arc;
+
+/// Maximum number of elevation sweeps the shader supports.
+const MAX_SWEEPS: usize = 25;
+
+// ── Shaders ─────────────────────────────────────────────────────────────
+
+const VOLUME_VERTEX_SHADER: &str = r#"#version 300 es
+precision highp float;
+
+in vec2 a_position;
+out vec2 v_uv;
+
+void main() {
+    v_uv = a_position * 0.5 + 0.5;
+    gl_Position = vec4(a_position, 0.0, 1.0);
+}
+"#;
+
+const VOLUME_FRAGMENT_SHADER: &str = r#"#version 300 es
+precision highp float;
+precision highp int;
+precision highp usampler2D;
+
+in vec2 v_uv;
+out vec4 fragColor;
+
+// Camera
+uniform mat4 u_inv_view_projection;
+uniform vec3 u_camera_pos;
+
+// Radar site on unit sphere
+uniform vec3 u_site_pos;
+uniform float u_site_lat_rad;
+uniform float u_site_lon_rad;
+
+// Volume bounds
+uniform float u_inner_radius;   // ~1.003
+uniform float u_outer_radius;   // ~1.003 + max_beam_height/6371
+uniform float u_max_range_km;
+
+// Data texture (packed u16 values in R16UI 2D texture)
+uniform usampler2D u_volume_tex;
+uniform int u_tex_width;
+uniform sampler2D u_lut_tex;
+
+// Per-sweep metadata arrays
+uniform int u_sweep_count;
+uniform float u_elevation[25];
+uniform float u_azimuth_count[25];
+uniform float u_gate_count[25];
+uniform float u_first_gate_km[25];
+uniform float u_gate_interval_km[25];
+uniform float u_max_range[25];
+uniform int u_data_offset[25];
+uniform float u_scale[25];
+uniform float u_offset[25];
+
+// Rendering params
+uniform float u_opacity;
+uniform float u_density_cutoff;
+uniform float u_value_min;
+uniform float u_value_range;
+
+const float EARTH_RADIUS = 6371.0;
+const float PI = 3.14159265359;
+
+// Step size in unit-sphere coordinates (~0.5km equivalent)
+const float STEP_SIZE = 0.0001;
+const int MAX_STEPS = 512;
+const float ALPHA_CUTOFF = 0.95;
+
+// ── Ray-sphere intersection ──────────────────────────────────────────
+
+// Returns (t_enter, t_exit). If no intersection, t_enter > t_exit.
+vec2 sphere_intersect(vec3 ro, vec3 rd, float radius) {
+    float a = dot(rd, rd);
+    float b = 2.0 * dot(ro, rd);
+    float c = dot(ro, ro) - radius * radius;
+    float disc = b * b - 4.0 * a * c;
+    if (disc < 0.0) return vec2(1e20, -1e20);
+    float sq = sqrt(disc);
+    float t0 = (-b - sq) / (2.0 * a);
+    float t1 = (-b + sq) / (2.0 * a);
+    return vec2(t0, t1);
+}
+
+// ── Sample a single value from the packed volume texture ─────────────
+
+float fetch_value(int idx) {
+    int y = idx / u_tex_width;
+    int x = idx - y * u_tex_width;  // avoid mod for performance
+    uint raw = texelFetch(u_volume_tex, ivec2(x, y), 0).r;
+    return float(raw);
+}
+
+// ── Sample a sweep with bilinear interpolation ──────────────────────
+
+float sample_sweep(int si, float az_deg, float range_km) {
+    float gc = u_gate_count[si];
+    float ac = u_azimuth_count[si];
+
+    float gate_f = (range_km - u_first_gate_km[si]) / u_gate_interval_km[si];
+    if (gate_f < 0.0 || gate_f >= gc - 1.0) return -1.0;
+
+    float az_f = az_deg * ac / 360.0;
+
+    // Bilinear interpolation
+    int g0 = int(floor(gate_f));
+    int g1 = min(g0 + 1, int(gc) - 1);
+    float gf = gate_f - float(g0);
+
+    int a0 = int(mod(floor(az_f), ac));
+    int a1 = int(mod(float(a0 + 1), ac));
+    float af = fract(az_f);
+
+    int base = u_data_offset[si];
+    int gci = int(gc);
+
+    float v00 = fetch_value(base + a0 * gci + g0);
+    float v10 = fetch_value(base + a0 * gci + g1);
+    float v01 = fetch_value(base + a1 * gci + g0);
+    float v11 = fetch_value(base + a1 * gci + g1);
+
+    // Sentinel check: 0=below threshold, 1=range folded
+    // Only interpolate valid values
+    float sum = 0.0;
+    float wsum = 0.0;
+    float w00 = (1.0 - gf) * (1.0 - af);
+    float w10 = gf * (1.0 - af);
+    float w01 = (1.0 - gf) * af;
+    float w11 = gf * af;
+
+    if (v00 > 1.5) { sum += v00 * w00; wsum += w00; }
+    if (v10 > 1.5) { sum += v10 * w10; wsum += w10; }
+    if (v01 > 1.5) { sum += v01 * w01; wsum += w01; }
+    if (v11 > 1.5) { sum += v11 * w11; wsum += w11; }
+
+    if (wsum < 0.001) return -1.0;
+    return sum / wsum;
+}
+
+// ── Binary search for elevation bracket ─────────────────────────────
+
+// Find sweep index i such that u_elevation[i] <= el < u_elevation[i+1]
+// Returns -1 if outside range.
+int find_sweep_bracket(float el_deg) {
+    if (u_sweep_count < 2) return -1;
+    if (el_deg < u_elevation[0] || el_deg > u_elevation[u_sweep_count - 1]) return -1;
+
+    int lo = 0;
+    int hi = u_sweep_count - 1;
+    for (int iter = 0; iter < 20; iter++) {
+        if (hi - lo <= 1) break;
+        int mid = (lo + hi) / 2;
+        if (u_elevation[mid] <= el_deg) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+// ── Sample the full volume at a 3D point ────────────────────────────
+
+float sample_volume(vec3 pos) {
+    // Height above unit sphere surface (in km)
+    float r = length(pos);
+    float h_km = (r - u_inner_radius) * EARTH_RADIUS;
+
+    // Vector from site to point on sphere surface
+    vec3 p_surf = normalize(pos);
+    vec3 s = u_site_pos;
+
+    // Ground distance (great-circle) in km
+    float cos_gd = clamp(dot(p_surf, s), -1.0, 1.0);
+    float ground_dist_km = acos(cos_gd) * EARTH_RADIUS;
+
+    // Slant range (simplified Pythagorean approximation)
+    float range_km = sqrt(ground_dist_km * ground_dist_km + h_km * h_km);
+
+    if (range_km > u_max_range_km || range_km < 1.0) return -1.0;
+
+    // Elevation angle: inverse of beam height equation
+    float el_deg = degrees(atan(h_km, ground_dist_km));
+
+    // Azimuth: bearing from site to point
+    // Compute using local east/north at site
+    float slat = sin(u_site_lat_rad);
+    float clat = cos(u_site_lat_rad);
+    float slon = sin(u_site_lon_rad);
+    float clon = cos(u_site_lon_rad);
+
+    // Local North and East unit vectors at site
+    vec3 north = vec3(-slat * slon, clat, -slat * clon);
+    vec3 east  = vec3(clon, 0.0, -slon);
+
+    // Direction from site to surface point
+    vec3 d = p_surf - s;
+    float dn = dot(d, north);
+    float de = dot(d, east);
+    float az_deg = degrees(atan(de, dn));
+    if (az_deg < 0.0) az_deg += 360.0;
+
+    // Find bracketing elevation sweeps
+    int si = find_sweep_bracket(el_deg);
+    if (si < 0) return -1.0;
+
+    // Sample both bracketing sweeps
+    float v_lo = sample_sweep(si, az_deg, range_km);
+    float v_hi = sample_sweep(si + 1, az_deg, range_km);
+
+    // Interpolate between elevations
+    float el_lo = u_elevation[si];
+    float el_hi = u_elevation[si + 1];
+    float el_frac = (el_deg - el_lo) / max(el_hi - el_lo, 0.01);
+
+    if (v_lo < 0.0 && v_hi < 0.0) return -1.0;
+    if (v_lo < 0.0) return v_hi;
+    if (v_hi < 0.0) return v_lo;
+
+    return mix(v_lo, v_hi, el_frac);
+}
+
+// ── Main ────────────────────────────────────────────────────────────
+
+void main() {
+    // Generate world-space ray from screen UV
+    vec2 ndc = v_uv * 2.0 - 1.0;
+    vec4 near_h = u_inv_view_projection * vec4(ndc, -1.0, 1.0);
+    vec4 far_h  = u_inv_view_projection * vec4(ndc,  1.0, 1.0);
+    vec3 near_p = near_h.xyz / near_h.w;
+    vec3 far_p  = far_h.xyz / far_h.w;
+    vec3 rd = normalize(far_p - near_p);
+    vec3 ro = u_camera_pos;
+
+    // Intersect with inner and outer bounding spheres
+    vec2 t_inner = sphere_intersect(ro, rd, u_inner_radius);
+    vec2 t_outer = sphere_intersect(ro, rd, u_outer_radius);
+
+    // If outer sphere missed entirely, skip
+    if (t_outer.x > t_outer.y) discard;
+
+    // Determine march range: only through the shell between inner and outer
+    float t_start = max(t_outer.x, 0.0);  // don't start behind camera
+    float t_end = t_outer.y;
+
+    // If inside outer sphere, start from camera
+    if (t_start < 0.0) t_start = 0.0;
+
+    // Clip to inner sphere exit (don't render inside earth)
+    if (t_inner.x < t_inner.y && t_inner.x > 0.0) {
+        // Ray hits earth — end at earth surface entry
+        t_end = min(t_end, t_inner.x);
+    }
+
+    if (t_start >= t_end) discard;
+
+    // Adaptive step size
+    float range = t_end - t_start;
+    float step = max(STEP_SIZE, range / float(MAX_STEPS));
+
+    // Front-to-back accumulation
+    vec3 accum_color = vec3(0.0);
+    float accum_alpha = 0.0;
+
+    float t = t_start;
+    for (int i = 0; i < MAX_STEPS; i++) {
+        if (t >= t_end || accum_alpha >= ALPHA_CUTOFF) break;
+
+        vec3 pos = ro + rd * t;
+
+        // Check if this point is within radar range of the site
+        vec3 p_surf = normalize(pos);
+        float cos_gd = clamp(dot(p_surf, u_site_pos), -1.0, 1.0);
+        float ground_dist_km = acos(cos_gd) * EARTH_RADIUS;
+        if (ground_dist_km > u_max_range_km) {
+            t += step;
+            continue;
+        }
+
+        float raw = sample_volume(pos);
+
+        if (raw > 1.5) {
+            // All sweeps for the same product share scale/offset
+            float scale_val = u_scale[0];
+            float offset_val = u_offset[0];
+
+            float physical;
+            if (scale_val == 0.0) {
+                physical = raw;
+            } else {
+                physical = (raw - offset_val) / scale_val;
+            }
+
+            if (physical >= u_density_cutoff) {
+                // Color lookup
+                float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
+                vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
+
+                // Density: map physical value to opacity
+                float sample_alpha = color.a * u_opacity * step * 300.0;
+                sample_alpha = clamp(sample_alpha, 0.0, 0.8);
+
+                // Front-to-back compositing
+                accum_color += (1.0 - accum_alpha) * color.rgb * sample_alpha;
+                accum_alpha += (1.0 - accum_alpha) * sample_alpha;
+            }
+        }
+
+        t += step;
+    }
+
+    if (accum_alpha < 0.001) discard;
+
+    // Premultiplied alpha output
+    fragColor = vec4(accum_color, accum_alpha);
+}
+"#;
+
+// ── Renderer struct ─────────────────────────────────────────────────
+
+pub struct VolumeRayRenderer {
+    program: glow::Program,
+    quad_vao: glow::VertexArray,
+    _quad_vbo: glow::Buffer,
+    volume_texture: Option<glow::Texture>,
+    tex_width: i32,
+
+    // Uniform locations (Option because shader may optimize them away)
+    u_inv_view_projection: Option<glow::UniformLocation>,
+    u_camera_pos: Option<glow::UniformLocation>,
+    u_site_pos: Option<glow::UniformLocation>,
+    u_site_lat_rad: Option<glow::UniformLocation>,
+    u_site_lon_rad: Option<glow::UniformLocation>,
+    u_inner_radius: Option<glow::UniformLocation>,
+    u_outer_radius: Option<glow::UniformLocation>,
+    u_max_range_km: Option<glow::UniformLocation>,
+    u_tex_width: Option<glow::UniformLocation>,
+    u_sweep_count: Option<glow::UniformLocation>,
+    u_elevation: Option<glow::UniformLocation>,
+    u_azimuth_count: Option<glow::UniformLocation>,
+    u_gate_count: Option<glow::UniformLocation>,
+    u_first_gate_km: Option<glow::UniformLocation>,
+    u_gate_interval_km: Option<glow::UniformLocation>,
+    u_max_range: Option<glow::UniformLocation>,
+    u_data_offset: Option<glow::UniformLocation>,
+    u_scale: Option<glow::UniformLocation>,
+    u_offset: Option<glow::UniformLocation>,
+    u_opacity: Option<glow::UniformLocation>,
+    u_density_cutoff: Option<glow::UniformLocation>,
+    u_value_min: Option<glow::UniformLocation>,
+    u_value_range: Option<glow::UniformLocation>,
+
+    has_data: bool,
+    sweep_count: i32,
+    site_lat: f64,
+    site_lon: f64,
+}
+
+impl VolumeRayRenderer {
+    pub fn new(gl: &Arc<glow::Context>) -> Self {
+        unsafe { Self::new_inner(gl) }
+    }
+
+    unsafe fn new_inner(gl: &Arc<glow::Context>) -> Self {
+        let program = crate::geo::globe_renderer::compile_program(
+            gl,
+            VOLUME_VERTEX_SHADER,
+            VOLUME_FRAGMENT_SHADER,
+        );
+
+        // Check if shader compiled/linked successfully by testing a known uniform
+        let get = |name: &str| {
+            let loc = gl.get_uniform_location(program, name);
+            if loc.is_none() {
+                log::warn!("Volume shader: uniform '{}' not found (shader may have failed to compile)", name);
+            }
+            loc
+        };
+        let u_inv_view_projection = get("u_inv_view_projection");
+        let u_camera_pos = get("u_camera_pos");
+        let u_site_pos = get("u_site_pos");
+        let u_site_lat_rad = get("u_site_lat_rad");
+        let u_site_lon_rad = get("u_site_lon_rad");
+        let u_inner_radius = get("u_inner_radius");
+        let u_outer_radius = get("u_outer_radius");
+        let u_max_range_km = get("u_max_range_km");
+        let u_tex_width = get("u_tex_width");
+        let u_sweep_count = get("u_sweep_count");
+        let u_elevation = get("u_elevation[0]");
+        let u_azimuth_count = get("u_azimuth_count[0]");
+        let u_gate_count = get("u_gate_count[0]");
+        let u_first_gate_km = get("u_first_gate_km[0]");
+        let u_gate_interval_km = get("u_gate_interval_km[0]");
+        let u_max_range = get("u_max_range[0]");
+        let u_data_offset = get("u_data_offset[0]");
+        let u_scale = get("u_scale[0]");
+        let u_offset = get("u_offset[0]");
+        let u_opacity = get("u_opacity");
+        let u_density_cutoff = get("u_density_cutoff");
+        let u_value_min = get("u_value_min");
+        let u_value_range = get("u_value_range");
+
+        // Bind texture samplers
+        gl.use_program(Some(program));
+        if let Some(loc) = gl.get_uniform_location(program, "u_volume_tex") {
+            gl.uniform_1_i32(Some(&loc), 0);
+        }
+        if let Some(loc) = gl.get_uniform_location(program, "u_lut_tex") {
+            gl.uniform_1_i32(Some(&loc), 1);
+        }
+        gl.use_program(None);
+
+        // Create full-screen quad
+        let quad_vao = gl.create_vertex_array().unwrap();
+        let quad_vbo = gl.create_buffer().unwrap();
+
+        #[rustfmt::skip]
+        let quad_verts: [f32; 12] = [
+            -1.0, -1.0,
+             1.0, -1.0,
+            -1.0,  1.0,
+            -1.0,  1.0,
+             1.0, -1.0,
+             1.0,  1.0,
+        ];
+
+        gl.bind_vertex_array(Some(quad_vao));
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(quad_vbo));
+        gl.buffer_data_u8_slice(
+            glow::ARRAY_BUFFER,
+            cast_f32_to_u8(&quad_verts),
+            glow::STATIC_DRAW,
+        );
+
+        let a_position = gl.get_attrib_location(program, "a_position").unwrap();
+        gl.enable_vertex_attrib_array(a_position);
+        gl.vertex_attrib_pointer_f32(a_position, 2, glow::FLOAT, false, 8, 0);
+
+        gl.bind_vertex_array(None);
+
+        Self {
+            program,
+            quad_vao,
+            _quad_vbo: quad_vbo,
+            volume_texture: None,
+            tex_width: 0,
+            u_inv_view_projection,
+            u_camera_pos,
+            u_site_pos,
+            u_site_lat_rad,
+            u_site_lon_rad,
+            u_inner_radius,
+            u_outer_radius,
+            u_max_range_km,
+            u_tex_width,
+            u_sweep_count,
+            u_elevation,
+            u_azimuth_count,
+            u_gate_count,
+            u_first_gate_km,
+            u_gate_interval_km,
+            u_max_range,
+            u_data_offset,
+            u_scale,
+            u_offset,
+            u_opacity,
+            u_density_cutoff,
+            u_value_min,
+            u_value_range,
+            has_data: false,
+            sweep_count: 0,
+            site_lat: 0.0,
+            site_lon: 0.0,
+        }
+    }
+
+    /// Upload packed volume data and sweep metadata.
+    pub fn update_volume(
+        &mut self,
+        gl: &glow::Context,
+        buffer: &[u8],
+        sweeps: &[VolumeSweepMeta],
+        site_lat: f64,
+        site_lon: f64,
+    ) {
+        if sweeps.is_empty() || buffer.is_empty() {
+            self.has_data = false;
+            return;
+        }
+
+        self.site_lat = site_lat;
+        self.site_lon = site_lon;
+        self.sweep_count = sweeps.len().min(MAX_SWEEPS) as i32;
+
+        // Determine texture dimensions
+        // buffer is packed u16 values, so total values = buffer.len() / 2
+        let total_values = buffer.len() / 2;
+        let tex_width = 4096i32;
+        let tex_height = ((total_values as i32 + tex_width - 1) / tex_width).max(1);
+        self.tex_width = tex_width;
+
+        // Pad buffer to fill full texture
+        let padded_size = (tex_width * tex_height) as usize * 2;
+        let mut padded = buffer.to_vec();
+        padded.resize(padded_size, 0);
+
+        unsafe {
+            // Delete old texture
+            if let Some(tex) = self.volume_texture.take() {
+                gl.delete_texture(tex);
+            }
+
+            let tex = gl.create_texture().unwrap();
+            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::R16UI as i32,
+                tex_width,
+                tex_height,
+                0,
+                glow::RED_INTEGER,
+                glow::UNSIGNED_SHORT,
+                glow::PixelUnpackData::Slice(Some(&padded)),
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MIN_FILTER,
+                glow::NEAREST as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_MAG_FILTER,
+                glow::NEAREST as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_S,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D,
+                glow::TEXTURE_WRAP_T,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.bind_texture(glow::TEXTURE_2D, None);
+
+            self.volume_texture = Some(tex);
+        }
+
+        // Upload sweep metadata uniforms
+        unsafe {
+            gl.use_program(Some(self.program));
+
+            let n = self.sweep_count as usize;
+            let mut elev = [0.0f32; MAX_SWEEPS];
+            let mut az_count = [0.0f32; MAX_SWEEPS];
+            let mut g_count = [0.0f32; MAX_SWEEPS];
+            let mut fg_km = [0.0f32; MAX_SWEEPS];
+            let mut gi_km = [0.0f32; MAX_SWEEPS];
+            let mut max_r = [0.0f32; MAX_SWEEPS];
+            let mut d_off = [0i32; MAX_SWEEPS];
+            let mut scale = [1.0f32; MAX_SWEEPS];
+            let mut offset = [0.0f32; MAX_SWEEPS];
+
+            for (i, s) in sweeps.iter().take(n).enumerate() {
+                elev[i] = s.elevation_deg;
+                az_count[i] = s.azimuth_count as f32;
+                g_count[i] = s.gate_count as f32;
+                fg_km[i] = s.first_gate_km;
+                gi_km[i] = s.gate_interval_km;
+                max_r[i] = s.max_range_km;
+                d_off[i] = s.data_offset as i32;
+                scale[i] = s.scale;
+                offset[i] = s.offset;
+            }
+
+            gl.uniform_1_f32_slice(self.u_elevation.as_ref(), &elev[..n]);
+            gl.uniform_1_f32_slice(self.u_azimuth_count.as_ref(), &az_count[..n]);
+            gl.uniform_1_f32_slice(self.u_gate_count.as_ref(), &g_count[..n]);
+            gl.uniform_1_f32_slice(self.u_first_gate_km.as_ref(), &fg_km[..n]);
+            gl.uniform_1_f32_slice(self.u_gate_interval_km.as_ref(), &gi_km[..n]);
+            gl.uniform_1_f32_slice(self.u_max_range.as_ref(), &max_r[..n]);
+            gl.uniform_1_i32_slice(self.u_data_offset.as_ref(), &d_off[..n]);
+            gl.uniform_1_f32_slice(self.u_scale.as_ref(), &scale[..n]);
+            gl.uniform_1_f32_slice(self.u_offset.as_ref(), &offset[..n]);
+
+            gl.use_program(None);
+        }
+
+        self.has_data = true;
+
+        log::info!(
+            "Volume texture: {}x{} ({} values, {} sweeps, {:.1}KB)",
+            tex_width,
+            tex_height,
+            total_values,
+            self.sweep_count,
+            buffer.len() as f64 / 1024.0,
+        );
+    }
+
+    /// Returns true if volume data has been uploaded.
+    pub fn has_data(&self) -> bool {
+        self.has_data
+    }
+
+    /// Paint the volume. The LUT texture should be pre-bound to unit 1,
+    /// or passed explicitly via the flat renderer.
+    pub fn paint(
+        &self,
+        gl: &glow::Context,
+        camera: &GlobeCamera,
+        lut_texture: glow::Texture,
+        processing: &RenderProcessing,
+        value_min: f32,
+        value_range: f32,
+        density_cutoff: f32,
+    ) {
+        if !self.has_data || self.volume_texture.is_none() {
+            return;
+        }
+
+        log::debug!(
+            "Volume paint: {} sweeps, tex_width={}, site=({:.2},{:.2}), density_cutoff={}, value_min={}, value_range={}",
+            self.sweep_count, self.tex_width, self.site_lat, self.site_lon,
+            density_cutoff, value_min, value_range,
+        );
+
+        unsafe {
+            // Premultiplied alpha blending
+            gl.enable(glow::BLEND);
+            gl.blend_func_separate(
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+            );
+
+            // Depth test OFF — the ray marcher handles earth occlusion via sphere intersection.
+            // The full-screen quad is at z=0 which doesn't correspond to any meaningful depth.
+            gl.disable(glow::DEPTH_TEST);
+            gl.depth_mask(false);
+
+            gl.use_program(Some(self.program));
+            gl.bind_vertex_array(Some(self.quad_vao));
+
+            // Bind textures
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, self.volume_texture);
+
+            gl.active_texture(glow::TEXTURE1);
+            gl.bind_texture(glow::TEXTURE_2D, Some(lut_texture));
+
+            // Camera uniforms
+            let vp = camera.view_projection();
+            let inv_vp = vp.inverse();
+            gl.uniform_matrix_4_f32_slice(
+                self.u_inv_view_projection.as_ref(),
+                false,
+                &inv_vp.to_cols_array(),
+            );
+
+            let cam_pos = camera.camera_world_pos();
+            gl.uniform_3_f32(self.u_camera_pos.as_ref(), cam_pos.x, cam_pos.y, cam_pos.z);
+
+            // Site position on unit sphere
+            let lat_rad = self.site_lat.to_radians();
+            let lon_rad = self.site_lon.to_radians();
+            let site_x = (lat_rad.cos() * lon_rad.sin()) as f32;
+            let site_y = lat_rad.sin() as f32;
+            let site_z = (lat_rad.cos() * lon_rad.cos()) as f32;
+            gl.uniform_3_f32(self.u_site_pos.as_ref(), site_x, site_y, site_z);
+            gl.uniform_1_f32(self.u_site_lat_rad.as_ref(), lat_rad as f32);
+            gl.uniform_1_f32(self.u_site_lon_rad.as_ref(), lon_rad as f32);
+
+            // Volume bounds
+            let inner_radius = 1.003f32;
+            // Max beam height at max range and max elevation
+            let max_elev_rad = if self.sweep_count > 0 {
+                // Use the highest elevation (last in sorted array)
+                // Already set via uniform, but we compute outer radius here
+                20.0f32.to_radians() // generous upper bound
+            } else {
+                5.0f32.to_radians()
+            };
+            let max_range = 300.0f32; // km
+            // Simplified: use h ≈ R*sin(theta) for rough bound
+            let max_height_km = max_range * max_elev_rad.sin() + 10.0;
+            let outer_radius = inner_radius + max_height_km / 6371.0;
+
+            gl.uniform_1_f32(self.u_inner_radius.as_ref(), inner_radius);
+            gl.uniform_1_f32(self.u_outer_radius.as_ref(), outer_radius);
+            gl.uniform_1_f32(self.u_max_range_km.as_ref(), 300.0);
+
+            // Data texture info
+            gl.uniform_1_i32(self.u_tex_width.as_ref(), self.tex_width);
+            gl.uniform_1_i32(self.u_sweep_count.as_ref(), self.sweep_count);
+
+            // Rendering params
+            gl.uniform_1_f32(self.u_opacity.as_ref(), processing.opacity);
+            gl.uniform_1_f32(self.u_density_cutoff.as_ref(), density_cutoff);
+            gl.uniform_1_f32(self.u_value_min.as_ref(), value_min);
+            gl.uniform_1_f32(self.u_value_range.as_ref(), value_range);
+
+            gl.draw_arrays(glow::TRIANGLES, 0, 6);
+
+            // Cleanup
+            gl.bind_vertex_array(None);
+            gl.use_program(None);
+            gl.active_texture(glow::TEXTURE0);
+            gl.depth_mask(true);
+        }
+    }
+}
+
+fn cast_f32_to_u8(data: &[f32]) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, data.len() * 4) }
+}

@@ -73,6 +73,27 @@ self.onmessage = async function (e) {
         return;
     }
 
+    if (msg.type === 'render_volume') {
+        try {
+            const result = await wasm.worker_render_volume({
+                scanKey: msg.scanKey,
+                product: msg.product,
+                elevationNumbers: msg.elevationNumbers,
+            });
+
+            const { buffer } = result;
+            const transferList = [buffer];
+            const payload = Object.assign({}, result, {
+                type: 'volume_decoded',
+                id: msg.id,
+            });
+            self.postMessage(payload, transferList);
+        } catch (err) {
+            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+        }
+        return;
+    }
+
     if (msg.type === 'render') {
         try {
             // worker_render: JsValue -> Promise<JsValue>

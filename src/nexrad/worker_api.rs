@@ -611,6 +611,203 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 }
 
 // ---------------------------------------------------------------------------
+// Volume render (all elevations packed for ray marching)
+// ---------------------------------------------------------------------------
+
+/// Render all elevations for a scan, packing raw gate data into a single buffer
+/// for volumetric ray-march rendering on the GPU.
+///
+/// Parameters (JS object): `{ scanKey: string, product: string, elevationNumbers: number[] }`
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
+    init_logger();
+    wasm_bindgen_futures::future_to_promise(async move {
+        let t_total = web_time::Instant::now();
+
+        let scan_key_str = js_sys::Reflect::get(&params, &"scanKey".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Missing scanKey"))?;
+
+        let product_str = js_sys::Reflect::get(&params, &"product".into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "reflectivity".to_string());
+
+        let elev_arr = js_sys::Reflect::get(&params, &"elevationNumbers".into())
+            .ok()
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Missing elevationNumbers"))?;
+        let elev_arr: js_sys::Array = wasm_bindgen::JsCast::unchecked_into(elev_arr);
+        let mut elevation_numbers: Vec<u8> = Vec::new();
+        for i in 0..elev_arr.length() {
+            if let Some(n) = elev_arr.get(i).as_f64() {
+                elevation_numbers.push(n as u8);
+            }
+        }
+
+        let scan_key = ScanKey::from_storage_key(&scan_key_str)
+            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Invalid scanKey format"))?;
+
+        let store = idb_store().await?;
+
+        // Collect all sweep data into a packed buffer.
+        // We widen everything to u16 (2 bytes per gate) so the shader only needs one format.
+        let mut packed_data: Vec<u8> = Vec::new();
+        let sweep_meta_arr = js_sys::Array::new();
+        let mut data_offset: u32 = 0; // offset in u16 elements, not bytes
+
+        for &elev_num in &elevation_numbers {
+            let sweep_key = SweepDataKey::new(scan_key.clone(), elev_num, &product_str);
+            let blob_buffer = match store
+                .get_sweep_as_js(&sweep_key.to_storage_key())
+                .await
+            {
+                Ok(Some(buf)) => buf,
+                _ => continue, // skip missing elevations
+            };
+
+            let header_bytes = {
+                let view =
+                    js_sys::Uint8Array::new_with_byte_offset_and_length(&blob_buffer, 0, 72);
+                let mut buf = [0u8; 72];
+                view.copy_to(&mut buf);
+                buf
+            };
+            let header = match parse_sweep_header(&header_bytes) {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+
+            let az = header.azimuth_count as usize;
+            let gc = header.gate_count as usize;
+            let total_values = az * gc;
+
+            // Copy raw gate values, widening u8 → u16 if needed
+            if header.data_word_size == 1 {
+                let u8_view = js_sys::Uint8Array::new_with_byte_offset_and_length(
+                    &blob_buffer,
+                    header.gate_values_offset,
+                    total_values as u32,
+                );
+                let mut tmp = vec![0u8; total_values];
+                u8_view.copy_to(&mut tmp);
+                for &val in &tmp {
+                    packed_data.extend_from_slice(&(val as u16).to_le_bytes());
+                }
+            } else {
+                // u16: copy raw bytes directly (already little-endian)
+                let u8_view = js_sys::Uint8Array::new_with_byte_offset_and_length(
+                    &blob_buffer,
+                    header.gate_values_offset,
+                    (total_values * 2) as u32,
+                );
+                let prev_len = packed_data.len();
+                packed_data.resize(prev_len + total_values * 2, 0);
+                u8_view.copy_to(&mut packed_data[prev_len..]);
+            }
+
+            // Build per-sweep metadata JS object
+            let meta = js_sys::Object::new();
+            js_sys::Reflect::set(
+                &meta,
+                &"elevationDeg".into(),
+                &wasm_bindgen::JsValue::from(header.mean_elevation as f64),
+            )
+            .ok();
+            js_sys::Reflect::set(
+                &meta,
+                &"azimuthCount".into(),
+                &wasm_bindgen::JsValue::from(header.azimuth_count),
+            )
+            .ok();
+            js_sys::Reflect::set(
+                &meta,
+                &"gateCount".into(),
+                &wasm_bindgen::JsValue::from(header.gate_count),
+            )
+            .ok();
+            js_sys::Reflect::set(
+                &meta,
+                &"firstGateKm".into(),
+                &wasm_bindgen::JsValue::from(header.first_gate_range_km),
+            )
+            .ok();
+            js_sys::Reflect::set(
+                &meta,
+                &"gateIntervalKm".into(),
+                &wasm_bindgen::JsValue::from(header.gate_interval_km),
+            )
+            .ok();
+            js_sys::Reflect::set(
+                &meta,
+                &"maxRangeKm".into(),
+                &wasm_bindgen::JsValue::from(header.max_range_km),
+            )
+            .ok();
+            js_sys::Reflect::set(
+                &meta,
+                &"dataOffset".into(),
+                &wasm_bindgen::JsValue::from(data_offset),
+            )
+            .ok();
+            js_sys::Reflect::set(
+                &meta,
+                &"scale".into(),
+                &wasm_bindgen::JsValue::from(header.scale as f64),
+            )
+            .ok();
+            js_sys::Reflect::set(
+                &meta,
+                &"offset".into(),
+                &wasm_bindgen::JsValue::from(header.offset as f64),
+            )
+            .ok();
+            sweep_meta_arr.push(&meta);
+
+            data_offset += total_values as u32;
+        }
+
+        // Create the packed buffer as a transferable ArrayBuffer
+        let packed_u8 = js_sys::Uint8Array::from(&packed_data[..]);
+        let packed_buffer = packed_u8.buffer();
+
+        let result = js_sys::Object::new();
+        js_sys::Reflect::set(&result, &"buffer".into(), &packed_buffer).ok();
+        js_sys::Reflect::set(
+            &result,
+            &"sweepCount".into(),
+            &wasm_bindgen::JsValue::from(sweep_meta_arr.length()),
+        )
+        .ok();
+        js_sys::Reflect::set(&result, &"sweepMeta".into(), &sweep_meta_arr).ok();
+        js_sys::Reflect::set(
+            &result,
+            &"product".into(),
+            &wasm_bindgen::JsValue::from_str(&product_str),
+        )
+        .ok();
+
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+        js_sys::Reflect::set(
+            &result,
+            &"totalMs".into(),
+            &wasm_bindgen::JsValue::from(total_ms),
+        )
+        .ok();
+
+        log::info!(
+            "render_volume: {} sweeps, {} values packed ({:.1}KB) in {:.1}ms",
+            sweep_meta_arr.length(),
+            data_offset,
+            packed_data.len() as f64 / 1024.0,
+            total_ms,
+        );
+
+        Ok(result.into())
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Per-chunk incremental ingest
 // ---------------------------------------------------------------------------
 

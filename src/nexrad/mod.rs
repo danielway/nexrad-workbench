@@ -14,17 +14,19 @@ pub(crate) mod gpu_renderer;
 mod realtime;
 pub(crate) mod record_decode;
 mod types;
+pub(crate) mod volume_ray_renderer;
 mod worker_api;
 
 pub use archive_index::ArchiveIndex;
 pub use cache_channel::{CacheLoadChannel, CacheLoadResult};
-pub use decode_worker::{DecodeWorker, WorkerOutcome};
+pub use decode_worker::{DecodeWorker, VolumeSweepMeta, WorkerOutcome};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use globe_radar_renderer::GlobeRadarRenderer;
 pub use gpu_renderer::RadarGpuRenderer;
 pub use realtime::{RealtimeChannel, RealtimeResult};
 pub use record_decode::extract_elevation_numbers;
 pub use types::{CachedScan, DownloadResult, ScanMetadata};
+pub use volume_ray_renderer::VolumeRayRenderer;
 
 /// Standard NEXRAD coverage range in km.
 pub const RADAR_COVERAGE_RANGE_KM: f64 = 300.0;

@@ -145,6 +145,29 @@ pub struct DecodeResult {
     pub sweep_end_secs: f64,
 }
 
+/// Per-sweep metadata for the volume ray marcher.
+pub struct VolumeSweepMeta {
+    pub elevation_deg: f32,
+    pub azimuth_count: u32,
+    pub gate_count: u32,
+    pub first_gate_km: f32,
+    pub gate_interval_km: f32,
+    pub max_range_km: f32,
+    pub data_offset: u32,
+    pub scale: f32,
+    pub offset: f32,
+}
+
+/// All-elevation packed volume data for ray-march rendering.
+pub struct VolumeData {
+    /// Packed raw gate values (u16 per value, all sweeps concatenated).
+    pub buffer: Vec<u8>,
+    /// Per-sweep metadata sorted by elevation.
+    pub sweeps: Vec<VolumeSweepMeta>,
+    pub product: String,
+    pub total_ms: f64,
+}
+
 /// Outcome of any worker operation.
 pub enum WorkerOutcome {
     /// Archive ingest completed.
@@ -153,6 +176,8 @@ pub enum WorkerOutcome {
     ChunkIngested(ChunkIngestResult),
     /// Decode completed (raw data for GPU rendering).
     Decoded(DecodeResult),
+    /// Volume decode completed (all elevations packed for ray marching).
+    VolumeDecoded(VolumeData),
     /// Error from any operation.
     WorkerError { id: u64, message: String },
 }
@@ -165,6 +190,12 @@ pub enum WorkerOutcome {
 /// - `render`: Selectively decode + render a single elevation
 ///
 /// Results are polled via `try_recv()` each frame.
+/// Context for a volume render request.
+pub struct VolumeRenderContext {
+    #[allow(dead_code)]
+    pub scan_key: String,
+}
+
 pub struct DecodeWorker {
     worker: Worker,
     next_id: u64,
@@ -172,6 +203,7 @@ pub struct DecodeWorker {
     pending_ingest: Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_chunk_ingest: Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_volume: Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     results: Rc<RefCell<Vec<WorkerOutcome>>>,
     /// Requests queued before the worker was ready.
     queue: Vec<QueuedRequest>,
@@ -182,6 +214,7 @@ enum QueuedRequest {
     Ingest(RequestId, Vec<u8>, String, i64, String),
     IngestChunk(RequestId, Vec<u8>, String, i64, u32, bool, bool, String),
     Render(RequestId, String, u8, String),
+    RenderVolume(RequestId, String, String, Vec<u8>),
 }
 
 impl DecodeWorker {
@@ -217,6 +250,8 @@ impl DecodeWorker {
             Rc::new(RefCell::new(HashMap::new()));
         let pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>> =
             Rc::new(RefCell::new(HashMap::new()));
+        let pending_volume: Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>> =
+            Rc::new(RefCell::new(HashMap::new()));
         let results: Rc<RefCell<Vec<WorkerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
 
         // Set up the onmessage handler
@@ -225,6 +260,7 @@ impl DecodeWorker {
             let pending_ingest_c = pending_ingest.clone();
             let pending_chunk_ingest_c = pending_chunk_ingest.clone();
             let pending_render_c = pending_render.clone();
+            let pending_volume_c = pending_volume.clone();
             let results_c = results.clone();
             let ctx_c = ctx.clone();
 
@@ -249,6 +285,10 @@ impl DecodeWorker {
                     }
                     Some("decoded") => {
                         handle_decoded_message(&data, &pending_render_c, &results_c);
+                        ctx_c.request_repaint();
+                    }
+                    Some("volume_decoded") => {
+                        handle_volume_decoded_message(&data, &pending_volume_c, &results_c);
                         ctx_c.request_repaint();
                     }
                     Some("error") => {
@@ -298,6 +338,7 @@ impl DecodeWorker {
             pending_ingest,
             pending_chunk_ingest,
             pending_render,
+            pending_volume,
             results,
             queue: Vec::new(),
         })
@@ -367,6 +408,39 @@ impl DecodeWorker {
                 scan_key,
                 elevation_number,
                 product,
+            ));
+        }
+    }
+
+    /// Submit a volume render request: fetch all elevations, pack for ray marching.
+    pub fn render_volume(
+        &mut self,
+        scan_key: String,
+        product: String,
+        elevation_numbers: Vec<u8>,
+    ) {
+        let id = self.next_request_id();
+        self.pending_volume.borrow_mut().insert(
+            id,
+            VolumeRenderContext {
+                scan_key: scan_key.clone(),
+            },
+        );
+
+        if *self.ready.borrow() {
+            send_render_volume_request(
+                &self.worker,
+                id,
+                &scan_key,
+                &product,
+                &elevation_numbers,
+            );
+        } else {
+            self.queue.push(QueuedRequest::RenderVolume(
+                id,
+                scan_key,
+                product,
+                elevation_numbers,
             ));
         }
     }
@@ -454,6 +528,15 @@ impl DecodeWorker {
                     }
                     QueuedRequest::Render(id, scan_key, elev, product) => {
                         send_render_request(&self.worker, id, &scan_key, elev, &product);
+                    }
+                    QueuedRequest::RenderVolume(id, scan_key, product, elev_nums) => {
+                        send_render_volume_request(
+                            &self.worker,
+                            id,
+                            &scan_key,
+                            &product,
+                            &elev_nums,
+                        );
                     }
                 }
             }
@@ -971,6 +1054,117 @@ fn send_render_request(
 
     if let Err(e) = worker.post_message(&msg) {
         log::error!("Failed to send render request {}: {:?}", id, e);
+    }
+}
+
+/// Handle a "volume_decoded" message from the worker.
+fn handle_volume_decoded_message(
+    data: &JsValue,
+    pending: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
+) {
+    let id = js_sys::Reflect::get(data, &"id".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0) as u64;
+
+    let _context = match pending.borrow_mut().remove(&id) {
+        Some(ctx) => ctx,
+        None => {
+            log::warn!(
+                "Received volume_decoded message for unknown request {}",
+                id
+            );
+            return;
+        }
+    };
+
+    let total_ms = js_sys::Reflect::get(data, &"totalMs".into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let product = js_sys::Reflect::get(data, &"product".into())
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_else(|| "reflectivity".to_string());
+
+    // Extract packed buffer
+    let buf_js = js_sys::Reflect::get(data, &"buffer".into()).unwrap_or(JsValue::NULL);
+    let buffer = if !buf_js.is_null() && !buf_js.is_undefined() {
+        let u8_view = js_sys::Uint8Array::new(&buf_js);
+        u8_view.to_vec()
+    } else {
+        Vec::new()
+    };
+
+    // Extract per-sweep metadata
+    let meta_arr = js_sys::Reflect::get(data, &"sweepMeta".into()).unwrap_or(JsValue::NULL);
+    let mut sweeps: Vec<VolumeSweepMeta> = Vec::new();
+    if !meta_arr.is_null() && !meta_arr.is_undefined() {
+        let arr: js_sys::Array = meta_arr.unchecked_into();
+        for i in 0..arr.length() {
+            let obj = arr.get(i);
+            let get_f = |key: &str| -> f64 {
+                js_sys::Reflect::get(&obj, &key.into())
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0)
+            };
+            sweeps.push(VolumeSweepMeta {
+                elevation_deg: get_f("elevationDeg") as f32,
+                azimuth_count: get_f("azimuthCount") as u32,
+                gate_count: get_f("gateCount") as u32,
+                first_gate_km: get_f("firstGateKm") as f32,
+                gate_interval_km: get_f("gateIntervalKm") as f32,
+                max_range_km: get_f("maxRangeKm") as f32,
+                data_offset: get_f("dataOffset") as u32,
+                scale: get_f("scale") as f32,
+                offset: get_f("offset") as f32,
+            });
+        }
+    }
+
+    log::info!(
+        "Worker volume decode: {} sweeps, {:.1}KB buffer, product={}, {:.0}ms",
+        sweeps.len(),
+        buffer.len() as f64 / 1024.0,
+        product,
+        total_ms,
+    );
+
+    results
+        .borrow_mut()
+        .push(WorkerOutcome::VolumeDecoded(VolumeData {
+            buffer,
+            sweeps,
+            product,
+            total_ms,
+        }));
+}
+
+/// Send a render_volume request to the worker.
+fn send_render_volume_request(
+    worker: &Worker,
+    id: u64,
+    scan_key: &str,
+    product: &str,
+    elevation_numbers: &[u8],
+) {
+    let msg = js_sys::Object::new();
+    js_sys::Reflect::set(&msg, &"type".into(), &"render_volume".into()).ok();
+    js_sys::Reflect::set(&msg, &"id".into(), &JsValue::from(id as f64)).ok();
+    js_sys::Reflect::set(&msg, &"scanKey".into(), &JsValue::from_str(scan_key)).ok();
+    js_sys::Reflect::set(&msg, &"product".into(), &JsValue::from_str(product)).ok();
+
+    let elev_arr = js_sys::Array::new();
+    for &e in elevation_numbers {
+        elev_arr.push(&JsValue::from(e));
+    }
+    js_sys::Reflect::set(&msg, &"elevationNumbers".into(), &elev_arr).ok();
+
+    if let Err(e) = worker.post_message(&msg) {
+        log::error!("Failed to send render_volume request {}: {:?}", id, e);
     }
 }
 
