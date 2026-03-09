@@ -62,7 +62,6 @@ uniform float u_azimuth_count[25];
 uniform float u_gate_count[25];
 uniform float u_first_gate_km[25];
 uniform float u_gate_interval_km[25];
-uniform float u_max_range[25];
 uniform int u_data_offset[25];
 uniform float u_scale[25];
 uniform float u_offset[25];
@@ -74,164 +73,53 @@ uniform float u_value_min;
 uniform float u_value_range;
 
 const float EARTH_RADIUS = 6371.0;
-const float PI = 3.14159265359;
 
-// Step size in unit-sphere coordinates (~0.5km equivalent)
-const float STEP_SIZE = 0.0001;
-const int MAX_STEPS = 512;
+// Tuning constants
+const int MAX_STEPS = 96;
 const float ALPHA_CUTOFF = 0.95;
 
 // ── Ray-sphere intersection ──────────────────────────────────────────
 
-// Returns (t_enter, t_exit). If no intersection, t_enter > t_exit.
 vec2 sphere_intersect(vec3 ro, vec3 rd, float radius) {
-    float a = dot(rd, rd);
-    float b = 2.0 * dot(ro, rd);
+    float b = dot(ro, rd);
     float c = dot(ro, ro) - radius * radius;
-    float disc = b * b - 4.0 * a * c;
+    float disc = b * b - c;
     if (disc < 0.0) return vec2(1e20, -1e20);
     float sq = sqrt(disc);
-    float t0 = (-b - sq) / (2.0 * a);
-    float t1 = (-b + sq) / (2.0 * a);
-    return vec2(t0, t1);
+    return vec2(-b - sq, -b + sq);
 }
 
-// ── Sample a single value from the packed volume texture ─────────────
+// ── Nearest-neighbor sweep sample (1 fetch instead of 4) ────────────
 
-float fetch_value(int idx) {
-    int y = idx / u_tex_width;
-    int x = idx - y * u_tex_width;  // avoid mod for performance
-    uint raw = texelFetch(u_volume_tex, ivec2(x, y), 0).r;
-    return float(raw);
-}
-
-// ── Sample a sweep with bilinear interpolation ──────────────────────
-
-float sample_sweep(int si, float az_deg, float range_km) {
+float sample_sweep_nn(int si, float az_deg, float range_km) {
     float gc = u_gate_count[si];
     float ac = u_azimuth_count[si];
 
     float gate_f = (range_km - u_first_gate_km[si]) / u_gate_interval_km[si];
-    if (gate_f < 0.0 || gate_f >= gc - 1.0) return -1.0;
+    if (gate_f < 0.0 || gate_f >= gc) return -1.0;
 
-    float az_f = az_deg * ac / 360.0;
+    int gate = int(gate_f);
+    int az = int(mod(az_deg * ac / 360.0, ac));
 
-    // Bilinear interpolation
-    int g0 = int(floor(gate_f));
-    int g1 = min(g0 + 1, int(gc) - 1);
-    float gf = gate_f - float(g0);
+    int idx = u_data_offset[si] + az * int(gc) + gate;
+    int y = idx / u_tex_width;
+    int x = idx - y * u_tex_width;
+    float raw = float(texelFetch(u_volume_tex, ivec2(x, y), 0).r);
 
-    int a0 = int(mod(floor(az_f), ac));
-    int a1 = int(mod(float(a0 + 1), ac));
-    float af = fract(az_f);
-
-    int base = u_data_offset[si];
-    int gci = int(gc);
-
-    float v00 = fetch_value(base + a0 * gci + g0);
-    float v10 = fetch_value(base + a0 * gci + g1);
-    float v01 = fetch_value(base + a1 * gci + g0);
-    float v11 = fetch_value(base + a1 * gci + g1);
-
-    // Sentinel check: 0=below threshold, 1=range folded
-    // Only interpolate valid values
-    float sum = 0.0;
-    float wsum = 0.0;
-    float w00 = (1.0 - gf) * (1.0 - af);
-    float w10 = gf * (1.0 - af);
-    float w01 = (1.0 - gf) * af;
-    float w11 = gf * af;
-
-    if (v00 > 1.5) { sum += v00 * w00; wsum += w00; }
-    if (v10 > 1.5) { sum += v10 * w10; wsum += w10; }
-    if (v01 > 1.5) { sum += v01 * w01; wsum += w01; }
-    if (v11 > 1.5) { sum += v11 * w11; wsum += w11; }
-
-    if (wsum < 0.001) return -1.0;
-    return sum / wsum;
+    return (raw > 1.5) ? raw : -1.0;
 }
 
-// ── Binary search for elevation bracket ─────────────────────────────
+// ── Linear search for elevation bracket (faster than binary for ≤25) ─
 
-// Find sweep index i such that u_elevation[i] <= el < u_elevation[i+1]
-// Returns -1 if outside range.
 int find_sweep_bracket(float el_deg) {
     if (u_sweep_count < 2) return -1;
     if (el_deg < u_elevation[0] || el_deg > u_elevation[u_sweep_count - 1]) return -1;
 
-    int lo = 0;
-    int hi = u_sweep_count - 1;
-    for (int iter = 0; iter < 20; iter++) {
-        if (hi - lo <= 1) break;
-        int mid = (lo + hi) / 2;
-        if (u_elevation[mid] <= el_deg) {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
+    for (int i = 0; i < 24; i++) {
+        if (i + 1 >= u_sweep_count) return -1;
+        if (u_elevation[i + 1] >= el_deg) return i;
     }
-    return lo;
-}
-
-// ── Sample the full volume at a 3D point ────────────────────────────
-
-float sample_volume(vec3 pos) {
-    // Height above unit sphere surface (in km)
-    float r = length(pos);
-    float h_km = (r - u_inner_radius) * EARTH_RADIUS;
-
-    // Vector from site to point on sphere surface
-    vec3 p_surf = normalize(pos);
-    vec3 s = u_site_pos;
-
-    // Ground distance (great-circle) in km
-    float cos_gd = clamp(dot(p_surf, s), -1.0, 1.0);
-    float ground_dist_km = acos(cos_gd) * EARTH_RADIUS;
-
-    // Slant range (simplified Pythagorean approximation)
-    float range_km = sqrt(ground_dist_km * ground_dist_km + h_km * h_km);
-
-    if (range_km > u_max_range_km || range_km < 1.0) return -1.0;
-
-    // Elevation angle: inverse of beam height equation
-    float el_deg = degrees(atan(h_km, ground_dist_km));
-
-    // Azimuth: bearing from site to point
-    // Compute using local east/north at site
-    float slat = sin(u_site_lat_rad);
-    float clat = cos(u_site_lat_rad);
-    float slon = sin(u_site_lon_rad);
-    float clon = cos(u_site_lon_rad);
-
-    // Local North and East unit vectors at site
-    vec3 north = vec3(-slat * slon, clat, -slat * clon);
-    vec3 east  = vec3(clon, 0.0, -slon);
-
-    // Direction from site to surface point
-    vec3 d = p_surf - s;
-    float dn = dot(d, north);
-    float de = dot(d, east);
-    float az_deg = degrees(atan(de, dn));
-    if (az_deg < 0.0) az_deg += 360.0;
-
-    // Find bracketing elevation sweeps
-    int si = find_sweep_bracket(el_deg);
-    if (si < 0) return -1.0;
-
-    // Sample both bracketing sweeps
-    float v_lo = sample_sweep(si, az_deg, range_km);
-    float v_hi = sample_sweep(si + 1, az_deg, range_km);
-
-    // Interpolate between elevations
-    float el_lo = u_elevation[si];
-    float el_hi = u_elevation[si + 1];
-    float el_frac = (el_deg - el_lo) / max(el_hi - el_lo, 0.01);
-
-    if (v_lo < 0.0 && v_hi < 0.0) return -1.0;
-    if (v_lo < 0.0) return v_hi;
-    if (v_hi < 0.0) return v_lo;
-
-    return mix(v_lo, v_hi, el_frac);
+    return -1;
 }
 
 // ── Main ────────────────────────────────────────────────────────────
@@ -253,71 +141,127 @@ void main() {
     // If outer sphere missed entirely, skip
     if (t_outer.x > t_outer.y) discard;
 
-    // Determine march range: only through the shell between inner and outer
-    float t_start = max(t_outer.x, 0.0);  // don't start behind camera
+    // Determine march range
+    float t_start = max(t_outer.x, 0.0);
     float t_end = t_outer.y;
 
-    // If inside outer sphere, start from camera
-    if (t_start < 0.0) t_start = 0.0;
-
-    // Clip to inner sphere exit (don't render inside earth)
+    // Clip to inner sphere (don't render inside earth)
     if (t_inner.x < t_inner.y && t_inner.x > 0.0) {
-        // Ray hits earth — end at earth surface entry
         t_end = min(t_end, t_inner.x);
     }
-
     if (t_start >= t_end) discard;
 
-    // Adaptive step size
-    float range = t_end - t_start;
-    float step = max(STEP_SIZE, range / float(MAX_STEPS));
+    // Early discard: test if midpoint of the ray is within radar range
+    // This cheaply kills ~90% of pixels on the globe that are far from the site
+    vec3 mid_pt = normalize(ro + rd * ((t_start + t_end) * 0.5));
+    float cos_mid = dot(mid_pt, u_site_pos);
+    float cos_max_angle = cos(u_max_range_km / EARTH_RADIUS);
+    if (cos_mid < cos_max_angle * 0.7) discard;  // 0.7 = generous margin
+
+    // Adaptive step size — target ~64-96 steps through the shell
+    float march_range = t_end - t_start;
+    float step = march_range / float(MAX_STEPS);
+
+    // Precompute site trig (hoisted out of loop)
+    float slat = sin(u_site_lat_rad);
+    float clat = cos(u_site_lat_rad);
+    float slon = sin(u_site_lon_rad);
+    float clon = cos(u_site_lon_rad);
+    vec3 north = vec3(-slat * slon, clat, -slat * clon);
+    vec3 east  = vec3(clon, 0.0, -slon);
+
+    // Precompute scale/offset (same for all sweeps of same product)
+    float scale_val = u_scale[0];
+    float offset_val = u_offset[0];
 
     // Front-to-back accumulation
     vec3 accum_color = vec3(0.0);
     float accum_alpha = 0.0;
 
-    float t = t_start;
+    float t = t_start + step * 0.5;  // offset by half-step to avoid aliasing
     for (int i = 0; i < MAX_STEPS; i++) {
         if (t >= t_end || accum_alpha >= ALPHA_CUTOFF) break;
 
         vec3 pos = ro + rd * t;
 
-        // Check if this point is within radar range of the site
-        vec3 p_surf = normalize(pos);
-        float cos_gd = clamp(dot(p_surf, u_site_pos), -1.0, 1.0);
-        float ground_dist_km = acos(cos_gd) * EARTH_RADIUS;
-        if (ground_dist_km > u_max_range_km) {
+        // Height above unit sphere surface (in km)
+        float r = length(pos);
+        float h_km = (r - u_inner_radius) * EARTH_RADIUS;
+
+        // Ground distance from site — use cheap dot product approximation
+        // cos(angle) ≈ dot(normalize(pos), site_pos), then ground_dist ≈ acos(cos) * R
+        // But acos is expensive. Use: dist² ≈ 2R²(1-cos) for small angles
+        vec3 p_surf = pos / r;  // normalize
+        float cos_gd = dot(p_surf, u_site_pos);
+
+        // Quick range check using squared chord distance (avoids acos)
+        // chord² = 2(1 - cos(θ)), ground_dist² ≈ R²·chord² for small angles
+        float chord2 = 2.0 * (1.0 - cos_gd);
+        float ground_dist2_km = chord2 * EARTH_RADIUS * EARTH_RADIUS;
+        float max_r2 = u_max_range_km * u_max_range_km;
+
+        if (ground_dist2_km > max_r2) {
             t += step;
             continue;
         }
 
-        float raw = sample_volume(pos);
+        // Full computation only for in-range samples
+        float ground_dist_km = sqrt(ground_dist2_km);
+        float range_km = sqrt(ground_dist2_km + h_km * h_km);
 
-        if (raw > 1.5) {
-            // All sweeps for the same product share scale/offset
-            float scale_val = u_scale[0];
-            float offset_val = u_offset[0];
+        if (range_km < 1.0) {
+            t += step;
+            continue;
+        }
 
-            float physical;
-            if (scale_val == 0.0) {
-                physical = raw;
-            } else {
-                physical = (raw - offset_val) / scale_val;
-            }
+        // Elevation angle
+        float el_deg = degrees(atan(h_km, ground_dist_km));
 
-            if (physical >= u_density_cutoff) {
-                // Color lookup
-                float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
-                vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
+        // Find bracketing sweeps
+        int si = find_sweep_bracket(el_deg);
+        if (si < 0) {
+            t += step;
+            continue;
+        }
 
-                // Density: map physical value to opacity
-                float sample_alpha = color.a * u_opacity * step * 300.0;
-                sample_alpha = clamp(sample_alpha, 0.0, 0.8);
+        // Azimuth: bearing from site to point
+        vec3 d = p_surf - u_site_pos;
+        float az_deg = degrees(atan(dot(d, east), dot(d, north)));
+        if (az_deg < 0.0) az_deg += 360.0;
 
-                // Front-to-back compositing
-                accum_color += (1.0 - accum_alpha) * color.rgb * sample_alpha;
-                accum_alpha += (1.0 - accum_alpha) * sample_alpha;
-            }
+        // Sample two bracketing sweeps (nearest-neighbor: 1 fetch each)
+        float v_lo = sample_sweep_nn(si, az_deg, range_km);
+        float v_hi = sample_sweep_nn(si + 1, az_deg, range_km);
+
+        // Elevation interpolation
+        float raw;
+        if (v_lo < 0.0 && v_hi < 0.0) {
+            t += step;
+            continue;
+        } else if (v_lo < 0.0) {
+            raw = v_hi;
+        } else if (v_hi < 0.0) {
+            raw = v_lo;
+        } else {
+            float el_frac = (el_deg - u_elevation[si]) / max(u_elevation[si + 1] - u_elevation[si], 0.01);
+            raw = mix(v_lo, v_hi, el_frac);
+        }
+
+        // Convert raw to physical value
+        float physical = (scale_val != 0.0) ? (raw - offset_val) / scale_val : raw;
+
+        if (physical >= u_density_cutoff) {
+            // Color lookup
+            float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
+            vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
+
+            // Density-proportional opacity
+            float sample_alpha = color.a * u_opacity * step * 300.0;
+            sample_alpha = clamp(sample_alpha, 0.0, 0.8);
+
+            // Front-to-back compositing
+            accum_color += (1.0 - accum_alpha) * color.rgb * sample_alpha;
+            accum_alpha += (1.0 - accum_alpha) * sample_alpha;
         }
 
         t += step;
@@ -325,7 +269,6 @@ void main() {
 
     if (accum_alpha < 0.001) discard;
 
-    // Premultiplied alpha output
     fragColor = vec4(accum_color, accum_alpha);
 }
 "#;
