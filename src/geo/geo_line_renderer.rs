@@ -18,8 +18,8 @@ struct LayerBatch {
     layer_type: GeoLayerType,
     color: Color32,
     line_width: f32,
-    start: i32,  // first vertex index
-    count: i32,  // number of vertices (draw as GL_LINES)
+    start: i32, // first vertex index
+    count: i32, // number of vertices (draw as GL_LINES)
 }
 
 pub struct GeoLineRenderer {
@@ -60,7 +60,9 @@ void main() {
 "#;
 
         let program = super::globe_renderer::compile_program(gl, vert_src, frag_src);
-        let u_view_projection = gl.get_uniform_location(program, "u_view_projection").unwrap();
+        let u_view_projection = gl
+            .get_uniform_location(program, "u_view_projection")
+            .unwrap();
         let u_color = gl.get_uniform_location(program, "u_color").unwrap();
 
         let vao = gl.create_vertex_array().unwrap();
@@ -128,12 +130,7 @@ void main() {
     }
 
     /// Draw geo lines. Expects depth test already enabled by globe renderer.
-    pub fn paint(
-        &self,
-        gl: &glow::Context,
-        camera: &GlobeCamera,
-        visible_layers: &VisibleLayers,
-    ) {
+    pub fn paint(&self, gl: &glow::Context, camera: &GlobeCamera, visible_layers: &VisibleLayers) {
         if self.batches.is_empty() {
             return;
         }

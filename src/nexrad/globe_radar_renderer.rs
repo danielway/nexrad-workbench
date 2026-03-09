@@ -335,25 +335,42 @@ impl GlobeRadarRenderer {
     }
 
     unsafe fn new_inner(gl: &Arc<glow::Context>) -> Self {
-        let program =
-            crate::geo::globe_renderer::compile_program(gl, GLOBE_VERTEX_SHADER, GLOBE_FRAGMENT_SHADER);
+        let program = crate::geo::globe_renderer::compile_program(
+            gl,
+            GLOBE_VERTEX_SHADER,
+            GLOBE_FRAGMENT_SHADER,
+        );
 
         // Get uniform locations
-        let u_view_projection = gl.get_uniform_location(program, "u_view_projection").unwrap();
+        let u_view_projection = gl
+            .get_uniform_location(program, "u_view_projection")
+            .unwrap();
         let u_gate_count = gl.get_uniform_location(program, "u_gate_count").unwrap();
         let u_azimuth_count = gl.get_uniform_location(program, "u_azimuth_count").unwrap();
         let u_first_gate_km = gl.get_uniform_location(program, "u_first_gate_km").unwrap();
-        let u_gate_interval_km = gl.get_uniform_location(program, "u_gate_interval_km").unwrap();
+        let u_gate_interval_km = gl
+            .get_uniform_location(program, "u_gate_interval_km")
+            .unwrap();
         let u_max_range_km = gl.get_uniform_location(program, "u_max_range_km").unwrap();
         let u_value_min = gl.get_uniform_location(program, "u_value_min").unwrap();
         let u_value_range = gl.get_uniform_location(program, "u_value_range").unwrap();
         let u_interpolation = gl.get_uniform_location(program, "u_interpolation").unwrap();
-        let u_smoothing_enabled = gl.get_uniform_location(program, "u_smoothing_enabled").unwrap();
-        let u_smoothing_radius = gl.get_uniform_location(program, "u_smoothing_radius").unwrap();
-        let u_despeckle_enabled = gl.get_uniform_location(program, "u_despeckle_enabled").unwrap();
-        let u_despeckle_threshold = gl.get_uniform_location(program, "u_despeckle_threshold").unwrap();
+        let u_smoothing_enabled = gl
+            .get_uniform_location(program, "u_smoothing_enabled")
+            .unwrap();
+        let u_smoothing_radius = gl
+            .get_uniform_location(program, "u_smoothing_radius")
+            .unwrap();
+        let u_despeckle_enabled = gl
+            .get_uniform_location(program, "u_despeckle_enabled")
+            .unwrap();
+        let u_despeckle_threshold = gl
+            .get_uniform_location(program, "u_despeckle_threshold")
+            .unwrap();
         let u_opacity = gl.get_uniform_location(program, "u_opacity").unwrap();
-        let u_edge_softening = gl.get_uniform_location(program, "u_edge_softening").unwrap();
+        let u_edge_softening = gl
+            .get_uniform_location(program, "u_edge_softening")
+            .unwrap();
         let u_offset = gl.get_uniform_location(program, "u_offset").unwrap();
         let u_scale = gl.get_uniform_location(program, "u_scale").unwrap();
 
@@ -505,10 +522,22 @@ impl GlobeRadarRenderer {
 
             // Data metadata (from the flat renderer)
             gl.uniform_1_f32(Some(&self.u_gate_count), flat_renderer.gate_count() as f32);
-            gl.uniform_1_f32(Some(&self.u_azimuth_count), flat_renderer.azimuth_count() as f32);
-            gl.uniform_1_f32(Some(&self.u_first_gate_km), flat_renderer.first_gate_km() as f32);
-            gl.uniform_1_f32(Some(&self.u_gate_interval_km), flat_renderer.gate_interval_km() as f32);
-            gl.uniform_1_f32(Some(&self.u_max_range_km), flat_renderer.max_range_km() as f32);
+            gl.uniform_1_f32(
+                Some(&self.u_azimuth_count),
+                flat_renderer.azimuth_count() as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.u_first_gate_km),
+                flat_renderer.first_gate_km() as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.u_gate_interval_km),
+                flat_renderer.gate_interval_km() as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.u_max_range_km),
+                flat_renderer.max_range_km() as f32,
+            );
             gl.uniform_1_f32(Some(&self.u_value_min), flat_renderer.value_min());
             gl.uniform_1_f32(Some(&self.u_value_range), flat_renderer.value_range());
 
@@ -518,12 +547,24 @@ impl GlobeRadarRenderer {
                 crate::state::InterpolationMode::Bilinear => 1,
             };
             gl.uniform_1_i32(Some(&self.u_interpolation), interp_mode);
-            gl.uniform_1_i32(Some(&self.u_smoothing_enabled), processing.smoothing_enabled as i32);
+            gl.uniform_1_i32(
+                Some(&self.u_smoothing_enabled),
+                processing.smoothing_enabled as i32,
+            );
             gl.uniform_1_f32(Some(&self.u_smoothing_radius), processing.smoothing_radius);
-            gl.uniform_1_i32(Some(&self.u_despeckle_enabled), processing.despeckle_enabled as i32);
-            gl.uniform_1_i32(Some(&self.u_despeckle_threshold), processing.despeckle_threshold as i32);
+            gl.uniform_1_i32(
+                Some(&self.u_despeckle_enabled),
+                processing.despeckle_enabled as i32,
+            );
+            gl.uniform_1_i32(
+                Some(&self.u_despeckle_threshold),
+                processing.despeckle_threshold as i32,
+            );
             gl.uniform_1_f32(Some(&self.u_opacity), processing.opacity);
-            gl.uniform_1_i32(Some(&self.u_edge_softening), processing.edge_softening as i32);
+            gl.uniform_1_i32(
+                Some(&self.u_edge_softening),
+                processing.edge_softening as i32,
+            );
 
             // Raw-to-physical conversion
             gl.uniform_1_f32(Some(&self.u_offset), flat_renderer.data_offset());

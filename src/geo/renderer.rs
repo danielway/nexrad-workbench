@@ -62,7 +62,15 @@ fn render_feature(
 ) {
     match feature {
         GeoFeature::Point(coord, label) => {
-            render_point(painter, coord, projection, color, label.as_deref(), show_labels, zoom);
+            render_point(
+                painter,
+                coord,
+                projection,
+                color,
+                label.as_deref(),
+                show_labels,
+                zoom,
+            );
         }
         GeoFeature::LineString(coords) => {
             render_line_string(painter, coords, projection, stroke);

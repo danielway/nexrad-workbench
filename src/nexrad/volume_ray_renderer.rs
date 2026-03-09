@@ -360,7 +360,10 @@ impl VolumeRayRenderer {
         let get = |name: &str| {
             let loc = gl.get_uniform_location(program, name);
             if loc.is_none() {
-                log::warn!("Volume shader: uniform '{}' not found (shader may have failed to compile)", name);
+                log::warn!(
+                    "Volume shader: uniform '{}' not found (shader may have failed to compile)",
+                    name
+                );
             }
             loc
         };
@@ -415,18 +418,43 @@ impl VolumeRayRenderer {
         let fbo_color = gl.create_texture().unwrap();
         gl.bind_texture(glow::TEXTURE_2D, Some(fbo_color));
         gl.tex_image_2d(
-            glow::TEXTURE_2D, 0, glow::RGBA8 as i32,
-            1, 1, 0, glow::RGBA, glow::UNSIGNED_BYTE,
+            glow::TEXTURE_2D,
+            0,
+            glow::RGBA8 as i32,
+            1,
+            1,
+            0,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
             glow::PixelUnpackData::Slice(None),
         );
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
-        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MIN_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_MAG_FILTER,
+            glow::LINEAR as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_S,
+            glow::CLAMP_TO_EDGE as i32,
+        );
+        gl.tex_parameter_i32(
+            glow::TEXTURE_2D,
+            glow::TEXTURE_WRAP_T,
+            glow::CLAMP_TO_EDGE as i32,
+        );
         gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
         gl.framebuffer_texture_2d(
-            glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0,
-            glow::TEXTURE_2D, Some(fbo_color), 0,
+            glow::FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(fbo_color),
+            0,
         );
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         gl.bind_texture(glow::TEXTURE_2D, None);
@@ -632,6 +660,7 @@ impl VolumeRayRenderer {
     }
 
     /// Paint the volume at half resolution into an FBO, then blit to screen.
+    #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &mut self,
         gl: &glow::Context,
@@ -658,12 +687,24 @@ impl VolumeRayRenderer {
                 self.fbo_height = fbo_h;
                 gl.bind_texture(glow::TEXTURE_2D, Some(self.fbo_color));
                 gl.tex_image_2d(
-                    glow::TEXTURE_2D, 0, glow::RGBA8 as i32,
-                    fbo_w, fbo_h, 0, glow::RGBA, glow::UNSIGNED_BYTE,
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    fbo_w,
+                    fbo_h,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
                     glow::PixelUnpackData::Slice(None),
                 );
                 gl.bind_texture(glow::TEXTURE_2D, None);
-                log::info!("Volume FBO resized to {}x{} (viewport {}x{})", fbo_w, fbo_h, viewport_width, viewport_height);
+                log::info!(
+                    "Volume FBO resized to {}x{} (viewport {}x{})",
+                    fbo_w,
+                    fbo_h,
+                    viewport_width,
+                    viewport_height
+                );
             }
 
             // Save GL state that egui has set (scissor, viewport)
@@ -739,10 +780,20 @@ impl VolumeRayRenderer {
             // ── Pass 2: Blit FBO to screen ───────────────────────────
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             // Restore original viewport and scissor for the blit
-            gl.viewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);
+            gl.viewport(
+                saved_viewport[0],
+                saved_viewport[1],
+                saved_viewport[2],
+                saved_viewport[3],
+            );
             if scissor_was_enabled {
                 gl.enable(glow::SCISSOR_TEST);
-                gl.scissor(saved_scissor[0], saved_scissor[1], saved_scissor[2], saved_scissor[3]);
+                gl.scissor(
+                    saved_scissor[0],
+                    saved_scissor[1],
+                    saved_scissor[2],
+                    saved_scissor[3],
+                );
             }
 
             gl.enable(glow::BLEND);

@@ -120,7 +120,9 @@ async fn streaming_loop(
     stats: NetworkStats,
     _facade: DataFacade,
 ) {
-    use nexrad_data::aws::realtime::{download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType};
+    use nexrad_data::aws::realtime::{
+        download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType,
+    };
 
     log::info!("Starting realtime streaming for site: {}", site_id);
 
@@ -245,7 +247,10 @@ async fn streaming_loop(
                         }
                     }
 
-                    log::info!("Backfill: completed, {} chunks downloaded", chunks_in_volume - 1);
+                    log::info!(
+                        "Backfill: completed, {} chunks downloaded",
+                        chunks_in_volume - 1
+                    );
                 }
                 Err(e) => {
                     log::warn!("Backfill: failed to list chunks: {}, skipping backfill", e);

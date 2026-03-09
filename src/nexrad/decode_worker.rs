@@ -11,14 +11,72 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, Worker, WorkerOptions, WorkerType};
 
+// ---------------------------------------------------------------------------
+// JS interop helpers — typed extraction from worker response objects
+// ---------------------------------------------------------------------------
+
+/// Extract a string field, returning empty string if absent.
+fn js_get_string_or_default(obj: &JsValue, key: &str) -> String {
+    js_sys::Reflect::get(obj, &key.into())
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default()
+}
+
+/// Extract a string field with a fallback default.
+fn js_get_string_or(obj: &JsValue, key: &str, default: &str) -> String {
+    js_sys::Reflect::get(obj, &key.into())
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// Extract an f64 field, returning 0.0 if absent.
+fn js_get_f64_or_zero(obj: &JsValue, key: &str) -> f64 {
+    js_sys::Reflect::get(obj, &key.into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0)
+}
+
+/// Extract an f64 field with a custom default.
+fn js_get_f64_or(obj: &JsValue, key: &str, default: f64) -> f64 {
+    js_sys::Reflect::get(obj, &key.into())
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(default)
+}
+
+/// Extract an optional f64 field.
+fn js_get_f64_opt(obj: &JsValue, key: &str) -> Option<f64> {
+    js_sys::Reflect::get(obj, &key.into())
+        .ok()
+        .and_then(|v| v.as_f64())
+}
+
+/// Extract a bool field, returning a default if absent.
+fn js_get_bool_or(obj: &JsValue, key: &str, default: bool) -> bool {
+    js_sys::Reflect::get(obj, &key.into())
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(default)
+}
+
+/// Extract a JSON-serialized field and deserialize it.
+fn js_get_json<T: serde::de::DeserializeOwned>(obj: &JsValue, key: &str) -> Option<T> {
+    js_sys::Reflect::get(obj, &key.into())
+        .ok()
+        .and_then(|v| v.as_string())
+        .and_then(|s| serde_json::from_str(&s).ok())
+}
+
 /// Unique ID for tracking worker requests.
 type RequestId = u64;
 
 /// Context for an ingest request.
 pub struct IngestContext {
     pub timestamp_secs: i64,
-    #[allow(dead_code)]
-    pub file_name: String,
+    pub _file_name: String,
     pub fetch_latency_ms: f64,
 }
 
@@ -34,9 +92,8 @@ pub struct IngestResult {
     /// Per-sweep metadata extracted from radials during ingest.
     pub sweeps: Vec<crate::data::SweepMeta>,
     /// Full extracted VCP pattern (from Message Type 5).
-    #[allow(dead_code)]
-    // Available for direct VCP inspection; primary propagation is via IDB metadata
-    pub vcp: Option<crate::data::keys::ExtractedVcp>,
+    /// Available for direct VCP inspection; primary propagation is via IDB metadata.
+    pub _vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Total time in worker (ms).
     pub total_ms: f64,
     /// Sub-phase timing: record splitting.
@@ -55,13 +112,10 @@ pub struct IngestResult {
 
 /// Context for a per-chunk ingest request (real-time streaming).
 pub struct ChunkIngestContext {
-    #[allow(dead_code)]
-    pub site_id: String,
+    pub _site_id: String,
     pub timestamp_secs: i64,
-    #[allow(dead_code)]
-    pub chunk_index: u32,
-    #[allow(dead_code)]
-    pub is_end: bool,
+    pub _chunk_index: u32,
+    pub _is_end: bool,
 }
 
 /// Successful per-chunk ingest result from the worker.
@@ -76,10 +130,8 @@ pub struct ChunkIngestResult {
     /// Whether this was the final chunk in the volume.
     pub is_end: bool,
     /// Per-sweep metadata for all completed elevations so far.
-    #[allow(dead_code)]
     pub sweeps: Vec<crate::data::SweepMeta>,
     /// VCP pattern if extracted.
-    #[allow(dead_code)]
     pub vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Total processing time in worker (ms).
     pub total_ms: f64,
@@ -103,17 +155,14 @@ pub struct ChunkIngestResult {
 /// Context for a render/decode request.
 pub struct RenderContext {
     /// Scan storage key.
-    #[allow(dead_code)]
-    pub scan_key: String,
+    pub _scan_key: String,
     /// Elevation number being rendered.
-    #[allow(dead_code)]
-    pub elevation_number: u8,
+    pub _elevation_number: u8,
 }
 
 /// Decoded radar sweep data from the worker (raw data for GPU rendering).
 pub struct DecodeResult {
-    #[allow(dead_code)]
-    pub context: RenderContext,
+    pub _context: RenderContext,
     /// Sorted azimuth angles in degrees.
     pub azimuths: Vec<f32>,
     /// Flat row-major raw gate values (azimuth_count * gate_count).
@@ -192,8 +241,7 @@ pub enum WorkerOutcome {
 /// Results are polled via `try_recv()` each frame.
 /// Context for a volume render request.
 pub struct VolumeRenderContext {
-    #[allow(dead_code)]
-    pub scan_key: String,
+    pub _scan_key: String,
 }
 
 pub struct DecodeWorker {
@@ -364,7 +412,7 @@ impl DecodeWorker {
             id,
             IngestContext {
                 timestamp_secs,
-                file_name: file_name.clone(),
+                _file_name: file_name.clone(),
                 fetch_latency_ms,
             },
         );
@@ -395,8 +443,8 @@ impl DecodeWorker {
         self.pending_render.borrow_mut().insert(
             id,
             RenderContext {
-                scan_key: scan_key.clone(),
-                elevation_number,
+                _scan_key: scan_key.clone(),
+                _elevation_number: elevation_number,
             },
         );
 
@@ -413,28 +461,17 @@ impl DecodeWorker {
     }
 
     /// Submit a volume render request: fetch all elevations, pack for ray marching.
-    pub fn render_volume(
-        &mut self,
-        scan_key: String,
-        product: String,
-        elevation_numbers: Vec<u8>,
-    ) {
+    pub fn render_volume(&mut self, scan_key: String, product: String, elevation_numbers: Vec<u8>) {
         let id = self.next_request_id();
         self.pending_volume.borrow_mut().insert(
             id,
             VolumeRenderContext {
-                scan_key: scan_key.clone(),
+                _scan_key: scan_key.clone(),
             },
         );
 
         if *self.ready.borrow() {
-            send_render_volume_request(
-                &self.worker,
-                id,
-                &scan_key,
-                &product,
-                &elevation_numbers,
-            );
+            send_render_volume_request(&self.worker, id, &scan_key, &product, &elevation_numbers);
         } else {
             self.queue.push(QueuedRequest::RenderVolume(
                 id,
@@ -461,10 +498,10 @@ impl DecodeWorker {
         self.pending_chunk_ingest.borrow_mut().insert(
             id,
             ChunkIngestContext {
-                site_id: site_id.clone(),
+                _site_id: site_id.clone(),
                 timestamp_secs,
-                chunk_index,
-                is_end,
+                _chunk_index: chunk_index,
+                _is_end: is_end,
             },
         );
 
@@ -548,12 +585,6 @@ impl DecodeWorker {
         self.flush_queue();
         self.results.borrow_mut().drain(..).collect()
     }
-
-    /// Returns true if the worker has initialized and is ready to accept requests.
-    #[allow(dead_code)]
-    pub fn is_ready(&self) -> bool {
-        *self.ready.borrow()
-    }
 }
 
 /// Handle an "ingested" message from the worker.
@@ -562,10 +593,7 @@ fn handle_ingested_message(
     pending: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let id = js_sys::Reflect::get(data, &"id".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u64;
+    let id = js_get_f64_or_zero(data, "id") as u64;
 
     let context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -577,34 +605,15 @@ fn handle_ingested_message(
 
     let result_obj = js_sys::Reflect::get(data, &"result".into()).unwrap_or(JsValue::NULL);
 
-    let scan_key = js_sys::Reflect::get(&result_obj, &"scanKey".into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-
-    let records_stored = js_sys::Reflect::get(&result_obj, &"recordsStored".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
-
-    let total_ms = js_sys::Reflect::get(&result_obj, &"totalMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-
-    // Extract sub-phase timings
-    let get_f64 = |key: &str| -> f64 {
-        js_sys::Reflect::get(&result_obj, &key.into())
-            .ok()
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0)
-    };
-    let split_ms = get_f64("splitMs");
-    let decompress_ms = get_f64("decompressMs");
-    let decode_ms = get_f64("decodeMs");
-    let extract_ms = get_f64("extractMs");
-    let store_ms = get_f64("storeMs");
-    let index_ms = get_f64("indexMs");
+    let scan_key = js_get_string_or_default(&result_obj, "scanKey");
+    let records_stored = js_get_f64_or_zero(&result_obj, "recordsStored") as u32;
+    let total_ms = js_get_f64_or_zero(&result_obj, "totalMs");
+    let split_ms = js_get_f64_or_zero(&result_obj, "splitMs");
+    let decompress_ms = js_get_f64_or_zero(&result_obj, "decompressMs");
+    let decode_ms = js_get_f64_or_zero(&result_obj, "decodeMs");
+    let extract_ms = js_get_f64_or_zero(&result_obj, "extractMs");
+    let store_ms = js_get_f64_or_zero(&result_obj, "storeMs");
+    let index_ms = js_get_f64_or_zero(&result_obj, "indexMs");
 
     // Extract unique elevation numbers from the elevationMap
     let mut elevation_numbers: Vec<u8> = Vec::new();
@@ -633,18 +642,10 @@ fn handle_ingested_message(
 
     // Parse sweep metadata from JSON
     let sweeps: Vec<crate::data::SweepMeta> =
-        js_sys::Reflect::get(&result_obj, &"sweepsJson".into())
-            .ok()
-            .and_then(|v| v.as_string())
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        js_get_json(&result_obj, "sweepsJson").unwrap_or_default();
 
     // Parse extracted VCP pattern from JSON
-    let vcp: Option<crate::data::keys::ExtractedVcp> =
-        js_sys::Reflect::get(&result_obj, &"vcpJson".into())
-            .ok()
-            .and_then(|v| v.as_string())
-            .and_then(|s| serde_json::from_str(&s).ok());
+    let vcp: Option<crate::data::keys::ExtractedVcp> = js_get_json(&result_obj, "vcpJson");
 
     log::info!(
         "Worker ingest complete: {} ({} records, {} elevations, {} sweeps, vcp={}, {:.0}ms)",
@@ -666,7 +667,7 @@ fn handle_ingested_message(
             records_stored,
             elevation_numbers,
             sweeps,
-            vcp,
+            _vcp: vcp,
             total_ms,
             split_ms,
             decompress_ms,
@@ -683,10 +684,7 @@ fn handle_chunk_ingested_message(
     pending: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let id = js_sys::Reflect::get(data, &"id".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u64;
+    let id = js_get_f64_or_zero(data, "id") as u64;
 
     let context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -698,25 +696,10 @@ fn handle_chunk_ingested_message(
 
     let result_obj = js_sys::Reflect::get(data, &"result".into()).unwrap_or(JsValue::NULL);
 
-    let scan_key = js_sys::Reflect::get(&result_obj, &"scanKey".into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-
-    let sweeps_stored = js_sys::Reflect::get(&result_obj, &"sweepsStored".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
-
-    let is_end = js_sys::Reflect::get(&result_obj, &"isEnd".into())
-        .ok()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let total_ms = js_sys::Reflect::get(&result_obj, &"totalMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+    let scan_key = js_get_string_or_default(&result_obj, "scanKey");
+    let sweeps_stored = js_get_f64_or_zero(&result_obj, "sweepsStored") as u32;
+    let is_end = js_get_bool_or(&result_obj, "isEnd", false);
+    let total_ms = js_get_f64_or_zero(&result_obj, "totalMs");
 
     // Parse elevations completed
     let mut elevations_completed: Vec<u8> = Vec::new();
@@ -731,58 +714,29 @@ fn handle_chunk_ingested_message(
         }
     }
 
-    // Parse sweep metadata
+    // Parse sweep metadata and VCP from JSON
     let sweeps: Vec<crate::data::SweepMeta> =
-        js_sys::Reflect::get(&result_obj, &"sweepsJson".into())
-            .ok()
-            .and_then(|v| v.as_string())
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-
-    // Parse VCP
-    let vcp: Option<crate::data::keys::ExtractedVcp> =
-        js_sys::Reflect::get(&result_obj, &"vcpJson".into())
-            .ok()
-            .and_then(|v| v.as_string())
-            .and_then(|s| serde_json::from_str(&s).ok());
+        js_get_json(&result_obj, "sweepsJson").unwrap_or_default();
+    let vcp: Option<crate::data::keys::ExtractedVcp> = js_get_json(&result_obj, "vcpJson");
 
     // Parse current in-progress elevation info
-    let current_elevation = js_sys::Reflect::get(&result_obj, &"currentElevation".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .map(|v| v as u8);
+    let current_elevation = js_get_f64_opt(&result_obj, "currentElevation").map(|v| v as u8);
     let current_elevation_radials =
-        js_sys::Reflect::get(&result_obj, &"currentElevationRadials".into())
-            .ok()
-            .and_then(|v| v.as_f64())
-            .map(|v| v as u32);
+        js_get_f64_opt(&result_obj, "currentElevationRadials").map(|v| v as u32);
 
     // Parse chunk data time range
-    let chunk_min_time_secs = js_sys::Reflect::get(&result_obj, &"chunkMinTimeSecs".into())
-        .ok()
-        .and_then(|v| v.as_f64());
+    let chunk_min_time_secs = js_get_f64_opt(&result_obj, "chunkMinTimeSecs");
 
     // Parse last radial azimuth/time for sweep line extrapolation
-    let last_radial_azimuth = js_sys::Reflect::get(&result_obj, &"lastRadialAzimuth".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .map(|v| v as f32);
-    let last_radial_time_secs = js_sys::Reflect::get(&result_obj, &"lastRadialTimeSecs".into())
-        .ok()
-        .and_then(|v| v.as_f64());
+    let last_radial_azimuth = js_get_f64_opt(&result_obj, "lastRadialAzimuth").map(|v| v as f32);
+    let last_radial_time_secs = js_get_f64_opt(&result_obj, "lastRadialTimeSecs");
 
     // Parse volume header time (authoritative scan start from Archive II header)
-    let volume_header_time_secs = js_sys::Reflect::get(&result_obj, &"volumeHeaderTimeSecs".into())
-        .ok()
-        .and_then(|v| v.as_f64());
+    let volume_header_time_secs = js_get_f64_opt(&result_obj, "volumeHeaderTimeSecs");
 
     // Parse per-elevation chunk time spans
     let chunk_elev_spans: Vec<(u8, f64, f64, u32)> =
-        js_sys::Reflect::get(&result_obj, &"chunkElevSpansJson".into())
-            .ok()
-            .and_then(|v| v.as_string())
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        js_get_json(&result_obj, "chunkElevSpansJson").unwrap_or_default();
 
     results
         .borrow_mut()
@@ -811,10 +765,7 @@ fn handle_decoded_message(
     pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let id = js_sys::Reflect::get(data, &"id".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u64;
+    let id = js_get_f64_or_zero(data, "id") as u64;
 
     let context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -830,70 +781,22 @@ fn handle_decoded_message(
     let val_buffer = js_sys::Reflect::get(data, &"gateValues".into()).unwrap_or(JsValue::NULL);
     let gate_values = js_sys::Float32Array::new(&val_buffer).to_vec();
 
-    let azimuth_count = js_sys::Reflect::get(data, &"azimuthCount".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
-    let gate_count = js_sys::Reflect::get(data, &"gateCount".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
-    let first_gate_range_km = js_sys::Reflect::get(data, &"firstGateRangeKm".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let gate_interval_km = js_sys::Reflect::get(data, &"gateIntervalKm".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let max_range_km = js_sys::Reflect::get(data, &"maxRangeKm".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let product = js_sys::Reflect::get(data, &"product".into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_else(|| "reflectivity".to_string());
-    let radial_count = js_sys::Reflect::get(data, &"radialCount".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u32;
-    let fetch_ms = js_sys::Reflect::get(data, &"fetchMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let deser_ms = js_sys::Reflect::get(data, &"deserMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let total_ms = js_sys::Reflect::get(data, &"totalMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let marshal_ms = js_sys::Reflect::get(data, &"marshalMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let scale = js_sys::Reflect::get(data, &"scale".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(1.0) as f32;
-    let offset = js_sys::Reflect::get(data, &"offset".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as f32;
-    let mean_elevation = js_sys::Reflect::get(data, &"meanElevation".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as f32;
-    let sweep_start_secs = js_sys::Reflect::get(data, &"sweepStartSecs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let sweep_end_secs = js_sys::Reflect::get(data, &"sweepEndSecs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+    let azimuth_count = js_get_f64_or_zero(data, "azimuthCount") as u32;
+    let gate_count = js_get_f64_or_zero(data, "gateCount") as u32;
+    let first_gate_range_km = js_get_f64_or_zero(data, "firstGateRangeKm");
+    let gate_interval_km = js_get_f64_or_zero(data, "gateIntervalKm");
+    let max_range_km = js_get_f64_or_zero(data, "maxRangeKm");
+    let product = js_get_string_or(data, "product", "reflectivity");
+    let radial_count = js_get_f64_or_zero(data, "radialCount") as u32;
+    let fetch_ms = js_get_f64_or_zero(data, "fetchMs");
+    let deser_ms = js_get_f64_or_zero(data, "deserMs");
+    let total_ms = js_get_f64_or_zero(data, "totalMs");
+    let marshal_ms = js_get_f64_or_zero(data, "marshalMs");
+    let scale = js_get_f64_or(data, "scale", 1.0) as f32;
+    let offset = js_get_f64_or_zero(data, "offset") as f32;
+    let mean_elevation = js_get_f64_or_zero(data, "meanElevation") as f32;
+    let sweep_start_secs = js_get_f64_or_zero(data, "sweepStartSecs");
+    let sweep_end_secs = js_get_f64_or_zero(data, "sweepEndSecs");
 
     log::info!(
         "Worker decode: {}x{}, {} radials, {}, {:.0}ms (fetch: {:.1}, marshal: {:.1})",
@@ -909,7 +812,7 @@ fn handle_decoded_message(
     results
         .borrow_mut()
         .push(WorkerOutcome::Decoded(DecodeResult {
-            context,
+            _context: context,
             azimuths,
             gate_values,
             azimuth_count,
@@ -933,15 +836,8 @@ fn handle_decoded_message(
 
 /// Handle an "error" message from the worker.
 fn handle_error_message(data: &JsValue, results: &Rc<RefCell<Vec<WorkerOutcome>>>) {
-    let id = js_sys::Reflect::get(data, &"id".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u64;
-
-    let message = js_sys::Reflect::get(data, &"message".into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_else(|| "Unknown worker error".to_string());
+    let id = js_get_f64_or_zero(data, "id") as u64;
+    let message = js_get_string_or(data, "message", "Unknown worker error");
 
     log::error!("Worker error (request {}): {}", id, message);
 
@@ -1063,31 +959,18 @@ fn handle_volume_decoded_message(
     pending: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let id = js_sys::Reflect::get(data, &"id".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0) as u64;
+    let id = js_get_f64_or_zero(data, "id") as u64;
 
     let _context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
         None => {
-            log::warn!(
-                "Received volume_decoded message for unknown request {}",
-                id
-            );
+            log::warn!("Received volume_decoded message for unknown request {}", id);
             return;
         }
     };
 
-    let total_ms = js_sys::Reflect::get(data, &"totalMs".into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-
-    let product = js_sys::Reflect::get(data, &"product".into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_else(|| "reflectivity".to_string());
+    let total_ms = js_get_f64_or_zero(data, "totalMs");
+    let product = js_get_string_or(data, "product", "reflectivity");
 
     // Extract packed buffer
     let buf_js = js_sys::Reflect::get(data, &"buffer".into()).unwrap_or(JsValue::NULL);
@@ -1105,22 +988,16 @@ fn handle_volume_decoded_message(
         let arr: js_sys::Array = meta_arr.unchecked_into();
         for i in 0..arr.length() {
             let obj = arr.get(i);
-            let get_f = |key: &str| -> f64 {
-                js_sys::Reflect::get(&obj, &key.into())
-                    .ok()
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0)
-            };
             sweeps.push(VolumeSweepMeta {
-                elevation_deg: get_f("elevationDeg") as f32,
-                azimuth_count: get_f("azimuthCount") as u32,
-                gate_count: get_f("gateCount") as u32,
-                first_gate_km: get_f("firstGateKm") as f32,
-                gate_interval_km: get_f("gateIntervalKm") as f32,
-                max_range_km: get_f("maxRangeKm") as f32,
-                data_offset: get_f("dataOffset") as u32,
-                scale: get_f("scale") as f32,
-                offset: get_f("offset") as f32,
+                elevation_deg: js_get_f64_or_zero(&obj, "elevationDeg") as f32,
+                azimuth_count: js_get_f64_or_zero(&obj, "azimuthCount") as u32,
+                gate_count: js_get_f64_or_zero(&obj, "gateCount") as u32,
+                first_gate_km: js_get_f64_or_zero(&obj, "firstGateKm") as f32,
+                gate_interval_km: js_get_f64_or_zero(&obj, "gateIntervalKm") as f32,
+                max_range_km: js_get_f64_or_zero(&obj, "maxRangeKm") as f32,
+                data_offset: js_get_f64_or_zero(&obj, "dataOffset") as u32,
+                scale: js_get_f64_or_zero(&obj, "scale") as f32,
+                offset: js_get_f64_or_zero(&obj, "offset") as f32,
             });
         }
     }

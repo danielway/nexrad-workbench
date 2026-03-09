@@ -230,7 +230,10 @@ impl WorkbenchApp {
             if let Some(site_info) = data::sites::get_site(site) {
                 state.viz_state.center_lat = site_info.lat;
                 state.viz_state.center_lon = site_info.lon;
-                state.viz_state.camera.center_on(site_info.lat, site_info.lon);
+                state
+                    .viz_state
+                    .camera
+                    .center_on(site_info.lat, site_info.lon);
             }
             state.timeline_needs_refresh = true;
             state.auto_position_on_timeline_load = true;
@@ -305,11 +308,19 @@ impl WorkbenchApp {
 
         // Create GPU renderer for radar visualization
         let gpu_renderer_gl = cc.gl.clone();
-        let gpu_renderer = cc.gl.as_ref().map(|gl| {
-            let renderer = nexrad::RadarGpuRenderer::new(gl);
-            log::info!("GPU radar renderer created");
-            std::sync::Arc::new(std::sync::Mutex::new(renderer))
-        });
+        let gpu_renderer = cc
+            .gl
+            .as_ref()
+            .and_then(|gl| match nexrad::RadarGpuRenderer::new(gl) {
+                Ok(renderer) => {
+                    log::info!("GPU radar renderer created");
+                    Some(std::sync::Arc::new(std::sync::Mutex::new(renderer)))
+                }
+                Err(e) => {
+                    log::error!("Failed to create GPU radar renderer: {}", e);
+                    None
+                }
+            });
 
         // Create globe and geo-line renderers for 3D mode
         let globe_renderer = cc.gl.as_ref().map(|gl| {
@@ -810,6 +821,9 @@ impl WorkbenchApp {
         chunk_data_time - (elev as f64 - 1.0) * sweep_dur
     }
 
+    /// Send a render request to the worker for the current scan/elevation/product.
+    ///
+    /// Skips the request if the parameters haven't changed since the last render.
     fn request_worker_render(&mut self) {
         let Some(ref scan_key) = self.current_render_scan_key else {
             return;
@@ -1612,11 +1626,8 @@ impl eframe::App for WorkbenchApp {
                         .radar_timeline
                         .find_recent_scan(scan_ts as f64, 1.0)
                     {
-                        let mut elev_nums: Vec<u8> = tl_scan
-                            .sweeps
-                            .iter()
-                            .map(|s| s.elevation_number)
-                            .collect();
+                        let mut elev_nums: Vec<u8> =
+                            tl_scan.sweeps.iter().map(|s| s.elevation_number).collect();
                         elev_nums.sort_unstable();
                         elev_nums.dedup();
                         if !elev_nums.is_empty() {
@@ -1768,11 +1779,8 @@ impl eframe::App for WorkbenchApp {
                         .map(|s| (s.start_time, s.end_time, s.elevation));
 
                     // Extract all elevation numbers for volume rendering
-                    let mut elev_nums: Vec<u8> = scan
-                        .sweeps
-                        .iter()
-                        .map(|s| s.elevation_number)
-                        .collect();
+                    let mut elev_nums: Vec<u8> =
+                        scan.sweeps.iter().map(|s| s.elevation_number).collect();
                     elev_nums.sort_unstable();
                     elev_nums.dedup();
 

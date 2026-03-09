@@ -68,7 +68,9 @@ void main() {
 "#;
 
         let program = compile_program(gl, vert_src, frag_src);
-        let u_view_projection = gl.get_uniform_location(program, "u_view_projection").unwrap();
+        let u_view_projection = gl
+            .get_uniform_location(program, "u_view_projection")
+            .unwrap();
         let u_light_dir = gl.get_uniform_location(program, "u_light_dir").unwrap();
 
         // ── Sphere mesh ─────────────────────────────────────────
@@ -137,7 +139,11 @@ void main() {
 
             // View-projection matrix
             let vp = camera.view_projection();
-            gl.uniform_matrix_4_f32_slice(Some(&self.u_view_projection), false, &vp.to_cols_array());
+            gl.uniform_matrix_4_f32_slice(
+                Some(&self.u_view_projection),
+                false,
+                &vp.to_cols_array(),
+            );
 
             // Light direction (fixed, upper-right)
             let light = glam::Vec3::new(0.4, 0.7, 0.6).normalize();

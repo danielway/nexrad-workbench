@@ -4,7 +4,6 @@
 
 /// A NEXRAD radar site with its location and metadata.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 pub struct NexradSite {
     /// 4-letter site identifier (e.g., "KDMX")
     pub id: &'static str,
@@ -17,6 +16,7 @@ pub struct NexradSite {
     /// Longitude in decimal degrees
     pub lon: f64,
     /// Elevation in feet above sea level
+    #[allow(dead_code)]
     pub elevation_ft: i32,
 }
 

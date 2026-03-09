@@ -222,8 +222,11 @@ fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CollapsingHeader::new(RichText::new("3D Volume").strong())
         .default_open(true)
         .show(ui, |ui| {
-            ui.checkbox(&mut state.viz_state.volume_3d_enabled, "Enable Volume Rendering")
-                .on_hover_text("Ray-march through all elevation sweeps as a volumetric cloud");
+            ui.checkbox(
+                &mut state.viz_state.volume_3d_enabled,
+                "Enable Volume Rendering",
+            )
+            .on_hover_text("Ray-march through all elevation sweeps as a volumetric cloud");
 
             if state.viz_state.volume_3d_enabled {
                 ui.add_space(4.0);

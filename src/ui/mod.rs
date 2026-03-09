@@ -11,10 +11,12 @@ mod bottom_panel;
 mod canvas;
 pub(crate) mod colors;
 mod left_panel;
+mod playback_controls;
 mod right_panel;
 mod shortcuts;
 mod site_modal;
 mod stats_modal;
+mod timeline;
 mod top_bar;
 mod wipe_modal;
 

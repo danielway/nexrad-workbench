@@ -531,4 +531,45 @@ mod tests {
             ScanCompleteness::Complete
         );
     }
+
+    #[test]
+    fn test_scan_key_from_storage_key_invalid() {
+        assert!(ScanKey::from_storage_key("").is_none());
+        assert!(ScanKey::from_storage_key("KDMX").is_none());
+        assert!(ScanKey::from_storage_key("KDMX|not_a_number").is_none());
+        assert!(ScanKey::from_storage_key("A|B|C").is_none());
+    }
+
+    #[test]
+    fn test_scan_key_roundtrip() {
+        let key = ScanKey::new("KFWS", UnixMillis(1609459200000));
+        let serialized = key.to_storage_key();
+        let parsed = ScanKey::from_storage_key(&serialized).unwrap();
+        assert_eq!(parsed.site.0, "KFWS");
+        assert_eq!(parsed.scan_start.0, 1609459200000);
+    }
+
+    #[test]
+    fn test_sweep_data_key_roundtrip() {
+        let scan = ScanKey::new("KLOT", UnixMillis(1700000000000));
+        let key = SweepDataKey::new(scan, 3, "velocity");
+        assert_eq!(key.to_storage_key(), "KLOT|1700000000000|3|velocity");
+        assert_eq!(key.elevation_number, 3);
+        assert_eq!(key.product, "velocity");
+    }
+
+    #[test]
+    fn test_unix_millis_conversion() {
+        let ms = UnixMillis::from_secs(1700000000);
+        assert_eq!(ms.0, 1700000000000);
+        assert_eq!(ms.as_secs(), 1700000000);
+    }
+
+    #[test]
+    fn test_site_id_from_conversions() {
+        let s1: SiteId = "KDMX".into();
+        let s2: SiteId = String::from("KDMX").into();
+        assert_eq!(s1, s2);
+        assert_eq!(format!("{}", s1), "KDMX");
+    }
 }

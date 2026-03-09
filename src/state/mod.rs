@@ -16,6 +16,7 @@ pub(crate) mod url_state;
 pub(crate) mod vcp;
 mod viz;
 
+pub use crate::geo::camera::CameraMode;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use playback::{LoopMode, PlaybackSpeed, PlaybackState};
@@ -28,7 +29,6 @@ pub use stats::{
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
 pub use viz::{InterpolationMode, RadarProduct, RenderMode, RenderProcessing, ViewMode, VizState};
-pub use crate::geo::camera::CameraMode;
 
 /// Root application state containing all sub-states.
 #[derive(Default)]

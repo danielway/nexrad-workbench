@@ -129,7 +129,10 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                                 .strong()
                                 .color(mode_color),
                         )
-                        .on_hover_text(format!("View mode ({}) — T to toggle 2D/3D, 1-4 to switch", view_hint))
+                        .on_hover_text(format!(
+                            "View mode ({}) — T to toggle 2D/3D, 1-4 to switch",
+                            view_hint
+                        ))
                         .clicked()
                     {
                         // Click cycles through modes: 2D → Planet → Site → Free → 2D
@@ -169,7 +172,11 @@ fn render_live_status(ui: &mut egui::Ui, state: &AppState) {
                 live::ACQUIRING.b(),
                 (128.0 + 127.0 * pulse_alpha) as u8,
             );
-            ui.label(RichText::new(egui_phosphor::regular::BROADCAST).size(16.0).color(pulsed_color));
+            ui.label(
+                RichText::new(egui_phosphor::regular::BROADCAST)
+                    .size(16.0)
+                    .color(pulsed_color),
+            );
 
             let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
             ui.label(
@@ -185,7 +192,11 @@ fn render_live_status(ui: &mut egui::Ui, state: &AppState) {
                 live::STREAMING.b(),
                 (128.0 + 127.0 * pulse_alpha) as u8,
             );
-            ui.label(RichText::new(egui_phosphor::regular::BROADCAST).size(16.0).color(pulsed_color));
+            ui.label(
+                RichText::new(egui_phosphor::regular::BROADCAST)
+                    .size(16.0)
+                    .color(pulsed_color),
+            );
             ui.label(
                 RichText::new("LIVE")
                     .size(13.0)

@@ -329,18 +329,16 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
         state.viz_state.camera.align_north();
     }
 
-    if reset_pivot {
-        if state.viz_state.view_mode == ViewMode::Globe3D {
-            state.viz_state.camera.reset_pivot();
-        }
+    if reset_pivot && state.viz_state.view_mode == ViewMode::Globe3D {
+        state.viz_state.camera.reset_pivot();
     }
 
     // ── WASD / Arrow key movement ──
     // S and E are mode-split: in 2D they trigger site selection / elevation cycling,
     // in 3D they are reserved for camera movement (backward / up).
 
-    let forward = if w_held || up_held { 1.0f32 } else { 0.0 }
-        - if s_held || down_held { 1.0 } else { 0.0 };
+    let forward =
+        if w_held || up_held { 1.0f32 } else { 0.0 } - if s_held || down_held { 1.0 } else { 0.0 };
     let right_move = if d_held || right_held { 1.0f32 } else { 0.0 }
         - if a_held || left_held { 1.0 } else { 0.0 };
     let up_move = if e_held { 1.0f32 } else { 0.0 } - if q_held { 1.0 } else { 0.0 };

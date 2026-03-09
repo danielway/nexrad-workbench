@@ -12,6 +12,7 @@ use std::f32::consts::PI;
 use std::sync::{Arc, Mutex};
 
 /// Render canvas with optional geographic layers and NEXRAD data.
+#[allow(clippy::too_many_arguments)]
 pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -136,6 +137,7 @@ pub fn render_canvas_with_geo(
 }
 
 /// Draw the 3D globe with geo overlays via egui PaintCallback.
+#[allow(clippy::too_many_arguments)]
 fn draw_globe(
     ui: &mut egui::Ui,
     rect: &Rect,
@@ -201,8 +203,8 @@ fn draw_globe(
                                 flat_r.value_min(),
                                 flat_r.value_range(),
                                 volume_density_cutoff,
-                                vp[2],  // viewport width
-                                vp[3],  // viewport height
+                                vp[2], // viewport width
+                                vp[3], // viewport height
                             );
                             drew_volume = true;
                         }
@@ -467,7 +469,7 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
             let is_archive = state
                 .viz_state
                 .data_staleness_secs
-                .map_or(false, |s| s > ARCHIVE_AGE_THRESHOLD_SECS);
+                .is_some_and(|s| s > ARCHIVE_AGE_THRESHOLD_SECS);
             if is_archive {
                 ui.label(
                     RichText::new("ARCHIVE DATA")
@@ -515,7 +517,10 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera) {
     let painter = ui.painter();
     let radius = 28.0f32;
     let margin = 16.0f32;
-    let center = Pos2::new(rect.left() + margin + radius, rect.bottom() - margin - radius);
+    let center = Pos2::new(
+        rect.left() + margin + radius,
+        rect.bottom() - margin - radius,
+    );
 
     // Background circle
     painter.circle_filled(

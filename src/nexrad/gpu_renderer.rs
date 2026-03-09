@@ -8,10 +8,6 @@ use glow::HasContext;
 use nexrad_render::{Color as NrColor, ColorScale, ColorStop, ContinuousColorScale, Product};
 use std::sync::Arc;
 
-/// Sentinel value used to mark no-data gates in the data texture.
-#[allow(dead_code)]
-const SENTINEL: f32 = -9999.0;
-
 // Default value ranges per product (used for color LUT normalization).
 pub fn product_value_range(product: Product) -> (f32, f32) {
     match product {
@@ -641,28 +637,33 @@ pub struct RadarGpuRenderer {
 
 impl RadarGpuRenderer {
     /// Create a new GPU renderer, compiling shaders and allocating GL resources.
-    pub fn new(gl: &Arc<glow::Context>) -> Self {
+    ///
+    /// Returns `Err` if shader compilation, program linking, or GL resource
+    /// allocation fails, allowing the caller to fall back gracefully.
+    pub fn new(gl: &Arc<glow::Context>) -> Result<Self, String> {
         unsafe {
-            let program = gl.create_program().expect("Cannot create program");
+            let program = gl
+                .create_program()
+                .map_err(|e| format!("Cannot create program: {}", e))?;
 
             let vert = gl
                 .create_shader(glow::VERTEX_SHADER)
-                .expect("Cannot create vertex shader");
+                .map_err(|e| format!("Cannot create vertex shader: {}", e))?;
             gl.shader_source(vert, VERTEX_SHADER);
             gl.compile_shader(vert);
             if !gl.get_shader_compile_status(vert) {
                 let info = gl.get_shader_info_log(vert);
-                log::error!("Vertex shader compile error: {}", info);
+                return Err(format!("Vertex shader compile error: {}", info));
             }
 
             let frag = gl
                 .create_shader(glow::FRAGMENT_SHADER)
-                .expect("Cannot create fragment shader");
+                .map_err(|e| format!("Cannot create fragment shader: {}", e))?;
             gl.shader_source(frag, FRAGMENT_SHADER);
             gl.compile_shader(frag);
             if !gl.get_shader_compile_status(frag) {
                 let info = gl.get_shader_info_log(frag);
-                log::error!("Fragment shader compile error: {}", info);
+                return Err(format!("Fragment shader compile error: {}", info));
             }
 
             gl.attach_shader(program, vert);
@@ -670,7 +671,7 @@ impl RadarGpuRenderer {
             gl.link_program(program);
             if !gl.get_program_link_status(program) {
                 let info = gl.get_program_info_log(program);
-                log::error!("Shader program link error: {}", info);
+                return Err(format!("Shader program link error: {}", info));
             }
             gl.detach_shader(program, vert);
             gl.detach_shader(program, frag);
@@ -682,7 +683,9 @@ impl RadarGpuRenderer {
                 -1.0, -1.0, 1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0,
             ];
 
-            let vbo = gl.create_buffer().expect("Cannot create VBO");
+            let vbo = gl
+                .create_buffer()
+                .map_err(|e| format!("Cannot create VBO: {}", e))?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.buffer_data_u8_slice(
                 glow::ARRAY_BUFFER,
@@ -690,11 +693,13 @@ impl RadarGpuRenderer {
                 glow::STATIC_DRAW,
             );
 
-            let vao = gl.create_vertex_array().expect("Cannot create VAO");
+            let vao = gl
+                .create_vertex_array()
+                .map_err(|e| format!("Cannot create VAO: {}", e))?;
             gl.bind_vertex_array(Some(vao));
             let a_position = gl
                 .get_attrib_location(program, "a_position")
-                .expect("Missing a_position");
+                .ok_or("Missing a_position")?;
             gl.enable_vertex_attrib_array(a_position);
             gl.vertex_attrib_pointer_f32(a_position, 2, glow::FLOAT, false, 8, 0);
             gl.bind_vertex_array(None);
@@ -704,87 +709,49 @@ impl RadarGpuRenderer {
             let azimuth_texture = create_r32f_texture(gl, 1, 1, &[0.0]);
             let lut_texture = create_rgba8_texture(gl, 1, 1, &[0, 0, 0, 0]);
 
+            // Helper to look up a required uniform location
+            let uniform = |name: &str| -> Result<glow::UniformLocation, String> {
+                gl.get_uniform_location(program, name)
+                    .ok_or_else(|| format!("Missing uniform: {}", name))
+            };
+
             // Bind texture units to sampler uniforms
             gl.use_program(Some(program));
 
-            let u_data_tex = gl
-                .get_uniform_location(program, "u_data_tex")
-                .expect("Missing u_data_tex");
+            let u_data_tex = uniform("u_data_tex")?;
             gl.uniform_1_i32(Some(&u_data_tex), 0);
-            let u_lut_tex = gl
-                .get_uniform_location(program, "u_lut_tex")
-                .expect("Missing u_lut_tex");
+            let u_lut_tex = uniform("u_lut_tex")?;
             gl.uniform_1_i32(Some(&u_lut_tex), 1);
-            let u_azimuth_tex = gl
-                .get_uniform_location(program, "u_azimuth_tex")
-                .expect("Missing u_azimuth_tex");
+            let u_azimuth_tex = uniform("u_azimuth_tex")?;
             gl.uniform_1_i32(Some(&u_azimuth_tex), 2);
 
-            let u_radar_center = gl
-                .get_uniform_location(program, "u_radar_center")
-                .expect("Missing u_radar_center");
-            let u_radar_radius = gl
-                .get_uniform_location(program, "u_radar_radius")
-                .expect("Missing u_radar_radius");
-            let u_gate_count = gl
-                .get_uniform_location(program, "u_gate_count")
-                .expect("Missing u_gate_count");
-            let u_azimuth_count = gl
-                .get_uniform_location(program, "u_azimuth_count")
-                .expect("Missing u_azimuth_count");
-            let u_first_gate_km = gl
-                .get_uniform_location(program, "u_first_gate_km")
-                .expect("Missing u_first_gate_km");
-            let u_gate_interval_km = gl
-                .get_uniform_location(program, "u_gate_interval_km")
-                .expect("Missing u_gate_interval_km");
-            let u_max_range_km = gl
-                .get_uniform_location(program, "u_max_range_km")
-                .expect("Missing u_max_range_km");
-            let u_value_min = gl
-                .get_uniform_location(program, "u_value_min")
-                .expect("Missing u_value_min");
-            let u_value_range = gl
-                .get_uniform_location(program, "u_value_range")
-                .expect("Missing u_value_range");
-            let u_viewport_size = gl
-                .get_uniform_location(program, "u_viewport_size")
-                .expect("Missing u_viewport_size");
+            let u_radar_center = uniform("u_radar_center")?;
+            let u_radar_radius = uniform("u_radar_radius")?;
+            let u_gate_count = uniform("u_gate_count")?;
+            let u_azimuth_count = uniform("u_azimuth_count")?;
+            let u_first_gate_km = uniform("u_first_gate_km")?;
+            let u_gate_interval_km = uniform("u_gate_interval_km")?;
+            let u_max_range_km = uniform("u_max_range_km")?;
+            let u_value_min = uniform("u_value_min")?;
+            let u_value_range = uniform("u_value_range")?;
+            let u_viewport_size = uniform("u_viewport_size")?;
 
             // Processing uniforms
-            let u_interpolation = gl
-                .get_uniform_location(program, "u_interpolation")
-                .expect("Missing u_interpolation");
-            let u_smoothing_enabled = gl
-                .get_uniform_location(program, "u_smoothing_enabled")
-                .expect("Missing u_smoothing_enabled");
-            let u_smoothing_radius = gl
-                .get_uniform_location(program, "u_smoothing_radius")
-                .expect("Missing u_smoothing_radius");
-            let u_despeckle_enabled = gl
-                .get_uniform_location(program, "u_despeckle_enabled")
-                .expect("Missing u_despeckle_enabled");
-            let u_despeckle_threshold = gl
-                .get_uniform_location(program, "u_despeckle_threshold")
-                .expect("Missing u_despeckle_threshold");
-            let u_opacity = gl
-                .get_uniform_location(program, "u_opacity")
-                .expect("Missing u_opacity");
-            let u_edge_softening = gl
-                .get_uniform_location(program, "u_edge_softening")
-                .expect("Missing u_edge_softening");
+            let u_interpolation = uniform("u_interpolation")?;
+            let u_smoothing_enabled = uniform("u_smoothing_enabled")?;
+            let u_smoothing_radius = uniform("u_smoothing_radius")?;
+            let u_despeckle_enabled = uniform("u_despeckle_enabled")?;
+            let u_despeckle_threshold = uniform("u_despeckle_threshold")?;
+            let u_opacity = uniform("u_opacity")?;
+            let u_edge_softening = uniform("u_edge_softening")?;
 
             // Raw-to-physical conversion uniforms
-            let u_offset = gl
-                .get_uniform_location(program, "u_offset")
-                .expect("Missing u_offset");
-            let u_scale = gl
-                .get_uniform_location(program, "u_scale")
-                .expect("Missing u_scale");
+            let u_offset = uniform("u_offset")?;
+            let u_scale = uniform("u_scale")?;
 
             gl.use_program(None);
 
-            Self {
+            Ok(Self {
                 program,
                 vao,
                 vbo,
@@ -822,7 +789,7 @@ impl RadarGpuRenderer {
                 data_scale: 1.0,
                 cpu_azimuths: Vec::new(),
                 cpu_gate_values: Vec::new(),
-            }
+            })
         }
     }
 
@@ -1284,19 +1251,6 @@ impl RadarGpuRenderer {
         );
 
         result
-    }
-
-    /// Clean up GL resources.
-    #[allow(dead_code)]
-    pub fn destroy(&self, gl: &glow::Context) {
-        unsafe {
-            gl.delete_program(self.program);
-            gl.delete_vertex_array(self.vao);
-            gl.delete_buffer(self.vbo);
-            gl.delete_texture(self.data_texture);
-            gl.delete_texture(self.lut_texture);
-            gl.delete_texture(self.azimuth_texture);
-        }
     }
 }
 
