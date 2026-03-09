@@ -1,5 +1,7 @@
 # Phase 1 — Core Single-Site Viewer
 
+> **Status: Largely complete.** All major features are implemented except local file upload. See notes below for per-feature status.
+
 The baseline product. A single radar site can be selected, data navigated in time, radar imagery viewed, and real-time data streamed — all with the simplest viable rendering model.
 
 ## First-Run Experience
@@ -117,5 +119,7 @@ Data is persisted in browser storage (IndexedDB) in two logical categories:
 Downloaded data is cached and reused when the user navigates to previously-viewed time ranges. Cache persists across sessions. When storage limits are reached, older data is evicted according to a least-recently-used policy. Users can manually clear the cache via a button in the status bar (with confirmation). Timeline-based cache management is also available: "clear data in selection" and "clear everything except selection" allow targeted cleanup based on the current time range selection.
 
 ## Local File Upload
+
+> **Status: Not yet implemented.**
 
 Users can upload local Archive II files for viewing without requiring network access. This supports offline analysis and examination of data from non-standard sources.

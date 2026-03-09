@@ -1,5 +1,7 @@
 # Phase 3 — Acquisition Depth
 
+> **Status: Partially complete.** Real-time predictive visualization is implemented. The acquisition queue, error-pause behavior, and detailed network activity views are not yet implemented.
+
 Adds full acquisition transparency and rich real-time feedback to the single-site viewer. The simple progress indicator from Phase 1 is replaced by a detailed acquisition queue, and real-time streaming gains predictive visualization.
 
 ## Acquisition Queue
