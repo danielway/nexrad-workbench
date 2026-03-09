@@ -14,6 +14,9 @@ use std::sync::Arc;
 /// Maximum number of elevation sweeps the shader supports.
 const MAX_SWEEPS: usize = 25;
 
+/// Resolution divisor for the offscreen FBO (2 = half-res = 4x fewer pixels).
+const RESOLUTION_DIVISOR: u32 = 2;
+
 // ── Shaders ─────────────────────────────────────────────────────────────
 
 const VOLUME_VERTEX_SHADER: &str = r#"#version 300 es
@@ -25,6 +28,27 @@ out vec2 v_uv;
 void main() {
     v_uv = a_position * 0.5 + 0.5;
     gl_Position = vec4(a_position, 0.0, 1.0);
+}
+"#;
+
+/// Simple blit shader — draws an RGBA texture onto a full-screen quad.
+const BLIT_VERTEX_SHADER: &str = r#"#version 300 es
+precision highp float;
+in vec2 a_position;
+out vec2 v_uv;
+void main() {
+    v_uv = a_position * 0.5 + 0.5;
+    gl_Position = vec4(a_position, 0.0, 1.0);
+}
+"#;
+
+const BLIT_FRAGMENT_SHADER: &str = r#"#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+uniform sampler2D u_tex;
+void main() {
+    fragColor = texture(u_tex, v_uv);
 }
 "#;
 
@@ -282,6 +306,13 @@ pub struct VolumeRayRenderer {
     volume_texture: Option<glow::Texture>,
     tex_width: i32,
 
+    // Half-res offscreen FBO for cheaper rendering
+    blit_program: glow::Program,
+    fbo: glow::Framebuffer,
+    fbo_color: glow::Texture,
+    fbo_width: i32,
+    fbo_height: i32,
+
     // Uniform locations (Option because shader may optimize them away)
     u_inv_view_projection: Option<glow::UniformLocation>,
     u_camera_pos: Option<glow::UniformLocation>,
@@ -367,6 +398,39 @@ impl VolumeRayRenderer {
         }
         gl.use_program(None);
 
+        // Compile blit shader
+        let blit_program = crate::geo::globe_renderer::compile_program(
+            gl,
+            BLIT_VERTEX_SHADER,
+            BLIT_FRAGMENT_SHADER,
+        );
+        gl.use_program(Some(blit_program));
+        if let Some(loc) = gl.get_uniform_location(blit_program, "u_tex") {
+            gl.uniform_1_i32(Some(&loc), 0);
+        }
+        gl.use_program(None);
+
+        // Create initial FBO (1x1, resized on first paint)
+        let fbo = gl.create_framebuffer().unwrap();
+        let fbo_color = gl.create_texture().unwrap();
+        gl.bind_texture(glow::TEXTURE_2D, Some(fbo_color));
+        gl.tex_image_2d(
+            glow::TEXTURE_2D, 0, glow::RGBA8 as i32,
+            1, 1, 0, glow::RGBA, glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(None),
+        );
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+        gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+        gl.framebuffer_texture_2d(
+            glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D, Some(fbo_color), 0,
+        );
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.bind_texture(glow::TEXTURE_2D, None);
+
         // Create full-screen quad
         let quad_vao = gl.create_vertex_array().unwrap();
         let quad_vbo = gl.create_buffer().unwrap();
@@ -401,6 +465,11 @@ impl VolumeRayRenderer {
             _quad_vbo: quad_vbo,
             volume_texture: None,
             tex_width: 0,
+            blit_program,
+            fbo,
+            fbo_color,
+            fbo_width: 1,
+            fbo_height: 1,
             u_inv_view_projection,
             u_camera_pos,
             u_site_pos,
@@ -562,10 +631,9 @@ impl VolumeRayRenderer {
         self.has_data
     }
 
-    /// Paint the volume. The LUT texture should be pre-bound to unit 1,
-    /// or passed explicitly via the flat renderer.
+    /// Paint the volume at half resolution into an FBO, then blit to screen.
     pub fn paint(
-        &self,
+        &mut self,
         gl: &glow::Context,
         camera: &GlobeCamera,
         lut_texture: glow::Texture,
@@ -573,39 +641,55 @@ impl VolumeRayRenderer {
         value_min: f32,
         value_range: f32,
         density_cutoff: f32,
+        viewport_width: i32,
+        viewport_height: i32,
     ) {
         if !self.has_data || self.volume_texture.is_none() {
             return;
         }
 
-        log::debug!(
-            "Volume paint: {} sweeps, tex_width={}, site=({:.2},{:.2}), density_cutoff={}, value_min={}, value_range={}",
-            self.sweep_count, self.tex_width, self.site_lat, self.site_lon,
-            density_cutoff, value_min, value_range,
-        );
+        let fbo_w = (viewport_width as u32 / RESOLUTION_DIVISOR).max(1) as i32;
+        let fbo_h = (viewport_height as u32 / RESOLUTION_DIVISOR).max(1) as i32;
 
         unsafe {
-            // Premultiplied alpha blending
-            gl.enable(glow::BLEND);
-            gl.blend_func_separate(
-                glow::ONE,
-                glow::ONE_MINUS_SRC_ALPHA,
-                glow::ONE,
-                glow::ONE_MINUS_SRC_ALPHA,
-            );
+            // Resize FBO if needed
+            if fbo_w != self.fbo_width || fbo_h != self.fbo_height {
+                self.fbo_width = fbo_w;
+                self.fbo_height = fbo_h;
+                gl.bind_texture(glow::TEXTURE_2D, Some(self.fbo_color));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D, 0, glow::RGBA8 as i32,
+                    fbo_w, fbo_h, 0, glow::RGBA, glow::UNSIGNED_BYTE,
+                    glow::PixelUnpackData::Slice(None),
+                );
+                gl.bind_texture(glow::TEXTURE_2D, None);
+                log::info!("Volume FBO resized to {}x{} (viewport {}x{})", fbo_w, fbo_h, viewport_width, viewport_height);
+            }
 
-            // Depth test OFF — the ray marcher handles earth occlusion via sphere intersection.
-            // The full-screen quad is at z=0 which doesn't correspond to any meaningful depth.
+            // Save GL state that egui has set (scissor, viewport)
+            let mut saved_viewport = [0i32; 4];
+            gl.get_parameter_i32_slice(glow::VIEWPORT, &mut saved_viewport);
+            let mut saved_scissor = [0i32; 4];
+            gl.get_parameter_i32_slice(glow::SCISSOR_BOX, &mut saved_scissor);
+            let scissor_was_enabled = gl.is_enabled(glow::SCISSOR_TEST);
+
+            // ── Pass 1: Render volume into half-res FBO ──────────────
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.fbo));
+            gl.viewport(0, 0, fbo_w, fbo_h);
+            gl.disable(glow::SCISSOR_TEST);
+            gl.clear_color(0.0, 0.0, 0.0, 0.0);
+            gl.clear(glow::COLOR_BUFFER_BIT);
+
             gl.disable(glow::DEPTH_TEST);
+            gl.disable(glow::BLEND);
             gl.depth_mask(false);
 
             gl.use_program(Some(self.program));
             gl.bind_vertex_array(Some(self.quad_vao));
 
-            // Bind textures
+            // Bind data textures
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, self.volume_texture);
-
             gl.active_texture(glow::TEXTURE1);
             gl.bind_texture(glow::TEXTURE_2D, Some(lut_texture));
 
@@ -633,16 +717,8 @@ impl VolumeRayRenderer {
 
             // Volume bounds
             let inner_radius = 1.003f32;
-            // Max beam height at max range and max elevation
-            let max_elev_rad = if self.sweep_count > 0 {
-                // Use the highest elevation (last in sorted array)
-                // Already set via uniform, but we compute outer radius here
-                20.0f32.to_radians() // generous upper bound
-            } else {
-                5.0f32.to_radians()
-            };
-            let max_range = 300.0f32; // km
-            // Simplified: use h ≈ R*sin(theta) for rough bound
+            let max_elev_rad = 20.0f32.to_radians();
+            let max_range = 300.0f32;
             let max_height_km = max_range * max_elev_rad.sin() + 10.0;
             let outer_radius = inner_radius + max_height_km / 6371.0;
 
@@ -650,15 +726,39 @@ impl VolumeRayRenderer {
             gl.uniform_1_f32(self.u_outer_radius.as_ref(), outer_radius);
             gl.uniform_1_f32(self.u_max_range_km.as_ref(), 300.0);
 
-            // Data texture info
             gl.uniform_1_i32(self.u_tex_width.as_ref(), self.tex_width);
             gl.uniform_1_i32(self.u_sweep_count.as_ref(), self.sweep_count);
 
-            // Rendering params
             gl.uniform_1_f32(self.u_opacity.as_ref(), processing.opacity);
             gl.uniform_1_f32(self.u_density_cutoff.as_ref(), density_cutoff);
             gl.uniform_1_f32(self.u_value_min.as_ref(), value_min);
             gl.uniform_1_f32(self.u_value_range.as_ref(), value_range);
+
+            gl.draw_arrays(glow::TRIANGLES, 0, 6);
+
+            // ── Pass 2: Blit FBO to screen ───────────────────────────
+            gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+            // Restore original viewport and scissor for the blit
+            gl.viewport(saved_viewport[0], saved_viewport[1], saved_viewport[2], saved_viewport[3]);
+            if scissor_was_enabled {
+                gl.enable(glow::SCISSOR_TEST);
+                gl.scissor(saved_scissor[0], saved_scissor[1], saved_scissor[2], saved_scissor[3]);
+            }
+
+            gl.enable(glow::BLEND);
+            gl.blend_func_separate(
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+                glow::ONE,
+                glow::ONE_MINUS_SRC_ALPHA,
+            );
+            gl.disable(glow::DEPTH_TEST);
+
+            gl.use_program(Some(self.blit_program));
+            gl.bind_vertex_array(Some(self.quad_vao));
+
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.fbo_color));
 
             gl.draw_arrays(glow::TRIANGLES, 0, 6);
 

@@ -188,8 +188,11 @@ fn draw_globe(
             let mut drew_volume = false;
             if volume_enabled {
                 if let (Some(ref vr), Some(ref rr)) = (&vol_r, &radar_r) {
-                    if let (Ok(v), Ok(flat_r)) = (vr.lock(), rr.lock()) {
+                    if let (Ok(mut v), Ok(flat_r)) = (vr.lock(), rr.lock()) {
                         if v.has_data() {
+                            // Get current viewport dimensions for FBO sizing
+                            let mut vp = [0i32; 4];
+                            unsafe { gl.get_parameter_i32_slice(glow::VIEWPORT, &mut vp) };
                             v.paint(
                                 gl,
                                 &camera,
@@ -198,6 +201,8 @@ fn draw_globe(
                                 flat_r.value_min(),
                                 flat_r.value_range(),
                                 volume_density_cutoff,
+                                vp[2],  // viewport width
+                                vp[3],  // viewport height
                             );
                             drew_volume = true;
                         }
