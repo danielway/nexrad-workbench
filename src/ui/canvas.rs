@@ -284,11 +284,12 @@ fn handle_globe_interaction(response: &egui::Response, rect: &Rect, state: &mut 
                         .camera
                         .pan_pivot(delta.x, delta.y, viewport_h);
                 } else if right_button {
-                    // Right-drag: tilt/rotate camera orientation
+                    // Right-drag: horizontal orbits (rotation), vertical tilts (pitch)
+                    state.viz_state.camera.orbit(delta.x, 0.0, viewport_h);
                     state
                         .viz_state
                         .camera
-                        .tilt_rotate(delta.x, delta.y, viewport_h);
+                        .tilt_rotate(0.0, delta.y, viewport_h);
                 } else {
                     // Left-drag: orbit
                     state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
