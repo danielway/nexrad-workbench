@@ -169,6 +169,14 @@ pub struct AppState {
 
     /// Event ID being edited (None = creating new event).
     pub event_modal_editing_id: Option<u64>,
+
+    /// Shadowed scan boundaries from the archive index.
+    ///
+    /// When a listing is fetched for a site/date, scan time boundaries are
+    /// derived from adjacent file timestamps and stored here. The timeline
+    /// renders these as subtle markers to show where scans exist before they
+    /// are actually downloaded.
+    pub shadow_scan_boundaries: Vec<crate::nexrad::ScanBoundary>,
 }
 
 /// Lightweight storm cell info for rendering on the canvas.
