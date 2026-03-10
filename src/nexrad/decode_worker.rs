@@ -15,59 +15,56 @@ use web_sys::{MessageEvent, Worker, WorkerOptions, WorkerType};
 // JS interop helpers — typed extraction from worker response objects
 // ---------------------------------------------------------------------------
 
-/// Extract a string field, returning empty string if absent.
-fn js_get_string_or_default(obj: &JsValue, key: &str) -> String {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default()
-}
+/// Lightweight wrapper for reading typed fields from a JS object.
+///
+/// Consolidates the 8 individual `js_get_*` functions into a single struct
+/// with clear method names, reducing boilerplate at call sites.
+struct JsObj<'a>(&'a JsValue);
 
-/// Extract a string field with a fallback default.
-fn js_get_string_or(obj: &JsValue, key: &str, default: &str) -> String {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_else(|| default.to_string())
-}
+impl<'a> JsObj<'a> {
+    /// Get a raw JsValue field by key.
+    fn get(&self, key: &str) -> Option<JsValue> {
+        js_sys::Reflect::get(self.0, &key.into()).ok()
+    }
 
-/// Extract an f64 field, returning 0.0 if absent.
-fn js_get_f64_or_zero(obj: &JsValue, key: &str) -> f64 {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0)
-}
+    /// Extract a string field, returning empty string if absent.
+    fn str(&self, key: &str) -> String {
+        self.get(key).and_then(|v| v.as_string()).unwrap_or_default()
+    }
 
-/// Extract an f64 field with a custom default.
-fn js_get_f64_or(obj: &JsValue, key: &str, default: f64) -> f64 {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(default)
-}
+    /// Extract a string field with a fallback default.
+    fn str_or(&self, key: &str, default: &str) -> String {
+        self.get(key)
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| default.to_string())
+    }
 
-/// Extract an optional f64 field.
-fn js_get_f64_opt(obj: &JsValue, key: &str) -> Option<f64> {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_f64())
-}
+    /// Extract an f64 field, returning 0.0 if absent.
+    fn f64(&self, key: &str) -> f64 {
+        self.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)
+    }
 
-/// Extract a bool field, returning a default if absent.
-fn js_get_bool_or(obj: &JsValue, key: &str, default: bool) -> bool {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(default)
-}
+    /// Extract an f64 field with a custom default.
+    fn f64_or(&self, key: &str, default: f64) -> f64 {
+        self.get(key).and_then(|v| v.as_f64()).unwrap_or(default)
+    }
 
-/// Extract a JSON-serialized field and deserialize it.
-fn js_get_json<T: serde::de::DeserializeOwned>(obj: &JsValue, key: &str) -> Option<T> {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .and_then(|s| serde_json::from_str(&s).ok())
+    /// Extract an optional f64 field.
+    fn f64_opt(&self, key: &str) -> Option<f64> {
+        self.get(key).and_then(|v| v.as_f64())
+    }
+
+    /// Extract a bool field, returning a default if absent.
+    fn bool_or(&self, key: &str, default: bool) -> bool {
+        self.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+    }
+
+    /// Extract a JSON-serialized field and deserialize it.
+    fn json<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
+        self.get(key)
+            .and_then(|v| v.as_string())
+            .and_then(|s| serde_json::from_str(&s).ok())
+    }
 }
 
 /// Unique ID for tracking worker requests.
@@ -593,7 +590,8 @@ fn handle_ingested_message(
     pending: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let id = js_get_f64_or_zero(data, "id") as u64;
+    let d = JsObj(data);
+    let id = d.f64("id") as u64;
 
     let context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -604,16 +602,17 @@ fn handle_ingested_message(
     };
 
     let result_obj = js_sys::Reflect::get(data, &"result".into()).unwrap_or(JsValue::NULL);
+    let r = JsObj(&result_obj);
 
-    let scan_key = js_get_string_or_default(&result_obj, "scanKey");
-    let records_stored = js_get_f64_or_zero(&result_obj, "recordsStored") as u32;
-    let total_ms = js_get_f64_or_zero(&result_obj, "totalMs");
-    let split_ms = js_get_f64_or_zero(&result_obj, "splitMs");
-    let decompress_ms = js_get_f64_or_zero(&result_obj, "decompressMs");
-    let decode_ms = js_get_f64_or_zero(&result_obj, "decodeMs");
-    let extract_ms = js_get_f64_or_zero(&result_obj, "extractMs");
-    let store_ms = js_get_f64_or_zero(&result_obj, "storeMs");
-    let index_ms = js_get_f64_or_zero(&result_obj, "indexMs");
+    let scan_key = r.str("scanKey");
+    let records_stored = r.f64("recordsStored") as u32;
+    let total_ms = r.f64("totalMs");
+    let split_ms = r.f64("splitMs");
+    let decompress_ms = r.f64("decompressMs");
+    let decode_ms = r.f64("decodeMs");
+    let extract_ms = r.f64("extractMs");
+    let store_ms = r.f64("storeMs");
+    let index_ms = r.f64("indexMs");
 
     // Extract unique elevation numbers from the elevationMap
     let mut elevation_numbers: Vec<u8> = Vec::new();
@@ -641,11 +640,10 @@ fn handle_ingested_message(
     elevation_numbers.sort_unstable();
 
     // Parse sweep metadata from JSON
-    let sweeps: Vec<crate::data::SweepMeta> =
-        js_get_json(&result_obj, "sweepsJson").unwrap_or_default();
+    let sweeps: Vec<crate::data::SweepMeta> = r.json("sweepsJson").unwrap_or_default();
 
     // Parse extracted VCP pattern from JSON
-    let vcp: Option<crate::data::keys::ExtractedVcp> = js_get_json(&result_obj, "vcpJson");
+    let vcp: Option<crate::data::keys::ExtractedVcp> = r.json("vcpJson");
 
     log::info!(
         "Worker ingest complete: {} ({} records, {} elevations, {} sweeps, vcp={}, {:.0}ms)",
@@ -684,7 +682,8 @@ fn handle_chunk_ingested_message(
     pending: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let id = js_get_f64_or_zero(data, "id") as u64;
+    let d = JsObj(data);
+    let id = d.f64("id") as u64;
 
     let context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -695,11 +694,12 @@ fn handle_chunk_ingested_message(
     };
 
     let result_obj = js_sys::Reflect::get(data, &"result".into()).unwrap_or(JsValue::NULL);
+    let r = JsObj(&result_obj);
 
-    let scan_key = js_get_string_or_default(&result_obj, "scanKey");
-    let sweeps_stored = js_get_f64_or_zero(&result_obj, "sweepsStored") as u32;
-    let is_end = js_get_bool_or(&result_obj, "isEnd", false);
-    let total_ms = js_get_f64_or_zero(&result_obj, "totalMs");
+    let scan_key = r.str("scanKey");
+    let sweeps_stored = r.f64("sweepsStored") as u32;
+    let is_end = r.bool_or("isEnd", false);
+    let total_ms = r.f64("totalMs");
 
     // Parse elevations completed
     let mut elevations_completed: Vec<u8> = Vec::new();
@@ -715,28 +715,26 @@ fn handle_chunk_ingested_message(
     }
 
     // Parse sweep metadata and VCP from JSON
-    let sweeps: Vec<crate::data::SweepMeta> =
-        js_get_json(&result_obj, "sweepsJson").unwrap_or_default();
-    let vcp: Option<crate::data::keys::ExtractedVcp> = js_get_json(&result_obj, "vcpJson");
+    let sweeps: Vec<crate::data::SweepMeta> = r.json("sweepsJson").unwrap_or_default();
+    let vcp: Option<crate::data::keys::ExtractedVcp> = r.json("vcpJson");
 
     // Parse current in-progress elevation info
-    let current_elevation = js_get_f64_opt(&result_obj, "currentElevation").map(|v| v as u8);
-    let current_elevation_radials =
-        js_get_f64_opt(&result_obj, "currentElevationRadials").map(|v| v as u32);
+    let current_elevation = r.f64_opt("currentElevation").map(|v| v as u8);
+    let current_elevation_radials = r.f64_opt("currentElevationRadials").map(|v| v as u32);
 
     // Parse chunk data time range
-    let chunk_min_time_secs = js_get_f64_opt(&result_obj, "chunkMinTimeSecs");
+    let chunk_min_time_secs = r.f64_opt("chunkMinTimeSecs");
 
     // Parse last radial azimuth/time for sweep line extrapolation
-    let last_radial_azimuth = js_get_f64_opt(&result_obj, "lastRadialAzimuth").map(|v| v as f32);
-    let last_radial_time_secs = js_get_f64_opt(&result_obj, "lastRadialTimeSecs");
+    let last_radial_azimuth = r.f64_opt("lastRadialAzimuth").map(|v| v as f32);
+    let last_radial_time_secs = r.f64_opt("lastRadialTimeSecs");
 
     // Parse volume header time (authoritative scan start from Archive II header)
-    let volume_header_time_secs = js_get_f64_opt(&result_obj, "volumeHeaderTimeSecs");
+    let volume_header_time_secs = r.f64_opt("volumeHeaderTimeSecs");
 
     // Parse per-elevation chunk time spans
     let chunk_elev_spans: Vec<(u8, f64, f64, u32)> =
-        js_get_json(&result_obj, "chunkElevSpansJson").unwrap_or_default();
+        r.json("chunkElevSpansJson").unwrap_or_default();
 
     results
         .borrow_mut()
@@ -765,7 +763,8 @@ fn handle_decoded_message(
     pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let id = js_get_f64_or_zero(data, "id") as u64;
+    let d = JsObj(data);
+    let id = d.f64("id") as u64;
 
     let context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -781,22 +780,22 @@ fn handle_decoded_message(
     let val_buffer = js_sys::Reflect::get(data, &"gateValues".into()).unwrap_or(JsValue::NULL);
     let gate_values = js_sys::Float32Array::new(&val_buffer).to_vec();
 
-    let azimuth_count = js_get_f64_or_zero(data, "azimuthCount") as u32;
-    let gate_count = js_get_f64_or_zero(data, "gateCount") as u32;
-    let first_gate_range_km = js_get_f64_or_zero(data, "firstGateRangeKm");
-    let gate_interval_km = js_get_f64_or_zero(data, "gateIntervalKm");
-    let max_range_km = js_get_f64_or_zero(data, "maxRangeKm");
-    let product = js_get_string_or(data, "product", "reflectivity");
-    let radial_count = js_get_f64_or_zero(data, "radialCount") as u32;
-    let fetch_ms = js_get_f64_or_zero(data, "fetchMs");
-    let deser_ms = js_get_f64_or_zero(data, "deserMs");
-    let total_ms = js_get_f64_or_zero(data, "totalMs");
-    let marshal_ms = js_get_f64_or_zero(data, "marshalMs");
-    let scale = js_get_f64_or(data, "scale", 1.0) as f32;
-    let offset = js_get_f64_or_zero(data, "offset") as f32;
-    let mean_elevation = js_get_f64_or_zero(data, "meanElevation") as f32;
-    let sweep_start_secs = js_get_f64_or_zero(data, "sweepStartSecs");
-    let sweep_end_secs = js_get_f64_or_zero(data, "sweepEndSecs");
+    let azimuth_count = d.f64("azimuthCount") as u32;
+    let gate_count = d.f64("gateCount") as u32;
+    let first_gate_range_km = d.f64("firstGateRangeKm");
+    let gate_interval_km = d.f64("gateIntervalKm");
+    let max_range_km = d.f64("maxRangeKm");
+    let product = d.str_or("product", "reflectivity");
+    let radial_count = d.f64("radialCount") as u32;
+    let fetch_ms = d.f64("fetchMs");
+    let deser_ms = d.f64("deserMs");
+    let total_ms = d.f64("totalMs");
+    let marshal_ms = d.f64("marshalMs");
+    let scale = d.f64_or("scale", 1.0) as f32;
+    let offset = d.f64("offset") as f32;
+    let mean_elevation = d.f64("meanElevation") as f32;
+    let sweep_start_secs = d.f64("sweepStartSecs");
+    let sweep_end_secs = d.f64("sweepEndSecs");
 
     log::info!(
         "Worker decode: {}x{}, {} radials, {}, {:.0}ms (fetch: {:.1}, marshal: {:.1})",
@@ -836,8 +835,9 @@ fn handle_decoded_message(
 
 /// Handle an "error" message from the worker.
 fn handle_error_message(data: &JsValue, results: &Rc<RefCell<Vec<WorkerOutcome>>>) {
-    let id = js_get_f64_or_zero(data, "id") as u64;
-    let message = js_get_string_or(data, "message", "Unknown worker error");
+    let d = JsObj(data);
+    let id = d.f64("id") as u64;
+    let message = d.str_or("message", "Unknown worker error");
 
     log::error!("Worker error (request {}): {}", id, message);
 
@@ -959,7 +959,8 @@ fn handle_volume_decoded_message(
     pending: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let id = js_get_f64_or_zero(data, "id") as u64;
+    let d = JsObj(data);
+    let id = d.f64("id") as u64;
 
     let _context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -969,8 +970,8 @@ fn handle_volume_decoded_message(
         }
     };
 
-    let total_ms = js_get_f64_or_zero(data, "totalMs");
-    let product = js_get_string_or(data, "product", "reflectivity");
+    let total_ms = d.f64("totalMs");
+    let product = d.str_or("product", "reflectivity");
 
     // Extract packed buffer
     let buf_js = js_sys::Reflect::get(data, &"buffer".into()).unwrap_or(JsValue::NULL);
@@ -988,16 +989,17 @@ fn handle_volume_decoded_message(
         let arr: js_sys::Array = meta_arr.unchecked_into();
         for i in 0..arr.length() {
             let obj = arr.get(i);
+            let s = JsObj(&obj);
             sweeps.push(VolumeSweepMeta {
-                elevation_deg: js_get_f64_or_zero(&obj, "elevationDeg") as f32,
-                azimuth_count: js_get_f64_or_zero(&obj, "azimuthCount") as u32,
-                gate_count: js_get_f64_or_zero(&obj, "gateCount") as u32,
-                first_gate_km: js_get_f64_or_zero(&obj, "firstGateKm") as f32,
-                gate_interval_km: js_get_f64_or_zero(&obj, "gateIntervalKm") as f32,
-                max_range_km: js_get_f64_or_zero(&obj, "maxRangeKm") as f32,
-                data_offset: js_get_f64_or_zero(&obj, "dataOffset") as u32,
-                scale: js_get_f64_or_zero(&obj, "scale") as f32,
-                offset: js_get_f64_or_zero(&obj, "offset") as f32,
+                elevation_deg: s.f64("elevationDeg") as f32,
+                azimuth_count: s.f64("azimuthCount") as u32,
+                gate_count: s.f64("gateCount") as u32,
+                first_gate_km: s.f64("firstGateKm") as f32,
+                gate_interval_km: s.f64("gateIntervalKm") as f32,
+                max_range_km: s.f64("maxRangeKm") as f32,
+                data_offset: s.f64("dataOffset") as u32,
+                scale: s.f64("scale") as f32,
+                offset: s.f64("offset") as f32,
             });
         }
     }
