@@ -186,9 +186,9 @@ impl Default for RenderProcessing {
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
     /// Classic flat equirectangular map.
+    #[default]
     Flat2D,
     /// 3D globe.
-    #[default]
     Globe3D,
 }
 
