@@ -155,18 +155,11 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                     // View mode selector — all options always visible
                     let modes: &[(&str, ViewMode, Option<CameraMode>, Color32, &str)] = &[
                         (
-                            "3D Free",
-                            ViewMode::Globe3D,
-                            Some(CameraMode::FreeLook),
-                            Color32::from_rgb(200, 140, 255),
-                            "4",
-                        ),
-                        (
-                            "3D Planet",
-                            ViewMode::Globe3D,
-                            Some(CameraMode::PlanetOrbit),
-                            Color32::from_rgb(120, 200, 120),
-                            "3",
+                            "2D",
+                            ViewMode::Flat2D,
+                            None,
+                            Color32::from_rgb(100, 180, 255),
+                            "1",
                         ),
                         (
                             "3D Site",
@@ -176,11 +169,18 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                             "2",
                         ),
                         (
-                            "2D",
-                            ViewMode::Flat2D,
-                            None,
-                            Color32::from_rgb(100, 180, 255),
-                            "1",
+                            "3D Planet",
+                            ViewMode::Globe3D,
+                            Some(CameraMode::PlanetOrbit),
+                            Color32::from_rgb(120, 200, 120),
+                            "3",
+                        ),
+                        (
+                            "3D Free",
+                            ViewMode::Globe3D,
+                            Some(CameraMode::FreeLook),
+                            Color32::from_rgb(200, 140, 255),
+                            "4",
                         ),
                     ];
 
