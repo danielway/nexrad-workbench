@@ -103,6 +103,13 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                         state.shortcuts_help_visible = !state.shortcuts_help_visible;
                     }
 
+                    // Version stamp
+                    ui.label(
+                        RichText::new(option_env!("NEXRAD_VERSION").unwrap_or("dev"))
+                            .size(11.0)
+                            .color(Color32::from_rgb(80, 80, 80)),
+                    );
+
                     ui.separator();
 
                     // View mode indicator with camera mode
