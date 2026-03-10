@@ -194,8 +194,8 @@ impl GlobeCamera {
         let offset_dir = (horiz * elev_rad.cos() + up * elev_rad.sin()).normalize();
 
         let eye = site_pos + offset_dir * orbit_dist;
-        // Use geographic north as the up hint so the view orientation matches the compass.
-        Mat4::look_at_rh(eye, site_pos, north)
+        // Use radial up so the horizon stays level regardless of bearing.
+        Mat4::look_at_rh(eye, site_pos, up)
     }
 
     /// View matrix for FreeLook mode — first-person flying camera.
