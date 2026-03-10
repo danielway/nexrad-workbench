@@ -4,6 +4,9 @@ A browser-based workbench for visualizing and analyzing NEXRAD (WSR-88D) weather
 
 **Live site:** https://danielway.github.io/nexrad-workbench/
 
+![Example of 2D view](docs/example_2d_render.png)
+![Example of 3D view](docs/example_3d_render.png)
+
 ## Features
 
 - **Archive browsing** — Browse and download historical radar data from AWS S3
