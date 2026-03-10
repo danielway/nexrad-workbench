@@ -417,8 +417,9 @@ fn navigate_to_event(state: &mut AppState, event: &crate::state::SavedEvent) {
             state.viz_state.center_lon = site.lon;
             state.viz_state.pan_offset = egui::Vec2::ZERO;
             state.viz_state.camera.center_on(site.lat, site.lon);
-            state.timeline_needs_refresh = true;
-            state.auto_position_on_timeline_load = false;
+            state.push_command(crate::state::AppCommand::RefreshTimeline {
+                auto_position: false,
+            });
         }
     }
 
