@@ -320,9 +320,21 @@ impl WorkbenchApp {
             state.playback_state.center_view_on(time);
         }
 
-        // First-launch detection: open site selection modal if no site in URL
+        // First-launch detection: if no site specified in the URL, check for a
+        // saved preferred site. If one exists, apply it silently. Otherwise open
+        // the first-visit modal so the user can choose a site.
         if url_params.site.is_none() {
-            state.site_modal_open = true;
+            if let Some(ref preferred) = state.preferred_site {
+                if let Some(site) = crate::data::get_site(preferred) {
+                    state.viz_state.site_id = site.id.to_string();
+                    state.viz_state.center_lat = site.lat;
+                    state.viz_state.center_lon = site.lon;
+                    state.viz_state.camera.center_on(site.lat, site.lon);
+                    // Not a first visit — modal starts in SiteList mode if reopened
+                }
+            } else {
+                state.site_modal_open = true;
+            }
         }
 
         let initial_site_id = state.viz_state.site_id.clone();
@@ -344,6 +356,7 @@ impl WorkbenchApp {
         }
 
         let initial_prefs = state::UserPreferences::from_app_state(&state);
+        let has_preferred_site = state.preferred_site.is_some();
 
         // Create decode worker (offloads nexrad::load() to a Web Worker)
         let decode_worker = match nexrad::DecodeWorker::new(cc.egui_ctx.clone()) {
@@ -434,7 +447,16 @@ impl WorkbenchApp {
             available_elevation_numbers: Vec::new(),
             last_url_push: web_time::Instant::now(),
             last_saved_preferences: initial_prefs,
-            site_modal_state: ui::SiteModalState::default(),
+            site_modal_state: {
+                let mut sms = ui::SiteModalState::default();
+                // If the user already has a preferred site, they're not a first-time
+                // visitor, so the modal should open directly to the site list.
+                if has_preferred_site {
+                    sms.is_first_visit = false;
+                    sms.mode = ui::SiteModalMode::SiteList;
+                }
+                sms
+            },
             event_modal_state: ui::EventModalState::default(),
         }
     }

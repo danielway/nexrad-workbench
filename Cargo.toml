@@ -58,6 +58,16 @@ web-sys = { version = "0.3", features = [
     "Document",
     "Element",
     "NodeList",
+    "Navigator",
+    "Geolocation",
+    "Position",
+    "Coordinates",
+    "PositionError",
+    "PositionOptions",
+    "Headers",
+    "Request",
+    "RequestInit",
+    "RequestMode",
 ] }
 js-sys = "0.3"
 egui-phosphor = { version = "0.11.0", features = ["regular"] }

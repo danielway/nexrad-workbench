@@ -29,7 +29,7 @@ pub(crate) mod keys;
 pub(crate) mod sites;
 
 // Re-export static site data
-pub use sites::{all_sites_sorted, get_site, NEXRAD_SITES};
+pub use sites::{all_sites_sorted, get_site, nearest_site, NEXRAD_SITES};
 
 // Re-export cache types
 pub use facade::*;
