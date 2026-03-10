@@ -312,7 +312,6 @@ impl AppState {
         self.commands.drain(..).collect()
     }
 
-
     /// Set the status message and record the timestamp for auto-dismissal.
     #[allow(dead_code)]
     pub fn set_status(&mut self, msg: impl Into<String>) {

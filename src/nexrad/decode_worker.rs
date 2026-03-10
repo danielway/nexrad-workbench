@@ -29,7 +29,9 @@ impl<'a> JsObj<'a> {
 
     /// Extract a string field, returning empty string if absent.
     fn str(&self, key: &str) -> String {
-        self.get(key).and_then(|v| v.as_string()).unwrap_or_default()
+        self.get(key)
+            .and_then(|v| v.as_string())
+            .unwrap_or_default()
     }
 
     /// Extract a string field with a fallback default.

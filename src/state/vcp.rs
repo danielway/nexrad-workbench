@@ -238,3 +238,55 @@ pub fn get_vcp_definition(vcp: u16) -> Option<&'static VcpDefinition> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vcp_215_lookup() {
+        let def = get_vcp_definition(215).unwrap();
+        assert_eq!(def.name, "Precipitation");
+        assert_eq!(def.elevations.len(), 14);
+        assert_eq!(def.elevations[0].angle, 0.5);
+        assert_eq!(def.elevations[13].angle, 19.5);
+    }
+
+    #[test]
+    fn vcp_35_lookup() {
+        let def = get_vcp_definition(35).unwrap();
+        assert_eq!(def.name, "Clear Air");
+        assert_eq!(def.elevations.len(), 5);
+        assert_eq!(def.elevations[0].angle, 0.5);
+        assert_eq!(def.elevations[4].angle, 4.5);
+    }
+
+    #[test]
+    fn vcp_212_lookup() {
+        let def = get_vcp_definition(212).unwrap();
+        assert_eq!(def.name, "Precip Fast");
+        assert_eq!(def.elevations.len(), 14);
+    }
+
+    #[test]
+    fn vcp_unknown_returns_none() {
+        assert!(get_vcp_definition(0).is_none());
+        assert!(get_vcp_definition(999).is_none());
+    }
+
+    #[test]
+    fn vcp_elevations_are_ascending() {
+        for &vcp_num in &[215u16, 35, 212] {
+            let def = get_vcp_definition(vcp_num).unwrap();
+            for w in def.elevations.windows(2) {
+                assert!(
+                    w[1].angle > w[0].angle,
+                    "VCP {} elevations not ascending: {} >= {}",
+                    vcp_num,
+                    w[0].angle,
+                    w[1].angle
+                );
+            }
+        }
+    }
+}

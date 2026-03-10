@@ -525,7 +525,8 @@ impl WorkbenchApp {
                                 current_date,
                             );
                         }
-                        self.state.push_command(state::AppCommand::DownloadAtPosition);
+                        self.state
+                            .push_command(state::AppCommand::DownloadAtPosition);
                         self.state.status_message =
                             format!("Re-fetching archive listing for {}...", current_date);
                         return;
@@ -561,9 +562,11 @@ impl WorkbenchApp {
                 }
                 // Re-trigger once listing arrives — preserve the download type
                 if is_position_download {
-                    self.state.push_command(state::AppCommand::DownloadAtPosition);
+                    self.state
+                        .push_command(state::AppCommand::DownloadAtPosition);
                 } else {
-                    self.state.push_command(state::AppCommand::DownloadSelection);
+                    self.state
+                        .push_command(state::AppCommand::DownloadSelection);
                 }
                 self.state.status_message =
                     format!("Fetching archive listing for {}...", current_date);
@@ -1259,7 +1262,9 @@ impl eframe::App for WorkbenchApp {
                         // Refresh timeline to include the new scan (sweeps
                         // were persisted to IDB during ingest and will be
                         // loaded by from_metadata on the next refresh).
-                        self.state.push_command(state::AppCommand::RefreshTimeline { auto_position: false });
+                        self.state.push_command(state::AppCommand::RefreshTimeline {
+                            auto_position: false,
+                        });
 
                         // Request eviction check
                         self.state.push_command(state::AppCommand::CheckEviction);
@@ -1378,7 +1383,9 @@ impl eframe::App for WorkbenchApp {
                                 result.elevations_completed.len(),
                                 self.available_elevation_numbers,
                             );
-                            self.state.push_command(state::AppCommand::RefreshTimeline { auto_position: false });
+                            self.state.push_command(state::AppCommand::RefreshTimeline {
+                                auto_position: false,
+                            });
 
                             // Update status to show progress
                             self.state.status_message = format!(
@@ -1399,7 +1406,9 @@ impl eframe::App for WorkbenchApp {
                                 "Live: volume complete ({} elevations)",
                                 self.available_elevation_numbers.len()
                             );
-                            self.state.push_command(state::AppCommand::RefreshTimeline { auto_position: false });
+                            self.state.push_command(state::AppCommand::RefreshTimeline {
+                                auto_position: false,
+                            });
                             self.state.push_command(state::AppCommand::CheckEviction);
                             self.state.session_stats.pipeline.mark_processing_done();
 
@@ -1668,7 +1677,9 @@ impl eframe::App for WorkbenchApp {
                 self.current_scan = Some(scan.clone());
 
                 // Refresh timeline to show the new/loaded scan
-                self.state.push_command(state::AppCommand::RefreshTimeline { auto_position: false });
+                self.state.push_command(state::AppCommand::RefreshTimeline {
+                    auto_position: false,
+                });
             }
 
             if let nexrad::DownloadResult::Error(msg) = &result {
@@ -1709,10 +1720,8 @@ impl eframe::App for WorkbenchApp {
                 Some(true)
             } else if do_download_selection {
                 Some(false)
-            } else if !self.selection_download_queue.is_empty() {
-                None // Just pumping existing queue
             } else {
-                None
+                None // Just pumping existing queue, or nothing to do
             };
             if do_download_selection
                 || do_download_at_position
@@ -1919,7 +1928,9 @@ impl eframe::App for WorkbenchApp {
                                         product.clone(),
                                         self.state.viz_state.render_mode,
                                     );
-                                    if self.renderers.last_render_params.as_ref() != Some(&prefetch_params) {
+                                    if self.renderers.last_render_params.as_ref()
+                                        != Some(&prefetch_params)
+                                    {
                                         log::debug!(
                                             "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
                                             next_en,

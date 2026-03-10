@@ -235,3 +235,161 @@ impl ArchiveIndex {
 pub fn current_timestamp_secs() -> f64 {
     js_sys::Date::now() / 1000.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn file(name: &str, timestamp: i64) -> ArchiveFileMeta {
+        ArchiveFileMeta {
+            name: name.to_string(),
+            size: 0,
+            timestamp,
+        }
+    }
+
+    fn listing(files: Vec<ArchiveFileMeta>) -> ArchiveListing {
+        ArchiveListing {
+            files,
+            fetched_at: 0.0,
+        }
+    }
+
+    // --- parse_timestamp_from_name ---
+
+    #[test]
+    fn parse_timestamp_basic() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        let ts = ArchiveFileMeta::parse_timestamp_from_name("KDMX20240501_120000_V06", &date);
+        assert!(ts.is_some());
+        let expected = date.and_hms_opt(12, 0, 0).unwrap().and_utc().timestamp();
+        assert_eq!(ts.unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_timestamp_midnight() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        let ts = ArchiveFileMeta::parse_timestamp_from_name("KDMX20240501_000000_V06", &date);
+        let expected = date.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+        assert_eq!(ts.unwrap(), expected);
+    }
+
+    #[test]
+    fn parse_timestamp_too_short() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        assert!(ArchiveFileMeta::parse_timestamp_from_name("short", &date).is_none());
+    }
+
+    #[test]
+    fn parse_timestamp_invalid_time() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        // 25 is not a valid hour
+        assert!(
+            ArchiveFileMeta::parse_timestamp_from_name("KDMX20240501_250000_V06", &date).is_none()
+        );
+    }
+
+    // --- scan_boundaries ---
+
+    #[test]
+    fn scan_boundaries_empty() {
+        let l = listing(vec![]);
+        assert!(l.scan_boundaries().is_empty());
+    }
+
+    #[test]
+    fn scan_boundaries_single_file() {
+        let l = listing(vec![file("a", 1000)]);
+        let b = l.scan_boundaries();
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].start, 1000);
+        assert_eq!(b[0].end, 1300); // 1000 + 300
+    }
+
+    #[test]
+    fn scan_boundaries_multiple_files() {
+        let l = listing(vec![file("a", 1000), file("b", 1300), file("c", 1600)]);
+        let b = l.scan_boundaries();
+        assert_eq!(b.len(), 3);
+        // First two end at next scan's start
+        assert_eq!(b[0].start, 1000);
+        assert_eq!(b[0].end, 1300);
+        assert_eq!(b[1].start, 1300);
+        assert_eq!(b[1].end, 1600);
+        // Last uses average interval (300s)
+        assert_eq!(b[2].start, 1600);
+        assert_eq!(b[2].end, 1900);
+    }
+
+    // --- find_scan_containing ---
+
+    #[test]
+    fn find_scan_containing_found() {
+        let l = listing(vec![file("a", 1000), file("b", 1300)]);
+        let result = l.find_scan_containing(1150);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0.name, "a");
+    }
+
+    #[test]
+    fn find_scan_containing_not_found() {
+        let l = listing(vec![file("a", 1000), file("b", 1300)]);
+        assert!(l.find_scan_containing(500).is_none());
+    }
+
+    // --- scans_intersecting ---
+
+    #[test]
+    fn scans_intersecting_range() {
+        let l = listing(vec![file("a", 1000), file("b", 1300), file("c", 1600)]);
+        let result = l.scans_intersecting(1200, 1400);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].0.name, "a");
+        assert_eq!(result[1].0.name, "b");
+    }
+
+    // --- find_file_at_timestamp ---
+
+    #[test]
+    fn find_file_at_timestamp_exact() {
+        let l = listing(vec![file("a", 1000), file("b", 1300)]);
+        assert_eq!(l.find_file_at_timestamp(1000).unwrap().name, "a");
+        assert_eq!(l.find_file_at_timestamp(1300).unwrap().name, "b");
+    }
+
+    #[test]
+    fn find_file_at_timestamp_between() {
+        let l = listing(vec![file("a", 1000), file("b", 1300)]);
+        // 1100 is closer to 1000
+        assert_eq!(l.find_file_at_timestamp(1100).unwrap().name, "a");
+        // 1200 is closer to 1300
+        assert_eq!(l.find_file_at_timestamp(1200).unwrap().name, "b");
+    }
+
+    #[test]
+    fn find_file_at_timestamp_empty() {
+        let l = listing(vec![]);
+        assert!(l.find_file_at_timestamp(1000).is_none());
+    }
+
+    // --- ArchiveIndex ---
+
+    #[test]
+    fn archive_index_get_and_remove() {
+        let mut idx = ArchiveIndex::new();
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        assert!(idx.get("KDMX", &date).is_none());
+
+        idx.listings.insert(
+            ArchiveIndexKey::new("KDMX", date),
+            listing(vec![file("a", 1000)]),
+        );
+
+        assert!(idx.get("KDMX", &date).is_some());
+        assert!(idx.has_listing("KDMX", &date));
+
+        idx.remove("KDMX", &date);
+        assert!(idx.get("KDMX", &date).is_none());
+    }
+}
