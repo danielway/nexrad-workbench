@@ -229,6 +229,21 @@ impl ArchiveIndex {
     pub fn clear(&mut self) {
         self.listings.clear();
     }
+
+    /// Collect scan boundaries from all cached listings for a given site.
+    ///
+    /// Returns boundaries sorted by start time with duplicates removed.
+    pub fn all_boundaries_for_site(&self, site_id: &str) -> Vec<ScanBoundary> {
+        let mut boundaries: Vec<ScanBoundary> = self
+            .listings
+            .iter()
+            .filter(|(key, _)| key.site_id == site_id)
+            .flat_map(|(_, listing)| listing.scan_boundaries())
+            .collect();
+        boundaries.sort_by(|a, b| a.start.cmp(&b.start));
+        boundaries.dedup_by(|a, b| a.start == b.start && a.end == b.end);
+        boundaries
+    }
 }
 
 /// Get current timestamp in seconds.

@@ -1088,6 +1088,8 @@ impl eframe::App for WorkbenchApp {
             self.state.displayed_scan_timestamp = None;
             self.state.displayed_sweep_elevation_number = None;
             self.previous_site_id = self.state.viz_state.site_id.clone();
+            // Clear shadow boundaries from previous site; new listings will repopulate.
+            self.state.shadow_scan_boundaries.clear();
         }
 
         // Handle cache clear request
@@ -1694,6 +1696,12 @@ impl eframe::App for WorkbenchApp {
                         date
                     );
                     self.archive_index.insert(&site_id, date, listing);
+
+                    // Rebuild shadow scan boundaries for the timeline
+                    if site_id == self.state.viz_state.site_id {
+                        self.state.shadow_scan_boundaries =
+                            self.archive_index.all_boundaries_for_site(&site_id);
+                    }
                 }
                 nexrad::ListingResult::Error(msg) => {
                     log::error!("Listing request failed: {}", msg);

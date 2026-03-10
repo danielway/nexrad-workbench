@@ -17,7 +17,7 @@ mod types;
 pub(crate) mod volume_ray_renderer;
 mod worker_api;
 
-pub use archive_index::ArchiveIndex;
+pub use archive_index::{ArchiveIndex, ScanBoundary};
 pub use cache_channel::{CacheLoadChannel, CacheLoadResult};
 pub use decode_worker::{DecodeWorker, VolumeSweepMeta, WorkerOutcome};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
