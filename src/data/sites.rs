@@ -1718,6 +1718,25 @@ pub fn all_sites_sorted() -> Vec<&'static NexradSite> {
     sites
 }
 
+/// Find the nearest NEXRAD site to a given latitude/longitude.
+pub fn nearest_site(lat: f64, lon: f64) -> Option<&'static NexradSite> {
+    NEXRAD_SITES.iter().min_by(|a, b| {
+        haversine_distance(lat, lon, a.lat, a.lon)
+            .partial_cmp(&haversine_distance(lat, lon, b.lat, b.lon))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    })
+}
+
+/// Haversine distance between two lat/lon points in kilometers.
+fn haversine_distance(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+    let r = 6371.0; // Earth radius in km
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+    let a = (dlat / 2.0).sin().powi(2)
+        + lat1.to_radians().cos() * lat2.to_radians().cos() * (dlon / 2.0).sin().powi(2);
+    r * 2.0 * a.sqrt().asin()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

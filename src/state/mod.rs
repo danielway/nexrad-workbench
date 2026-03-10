@@ -107,6 +107,11 @@ pub struct AppState {
     /// Whether the site selection modal is open.
     pub site_modal_open: bool,
 
+    /// Preferred NEXRAD site chosen during first visit. `Some` means the user
+    /// has already completed the first-visit flow and this site should be used
+    /// as the default on future visits.
+    pub preferred_site: Option<String>,
+
     /// Whether the left sidebar is visible.
     pub left_sidebar_visible: bool,
 

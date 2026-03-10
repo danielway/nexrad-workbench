@@ -26,6 +26,10 @@ pub struct UserPreferences {
     pub layer_cities: bool,
     #[serde(default)]
     pub use_local_time: bool,
+    /// Preferred NEXRAD site from first-visit selection. When `Some`, the
+    /// first-visit modal is skipped and this site is used as the default.
+    #[serde(default)]
+    pub preferred_site: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -43,6 +47,7 @@ impl Default for UserPreferences {
             layer_nexrad_sites: false,
             layer_cities: true,
             use_local_time: false,
+            preferred_site: None,
         }
     }
 }
@@ -61,6 +66,7 @@ impl UserPreferences {
             layer_nexrad_sites: state.layer_state.geo.nexrad_sites,
             layer_cities: state.layer_state.geo.cities,
             use_local_time: state.use_local_time,
+            preferred_site: state.preferred_site.clone(),
         }
     }
 
@@ -74,6 +80,7 @@ impl UserPreferences {
         state.layer_state.geo.nexrad_sites = self.layer_nexrad_sites;
         state.layer_state.geo.cities = self.layer_cities;
         state.use_local_time = self.use_local_time;
+        state.preferred_site = self.preferred_site.clone();
     }
 
     /// Load preferences from localStorage.
