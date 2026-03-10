@@ -572,4 +572,78 @@ mod tests {
         assert_eq!(s1, s2);
         assert_eq!(format!("{}", s1), "KDMX");
     }
+
+    #[test]
+    fn test_precomputed_sweep_header_roundtrip() {
+        let sweep = PrecomputedSweep {
+            azimuth_count: 720,
+            gate_count: 1832,
+            first_gate_range_km: 2.125,
+            gate_interval_km: 0.25,
+            max_range_km: 460.125,
+            scale: 2.0,
+            offset: 66.0,
+            radial_count: 720,
+            mean_elevation: 0.5,
+            sweep_start_secs: 1700000000.5,
+            sweep_end_secs: 1700000020.3,
+            azimuths: (0..720).map(|i| i as f32 * 0.5).collect(),
+            gate_values: GateValues::U8(vec![0u8; 720 * 1832]),
+        };
+
+        let bytes = sweep.to_bytes();
+        let header = parse_sweep_header(&bytes).unwrap();
+
+        assert_eq!(header.azimuth_count, 720);
+        assert_eq!(header.gate_count, 1832);
+        assert!((header.first_gate_range_km - 2.125).abs() < 1e-10);
+        assert!((header.gate_interval_km - 0.25).abs() < 1e-10);
+        assert!((header.max_range_km - 460.125).abs() < 1e-10);
+        assert!((header.scale - 2.0).abs() < 1e-6);
+        assert!((header.offset - 66.0).abs() < 1e-6);
+        assert_eq!(header.radial_count, 720);
+        assert_eq!(header.data_word_size, 1);
+        assert!((header.mean_elevation - 0.5).abs() < 1e-6);
+        assert!((header.sweep_start_secs - 1700000000.5).abs() < 1e-10);
+        assert!((header.sweep_end_secs - 1700000020.3).abs() < 1e-10);
+        assert_eq!(header.azimuths_offset, 72);
+        assert_eq!(header.gate_values_offset, 72 + 720 * 4);
+    }
+
+    #[test]
+    fn test_parse_sweep_header_too_small() {
+        let data = vec![0u8; 50];
+        assert!(parse_sweep_header(&data).is_err());
+    }
+
+    #[test]
+    fn test_gate_values_word_size() {
+        assert_eq!(GateValues::U8(vec![]).word_size(), 1);
+        assert_eq!(GateValues::U16(vec![]).word_size(), 2);
+    }
+
+    #[test]
+    fn test_precomputed_sweep_u16_roundtrip() {
+        let sweep = PrecomputedSweep {
+            azimuth_count: 4,
+            gate_count: 2,
+            first_gate_range_km: 1.0,
+            gate_interval_km: 0.5,
+            max_range_km: 2.0,
+            scale: 1.0,
+            offset: 0.0,
+            radial_count: 4,
+            mean_elevation: 1.3,
+            sweep_start_secs: 100.0,
+            sweep_end_secs: 110.0,
+            azimuths: vec![0.0, 90.0, 180.0, 270.0],
+            gate_values: GateValues::U16(vec![100, 200, 300, 400, 500, 600, 700, 800]),
+        };
+
+        let bytes = sweep.to_bytes();
+        let header = parse_sweep_header(&bytes).unwrap();
+        assert_eq!(header.data_word_size, 2);
+        assert_eq!(header.azimuth_count, 4);
+        assert_eq!(header.gate_count, 2);
+    }
 }
