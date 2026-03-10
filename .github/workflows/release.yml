@@ -9,6 +9,8 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,3 +40,9 @@ jobs:
           gh release create "${{ steps.version.outputs.tag }}" \
             --title "${{ steps.version.outputs.tag }}" \
             --generate-notes
+
+  deploy:
+    needs: release
+    uses: ./.github/workflows/pages.yml
+    with:
+      version: ${{ needs.release.outputs.tag }}
