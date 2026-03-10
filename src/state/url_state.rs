@@ -21,7 +21,6 @@ pub struct ViewState {
     pub tz: Option<f64>,
 
     // ── 3D view parameters ──
-
     /// View mode: 0 = Flat2D, 1 = Globe3D.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vm: Option<u8>,
