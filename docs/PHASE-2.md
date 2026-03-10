@@ -1,5 +1,7 @@
 # Phase 2 — Rich Rendering
 
+> **Status: Not started.**
+
 Adds progressive sweep animation and full data age visualization to the single-site viewer. The rendering model gains two additional accumulation strategies and the visual tools needed to communicate temporal structure when data from multiple sweeps coexists on the canvas.
 
 ## Accumulation Strategies

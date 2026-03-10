@@ -50,13 +50,25 @@ The distinction between archive and real-time data is intentionally blurred at t
 
 The product is delivered in four phases, each building on the previous. Each phase produces a usable product; later phases layer in rendering richness, operational depth, and multi-site support.
 
-**Phase 1 — Core single-site viewer** ([PHASE-1.md](PHASE-1.md)). A complete single-site radar viewer with the simplest viable rendering model. Users can select a site, navigate time via the timeline, view radar imagery rendered as complete sweeps, stream real-time data, and upload local files. Data acquisition feedback is minimal — a progress indicator and error notifications. This phase establishes the full application layout, the timeline with zoom-dependent data availability decomposition, playback controls, product/elevation selection, and the IndexedDB caching layer.
+**Phase 1 — Core single-site viewer** ([PHASE-1.md](PHASE-1.md)) — *largely complete*. A complete single-site radar viewer with the simplest viable rendering model. Users can select a site, navigate time via the timeline, view radar imagery rendered as complete sweeps, and stream real-time data. Data acquisition feedback is minimal — a progress indicator and error notifications. This phase establishes the full application layout, the timeline with zoom-dependent data availability decomposition, playback controls, product/elevation selection, and the IndexedDB caching layer. Local file upload is not yet implemented.
 
-**Phase 2 — Rich rendering** ([PHASE-2.md](PHASE-2.md)). Adds progressive sweep animation and full data age visualization. Two additional accumulation strategies — continuous (wiper) and sweep-isolated — enable the viewer to animate radar sweeps as they progress, giving users fine-grained temporal control over what appears on the canvas. Sweep boundary lines, age labels, and optional age attenuation make the temporal structure of rendered data visually explicit.
+**Phase 2 — Rich rendering** ([PHASE-2.md](PHASE-2.md)) — *not started*. Adds progressive sweep animation and full data age visualization. Two additional accumulation strategies — continuous (wiper) and sweep-isolated — enable the viewer to animate radar sweeps as they progress, giving users fine-grained temporal control over what appears on the canvas. Sweep boundary lines, age labels, and optional age attenuation make the temporal structure of rendered data visually explicit.
 
-**Phase 3 — Acquisition depth** ([PHASE-3.md](PHASE-3.md)). Replaces the simple acquisition feedback with a full transparency layer. An expandable acquisition queue shows individual requests with status, progress, and controls to pause, cancel, or reprioritize. Per-chunk latency metrics surface radar collection delay and distribution latency. Error handling pauses the queue to prevent cascading failures. Real-time streaming gains predictive visualization: a shaded future region, estimated time until the next chunk, and a sweep line extending beyond received data.
+**Phase 3 — Acquisition depth** ([PHASE-3.md](PHASE-3.md)) — *partially complete*. Replaces the simple acquisition feedback with a full transparency layer. An expandable acquisition queue shows individual requests with status, progress, and controls to pause, cancel, or reprioritize. Per-chunk latency metrics surface radar collection delay and distribution latency. Error handling pauses the queue to prevent cascading failures. Real-time streaming gains predictive visualization: a shaded future region, estimated time until the next chunk, and a sweep line extending beyond received data. The predictive visualization for real-time streaming is implemented; the acquisition queue and error-pause behavior are not.
 
-**Phase 4 — Multi-site** ([PHASE-4.md](PHASE-4.md)). Extends the application to support multiple simultaneous radar sites. Multi-site selection, overlapping polar projections with mosaic compositing, and stacked per-site timeline tracks sharing a single playback position. All prior single-site capabilities apply independently to each active site.
+**Phase 4 — Multi-site** ([PHASE-4.md](PHASE-4.md)) — *not started*. Extends the application to support multiple simultaneous radar sites. Multi-site selection, overlapping polar projections with mosaic compositing, and stacked per-site timeline tracks sharing a single playback position. All prior single-site capabilities apply independently to each active site.
+
+### Beyond the Original Phases
+
+Several capabilities have been implemented that were not part of the original phase plan:
+
+- **3D globe view** with volumetric ray-marching renderer and radar projection onto a 3D globe surface
+- **Storm cell detection** with configurable dBZ thresholds and canvas overlay
+- **Inspector tool** showing lat/lon coordinates and data values on hover
+- **Distance measurement tool** between two points on the canvas
+- **Datetime jump picker** for navigating directly to a specific date/time
+- **Configurable storage management** with quota settings and LRU eviction
+- **Web Worker decoding** offloading heavy computation to a dedicated thread
 
 ## 4. Application Layout
 
@@ -147,4 +159,4 @@ The application supports dark and light appearance modes, defaulting to the oper
 
 ### Keyboard Shortcuts
 
-The application provides keyboard shortcuts for power users. The specific shortcut model is to be determined, but shortcuts should cover at a minimum: playback controls (play/pause, step, speed adjustment), timeline mode switching, sidebar toggling, product/elevation cycling, and site switching. Shortcuts should be discoverable through a help overlay or cheat sheet.
+The application provides keyboard shortcuts for power users. Shortcuts cover playback controls (play/pause, step, speed adjustment), sidebar toggling, product/elevation cycling, site switching, and tool activation. A help overlay (`?` key) lists all available shortcuts.

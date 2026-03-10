@@ -1,5 +1,7 @@
 # Phase 4 — Multi-Site
 
+> **Status: Not started.**
+
 Extends the application from a single-site viewer to support multiple simultaneous radar sites. All prior phases operate in a single-site context; this phase adds the selection, rendering, and timeline infrastructure for viewing several sites at once.
 
 ## Multi-Site Selection

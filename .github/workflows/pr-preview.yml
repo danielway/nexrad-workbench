@@ -35,6 +35,8 @@ jobs:
 
       - name: Build with Trunk
         if: github.event.action != 'closed'
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: trunk build --release --public-url /nexrad-workbench/pr-preview/pr-${{ github.event.number }}/
 
       - name: Deploy PR Preview
