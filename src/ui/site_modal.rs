@@ -115,7 +115,9 @@ fn start_geolocation(results: Rc<RefCell<Vec<LocationResult>>>, ctx: egui::Conte
             .unwrap()
             .as_f64()
             .unwrap_or(0.0);
-        results_ok.borrow_mut().push(LocationResult::Success(lat, lon));
+        results_ok
+            .borrow_mut()
+            .push(LocationResult::Success(lat, lon));
         ctx_ok.request_repaint();
     });
 
@@ -126,9 +128,7 @@ fn start_geolocation(results: Rc<RefCell<Vec<LocationResult>>>, ctx: egui::Conte
             .ok()
             .and_then(|v| v.as_string())
             .unwrap_or_else(|| "Location access denied".into());
-        results_err
-            .borrow_mut()
-            .push(LocationResult::Error(msg));
+        results_err.borrow_mut().push(LocationResult::Error(msg));
         ctx_err.request_repaint();
     });
 
@@ -150,10 +150,9 @@ fn start_zip_lookup(zip: &str, results: Rc<RefCell<Vec<LocationResult>>>, ctx: e
     wasm_bindgen_futures::spawn_local(async move {
         let result = async {
             let window = web_sys::window().ok_or("No browser window")?;
-            let resp_value =
-                wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&url))
-                    .await
-                    .map_err(|_| "Network error looking up zip code".to_string())?;
+            let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&url))
+                .await
+                .map_err(|_| "Network error looking up zip code".to_string())?;
             let resp: web_sys::Response = resp_value
                 .dyn_into()
                 .map_err(|_| "Invalid response".to_string())?;
@@ -163,7 +162,8 @@ fn start_zip_lookup(zip: &str, results: Rc<RefCell<Vec<LocationResult>>>, ctx: e
             }
 
             let json = wasm_bindgen_futures::JsFuture::from(
-                resp.json().map_err(|_| "Failed to parse response".to_string())?,
+                resp.json()
+                    .map_err(|_| "Failed to parse response".to_string())?,
             )
             .await
             .map_err(|_| "Failed to read response body".to_string())?;
@@ -219,7 +219,11 @@ pub fn render_site_modal(
     }
 
     // Poll for async location results
-    let results: Vec<_> = modal_state.location_results.borrow_mut().drain(..).collect();
+    let results: Vec<_> = modal_state
+        .location_results
+        .borrow_mut()
+        .drain(..)
+        .collect();
     for result in results {
         match result {
             LocationResult::Success(lat, lon) => {
@@ -288,8 +292,7 @@ pub fn render_site_modal(
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             let screen_rect = ctx.input(|i| i.viewport_rect());
-            let (response, painter) =
-                ui.allocate_painter(screen_rect.size(), egui::Sense::click());
+            let (response, painter) = ui.allocate_painter(screen_rect.size(), egui::Sense::click());
             painter.rect_filled(
                 screen_rect,
                 0.0,
@@ -516,12 +519,8 @@ fn render_site_list(
                         let label = site.display_label();
 
                         let text = if is_current {
-                            RichText::new(format!(
-                                "{} {}",
-                                label,
-                                egui_phosphor::regular::CHECK
-                            ))
-                            .color(Color32::from_rgb(100, 200, 255))
+                            RichText::new(format!("{} {}", label, egui_phosphor::regular::CHECK))
+                                .color(Color32::from_rgb(100, 200, 255))
                         } else {
                             RichText::new(label)
                         };
@@ -609,13 +608,10 @@ fn render_zip_entry(
                 if zip.len() == 5 && zip.chars().all(|c| c.is_ascii_digit()) {
                     modal_state.error_message = None;
                     modal_state.mode = SiteModalMode::Pending;
-                    start_zip_lookup(
-                        zip,
-                        modal_state.location_results.clone(),
-                        ctx.clone(),
-                    );
+                    start_zip_lookup(zip, modal_state.location_results.clone(), ctx.clone());
                 } else {
-                    modal_state.error_message = Some("Please enter a valid 5-digit zip code".into());
+                    modal_state.error_message =
+                        Some("Please enter a valid 5-digit zip code".into());
                 }
             }
 
