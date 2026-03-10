@@ -162,17 +162,17 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                             "1",
                         ),
                         (
-                            "3D Planet",
-                            ViewMode::Globe3D,
-                            Some(CameraMode::PlanetOrbit),
-                            Color32::from_rgb(120, 200, 120),
-                            "2",
-                        ),
-                        (
                             "3D Site",
                             ViewMode::Globe3D,
                             Some(CameraMode::SiteOrbit),
                             Color32::from_rgb(255, 200, 80),
+                            "2",
+                        ),
+                        (
+                            "3D Planet",
+                            ViewMode::Globe3D,
+                            Some(CameraMode::PlanetOrbit),
+                            Color32::from_rgb(120, 200, 120),
                             "3",
                         ),
                         (
@@ -202,8 +202,13 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                             RichText::new(label).size(13.0).color(dim)
                         };
 
-                        if ui
-                            .add(egui::Button::new(text).frame(is_active))
+                        let response = ui.add(egui::Button::new(text).frame(is_active));
+
+                        if !is_active && response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+
+                        if response
                             .on_hover_text(format!("Switch to {} ({})", label, key))
                             .clicked()
                         {
