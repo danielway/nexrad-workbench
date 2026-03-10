@@ -531,10 +531,13 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera) {
     );
 
     // Compute compass rotation to match the camera's on-screen orientation.
-    // In SiteOrbit, the bearing rotates the view. In any mode, camera.rotation
-    // (from Shift+drag or Free Look) also rotates the view.
+    // In SiteOrbit, orbit_bearing is where the camera IS, not where it looks.
+    // The camera looks FROM the bearing TOWARD the site, so the viewing direction
+    // is bearing + 180°. We add π to account for this.
     let rotation_rad = match camera.mode {
-        crate::geo::camera::CameraMode::SiteOrbit => -camera.orbit_bearing.to_radians(),
+        crate::geo::camera::CameraMode::SiteOrbit => {
+            std::f32::consts::PI - camera.orbit_bearing.to_radians()
+        }
         _ => 0.0,
     } - camera.rotation.to_radians();
 
