@@ -251,6 +251,62 @@ impl WorkbenchApp {
         if let Some(tz) = url_params.view.tz {
             state.playback_state.timeline_zoom = tz;
         }
+        // Restore 3D view mode and camera parameters from URL
+        {
+            let v = &url_params.view;
+            if let Some(vm) = v.vm {
+                state.viz_state.view_mode = match vm {
+                    0 => state::ViewMode::Flat2D,
+                    _ => state::ViewMode::Globe3D,
+                };
+            }
+            if let Some(cm) = v.cm {
+                state.viz_state.camera.mode = match cm {
+                    1 => state::CameraMode::SiteOrbit,
+                    2 => state::CameraMode::FreeLook,
+                    _ => state::CameraMode::PlanetOrbit,
+                };
+            }
+            if let Some(cd) = v.cd {
+                state.viz_state.camera.distance = cd;
+            }
+            if let Some(clat) = v.clat {
+                state.viz_state.camera.center_lat = clat;
+            }
+            if let Some(clon) = v.clon {
+                state.viz_state.camera.center_lon = clon;
+            }
+            if let Some(ct) = v.ct {
+                state.viz_state.camera.tilt = ct;
+            }
+            if let Some(cr) = v.cr {
+                state.viz_state.camera.rotation = cr;
+            }
+            if let Some(ob) = v.ob {
+                state.viz_state.camera.orbit_bearing = ob;
+            }
+            if let Some(oe) = v.oe {
+                state.viz_state.camera.orbit_elevation = oe;
+            }
+            if let Some(fp) = v.fp {
+                state.viz_state.camera.free_pos = glam::Vec3::new(fp[0], fp[1], fp[2]);
+            }
+            if let Some(fy) = v.fy {
+                state.viz_state.camera.free_yaw = fy;
+            }
+            if let Some(fpt) = v.fpt {
+                state.viz_state.camera.free_pitch = fpt;
+            }
+            if let Some(fs) = v.fs {
+                state.viz_state.camera.free_speed = fs;
+            }
+            if let Some(v3d) = v.v3d {
+                state.viz_state.volume_3d_enabled = v3d;
+            }
+            if let Some(vdc) = v.vdc {
+                state.viz_state.volume_density_cutoff = vdc;
+            }
+        }
         if let Some(ref product_code) = url_params.product {
             if let Some(product) = state::RadarProduct::from_short_code(product_code) {
                 state.viz_state.product = product;
@@ -1986,9 +2042,32 @@ impl eframe::App for WorkbenchApp {
             let now = web_time::Instant::now();
             if now.duration_since(self.last_url_push).as_secs_f64() >= 1.0 {
                 self.last_url_push = now;
+                let cam = &self.state.viz_state.camera;
                 let view = state::url_state::ViewState {
                     mz: Some(self.state.viz_state.zoom),
                     tz: Some(self.state.playback_state.timeline_zoom),
+                    vm: Some(match self.state.viz_state.view_mode {
+                        state::ViewMode::Flat2D => 0,
+                        state::ViewMode::Globe3D => 1,
+                    }),
+                    cm: Some(match cam.mode {
+                        state::CameraMode::PlanetOrbit => 0,
+                        state::CameraMode::SiteOrbit => 1,
+                        state::CameraMode::FreeLook => 2,
+                    }),
+                    cd: Some(cam.distance),
+                    clat: Some(cam.center_lat),
+                    clon: Some(cam.center_lon),
+                    ct: Some(cam.tilt),
+                    cr: Some(cam.rotation),
+                    ob: Some(cam.orbit_bearing),
+                    oe: Some(cam.orbit_elevation),
+                    fp: Some([cam.free_pos.x, cam.free_pos.y, cam.free_pos.z]),
+                    fy: Some(cam.free_yaw),
+                    fpt: Some(cam.free_pitch),
+                    fs: Some(cam.free_speed),
+                    v3d: Some(self.state.viz_state.volume_3d_enabled),
+                    vdc: Some(self.state.viz_state.volume_density_cutoff),
                 };
                 state::url_state::push_to_url(
                     &self.state.viz_state.site_id,
