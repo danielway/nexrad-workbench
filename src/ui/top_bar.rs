@@ -155,18 +155,11 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                     // View mode selector — all options always visible
                     let modes: &[(&str, ViewMode, Option<CameraMode>, Color32, &str)] = &[
                         (
-                            "2D",
-                            ViewMode::Flat2D,
-                            None,
-                            Color32::from_rgb(100, 180, 255),
-                            "1",
-                        ),
-                        (
-                            "3D Site",
+                            "3D Free",
                             ViewMode::Globe3D,
-                            Some(CameraMode::SiteOrbit),
-                            Color32::from_rgb(255, 200, 80),
-                            "2",
+                            Some(CameraMode::FreeLook),
+                            Color32::from_rgb(200, 140, 255),
+                            "4",
                         ),
                         (
                             "3D Planet",
@@ -176,11 +169,18 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                             "3",
                         ),
                         (
-                            "3D Free",
+                            "3D Site",
                             ViewMode::Globe3D,
-                            Some(CameraMode::FreeLook),
-                            Color32::from_rgb(200, 140, 255),
-                            "4",
+                            Some(CameraMode::SiteOrbit),
+                            Color32::from_rgb(255, 200, 80),
+                            "2",
+                        ),
+                        (
+                            "2D",
+                            ViewMode::Flat2D,
+                            None,
+                            Color32::from_rgb(100, 180, 255),
+                            "1",
                         ),
                     ];
 
