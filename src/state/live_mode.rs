@@ -18,13 +18,12 @@ pub enum LivePhase {
     /// Countdown to next chunk (10-15 second intervals).
     WaitingForChunk,
     /// Connection failed or lost.
-    #[allow(dead_code)] // Used when networking is implemented
     Error,
 }
 
 impl LivePhase {
     /// Human-readable label for the phase.
-    #[allow(dead_code)] // Used when status bar shows phase name
+    #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
             LivePhase::Idle => "Idle",
@@ -36,7 +35,7 @@ impl LivePhase {
     }
 
     /// Color for the phase indicator (RGB).
-    #[allow(dead_code)] // Alternative to ui::colors module
+    #[allow(dead_code)]
     pub fn color(&self) -> (u8, u8, u8) {
         match self {
             LivePhase::Idle => (100, 100, 100),
@@ -51,15 +50,14 @@ impl LivePhase {
 /// Reason why live mode was exited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LiveExitReason {
-    /// User pressed pause.
-    #[allow(dead_code)] // Used when pause behavior differs from stop
+    /// User pressed pause (reserved for future pause-vs-stop distinction).
+    #[allow(dead_code)]
     UserPaused,
     /// User clicked on timeline or used seek controls.
     UserSeeked,
     /// User used jog forward/backward buttons.
     UserJogged,
     /// Network or connection error.
-    #[allow(dead_code)] // Used when networking is implemented
     ConnectionError,
     /// User explicitly stopped live mode.
     UserStopped,
@@ -244,7 +242,6 @@ impl LiveModeState {
     }
 
     /// Set error state with message.
-    #[allow(dead_code)] // Used when networking is implemented
     pub fn set_error(&mut self, message: String) {
         self.phase = LivePhase::Error;
         self.error_message = Some(message);
@@ -258,7 +255,7 @@ impl LiveModeState {
     }
 
     /// Transition to WaitingForChunk phase with expected next chunk time.
-    #[allow(dead_code)] // Used by realtime streaming integration
+    #[allow(dead_code)]
     pub fn wait_for_next_chunk(&mut self, now: f64) {
         self.phase = LivePhase::WaitingForChunk;
         self.phase_started_at = Some(now);
@@ -309,7 +306,7 @@ impl LiveModeState {
     }
 
     /// Format status text for display.
-    #[allow(dead_code)] // Alternative to inline formatting in UI
+    #[allow(dead_code)]
     pub fn status_text(&self, now: f64) -> String {
         match self.phase {
             LivePhase::Idle => String::new(),

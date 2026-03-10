@@ -19,7 +19,7 @@ impl TimeRange {
     }
 
     /// Returns the duration of this range in seconds.
-    #[allow(dead_code)] // Part of TimeRange API
+    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         self.end - self.start
     }
@@ -32,7 +32,7 @@ impl TimeRange {
 
 /// A single radial (one azimuth direction at one elevation)
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Fields are part of data model, used in generate_sample_data
+#[allow(dead_code)]
 pub struct Radial {
     /// Start timestamp (Unix seconds with sub-second precision)
     pub start_time: f64,
@@ -44,7 +44,6 @@ pub struct Radial {
 
 /// A sweep (360-degree rotation at one elevation)
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Fields are part of data model, used in generate_sample_data
 pub struct Sweep {
     /// Start timestamp (Unix seconds with sub-second precision)
     pub start_time: f64,
@@ -59,7 +58,7 @@ pub struct Sweep {
 }
 
 impl Sweep {
-    #[allow(dead_code)] // Part of data model API
+    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }
@@ -67,7 +66,6 @@ impl Sweep {
 
 /// A complete volume scan (multiple sweeps at different elevations)
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // vcp field is part of data model, used in generate_sample_data
 pub struct Scan {
     /// Start timestamp (Unix seconds with sub-second precision).
     /// May be adjusted earlier than `key_timestamp` to encompass sweep data.
@@ -92,7 +90,7 @@ pub struct Scan {
 }
 
 impl Scan {
-    #[allow(dead_code)] // Part of data model API
+    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }

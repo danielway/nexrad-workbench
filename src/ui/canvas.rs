@@ -329,7 +329,7 @@ fn draw_radar_gpu(
 ) {
     // Check if renderer has data and get the actual data range
     let max_range_km = {
-        let r = renderer.lock().unwrap();
+        let r = renderer.lock().expect("renderer mutex poisoned");
         if !r.has_data() {
             return;
         }
@@ -366,7 +366,7 @@ fn draw_radar_gpu(
         rect: *rect,
         callback: Arc::new(egui_glow::CallbackFn::new(move |info, painter| {
             let gl = painter.gl();
-            let r = renderer.lock().unwrap();
+            let r = renderer.lock().expect("renderer mutex poisoned");
             if r.has_data() {
                 let px_per_point = info.pixels_per_point;
                 let viewport = info.viewport_in_pixels();
@@ -1047,7 +1047,7 @@ fn render_inspector(
 
     // Look up data value
     let value = gpu_renderer.and_then(|r| {
-        let renderer = r.lock().unwrap();
+        let renderer = r.lock().expect("renderer mutex poisoned");
         renderer.value_at_polar(azimuth_deg as f32, range_km)
     });
 

@@ -17,12 +17,12 @@ pub struct VcpElevation {
 #[derive(Clone, Debug)]
 pub struct VcpDefinition {
     /// VCP number (e.g., 215, 35)
-    #[allow(dead_code)] // Part of data model API
+    #[allow(dead_code)]
     pub number: u16,
     /// Short name for the VCP
     pub name: &'static str,
     /// Description of when this VCP is used
-    #[allow(dead_code)] // Part of data model API
+    #[allow(dead_code)]
     pub description: &'static str,
     /// List of elevation angles in this VCP
     pub elevations: &'static [VcpElevation],

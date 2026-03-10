@@ -162,7 +162,7 @@ pub struct AppState {
 
 /// Lightweight storm cell info for rendering on the canvas.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Fields are part of detection results data model
+#[allow(dead_code)]
 pub struct StormCellInfo {
     /// Centroid latitude.
     pub lat: f64,

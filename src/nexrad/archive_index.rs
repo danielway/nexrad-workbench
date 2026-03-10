@@ -11,8 +11,8 @@ use std::collections::HashMap;
 pub struct ArchiveFileMeta {
     /// File name (e.g., "KDMX20240501_000000_V06")
     pub name: String,
-    /// File size in bytes (may be 0 if not available from listing)
-    #[allow(dead_code)]
+    /// File size in bytes (may be 0 if not available from listing).
+    #[allow(dead_code)] // Populated from listing but not yet displayed in UI
     pub size: u64,
     /// Timestamp extracted from filename (Unix seconds)
     pub timestamp: i64,
@@ -127,7 +127,7 @@ impl ArchiveListing {
     }
 
     /// Find the file containing or closest to the given timestamp.
-    #[allow(dead_code)] // Utility method for future use
+    #[allow(dead_code)]
     pub fn find_file_at_timestamp(&self, timestamp: i64) -> Option<&ArchiveFileMeta> {
         if self.files.is_empty() {
             return None;
@@ -157,7 +157,7 @@ impl ArchiveListing {
     }
 
     /// Find the file after the given timestamp.
-    #[allow(dead_code)] // Utility method for future use
+    #[allow(dead_code)]
     pub fn find_next_file_after(&self, timestamp: i64) -> Option<&ArchiveFileMeta> {
         self.files.iter().find(|f| f.timestamp > timestamp)
     }
