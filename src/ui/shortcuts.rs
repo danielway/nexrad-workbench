@@ -254,7 +254,7 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
         } else {
-            state.start_live_requested = true;
+            state.push_command(crate::state::AppCommand::StartLive);
             state.playback_state.speed = PlaybackSpeed::Realtime;
         }
     }

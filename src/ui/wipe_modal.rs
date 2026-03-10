@@ -74,7 +74,7 @@ pub fn render_wipe_modal(ctx: &egui::Context, state: &mut AppState) {
                     );
                     if reset_btn.clicked() {
                         state.wipe_modal_open = false;
-                        state.wipe_all_requested = true;
+                        state.push_command(crate::state::AppCommand::WipeAll);
                     }
                 });
             });

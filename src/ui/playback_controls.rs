@@ -187,7 +187,7 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
             .clicked()
         {
             // Signal main loop to start live mode
-            state.start_live_requested = true;
+            state.push_command(crate::state::AppCommand::StartLive);
             state.playback_state.speed = PlaybackSpeed::Realtime;
         }
     }
@@ -349,7 +349,7 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
             .on_hover_text("Download all scans in the selected time range")
             .clicked()
         {
-            state.download_selection_requested = true;
+            state.push_command(crate::state::AppCommand::DownloadSelection);
         }
     } else if ui
         .button(
@@ -362,7 +362,7 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
         .on_hover_text("Download the scan at the current playback position")
         .clicked()
     {
-        state.download_at_position_requested = true;
+        state.push_command(crate::state::AppCommand::DownloadAtPosition);
     }
 
     ui.separator();
@@ -510,7 +510,7 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
 
     // Cache group: size with clear button
     if ui.small_button("x").on_hover_text("Clear cache").clicked() {
-        state.clear_cache_requested = true;
+        state.push_command(crate::state::AppCommand::ClearCache);
     }
     ui.label(
         RichText::new(cache_size)
