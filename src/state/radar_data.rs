@@ -19,7 +19,7 @@ impl TimeRange {
     }
 
     /// Returns the duration of this range in seconds.
-    #[allow(dead_code)] // Part of TimeRange API
+    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         self.end - self.start
     }
@@ -32,7 +32,7 @@ impl TimeRange {
 
 /// A single radial (one azimuth direction at one elevation)
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Fields are part of data model, used in generate_sample_data
+#[allow(dead_code)]
 pub struct Radial {
     /// Start timestamp (Unix seconds with sub-second precision)
     pub start_time: f64,
@@ -44,7 +44,6 @@ pub struct Radial {
 
 /// A sweep (360-degree rotation at one elevation)
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Fields are part of data model, used in generate_sample_data
 pub struct Sweep {
     /// Start timestamp (Unix seconds with sub-second precision)
     pub start_time: f64,
@@ -59,7 +58,7 @@ pub struct Sweep {
 }
 
 impl Sweep {
-    #[allow(dead_code)] // Part of data model API
+    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }
@@ -67,7 +66,6 @@ impl Sweep {
 
 /// A complete volume scan (multiple sweeps at different elevations)
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // vcp field is part of data model, used in generate_sample_data
 pub struct Scan {
     /// Start timestamp (Unix seconds with sub-second precision).
     /// May be adjusted earlier than `key_timestamp` to encompass sweep data.
@@ -92,7 +90,7 @@ pub struct Scan {
 }
 
 impl Scan {
-    #[allow(dead_code)] // Part of data model API
+    #[allow(dead_code)]
     pub fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }
@@ -444,5 +442,274 @@ impl RadarTimeline {
             .collect();
 
         Self { scans }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to create a minimal Scan for testing (no sweeps).
+    fn scan(start: f64, end: f64) -> Scan {
+        Scan {
+            start_time: start,
+            end_time: end,
+            key_timestamp: start,
+            vcp: 215,
+            vcp_pattern: None,
+            sweeps: Vec::new(),
+            completeness: None,
+            present_records: None,
+            expected_records: None,
+        }
+    }
+
+    /// Helper to create a Scan with sweeps.
+    fn scan_with_sweeps(start: f64, end: f64, sweeps: Vec<Sweep>) -> Scan {
+        Scan {
+            start_time: start,
+            end_time: end,
+            key_timestamp: start,
+            vcp: 215,
+            vcp_pattern: None,
+            sweeps,
+            completeness: None,
+            present_records: None,
+            expected_records: None,
+        }
+    }
+
+    fn sweep(start: f64, end: f64, elevation: f32, elev_num: u8) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation,
+            elevation_number: elev_num,
+            radials: Vec::new(),
+        }
+    }
+
+    // --- TimeRange tests ---
+
+    #[test]
+    fn time_range_duration() {
+        let r = TimeRange::new(100.0, 400.0);
+        assert_eq!(r.duration(), 300.0);
+    }
+
+    #[test]
+    fn time_range_contains() {
+        let r = TimeRange::new(100.0, 200.0);
+        assert!(r.contains(100.0)); // start inclusive
+        assert!(r.contains(150.0));
+        assert!(r.contains(200.0)); // end inclusive
+        assert!(!r.contains(99.9));
+        assert!(!r.contains(200.1));
+    }
+
+    // --- Scan tests ---
+
+    #[test]
+    fn scan_progress_at_timestamp() {
+        let s = scan(1000.0, 1100.0);
+        assert_eq!(s.progress_at_timestamp(1000.0), Some(0.0));
+        assert_eq!(s.progress_at_timestamp(1050.0), Some(0.5));
+        assert_eq!(s.progress_at_timestamp(1100.0), Some(1.0));
+        assert_eq!(s.progress_at_timestamp(999.0), None);
+        assert_eq!(s.progress_at_timestamp(1101.0), None);
+    }
+
+    #[test]
+    fn scan_progress_zero_duration() {
+        let s = scan(1000.0, 1000.0);
+        assert_eq!(s.progress_at_timestamp(1000.0), Some(0.0));
+    }
+
+    #[test]
+    fn scan_find_sweep_at_timestamp() {
+        let s = scan_with_sweeps(
+            1000.0,
+            1030.0,
+            vec![
+                sweep(1000.0, 1010.0, 0.5, 1),
+                sweep(1010.0, 1020.0, 0.9, 2),
+                sweep(1020.0, 1030.0, 1.3, 3),
+            ],
+        );
+        let (idx, sw) = s.find_sweep_at_timestamp(1005.0).unwrap();
+        assert_eq!(idx, 0);
+        assert_eq!(sw.elevation_number, 1);
+
+        let (idx, sw) = s.find_sweep_at_timestamp(1015.0).unwrap();
+        assert_eq!(idx, 1);
+        assert_eq!(sw.elevation_number, 2);
+
+        assert!(s.find_sweep_at_timestamp(999.0).is_none());
+    }
+
+    // --- RadarTimeline tests ---
+
+    #[test]
+    fn time_ranges_empty() {
+        let tl = RadarTimeline { scans: vec![] };
+        assert!(tl.time_ranges().is_empty());
+    }
+
+    #[test]
+    fn time_ranges_single_scan() {
+        let tl = RadarTimeline {
+            scans: vec![scan(1000.0, 1300.0)],
+        };
+        let ranges = tl.time_ranges();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].start, 1000.0);
+        assert_eq!(ranges[0].end, 1300.0);
+    }
+
+    #[test]
+    fn time_ranges_contiguous_scans() {
+        // Scans 5 minutes apart — should be one range
+        let tl = RadarTimeline {
+            scans: vec![
+                scan(1000.0, 1300.0),
+                scan(1300.0, 1600.0),
+                scan(1600.0, 1900.0),
+            ],
+        };
+        let ranges = tl.time_ranges();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].start, 1000.0);
+        assert_eq!(ranges[0].end, 1900.0);
+    }
+
+    #[test]
+    fn time_ranges_with_gap() {
+        // Two groups separated by more than MAX_CONTIGUOUS_GAP_SECS (15 min = 900s)
+        let tl = RadarTimeline {
+            scans: vec![
+                scan(1000.0, 1300.0),
+                scan(1300.0, 1600.0),
+                // gap of 1000s > 900s
+                scan(2600.0, 2900.0),
+            ],
+        };
+        let ranges = tl.time_ranges();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].start, 1000.0);
+        assert_eq!(ranges[0].end, 1600.0);
+        assert_eq!(ranges[1].start, 2600.0);
+        assert_eq!(ranges[1].end, 2900.0);
+    }
+
+    #[test]
+    fn overall_time_range() {
+        let tl = RadarTimeline {
+            scans: vec![scan(1000.0, 1300.0), scan(5000.0, 5300.0)],
+        };
+        assert_eq!(tl.overall_time_range(), Some((1000.0, 5300.0)));
+    }
+
+    #[test]
+    fn overall_time_range_empty() {
+        let tl = RadarTimeline { scans: vec![] };
+        assert_eq!(tl.overall_time_range(), None);
+    }
+
+    #[test]
+    fn find_scan_at_timestamp() {
+        let tl = RadarTimeline {
+            scans: vec![scan(1000.0, 1300.0), scan(1300.0, 1600.0)],
+        };
+        let s = tl.find_scan_at_timestamp(1150.0).unwrap();
+        assert_eq!(s.start_time, 1000.0);
+
+        let s = tl.find_scan_at_timestamp(1400.0).unwrap();
+        assert_eq!(s.start_time, 1300.0);
+
+        assert!(tl.find_scan_at_timestamp(999.0).is_none());
+        assert!(tl.find_scan_at_timestamp(1601.0).is_none());
+    }
+
+    #[test]
+    fn find_recent_scan() {
+        let tl = RadarTimeline {
+            scans: vec![scan(1000.0, 1300.0), scan(1300.0, 1600.0)],
+        };
+        // Timestamp after last scan, within 600s window
+        let s = tl.find_recent_scan(1700.0, 600.0).unwrap();
+        assert_eq!(s.start_time, 1300.0);
+
+        // Too old
+        assert!(tl.find_recent_scan(2500.0, 600.0).is_none());
+    }
+
+    #[test]
+    fn snap_to_boundary() {
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1030.0,
+                vec![sweep(1000.0, 1010.0, 0.5, 1), sweep(1010.0, 1020.0, 0.9, 2)],
+            )],
+        };
+        // Close to sweep boundary at 1010
+        assert_eq!(tl.snap_to_boundary(1011.0, 5.0), Some(1010.0));
+        // Too far from any boundary
+        assert_eq!(tl.snap_to_boundary(1015.0, 2.0), None);
+    }
+
+    #[test]
+    fn next_matching_sweep_end() {
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1040.0,
+                vec![
+                    sweep(1000.0, 1010.0, 0.5, 1),
+                    sweep(1010.0, 1020.0, 0.9, 2),
+                    sweep(1020.0, 1030.0, 0.5, 3), // same elevation as first
+                    sweep(1030.0, 1040.0, 0.9, 4),
+                ],
+            )],
+        };
+        // From ts=1005, next 0.5° sweep end is at 1030
+        assert_eq!(tl.next_matching_sweep_end(1005.0, 0.5, 0.1), Some(1030.0));
+        // From ts=1005, next 0.9° sweep end is at 1020
+        assert_eq!(tl.next_matching_sweep_end(1005.0, 0.9, 0.1), Some(1020.0));
+    }
+
+    #[test]
+    fn prev_matching_sweep_end() {
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1040.0,
+                vec![
+                    sweep(1000.0, 1010.0, 0.5, 1),
+                    sweep(1010.0, 1020.0, 0.9, 2),
+                    sweep(1020.0, 1030.0, 0.5, 3),
+                    sweep(1030.0, 1040.0, 0.9, 4),
+                ],
+            )],
+        };
+        // From ts=1035, prev 0.5° sweep end is at 1030
+        assert_eq!(tl.prev_matching_sweep_end(1035.0, 0.5, 0.1), Some(1030.0));
+        // From ts=1025, prev 0.9° sweep end is at 1020
+        assert_eq!(tl.prev_matching_sweep_end(1025.0, 0.9, 0.1), Some(1020.0));
+    }
+
+    #[test]
+    fn scans_in_range() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan(1000.0, 1300.0),
+                scan(1300.0, 1600.0),
+                scan(1600.0, 1900.0),
+            ],
+        };
+        let result: Vec<_> = tl.scans_in_range(1200.0, 1500.0).collect();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].start_time, 1000.0);
+        assert_eq!(result[1].start_time, 1300.0);
     }
 }

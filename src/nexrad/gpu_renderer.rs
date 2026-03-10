@@ -581,10 +581,10 @@ void main() {
 "#;
 
 /// GPU-based radar renderer using WebGL2 shaders.
-#[allow(dead_code)]
 pub struct RadarGpuRenderer {
     program: glow::Program,
     vao: glow::VertexArray,
+    #[allow(dead_code)] // Retained to prevent GPU resource deallocation
     vbo: glow::Buffer,
 
     data_texture: glow::Texture,

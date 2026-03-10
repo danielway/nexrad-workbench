@@ -28,9 +28,33 @@ pub use settings::{format_bytes, StorageSettings};
 pub use stats::{
     DownloadPhase, DownloadProgress, IngestTimingDetail, RenderTimingDetail, SessionStats,
 };
+// Re-export the command type for ergonomic access.
+// AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
 pub use viz::{InterpolationMode, RadarProduct, RenderMode, RenderProcessing, ViewMode, VizState};
+
+/// Commands dispatched by UI code and consumed by the main update loop.
+///
+/// Replaces scattered boolean `*_requested` flags with an explicit command queue,
+/// making state transitions easier to follow and impossible to forget to clear.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppCommand {
+    /// Refresh the timeline from the cache. Optionally auto-position the cursor.
+    RefreshTimeline { auto_position: bool },
+    /// Clear the record cache.
+    ClearCache,
+    /// Download all scans in the current selection range.
+    DownloadSelection,
+    /// Download the scan at the current playback position.
+    DownloadAtPosition,
+    /// Start live/real-time streaming.
+    StartLive,
+    /// Check and run eviction after a storage operation.
+    CheckEviction,
+    /// Wipe all data (IndexedDB + localStorage) and reload.
+    WipeAll,
+}
 
 /// Root application state containing all sub-states.
 #[derive(Default)]
@@ -63,25 +87,13 @@ pub struct AppState {
     /// Download progress tracking for timeline ghost markers and pipeline display.
     pub download_progress: DownloadProgress,
 
-    /// Flag to signal that the timeline needs to be refreshed from cache.
-    /// Set to true when the site changes or after a download completes.
-    pub timeline_needs_refresh: bool,
+    /// Command queue for cross-component signaling.
+    /// UI code pushes commands; the main update loop drains and dispatches them.
+    pub commands: std::collections::VecDeque<AppCommand>,
 
     /// Whether the next timeline load should auto-position the playback cursor.
     /// Set to true on initial startup and site changes; false for download-triggered refreshes.
     pub auto_position_on_timeline_load: bool,
-
-    /// Flag to signal that the cache should be cleared.
-    /// Set by UI, handled in main update loop.
-    pub clear_cache_requested: bool,
-
-    /// Flag to signal that scans in the selected range should be downloaded.
-    /// Set by UI, handled in main update loop.
-    pub download_selection_requested: bool,
-
-    /// Flag to signal that the scan at the current playback position should be downloaded.
-    /// Set by UI when Download button clicked without a selection range.
-    pub download_at_position_requested: bool,
 
     /// Whether a selection download is currently in progress.
     pub download_selection_in_progress: bool,
@@ -89,16 +101,8 @@ pub struct AppState {
     /// State for the datetime picker popup.
     pub datetime_picker: DateTimePickerState,
 
-    /// Flag to signal that live mode should be started.
-    /// Set by UI, handled in main update loop.
-    pub start_live_requested: bool,
-
     /// Storage settings (quota, eviction targets).
     pub storage_settings: StorageSettings,
-
-    /// Flag to signal that eviction should be checked after storage.
-    /// Set after downloads complete, handled in main update loop.
-    pub check_eviction_requested: bool,
 
     /// Whether the site selection modal is open.
     pub site_modal_open: bool,
@@ -114,10 +118,6 @@ pub struct AppState {
 
     /// Whether the "wipe all data" confirmation modal is open.
     pub wipe_modal_open: bool,
-
-    /// Flag to signal that all data should be wiped (IDB + localStorage + reload).
-    /// Set by the wipe modal, handled in main update loop.
-    pub wipe_all_requested: bool,
 
     /// Theme mode selection (System, Dark, Light).
     pub theme_mode: ThemeMode,
@@ -149,10 +149,10 @@ pub struct AppState {
     /// Cached storm cell detection results (centroid lat, lon, max dBZ, area km2).
     pub detected_storm_cells: Vec<StormCellInfo>,
 
-    /// Timestamp of the currently displayed scan (mirrored from WorkbenchApp for UI access).
+    /// Timestamp of the currently displayed scan (seconds since epoch).
     pub displayed_scan_timestamp: Option<i64>,
 
-    /// Elevation number of the currently displayed sweep (mirrored from WorkbenchApp for UI access).
+    /// Elevation number of the currently displayed sweep.
     pub displayed_sweep_elevation_number: Option<u8>,
 
     /// Whether to display times in local timezone (false = UTC).
@@ -173,7 +173,7 @@ pub struct AppState {
 
 /// Lightweight storm cell info for rendering on the canvas.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Fields are part of detection results data model
+#[allow(dead_code)]
 pub struct StormCellInfo {
     /// Centroid latitude.
     pub lat: f64,
@@ -287,6 +287,12 @@ impl AppState {
         let theme_mode = theme::load_theme_mode();
         let is_dark = theme_mode.is_dark();
 
+        let mut commands = std::collections::VecDeque::new();
+        // Request timeline refresh on startup to load from cache
+        commands.push_back(AppCommand::RefreshTimeline {
+            auto_position: true,
+        });
+
         let mut state = Self {
             playback_state,
             radar_timeline,
@@ -299,8 +305,7 @@ impl AppState {
             theme_mode,
             is_dark,
             storm_cell_threshold_dbz: 35.0,
-            // Request timeline refresh on startup to load from cache
-            timeline_needs_refresh: true,
+            commands,
             auto_position_on_timeline_load: true,
             ..Default::default()
         };
@@ -310,6 +315,16 @@ impl AppState {
         prefs.apply_to(&mut state);
 
         state
+    }
+
+    /// Push a command onto the queue for the main update loop to process.
+    pub fn push_command(&mut self, cmd: AppCommand) {
+        self.commands.push_back(cmd);
+    }
+
+    /// Drain all pending commands from the queue.
+    pub fn drain_commands(&mut self) -> Vec<AppCommand> {
+        self.commands.drain(..).collect()
     }
 
     /// Set the status message and record the timestamp for auto-dismissal.

@@ -72,6 +72,26 @@ pub async fn start() {
     });
 }
 
+/// All GPU renderers and their shared GL context, grouped for clarity.
+pub struct Renderers {
+    /// GPU renderer for radar data (None if GL not available).
+    pub gpu: Option<std::sync::Arc<std::sync::Mutex<nexrad::RadarGpuRenderer>>>,
+    /// GL context for uploading data to GPU textures.
+    pub gl: Option<std::sync::Arc<glow::Context>>,
+    /// Globe sphere renderer (3D mode).
+    pub globe: Option<std::sync::Arc<std::sync::Mutex<geo::GlobeRenderer>>>,
+    /// Geographic line renderer for 3D globe.
+    pub geo_line: Option<std::sync::Arc<std::sync::Mutex<geo::GeoLineRenderer>>>,
+    /// Globe-mode radar renderer (projects radar data onto sphere).
+    pub globe_radar: Option<std::sync::Arc<std::sync::Mutex<nexrad::GlobeRadarRenderer>>>,
+    /// Volumetric ray-march renderer for 3D mode.
+    pub volume_ray: Option<std::sync::Arc<std::sync::Mutex<nexrad::VolumeRayRenderer>>>,
+    /// Previous render parameters for change detection (scan_key, elev_num, product, render_mode).
+    pub last_render_params: Option<(String, u8, String, crate::state::RenderMode)>,
+    /// Previous volume render parameters for change detection (scan_key, product).
+    pub last_volume_render_params: Option<(String, String)>,
+}
+
 /// Main application state and logic.
 pub struct WorkbenchApp {
     /// Application state containing all sub-states
@@ -80,20 +100,8 @@ pub struct WorkbenchApp {
     /// Geographic layer data for map overlays
     geo_layers: geo::GeoLayerSet,
 
-    /// Globe sphere renderer (3D mode).
-    globe_renderer: Option<std::sync::Arc<std::sync::Mutex<geo::GlobeRenderer>>>,
-
-    /// Geographic line renderer for 3D globe.
-    geo_line_renderer: Option<std::sync::Arc<std::sync::Mutex<geo::GeoLineRenderer>>>,
-
-    /// Globe-mode radar renderer (projects radar data onto sphere).
-    globe_radar_renderer: Option<std::sync::Arc<std::sync::Mutex<nexrad::GlobeRadarRenderer>>>,
-
-    /// Volumetric ray-march renderer for 3D mode.
-    volume_ray_renderer: Option<std::sync::Arc<std::sync::Mutex<nexrad::VolumeRayRenderer>>>,
-
-    /// Previous volume render parameters for change detection (scan_key, product).
-    last_volume_render_params: Option<(String, String)>,
+    /// All GPU renderers and their GL context.
+    renderers: Renderers,
 
     /// Record-based data facade
     data_facade: DataFacade,
@@ -110,12 +118,6 @@ pub struct WorkbenchApp {
     /// Currently loaded NEXRAD scan
     current_scan: Option<nexrad::CachedScan>,
 
-    /// GPU renderer for radar data (None if GL not available).
-    gpu_renderer: Option<std::sync::Arc<std::sync::Mutex<nexrad::RadarGpuRenderer>>>,
-
-    /// GL context for uploading data to GPU textures.
-    gpu_renderer_gl: Option<std::sync::Arc<glow::Context>>,
-
     /// Queue of files to download for selection download feature.
     /// Each entry is (date, file_name, scan_start, scan_end).
     selection_download_queue: Vec<(chrono::NaiveDate, String, i64, i64)>,
@@ -123,13 +125,6 @@ pub struct WorkbenchApp {
     /// Map from scan start timestamp to computed end timestamp, populated when
     /// building the download queue so in-flight tracking can look up boundaries.
     scan_end_times: std::collections::HashMap<i64, i64>,
-
-    /// Timestamp of the currently displayed scan (for detecting when to load a new scan)
-    displayed_scan_timestamp: Option<i64>,
-
-    /// Elevation number of the currently displayed sweep within the scan.
-    /// Used to detect intra-scan sweep changes when scrubbing through a multi-sweep scan.
-    displayed_sweep_elevation_number: Option<u8>,
 
     /// Previous site ID to detect site changes (for clearing volume ring)
     previous_site_id: String,
@@ -147,10 +142,6 @@ pub struct WorkbenchApp {
 
     /// Available elevation numbers for the current scan (from ingest).
     available_elevation_numbers: Vec<u8>,
-
-    /// Previous render parameters for change detection (scan_key, elev_num, product, render_mode).
-    /// When any of these change, a new worker decode is sent.
-    last_render_params: Option<(String, u8, String, crate::state::RenderMode)>,
 
     /// Monotonic instant of last URL push (for throttling to ~1/sec).
     last_url_push: web_time::Instant,
@@ -238,8 +229,9 @@ impl WorkbenchApp {
                     .camera
                     .center_on(site_info.lat, site_info.lon);
             }
-            state.timeline_needs_refresh = true;
-            state.auto_position_on_timeline_load = true;
+            state.push_command(state::AppCommand::RefreshTimeline {
+                auto_position: true,
+            });
         }
         if let Some(lat) = url_params.lat {
             state.viz_state.center_lat = lat;
@@ -362,28 +354,28 @@ impl WorkbenchApp {
         Self {
             state,
             geo_layers,
+            renderers: Renderers {
+                gpu: gpu_renderer,
+                gl: gpu_renderer_gl,
+                globe: globe_renderer,
+                geo_line: geo_line_renderer,
+                globe_radar: globe_radar_renderer,
+                volume_ray: volume_ray_renderer,
+                last_render_params: None,
+                last_volume_render_params: None,
+            },
             data_facade,
             download_channel,
             cache_load_channel,
             archive_index: nexrad::ArchiveIndex::new(),
             current_scan: None,
-            gpu_renderer,
-            gpu_renderer_gl,
-            globe_renderer,
-            geo_line_renderer,
-            globe_radar_renderer,
-            volume_ray_renderer,
-            last_volume_render_params: None,
             selection_download_queue: Vec::new(),
             scan_end_times: std::collections::HashMap::new(),
-            displayed_scan_timestamp: None,
-            displayed_sweep_elevation_number: None,
             previous_site_id: initial_site_id,
             realtime_channel,
             decode_worker,
             current_render_scan_key: None,
             available_elevation_numbers: Vec::new(),
-            last_render_params: None,
             last_url_push: web_time::Instant::now(),
             last_saved_preferences: initial_prefs,
             site_modal_state: ui::SiteModalState::default(),
@@ -392,7 +384,10 @@ impl WorkbenchApp {
     }
 
     /// Process selection download: download scans in the selected time range serially.
-    fn process_selection_download(&mut self, ctx: &egui::Context) {
+    ///
+    /// `download_type` is `None` when pumping the existing queue (no new command),
+    /// `Some(true)` for a position-download, or `Some(false)` for a range-selection download.
+    fn process_selection_download(&mut self, ctx: &egui::Context, download_type: Option<bool>) {
         let site_id = self.state.viz_state.site_id.clone();
 
         // If we have items in the queue, try to download the next one
@@ -446,15 +441,12 @@ impl WorkbenchApp {
             return;
         }
 
-        // No queue - check if we should build one
-        let is_position_download = self.state.download_at_position_requested;
-        if is_position_download {
-            self.state.download_at_position_requested = false;
-        }
-        if !self.state.download_selection_requested && !is_position_download {
-            return;
-        }
-        self.state.download_selection_requested = false;
+        // No queue — check if a new download command was issued
+        let is_position_download = match download_type {
+            Some(true) => true,
+            Some(false) => false,
+            None => return, // Just pumping queue, nothing to build
+        };
 
         // Get the download range: either from selection or from current position.
         // For position download, we use a temporary wide window to determine which
@@ -537,7 +529,8 @@ impl WorkbenchApp {
                                 current_date,
                             );
                         }
-                        self.state.download_at_position_requested = true;
+                        self.state
+                            .push_command(state::AppCommand::DownloadAtPosition);
                         self.state.status_message =
                             format!("Re-fetching archive listing for {}...", current_date);
                         return;
@@ -573,9 +566,11 @@ impl WorkbenchApp {
                 }
                 // Re-trigger once listing arrives — preserve the download type
                 if is_position_download {
-                    self.state.download_at_position_requested = true;
+                    self.state
+                        .push_command(state::AppCommand::DownloadAtPosition);
                 } else {
-                    self.state.download_selection_requested = true;
+                    self.state
+                        .push_command(state::AppCommand::DownloadSelection);
                 }
                 self.state.status_message =
                     format!("Fetching archive listing for {}...", current_date);
@@ -837,6 +832,7 @@ impl WorkbenchApp {
         }
 
         let mut elevation_number = self
+            .state
             .displayed_sweep_elevation_number
             .unwrap_or_else(|| self.best_elevation_number());
 
@@ -859,7 +855,7 @@ impl WorkbenchApp {
         );
 
         // Skip if same as last request
-        if self.last_render_params.as_ref() == Some(&params) {
+        if self.renderers.last_render_params.as_ref() == Some(&params) {
             return;
         }
 
@@ -871,7 +867,7 @@ impl WorkbenchApp {
         );
 
         let scan_key = scan_key.clone();
-        self.last_render_params = Some(params);
+        self.renderers.last_render_params = Some(params);
         if !self.state.session_stats.pipeline.processing {
             self.state.session_stats.pipeline.processing = true;
         }
@@ -899,7 +895,7 @@ impl WorkbenchApp {
         let product = self.state.viz_state.product.to_worker_string().to_string();
         let params = (scan_key.clone(), product.clone());
 
-        if self.last_volume_render_params.as_ref() == Some(&params) {
+        if self.renderers.last_volume_render_params.as_ref() == Some(&params) {
             return; // Already requested with same params
         }
 
@@ -912,7 +908,7 @@ impl WorkbenchApp {
 
         let scan_key = scan_key.clone();
         let elev_nums = self.available_elevation_numbers.clone();
-        self.last_volume_render_params = Some(params);
+        self.renderers.last_volume_render_params = Some(params);
 
         self.decode_worker
             .as_mut()
@@ -1058,7 +1054,7 @@ impl eframe::App for WorkbenchApp {
 
         // Run storm cell detection on demand when toggled on with existing data
         if self.state.storm_cells_visible && self.state.detected_storm_cells.is_empty() {
-            if let Some(ref renderer) = self.gpu_renderer {
+            if let Some(ref renderer) = self.renderers.gpu {
                 if let Ok(r) = renderer.lock() {
                     if r.has_data() {
                         self.state.detected_storm_cells = r.detect_storm_cells(
@@ -1082,52 +1078,90 @@ impl eframe::App for WorkbenchApp {
                 self.previous_site_id,
                 self.state.viz_state.site_id
             );
-            if let Some(ref renderer) = self.gpu_renderer {
+            if let Some(ref renderer) = self.renderers.gpu {
                 if let Ok(mut r) = renderer.lock() {
                     r.clear_data();
                 }
             }
-            self.displayed_scan_timestamp = None;
-            self.displayed_sweep_elevation_number = None;
             self.state.displayed_scan_timestamp = None;
             self.state.displayed_sweep_elevation_number = None;
             self.previous_site_id = self.state.viz_state.site_id.clone();
         }
 
-        // Handle cache clear request
-        if self.state.clear_cache_requested && !self.cache_load_channel.is_loading() {
-            self.state.clear_cache_requested = false;
-            self.cache_load_channel
-                .clear_cache(ctx.clone(), self.data_facade.clone());
-        }
-
-        // Handle wipe-all request: clear IndexedDB + localStorage, then reload
-        if self.state.wipe_all_requested {
-            self.state.wipe_all_requested = false;
-            let facade = self.data_facade.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                // Clear all IndexedDB stores
-                if let Err(e) = facade.clear_all().await {
-                    log::error!("Failed to clear IndexedDB: {}", e);
-                }
-                // Clear localStorage and reload
-                if let Some(window) = web_sys::window() {
-                    if let Ok(Some(storage)) = window.local_storage() {
-                        let _ = storage.clear();
+        // Drain and dispatch commands from the queue.
+        let commands = self.state.drain_commands();
+        let mut do_download_selection = false;
+        let mut do_download_at_position = false;
+        for cmd in commands {
+            match cmd {
+                state::AppCommand::ClearCache => {
+                    if !self.cache_load_channel.is_loading() {
+                        self.cache_load_channel
+                            .clear_cache(ctx.clone(), self.data_facade.clone());
+                    } else {
+                        // Re-enqueue if channel is busy
+                        self.state.push_command(state::AppCommand::ClearCache);
                     }
-                    let _ = window.location().reload();
                 }
-            });
-        }
-
-        // Check if timeline needs to be refreshed from cache
-        if self.state.timeline_needs_refresh && !self.cache_load_channel.is_loading() {
-            self.state.timeline_needs_refresh = false;
-            self.cache_load_channel.load_site_timeline(
-                ctx.clone(),
-                self.data_facade.clone(),
-                self.state.viz_state.site_id.clone(),
-            );
+                state::AppCommand::WipeAll => {
+                    let facade = self.data_facade.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if let Err(e) = facade.clear_all().await {
+                            log::error!("Failed to clear IndexedDB: {}", e);
+                        }
+                        if let Some(window) = web_sys::window() {
+                            if let Ok(Some(storage)) = window.local_storage() {
+                                let _ = storage.clear();
+                            }
+                            let _ = window.location().reload();
+                        }
+                    });
+                }
+                state::AppCommand::RefreshTimeline { auto_position } => {
+                    if auto_position {
+                        self.state.auto_position_on_timeline_load = true;
+                    }
+                    if !self.cache_load_channel.is_loading() {
+                        self.cache_load_channel.load_site_timeline(
+                            ctx.clone(),
+                            self.data_facade.clone(),
+                            self.state.viz_state.site_id.clone(),
+                        );
+                    } else {
+                        self.state.push_command(state::AppCommand::RefreshTimeline {
+                            auto_position: false,
+                        });
+                    }
+                }
+                state::AppCommand::CheckEviction => {
+                    let facade = self.data_facade.clone();
+                    let quota = self.state.storage_settings.quota_bytes;
+                    let target = self.state.storage_settings.eviction_target_bytes;
+                    let ctx_clone = ctx.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match facade.check_and_evict(quota, target).await {
+                            Ok((evicted, count)) => {
+                                if evicted {
+                                    log::info!("Eviction complete: removed {} scans", count);
+                                }
+                            }
+                            Err(e) => {
+                                log::error!("Eviction check failed: {}", e);
+                            }
+                        }
+                        ctx_clone.request_repaint();
+                    });
+                }
+                state::AppCommand::StartLive => {
+                    self.start_live_mode(ctx);
+                }
+                state::AppCommand::DownloadSelection => {
+                    do_download_selection = true;
+                }
+                state::AppCommand::DownloadAtPosition => {
+                    do_download_at_position = true;
+                }
+            }
         }
 
         // Check for completed cache load operations
@@ -1185,29 +1219,6 @@ impl eframe::App for WorkbenchApp {
             }
         }
 
-        // Handle eviction check request (after storage operations)
-        if self.state.check_eviction_requested {
-            self.state.check_eviction_requested = false;
-            let facade = self.data_facade.clone();
-            let quota = self.state.storage_settings.quota_bytes;
-            let target = self.state.storage_settings.eviction_target_bytes;
-            let ctx_clone = ctx.clone();
-
-            wasm_bindgen_futures::spawn_local(async move {
-                match facade.check_and_evict(quota, target).await {
-                    Ok((evicted, count)) => {
-                        if evicted {
-                            log::info!("Eviction complete: removed {} scans", count);
-                        }
-                    }
-                    Err(e) => {
-                        log::error!("Eviction check failed: {}", e);
-                    }
-                }
-                ctx_clone.request_repaint();
-            });
-        }
-
         // Check for completed Web Worker operations
         if let Some(ref mut worker) = self.decode_worker {
             for outcome in worker.try_recv() {
@@ -1250,21 +1261,21 @@ impl eframe::App for WorkbenchApp {
                         // Track the scan for render requests
                         self.current_render_scan_key = Some(result.scan_key.clone());
                         self.available_elevation_numbers = result.elevation_numbers;
-                        self.displayed_scan_timestamp = Some(result.context.timestamp_secs);
-                        self.displayed_sweep_elevation_number = None;
                         self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
                         self.state.displayed_sweep_elevation_number = None;
                         // Refresh timeline to include the new scan (sweeps
                         // were persisted to IDB during ingest and will be
                         // loaded by from_metadata on the next refresh).
-                        self.state.timeline_needs_refresh = true;
+                        self.state.push_command(state::AppCommand::RefreshTimeline {
+                            auto_position: false,
+                        });
 
                         // Request eviction check
-                        self.state.check_eviction_requested = true;
+                        self.state.push_command(state::AppCommand::CheckEviction);
 
                         // Clear last render params to force a fresh render
-                        self.last_render_params = None;
-                        self.last_volume_render_params = None;
+                        self.renderers.last_render_params = None;
+                        self.renderers.last_volume_render_params = None;
 
                         // Trigger render for the ingested scan
                         self.request_worker_render();
@@ -1296,7 +1307,6 @@ impl eframe::App for WorkbenchApp {
                         }
 
                         // Update displayed timestamp
-                        self.displayed_scan_timestamp = Some(result.context.timestamp_secs);
                         self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
 
                         // Record per-elevation chunk time spans for timeline visualization
@@ -1377,7 +1387,9 @@ impl eframe::App for WorkbenchApp {
                                 result.elevations_completed.len(),
                                 self.available_elevation_numbers,
                             );
-                            self.state.timeline_needs_refresh = true;
+                            self.state.push_command(state::AppCommand::RefreshTimeline {
+                                auto_position: false,
+                            });
 
                             // Update status to show progress
                             self.state.status_message = format!(
@@ -1398,15 +1410,16 @@ impl eframe::App for WorkbenchApp {
                                 "Live: volume complete ({} elevations)",
                                 self.available_elevation_numbers.len()
                             );
-                            self.state.timeline_needs_refresh = true;
-                            self.state.check_eviction_requested = true;
+                            self.state.push_command(state::AppCommand::RefreshTimeline {
+                                auto_position: false,
+                            });
+                            self.state.push_command(state::AppCommand::CheckEviction);
                             self.state.session_stats.pipeline.mark_processing_done();
 
                             // Clear last render params to force a fresh render
-                            self.displayed_sweep_elevation_number = None;
                             self.state.displayed_sweep_elevation_number = None;
-                            self.last_render_params = None;
-                            self.last_volume_render_params = None;
+                            self.renderers.last_render_params = None;
+                            self.renderers.last_volume_render_params = None;
                             self.request_worker_render();
                             if self.state.viz_state.volume_3d_enabled {
                                 self.request_worker_render_volume();
@@ -1416,8 +1429,8 @@ impl eframe::App for WorkbenchApp {
                             log::info!(
                                 "Realtime: first elevation available, triggering initial render"
                             );
-                            self.last_render_params = None;
-                            self.last_volume_render_params = None;
+                            self.renderers.last_render_params = None;
+                            self.renderers.last_volume_render_params = None;
                             self.request_worker_render();
                             if self.state.viz_state.volume_3d_enabled {
                                 self.request_worker_render_volume();
@@ -1443,7 +1456,7 @@ impl eframe::App for WorkbenchApp {
                         // Upload decoded data to GPU renderer
                         let t_gpu = web_time::Instant::now();
                         if let (Some(ref renderer), Some(ref gl)) =
-                            (&self.gpu_renderer, &self.gpu_renderer_gl)
+                            (&self.renderers.gpu, &self.renderers.gl)
                         {
                             if let Ok(mut r) = renderer.lock() {
                                 r.update_data(
@@ -1485,7 +1498,7 @@ impl eframe::App for WorkbenchApp {
                         self.state.session_stats.pipeline.mark_render_done();
 
                         // Remove this scan from in-flight ghost tracking.
-                        if let Some(displayed_ts) = self.displayed_scan_timestamp {
+                        if let Some(displayed_ts) = self.state.displayed_scan_timestamp {
                             self.state
                                 .download_progress
                                 .in_flight_scans
@@ -1519,7 +1532,7 @@ impl eframe::App for WorkbenchApp {
 
                         // Upload to volume ray renderer
                         if let (Some(ref renderer), Some(ref gl)) =
-                            (&self.volume_ray_renderer, &self.gpu_renderer_gl)
+                            (&self.renderers.volume_ray, &self.renderers.gl)
                         {
                             if let Ok(mut r) = renderer.lock() {
                                 r.update_volume(
@@ -1534,7 +1547,7 @@ impl eframe::App for WorkbenchApp {
 
                         // Update LUT for the volume product
                         if let (Some(ref renderer), Some(ref gl)) =
-                            (&self.gpu_renderer, &self.gpu_renderer_gl)
+                            (&self.renderers.gpu, &self.renderers.gl)
                         {
                             if let Ok(mut r) = renderer.lock() {
                                 r.update_color_table(gl, &volume_data.product);
@@ -1546,7 +1559,7 @@ impl eframe::App for WorkbenchApp {
                         self.state.status_message = format!("Worker error: {}", message);
 
                         // Clean up ghost and progress for the failed scan.
-                        if let Some(displayed_ts) = self.displayed_scan_timestamp {
+                        if let Some(displayed_ts) = self.state.displayed_scan_timestamp {
                             self.state
                                 .download_progress
                                 .in_flight_scans
@@ -1609,7 +1622,6 @@ impl eframe::App for WorkbenchApp {
 
                 // Track which scan is being processed so error cleanup
                 // can remove the correct ghost.
-                self.displayed_scan_timestamp = Some(scan_ts);
                 self.state.displayed_scan_timestamp = Some(scan_ts);
 
                 if is_cache_hit {
@@ -1621,7 +1633,6 @@ impl eframe::App for WorkbenchApp {
 
                     // Cache hit: records already in IDB. Send render request directly.
                     self.current_render_scan_key = Some(scan.key.to_storage_key());
-                    self.displayed_sweep_elevation_number = None;
                     self.state.displayed_sweep_elevation_number = None;
 
                     // Populate elevation numbers from timeline metadata if available
@@ -1639,8 +1650,8 @@ impl eframe::App for WorkbenchApp {
                         }
                     }
 
-                    self.last_render_params = None; // Force fresh render
-                    self.last_volume_render_params = None;
+                    self.renderers.last_render_params = None; // Force fresh render
+                    self.renderers.last_volume_render_params = None;
                     self.request_worker_render();
                     if self.state.viz_state.volume_3d_enabled {
                         self.request_worker_render_volume();
@@ -1670,7 +1681,9 @@ impl eframe::App for WorkbenchApp {
                 self.current_scan = Some(scan.clone());
 
                 // Refresh timeline to show the new/loaded scan
-                self.state.timeline_needs_refresh = true;
+                self.state.push_command(state::AppCommand::RefreshTimeline {
+                    auto_position: false,
+                });
             }
 
             if let nexrad::DownloadResult::Error(msg) = &result {
@@ -1706,11 +1719,20 @@ impl eframe::App for WorkbenchApp {
         }
 
         // Process selection download queue
-        if self.state.download_selection_requested
-            || self.state.download_at_position_requested
-            || !self.selection_download_queue.is_empty()
         {
-            self.process_selection_download(ctx);
+            let download_type = if do_download_at_position {
+                Some(true)
+            } else if do_download_selection {
+                Some(false)
+            } else {
+                None // Just pumping existing queue, or nothing to do
+            };
+            if do_download_selection
+                || do_download_at_position
+                || !self.selection_download_queue.is_empty()
+            {
+                self.process_selection_download(ctx, download_type);
+            }
         }
 
         // Handle realtime streaming results
@@ -1732,12 +1754,6 @@ impl eframe::App for WorkbenchApp {
                 self.state.live_mode_state.next_chunk_expected_at =
                     Some(now + duration.as_secs_f64());
             }
-        }
-
-        // Handle start live mode request from UI
-        if self.state.start_live_requested {
-            self.state.start_live_requested = false;
-            self.start_live_mode(ctx);
         }
 
         // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
@@ -1768,12 +1784,12 @@ impl eframe::App for WorkbenchApp {
                         }
                     };
 
-                    let needs_new_scan = match self.displayed_scan_timestamp {
+                    let needs_new_scan = match self.state.displayed_scan_timestamp {
                         Some(displayed) => displayed != scan_ts,
                         None => true,
                     };
                     let needs_new_sweep = !needs_new_scan
-                        && self.displayed_sweep_elevation_number != Some(target_elev_num);
+                        && self.state.displayed_sweep_elevation_number != Some(target_elev_num);
 
                     // Capture overlay data from the matching sweep
                     let sweep_overlay = scan
@@ -1832,38 +1848,34 @@ impl eframe::App for WorkbenchApp {
                     // Build scan key in data storage format: "SITE|TIMESTAMP_MS"
                     let scan_key = data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts);
                     self.current_render_scan_key = Some(scan_key.to_storage_key());
-                    self.displayed_scan_timestamp = Some(scan_ts);
-                    self.displayed_sweep_elevation_number = Some(target_elev_num);
                     self.state.displayed_scan_timestamp = Some(scan_ts);
                     self.state.displayed_sweep_elevation_number = Some(target_elev_num);
                     if !elev_nums.is_empty() {
                         self.available_elevation_numbers = elev_nums;
                     }
-                    self.last_render_params = None; // Force fresh render
-                    self.last_volume_render_params = None;
+                    self.renderers.last_render_params = None; // Force fresh render
+                    self.renderers.last_volume_render_params = None;
                     self.request_worker_render();
                     if self.state.viz_state.volume_3d_enabled {
                         self.request_worker_render_volume();
                     }
                 }
-            } else if self.displayed_scan_timestamp.is_some() {
+            } else if self.state.displayed_scan_timestamp.is_some() {
                 // No scan found within range — clear stale render
                 log::debug!(
                     "No scan within {}s of playback at {}, clearing render",
                     MAX_SCAN_AGE_SECS,
                     playback_ts as i64
                 );
-                if let Some(ref renderer) = self.gpu_renderer {
+                if let Some(ref renderer) = self.renderers.gpu {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_data();
                     }
                 }
-                self.displayed_scan_timestamp = None;
-                self.displayed_sweep_elevation_number = None;
                 self.state.displayed_scan_timestamp = None;
                 self.state.displayed_sweep_elevation_number = None;
                 self.current_render_scan_key = None;
-                self.last_render_params = None;
+                self.renderers.last_render_params = None;
                 self.state.viz_state.data_staleness_secs = None;
                 self.state.viz_state.rendered_sweep_end_secs = None;
                 self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
@@ -1910,7 +1922,7 @@ impl eframe::App for WorkbenchApp {
 
                         if let Some(next_en) = next_elev_num {
                             // Only prefetch if it differs from what we're currently showing
-                            if self.displayed_sweep_elevation_number != Some(next_en) {
+                            if self.state.displayed_sweep_elevation_number != Some(next_en) {
                                 if let Some(ref scan_key) = self.current_render_scan_key {
                                     let product =
                                         self.state.viz_state.product.to_worker_string().to_string();
@@ -1920,13 +1932,15 @@ impl eframe::App for WorkbenchApp {
                                         product.clone(),
                                         self.state.viz_state.render_mode,
                                     );
-                                    if self.last_render_params.as_ref() != Some(&prefetch_params) {
+                                    if self.renderers.last_render_params.as_ref()
+                                        != Some(&prefetch_params)
+                                    {
                                         log::debug!(
                                             "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
                                             next_en,
                                             time_to_end,
                                         );
-                                        self.last_render_params = Some(prefetch_params);
+                                        self.renderers.last_render_params = Some(prefetch_params);
                                         self.decode_worker.as_mut().unwrap().render(
                                             scan_key.clone(),
                                             next_en,
@@ -1998,11 +2012,11 @@ impl eframe::App for WorkbenchApp {
             ctx,
             &mut self.state,
             Some(&self.geo_layers),
-            self.gpu_renderer.as_ref(),
-            self.globe_renderer.as_ref(),
-            self.geo_line_renderer.as_ref(),
-            self.globe_radar_renderer.as_ref(),
-            self.volume_ray_renderer.as_ref(),
+            self.renderers.gpu.as_ref(),
+            self.renderers.globe.as_ref(),
+            self.renderers.geo_line.as_ref(),
+            self.renderers.globe_radar.as_ref(),
+            self.renderers.volume_ray.as_ref(),
         );
 
         // Process keyboard shortcuts
