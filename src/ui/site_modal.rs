@@ -299,10 +299,11 @@ pub fn render_site_modal(
                 Color32::from_rgba_unmultiplied(0, 0, 0, 160),
             );
             // Click backdrop to close (only if not first visit)
-            if response.clicked() && !modal_state.is_first_visit {
-                if get_site(&state.viz_state.site_id).is_some() {
-                    state.site_modal_open = false;
-                }
+            if response.clicked()
+                && !modal_state.is_first_visit
+                && get_site(&state.viz_state.site_id).is_some()
+            {
+                state.site_modal_open = false;
             }
         });
 
@@ -434,11 +435,7 @@ fn render_site_list(
 ) -> bool {
     let mut selected = false;
 
-    let title = if modal_state.is_first_visit {
-        "Select Radar Site"
-    } else {
-        "Select Radar Site"
-    };
+    let title = "Select Radar Site";
 
     egui::Window::new(title)
         .collapsible(false)
