@@ -223,6 +223,19 @@ pub mod timeline {
     pub fn rt_pending_sweep_border() -> Color32 {
         Color32::from_rgba_unmultiplied(80, 120, 180, 60)
     }
+
+    // ── Shadow scan boundary colors ──────────────────────────────────
+
+    /// Fill color for shadow scan boundaries from the archive index.
+    /// Very subtle so they don't compete with real (downloaded) scan blocks.
+    pub fn shadow_fill() -> Color32 {
+        Color32::from_rgba_unmultiplied(120, 140, 180, 25)
+    }
+
+    /// Border color for shadow scan boundaries.
+    pub fn shadow_border() -> Color32 {
+        Color32::from_rgba_unmultiplied(120, 140, 180, 45)
+    }
 }
 
 /// Colors for the map canvas.

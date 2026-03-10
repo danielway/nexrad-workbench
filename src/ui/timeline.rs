@@ -645,6 +645,20 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         None
     };
 
+    // ── Render shadow scan boundaries from archive index ───────────────
+    if !state.shadow_scan_boundaries.is_empty() {
+        render_shadow_boundaries(
+            &painter,
+            &scan_rect,
+            &state.shadow_scan_boundaries,
+            &state.radar_timeline,
+            view_start,
+            view_end,
+            zoom,
+            detail_level,
+        );
+    }
+
     // ── Render scan track ─────────────────────────────────────────────
     // Extract the scan key timestamp (seconds) for the active real-time volume
     // so we can skip it in normal timeline rendering.
@@ -1168,6 +1182,117 @@ fn handle_timeline_interaction(
             }
 
             state.playback_state.timeline_zoom = new_zoom;
+        }
+    }
+}
+
+/// Render shadow scan boundaries from the archive index.
+///
+/// These are subtle markers showing where scans exist in the archive before
+/// they are downloaded. Boundaries that overlap already-downloaded scans are
+/// skipped so only un-downloaded positions are highlighted.
+#[allow(clippy::too_many_arguments)]
+fn render_shadow_boundaries(
+    painter: &Painter,
+    rect: &Rect,
+    boundaries: &[crate::nexrad::ScanBoundary],
+    timeline: &RadarTimeline,
+    view_start: f64,
+    view_end: f64,
+    zoom: f64,
+    detail_level: DetailLevel,
+) {
+    let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
+
+    let view_start_i64 = view_start as i64;
+    let view_end_i64 = view_end as i64;
+
+    match detail_level {
+        DetailLevel::Solid => {
+            // At solid detail, merge all visible shadow boundaries into contiguous regions
+            let visible: Vec<_> = boundaries
+                .iter()
+                .filter(|b| b.end > view_start_i64 && b.start < view_end_i64)
+                .filter(|b| {
+                    !timeline
+                        .scans
+                        .iter()
+                        .any(|s| (s.key_timestamp as i64 - b.start).abs() < 60)
+                })
+                .collect();
+
+            if visible.is_empty() {
+                return;
+            }
+
+            // Merge into contiguous regions (gap < 15 min)
+            let mut regions: Vec<(i64, i64)> = Vec::new();
+            for b in &visible {
+                if let Some(last) = regions.last_mut() {
+                    if b.start - last.1 < 900 {
+                        last.1 = b.end;
+                        continue;
+                    }
+                }
+                regions.push((b.start, b.end));
+            }
+
+            for (start, end) in regions {
+                let x_start = ts_to_x(start as f64).max(rect.left());
+                let x_end = ts_to_x(end as f64).min(rect.right());
+                let x_end = if (x_end - x_start) > 0.0 && (x_end - x_start) < 8.0 {
+                    (x_start + 8.0).min(rect.right())
+                } else {
+                    x_end
+                };
+                if x_end > x_start {
+                    painter.rect_filled(
+                        Rect::from_min_max(
+                            Pos2::new(x_start, rect.top() + 2.0),
+                            Pos2::new(x_end, rect.bottom() - 2.0),
+                        ),
+                        2.0,
+                        tl_colors::shadow_fill(),
+                    );
+                }
+            }
+        }
+        DetailLevel::Scans | DetailLevel::Sweeps => {
+            for b in boundaries {
+                // Skip if outside visible range
+                if b.end <= view_start_i64 || b.start >= view_end_i64 {
+                    continue;
+                }
+                // Skip if this scan is already downloaded (within 60s tolerance)
+                if timeline
+                    .scans
+                    .iter()
+                    .any(|s| (s.key_timestamp as i64 - b.start).abs() < 60)
+                {
+                    continue;
+                }
+
+                let x_start = ts_to_x(b.start as f64).max(rect.left());
+                let x_end = ts_to_x(b.end as f64).min(rect.right());
+                let width = x_end - x_start;
+
+                if width < 1.0 {
+                    continue;
+                }
+
+                let shadow_rect = Rect::from_min_max(
+                    Pos2::new(x_start, rect.top() + 2.0),
+                    Pos2::new(x_end, rect.bottom() - 2.0),
+                );
+
+                painter.rect_filled(shadow_rect, 2.0, tl_colors::shadow_fill());
+                painter.rect_stroke(
+                    shadow_rect,
+                    2.0,
+                    Stroke::new(0.5, tl_colors::shadow_border()),
+                    StrokeKind::Inside,
+                );
+            }
         }
     }
 }
