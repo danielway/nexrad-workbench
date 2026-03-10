@@ -278,17 +278,13 @@ fn handle_globe_interaction(response: &egui::Response, rect: &Rect, state: &mut 
             }
             CameraMode::PlanetOrbit | CameraMode::SiteOrbit => {
                 if middle_button || (shift_held && !right_button) {
-                    // Middle-drag or Shift+left: pan pivot
                     state
                         .viz_state
                         .camera
                         .pan_pivot(delta.x, delta.y, viewport_h);
                 } else if right_button {
-                    // Right-drag: tilt/rotate camera orientation
-                    state
-                        .viz_state
-                        .camera
-                        .tilt_rotate(delta.x, delta.y, viewport_h);
+                    // Right-drag: horizontal rotates (heading), vertical pitches
+                    state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
                 } else {
                     // Left-drag: orbit
                     state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
