@@ -14,11 +14,14 @@ fn main() {
     // GitHub Actions checks out PRs as detached HEAD (merge commit), so
     // `git rev-parse --abbrev-ref HEAD` returns "HEAD" and the hash is a
     // synthetic merge commit. Use GITHUB_HEAD_REF (the PR source branch) when
-    // available, and GITHUB_SHA for the actual commit hash in CI.
+    // available. For the commit hash, prefer PR_HEAD_SHA (the actual PR tip,
+    // set explicitly in the workflow) over GITHUB_SHA (which is the merge
+    // commit for pull_request events).
     let ci_branch = std::env::var("GITHUB_HEAD_REF")
         .ok()
         .filter(|s| !s.is_empty());
-    let ci_hash = std::env::var("GITHUB_SHA")
+    let ci_hash = std::env::var("PR_HEAD_SHA")
+        .or_else(|_| std::env::var("GITHUB_SHA"))
         .ok()
         .filter(|s| !s.is_empty())
         .map(|s| s[..7].to_string());
