@@ -192,7 +192,12 @@ pub fn render_event_modal(
         modal_state.initialized = true;
         if let Some(editing_id) = state.event_modal_editing_id {
             // Editing existing event
-            if let Some(event) = state.saved_events.events.iter().find(|e| e.id == editing_id) {
+            if let Some(event) = state
+                .saved_events
+                .events
+                .iter()
+                .find(|e| e.id == editing_id)
+            {
                 modal_state.init_from_event(
                     &event.name,
                     &event.site_id,
@@ -203,13 +208,10 @@ pub fn render_event_modal(
             }
         } else {
             // Creating new event — pre-fill from selection range
-            let (start, end) = state
-                .playback_state
-                .selection_range()
-                .unwrap_or_else(|| {
-                    let pos = state.playback_state.playback_position();
-                    (pos - 1800.0, pos + 1800.0)
-                });
+            let (start, end) = state.playback_state.selection_range().unwrap_or_else(|| {
+                let pos = state.playback_state.playback_position();
+                (pos - 1800.0, pos + 1800.0)
+            });
             modal_state.init_from_selection(
                 &state.viz_state.site_id,
                 start,
@@ -281,19 +283,13 @@ pub fn render_event_modal(
 
             ui.add_space(8.0);
 
-            let tz_label = if state.use_local_time {
-                "Local"
-            } else {
-                "UTC"
-            };
+            let tz_label = if state.use_local_time { "Local" } else { "UTC" };
 
             // Start time
             ui.label(RichText::new(format!("Start Time ({tz_label}):")).strong());
             ui.horizontal(|ui| {
                 let field_width = 32.0;
-                ui.add(
-                    egui::TextEdit::singleline(&mut modal_state.start_year).desired_width(40.0),
-                );
+                ui.add(egui::TextEdit::singleline(&mut modal_state.start_year).desired_width(40.0));
                 ui.label("-");
                 ui.add(
                     egui::TextEdit::singleline(&mut modal_state.start_month)
@@ -327,9 +323,7 @@ pub fn render_event_modal(
             ui.label(RichText::new(format!("End Time ({tz_label}):")).strong());
             ui.horizontal(|ui| {
                 let field_width = 32.0;
-                ui.add(
-                    egui::TextEdit::singleline(&mut modal_state.end_year).desired_width(40.0),
-                );
+                ui.add(egui::TextEdit::singleline(&mut modal_state.end_year).desired_width(40.0));
                 ui.label("-");
                 ui.add(
                     egui::TextEdit::singleline(&mut modal_state.end_month)
@@ -337,8 +331,7 @@ pub fn render_event_modal(
                 );
                 ui.label("-");
                 ui.add(
-                    egui::TextEdit::singleline(&mut modal_state.end_day)
-                        .desired_width(field_width),
+                    egui::TextEdit::singleline(&mut modal_state.end_day).desired_width(field_width),
                 );
                 ui.label(" ");
                 ui.add(
@@ -405,12 +398,9 @@ pub fn render_event_modal(
                         if let Some(id) = state.event_modal_editing_id {
                             state.saved_events.update(id, name, start, end);
                         } else {
-                            state.saved_events.add(
-                                name,
-                                modal_state.site_id.clone(),
-                                start,
-                                end,
-                            );
+                            state
+                                .saved_events
+                                .add(name, modal_state.site_id.clone(), start, end);
                         }
 
                         state.event_modal_open = false;

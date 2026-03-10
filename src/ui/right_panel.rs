@@ -326,11 +326,17 @@ fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
                         );
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button(egui_phosphor::regular::PENCIL_SIMPLE).clicked() {
+                            if ui
+                                .small_button(egui_phosphor::regular::PENCIL_SIMPLE)
+                                .clicked()
+                            {
                                 state.event_modal_open = true;
                                 state.event_modal_editing_id = Some(event.id);
                             }
-                            if ui.small_button(egui_phosphor::regular::NAVIGATION_ARROW).clicked() {
+                            if ui
+                                .small_button(egui_phosphor::regular::NAVIGATION_ARROW)
+                                .clicked()
+                            {
                                 navigate_to_event(state, event);
                             }
                         });

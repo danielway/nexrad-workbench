@@ -113,5 +113,4 @@ impl SavedEvents {
             self.save();
         }
     }
-
 }
