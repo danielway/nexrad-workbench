@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          # Find the latest vN tag
+          LATEST=$(git tag --list 'v[0-9]*' --sort=-version:refname | head -n1)
+          if [ -z "$LATEST" ]; then
+            NEXT=1
+          else
+            PREV=${LATEST#v}
+            NEXT=$((PREV + 1))
+          fi
+          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "Next version: v${NEXT}"
+
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+          gh release create "${{ steps.version.outputs.tag }}" \
+            --title "${{ steps.version.outputs.tag }}" \
+            --generate-notes

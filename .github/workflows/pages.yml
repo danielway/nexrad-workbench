@@ -21,31 +21,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Determine version
-        id: version
-        run: |
-          # Find the latest vN tag
-          LATEST=$(git tag --list 'v[0-9]*' --sort=-version:refname | head -n1)
-          if [ -z "$LATEST" ]; then
-            NEXT=1
-          else
-            PREV=${LATEST#v}
-            NEXT=$((PREV + 1))
-          fi
-          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
-          echo "Next version: v${NEXT}"
-
-      - name: Create tag and release
-        if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git tag "${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
-          gh release create "${{ steps.version.outputs.tag }}" \
-            --title "${{ steps.version.outputs.tag }}" \
-            --generate-notes
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -67,8 +42,6 @@ jobs:
           version: latest
 
       - name: Build with Trunk
-        env:
-          NEXRAD_VERSION: ${{ steps.version.outputs.tag }}
         run: trunk build --release --public-url /nexrad-workbench/
 
       - name: Deploy to GitHub Pages
