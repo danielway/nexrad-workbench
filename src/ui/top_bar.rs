@@ -103,12 +103,32 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                         state.shortcuts_help_visible = !state.shortcuts_help_visible;
                     }
 
-                    // Version stamp
-                    ui.label(
-                        RichText::new(option_env!("NEXRAD_VERSION").unwrap_or("dev"))
-                            .size(11.0)
-                            .color(Color32::from_rgb(80, 80, 80)),
-                    );
+                    // Version stamp (truncated with tooltip for long names)
+                    {
+                        const MAX_LEN: usize = 24;
+                        let version = env!("NEXRAD_VERSION");
+                        let full_version = env!("NEXRAD_VERSION_FULL");
+                        let display = if version.len() > MAX_LEN {
+                            let mut truncated = String::with_capacity(MAX_LEN + 3);
+                            for (i, ch) in version.char_indices() {
+                                if i >= MAX_LEN {
+                                    break;
+                                }
+                                truncated.push(ch);
+                            }
+                            truncated.push('\u{2026}');
+                            truncated
+                        } else {
+                            version.to_string()
+                        };
+
+                        ui.label(
+                            RichText::new(&display)
+                                .size(11.0)
+                                .color(Color32::from_rgb(80, 80, 80)),
+                        )
+                        .on_hover_text(full_version);
+                    }
 
                     ui.separator();
 
