@@ -2,11 +2,6 @@ name: Deploy to GitHub Pages
 
 on:
   workflow_call:
-    inputs:
-      version:
-        description: Version tag to embed in the build
-        required: false
-        type: string
   workflow_dispatch:
 
 permissions:
@@ -45,9 +40,15 @@ jobs:
         with:
           version: latest
 
+      - name: Determine version
+        id: version
+        run: |
+          LATEST=$(git tag --list 'v[0-9]*' --sort=-version:refname | head -n1)
+          echo "tag=${LATEST:-dev}" >> "$GITHUB_OUTPUT"
+
       - name: Build with Trunk
         env:
-          NEXRAD_VERSION: ${{ inputs.version || '' }}
+          NEXRAD_VERSION: ${{ steps.version.outputs.tag }}
         run: trunk build --release --public-url /nexrad-workbench/
 
       - name: Deploy to GitHub Pages
