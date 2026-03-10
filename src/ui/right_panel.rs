@@ -348,7 +348,7 @@ fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .on_hover_text("Delete all cached radar data")
                 .clicked()
             {
-                state.clear_cache_requested = true;
+                state.push_command(crate::state::AppCommand::ClearCache);
             }
 
             ui.add_space(4.0);
