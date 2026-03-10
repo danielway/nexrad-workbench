@@ -188,9 +188,7 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
 
                     for &(label, view, cam, color, key) in modes {
                         let is_active = match (view, cam) {
-                            (ViewMode::Flat2D, _) => {
-                                state.viz_state.view_mode == ViewMode::Flat2D
-                            }
+                            (ViewMode::Flat2D, _) => state.viz_state.view_mode == ViewMode::Flat2D,
                             (ViewMode::Globe3D, Some(cm)) => {
                                 state.viz_state.view_mode == ViewMode::Globe3D
                                     && state.viz_state.camera.mode == cm
