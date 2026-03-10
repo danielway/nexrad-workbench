@@ -10,8 +10,22 @@ fn main() {
     }
 
     // Otherwise, derive a version string from git.
-    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
-    let hash = git(&["rev-parse", "--short=7", "HEAD"]);
+    //
+    // GitHub Actions checks out PRs as detached HEAD (merge commit), so
+    // `git rev-parse --abbrev-ref HEAD` returns "HEAD" and the hash is a
+    // synthetic merge commit. Use GITHUB_HEAD_REF (the PR source branch) when
+    // available, and GITHUB_SHA for the actual commit hash in CI.
+    let ci_branch = std::env::var("GITHUB_HEAD_REF")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let ci_hash = std::env::var("GITHUB_SHA")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| s[..7].to_string());
+
+    let branch =
+        ci_branch.or_else(|| git(&["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| b != "HEAD"));
+    let hash = ci_hash.or_else(|| git(&["rev-parse", "--short=7", "HEAD"]));
 
     match (branch.as_deref(), hash.as_deref()) {
         (Some(branch), Some(hash)) => {
