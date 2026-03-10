@@ -223,6 +223,35 @@ pub mod timeline {
     pub fn rt_pending_sweep_border() -> Color32 {
         Color32::from_rgba_unmultiplied(80, 120, 180, 60)
     }
+
+    // ── Saved event overlay colors ────────────────────────────────────
+
+    const EVENT_PALETTE: &[(u8, u8, u8)] = &[
+        (255, 200, 80),
+        (120, 220, 160),
+        (160, 180, 255),
+        (255, 150, 150),
+        (200, 160, 255),
+        (255, 180, 120),
+    ];
+
+    /// Semi-transparent fill for a saved event overlay.
+    pub fn event_fill(index: usize) -> Color32 {
+        let (r, g, b) = EVENT_PALETTE[index % EVENT_PALETTE.len()];
+        Color32::from_rgba_unmultiplied(r, g, b, 30)
+    }
+
+    /// Border/line color for a saved event overlay.
+    pub fn event_border(index: usize) -> Color32 {
+        let (r, g, b) = EVENT_PALETTE[index % EVENT_PALETTE.len()];
+        Color32::from_rgba_unmultiplied(r, g, b, 160)
+    }
+
+    /// Label color for a saved event name.
+    pub fn event_label(index: usize) -> Color32 {
+        let (r, g, b) = EVENT_PALETTE[index % EVENT_PALETTE.len()];
+        Color32::from_rgb(r, g, b)
+    }
 }
 
 /// Colors for the map canvas.

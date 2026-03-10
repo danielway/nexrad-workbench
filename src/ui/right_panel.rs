@@ -36,6 +36,9 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
                 render_tools_section(ui, state);
                 ui.add_space(5.0);
 
+                render_events_section(ui, state);
+                ui.add_space(5.0);
+
                 render_storage_section(ui, state);
             });
         });
@@ -276,6 +279,183 @@ fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
                 });
             }
         });
+}
+
+fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
+    egui::CollapsingHeader::new(RichText::new("Events").strong())
+        .default_open(true)
+        .show(ui, |ui| {
+            // Save current selection as event button
+            let has_selection = state.playback_state.selection_range().is_some();
+            let btn = ui
+                .add_enabled(
+                    has_selection,
+                    egui::Button::new(format!(
+                        "{} Save Selection as Event",
+                        egui_phosphor::regular::BOOKMARK_SIMPLE
+                    )),
+                )
+                .on_hover_text("Select a time range on the timeline first (Shift+drag)");
+            if btn.clicked() {
+                state.event_modal_open = true;
+                state.event_modal_editing_id = None;
+            }
+
+            // Events for current site
+            let current_site = state.viz_state.site_id.clone();
+            let site_events: Vec<_> = state
+                .saved_events
+                .events
+                .iter()
+                .filter(|e| e.site_id == current_site)
+                .cloned()
+                .collect();
+            let other_count = state.saved_events.events.len() - site_events.len();
+
+            if !site_events.is_empty() {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+
+                for event in &site_events {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(&event.name)
+                                .strong()
+                                .color(event_color(event.id)),
+                        );
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button(egui_phosphor::regular::PENCIL_SIMPLE).clicked() {
+                                state.event_modal_open = true;
+                                state.event_modal_editing_id = Some(event.id);
+                            }
+                            if ui.small_button(egui_phosphor::regular::NAVIGATION_ARROW).clicked() {
+                                navigate_to_event(state, event);
+                            }
+                        });
+                    });
+
+                    // Time range label
+                    let start_label = format_event_time(event.start_time, state.use_local_time);
+                    let end_label = format_event_time(event.end_time, state.use_local_time);
+                    ui.label(
+                        RichText::new(format!("{} - {}", start_label, end_label))
+                            .small()
+                            .weak(),
+                    );
+                    ui.add_space(2.0);
+                }
+            }
+
+            // Other-site events
+            if other_count > 0 {
+                ui.add_space(4.0);
+                egui::CollapsingHeader::new(
+                    RichText::new(format!("{} events on other sites", other_count))
+                        .small()
+                        .weak(),
+                )
+                .id_salt("other_site_events")
+                .default_open(false)
+                .show(ui, |ui| {
+                    let other_events: Vec<_> = state
+                        .saved_events
+                        .events
+                        .iter()
+                        .filter(|e| e.site_id != current_site)
+                        .cloned()
+                        .collect();
+                    for event in &other_events {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{} ({})", event.name, event.site_id)));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button(egui_phosphor::regular::PENCIL_SIMPLE)
+                                        .clicked()
+                                    {
+                                        state.event_modal_open = true;
+                                        state.event_modal_editing_id = Some(event.id);
+                                    }
+                                    if ui
+                                        .small_button(egui_phosphor::regular::NAVIGATION_ARROW)
+                                        .clicked()
+                                    {
+                                        navigate_to_event(state, event);
+                                    }
+                                },
+                            );
+                        });
+                    }
+                });
+            }
+
+            if site_events.is_empty() && other_count == 0 {
+                ui.add_space(4.0);
+                ui.label(RichText::new("No saved events").small().weak());
+            }
+        });
+}
+
+/// Navigate to a saved event: switch site if needed, set selection, center timeline.
+fn navigate_to_event(state: &mut AppState, event: &crate::state::SavedEvent) {
+    use crate::data::get_site;
+
+    // Switch site if needed
+    if event.site_id != state.viz_state.site_id {
+        if let Some(site) = get_site(&event.site_id) {
+            state.viz_state.site_id = site.id.to_string();
+            state.viz_state.center_lat = site.lat;
+            state.viz_state.center_lon = site.lon;
+            state.viz_state.pan_offset = egui::Vec2::ZERO;
+            state.viz_state.camera.center_on(site.lat, site.lon);
+            state.timeline_needs_refresh = true;
+            state.auto_position_on_timeline_load = false;
+        }
+    }
+
+    // Set selection to event bounds
+    state.playback_state.selection_start = Some(event.start_time);
+    state.playback_state.selection_end = Some(event.end_time);
+
+    // Center timeline on the event
+    let mid = (event.start_time + event.end_time) / 2.0;
+    state.playback_state.center_view_on(mid);
+}
+
+/// Format a timestamp for display in the events list.
+fn format_event_time(ts: f64, use_local: bool) -> String {
+    if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(ts * 1000.0);
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}",
+            d.get_full_year(),
+            d.get_month() + 1,
+            d.get_date(),
+            d.get_hours(),
+            d.get_minutes(),
+        )
+    } else {
+        use chrono::{TimeZone, Utc};
+        let dt = Utc.timestamp_opt(ts as i64, 0).unwrap();
+        dt.format("%Y-%m-%d %H:%M").to_string()
+    }
+}
+
+/// Get a distinguishing color for an event based on its ID.
+fn event_color(id: u64) -> egui::Color32 {
+    const PALETTE: &[egui::Color32] = &[
+        egui::Color32::from_rgb(255, 200, 80),
+        egui::Color32::from_rgb(120, 220, 160),
+        egui::Color32::from_rgb(160, 180, 255),
+        egui::Color32::from_rgb(255, 150, 150),
+        egui::Color32::from_rgb(200, 160, 255),
+        egui::Color32::from_rgb(255, 180, 120),
+    ];
+    PALETTE[(id % PALETTE.len() as u64) as usize]
 }
 
 fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {

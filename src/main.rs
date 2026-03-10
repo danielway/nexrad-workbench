@@ -160,6 +160,9 @@ pub struct WorkbenchApp {
 
     /// Transient state for the site selection modal.
     site_modal_state: ui::SiteModalState,
+
+    /// Transient state for the event create/edit modal.
+    event_modal_state: ui::EventModalState,
 }
 
 // Embed shapefile data at compile time
@@ -384,6 +387,7 @@ impl WorkbenchApp {
             last_url_push: web_time::Instant::now(),
             last_saved_preferences: initial_prefs,
             site_modal_state: ui::SiteModalState::default(),
+            event_modal_state: ui::EventModalState::default(),
         }
     }
 
@@ -2009,5 +2013,6 @@ impl eframe::App for WorkbenchApp {
         ui::render_shortcuts_help(ctx, &mut self.state);
         ui::render_wipe_modal(ctx, &mut self.state);
         ui::render_stats_modal(ctx, &mut self.state);
+        ui::render_event_modal(ctx, &mut self.state, &mut self.event_modal_state);
     }
 }

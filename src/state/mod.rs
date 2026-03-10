@@ -9,6 +9,7 @@ mod live_mode;
 mod playback;
 mod preferences;
 pub(crate) mod radar_data;
+mod saved_events;
 mod settings;
 mod stats;
 pub(crate) mod theme;
@@ -22,6 +23,7 @@ pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use playback::{LoopMode, PlaybackSpeed, PlaybackState};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
+pub use saved_events::{SavedEvent, SavedEvents};
 pub use settings::{format_bytes, StorageSettings};
 pub use stats::{
     DownloadPhase, DownloadProgress, IngestTimingDetail, RenderTimingDetail, SessionStats,
@@ -158,6 +160,15 @@ pub struct AppState {
 
     /// Whether the stats detail popup is open.
     pub stats_detail_open: bool,
+
+    /// User-saved weather event bookmarks.
+    pub saved_events: SavedEvents,
+
+    /// Whether the event create/edit modal is open.
+    pub event_modal_open: bool,
+
+    /// Event ID being edited (None = creating new event).
+    pub event_modal_editing_id: Option<u64>,
 }
 
 /// Lightweight storm cell info for rendering on the canvas.
@@ -269,6 +280,9 @@ impl AppState {
         // Load storage settings from localStorage
         let storage_settings = StorageSettings::load();
 
+        // Load saved events from localStorage
+        let saved_events = SavedEvents::load();
+
         // Load theme preference
         let theme_mode = theme::load_theme_mode();
         let is_dark = theme_mode.is_dark();
@@ -279,6 +293,7 @@ impl AppState {
             status_message: "Ready".to_string(),
             session_stats: SessionStats::new(),
             storage_settings,
+            saved_events,
             left_sidebar_visible: true,
             right_sidebar_visible: true,
             theme_mode,

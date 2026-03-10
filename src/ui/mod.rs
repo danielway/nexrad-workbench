@@ -10,6 +10,7 @@
 mod bottom_panel;
 mod canvas;
 pub(crate) mod colors;
+mod event_modal;
 mod left_panel;
 mod playback_controls;
 mod right_panel;
@@ -22,6 +23,7 @@ mod wipe_modal;
 
 pub use bottom_panel::render_bottom_panel;
 pub use canvas::render_canvas_with_geo;
+pub use event_modal::{render_event_modal, EventModalState};
 pub use left_panel::render_left_panel;
 pub use right_panel::render_right_panel;
 pub use shortcuts::{handle_shortcuts, render_shortcuts_help};

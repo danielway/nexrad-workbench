@@ -3,7 +3,7 @@
 use super::colors::timeline as tl_colors;
 use crate::data::ScanCompleteness;
 use crate::state::radar_data::RadarTimeline;
-use crate::state::{AppState, LiveExitReason};
+use crate::state::{AppState, LiveExitReason, SavedEvents};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
@@ -794,6 +794,16 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
                 scan_rect.max.y
             },
         ),
+    );
+
+    // Draw saved event overlays (behind the selection range)
+    render_saved_events(
+        &painter,
+        &overlay_rect,
+        &state.saved_events,
+        &state.viz_state.site_id,
+        view_start,
+        zoom,
     );
 
     // Draw selection range (if user has selected a range via shift+drag)
@@ -1807,6 +1817,77 @@ fn render_realtime_progress(
                 label,
                 egui::FontId::monospace(8.0),
                 Color32::from_rgba_unmultiplied(220, 230, 255, label_alpha),
+            );
+        }
+    }
+}
+
+/// Render saved event overlays on the timeline.
+fn render_saved_events(
+    painter: &Painter,
+    overlay_rect: &Rect,
+    saved_events: &SavedEvents,
+    current_site: &str,
+    view_start: f64,
+    zoom: f64,
+) {
+    let ts_to_x = |ts: f64| -> f32 { overlay_rect.left() + ((ts - view_start) * zoom) as f32 };
+
+    for (i, event) in saved_events.events.iter().enumerate() {
+        if event.site_id != current_site {
+            continue;
+        }
+
+        let start_x = ts_to_x(event.start_time);
+        let end_x = ts_to_x(event.end_time);
+
+        // Skip if entirely outside the visible area
+        if end_x < overlay_rect.left() || start_x > overlay_rect.right() {
+            continue;
+        }
+
+        let visible_start = start_x.max(overlay_rect.left());
+        let visible_end = end_x.min(overlay_rect.right());
+
+        // Semi-transparent fill
+        let event_rect = Rect::from_min_max(
+            Pos2::new(visible_start, overlay_rect.top()),
+            Pos2::new(visible_end, overlay_rect.bottom()),
+        );
+        painter.rect_filled(event_rect, 0.0, tl_colors::event_fill(i));
+
+        // Boundary lines
+        let border_color = tl_colors::event_border(i);
+        if start_x >= overlay_rect.left() && start_x <= overlay_rect.right() {
+            painter.line_segment(
+                [
+                    Pos2::new(start_x, overlay_rect.top()),
+                    Pos2::new(start_x, overlay_rect.bottom()),
+                ],
+                Stroke::new(1.0, border_color),
+            );
+        }
+        if end_x >= overlay_rect.left() && end_x <= overlay_rect.right() {
+            painter.line_segment(
+                [
+                    Pos2::new(end_x, overlay_rect.top()),
+                    Pos2::new(end_x, overlay_rect.bottom()),
+                ],
+                Stroke::new(1.0, border_color),
+            );
+        }
+
+        // Event name label (at top of the rectangle, clipped to visible)
+        let label_width = visible_end - visible_start;
+        if label_width > 20.0 {
+            let label_x = ((start_x + end_x) / 2.0)
+                .clamp(overlay_rect.left() + 10.0, overlay_rect.right() - 10.0);
+            painter.text(
+                Pos2::new(label_x, overlay_rect.top() + 2.0),
+                egui::Align2::CENTER_TOP,
+                &event.name,
+                egui::FontId::proportional(9.0),
+                tl_colors::event_label(i),
             );
         }
     }
