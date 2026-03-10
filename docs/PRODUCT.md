@@ -46,31 +46,7 @@ The **header record** (the first record in every scan) contains radar operationa
 
 The distinction between archive and real-time data is intentionally blurred at the data level. Both are composed of chunks; archive files are simply the accumulated result of chunk delivery. Each Archive II volume file contains exactly one volume scan.
 
-## 3. Delivery Phases
-
-The product is delivered in four phases, each building on the previous. Each phase produces a usable product; later phases layer in rendering richness, operational depth, and multi-site support.
-
-**Phase 1 — Core single-site viewer** ([PHASE-1.md](PHASE-1.md)) — *largely complete*. A complete single-site radar viewer with the simplest viable rendering model. Users can select a site, navigate time via the timeline, view radar imagery rendered as complete sweeps, and stream real-time data. Data acquisition feedback is minimal — a progress indicator and error notifications. This phase establishes the full application layout, the timeline with zoom-dependent data availability decomposition, playback controls, product/elevation selection, and the IndexedDB caching layer. Local file upload is not yet implemented.
-
-**Phase 2 — Rich rendering** ([PHASE-2.md](PHASE-2.md)) — *not started*. Adds progressive sweep animation and full data age visualization. Two additional accumulation strategies — continuous (wiper) and sweep-isolated — enable the viewer to animate radar sweeps as they progress, giving users fine-grained temporal control over what appears on the canvas. Sweep boundary lines, age labels, and optional age attenuation make the temporal structure of rendered data visually explicit.
-
-**Phase 3 — Acquisition depth** ([PHASE-3.md](PHASE-3.md)) — *partially complete*. Replaces the simple acquisition feedback with a full transparency layer. An expandable acquisition queue shows individual requests with status, progress, and controls to pause, cancel, or reprioritize. Per-chunk latency metrics surface radar collection delay and distribution latency. Error handling pauses the queue to prevent cascading failures. Real-time streaming gains predictive visualization: a shaded future region, estimated time until the next chunk, and a sweep line extending beyond received data. The predictive visualization for real-time streaming is implemented; the acquisition queue and error-pause behavior are not.
-
-**Phase 4 — Multi-site** ([PHASE-4.md](PHASE-4.md)) — *not started*. Extends the application to support multiple simultaneous radar sites. Multi-site selection, overlapping polar projections with mosaic compositing, and stacked per-site timeline tracks sharing a single playback position. All prior single-site capabilities apply independently to each active site.
-
-### Beyond the Original Phases
-
-Several capabilities have been implemented that were not part of the original phase plan:
-
-- **3D globe view** with volumetric ray-marching renderer and radar projection onto a 3D globe surface
-- **Storm cell detection** with configurable dBZ thresholds and canvas overlay
-- **Inspector tool** showing lat/lon coordinates and data values on hover
-- **Distance measurement tool** between two points on the canvas
-- **Datetime jump picker** for navigating directly to a specific date/time
-- **Configurable storage management** with quota settings and LRU eviction
-- **Web Worker decoding** offloading heavy computation to a dedicated thread
-
-## 4. Application Layout
+## 3. Application Layout
 
 ### Overview
 
@@ -94,35 +70,188 @@ The layout consists of six regions:
 
 ### Site Context Bar
 
-The top bar prominently displays the active radar site. A button opens the site selection modal, which presents all NEXRAD sites. Phase 4 extends this to support multiple simultaneous sites.
+The top bar prominently displays the active radar site. A button opens the site selection modal, which presents all NEXRAD sites with three selection methods: browsing a searchable site list, entering a zip code, or using browser geolocation.
 
 ### Left Sidebar: Radar Operations
 
-Read-only panel displaying radar operations state derived from the current playback position. Collapsible.
+Read-only panel displaying radar operations state derived from the current playback position. Provides three coordinated views:
+
+- **Azimuth view**: A top-down compass visualization displaying a rotating sweep line and the current azimuth.
+- **Elevation view**: A side-profile diagram displaying the elevation angle of the current sweep.
+- **VCP view**: Renders the volume coverage pattern as a structured sequence, displaying sweep elevations and parameters as a "playlist" and highlighting the current sweep's position within the scan.
+
+Collapsible via keyboard shortcut.
 
 ### Right Sidebar: Rendering Parameters
 
-User-controlled settings for product selection, processing, and rendering options. Collapsible. Both sidebars can be toggled independently via keyboard shortcuts.
+User-controlled settings for product selection, processing, and rendering options. Includes:
+
+- **Product selection**: Reflectivity, Velocity, Spectrum Width, Differential Reflectivity, Correlation Coefficient, Differential Phase, and Clutter Filter Power.
+- **Elevation selection**: Slider with VCP snap-to-nearest behavior.
+- **Render mode**: Fixed Tilt (specific product and elevation) or Most Recent (latest data regardless of product/elevation).
+- **Tools**: Inspector tool (hover for lat/lon and data values), distance measurement tool (click two points), and storm cell detection (configurable dBZ threshold with canvas overlay).
+- **Geographic layers**: Toggles for state boundaries, county boundaries, city labels, site markers.
+- **Storage management**: Cache quota slider (100 MB to 20 GB), usage display, clear cache and reset app controls.
+
+Collapsible via keyboard shortcut.
 
 ### Bottom Dock: Timeline Complex
 
 The bottom dock is the primary interaction surface, organized in three layers:
 
-**Mode and acquisition status bar.** Displays the current timeline interaction mode and a compact summary of acquisition activity (e.g. active download count and progress).
+**Mode and acquisition status bar.** Displays the current timeline interaction mode (NAVIGATE or REAL-TIME) and a compact summary of acquisition activity (active download count and progress).
 
-**Timeline track.** The zoomable temporal axis displaying data availability, the playback position indicator, and any active range selection. Click and drag behavior depends on the active timeline mode. Scroll-to-zoom changes temporal scale.
+**Timeline track.** The zoomable temporal axis displaying data availability, the playback position indicator, and any active range selection. Scroll-to-zoom changes temporal scale. Data availability segments are color-coded by Volume Coverage Pattern. At closer zoom levels, segments decompose into individual scans with visual indicators for completeness (fully downloaded vs. partial) and VCP identity. At sweep-level zoom, scans decompose into constituent sweeps reflecting the VCP structure.
 
-**Transport bar.** Playback controls: play/pause, step forward/back, speed selector, current playback position readout, loop mode toggle, and a compact summary of the currently displayed data (product, elevation, sweep position, data staleness).
+**Transport bar.** Playback controls: play/pause, step forward/back, speed selector (seven levels from 1x real-time to 20 min/s), current playback position readout, loop mode toggle (loop, ping-pong, once), and a compact summary of the currently displayed data.
 
 ### Status Bar
 
-A thin status bar at the bottom edge of the application displays session statistics and performance metrics: active and total network requests, volume of data downloaded in the current session, number of cached scans and records, total volume of cached data, rendering performance (FPS), decompression time, processing time, rendering time, and the number of active background workers. This bar is always visible and provides continuous insight into application health and resource usage.
+A thin status bar at the bottom edge displays session statistics and performance metrics: active and total network requests, volume of data downloaded, number of cached scans and records, total cached data volume, and a stats modal for detailed session information.
 
-## 5. Constraints
+## 4. Map Canvas
+
+The primary view is a map canvas displaying radar data overlaid on geographic context. Radar data is rendered in polar coordinates centered on the radar site and projected onto the map. The canvas supports pan and zoom.
+
+### 2D View
+
+The default view renders radar data on a flat map projection with geographic overlays (state boundaries, county boundaries, city labels). Geographic layers are toggleable. The application supports dark and light map themes, matching the active appearance mode.
+
+### 3D Globe View
+
+An alternative rendering mode projects radar data onto a 3D globe surface using a volumetric ray-marching renderer. The globe view supports three camera modes: planet orbit, site orbit, and free look. Camera controls include WASD movement, mouse rotation, and adjustable speed (Shift for 2x, Ctrl for 1/4x). The view can be toggled between 2D and 3D via keyboard shortcuts (T to toggle, 1-4 for specific camera modes).
+
+### Tools
+
+- **Inspector**: Hover over the canvas to see lat/lon coordinates and data values at the cursor position.
+- **Distance measurement**: Click two points on the canvas to measure the distance between them.
+- **Storm cell detection**: Identifies storm cells based on a configurable dBZ threshold (default 35.0 dBZ), renders cell boundaries and centroids as a canvas overlay with area calculations.
+
+## 5. Rendering Model
+
+### Core Invariants
+
+1. **The playback position is a hard temporal boundary.** Only data collected at or before the playback position is eligible for rendering. The canvas never displays data from the future relative to the playback position, even if that data exists in the cache.
+2. **Product and elevation selection is a hard eligibility filter.** When the user selects a specific product and elevation (e.g. 0.5° REF), only radials matching both criteria are eligible. When no filter is applied ("most recent" mode), all products and elevations are eligible.
+3. **At each spatial position, the most recent eligible value is rendered.** Each point on the canvas corresponds to a specific azimuth and range. The rendered value is the most recent eligible gate value at or before the playback position.
+
+### Accumulation Strategy
+
+The viewer uses a **complete sweeps** accumulation strategy. The canvas displays only fully completed sweeps. There is no progressive sweep animation; the display updates discretely when a sweep's collection end time falls behind the playback position. At that moment, the most recent complete sweep matching the active filter is rendered as a full 360°.
+
+At high playback speeds where the playback position advances past multiple sweeps between rendered frames, the renderer shows the most recent complete eligible sweep rather than flashing through every intermediate sweep.
+
+## 6. Timeline and Playback
+
+### Timeline Bounds
+
+The timeline represents a continuous time axis with hard bounds. The right bound is `now + ε` (a small fixed future buffer). The left bound is the start of available NEXRAD data collection. User interaction cannot extend beyond these bounds.
+
+### Zoom and Scale
+
+The timeline supports zooming to change temporal scale. Zoom level governs which operations are available:
+
+- When zoomed too far out, playback is disabled to avoid data acquisition and processing bottlenecks.
+- When zoomed sufficiently far in, real-time mode becomes available.
+
+### Data Availability Visualization
+
+The timeline's visual representation changes with zoom level, progressively revealing more structural detail. At all zoom levels, data availability segments are color-coded by Volume Coverage Pattern, making VCP transitions visible even at the broadest scales.
+
+At coarse zoom levels, the timeline renders solid filled segments indicating contiguous regions where data exists. VCP color-coding is the primary structural information — the user can see at a glance when a site transitioned between clear-air and precipitation modes.
+
+At closer zoom, segments decompose into individual scans. Visual indicators communicate completeness (fully downloaded vs. partial), VCP identity, and VCP transition boundaries. Hatch patterns indicate partial scans.
+
+At sweep-level zoom, scans decompose into constituent sweeps reflecting the active VCP structure.
+
+### Timeline Modes
+
+The timeline operates in distinct interaction modes:
+
+- **Navigate mode** (default): Click sets the playback position. Drag scrubs through time. Data for the targeted moment is acquired on demand if not already cached. When a time range is selected (shift-click-drag or shift-click to set range endpoints), the range becomes the playback loop boundary and archive downloads begin for all scans within it. Playback within a range loops or ping-pongs depending on configuration.
+- **Real-time mode**: The timeline locks to "now" and continuously advances. The right edge is snapped to wall-clock time; the left edge is constrained to a fixed historical window. The application streams incoming chunks as the radar produces them. The user may scrub backward within the historical window while streaming continues in the background — data acquisition and playback position are independent.
+
+Modes are indicated in the timeline dock's status bar and can be switched via controls or keyboard shortcuts. Enabling streaming implicitly enters real-time mode.
+
+Regardless of mode, when streaming begins mid-volume, the system always fetches record 1 (the header) of the current archive, which contains the VCP and other metadata required to interpret subsequent records.
+
+### Playback Controls
+
+The timeline always has a playback position representing the moment whose data is displayed. Playback supports:
+
+- Pause and resume
+- Step forward and back
+- Variable playback speed, from real-time (1:1) to accelerated rates (seven levels up to 20 min/s)
+- Loop modes: loop, ping-pong, and once
+
+### Datetime Jump
+
+A datetime picker dialog allows navigating directly to a specific date and time. Supports both UTC and local timezone input with validation feedback.
+
+## 7. Data Acquisition
+
+When the playback position targets uncached data, the required scans are fetched on demand. When a time range is selected, scans within the range are enumerated and downloaded.
+
+Acquisition feedback includes a progress indicator showing active and completed fetches and download count. When a request fails, an error notification appears with the option to retry or dismiss. Failures do not block other pending downloads.
+
+## 8. Real-Time Streaming
+
+When streaming real-time data with playback locked to real time, the viewer renders all data received so far for the active sweep. The live mode tracks streaming phases (idle, acquiring lock, streaming, waiting for chunk, error) and provides estimated timing for chunk arrival.
+
+When streaming but not locked to real time, visualization behavior is identical to archive playback.
+
+## 9. Caching
+
+### Storage Model
+
+Data is persisted in browser storage (IndexedDB) in two logical categories:
+
+**Payload storage** holds the actual radar data as pre-computed sweep blobs. This format preserves rendered data for efficient retrieval.
+
+**Index storage** is a lightweight index tracking what data exists in storage. The index enables fast timeline construction and efficient planning of batch record loads. It tracks which scans are present, whether each scan is complete or partial, temporal bounds, and per-record metadata.
+
+### Cache Behavior
+
+Downloaded data is cached and reused when the user navigates to previously-viewed time ranges. Cache persists across sessions. When storage limits are reached, older data is evicted according to a least-recently-used policy. Users can configure the storage quota (100 MB to 20 GB) and manually clear the cache via controls in the right sidebar.
+
+## 10. Application Configuration
+
+### URL and Deep Linking
+
+The application state is encoded in the URL to support deep linking and sharing. URL parameters fall into two categories:
+
+**Transparent parameters** are human-readable and can be constructed programmatically: site ID (`site`), playback time as Unix timestamp (`t`), product selection (`product`), and center coordinates (`lat`, `lon`). A URL like `?site=KDMX&t=1700000000&product=REF` opens the application at a predictable state.
+
+**Opaque parameters** encode remaining view state (map zoom, pan position, 3D camera settings, and other UI options) as a single base64-encoded parameter (`v`). This preserves the exact view on reload or when sharing.
+
+The URL updates as the user navigates, enabling browser back/forward navigation and bookmarking.
+
+### User Preferences
+
+User preferences are persisted in browser local storage. Preferences include playback speed, render mode, geographic layer visibility, timezone preference (local vs. UTC), and preferred site. Preferences apply across sessions and are independent of URL state — the URL captures the current view, while preferences capture the user's defaults.
+
+### Appearance
+
+The application supports dark and light appearance modes, defaulting to the operating system's preference. Map base layers, UI chrome, and all interface elements adapt to the active mode. The user may override the OS default via application settings.
+
+### Keyboard Shortcuts
+
+The application provides keyboard shortcuts for power users:
+
+- **Playback**: Space (play/pause), `[`/`]` (step), `-`/`=` (speed), Ctrl+L (live mode), P (cycle product), E (cycle elevation), S (site selection)
+- **View**: 1/2/3/4 (2D, site orbit, planet orbit, free look), T (toggle 2D/3D)
+- **Camera (3D)**: WASD/arrows (move), Q/E (up/down), Shift (2x speed), Ctrl (1/4x speed), R (reset), F (focus), N (north), Home (reset pivot)
+- **General**: `?` (help overlay), Esc (close modal)
+
+### Web Worker Decoding
+
+Heavy computation (Bzip2 decompression, binary decoding, sweep rendering) is offloaded to a dedicated Web Worker, keeping the main UI thread responsive for user interaction.
+
+## 11. Constraints
 
 ### Browser Execution Model
 
-All core functionality runs client-side: data acquisition, decompression, decoding, and rendering. Heavy computation (Bzip2 decompression, binary decoding, rendering preparation) is isolated from the UI thread using WebWorkers. The main UI thread is reserved for user interaction and final composition.
+All core functionality runs client-side: data acquisition, decompression, decoding, and rendering. Heavy computation is isolated from the UI thread using a Web Worker. The main UI thread is reserved for user interaction and final composition.
 
 This architecture creates inherent constraints:
 
@@ -136,27 +265,3 @@ This architecture creates inherent constraints:
 - **Proprietary data sources**: Only publicly available NEXRAD data sources are supported
 - **Offline-first operation**: Network access is assumed for data acquisition; the application caches data but does not function as a fully offline tool
 - **Derived products**: The workbench displays base radar moments; derived products (storm tracking, precipitation estimates) are out of scope
-
-## 6. Application Configuration
-
-### URL and Deep Linking
-
-The application state is encoded in the URL to support deep linking and sharing. URL parameters fall into two categories:
-
-**Transparent parameters** are human-readable and can be constructed programmatically: site ID, playback time, and product selection. A URL like `?site=KDMX&time=2024-05-20T03:35Z&product=REF` opens the application at a predictable state.
-
-**Opaque parameters** encode remaining view state (map zoom, pan position, sidebar visibility, accumulation strategy, and other UI options) as a single base64-encoded parameter. This preserves the exact view on reload or when sharing, without requiring a large number of individual query parameters.
-
-The URL updates as the user navigates, enabling browser back/forward navigation and bookmarking.
-
-### User Preferences
-
-User preferences are persisted in browser local storage. Preferences include default accumulation strategy, preferred color tables, map layer visibility, playback speed defaults, age attenuation settings, and other rendering parameters. Preferences apply across sessions and are independent of URL state — the URL captures the current view, while preferences capture the user's defaults.
-
-### Appearance
-
-The application supports dark and light appearance modes, defaulting to the operating system's preference. Map base layers, UI chrome, and all interface elements adapt to the active mode. The user may override the OS default via application settings.
-
-### Keyboard Shortcuts
-
-The application provides keyboard shortcuts for power users. Shortcuts cover playback controls (play/pause, step, speed adjustment), sidebar toggling, product/elevation cycling, site switching, and tool activation. A help overlay (`?` key) lists all available shortcuts.
