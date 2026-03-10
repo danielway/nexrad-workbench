@@ -62,11 +62,11 @@ const VIEW_SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         key: "2",
-        description: "3D planet orbit mode",
+        description: "3D site orbit mode",
     },
     Shortcut {
         key: "3",
-        description: "3D site orbit mode",
+        description: "3D planet orbit mode",
     },
     Shortcut {
         key: "4",
@@ -286,12 +286,12 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
 
     if mode_2 {
         state.viz_state.view_mode = ViewMode::Globe3D;
-        state.viz_state.camera.switch_mode(CameraMode::PlanetOrbit);
+        state.viz_state.camera.switch_mode(CameraMode::SiteOrbit);
     }
 
     if mode_3 {
         state.viz_state.view_mode = ViewMode::Globe3D;
-        state.viz_state.camera.switch_mode(CameraMode::SiteOrbit);
+        state.viz_state.camera.switch_mode(CameraMode::PlanetOrbit);
     }
 
     if mode_4 {

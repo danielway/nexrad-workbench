@@ -44,8 +44,8 @@ impl CameraMode {
     /// Key label for the mode (shown in UI).
     pub fn key_hint(&self) -> &'static str {
         match self {
-            CameraMode::PlanetOrbit => "2",
-            CameraMode::SiteOrbit => "3",
+            CameraMode::SiteOrbit => "2",
+            CameraMode::PlanetOrbit => "3",
             CameraMode::FreeLook => "4",
         }
     }
