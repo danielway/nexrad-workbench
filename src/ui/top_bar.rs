@@ -103,7 +103,7 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                         state.shortcuts_help_visible = !state.shortcuts_help_visible;
                     }
 
-                    // Version stamp (truncated with tooltip for long names)
+                    // Version stamp — clickable link to GitHub releases
                     {
                         const MAX_LEN: usize = 24;
                         let version = env!("NEXRAD_VERSION");
@@ -122,12 +122,32 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                             version.to_string()
                         };
 
-                        ui.label(
-                            RichText::new(&display)
-                                .size(11.0)
-                                .color(Color32::from_rgb(80, 80, 80)),
-                        )
-                        .on_hover_text(full_version);
+                        let response = ui.add(
+                            egui::Button::new(
+                                RichText::new(&display)
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(80, 80, 80)),
+                            )
+                            .frame(false),
+                        );
+
+                        if response.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+
+                        let clicked = response.clicked();
+
+                        response
+                            .on_hover_text(format!("{} — click to view changelog", full_version));
+
+                        if clicked {
+                            if let Some(window) = web_sys::window() {
+                                let _ = window.open_with_url_and_target(
+                                    "https://github.com/danielway/nexrad-workbench/releases",
+                                    "_blank",
+                                );
+                            }
+                        }
                     }
 
                     ui.separator();
