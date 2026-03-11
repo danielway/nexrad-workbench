@@ -127,65 +127,44 @@ async fn streaming_loop(
     log::info!("Starting realtime streaming for site: {}", site_id);
 
     // Initialize iterator with a timeout to avoid indefinite waiting when
-    // the site has no data or is unreachable.
+    // the site has no data or is unreachable. ChunkIterator::start() performs
+    // a binary search over 999 round-robin volume directories (~10 S3 LIST
+    // requests) plus chunk fetches (~2-3 more). Each .await is a cancellation
+    // point — when the timeout wins the select, the init future is dropped,
+    // which drops any in-flight HTTP request future and cancels it.
     const ACQUIRE_TIMEOUT_SECS: u32 = 15;
-    let init_result = {
-        let (init_tx, init_rx) = futures_channel::oneshot::channel();
-        let (timeout_tx, timeout_rx) = futures_channel::oneshot::channel();
+    let init_future = ChunkIterator::start(&site_id);
+    let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
 
-        let site_clone = site_id.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            let result = ChunkIterator::start(&site_clone).await;
-            let _ = init_tx.send(result);
-        });
-        wasm_bindgen_futures::spawn_local(async move {
-            sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000).await;
-            let _ = timeout_tx.send(());
-        });
+    futures_util::pin_mut!(init_future);
+    futures_util::pin_mut!(timeout_future);
 
-        // Race the init against the timeout
-        let mut init_rx = init_rx;
-        let mut timeout_rx = timeout_rx;
-        match futures_util::future::select(
-            std::pin::Pin::new(&mut init_rx),
-            std::pin::Pin::new(&mut timeout_rx),
-        )
-        .await
-        {
-            futures_util::future::Either::Left((Ok(Ok(init)), _)) => init,
-            futures_util::future::Either::Left((Ok(Err(e)), _)) => {
-                let mut s = state.borrow_mut();
-                s.results.push(RealtimeResult::Error(format!(
-                    "Failed to initialize: {}",
-                    e
-                )));
-                s.active = false;
-                ctx.request_repaint();
-                return;
-            }
-            futures_util::future::Either::Left((Err(_), _)) => {
-                let mut s = state.borrow_mut();
-                s.results
-                    .push(RealtimeResult::Error("Acquisition cancelled".to_string()));
-                s.active = false;
-                ctx.request_repaint();
-                return;
-            }
-            futures_util::future::Either::Right(_) => {
-                log::warn!(
-                    "Realtime acquisition timed out after {}s for site {}",
-                    ACQUIRE_TIMEOUT_SECS,
-                    site_id
-                );
-                let mut s = state.borrow_mut();
-                s.results.push(RealtimeResult::Error(format!(
-                    "Acquisition timed out after {}s — data may be unavailable for this site",
-                    ACQUIRE_TIMEOUT_SECS
-                )));
-                s.active = false;
-                ctx.request_repaint();
-                return;
-            }
+    let init_result = match futures_util::future::select(init_future, timeout_future).await {
+        futures_util::future::Either::Left((Ok(init), _)) => init,
+        futures_util::future::Either::Left((Err(e), _)) => {
+            let mut s = state.borrow_mut();
+            s.results.push(RealtimeResult::Error(format!(
+                "Failed to initialize: {}",
+                e
+            )));
+            s.active = false;
+            ctx.request_repaint();
+            return;
+        }
+        futures_util::future::Either::Right(_) => {
+            log::warn!(
+                "Realtime acquisition timed out after {}s for site {}",
+                ACQUIRE_TIMEOUT_SECS,
+                site_id
+            );
+            let mut s = state.borrow_mut();
+            s.results.push(RealtimeResult::Error(format!(
+                "Acquisition timed out after {}s — data may be unavailable for this site",
+                ACQUIRE_TIMEOUT_SECS
+            )));
+            s.active = false;
+            ctx.request_repaint();
+            return;
         }
     };
 
