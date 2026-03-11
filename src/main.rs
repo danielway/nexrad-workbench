@@ -734,6 +734,49 @@ impl WorkbenchApp {
             .start(ctx.clone(), site_id, self.data_facade.clone());
     }
 
+    /// Fetch the latest available archive scan for the current site.
+    ///
+    /// Fetches today's (and yesterday's) archive listing to find the most recent
+    /// scan, then downloads it. This gives users immediate data after site selection
+    /// without starting real-time streaming.
+    fn fetch_latest_scan(&mut self, ctx: &egui::Context) {
+        let site_id = self.state.viz_state.site_id.clone();
+        log::info!("Fetching latest scan for site: {}", site_id);
+
+        self.state.status_message = "Fetching latest data...".to_string();
+
+        // Position playback at current time so DownloadAtPosition finds the latest scan
+        let now = js_sys::Date::now() / 1000.0;
+        self.state.playback_state.set_playback_position(now);
+        self.state.playback_state.center_view_on(now);
+
+        // Fetch listings for today and yesterday (in case we're near midnight UTC
+        // or today has no data yet). DownloadAtPosition will fire once the listing
+        // arrives and pick the scan closest to the current playback position.
+        let today = chrono::Utc::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+
+        // Fetch yesterday's listing first (fallback)
+        if self.archive_index.get(&site_id, &yesterday).is_none()
+            && !self.download_channel.is_listing_pending(&site_id, &yesterday)
+        {
+            self.download_channel
+                .fetch_listing(ctx.clone(), site_id.clone(), yesterday);
+        }
+
+        // Fetch today's listing
+        if self.archive_index.get(&site_id, &today).is_none()
+            && !self.download_channel.is_listing_pending(&site_id, &today)
+        {
+            self.download_channel
+                .fetch_listing(ctx.clone(), site_id.clone(), today);
+        }
+
+        // Queue a DownloadAtPosition to fire once listings are available.
+        self.state
+            .push_command(state::AppCommand::DownloadAtPosition);
+    }
+
     /// Find the best elevation number for the current target_elevation.
     ///
     /// If sweep metadata with angles is available, picks the number whose angle
@@ -1234,6 +1277,9 @@ impl eframe::App for WorkbenchApp {
                 }
                 state::AppCommand::StartLive => {
                     self.start_live_mode(ctx);
+                }
+                state::AppCommand::FetchLatest => {
+                    self.fetch_latest_scan(ctx);
                 }
                 state::AppCommand::DownloadSelection => {
                     do_download_selection = true;

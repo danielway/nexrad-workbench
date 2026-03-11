@@ -229,10 +229,17 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
 
     log::info!("Fetching archive listing for {}/{}", site_id, date);
 
-    let files = match archive::list_files(site_id, &date).await {
-        Ok(files) => files,
-        Err(e) => {
+    let files = match with_timeout(
+        archive::list_files(site_id, &date),
+        REQUEST_TIMEOUT_MS,
+        "Archive listing",
+    ).await {
+        Ok(Ok(files)) => files,
+        Ok(Err(e)) => {
             return ListingResult::Error(format!("Failed to list files: {}", e));
+        }
+        Err(timeout_msg) => {
+            return ListingResult::Error(timeout_msg);
         }
     };
 
@@ -268,6 +275,48 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
     }
 }
 
+/// Timeout duration for individual network requests (listing + download).
+const REQUEST_TIMEOUT_MS: u32 = 30_000; // 30 seconds
+
+/// Run a future with a timeout. Returns `Err(msg)` if the timeout fires first.
+async fn with_timeout<T>(
+    future: impl std::future::Future<Output = T>,
+    timeout_ms: u32,
+    label: &str,
+) -> Result<T, String> {
+    let label = label.to_string();
+    let timeout = async {
+        sleep_ms(timeout_ms).await;
+    };
+
+    futures_util::pin_mut!(future);
+    futures_util::pin_mut!(timeout);
+
+    match futures_util::future::select(future, timeout).await {
+        futures_util::future::Either::Left((val, _)) => Ok(val),
+        futures_util::future::Either::Right(_) => {
+            Err(format!("{} timed out after {}s", label, timeout_ms / 1000))
+        }
+    }
+}
+
+async fn sleep_ms(ms: u32) {
+    use wasm_bindgen::prelude::*;
+
+    #[wasm_bindgen]
+    extern "C" {
+        #[wasm_bindgen(js_name = setTimeout)]
+        fn set_timeout(closure: &Closure<dyn FnMut()>, millis: u32) -> i32;
+    }
+
+    let (tx, rx) = futures_channel::oneshot::channel::<()>();
+    let closure = Closure::once(move || {
+        let _ = tx.send(());
+    });
+    set_timeout(&closure, ms);
+    let _ = rx.await;
+}
+
 /// Downloads a specific file from the archive.
 async fn download_specific_file(
     site_id: &str,
@@ -293,14 +342,22 @@ async fn download_specific_file(
 
     // Request 1: List files to find the one we want
     stats.request_started();
-    let files = match archive::list_files(site_id, &date).await {
-        Ok(files) => {
+    let files = match with_timeout(
+        archive::list_files(site_id, &date),
+        REQUEST_TIMEOUT_MS,
+        "Archive listing",
+    ).await {
+        Ok(Ok(files)) => {
             stats.request_completed(0);
             files
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             stats.request_completed(0);
             return DownloadResult::Error(format!("Failed to list files: {}", e));
+        }
+        Err(timeout_msg) => {
+            stats.request_completed(0);
+            return DownloadResult::Error(timeout_msg);
         }
     };
 
@@ -315,11 +372,19 @@ async fn download_specific_file(
     // Request 2: Download the file
     stats.request_started();
     let fetch_start = web_time::Instant::now();
-    let file = match archive::download_file(file_meta).await {
-        Ok(file) => file,
-        Err(e) => {
+    let file = match with_timeout(
+        archive::download_file(file_meta),
+        REQUEST_TIMEOUT_MS,
+        "File download",
+    ).await {
+        Ok(Ok(file)) => file,
+        Ok(Err(e)) => {
             stats.request_completed(0);
             return DownloadResult::Error(format!("Download failed: {}", e));
+        }
+        Err(timeout_msg) => {
+            stats.request_completed(0);
+            return DownloadResult::Error(timeout_msg);
         }
     };
     let fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0;

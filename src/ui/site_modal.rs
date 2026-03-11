@@ -76,6 +76,7 @@ fn apply_site_selection(state: &mut AppState, site_id: &str, lat: f64, lon: f64)
     state.push_command(crate::state::AppCommand::RefreshTimeline {
         auto_position: true,
     });
+    state.push_command(crate::state::AppCommand::FetchLatest);
     state.preferred_site = Some(site_id.to_string());
     state.site_modal_open = false;
 }
