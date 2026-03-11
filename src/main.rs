@@ -758,7 +758,9 @@ impl WorkbenchApp {
 
         // Fetch yesterday's listing first (fallback)
         if self.archive_index.get(&site_id, &yesterday).is_none()
-            && !self.download_channel.is_listing_pending(&site_id, &yesterday)
+            && !self
+                .download_channel
+                .is_listing_pending(&site_id, &yesterday)
         {
             self.download_channel
                 .fetch_listing(ctx.clone(), site_id.clone(), yesterday);

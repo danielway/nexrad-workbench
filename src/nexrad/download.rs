@@ -233,7 +233,9 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
         archive::list_files(site_id, &date),
         REQUEST_TIMEOUT_MS,
         "Archive listing",
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(files)) => files,
         Ok(Err(e)) => {
             return ListingResult::Error(format!("Failed to list files: {}", e));
@@ -346,7 +348,9 @@ async fn download_specific_file(
         archive::list_files(site_id, &date),
         REQUEST_TIMEOUT_MS,
         "Archive listing",
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(files)) => {
             stats.request_completed(0);
             files
@@ -376,7 +380,9 @@ async fn download_specific_file(
         archive::download_file(file_meta),
         REQUEST_TIMEOUT_MS,
         "File download",
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(file)) => file,
         Ok(Err(e)) => {
             stats.request_completed(0);

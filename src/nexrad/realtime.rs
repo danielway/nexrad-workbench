@@ -165,9 +165,8 @@ async fn streaming_loop(
             }
             futures_util::future::Either::Left((Err(_), _)) => {
                 let mut s = state.borrow_mut();
-                s.results.push(RealtimeResult::Error(
-                    "Acquisition cancelled".to_string(),
-                ));
+                s.results
+                    .push(RealtimeResult::Error("Acquisition cancelled".to_string()));
                 s.active = false;
                 ctx.request_repaint();
                 return;
