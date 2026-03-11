@@ -124,13 +124,13 @@ impl Default for GlobeCamera {
 }
 
 // Distance clamp range (Earth radii).
-// 1.005 allows very close zoom (roughly matching 2D view detail levels).
-const MIN_DISTANCE: f32 = 1.005;
+// 1.001 allows very close zoom (~6.4 km above surface).
+const MIN_DISTANCE: f32 = 1.001;
 const MAX_DISTANCE: f32 = 20.0;
 
-/// Default camera distance when viewing a radar site (~956 km above surface).
+/// Default camera distance when viewing a radar site (~637 km above surface).
 /// Provides a view comparable to the 2D flat view's ~500 km radius.
-const DEFAULT_SITE_DISTANCE: f32 = 1.15;
+const DEFAULT_SITE_DISTANCE: f32 = 1.10;
 
 #[allow(dead_code)]
 impl GlobeCamera {
