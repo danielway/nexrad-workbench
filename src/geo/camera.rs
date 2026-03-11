@@ -111,7 +111,7 @@ impl Default for GlobeCamera {
             mode: CameraMode::default(),
             site_lat: 0.0,
             site_lon: 0.0,
-            orbit_bearing: 0.0,
+            orbit_bearing: 180.0,
             orbit_elevation: 45.0,
             tilt: 0.0,
             rotation: 0.0,
@@ -495,7 +495,7 @@ impl GlobeCamera {
         self.site_lat = lat_deg as f32;
         self.site_lon = lon_deg as f32;
         self.distance = 3.0;
-        self.orbit_bearing = 0.0;
+        self.orbit_bearing = 180.0;
         self.orbit_elevation = 45.0;
         self.tilt = 0.0;
         self.rotation = 0.0;
@@ -510,7 +510,7 @@ impl GlobeCamera {
     pub fn recenter(&mut self) {
         self.center_lat = self.site_lat;
         self.center_lon = self.site_lon;
-        self.orbit_bearing = 0.0;
+        self.orbit_bearing = 180.0;
         self.orbit_elevation = 45.0;
         self.tilt = 0.0;
         self.rotation = 0.0;
@@ -528,7 +528,7 @@ impl GlobeCamera {
                 self.rotation = 0.0;
             }
             CameraMode::SiteOrbit => {
-                self.orbit_bearing = 0.0;
+                self.orbit_bearing = 180.0;
                 self.orbit_elevation = 45.0;
                 self.distance = 3.0;
                 self.tilt = 0.0;
@@ -555,8 +555,8 @@ impl GlobeCamera {
                 self.center_lon = self.site_lon;
             }
             CameraMode::SiteOrbit => {
-                // Already orbiting the site; just snap bearing to north
-                self.orbit_bearing = 0.0;
+                // Already orbiting the site; snap to looking north (camera south)
+                self.orbit_bearing = 180.0;
             }
             CameraMode::FreeLook => {
                 // Move camera near the site and point toward it
