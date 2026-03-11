@@ -20,7 +20,7 @@ mod viz;
 pub use crate::geo::camera::CameraMode;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
-pub use playback::{LoopMode, PlaybackSpeed, PlaybackState};
+pub use playback::{LoopMode, PlaybackSpeed, PlaybackState, TimeModel};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
 pub use saved_events::{SavedEvent, SavedEvents};
