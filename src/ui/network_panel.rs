@@ -86,40 +86,6 @@ pub fn render_network_log(ctx: &egui::Context, state: &mut AppState) {
 
             ui.separator();
 
-            // Column headers
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("URL")
-                        .size(10.0)
-                        .strong()
-                        .color(heading_color),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(
-                        RichText::new("Duration")
-                            .size(10.0)
-                            .strong()
-                            .color(heading_color),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("Size")
-                            .size(10.0)
-                            .strong()
-                            .color(heading_color),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("Status")
-                            .size(10.0)
-                            .strong()
-                            .color(heading_color),
-                    );
-                });
-            });
-
-            ui.separator();
-
             // Scrollable request list (newest at bottom)
             ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -135,62 +101,85 @@ pub fn render_network_log(ctx: &egui::Context, state: &mut AppState) {
                         return;
                     }
 
-                    for req in &state.recent_network_requests {
-                        let status_color = status_color(req.status, req.ok);
-                        let short_url = shorten_url(&req.url);
-
-                        ui.horizontal(|ui| {
-                            // URL (left-aligned, truncated)
+                    egui::Grid::new("network_log_grid")
+                        .num_columns(4)
+                        .spacing([10.0, 2.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            // Column headers
                             ui.label(
-                                RichText::new(&short_url)
+                                RichText::new("Status")
                                     .size(10.0)
-                                    .monospace()
-                                    .color(value_color),
-                            )
-                            .on_hover_text(&req.url);
-
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    // Duration
-                                    ui.label(
-                                        RichText::new(format!("{:.0}ms", req.duration_ms))
-                                            .size(10.0)
-                                            .monospace()
-                                            .color(value_color),
-                                    );
-                                    ui.add_space(8.0);
-
-                                    // Size
-                                    let size_str = if req.bytes > 0 {
-                                        format_bytes(req.bytes)
-                                    } else {
-                                        "\u{2014}".to_string()
-                                    };
-                                    ui.label(
-                                        RichText::new(size_str)
-                                            .size(10.0)
-                                            .monospace()
-                                            .color(value_color),
-                                    );
-                                    ui.add_space(8.0);
-
-                                    // Status code
-                                    let status_str = if req.status > 0 {
-                                        format!("{}", req.status)
-                                    } else {
-                                        "ERR".to_string()
-                                    };
-                                    ui.label(
-                                        RichText::new(status_str)
-                                            .size(10.0)
-                                            .monospace()
-                                            .color(status_color),
-                                    );
-                                },
+                                    .strong()
+                                    .color(heading_color),
                             );
+                            ui.label(
+                                RichText::new("URL")
+                                    .size(10.0)
+                                    .strong()
+                                    .color(heading_color),
+                            );
+                            ui.label(
+                                RichText::new("Size")
+                                    .size(10.0)
+                                    .strong()
+                                    .color(heading_color),
+                            );
+                            ui.label(
+                                RichText::new("Duration")
+                                    .size(10.0)
+                                    .strong()
+                                    .color(heading_color),
+                            );
+                            ui.end_row();
+
+                            for req in &state.recent_network_requests {
+                                let sc = status_color(req.status, req.ok);
+                                let short_url = shorten_url(&req.url);
+
+                                // Status code
+                                let status_str = if req.status > 0 {
+                                    format!("{}", req.status)
+                                } else {
+                                    "ERR".to_string()
+                                };
+                                ui.label(
+                                    RichText::new(status_str).size(10.0).monospace().color(sc),
+                                );
+
+                                // URL (truncated, hover for full)
+                                ui.label(
+                                    RichText::new(&short_url)
+                                        .size(10.0)
+                                        .monospace()
+                                        .color(value_color),
+                                )
+                                .on_hover_text(&req.url);
+
+                                // Size
+                                let size_str = if req.bytes > 0 {
+                                    format_bytes(req.bytes)
+                                } else {
+                                    "\u{2014}".to_string()
+                                };
+                                ui.label(
+                                    RichText::new(size_str)
+                                        .size(10.0)
+                                        .monospace()
+                                        .color(value_color),
+                                );
+
+                                // Duration
+                                ui.label(
+                                    RichText::new(format!("{:.0}ms", req.duration_ms))
+                                        .size(10.0)
+                                        .monospace()
+                                        .color(value_color),
+                                );
+
+                                ui.end_row();
+                            }
                         });
-                    }
                 });
         });
 }
@@ -206,33 +195,32 @@ fn status_color(status: u16, ok: bool) -> Color32 {
     }
 }
 
-/// Shorten a URL for display by extracting the hostname and last path segment.
+/// Shorten a URL for display, keeping host and full path visible up to a
+/// generous limit. The full URL is still available on hover.
 fn shorten_url(url: &str) -> String {
-    // Try to extract host + last path segment
-    if let Some(after_scheme) = url
+    // Strip the scheme to save space but keep the rest visible.
+    let without_scheme = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
-    {
-        let parts: Vec<&str> = after_scheme.splitn(2, '/').collect();
+        .unwrap_or(url);
+
+    const MAX_LEN: usize = 120;
+    if without_scheme.len() <= MAX_LEN {
+        without_scheme.to_string()
+    } else {
+        // Keep the host and as much of the tail as possible.
+        let parts: Vec<&str> = without_scheme.splitn(2, '/').collect();
         let host = parts[0];
         let path = parts.get(1).unwrap_or(&"");
-
-        // Get the last path segment (file name)
-        let last_segment = path.rsplit('/').next().unwrap_or("");
-
-        if last_segment.is_empty() {
-            host.to_string()
-        } else if last_segment.len() > 40 {
-            format!("{}/...{}", host, &last_segment[last_segment.len() - 35..])
+        let budget = MAX_LEN.saturating_sub(host.len() + 5); // "/.../" = 5
+        if budget > 0 && path.len() > budget {
+            format!("{}/.../{}", host, &path[path.len() - budget..])
         } else {
-            format!("{}/.../{}", host, last_segment)
-        }
-    } else {
-        // Fallback: truncate from the end
-        if url.len() > 60 {
-            format!("...{}", &url[url.len() - 57..])
-        } else {
-            url.to_string()
+            format!(
+                "{}...{}",
+                &without_scheme[..40],
+                &without_scheme[without_scheme.len() - (MAX_LEN - 43)..]
+            )
         }
     }
 }

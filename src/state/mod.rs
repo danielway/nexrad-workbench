@@ -21,7 +21,8 @@ mod viz;
 
 pub use crate::geo::camera::CameraMode;
 pub use acquisition::{
-    AcquisitionState, DrawerTab, OperationId, OperationKind, OperationStatus, QueueState,
+    AcquisitionState, DrawerTab, NetworkGroupKey, OperationId, OperationKind, OperationStatus,
+    QueueState,
 };
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
