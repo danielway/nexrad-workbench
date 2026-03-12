@@ -254,7 +254,7 @@ pub fn fallback_azimuth_rate(is_clear_air: bool, waveform: &str, prf_number: u8)
         match (waveform, prf_number) {
             ("CS", 1) => 5.0,
             ("CS", 2) => 5.5,
-            ("CS", _) => 5.0,    // Default CS clear-air
+            ("CS", _) => 5.0, // Default CS clear-air
             ("CDW", _) => 15.7,
             ("CDWO", _) => 8.5,
             ("Batch", 3) => 14.6,
@@ -267,7 +267,7 @@ pub fn fallback_azimuth_rate(is_clear_air: bool, waveform: &str, prf_number: u8)
         match (waveform, prf_number) {
             ("CS", 1) => 21.1,
             ("CS", 2) => 23.0,
-            ("CS", _) => 21.1,   // Default CS precip
+            ("CS", _) => 21.1, // Default CS precip
             ("CDW", _) => 18.8,
             ("CDWO", _) => 28.5,
             ("Batch", 3) => 26.2,
@@ -281,6 +281,7 @@ pub fn fallback_azimuth_rate(is_clear_air: bool, waveform: &str, prf_number: u8)
 
 /// Compute even-distribution sweep durations (fallback when no VCP elevation data
 /// is available). Returns a vec of `count` equal durations summing to `total`.
+#[allow(dead_code)]
 pub fn even_sweep_durations(total: f64, count: usize) -> Vec<f64> {
     if count == 0 {
         return Vec::new();

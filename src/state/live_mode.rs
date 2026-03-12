@@ -459,9 +459,12 @@ impl LiveModeState {
             // Recompute with current volume duration to stay in sync
             let total_weight: f64 = self.estimated_sweep_durations.iter().sum();
             if total_weight > 0.0 {
-                let fraction =
-                    self.estimated_sweep_durations.get(elev_idx).copied().unwrap_or(0.0)
-                        / total_weight;
+                let fraction = self
+                    .estimated_sweep_durations
+                    .get(elev_idx)
+                    .copied()
+                    .unwrap_or(0.0)
+                    / total_weight;
                 return Some(fraction * vol_dur);
             }
         }

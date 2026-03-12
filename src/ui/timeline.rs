@@ -1797,15 +1797,12 @@ fn render_realtime_progress(
                     let remaining_dur = (vol_start + expected_dur) - ae;
 
                     // Sum the weights of remaining elevations for proportional distribution
-                    let remaining_weight_sum: f64 = (anchor_idx..expected_count)
-                        .map(|i| sweep_dur_for(i))
-                        .sum();
+                    let remaining_weight_sum: f64 =
+                        (anchor_idx..expected_count).map(&sweep_dur_for).sum();
 
                     if remaining_weight_sum > 0.0 {
                         let offset_from_anchor: f64 = (anchor_idx..elev_idx)
-                            .map(|i| {
-                                (sweep_dur_for(i) / remaining_weight_sum) * remaining_dur
-                            })
+                            .map(|i| (sweep_dur_for(i) / remaining_weight_sum) * remaining_dur)
                             .sum();
                         ae + offset_from_anchor
                     } else {
@@ -2386,14 +2383,11 @@ fn render_realtime_volume_tooltip(
                             .unwrap_or(0);
                         let anchor_idx = anchor_elev_num as usize;
                         let remaining_dur = (vol_start + expected_dur) - ae;
-                        let remaining_weight_sum: f64 = (anchor_idx..expected_count)
-                            .map(|i| sweep_dur_for(i))
-                            .sum();
+                        let remaining_weight_sum: f64 =
+                            (anchor_idx..expected_count).map(&sweep_dur_for).sum();
                         if remaining_weight_sum > 0.0 {
                             let offset_from_anchor: f64 = (anchor_idx..elev_idx)
-                                .map(|i| {
-                                    (sweep_dur_for(i) / remaining_weight_sum) * remaining_dur
-                                })
+                                .map(|i| (sweep_dur_for(i) / remaining_weight_sum) * remaining_dur)
                                 .sum();
                             ae + offset_from_anchor
                         } else {
