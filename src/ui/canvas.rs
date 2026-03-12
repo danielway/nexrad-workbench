@@ -123,6 +123,7 @@ pub fn render_canvas_with_geo(
                             state.viz_state.center_lon,
                             gpu_renderer,
                             &state.viz_state.product,
+                            state.use_local_time,
                         );
                     }
                 }
@@ -1022,14 +1023,27 @@ fn render_nexrad_sites(
     }
 }
 
-/// Format a Unix timestamp (seconds) as "HH:MM:SS.mmm UTC".
-fn format_unix_timestamp(ts: f64) -> String {
-    use chrono::{TimeZone, Utc};
-    let secs = ts.floor() as i64;
-    let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
-    match Utc.timestamp_opt(secs, millis * 1_000_000) {
-        chrono::LocalResult::Single(dt) => dt.format("%H:%M:%S%.3f UTC").to_string(),
-        _ => format!("{:.3}s", ts),
+/// Format a Unix timestamp (seconds) as a time string.
+///
+/// When `use_local` is true, formats in the browser's local timezone via `js_sys::Date`.
+/// Otherwise formats as UTC via chrono.
+fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
+    if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(ts * 1000.0);
+        let h = d.get_hours();
+        let m = d.get_minutes();
+        let s = d.get_seconds();
+        let ms = d.get_milliseconds();
+        format!("{h:02}:{m:02}:{s:02}.{ms:03} Local")
+    } else {
+        use chrono::{TimeZone, Utc};
+        let secs = ts.floor() as i64;
+        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
+        match Utc.timestamp_opt(secs, millis * 1_000_000) {
+            chrono::LocalResult::Single(dt) => dt.format("%H:%M:%S%.3f UTC").to_string(),
+            _ => format!("{:.3}s", ts),
+        }
     }
 }
 
@@ -1044,6 +1058,7 @@ fn render_inspector(
     radar_lon: f64,
     gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
     product: &crate::state::RadarProduct,
+    use_local_time: bool,
 ) {
     let geo = projection.screen_to_geo(hover_pos);
     let lat = geo.y;
@@ -1079,7 +1094,7 @@ fn render_inspector(
         }
     }
     if let Some(ts) = collection_time {
-        lines.push(format_unix_timestamp(ts));
+        lines.push(format_unix_timestamp(ts, use_local_time));
     }
     let text = lines.join("\n");
 
