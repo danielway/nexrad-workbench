@@ -525,12 +525,13 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                         }
                     });
             } else if let Some(pattern) = extracted_pattern {
-                // No scan reference but have VCP pattern
+                // No scan reference but have VCP pattern (live mode fallback)
                 egui::ScrollArea::vertical()
                     .max_height(f32::INFINITY)
                     .show(ui, |ui| {
                         ui.set_min_width(available_width);
-                        for elev in &pattern.elevations {
+                        for (idx, elev) in pattern.elevations.iter().enumerate() {
+                            let is_current = radar_state.sweep_index == Some(idx);
                             let wf_short = match elev.waveform.as_str() {
                                 "CS" => "CS",
                                 "CDW" | "CDWO" => "CD",
@@ -547,7 +548,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                                 ui,
                                 elev.angle,
                                 Some(meta),
-                                false,
+                                is_current,
                                 available_width,
                             );
                         }
