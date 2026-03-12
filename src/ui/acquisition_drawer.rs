@@ -51,9 +51,7 @@ pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height
                             state.push_command(AppCommand::ResumeQueue);
                         }
                     } else if state.acquisition.has_active_operations()
-                        && ui
-                            .small_button(format!("{} Pause", icons::PAUSE))
-                            .clicked()
+                        && ui.small_button(format!("{} Pause", icons::PAUSE)).clicked()
                     {
                         state.push_command(AppCommand::PauseQueue);
                     }
