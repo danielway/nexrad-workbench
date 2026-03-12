@@ -1043,7 +1043,12 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 if record.compressed() {
                     match record.decompress() {
                         Ok(decompressed) => {
-                            if !accum_has_full_vcp && chunk_vcp.as_ref().map(|v| v.elevations.is_empty()).unwrap_or(true) {
+                            if !accum_has_full_vcp
+                                && chunk_vcp
+                                    .as_ref()
+                                    .map(|v| v.elevations.is_empty())
+                                    .unwrap_or(true)
+                            {
                                 if let Ok(msgs) = decompressed.messages() {
                                     let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
                                     chunk_radials.extend(r);
