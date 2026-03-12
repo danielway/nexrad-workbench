@@ -1339,12 +1339,6 @@ impl eframe::App for WorkbenchApp {
             }
         }
 
-        // Advance playback position each frame. In real-time mode this keeps
-        // the position tracking wall-clock time; during archive playback it
-        // advances by (dt * speed).  Must run before the scrub logic below so
-        // that scan/sweep lookups use the up-to-date position.
-        self.state.playback_state.advance(dt as f64);
-
         // Ensure continuous repainting for time-dependent UI elements (the "now"
         // marker on the timeline and the data-age indicators) even when the user
         // is idle and playback is stopped.  Repaint once per second which is
