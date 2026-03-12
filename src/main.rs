@@ -129,6 +129,11 @@ pub struct WorkbenchApp {
     /// Currently active acquisition operation ID (for correlating download results).
     active_download_operation_id: Option<state::OperationId>,
 
+    /// Whether the current item at queue[0] has had its download kicked off.
+    /// Used to distinguish "download finished" from "never started" when the
+    /// queue is paused and later resumed.
+    current_queue_item_started: bool,
+
     /// Previous site ID to detect site changes (for clearing volume ring)
     previous_site_id: String,
 
@@ -457,6 +462,7 @@ impl WorkbenchApp {
             selection_download_queue: Vec::new(),
             scan_end_times: std::collections::HashMap::new(),
             active_download_operation_id: None,
+            current_queue_item_started: false,
             previous_site_id: initial_site_id,
             realtime_channel,
             decode_worker,
@@ -502,16 +508,23 @@ impl WorkbenchApp {
         if !self.selection_download_queue.is_empty() {
             // Check if current download is still in progress
             let (_, _, timestamp, _) = &self.selection_download_queue[0];
-            if self
+            let has_active_download = self
                 .download_channel
-                .is_download_pending(&site_id, *timestamp)
-            {
+                .is_download_pending(&site_id, *timestamp);
+
+            if has_active_download {
                 // Still downloading, wait
                 return;
             }
 
-            // Previous download finished, remove it from queue
-            let _ = self.selection_download_queue.remove(0);
+            // Only remove item[0] if its download was actually kicked off.
+            // Without this check, resuming from pause would incorrectly
+            // remove the next unstarted item (is_download_pending returns
+            // false for items that were never started).
+            if self.current_queue_item_started {
+                let _ = self.selection_download_queue.remove(0);
+                self.current_queue_item_started = false;
+            }
 
             // Don't start next download if queue is paused (user or error)
             if self.state.acquisition.is_paused() {
@@ -537,6 +550,7 @@ impl WorkbenchApp {
                     self.active_download_operation_id = Some(op_id);
                 }
 
+                self.current_queue_item_started = true;
                 self.download_channel.download_file(
                     ctx.clone(),
                     site_id.clone(),
@@ -720,6 +734,7 @@ impl WorkbenchApp {
         // Cancel any existing acquisition operations (selection change = cancel all + rebuild)
         self.state.acquisition.cancel_all();
         self.active_download_operation_id = None;
+        self.current_queue_item_started = false;
 
         self.selection_download_queue = files_to_download;
 
@@ -770,6 +785,7 @@ impl WorkbenchApp {
             self.active_download_operation_id = Some(op_id);
         }
 
+        self.current_queue_item_started = true;
         self.download_channel.download_file(
             ctx.clone(),
             site_id,
