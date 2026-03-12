@@ -291,7 +291,7 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                 state
                     .acquisition
                     .find(op_id)
-                    .map(|op| AcquisitionState::network_group_key(op))
+                    .map(AcquisitionState::network_group_key)
                     .unwrap_or(NetworkGroupKey::Operation(op_id))
             }
             None => NetworkGroupKey::Ungrouped,
@@ -329,8 +329,7 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
             }
 
             // Sort groups: named groups first (most recent first), then ungrouped
-            let mut op_groups: Vec<(NetworkGroupKey, Vec<usize>)> =
-                grouped.into_iter().collect();
+            let mut op_groups: Vec<(NetworkGroupKey, Vec<usize>)> = grouped.into_iter().collect();
             op_groups.sort_by(|a, b| {
                 let a_ungrouped = matches!(a.0, NetworkGroupKey::Ungrouped);
                 let b_ungrouped = matches!(b.0, NetworkGroupKey::Ungrouped);
@@ -556,7 +555,11 @@ fn shorten_url(url: &str) -> String {
         if budget > 0 && path.len() > budget {
             format!("{}/.../{}", host, &path[path.len() - budget..])
         } else {
-            format!("{}...{}", &without_scheme[..30], &without_scheme[without_scheme.len() - (MAX_LEN - 33)..])
+            format!(
+                "{}...{}",
+                &without_scheme[..30],
+                &without_scheme[without_scheme.len() - (MAX_LEN - 33)..]
+            )
         }
     }
 }

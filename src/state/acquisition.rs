@@ -49,7 +49,10 @@ pub enum NetworkGroupKey {
     /// A single acquisition operation (archive download, listing, backfill).
     Operation(OperationId),
     /// All realtime chunks sharing the same volume/scan timestamp.
-    RealtimeScan { site_id: String, scan_timestamp: i64 },
+    RealtimeScan {
+        site_id: String,
+        scan_timestamp: i64,
+    },
     /// Requests not correlated to any operation.
     Ungrouped,
 }

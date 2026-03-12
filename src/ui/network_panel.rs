@@ -86,8 +86,6 @@ pub fn render_network_log(ctx: &egui::Context, state: &mut AppState) {
 
             ui.separator();
 
-            ui.separator();
-
             // Scrollable request list (newest at bottom)
             ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -146,10 +144,7 @@ pub fn render_network_log(ctx: &egui::Context, state: &mut AppState) {
                                     "ERR".to_string()
                                 };
                                 ui.label(
-                                    RichText::new(status_str)
-                                        .size(10.0)
-                                        .monospace()
-                                        .color(sc),
+                                    RichText::new(status_str).size(10.0).monospace().color(sc),
                                 );
 
                                 // URL (truncated, hover for full)
@@ -221,7 +216,11 @@ fn shorten_url(url: &str) -> String {
         if budget > 0 && path.len() > budget {
             format!("{}/.../{}", host, &path[path.len() - budget..])
         } else {
-            format!("{}...{}", &without_scheme[..40], &without_scheme[without_scheme.len() - (MAX_LEN - 43)..])
+            format!(
+                "{}...{}",
+                &without_scheme[..40],
+                &without_scheme[without_scheme.len() - (MAX_LEN - 43)..]
+            )
         }
     }
 }
