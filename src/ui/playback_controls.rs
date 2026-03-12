@@ -515,8 +515,12 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
         let req_text = format!("{} req / {}", display_count, display_transferred);
         if ui
             .add(
-                egui::Label::new(RichText::new(req_text).size(10.0).color(ui_colors::value(dark)))
-                    .sense(egui::Sense::click()),
+                egui::Label::new(
+                    RichText::new(req_text)
+                        .size(10.0)
+                        .color(ui_colors::value(dark)),
+                )
+                .sense(egui::Sense::click()),
             )
             .on_hover_text("Click to view network log")
             .clicked()
@@ -528,12 +532,8 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
 
     // Cross-origin isolation indicator
     if state.cross_origin_isolated {
-        ui.label(
-            RichText::new("COI")
-                .size(9.0)
-                .color(ui_colors::SUCCESS),
-        )
-        .on_hover_text("Cross-Origin Isolated: SharedArrayBuffer available");
+        ui.label(RichText::new("COI").size(9.0).color(ui_colors::SUCCESS))
+            .on_hover_text("Cross-Origin Isolated: SharedArrayBuffer available");
         ui.separator();
     }
 

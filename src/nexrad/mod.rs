@@ -10,8 +10,8 @@ mod cache_channel;
 mod decode_worker;
 mod download;
 pub(crate) mod globe_radar_renderer;
-pub(crate) mod network_monitor;
 pub(crate) mod gpu_renderer;
+pub(crate) mod network_monitor;
 mod realtime;
 pub(crate) mod record_decode;
 mod types;
@@ -23,8 +23,10 @@ pub use cache_channel::{CacheLoadChannel, CacheLoadResult};
 pub use decode_worker::{DecodeWorker, VolumeSweepMeta, WorkerOutcome};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use globe_radar_renderer::GlobeRadarRenderer;
-pub use network_monitor::{is_cross_origin_isolated, NetworkAggregate, NetworkMonitor, NetworkRequest};
 pub use gpu_renderer::RadarGpuRenderer;
+pub use network_monitor::{
+    is_cross_origin_isolated, NetworkAggregate, NetworkMonitor, NetworkRequest,
+};
 pub use realtime::{RealtimeChannel, RealtimeResult};
 pub use record_decode::extract_elevation_numbers;
 pub use types::{CachedScan, DownloadResult, ScanMetadata};

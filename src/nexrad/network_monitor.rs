@@ -69,8 +69,8 @@ impl NetworkMonitor {
         let recent_clone = recent_requests.clone();
         let agg_clone = aggregate.clone();
 
-        let listener =
-            Closure::<dyn FnMut(web_sys::MessageEvent)>::new(move |event: web_sys::MessageEvent| {
+        let listener = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
+            move |event: web_sys::MessageEvent| {
                 let data = event.data();
 
                 // Only process our network-metric messages
@@ -133,7 +133,8 @@ impl NetworkMonitor {
                     }
                     recent.push_back(req);
                 }
-            });
+            },
+        );
 
         sw_container
             .add_event_listener_with_callback("message", listener.as_ref().unchecked_ref())
@@ -159,7 +160,6 @@ impl NetworkMonitor {
         let recent = self.recent_requests.borrow();
         recent.iter().cloned().collect()
     }
-
 }
 
 /// Check whether the current browsing context is cross-origin isolated

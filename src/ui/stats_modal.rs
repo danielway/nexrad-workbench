@@ -249,7 +249,13 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
                 } else {
                     label_color
                 };
-                stat_row(ui, "Cross-Origin Isolation", coi_label, label_color, coi_color);
+                stat_row(
+                    ui,
+                    "Cross-Origin Isolation",
+                    coi_label,
+                    label_color,
+                    coi_color,
+                );
 
                 if ui
                     .small_button("View request log")
