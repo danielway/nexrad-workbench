@@ -1958,8 +1958,8 @@ fn render_realtime_progress(
             }
 
             // Leading edge: bright vertical line at the progress front
+            let edge_x = block.min.x + (block.width() * frac);
             if frac > 0.01 && frac < 0.99 {
-                let edge_x = block.min.x + (block.width() * frac);
                 painter.line_segment(
                     [
                         Pos2::new(edge_x, block.min.y),
@@ -1969,18 +1969,81 @@ fn render_realtime_progress(
                 );
             }
 
-            // Next-chunk countdown if we're waiting
+            // ── Next-chunk placeholder block ──
+            // When waiting for the next chunk, render a distinct placeholder
+            // right after the last received chunk with a dotted border and
+            // countdown label. Sized to match chunk_interval in timeline scale.
             if let Some(remaining) = countdown {
-                if width > 20.0 {
+                let nc_start_x = prev_chunk_end_x.unwrap_or(edge_x);
+                let chunk_px = (live_state.chunk_interval_secs * zoom) as f32;
+                let nc_width_raw = chunk_px.max(8.0);
+                let nc_end_x = (nc_start_x + nc_width_raw).min(block.max.x);
+
+                let nc_rect = Rect::from_min_max(
+                    Pos2::new(nc_start_x, block.min.y),
+                    Pos2::new(nc_end_x, block.max.y),
+                );
+                let nc_width = nc_rect.width();
+
+                // Faint fill
+                painter.rect_filled(nc_rect, 1.0, tl_colors::rt_next_chunk_fill());
+
+                // Dotted border (shorter dashes than the regular dashed borders)
+                let dot_color = tl_colors::rt_next_chunk_border();
+                // Top and bottom dotted edges
+                {
+                    let mut x = nc_rect.min.x;
+                    while x < nc_rect.max.x {
+                        let x_seg_end = (x + 2.0).min(nc_rect.max.x);
+                        painter.line_segment(
+                            [
+                                Pos2::new(x, nc_rect.min.y),
+                                Pos2::new(x_seg_end, nc_rect.min.y),
+                            ],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        painter.line_segment(
+                            [
+                                Pos2::new(x, nc_rect.max.y),
+                                Pos2::new(x_seg_end, nc_rect.max.y),
+                            ],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        x += 4.0; // 2px on, 2px off = dotted pattern
+                    }
+                }
+                // Left and right dotted edges
+                {
+                    let mut y = nc_rect.min.y;
+                    while y < nc_rect.max.y {
+                        let y_end = (y + 2.0).min(nc_rect.max.y);
+                        painter.line_segment(
+                            [Pos2::new(nc_rect.min.x, y), Pos2::new(nc_rect.min.x, y_end)],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        painter.line_segment(
+                            [Pos2::new(nc_rect.max.x, y), Pos2::new(nc_rect.max.x, y_end)],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        y += 4.0;
+                    }
+                }
+
+                // Countdown label centered in the next-chunk placeholder
+                if nc_width > 16.0 {
+                    let label = format!("{}s", remaining.ceil() as i32);
                     painter.text(
-                        block.center(),
+                        nc_rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        format!("~{}s", remaining.ceil() as i32),
+                        label,
                         egui::FontId::monospace(8.0),
-                        Color32::from_rgba_unmultiplied(140, 200, 255, 180),
+                        tl_colors::rt_next_chunk_label(),
                     );
                 }
-            } else if width > 30.0 {
+            }
+
+            // Radial progress label in the filled (collected) portion
+            if countdown.is_none() && width > 30.0 {
                 // Show radial progress as fraction while actively receiving
                 let label = if width > 55.0 {
                     format!("{}/{}", total_radials, expected_radials)
@@ -1994,37 +2057,168 @@ fn render_realtime_progress(
                     egui::FontId::monospace(8.0),
                     Color32::from_rgba_unmultiplied(140, 200, 255, 180),
                 );
+            } else if countdown.is_some() && frac > 0.15 {
+                // When waiting, show radial count in the collected portion
+                let collected_center_x = (block.min.x + edge_x) / 2.0;
+                let collected_width = edge_x - block.min.x;
+                if collected_width > 25.0 {
+                    let label = format!("{}", total_radials);
+                    painter.text(
+                        Pos2::new(collected_center_x, block.center().y),
+                        egui::Align2::CENTER_CENTER,
+                        label,
+                        egui::FontId::monospace(8.0),
+                        Color32::from_rgba_unmultiplied(140, 200, 255, 140),
+                    );
+                }
             }
         } else if is_future {
-            // -- Future: dashed outline to clearly indicate estimated bounds --
-            let dash_color = tl_colors::rt_pending_sweep_border();
-            // Dashed top and bottom edges
-            let mut x = block.min.x;
-            while x < block.max.x {
-                let x_seg_end = (x + 4.0).min(block.max.x);
-                painter.line_segment(
-                    [Pos2::new(x, block.min.y), Pos2::new(x_seg_end, block.min.y)],
-                    Stroke::new(0.5, dash_color),
+            // Check if this is the first future sweep (next to receive data)
+            // and we're waiting for a chunk with no downloading sweep active.
+            let is_next_sweep = in_progress_elev.is_none()
+                && countdown.is_some()
+                && !received.iter().any(|&e| e > elev_num);
+
+            // For the "next" sweep, also check it's the very first future one
+            let is_first_future = is_next_sweep
+                && (elev_num == 1 || received.last().is_some_and(|&last| last == elev_num - 1));
+
+            if is_first_future {
+                // ── Next-chunk placeholder on the first future sweep ──
+                // Sized to one chunk interval at the start of the sweep block,
+                // not the entire sweep.
+                let chunk_px = (live_state.chunk_interval_secs * zoom) as f32;
+                let nc_end_x = (block.min.x + chunk_px.max(8.0)).min(block.max.x);
+                let nc_rect = Rect::from_min_max(
+                    Pos2::new(block.min.x, block.min.y),
+                    Pos2::new(nc_end_x, block.max.y),
                 );
-                painter.line_segment(
-                    [Pos2::new(x, block.max.y), Pos2::new(x_seg_end, block.max.y)],
-                    Stroke::new(0.5, dash_color),
-                );
-                x += 8.0;
-            }
-            // Dashed left and right edges
-            let mut y = block.min.y;
-            while y < block.max.y {
-                let y_end = (y + 3.0).min(block.max.y);
-                painter.line_segment(
-                    [Pos2::new(block.min.x, y), Pos2::new(block.min.x, y_end)],
-                    Stroke::new(0.5, dash_color),
-                );
-                painter.line_segment(
-                    [Pos2::new(block.max.x, y), Pos2::new(block.max.x, y_end)],
-                    Stroke::new(0.5, dash_color),
-                );
-                y += 6.0;
+                let nc_width = nc_rect.width();
+
+                let nc_fill = tl_colors::rt_next_chunk_fill();
+                let dot_color = tl_colors::rt_next_chunk_border();
+
+                painter.rect_filled(nc_rect, 1.0, nc_fill);
+
+                // Dotted border (2px on, 2px off)
+                {
+                    let mut x = nc_rect.min.x;
+                    while x < nc_rect.max.x {
+                        let x_seg_end = (x + 2.0).min(nc_rect.max.x);
+                        painter.line_segment(
+                            [
+                                Pos2::new(x, nc_rect.min.y),
+                                Pos2::new(x_seg_end, nc_rect.min.y),
+                            ],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        painter.line_segment(
+                            [
+                                Pos2::new(x, nc_rect.max.y),
+                                Pos2::new(x_seg_end, nc_rect.max.y),
+                            ],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        x += 4.0;
+                    }
+                    let mut y = nc_rect.min.y;
+                    while y < nc_rect.max.y {
+                        let y_end = (y + 2.0).min(nc_rect.max.y);
+                        painter.line_segment(
+                            [Pos2::new(nc_rect.min.x, y), Pos2::new(nc_rect.min.x, y_end)],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        painter.line_segment(
+                            [Pos2::new(nc_rect.max.x, y), Pos2::new(nc_rect.max.x, y_end)],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        y += 4.0;
+                    }
+                }
+
+                // Countdown label
+                if let Some(remaining) = countdown {
+                    if nc_width > 16.0 {
+                        painter.text(
+                            nc_rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            format!("{}s", remaining.ceil() as i32),
+                            egui::FontId::monospace(8.0),
+                            tl_colors::rt_next_chunk_label(),
+                        );
+                    }
+                }
+
+                // Still draw the rest of the sweep as regular future dashed outline
+                if nc_end_x < block.max.x {
+                    let rest_block = Rect::from_min_max(
+                        Pos2::new(nc_end_x, block.min.y),
+                        Pos2::new(block.max.x, block.max.y),
+                    );
+                    let dash_color = tl_colors::rt_pending_sweep_border();
+                    let mut x = rest_block.min.x;
+                    while x < rest_block.max.x {
+                        let x_seg_end = (x + 4.0).min(rest_block.max.x);
+                        painter.line_segment(
+                            [
+                                Pos2::new(x, rest_block.min.y),
+                                Pos2::new(x_seg_end, rest_block.min.y),
+                            ],
+                            Stroke::new(0.5, dash_color),
+                        );
+                        painter.line_segment(
+                            [
+                                Pos2::new(x, rest_block.max.y),
+                                Pos2::new(x_seg_end, rest_block.max.y),
+                            ],
+                            Stroke::new(0.5, dash_color),
+                        );
+                        x += 8.0;
+                    }
+                    let mut y = rest_block.min.y;
+                    while y < rest_block.max.y {
+                        let y_end = (y + 3.0).min(rest_block.max.y);
+                        painter.line_segment(
+                            [
+                                Pos2::new(rest_block.max.x, y),
+                                Pos2::new(rest_block.max.x, y_end),
+                            ],
+                            Stroke::new(0.5, dash_color),
+                        );
+                        y += 6.0;
+                    }
+                }
+            } else {
+                // -- Regular future: dashed outline to indicate estimated bounds --
+                let dash_color = tl_colors::rt_pending_sweep_border();
+                // Dashed top and bottom edges
+                let mut x = block.min.x;
+                while x < block.max.x {
+                    let x_seg_end = (x + 4.0).min(block.max.x);
+                    painter.line_segment(
+                        [Pos2::new(x, block.min.y), Pos2::new(x_seg_end, block.min.y)],
+                        Stroke::new(0.5, dash_color),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(x, block.max.y), Pos2::new(x_seg_end, block.max.y)],
+                        Stroke::new(0.5, dash_color),
+                    );
+                    x += 8.0;
+                }
+                // Dashed left and right edges
+                let mut y = block.min.y;
+                while y < block.max.y {
+                    let y_end = (y + 3.0).min(block.max.y);
+                    painter.line_segment(
+                        [Pos2::new(block.min.x, y), Pos2::new(block.min.x, y_end)],
+                        Stroke::new(0.5, dash_color),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(block.max.x, y), Pos2::new(block.max.x, y_end)],
+                        Stroke::new(0.5, dash_color),
+                    );
+                    y += 6.0;
+                }
             }
         }
 

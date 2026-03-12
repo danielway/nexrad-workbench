@@ -234,6 +234,21 @@ pub mod timeline {
         Color32::from_rgba_unmultiplied(100, 200, 255, 160)
     }
 
+    /// Dotted border for the "next chunk" placeholder block.
+    pub fn rt_next_chunk_border() -> Color32 {
+        Color32::from_rgba_unmultiplied(140, 200, 255, 140)
+    }
+
+    /// Very faint fill for the "next chunk" placeholder block.
+    pub fn rt_next_chunk_fill() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 180, 255, 20)
+    }
+
+    /// Countdown label color for the "next chunk" placeholder.
+    pub fn rt_next_chunk_label() -> Color32 {
+        Color32::from_rgba_unmultiplied(160, 220, 255, 220)
+    }
+
     // ── Saved event overlay colors ────────────────────────────────────
 
     const EVENT_PALETTE: &[(u8, u8, u8)] = &[
