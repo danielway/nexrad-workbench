@@ -2381,8 +2381,8 @@ fn render_realtime_volume_tooltip(
 
         if let Some((elev_num, sw_start, sw_end)) = hovered_elev {
             let is_complete = live_state.elevations_received.contains(&elev_num);
-            let is_downloading = !is_complete
-                && live_state.current_in_progress_elevation == Some(elev_num);
+            let is_downloading =
+                !is_complete && live_state.current_in_progress_elevation == Some(elev_num);
             let elev_angle = vcp_def
                 .and_then(|d| d.elevations.get(elev_num.saturating_sub(1) as usize))
                 .map(|e| e.angle)
@@ -2438,14 +2438,11 @@ fn render_realtime_volume_tooltip(
                     .filter(|&&(e, _, _, _)| e == elev_num)
                     .collect();
                 let completed_chunks = chunks_for_elev.len();
-                let in_progress_radials =
-                    live_state.current_in_progress_radials.unwrap_or(0);
+                let in_progress_radials = live_state.current_in_progress_radials.unwrap_or(0);
 
-                let total_radials: u32 = chunks_for_elev
-                    .iter()
-                    .map(|&&(_, _, _, r)| r)
-                    .sum::<u32>()
-                    + in_progress_radials;
+                let total_radials: u32 =
+                    chunks_for_elev.iter().map(|&&(_, _, _, r)| r).sum::<u32>()
+                        + in_progress_radials;
 
                 ui.label(format!("Radials: {}/360 collected", total_radials));
 
@@ -2455,8 +2452,8 @@ fn render_realtime_volume_tooltip(
                 // Show per-chunk breakdown
                 if completed_chunks > 0 || in_progress_radials > 0 {
                     ui.separator();
-                    let has_active =
-                        in_progress_radials > 0 || live_state.phase == crate::state::LivePhase::Streaming;
+                    let has_active = in_progress_radials > 0
+                        || live_state.phase == crate::state::LivePhase::Streaming;
                     let display_total = if has_active {
                         completed_chunks + 1
                     } else {
@@ -2511,18 +2508,13 @@ fn render_realtime_volume_tooltip(
 
             // VCP waveform info if available
             if let Some(vcp_def) = vcp_def {
-                if let Some(vcp_elev) =
-                    vcp_def.elevations.get(elev_num.saturating_sub(1) as usize)
+                if let Some(vcp_elev) = vcp_def.elevations.get(elev_num.saturating_sub(1) as usize)
                 {
                     ui.separator();
                     let wf_label = match vcp_elev.waveform {
                         "CS" | "ContiguousSurveillance" => "Contiguous Surveillance",
-                        "CDW" | "ContiguousDopplerWithGating" => {
-                            "Contiguous Doppler (Gated)"
-                        }
-                        "CDWO" | "ContiguousDopplerWithoutGating" => {
-                            "Contiguous Doppler"
-                        }
+                        "CDW" | "ContiguousDopplerWithGating" => "Contiguous Doppler (Gated)",
+                        "CDWO" | "ContiguousDopplerWithoutGating" => "Contiguous Doppler",
                         "B" | "Batch" => "Batch",
                         "SPP" | "StaggeredPulsePair" => "Staggered Pulse Pair",
                         other => other,
