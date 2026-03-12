@@ -1579,13 +1579,13 @@ fn render_realtime_progress(
         );
     }
 
-    // Projected remainder: very subtle fill
+    // Projected remainder: subtle fill indicating estimated extent
     if x_vol_end > x_now && x_now >= scan_rect.left() {
         let future_rect = Rect::from_min_max(Pos2::new(x_now, scan_block.min.y), scan_block.max);
         painter.rect_filled(
             future_rect,
             2.0,
-            Color32::from_rgba_unmultiplied(vr, vg, vb, 40),
+            Color32::from_rgba_unmultiplied(vr, vg, vb, 55),
         );
     }
 
@@ -1605,16 +1605,16 @@ fn render_realtime_progress(
     }
     // Dashed border for projected remainder
     if x_vol_end > x_now && x_now >= scan_rect.left() {
-        let dash_color = Color32::from_rgba_unmultiplied(vr, vg, vb, 60);
+        let dash_color = Color32::from_rgba_unmultiplied(vr, vg, vb, 90);
         // Dashed right edge
         let mut y = scan_block.min.y;
         while y < scan_block.max.y {
-            let y_end = (y + 3.0).min(scan_block.max.y);
+            let y_end = (y + 4.0).min(scan_block.max.y);
             painter.line_segment(
                 [Pos2::new(x_vol_end, y), Pos2::new(x_vol_end, y_end)],
-                Stroke::new(0.5, dash_color),
+                Stroke::new(1.0, dash_color),
             );
-            y += 6.0;
+            y += 7.0;
         }
         // Dashed top and bottom
         let mut x = x_now;
@@ -1672,25 +1672,26 @@ fn render_realtime_progress(
 
     // ── Projected future scan boundaries (dashed lines) ──
     if expected_dur > 30.0 {
+        let boundary_color = tl_colors::estimated_boundary();
         for i in 1..=2 {
             let projected_ts = vol_start + expected_dur * i as f64;
             let x = ts_to_x(projected_ts);
             if x >= scan_rect.left() && x <= scan_rect.right() {
                 let mut y = scan_rect.top();
                 while y < scan_rect.bottom() {
-                    let y_end = (y + 3.0).min(scan_rect.bottom());
+                    let y_end = (y + 4.0).min(scan_rect.bottom());
                     painter.line_segment(
                         [Pos2::new(x, y), Pos2::new(x, y_end)],
-                        Stroke::new(0.5, tl_colors::estimated_boundary()),
+                        Stroke::new(1.0, boundary_color),
                     );
-                    y += 6.0;
+                    y += 7.0;
                 }
                 painter.text(
-                    Pos2::new(x + 2.0, scan_rect.top() + 2.0),
+                    Pos2::new(x + 3.0, scan_rect.top() + 2.0),
                     egui::Align2::LEFT_TOP,
                     "est.",
-                    egui::FontId::monospace(8.0),
-                    tl_colors::estimated_boundary(),
+                    egui::FontId::monospace(9.0),
+                    boundary_color,
                 );
             }
         }
@@ -1865,14 +1866,40 @@ fn render_realtime_progress(
                 );
             }
 
-            painter.rect_stroke(
-                block,
-                1.0,
-                Stroke::new(1.0, border_color),
-                StrokeKind::Inside,
-            );
+            // Dashed border: the extent of the downloading sweep is estimated,
+            // so use dashes to communicate that these bounds are approximate.
+            {
+                let mut x = block.min.x;
+                while x < block.max.x {
+                    let x_seg_end = (x + 4.0).min(block.max.x);
+                    painter.line_segment(
+                        [Pos2::new(x, block.min.y), Pos2::new(x_seg_end, block.min.y)],
+                        Stroke::new(1.0, border_color),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(x, block.max.y), Pos2::new(x_seg_end, block.max.y)],
+                        Stroke::new(1.0, border_color),
+                    );
+                    x += 8.0;
+                }
+                let mut y = block.min.y;
+                while y < block.max.y {
+                    let y_end = (y + 3.0).min(block.max.y);
+                    painter.line_segment(
+                        [Pos2::new(block.min.x, y), Pos2::new(block.min.x, y_end)],
+                        Stroke::new(1.0, border_color),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(block.max.x, y), Pos2::new(block.max.x, y_end)],
+                        Stroke::new(1.0, border_color),
+                    );
+                    y += 6.0;
+                }
+            }
 
-            // Draw downloaded chunks that belong to this elevation
+            // Draw downloaded chunks that belong to this elevation, with
+            // clear separators between each chunk boundary.
+            let mut prev_chunk_end_x: Option<f32> = None;
             for &(span_elev, span_start, span_end, _) in &live_state.chunk_elev_spans {
                 if span_elev != elev_num {
                     continue;
@@ -1889,7 +1916,33 @@ fn render_realtime_progress(
                         0.0,
                         Color32::from_rgba_unmultiplied(60, 140, 200, 55),
                     );
+
+                    // Separator tick at each chunk boundary
+                    if let Some(prev_x) = prev_chunk_end_x {
+                        // Draw separator at the boundary between previous and current chunk
+                        let sep_x = (prev_x + cx0) / 2.0;
+                        painter.line_segment(
+                            [
+                                Pos2::new(sep_x, block.min.y + 1.0),
+                                Pos2::new(sep_x, block.max.y - 1.0),
+                            ],
+                            Stroke::new(1.0, tl_colors::rt_chunk_separator()),
+                        );
+                    }
+                    prev_chunk_end_x = Some(cx1);
                 }
+            }
+
+            // Leading edge: bright vertical line at the progress front
+            if frac > 0.01 && frac < 0.99 {
+                let edge_x = block.min.x + (block.width() * frac);
+                painter.line_segment(
+                    [
+                        Pos2::new(edge_x, block.min.y),
+                        Pos2::new(edge_x, block.max.y),
+                    ],
+                    Stroke::new(1.5, tl_colors::rt_progress_edge()),
+                );
             }
 
             // Next-chunk countdown if we're waiting
@@ -1919,13 +1972,36 @@ fn render_realtime_progress(
                 );
             }
         } else if is_future {
-            // -- Future: dashed outline --
-            painter.rect_stroke(
-                block,
-                1.0,
-                Stroke::new(0.5, tl_colors::rt_pending_sweep_border()),
-                StrokeKind::Inside,
-            );
+            // -- Future: dashed outline to clearly indicate estimated bounds --
+            let dash_color = tl_colors::rt_pending_sweep_border();
+            // Dashed top and bottom edges
+            let mut x = block.min.x;
+            while x < block.max.x {
+                let x_seg_end = (x + 4.0).min(block.max.x);
+                painter.line_segment(
+                    [Pos2::new(x, block.min.y), Pos2::new(x_seg_end, block.min.y)],
+                    Stroke::new(0.5, dash_color),
+                );
+                painter.line_segment(
+                    [Pos2::new(x, block.max.y), Pos2::new(x_seg_end, block.max.y)],
+                    Stroke::new(0.5, dash_color),
+                );
+                x += 8.0;
+            }
+            // Dashed left and right edges
+            let mut y = block.min.y;
+            while y < block.max.y {
+                let y_end = (y + 3.0).min(block.max.y);
+                painter.line_segment(
+                    [Pos2::new(block.min.x, y), Pos2::new(block.min.x, y_end)],
+                    Stroke::new(0.5, dash_color),
+                );
+                painter.line_segment(
+                    [Pos2::new(block.max.x, y), Pos2::new(block.max.x, y_end)],
+                    Stroke::new(0.5, dash_color),
+                );
+                y += 6.0;
+            }
         }
 
         // Elevation label (for all states, when wide enough)
