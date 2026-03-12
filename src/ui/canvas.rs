@@ -455,6 +455,10 @@ fn filter_geo_layers(layers: &GeoLayerSet, visibility: &GeoLayerVisibility) -> G
 /// Threshold in seconds above which data is considered "archive" (1 hour).
 const ARCHIVE_AGE_THRESHOLD_SECS: f64 = 3600.0;
 
+/// Threshold in seconds above which the age range collapses to a single value
+/// because the sweep duration (~20-30s) is negligible compared to total age.
+const AGE_RANGE_COLLAPSE_SECS: f64 = 300.0;
+
 fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
     let overlay_pos = rect.left_top() + Vec2::new(10.0, 10.0);
     let overlay_rect = Rect::from_min_size(overlay_pos, Vec2::new(260.0, 90.0));
@@ -494,10 +498,24 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
                     .size(12.0)
                     .color(Color32::from_rgb(200, 200, 220)),
             );
-            if let Some(secs) = state.viz_state.data_staleness_secs {
-                let color = age_color(secs);
+            if let Some(end_secs) = state.viz_state.data_staleness_secs {
+                let color = age_color(end_secs);
+                let age_text =
+                    if end_secs < AGE_RANGE_COLLAPSE_SECS {
+                        if let Some(start_secs) = state.viz_state.data_staleness_start_secs {
+                            format!(
+                                "Age: {} – {}",
+                                format_age(start_secs),
+                                format_age(end_secs),
+                            )
+                        } else {
+                            format!("Age: {}", format_age(end_secs))
+                        }
+                    } else {
+                        format!("Age: {}", format_age(end_secs))
+                    };
                 ui.label(
-                    RichText::new(format!("Age: {}", format_age(secs)))
+                    RichText::new(age_text)
                         .monospace()
                         .size(12.0)
                         .color(color),

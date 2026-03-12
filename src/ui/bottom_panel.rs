@@ -85,22 +85,39 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
                     );
 
                     // Show data staleness if available
-                    if let Some(staleness) = state.viz_state.data_staleness_secs {
+                    if let Some(end_staleness) = state.viz_state.data_staleness_secs {
                         ui.separator();
-                        let age_text = if staleness < 60.0 {
-                            format!("{:.0}s old", staleness)
-                        } else if staleness < 3600.0 {
-                            format!("{:.0}m old", staleness / 60.0)
-                        } else if staleness < 86400.0 {
-                            format!("{:.1}h old", staleness / 3600.0)
-                        } else if staleness < 86400.0 * 365.0 {
-                            format!("{:.0}d old", staleness / 86400.0)
-                        } else {
-                            format!("{:.1}y old", staleness / (86400.0 * 365.25))
+                        let format_compact = |secs: f64| -> String {
+                            if secs < 60.0 {
+                                format!("{:.0}s", secs)
+                            } else if secs < 3600.0 {
+                                format!("{:.0}m", secs / 60.0)
+                            } else if secs < 86400.0 {
+                                format!("{:.1}h", secs / 3600.0)
+                            } else if secs < 86400.0 * 365.0 {
+                                format!("{:.0}d", secs / 86400.0)
+                            } else {
+                                format!("{:.1}y", secs / (86400.0 * 365.25))
+                            }
                         };
-                        let age_color = if staleness < 60.0 {
+                        let age_text = if end_staleness < 300.0 {
+                            if let Some(start_staleness) =
+                                state.viz_state.data_staleness_start_secs
+                            {
+                                format!(
+                                    "{}–{} old",
+                                    format_compact(start_staleness),
+                                    format_compact(end_staleness),
+                                )
+                            } else {
+                                format!("{} old", format_compact(end_staleness))
+                            }
+                        } else {
+                            format!("{} old", format_compact(end_staleness))
+                        };
+                        let age_color = if end_staleness < 60.0 {
                             ui_colors::SUCCESS
-                        } else if staleness < 300.0 {
+                        } else if end_staleness < 300.0 {
                             ui_colors::ACTIVE
                         } else {
                             egui::Color32::from_rgb(220, 80, 80)

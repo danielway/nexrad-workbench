@@ -230,8 +230,15 @@ pub struct VizState {
     /// Geographic center longitude (radar site location)
     pub center_lon: f64,
 
-    /// Staleness of the currently displayed data in seconds (for fixed-tilt mode).
+    /// Staleness of the most recent radial (sweep end) in seconds.
     pub data_staleness_secs: Option<f64>,
+
+    /// Staleness of the oldest radial (sweep start) in seconds.
+    pub data_staleness_start_secs: Option<f64>,
+
+    /// Start timestamp (Unix seconds) of the currently rendered sweep.
+    /// Used to recompute `data_staleness_start_secs` every frame.
+    pub rendered_sweep_start_secs: Option<f64>,
 
     /// End timestamp (Unix seconds) of the currently rendered sweep.
     /// Used to recompute `data_staleness_secs` every frame so the age counter ticks.
@@ -260,6 +267,8 @@ impl Default for VizState {
             center_lat: 41.7312,
             center_lon: -93.7229,
             data_staleness_secs: None,
+            data_staleness_start_secs: None,
+            rendered_sweep_start_secs: None,
             rendered_sweep_end_secs: None,
             volume_3d_enabled: false,
             volume_density_cutoff: 5.0,

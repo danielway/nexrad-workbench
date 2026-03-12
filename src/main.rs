@@ -902,13 +902,20 @@ impl WorkbenchApp {
             );
         }
 
-        // Store sweep end time so staleness can be recomputed each frame
+        // Store sweep start/end times so staleness can be recomputed each frame
+        self.state.viz_state.rendered_sweep_start_secs = Some(start);
         self.state.viz_state.rendered_sweep_end_secs = Some(end);
         // Staleness is recomputed per-frame in update(); seed it here for immediate display
         let now = js_sys::Date::now() / 1000.0;
-        let staleness = now - end;
-        self.state.viz_state.data_staleness_secs = if staleness >= 0.0 {
-            Some(staleness)
+        let staleness_end = now - end;
+        let staleness_start = now - start;
+        self.state.viz_state.data_staleness_secs = if staleness_end >= 0.0 {
+            Some(staleness_end)
+        } else {
+            None
+        };
+        self.state.viz_state.data_staleness_start_secs = if staleness_start >= 0.0 {
+            Some(staleness_start)
         } else {
             None
         };
@@ -1213,14 +1220,24 @@ impl eframe::App for WorkbenchApp {
         // Recompute data staleness every frame against wall-clock time.
         // This ensures archive data correctly shows its true age (days/years)
         // rather than a misleading "few minutes" relative to playback position.
-        if let Some(sweep_end) = self.state.viz_state.rendered_sweep_end_secs {
+        {
             let now = js_sys::Date::now() / 1000.0;
-            let staleness = now - sweep_end;
-            self.state.viz_state.data_staleness_secs = if staleness >= 0.0 {
-                Some(staleness)
-            } else {
-                None
-            };
+            if let Some(sweep_end) = self.state.viz_state.rendered_sweep_end_secs {
+                let staleness = now - sweep_end;
+                self.state.viz_state.data_staleness_secs = if staleness >= 0.0 {
+                    Some(staleness)
+                } else {
+                    None
+                };
+            }
+            if let Some(sweep_start) = self.state.viz_state.rendered_sweep_start_secs {
+                let staleness = now - sweep_start;
+                self.state.viz_state.data_staleness_start_secs = if staleness >= 0.0 {
+                    Some(staleness)
+                } else {
+                    None
+                };
+            }
         }
 
         // Run storm cell detection on demand when toggled on with existing data
