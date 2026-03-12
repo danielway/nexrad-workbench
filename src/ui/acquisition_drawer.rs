@@ -50,10 +50,12 @@ pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height
                         if ui.small_button(format!("{} Resume", icons::PLAY)).clicked() {
                             state.push_command(AppCommand::ResumeQueue);
                         }
-                    } else if state.acquisition.has_active_operations() {
-                        if ui.small_button(format!("{} Pause", icons::PAUSE)).clicked() {
-                            state.push_command(AppCommand::PauseQueue);
-                        }
+                    } else if state.acquisition.has_active_operations()
+                        && ui
+                            .small_button(format!("{} Pause", icons::PAUSE))
+                            .clicked()
+                    {
+                        state.push_command(AppCommand::PauseQueue);
                     }
                 } else {
                     // Network tab: link to full log

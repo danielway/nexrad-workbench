@@ -4,6 +4,7 @@
 //! State is organized into logical groupings that correspond to different
 //! areas of functionality.
 
+#[allow(dead_code)]
 pub(crate) mod acquisition;
 mod layer;
 mod live_mode;

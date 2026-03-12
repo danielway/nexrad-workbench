@@ -343,6 +343,7 @@ pub mod acquisition {
     /// Cancelled operation — gray.
     pub const CANCELLED: Color32 = Color32::from_rgb(120, 120, 120);
     /// Paused operation — amber.
+    #[allow(dead_code)]
     pub const PAUSED: Color32 = Color32::from_rgb(255, 180, 50);
 }
 
