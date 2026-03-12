@@ -433,33 +433,26 @@ impl LiveModeState {
         self.current_in_progress_radials = radials;
     }
 
-    /// Record VCP info from an ingest result.
+    /// Record VCP info from an ingest result. When a full `ExtractedVcp` with
+    /// elevation data is available, also computes per-elevation sweep durations.
     pub fn record_vcp(&mut self, vcp: &crate::data::keys::ExtractedVcp) {
         self.current_vcp_number = Some(vcp.number);
         self.expected_elevation_count = Some(vcp.elevations.len() as u8);
         if !vcp.elevations.is_empty() {
             self.current_vcp_pattern = Some(vcp.clone());
-        }
-    }
 
-    /// Record per-elevation sweep duration estimates from an extracted VCP.
-    /// Uses Method A (1/azimuth_rate) weights with Method B category fallbacks.
-    ///
-    /// Also seeds `last_volume_duration_secs` from the VCP if no measured volume
-    /// duration is available yet, providing a much better initial estimate than
-    /// the hardcoded 300s fallback.
-    pub fn record_vcp_durations(&mut self, vcp: &crate::data::keys::ExtractedVcp) {
-        // Seed volume duration from VCP azimuth rates if we haven't measured one yet.
-        // This replaces the 300s fallback with sum(360°/rate_i) which is much closer
-        // to reality (~600s for clear-air VCP 35 vs ~270s for precip VCP 212).
-        if self.last_volume_duration_secs.is_none() {
-            if let Some(estimated) = vcp.estimated_volume_duration() {
-                self.last_volume_duration_secs = Some(estimated);
+            // Seed volume duration from VCP azimuth rates if we haven't measured one yet.
+            // This replaces the 300s fallback with sum(360°/rate_i) which is much closer
+            // to reality (~600s for clear-air VCP 35 vs ~270s for precip VCP 212).
+            if self.last_volume_duration_secs.is_none() {
+                if let Some(estimated) = vcp.estimated_volume_duration() {
+                    self.last_volume_duration_secs = Some(estimated);
+                }
             }
-        }
 
-        let vol_dur = self.last_volume_duration_secs.unwrap_or(300.0);
-        self.estimated_sweep_durations = vcp.sweep_durations(vol_dur);
+            let vol_dur = self.last_volume_duration_secs.unwrap_or(300.0);
+            self.estimated_sweep_durations = vcp.sweep_durations(vol_dur);
+        }
     }
 
     /// Get the estimated sweep duration for a specific elevation index (0-based).
