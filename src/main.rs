@@ -2322,8 +2322,7 @@ impl eframe::App for WorkbenchApp {
                                             next_en,
                                             time_to_end,
                                         );
-                                        self.renderers.last_render_request =
-                                            Some(prefetch_request);
+                                        self.renderers.last_render_request = Some(prefetch_request);
                                         self.decode_worker.as_mut().unwrap().render(
                                             scan_key.clone(),
                                             next_en,
