@@ -109,6 +109,42 @@ pub struct VolumeRenderRequest {
     product: String,
 }
 
+/// State of a single item in the selection download queue.
+#[derive(Clone, Debug)]
+enum QueueItemState {
+    /// Queued but not yet started.
+    Pending,
+    /// Download has been kicked off.
+    Active,
+    /// Download completed successfully.
+    Done,
+    /// Download failed with an error message.
+    #[allow(dead_code)]
+    Failed(String),
+}
+
+/// A single file in the selection download queue.
+#[derive(Clone, Debug)]
+struct QueueItem {
+    date: chrono::NaiveDate,
+    file_name: String,
+    scan_start: i64,
+    scan_end: i64,
+    state: QueueItemState,
+}
+
+impl QueueItem {
+    fn new(date: chrono::NaiveDate, file_name: String, scan_start: i64, scan_end: i64) -> Self {
+        Self {
+            date,
+            file_name,
+            scan_start,
+            scan_end,
+            state: QueueItemState::Pending,
+        }
+    }
+}
+
 /// Main application state and logic.
 pub struct WorkbenchApp {
     /// Application state containing all sub-states
@@ -136,20 +172,10 @@ pub struct WorkbenchApp {
     current_scan: Option<nexrad::CachedScan>,
 
     /// Queue of files to download for selection download feature.
-    /// Each entry is (date, file_name, scan_start, scan_end).
-    selection_download_queue: Vec<(chrono::NaiveDate, String, i64, i64)>,
-
-    /// Map from scan start timestamp to computed end timestamp, populated when
-    /// building the download queue so in-flight tracking can look up boundaries.
-    scan_end_times: std::collections::HashMap<i64, i64>,
+    selection_download_queue: Vec<QueueItem>,
 
     /// Currently active acquisition operation ID (for correlating download results).
     active_download_operation_id: Option<state::OperationId>,
-
-    /// Whether the current item at queue[0] has had its download kicked off.
-    /// Used to distinguish "download finished" from "never started" when the
-    /// queue is paused and later resumed.
-    current_queue_item_started: bool,
 
     /// Previous site ID to detect site changes (for clearing volume ring)
     previous_site_id: String,
@@ -479,9 +505,7 @@ impl WorkbenchApp {
             archive_index: nexrad::ArchiveIndex::new(),
             current_scan: None,
             selection_download_queue: Vec::new(),
-            scan_end_times: std::collections::HashMap::new(),
             active_download_operation_id: None,
-            current_queue_item_started: false,
             previous_site_id: initial_site_id,
             realtime_channel,
             decode_worker,
@@ -523,26 +547,37 @@ impl WorkbenchApp {
     fn process_selection_download(&mut self, ctx: &egui::Context, download_type: Option<bool>) {
         let site_id = self.state.viz_state.site_id.clone();
 
-        // If we have items in the queue, try to download the next one
-        if !self.selection_download_queue.is_empty() {
-            // Check if current download is still in progress
-            let (_, _, timestamp, _) = &self.selection_download_queue[0];
-            let has_active_download = self
-                .download_channel
-                .is_download_pending(&site_id, *timestamp);
+        // If we have items in the queue, try to advance the state machine
+        let has_work = self
+            .selection_download_queue
+            .iter()
+            .any(|item| matches!(item.state, QueueItemState::Pending | QueueItemState::Active));
+        if has_work {
+            // If there is an Active item, check whether its download has finished
+            if let Some(active) = self
+                .selection_download_queue
+                .iter()
+                .find(|item| matches!(item.state, QueueItemState::Active))
+            {
+                let still_pending = self
+                    .download_channel
+                    .is_download_pending(&site_id, active.scan_start);
 
-            if has_active_download {
-                // Still downloading, wait
-                return;
-            }
+                if still_pending {
+                    // Still downloading, wait
+                    return;
+                }
 
-            // Only remove item[0] if its download was actually kicked off.
-            // Without this check, resuming from pause would incorrectly
-            // remove the next unstarted item (is_download_pending returns
-            // false for items that were never started).
-            if self.current_queue_item_started {
-                let _ = self.selection_download_queue.remove(0);
-                self.current_queue_item_started = false;
+                // Download finished — transition Active → Done
+                let active_start = active.scan_start;
+                self.selection_download_queue
+                    .iter_mut()
+                    .find(|item| {
+                        matches!(item.state, QueueItemState::Active)
+                            && item.scan_start == active_start
+                    })
+                    .unwrap()
+                    .state = QueueItemState::Done;
             }
 
             // Don't start next download if queue is paused (user or error)
@@ -550,16 +585,23 @@ impl WorkbenchApp {
                 return;
             }
 
-            // Start the next download if there are more items
-            if !self.selection_download_queue.is_empty() {
-                let (next_date, next_name, next_ts, next_end) = &self.selection_download_queue[0];
-                self.state.status_message = format!(
-                    "Downloading {} ({} remaining)",
-                    next_name,
-                    self.selection_download_queue.len()
-                );
+            // Find the next Pending item and kick off its download
+            let next_pending = self
+                .selection_download_queue
+                .iter()
+                .position(|item| matches!(item.state, QueueItemState::Pending));
+
+            if let Some(idx) = next_pending {
+                let remaining = self
+                    .selection_download_queue
+                    .iter()
+                    .filter(|item| matches!(item.state, QueueItemState::Pending))
+                    .count();
+                let item = &self.selection_download_queue[idx];
+                self.state.status_message =
+                    format!("Downloading {} ({} remaining)", item.file_name, remaining);
                 // Update download progress for next file
-                self.state.download_progress.active_scan = Some((*next_ts, *next_end));
+                self.state.download_progress.active_scan = Some((item.scan_start, item.scan_end));
                 self.state.download_progress.phase = crate::state::DownloadPhase::Downloading;
                 self.state.download_progress.batch_completed += 1;
 
@@ -569,17 +611,22 @@ impl WorkbenchApp {
                     self.active_download_operation_id = Some(op_id);
                 }
 
-                self.current_queue_item_started = true;
+                let date = item.date;
+                let file_name = item.file_name.clone();
+                let scan_start = item.scan_start;
+
+                self.selection_download_queue[idx].state = QueueItemState::Active;
                 self.download_channel.download_file(
                     ctx.clone(),
                     site_id.clone(),
-                    *next_date,
-                    next_name.clone(),
-                    *next_ts,
+                    date,
+                    file_name,
+                    scan_start,
                     self.data_facade.clone(),
                 );
             } else {
-                // Download queue drained, but in-flight processing may continue.
+                // All items are Done/Failed — download queue drained.
+                self.selection_download_queue.clear();
                 self.state.download_selection_in_progress = false;
                 self.state.download_progress.pending_scans.clear();
                 self.state.download_progress.active_scan = None;
@@ -639,7 +686,7 @@ impl WorkbenchApp {
         );
 
         // Collect all files whose scan boundaries intersect the selection
-        let mut files_to_download = Vec::new();
+        let mut files_to_download: Vec<QueueItem> = Vec::new();
         let mut current_date = start_date;
 
         while current_date <= end_date {
@@ -654,7 +701,7 @@ impl WorkbenchApp {
                             .iter()
                             .any(|s| (s.start_time as i64 - file.timestamp).abs() < 60);
                         if !is_cached {
-                            files_to_download.push((
+                            files_to_download.push(QueueItem::new(
                                 current_date,
                                 file.name.clone(),
                                 boundary.start,
@@ -698,7 +745,7 @@ impl WorkbenchApp {
                             .iter()
                             .any(|s| (s.start_time as i64 - file.timestamp).abs() < 60);
                         if !is_cached {
-                            files_to_download.push((
+                            files_to_download.push(QueueItem::new(
                                 current_date,
                                 file.name.clone(),
                                 boundary.start,
@@ -740,7 +787,7 @@ impl WorkbenchApp {
         }
 
         // Sort by start timestamp
-        files_to_download.sort_by_key(|(_, _, start, _)| *start);
+        files_to_download.sort_by_key(|item| item.scan_start);
 
         log::info!(
             "Queued {} files for download in selection",
@@ -753,25 +800,18 @@ impl WorkbenchApp {
         // Cancel any existing acquisition operations (selection change = cancel all + rebuild)
         self.state.acquisition.cancel_all();
         self.active_download_operation_id = None;
-        self.current_queue_item_started = false;
 
         self.selection_download_queue = files_to_download;
 
-        // Build scan_end_times lookup for in-flight tracking
-        self.scan_end_times.clear();
-        for (_, _, start, end) in &self.selection_download_queue {
-            self.scan_end_times.insert(*start, *end);
-        }
-
         // Create acquisition operations for each file in the queue
-        for (_, name, start, end) in &self.selection_download_queue {
+        for item in &self.selection_download_queue {
             self.state
                 .acquisition
                 .create_operation(state::OperationKind::ArchiveDownload {
                     site_id: site_id.clone(),
-                    file_name: name.clone(),
-                    scan_start: *start,
-                    scan_end: *end,
+                    file_name: item.file_name.clone(),
+                    scan_start: item.scan_start,
+                    scan_end: item.scan_end,
                 });
         }
 
@@ -781,20 +821,20 @@ impl WorkbenchApp {
             progress.pending_scans = self
                 .selection_download_queue
                 .iter()
-                .map(|(_, _, start, end)| (*start, *end))
+                .map(|item| (item.scan_start, item.scan_end))
                 .collect();
             progress.batch_total = self.selection_download_queue.len() as u32;
             progress.batch_completed = 0;
             progress.phase = crate::state::DownloadPhase::Downloading;
             let first = &self.selection_download_queue[0];
-            progress.active_scan = Some((first.2, first.3));
+            progress.active_scan = Some((first.scan_start, first.scan_end));
         }
 
         // Kick off first download
-        let (date, file_name, timestamp, _) = &self.selection_download_queue[0];
+        let first = &self.selection_download_queue[0];
         self.state.status_message = format!(
             "Downloading {} ({} total)",
-            file_name,
+            first.file_name,
             self.selection_download_queue.len()
         );
 
@@ -804,13 +844,16 @@ impl WorkbenchApp {
             self.active_download_operation_id = Some(op_id);
         }
 
-        self.current_queue_item_started = true;
+        let date = first.date;
+        let file_name = first.file_name.clone();
+        let scan_start = first.scan_start;
+        self.selection_download_queue[0].state = QueueItemState::Active;
         self.download_channel.download_file(
             ctx.clone(),
             site_id,
-            *date,
-            file_name.clone(),
-            *timestamp,
+            date,
+            file_name,
+            scan_start,
             self.data_facade.clone(),
         );
     }
@@ -1976,9 +2019,10 @@ impl eframe::App for WorkbenchApp {
                 // visible until processing completes in the Decoded handler).
                 let scan_ts = scan.key.scan_start.as_secs();
                 let scan_end = self
-                    .scan_end_times
-                    .get(&scan_ts)
-                    .copied()
+                    .selection_download_queue
+                    .iter()
+                    .find(|item| item.scan_start == scan_ts)
+                    .map(|item| item.scan_end)
                     .unwrap_or(scan_ts + 300);
                 self.state
                     .download_progress
@@ -2069,8 +2113,12 @@ impl eframe::App for WorkbenchApp {
                     self.state.acquisition.mark_failed(op_id, msg.clone());
                 }
 
-                // Clear download progress on error (batch will continue via queue)
-                if self.selection_download_queue.is_empty() {
+                // Clear download progress on error if no more work remains
+                let has_remaining_work = self.selection_download_queue.iter().any(|item| {
+                    matches!(item.state, QueueItemState::Pending | QueueItemState::Active)
+                });
+                if !has_remaining_work {
+                    self.selection_download_queue.clear();
                     self.state.download_progress.clear();
                 }
             }
@@ -2113,11 +2161,11 @@ impl eframe::App for WorkbenchApp {
             } else {
                 None // Just pumping existing queue, or nothing to do
             };
-            if do_download_selection
-                || do_download_at_position
-                || do_pump_queue
-                || !self.selection_download_queue.is_empty()
-            {
+            let queue_has_work = self
+                .selection_download_queue
+                .iter()
+                .any(|item| matches!(item.state, QueueItemState::Pending | QueueItemState::Active));
+            if do_download_selection || do_download_at_position || do_pump_queue || queue_has_work {
                 self.process_selection_download(ctx, download_type);
             }
         }
