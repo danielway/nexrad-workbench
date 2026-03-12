@@ -536,6 +536,18 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
         let az_buf = az_view.slice(0, header.azimuth_count).buffer();
 
+        // Extract radial_times if present (format version >= 1)
+        let rt_buf = if header.radial_times_offset > 0 {
+            let rt_view = js_sys::Float64Array::new_with_byte_offset_and_length(
+                &blob_buffer,
+                header.radial_times_offset as u32,
+                header.azimuth_count,
+            );
+            Some(rt_view.slice(0, header.azimuth_count).buffer())
+        } else {
+            None
+        };
+
         // Convert native-width gate values to f32 for GPU upload
         let gate_count_total = header.azimuth_count * header.gate_count;
         let val_buf = if header.data_word_size == 1 {
@@ -568,6 +580,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         Ok(build_render_response(
             &az_buf,
             &val_buf,
+            rt_buf.as_ref(),
             &header,
             &product_str,
             fetch_ms,
@@ -584,6 +597,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 fn build_render_response(
     az_buf: &js_sys::ArrayBuffer,
     val_buf: &js_sys::ArrayBuffer,
+    rt_buf: Option<&js_sys::ArrayBuffer>,
     header: &SweepHeader,
     product_str: &str,
     fetch_ms: f64,
@@ -594,6 +608,9 @@ fn build_render_response(
     let result = js_sys::Object::new();
     js_sys::Reflect::set(&result, &"azimuths".into(), az_buf).ok();
     js_sys::Reflect::set(&result, &"gateValues".into(), val_buf).ok();
+    if let Some(rt) = rt_buf {
+        js_sys::Reflect::set(&result, &"radialTimes".into(), rt).ok();
+    }
     js_sys::Reflect::set(
         &result,
         &"azimuthCount".into(),

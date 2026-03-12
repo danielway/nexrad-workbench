@@ -189,6 +189,7 @@ fn build_precomputed_sweep(target: &[&Radial], product: Product) -> Option<Preco
     let azimuth_count = target.len();
     let total = azimuth_count * gate_count;
     let mut azimuths = Vec::with_capacity(azimuth_count);
+    let mut radial_times = Vec::with_capacity(azimuth_count);
     let mut min_ts = f64::INFINITY;
     let mut max_ts = f64::NEG_INFINITY;
     let mut elev_sum: f64 = 0.0;
@@ -198,6 +199,7 @@ fn build_precomputed_sweep(target: &[&Radial], product: Product) -> Option<Preco
         for (row, radial) in target.iter().enumerate() {
             azimuths.push(radial.azimuth_angle_degrees());
             let ts = radial.collection_timestamp() as f64;
+            radial_times.push(ts / 1000.0);
             if ts < min_ts {
                 min_ts = ts;
             }
@@ -220,6 +222,7 @@ fn build_precomputed_sweep(target: &[&Radial], product: Product) -> Option<Preco
         for (row, radial) in target.iter().enumerate() {
             azimuths.push(radial.azimuth_angle_degrees());
             let ts = radial.collection_timestamp() as f64;
+            radial_times.push(ts / 1000.0);
             if ts < min_ts {
                 min_ts = ts;
             }
@@ -253,6 +256,7 @@ fn build_precomputed_sweep(target: &[&Radial], product: Product) -> Option<Preco
         sweep_start_secs: min_ts / 1000.0,
         sweep_end_secs: max_ts / 1000.0,
         azimuths,
+        radial_times,
         gate_values,
     })
 }

@@ -633,6 +633,8 @@ pub struct RadarGpuRenderer {
     // CPU-side copies for inspector value lookup
     cpu_azimuths: Vec<f32>,
     cpu_gate_values: Vec<f32>,
+    /// Per-radial collection timestamps in Unix seconds (parallel to cpu_azimuths).
+    cpu_radial_times: Vec<f64>,
 }
 
 impl RadarGpuRenderer {
@@ -789,6 +791,7 @@ impl RadarGpuRenderer {
                 data_scale: 1.0,
                 cpu_azimuths: Vec::new(),
                 cpu_gate_values: Vec::new(),
+                cpu_radial_times: Vec::new(),
             })
         }
     }
@@ -811,6 +814,7 @@ impl RadarGpuRenderer {
         max_range_km: f64,
         offset: f32,
         scale: f32,
+        radial_times: &[f64],
     ) {
         let t_total = web_time::Instant::now();
 
@@ -827,6 +831,7 @@ impl RadarGpuRenderer {
         let t_copy = web_time::Instant::now();
         self.cpu_azimuths = azimuths.to_vec();
         self.cpu_gate_values = gate_values.to_vec();
+        self.cpu_radial_times = radial_times.to_vec();
         let copy_ms = t_copy.elapsed().as_secs_f64() * 1000.0;
 
         if !self.has_data {
@@ -959,6 +964,7 @@ impl RadarGpuRenderer {
         self.has_data = false;
         self.cpu_azimuths.clear();
         self.cpu_gate_values.clear();
+        self.cpu_radial_times.clear();
     }
 
     /// Look up the raw data value at a given polar coordinate.
@@ -1020,6 +1026,36 @@ impl RadarGpuRenderer {
         } else {
             Some((raw - self.data_offset) / self.data_scale)
         }
+    }
+
+    /// Look up the radial collection timestamp (Unix seconds) at a given azimuth.
+    ///
+    /// Returns `None` if radial times are not available or azimuth is out of range.
+    pub fn collection_time_at_polar(&self, azimuth_deg: f32) -> Option<f64> {
+        if self.cpu_radial_times.is_empty() || self.cpu_azimuths.is_empty() {
+            return None;
+        }
+
+        let az_count = self.azimuth_count as usize;
+        let mut best_idx = 0usize;
+        let mut best_dist = 360.0f32;
+        for (i, &az) in self.cpu_azimuths.iter().enumerate() {
+            let mut d = (azimuth_deg - az).abs();
+            if d > 180.0 {
+                d = 360.0 - d;
+            }
+            if d < best_dist {
+                best_dist = d;
+                best_idx = i;
+            }
+        }
+
+        let az_spacing = 360.0 / az_count as f32;
+        if best_dist > az_spacing * 1.5 {
+            return None;
+        }
+
+        self.cpu_radial_times.get(best_idx).copied()
     }
 
     /// Render the radar data using the current GL context.

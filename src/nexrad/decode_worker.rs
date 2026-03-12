@@ -191,6 +191,8 @@ pub struct DecodeResult {
     pub sweep_start_secs: f64,
     /// Sweep end timestamp (Unix seconds).
     pub sweep_end_secs: f64,
+    /// Per-radial collection timestamps in Unix seconds (parallel to azimuths).
+    pub radial_times: Vec<f64>,
 }
 
 /// Per-sweep metadata for the volume ray marcher.
@@ -782,6 +784,13 @@ fn handle_decoded_message(
     let val_buffer = js_sys::Reflect::get(data, &"gateValues".into()).unwrap_or(JsValue::NULL);
     let gate_values = js_sys::Float32Array::new(&val_buffer).to_vec();
 
+    let rt_js = js_sys::Reflect::get(data, &"radialTimes".into()).unwrap_or(JsValue::NULL);
+    let radial_times = if rt_js.is_object() && !rt_js.is_null() {
+        js_sys::Float64Array::new(&rt_js).to_vec()
+    } else {
+        Vec::new()
+    };
+
     let azimuth_count = d.f64("azimuthCount") as u32;
     let gate_count = d.f64("gateCount") as u32;
     let first_gate_range_km = d.f64("firstGateRangeKm");
@@ -832,6 +841,7 @@ fn handle_decoded_message(
             mean_elevation,
             sweep_start_secs,
             sweep_end_secs,
+            radial_times,
         }));
 }
 

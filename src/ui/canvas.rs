@@ -1022,6 +1022,17 @@ fn render_nexrad_sites(
     }
 }
 
+/// Format a Unix timestamp (seconds) as "HH:MM:SS.mmm UTC".
+fn format_unix_timestamp(ts: f64) -> String {
+    use chrono::{TimeZone, Utc};
+    let secs = ts.floor() as i64;
+    let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
+    match Utc.timestamp_opt(secs, millis * 1_000_000) {
+        chrono::LocalResult::Single(dt) => dt.format("%H:%M:%S%.3f UTC").to_string(),
+        _ => format!("{:.3}s", ts),
+    }
+}
+
 /// Render inspector tooltip showing lat/lon and data value at hover position.
 #[allow(clippy::too_many_arguments)]
 fn render_inspector(
@@ -1044,11 +1055,15 @@ fn render_inspector(
     let range_km = (dlat * dlat + dlon * dlon).sqrt() * 111.0;
     let azimuth_deg = (dlon.atan2(dlat).to_degrees() + 360.0) % 360.0;
 
-    // Look up data value
-    let value = gpu_renderer.and_then(|r| {
-        let renderer = r.lock().expect("renderer mutex poisoned");
-        renderer.value_at_polar(azimuth_deg as f32, range_km)
-    });
+    // Look up data value and collection time
+    let (value, collection_time) = gpu_renderer
+        .map(|r| {
+            let renderer = r.lock().expect("renderer mutex poisoned");
+            let v = renderer.value_at_polar(azimuth_deg as f32, range_km);
+            let t = renderer.collection_time_at_polar(azimuth_deg as f32);
+            (v, t)
+        })
+        .unwrap_or((None, None));
 
     // Build tooltip text
     let mut lines = vec![
@@ -1062,6 +1077,9 @@ fn render_inspector(
         } else {
             lines.push(format!("{}: {:.1} {}", product.short_code(), v, unit));
         }
+    }
+    if let Some(ts) = collection_time {
+        lines.push(format_unix_timestamp(ts));
     }
     let text = lines.join("\n");
 
