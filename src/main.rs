@@ -1490,7 +1490,8 @@ impl eframe::App for WorkbenchApp {
 
                         // Only update live_mode_state when actually in live mode
                         if is_live {
-                            self.state.live_mode_state.current_scan_key = Some(result.scan_key.clone());
+                            self.state.live_mode_state.current_scan_key =
+                                Some(result.scan_key.clone());
 
                             if !result.chunk_elev_spans.is_empty() {
                                 self.state
@@ -1896,7 +1897,6 @@ impl eframe::App for WorkbenchApp {
                         self.state.shadow_scan_boundaries =
                             self.archive_index.all_boundaries_for_site(&site_id);
                     }
-
                 }
                 nexrad::ListingResult::Error(msg) => {
                     log::error!("Listing request failed: {}", msg);
