@@ -27,7 +27,7 @@ pub use gpu_renderer::RadarGpuRenderer;
 pub use network_monitor::{
     is_cross_origin_isolated, NetworkAggregate, NetworkMonitor, NetworkRequest,
 };
-pub use realtime::{RealtimeChannel, RealtimeResult};
+pub use realtime::{BackfillChannel, RealtimeChannel, RealtimeResult};
 pub use record_decode::extract_elevation_numbers;
 pub use types::{CachedScan, DownloadResult, ScanMetadata};
 pub use volume_ray_renderer::VolumeRayRenderer;
