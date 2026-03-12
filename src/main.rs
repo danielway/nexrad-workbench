@@ -773,6 +773,13 @@ impl WorkbenchApp {
 
         self.state.status_message = "Fetching latest data...".to_string();
         self.backfill_in_progress = true;
+
+        // Position playback at "now" so the timeline is centered on the
+        // area where the backfilled data will appear.
+        let now = js_sys::Date::now() / 1000.0;
+        self.state.playback_state.set_playback_position(now);
+        self.state.playback_state.center_view_on(now);
+
         self.backfill_channel.start(ctx.clone(), site_id);
     }
 
