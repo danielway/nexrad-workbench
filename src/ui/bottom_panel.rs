@@ -63,12 +63,28 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     }
 
     let drawer_expanded = state.acquisition.drawer_expanded;
+    let controls_height = 104.0;
+    let top_bar_height = 36.0;
+    let min_central_height = 100.0;
+    let max_panel_height =
+        ctx.input(|i| i.viewport_rect().height()) - top_bar_height - min_central_height;
+
+    // When the drawer is expanded, a resize handle, separator, and inter-widget
+    // spacing are rendered between the drawer and the controls. Account for that
+    // overhead so the controls aren't pushed below the window edge.
+    let drawer_spacing_overhead = 14.0;
     let drawer_height = if drawer_expanded {
-        state.acquisition.drawer_height
+        let max_drawer =
+            (max_panel_height - controls_height - drawer_spacing_overhead).max(0.0);
+        state.acquisition.drawer_height.min(max_drawer)
     } else {
         0.0
     };
-    let total_height = 104.0 + drawer_height;
+    let total_height = if drawer_expanded {
+        controls_height + drawer_spacing_overhead + drawer_height
+    } else {
+        controls_height
+    };
 
     egui::TopBottomPanel::bottom("bottom_panel")
         .exact_height(total_height)
