@@ -179,9 +179,7 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                     let (icon, color) = match &op.status {
                         OperationStatus::Active => ("\u{25cf}", acq_colors::ACTIVE),
                         OperationStatus::Queued => ("\u{25cb}", acq_colors::QUEUED),
-                        OperationStatus::Completed { .. } => {
-                            ("\u{2713}", acq_colors::COMPLETED)
-                        }
+                        OperationStatus::Completed { .. } => ("\u{2713}", acq_colors::COMPLETED),
                         OperationStatus::Failed { .. } => ("\u{2717}", acq_colors::FAILED),
                         OperationStatus::Cancelled => ("\u{2014}", acq_colors::CANCELLED),
                     };
@@ -206,11 +204,7 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                             );
                         }
                         OperationStatus::Queued => {
-                            ui.label(
-                                RichText::new("Queued")
-                                    .size(10.0)
-                                    .color(label_color),
-                            );
+                            ui.label(RichText::new("Queued").size(10.0).color(label_color));
                         }
                         OperationStatus::Completed { duration_ms, bytes } => {
                             ui.label(
@@ -224,12 +218,8 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                             );
                         }
                         OperationStatus::Failed { error } => {
-                            ui.label(
-                                RichText::new(error)
-                                    .size(10.0)
-                                    .color(acq_colors::FAILED),
-                            )
-                            .on_hover_text(error);
+                            ui.label(RichText::new(error).size(10.0).color(acq_colors::FAILED))
+                                .on_hover_text(error);
                         }
                         OperationStatus::Cancelled => {
                             ui.label(
@@ -243,40 +233,39 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                     // Action buttons (right-aligned)
                     ui.with_layout(
                         egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            match &op.status {
-                                OperationStatus::Queued => {
-                                    if ui.small_button("\u{2715}").on_hover_text("Cancel").clicked()
-                                    {
-                                        commands_to_push.push(AppCommand::CancelOperation(op.id));
-                                    }
-                                    if ui
-                                        .small_button("\u{25bc}")
-                                        .on_hover_text("Move down")
-                                        .clicked()
-                                    {
-                                        commands_to_push
-                                            .push(AppCommand::ReorderOperation(op.id, 1));
-                                    }
-                                    if ui
-                                        .small_button("\u{25b2}")
-                                        .on_hover_text("Move up")
-                                        .clicked()
-                                    {
-                                        commands_to_push
-                                            .push(AppCommand::ReorderOperation(op.id, -1));
-                                    }
+                        |ui| match &op.status {
+                            OperationStatus::Queued => {
+                                if ui
+                                    .small_button("\u{2715}")
+                                    .on_hover_text("Cancel")
+                                    .clicked()
+                                {
+                                    commands_to_push.push(AppCommand::CancelOperation(op.id));
                                 }
-                                OperationStatus::Failed { .. } => {
-                                    if ui.small_button("Retry").clicked() {
-                                        commands_to_push.push(AppCommand::RetryFailed(op.id));
-                                    }
-                                    if ui.small_button("Skip").clicked() {
-                                        commands_to_push.push(AppCommand::SkipFailed(op.id));
-                                    }
+                                if ui
+                                    .small_button("\u{25bc}")
+                                    .on_hover_text("Move down")
+                                    .clicked()
+                                {
+                                    commands_to_push.push(AppCommand::ReorderOperation(op.id, 1));
                                 }
-                                _ => {}
+                                if ui
+                                    .small_button("\u{25b2}")
+                                    .on_hover_text("Move up")
+                                    .clicked()
+                                {
+                                    commands_to_push.push(AppCommand::ReorderOperation(op.id, -1));
+                                }
                             }
+                            OperationStatus::Failed { .. } => {
+                                if ui.small_button("Retry").clicked() {
+                                    commands_to_push.push(AppCommand::RetryFailed(op.id));
+                                }
+                                if ui.small_button("Skip").clicked() {
+                                    commands_to_push.push(AppCommand::SkipFailed(op.id));
+                                }
+                            }
+                            _ => {}
                         },
                     );
                 });
@@ -306,9 +295,13 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
     let total_bytes: u64 = state.recent_network_requests.iter().map(|r| r.bytes).sum();
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(format!("{} requests \u{00b7} {}", total_reqs, format_bytes(total_bytes)))
-                .size(10.0)
-                .color(value_color),
+            RichText::new(format!(
+                "{} requests \u{00b7} {}",
+                total_reqs,
+                format_bytes(total_bytes)
+            ))
+            .size(10.0)
+            .color(value_color),
         );
     });
     ui.separator();
@@ -336,21 +329,21 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                     (None, Some(_)) => std::cmp::Ordering::Greater,
                     _ => {
                         // Sort by most recent request timestamp (descending)
-                        let a_max = a
-                            .1
-                            .iter()
-                            .filter_map(|&i| {
-                                state.recent_network_requests.get(i).map(|r| r.timestamp_ms)
-                            })
-                            .fold(0.0f64, f64::max);
-                        let b_max = b
-                            .1
-                            .iter()
-                            .filter_map(|&i| {
-                                state.recent_network_requests.get(i).map(|r| r.timestamp_ms)
-                            })
-                            .fold(0.0f64, f64::max);
-                        b_max.partial_cmp(&a_max).unwrap_or(std::cmp::Ordering::Equal)
+                        let a_max =
+                            a.1.iter()
+                                .filter_map(|&i| {
+                                    state.recent_network_requests.get(i).map(|r| r.timestamp_ms)
+                                })
+                                .fold(0.0f64, f64::max);
+                        let b_max =
+                            b.1.iter()
+                                .filter_map(|&i| {
+                                    state.recent_network_requests.get(i).map(|r| r.timestamp_ms)
+                                })
+                                .fold(0.0f64, f64::max);
+                        b_max
+                            .partial_cmp(&a_max)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     }
                 }
             });
@@ -365,9 +358,7 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                     .sum();
                 let group_duration: f64 = indices
                     .iter()
-                    .filter_map(|&i| {
-                        state.recent_network_requests.get(i).map(|r| r.duration_ms)
-                    })
+                    .filter_map(|&i| state.recent_network_requests.get(i).map(|r| r.duration_ms))
                     .sum();
 
                 let is_expanded = state.acquisition.expanded_network_groups.contains(op_id);
@@ -468,7 +459,11 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
 
             // Apply group toggle
             if let Some(group_key) = toggle_group {
-                if state.acquisition.expanded_network_groups.contains(&group_key) {
+                if state
+                    .acquisition
+                    .expanded_network_groups
+                    .contains(&group_key)
+                {
                     state.acquisition.expanded_network_groups.remove(&group_key);
                 } else {
                     state.acquisition.expanded_network_groups.insert(group_key);

@@ -34,10 +34,7 @@ pub enum OperationKind {
         is_end: bool,
     },
     /// Backfill chunk download during initial volume load.
-    BackfillChunk {
-        site_id: String,
-        chunk_index: u32,
-    },
+    BackfillChunk { site_id: String, chunk_index: u32 },
 }
 
 /// Status of an acquisition operation.
@@ -203,10 +200,7 @@ impl AcquisitionState {
     pub fn mark_completed(&mut self, id: OperationId, bytes: u64) {
         let now = js_sys::Date::now();
         if let Some(op) = self.find_mut(id) {
-            let duration_ms = op
-                .started_at_ms
-                .map(|s| now - s)
-                .unwrap_or(0.0);
+            let duration_ms = op.started_at_ms.map(|s| now - s).unwrap_or(0.0);
             op.status = OperationStatus::Completed { duration_ms, bytes };
             op.completed_at_ms = Some(now);
             op.phase = DownloadPhase::Done;
@@ -278,7 +272,9 @@ impl AcquisitionState {
                 let insert_pos = self
                     .operations
                     .iter()
-                    .position(|o| matches!(o.status, OperationStatus::Queued | OperationStatus::Active))
+                    .position(|o| {
+                        matches!(o.status, OperationStatus::Queued | OperationStatus::Active)
+                    })
                     .unwrap_or(self.operations.len());
                 self.operations.insert(insert_pos, op);
             }
@@ -296,7 +292,10 @@ impl AcquisitionState {
 
     /// Resume a paused queue.
     pub fn resume(&mut self) {
-        if matches!(self.queue_state, QueueState::Paused | QueueState::ErrorPaused) {
+        if matches!(
+            self.queue_state,
+            QueueState::Paused | QueueState::ErrorPaused
+        ) {
             self.queue_state = QueueState::Running;
             self.error_pause_operation_id = None;
         }
@@ -312,7 +311,8 @@ impl AcquisitionState {
     /// Reorder an operation by a delta (-1 = move up, +1 = move down).
     pub fn reorder_operation(&mut self, id: OperationId, delta: isize) {
         if let Some(idx) = self.operations.iter().position(|o| o.id == id) {
-            let new_idx = (idx as isize + delta).clamp(0, self.operations.len() as isize - 1) as usize;
+            let new_idx =
+                (idx as isize + delta).clamp(0, self.operations.len() as isize - 1) as usize;
             if new_idx != idx {
                 if let Some(op) = self.operations.remove(idx) {
                     self.operations.insert(new_idx, op);
@@ -339,12 +339,9 @@ impl AcquisitionState {
 
     /// Whether there are any active or queued operations.
     pub fn has_active_operations(&self) -> bool {
-        self.operations.iter().any(|o| {
-            matches!(
-                o.status,
-                OperationStatus::Queued | OperationStatus::Active
-            )
-        })
+        self.operations
+            .iter()
+            .any(|o| matches!(o.status, OperationStatus::Queued | OperationStatus::Active))
     }
 
     /// Correlate a network request URL with an active/recent operation.
@@ -352,7 +349,10 @@ impl AcquisitionState {
     pub fn correlate_network_request(&self, url: &str) -> Option<OperationId> {
         // Search active operations first (most recent first)
         for op in self.operations.iter().rev() {
-            if !matches!(op.status, OperationStatus::Active | OperationStatus::Completed { .. }) {
+            if !matches!(
+                op.status,
+                OperationStatus::Active | OperationStatus::Completed { .. }
+            ) {
                 continue;
             }
             if self.url_matches_operation(url, &op.kind) {
@@ -399,9 +399,7 @@ impl AcquisitionState {
             last_radial_time_secs: last_radial_secs,
             fetch_latency_ms,
             download_complete_time_ms: now_ms,
-            end_to_end_latency_ms: first_radial_secs.map(|frs| {
-                (now_ms / 1000.0 - frs) * 1000.0
-            }),
+            end_to_end_latency_ms: first_radial_secs.map(|frs| (now_ms / 1000.0 - frs) * 1000.0),
         };
         self.chunk_latencies.push(metrics);
     }
@@ -454,7 +452,9 @@ impl AcquisitionState {
             OperationKind::ArchiveListing { site_id, date } => {
                 format!("List {} {}", site_id, date)
             }
-            OperationKind::ArchiveDownload { site_id, file_name, .. } => {
+            OperationKind::ArchiveDownload {
+                site_id, file_name, ..
+            } => {
                 // Extract time portion from file name if possible
                 let time_part = file_name
                     .find('_')
@@ -463,10 +463,17 @@ impl AcquisitionState {
                     .unwrap_or_else(|| file_name.clone());
                 format!("{} {}", site_id, time_part)
             }
-            OperationKind::RealtimeChunk { site_id, chunk_index, .. } => {
+            OperationKind::RealtimeChunk {
+                site_id,
+                chunk_index,
+                ..
+            } => {
                 format!("{} chunk #{}", site_id, chunk_index)
             }
-            OperationKind::BackfillChunk { site_id, chunk_index } => {
+            OperationKind::BackfillChunk {
+                site_id,
+                chunk_index,
+            } => {
                 format!("{} backfill #{}", site_id, chunk_index)
             }
         }
@@ -484,7 +491,12 @@ impl AcquisitionState {
 
     /// Update queue state based on remaining operations.
     fn update_queue_state(&mut self) {
-        if !self.has_active_operations() && !matches!(self.queue_state, QueueState::Paused | QueueState::ErrorPaused) {
+        if !self.has_active_operations()
+            && !matches!(
+                self.queue_state,
+                QueueState::Paused | QueueState::ErrorPaused
+            )
+        {
             self.queue_state = QueueState::Empty;
         }
     }
@@ -499,6 +511,9 @@ impl AcquisitionState {
 
     /// Whether the queue is paused (user or error).
     pub fn is_paused(&self) -> bool {
-        matches!(self.queue_state, QueueState::Paused | QueueState::ErrorPaused)
+        matches!(
+            self.queue_state,
+            QueueState::Paused | QueueState::ErrorPaused
+        )
     }
 }

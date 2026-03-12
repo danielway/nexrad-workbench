@@ -731,14 +731,14 @@ impl WorkbenchApp {
 
         // Create acquisition operations for each file in the queue
         for (_, name, start, end) in &self.selection_download_queue {
-            self.state.acquisition.create_operation(
-                state::OperationKind::ArchiveDownload {
+            self.state
+                .acquisition
+                .create_operation(state::OperationKind::ArchiveDownload {
                     site_id: site_id.clone(),
                     file_name: name.clone(),
                     scan_start: *start,
                     scan_end: *end,
-                },
-            );
+                });
         }
 
         // Populate download progress for timeline ghosts and pipeline display
@@ -1154,16 +1154,19 @@ impl WorkbenchApp {
 
                 // Track realtime chunk as an acquisition operation
                 let rt_site_id = self.state.viz_state.site_id.clone();
-                let op_id = self.state.acquisition.create_operation(
-                    state::OperationKind::RealtimeChunk {
-                        site_id: rt_site_id,
-                        chunk_index,
-                        is_start,
-                        is_end,
-                    },
-                );
+                let op_id =
+                    self.state
+                        .acquisition
+                        .create_operation(state::OperationKind::RealtimeChunk {
+                            site_id: rt_site_id,
+                            chunk_index,
+                            is_start,
+                            is_end,
+                        });
                 self.state.acquisition.mark_active(op_id);
-                self.state.acquisition.mark_completed(op_id, data.len() as u64);
+                self.state
+                    .acquisition
+                    .mark_completed(op_id, data.len() as u64);
 
                 if is_start {
                     self.state.status_message = "Live: receiving new volume...".to_string();
@@ -1201,14 +1204,15 @@ impl WorkbenchApp {
 
                 // Track error as a failed acquisition operation
                 let err_site_id = self.state.viz_state.site_id.clone();
-                let op_id = self.state.acquisition.create_operation(
-                    state::OperationKind::RealtimeChunk {
-                        site_id: err_site_id,
-                        chunk_index: 0,
-                        is_start: false,
-                        is_end: false,
-                    },
-                );
+                let op_id =
+                    self.state
+                        .acquisition
+                        .create_operation(state::OperationKind::RealtimeChunk {
+                            site_id: err_site_id,
+                            chunk_index: 0,
+                            is_start: false,
+                            is_end: false,
+                        });
                 self.state.acquisition.mark_failed(op_id, msg);
             }
         }
@@ -1970,7 +1974,9 @@ impl eframe::App for WorkbenchApp {
             // Mark acquisition operation completed on success
             if let Some(scan) = scan_opt {
                 if let Some(op_id) = self.active_download_operation_id.take() {
-                    self.state.acquisition.mark_completed(op_id, scan.data.len() as u64);
+                    self.state
+                        .acquisition
+                        .mark_completed(op_id, scan.data.len() as u64);
                 }
             }
 
