@@ -463,10 +463,10 @@ impl WorkbenchApp {
             site_modal_state: {
                 let mut sms = ui::SiteModalState::default();
                 // If the user already has a preferred site, they're not a first-time
-                // visitor, so the modal should open directly to the site list.
+                // visitor. The modal still opens to the Welcome screen (with all
+                // three selection paths), but without the first-visit verbiage.
                 if has_preferred_site {
                     sms.is_first_visit = false;
-                    sms.mode = ui::SiteModalMode::SiteList;
                 }
                 sms
             },
