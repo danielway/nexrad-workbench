@@ -238,7 +238,7 @@ impl PrecomputedSweep {
         let size = HEADER_SIZE
             + az * 4             // azimuths (f32)
             + times_size         // radial_times (f64), version 1 only
-            + az * gc * ws;      // gate_values (u8 or u16)
+            + az * gc * ws; // gate_values (u8 or u16)
         let mut buf = Vec::with_capacity(size);
 
         // Header (72 bytes)
@@ -609,9 +609,7 @@ mod tests {
 
     #[test]
     fn test_precomputed_sweep_header_roundtrip() {
-        let radial_times: Vec<f64> = (0..720)
-            .map(|i| 1700000000.5 + i as f64 * 0.028)
-            .collect();
+        let radial_times: Vec<f64> = (0..720).map(|i| 1700000000.5 + i as f64 * 0.028).collect();
         let sweep = PrecomputedSweep {
             azimuth_count: 720,
             gate_count: 1832,
