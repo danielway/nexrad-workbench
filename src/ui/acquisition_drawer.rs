@@ -10,6 +10,7 @@ use crate::state::{
     QueueState,
 };
 use eframe::egui::{self, Color32, RichText, ScrollArea};
+use egui_phosphor::regular as icons;
 
 /// Render the acquisition drawer content inside the bottom panel.
 pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height: f32) {
@@ -20,11 +21,7 @@ pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height
         // Tab bar + controls
         ui.horizontal(|ui| {
             // Tab buttons
-            let queue_label = if state.acquisition.active_tab == DrawerTab::Queue {
-                "Queue \u{25be}"
-            } else {
-                "Queue"
-            };
+            let queue_label = format!("{} Queue", icons::QUEUE);
             if ui
                 .selectable_label(
                     state.acquisition.active_tab == DrawerTab::Queue,
@@ -35,11 +32,7 @@ pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height
                 state.acquisition.active_tab = DrawerTab::Queue;
             }
 
-            let net_label = if state.acquisition.active_tab == DrawerTab::Network {
-                "Network \u{25be}"
-            } else {
-                "Network"
-            };
+            let net_label = format!("{} Network", icons::WIFI_HIGH);
             if ui
                 .selectable_label(
                     state.acquisition.active_tab == DrawerTab::Network,
@@ -54,11 +47,11 @@ pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height
                 // Queue controls (only when Queue tab is active)
                 if state.acquisition.active_tab == DrawerTab::Queue {
                     if state.acquisition.is_paused() {
-                        if ui.small_button("\u{25b6} Resume").clicked() {
+                        if ui.small_button(format!("{} Resume", icons::PLAY)).clicked() {
                             state.push_command(AppCommand::ResumeQueue);
                         }
                     } else if state.acquisition.has_active_operations() {
-                        if ui.small_button("\u{23f8} Pause").clicked() {
+                        if ui.small_button(format!("{} Pause", icons::PAUSE)).clicked() {
                             state.push_command(AppCommand::PauseQueue);
                         }
                     }
@@ -75,7 +68,7 @@ pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height
         if state.acquisition.queue_state == QueueState::ErrorPaused {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("\u{26a0} Queue paused due to error")
+                    RichText::new(format!("{} Queue paused due to error", icons::WARNING))
                         .size(10.0)
                         .strong()
                         .color(acq_colors::FAILED),
@@ -177,11 +170,13 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                 ui.horizontal(|ui| {
                     // Status icon
                     let (icon, color) = match &op.status {
-                        OperationStatus::Active => ("\u{25cf}", acq_colors::ACTIVE),
-                        OperationStatus::Queued => ("\u{25cb}", acq_colors::QUEUED),
-                        OperationStatus::Completed { .. } => ("\u{2713}", acq_colors::COMPLETED),
-                        OperationStatus::Failed { .. } => ("\u{2717}", acq_colors::FAILED),
-                        OperationStatus::Cancelled => ("\u{2014}", acq_colors::CANCELLED),
+                        OperationStatus::Active => (icons::SPINNER, acq_colors::ACTIVE),
+                        OperationStatus::Queued => (icons::CLOCK, acq_colors::QUEUED),
+                        OperationStatus::Completed { .. } => {
+                            (icons::CHECK_CIRCLE, acq_colors::COMPLETED)
+                        }
+                        OperationStatus::Failed { .. } => (icons::X_CIRCLE, acq_colors::FAILED),
+                        OperationStatus::Cancelled => (icons::MINUS_CIRCLE, acq_colors::CANCELLED),
                     };
                     ui.label(RichText::new(icon).size(10.0).color(color));
 
@@ -235,22 +230,18 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                         egui::Layout::right_to_left(egui::Align::Center),
                         |ui| match &op.status {
                             OperationStatus::Queued => {
-                                if ui
-                                    .small_button("\u{2715}")
-                                    .on_hover_text("Cancel")
-                                    .clicked()
-                                {
+                                if ui.small_button(icons::X).on_hover_text("Cancel").clicked() {
                                     commands_to_push.push(AppCommand::CancelOperation(op.id));
                                 }
                                 if ui
-                                    .small_button("\u{25bc}")
+                                    .small_button(icons::CARET_DOWN)
                                     .on_hover_text("Move down")
                                     .clicked()
                                 {
                                     commands_to_push.push(AppCommand::ReorderOperation(op.id, 1));
                                 }
                                 if ui
-                                    .small_button("\u{25b2}")
+                                    .small_button(icons::CARET_UP)
                                     .on_hover_text("Move up")
                                     .clicked()
                                 {
@@ -258,10 +249,16 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                                 }
                             }
                             OperationStatus::Failed { .. } => {
-                                if ui.small_button("Retry").clicked() {
+                                if ui
+                                    .small_button(format!("{} Retry", icons::ARROW_CLOCKWISE))
+                                    .clicked()
+                                {
                                     commands_to_push.push(AppCommand::RetryFailed(op.id));
                                 }
-                                if ui.small_button("Skip").clicked() {
+                                if ui
+                                    .small_button(format!("{} Skip", icons::SKIP_FORWARD))
+                                    .clicked()
+                                {
                                     commands_to_push.push(AppCommand::SkipFailed(op.id));
                                 }
                             }
@@ -362,7 +359,11 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                     .sum();
 
                 let is_expanded = state.acquisition.expanded_network_groups.contains(op_id);
-                let arrow = if is_expanded { "\u{25be}" } else { "\u{25b8}" };
+                let arrow = if is_expanded {
+                    icons::CARET_DOWN
+                } else {
+                    icons::CARET_RIGHT
+                };
 
                 // Group header
                 let group_name = match op_id {
@@ -429,7 +430,7 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                                         let size_str = if req.bytes > 0 {
                                             format_bytes(req.bytes)
                                         } else {
-                                            "\u{2014}".to_string()
+                                            "--".to_string()
                                         };
                                         ui.label(
                                             RichText::new(size_str)

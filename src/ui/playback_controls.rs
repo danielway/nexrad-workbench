@@ -541,7 +541,7 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
         let queued = state.acquisition.queued_count();
         let req_text = if queued > 0 {
             format!(
-                "{} req / {} \u{00b7} {} queued",
+                "{} req / {} | {} queued",
                 display_count, display_transferred, queued
             )
         } else {
@@ -549,15 +549,15 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
         };
 
         let drawer_icon = if state.acquisition.drawer_expanded {
-            "\u{25be} "
+            egui_phosphor::regular::CARET_DOWN
         } else {
-            "\u{25b8} "
+            egui_phosphor::regular::CARET_UP
         };
 
         if ui
             .add(
                 egui::Label::new(
-                    RichText::new(format!("{}{}", drawer_icon, req_text))
+                    RichText::new(format!("{} {}", drawer_icon, req_text))
                         .size(10.0)
                         .color(ui_colors::value(dark)),
                 )
