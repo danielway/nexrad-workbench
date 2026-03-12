@@ -537,21 +537,36 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
         );
     }
     if display_count > 0 {
-        // Clickable to open network log
-        let req_text = format!("{} req / {}", display_count, display_transferred);
+        // Clickable to toggle acquisition drawer (subsumes network log modal)
+        let queued = state.acquisition.queued_count();
+        let req_text = if queued > 0 {
+            format!(
+                "{} req / {} | {} queued",
+                display_count, display_transferred, queued
+            )
+        } else {
+            format!("{} req / {}", display_count, display_transferred)
+        };
+
+        let drawer_icon = if state.acquisition.drawer_expanded {
+            egui_phosphor::regular::CARET_DOWN
+        } else {
+            egui_phosphor::regular::CARET_UP
+        };
+
         if ui
             .add(
                 egui::Label::new(
-                    RichText::new(req_text)
+                    RichText::new(format!("{} {}", drawer_icon, req_text))
                         .size(10.0)
                         .color(ui_colors::value(dark)),
                 )
                 .sense(egui::Sense::click()),
             )
-            .on_hover_text("Click to view network log")
+            .on_hover_text("Click to toggle acquisition drawer")
             .clicked()
         {
-            state.network_log_open = true;
+            state.acquisition.drawer_expanded = !state.acquisition.drawer_expanded;
         }
         ui.separator();
     }

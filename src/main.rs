@@ -126,6 +126,14 @@ pub struct WorkbenchApp {
     /// building the download queue so in-flight tracking can look up boundaries.
     scan_end_times: std::collections::HashMap<i64, i64>,
 
+    /// Currently active acquisition operation ID (for correlating download results).
+    active_download_operation_id: Option<state::OperationId>,
+
+    /// Whether the current item at queue[0] has had its download kicked off.
+    /// Used to distinguish "download finished" from "never started" when the
+    /// queue is paused and later resumed.
+    current_queue_item_started: bool,
+
     /// Previous site ID to detect site changes (for clearing volume ring)
     previous_site_id: String,
 
@@ -453,6 +461,8 @@ impl WorkbenchApp {
             current_scan: None,
             selection_download_queue: Vec::new(),
             scan_end_times: std::collections::HashMap::new(),
+            active_download_operation_id: None,
+            current_queue_item_started: false,
             previous_site_id: initial_site_id,
             realtime_channel,
             decode_worker,
@@ -498,16 +508,28 @@ impl WorkbenchApp {
         if !self.selection_download_queue.is_empty() {
             // Check if current download is still in progress
             let (_, _, timestamp, _) = &self.selection_download_queue[0];
-            if self
+            let has_active_download = self
                 .download_channel
-                .is_download_pending(&site_id, *timestamp)
-            {
+                .is_download_pending(&site_id, *timestamp);
+
+            if has_active_download {
                 // Still downloading, wait
                 return;
             }
 
-            // Previous download finished, remove it from queue
-            let _ = self.selection_download_queue.remove(0);
+            // Only remove item[0] if its download was actually kicked off.
+            // Without this check, resuming from pause would incorrectly
+            // remove the next unstarted item (is_download_pending returns
+            // false for items that were never started).
+            if self.current_queue_item_started {
+                let _ = self.selection_download_queue.remove(0);
+                self.current_queue_item_started = false;
+            }
+
+            // Don't start next download if queue is paused (user or error)
+            if self.state.acquisition.is_paused() {
+                return;
+            }
 
             // Start the next download if there are more items
             if !self.selection_download_queue.is_empty() {
@@ -521,6 +543,14 @@ impl WorkbenchApp {
                 self.state.download_progress.active_scan = Some((*next_ts, *next_end));
                 self.state.download_progress.phase = crate::state::DownloadPhase::Downloading;
                 self.state.download_progress.batch_completed += 1;
+
+                // Mark next acquisition operation as active
+                if let Some(op_id) = self.state.acquisition.next_queued_id() {
+                    self.state.acquisition.mark_active(op_id);
+                    self.active_download_operation_id = Some(op_id);
+                }
+
+                self.current_queue_item_started = true;
                 self.download_channel.download_file(
                     ctx.clone(),
                     site_id.clone(),
@@ -700,12 +730,30 @@ impl WorkbenchApp {
 
         // Start downloading
         self.state.download_selection_in_progress = true;
+
+        // Cancel any existing acquisition operations (selection change = cancel all + rebuild)
+        self.state.acquisition.cancel_all();
+        self.active_download_operation_id = None;
+        self.current_queue_item_started = false;
+
         self.selection_download_queue = files_to_download;
 
         // Build scan_end_times lookup for in-flight tracking
         self.scan_end_times.clear();
         for (_, _, start, end) in &self.selection_download_queue {
             self.scan_end_times.insert(*start, *end);
+        }
+
+        // Create acquisition operations for each file in the queue
+        for (_, name, start, end) in &self.selection_download_queue {
+            self.state
+                .acquisition
+                .create_operation(state::OperationKind::ArchiveDownload {
+                    site_id: site_id.clone(),
+                    file_name: name.clone(),
+                    scan_start: *start,
+                    scan_end: *end,
+                });
         }
 
         // Populate download progress for timeline ghosts and pipeline display
@@ -730,6 +778,14 @@ impl WorkbenchApp {
             file_name,
             self.selection_download_queue.len()
         );
+
+        // Mark the first acquisition operation as active
+        if let Some(op_id) = self.state.acquisition.next_queued_id() {
+            self.state.acquisition.mark_active(op_id);
+            self.active_download_operation_id = Some(op_id);
+        }
+
+        self.current_queue_item_started = true;
         self.download_channel.download_file(
             ctx.clone(),
             site_id,
@@ -1094,6 +1150,14 @@ impl WorkbenchApp {
                     is_volume_end,
                     now,
                 );
+
+                // Record chunk latency for the acquisition drawer
+                self.state.acquisition.record_chunk_latency(
+                    chunks_in_volume,
+                    fetch_latency_ms,
+                    None, // radial timestamps populated after ingest
+                    None,
+                );
             }
             nexrad::RealtimeResult::ChunkData {
                 data,
@@ -1110,6 +1174,22 @@ impl WorkbenchApp {
                     data.len(),
                     timestamp,
                 );
+
+                // Track realtime chunk as an acquisition operation
+                let rt_site_id = self.state.viz_state.site_id.clone();
+                let op_id =
+                    self.state
+                        .acquisition
+                        .create_operation(state::OperationKind::RealtimeChunk {
+                            site_id: rt_site_id,
+                            chunk_index,
+                            is_start,
+                            is_end,
+                        });
+                self.state.acquisition.mark_active(op_id);
+                self.state
+                    .acquisition
+                    .mark_completed(op_id, data.len() as u64);
 
                 if is_start {
                     self.state.status_message = "Live: receiving new volume...".to_string();
@@ -1144,6 +1224,19 @@ impl WorkbenchApp {
                 log::error!("Realtime streaming error: {}", msg);
                 self.state.live_mode_state.set_error(msg.clone());
                 self.state.status_message = format!("Live error: {}", msg);
+
+                // Track error as a failed acquisition operation
+                let err_site_id = self.state.viz_state.site_id.clone();
+                let op_id =
+                    self.state
+                        .acquisition
+                        .create_operation(state::OperationKind::RealtimeChunk {
+                            site_id: err_site_id,
+                            chunk_index: 0,
+                            is_start: false,
+                            is_end: false,
+                        });
+                self.state.acquisition.mark_failed(op_id, msg);
             }
         }
     }
@@ -1284,6 +1377,7 @@ impl eframe::App for WorkbenchApp {
         let commands = self.state.drain_commands();
         let mut do_download_selection = false;
         let mut do_download_at_position = false;
+        let mut do_pump_queue = false;
         for cmd in commands {
             match cmd {
                 state::AppCommand::ClearCache => {
@@ -1355,6 +1449,27 @@ impl eframe::App for WorkbenchApp {
                 }
                 state::AppCommand::DownloadAtPosition => {
                     do_download_at_position = true;
+                }
+                state::AppCommand::PauseQueue => {
+                    self.state.acquisition.pause();
+                }
+                state::AppCommand::ResumeQueue => {
+                    self.state.acquisition.resume();
+                    do_pump_queue = true;
+                }
+                state::AppCommand::RetryFailed(op_id) => {
+                    self.state.acquisition.retry_failed(op_id);
+                    do_pump_queue = true;
+                }
+                state::AppCommand::SkipFailed(op_id) => {
+                    self.state.acquisition.skip_failed(op_id);
+                    do_pump_queue = true;
+                }
+                state::AppCommand::CancelOperation(op_id) => {
+                    self.state.acquisition.cancel_operation(op_id);
+                }
+                state::AppCommand::ReorderOperation(op_id, delta) => {
+                    self.state.acquisition.reorder_operation(op_id, delta);
                 }
             }
         }
@@ -1890,9 +2005,24 @@ impl eframe::App for WorkbenchApp {
                 });
             }
 
+            // Mark acquisition operation completed on success
+            if let Some(scan) = scan_opt {
+                if let Some(op_id) = self.active_download_operation_id.take() {
+                    self.state
+                        .acquisition
+                        .mark_completed(op_id, scan.data.len() as u64);
+                }
+            }
+
             if let nexrad::DownloadResult::Error(msg) = &result {
                 self.state.status_message = format!("Download failed: {}", msg);
                 log::error!("Download failed: {}", msg);
+
+                // Mark acquisition operation as failed and error-pause
+                if let Some(op_id) = self.active_download_operation_id.take() {
+                    self.state.acquisition.mark_failed(op_id, msg.clone());
+                }
+
                 // Clear download progress on error (batch will continue via queue)
                 if self.selection_download_queue.is_empty() {
                     self.state.download_progress.clear();
@@ -1939,6 +2069,7 @@ impl eframe::App for WorkbenchApp {
             };
             if do_download_selection
                 || do_download_at_position
+                || do_pump_queue
                 || !self.selection_download_queue.is_empty()
             {
                 self.process_selection_download(ctx, download_type);
@@ -2197,8 +2328,12 @@ impl eframe::App for WorkbenchApp {
         if let Some(ref monitor) = self.network_monitor {
             self.state.network_aggregate = monitor.aggregate();
             // Update the recent requests buffer (full snapshot each frame)
-            let recent = monitor.drain_recent();
+            let mut recent = monitor.drain_recent();
             if !recent.is_empty() {
+                // Correlate network requests with acquisition operations
+                for req in recent.iter_mut() {
+                    req.operation_id = self.state.acquisition.correlate_network_request(&req.url);
+                }
                 self.state.recent_network_requests = recent.into();
             }
         }

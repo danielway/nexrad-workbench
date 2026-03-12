@@ -4,6 +4,8 @@
 //! State is organized into logical groupings that correspond to different
 //! areas of functionality.
 
+#[allow(dead_code)]
+pub(crate) mod acquisition;
 mod layer;
 mod live_mode;
 mod playback;
@@ -18,6 +20,9 @@ pub(crate) mod vcp;
 mod viz;
 
 pub use crate::geo::camera::CameraMode;
+pub use acquisition::{
+    AcquisitionState, DrawerTab, OperationId, OperationKind, OperationStatus, QueueState,
+};
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use playback::{LoopMode, PlaybackSpeed, PlaybackState, TimeModel};
@@ -58,6 +63,18 @@ pub enum AppCommand {
     CheckEviction,
     /// Wipe all data (IndexedDB + localStorage) and reload.
     WipeAll,
+    /// Pause the acquisition queue.
+    PauseQueue,
+    /// Resume the acquisition queue.
+    ResumeQueue,
+    /// Retry a failed operation.
+    RetryFailed(OperationId),
+    /// Skip a failed operation and continue.
+    SkipFailed(OperationId),
+    /// Cancel a specific operation.
+    CancelOperation(OperationId),
+    /// Reorder an operation (delta: -1 = up, +1 = down).
+    ReorderOperation(OperationId, isize),
 }
 
 /// Root application state containing all sub-states.
@@ -198,6 +215,9 @@ pub struct AppState {
 
     /// Whether the network request log modal is open.
     pub network_log_open: bool,
+
+    /// Unified acquisition queue state.
+    pub acquisition: AcquisitionState,
 }
 
 /// Lightweight storm cell info for rendering on the canvas.

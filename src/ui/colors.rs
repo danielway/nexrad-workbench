@@ -338,6 +338,25 @@ pub mod canvas {
     }
 }
 
+/// Colors for acquisition queue operation statuses (theme-independent).
+pub mod acquisition {
+    use super::Color32;
+
+    /// Queued operation — muted blue.
+    pub const QUEUED: Color32 = Color32::from_rgb(120, 160, 200);
+    /// Active operation — bright blue.
+    pub const ACTIVE: Color32 = Color32::from_rgb(100, 180, 255);
+    /// Completed operation — green.
+    pub const COMPLETED: Color32 = Color32::from_rgb(100, 200, 100);
+    /// Failed operation — red.
+    pub const FAILED: Color32 = Color32::from_rgb(255, 100, 100);
+    /// Cancelled operation — gray.
+    pub const CANCELLED: Color32 = Color32::from_rgb(120, 120, 120);
+    /// Paused operation — amber.
+    #[allow(dead_code)]
+    pub const PAUSED: Color32 = Color32::from_rgb(255, 180, 50);
+}
+
 /// Colors for NEXRAD site markers (theme-independent).
 pub mod sites {
     use super::Color32;
