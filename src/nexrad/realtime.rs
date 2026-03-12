@@ -484,6 +484,272 @@ impl StatsTracker {
     }
 }
 
+// ── Backfill-only channel ──────────────────────────────────────────────
+
+/// Internal state for the backfill channel.
+#[derive(Default)]
+struct BackfillState {
+    results: Vec<RealtimeResult>,
+    active: bool,
+}
+
+/// Channel that performs a one-shot backfill of the latest in-progress
+/// volume using `ChunkIterator::start()`, then stops. This gives the user
+/// immediate data on site selection without starting continuous streaming.
+pub struct BackfillChannel {
+    state: Rc<RefCell<BackfillState>>,
+    stats: NetworkStats,
+}
+
+impl Default for BackfillChannel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BackfillChannel {
+    pub fn new() -> Self {
+        Self {
+            state: Rc::new(RefCell::new(BackfillState::default())),
+            stats: NetworkStats::new(),
+        }
+    }
+
+    pub fn with_stats(stats: NetworkStats) -> Self {
+        Self {
+            state: Rc::new(RefCell::new(BackfillState::default())),
+            stats,
+        }
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.state.borrow().active
+    }
+
+    pub fn start(&self, ctx: egui::Context, site_id: String) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.active = true;
+            state.results.clear();
+        }
+
+        let state = self.state.clone();
+        let stats = self.stats.clone();
+
+        wasm_bindgen_futures::spawn_local(async move {
+            backfill_loop(ctx, site_id, state, stats).await;
+        });
+    }
+
+    pub fn try_recv(&self) -> Option<RealtimeResult> {
+        let mut state = self.state.borrow_mut();
+        if state.results.is_empty() {
+            None
+        } else {
+            Some(state.results.remove(0))
+        }
+    }
+}
+
+async fn backfill_loop(
+    ctx: egui::Context,
+    site_id: String,
+    state: Rc<RefCell<BackfillState>>,
+    stats: NetworkStats,
+) {
+    use nexrad_data::aws::realtime::{
+        download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType,
+    };
+
+    log::info!("Starting backfill for site: {}", site_id);
+
+    const ACQUIRE_TIMEOUT_SECS: u32 = 10;
+    let init_future = ChunkIterator::start(&site_id);
+    let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
+
+    futures_util::pin_mut!(init_future);
+    futures_util::pin_mut!(timeout_future);
+
+    let init_result = match futures_util::future::select(init_future, timeout_future).await {
+        futures_util::future::Either::Left((Ok(init), _)) => init,
+        futures_util::future::Either::Left((Err(e), _)) => {
+            let mut s = state.borrow_mut();
+            s.results.push(RealtimeResult::Error(format!(
+                "Failed to initialize: {}",
+                e
+            )));
+            s.active = false;
+            ctx.request_repaint();
+            return;
+        }
+        futures_util::future::Either::Right(_) => {
+            log::warn!(
+                "Backfill acquisition timed out after {}s for site {}",
+                ACQUIRE_TIMEOUT_SECS,
+                site_id
+            );
+            let mut s = state.borrow_mut();
+            s.results.push(RealtimeResult::Error(format!(
+                "Acquisition timed out after {}s — data may be unavailable for this site",
+                ACQUIRE_TIMEOUT_SECS
+            )));
+            s.active = false;
+            ctx.request_repaint();
+            return;
+        }
+    };
+
+    let iter = init_result.iterator;
+
+    // Track stats from the init phase
+    let mut stats_tracker = StatsTracker::new(&iter);
+    stats_tracker.update(&stats, &iter);
+
+    log::info!(
+        "Backfill iterator initialized: {} requests, {} bytes",
+        iter.requests_made(),
+        iter.bytes_downloaded()
+    );
+
+    let current_scan_start_secs = current_timestamp();
+    let mut chunks_in_volume: u32;
+
+    if let Some(start_chunk) = init_result.start_chunk {
+        // Joined mid-volume: emit the start chunk, backfill intermediates, then latest
+        let start_data = start_chunk.chunk.data().to_vec();
+        chunks_in_volume = 1;
+
+        log::info!(
+            "Backfill: emitting start_chunk ({} bytes) for mid-volume join",
+            start_data.len()
+        );
+        {
+            let mut s = state.borrow_mut();
+            s.results.push(RealtimeResult::ChunkData {
+                data: start_data,
+                chunk_index: 0,
+                is_start: true,
+                is_end: false,
+                timestamp: current_scan_start_secs,
+            });
+        }
+        ctx.request_repaint();
+
+        // Backfill: download all intermediate chunks between start and latest
+        let latest_seq = init_result.latest_chunk.identifier.sequence();
+        let volume = *init_result.latest_chunk.identifier.volume();
+
+        if latest_seq > 2 {
+            match list_chunks_in_volume(&site_id, volume, 100).await {
+                Ok(chunk_ids) => {
+                    let intermediates: Vec<_> = chunk_ids
+                        .into_iter()
+                        .filter(|id| id.sequence() > 1 && id.sequence() < latest_seq)
+                        .collect();
+
+                    log::info!(
+                        "Backfill: downloading {} intermediate chunks (seq 2..{})",
+                        intermediates.len(),
+                        latest_seq - 1
+                    );
+
+                    for chunk_id in &intermediates {
+                        match download_chunk(&site_id, chunk_id).await {
+                            Ok((_id, chunk)) => {
+                                chunks_in_volume += 1;
+                                let chunk_data = chunk.data().to_vec();
+                                log::debug!(
+                                    "Backfill: chunk seq {} ({} bytes, {:?})",
+                                    chunk_id.sequence(),
+                                    chunk_data.len(),
+                                    chunk_id.chunk_type()
+                                );
+                                {
+                                    let mut s = state.borrow_mut();
+                                    s.results.push(RealtimeResult::ChunkData {
+                                        data: chunk_data,
+                                        chunk_index: chunks_in_volume - 1,
+                                        is_start: false,
+                                        is_end: false,
+                                        timestamp: current_scan_start_secs,
+                                    });
+                                }
+                                ctx.request_repaint();
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "Backfill: failed to download chunk seq {}: {}",
+                                    chunk_id.sequence(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("Backfill: failed to list chunks: {}, skipping", e);
+                }
+            }
+        }
+
+        // Emit the latest chunk — mark as end to flush all accumulated data
+        let latest_data = init_result.latest_chunk.chunk.data().to_vec();
+        let latest_type = init_result.latest_chunk.identifier.chunk_type();
+        let is_actually_end = latest_type == ChunkType::End;
+        chunks_in_volume += 1;
+
+        log::info!(
+            "Backfill: emitting latest_chunk seq {} ({} bytes, actual_end={}, forcing is_end=true)",
+            latest_seq,
+            latest_data.len(),
+            is_actually_end
+        );
+        {
+            let mut s = state.borrow_mut();
+            s.results.push(RealtimeResult::ChunkData {
+                data: latest_data,
+                chunk_index: chunks_in_volume - 1,
+                is_start: false,
+                // Force is_end=true so worker flushes all accumulated elevations
+                is_end: true,
+                timestamp: current_scan_start_secs,
+            });
+        }
+        ctx.request_repaint();
+    } else {
+        // Joined at volume start: latest_chunk IS the start chunk
+        let latest_data = init_result.latest_chunk.chunk.data().to_vec();
+        let latest_type = init_result.latest_chunk.identifier.chunk_type();
+        let latest_is_start = latest_type == ChunkType::Start;
+        chunks_in_volume = 1;
+
+        log::info!(
+            "Backfill: emitting latest_chunk as start+end ({} bytes)",
+            latest_data.len()
+        );
+        {
+            let mut s = state.borrow_mut();
+            s.results.push(RealtimeResult::ChunkData {
+                data: latest_data,
+                chunk_index: 0,
+                is_start: latest_is_start,
+                // Force is_end=true so worker flushes all accumulated elevations
+                is_end: true,
+                timestamp: current_scan_start_secs,
+            });
+        }
+        ctx.request_repaint();
+    }
+
+    log::info!(
+        "Backfill complete: {} chunks downloaded for site {}",
+        chunks_in_volume,
+        site_id
+    );
+
+    state.borrow_mut().active = false;
+}
+
 fn current_timestamp() -> i64 {
     (js_sys::Date::now() / 1000.0) as i64
 }

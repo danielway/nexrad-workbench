@@ -23,7 +23,7 @@ pub use decode_worker::{DecodeWorker, VolumeSweepMeta, WorkerOutcome};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use globe_radar_renderer::GlobeRadarRenderer;
 pub use gpu_renderer::RadarGpuRenderer;
-pub use realtime::{RealtimeChannel, RealtimeResult};
+pub use realtime::{BackfillChannel, RealtimeChannel, RealtimeResult};
 pub use record_decode::extract_elevation_numbers;
 pub use types::{CachedScan, DownloadResult, ScanMetadata};
 pub use volume_ray_renderer::VolumeRayRenderer;

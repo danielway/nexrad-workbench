@@ -155,10 +155,14 @@ pub struct WorkbenchApp {
     /// Transient state for the event create/edit modal.
     event_modal_state: ui::EventModalState,
 
-    /// Site ID for which we're fetching the latest archive scan.
-    /// Set by `FetchLatest`, cleared once the download is kicked off
-    /// or all listings arrive with no usable data.
-    fetch_latest_pending: Option<String>,
+    /// Channel for one-shot backfill of the latest in-progress volume.
+    /// Used by `FetchLatest` to download current realtime chunks without
+    /// starting continuous streaming.
+    backfill_channel: nexrad::BackfillChannel,
+
+    /// True while a backfill is in progress. Used to prevent ChunkIngested
+    /// results from updating live_mode_state.
+    backfill_in_progress: bool,
 }
 
 // Embed shapefile data at compile time
@@ -347,6 +351,7 @@ impl WorkbenchApp {
         let cache_load_channel = nexrad::CacheLoadChannel::new();
         let download_channel = nexrad::DownloadChannel::new();
         let realtime_channel = nexrad::RealtimeChannel::with_stats(download_channel.stats());
+        let backfill_channel = nexrad::BackfillChannel::with_stats(download_channel.stats());
 
         // Open the record cache database
         {
@@ -463,7 +468,8 @@ impl WorkbenchApp {
                 sms
             },
             event_modal_state: ui::EventModalState::default(),
-            fetch_latest_pending: None,
+            backfill_channel,
+            backfill_in_progress: false,
         }
     }
 
@@ -740,125 +746,20 @@ impl WorkbenchApp {
             .start(ctx.clone(), site_id, self.data_facade.clone());
     }
 
-    /// Fetch the latest available archive scan for the current site.
+    /// Fetch the latest available data for the current site.
     ///
-    /// Kicks off archive listing requests for today and yesterday, then sets
-    /// `fetch_latest_pending` so that the listing-received handler can pick the
-    /// most recent file and download it directly. This avoids the
-    /// `DownloadAtPosition` flow which can loop infinitely when the playback
-    /// position is past the last archived scan.
+    /// Uses the realtime chunk backfill approach: `ChunkIterator::start()`
+    /// finds the latest in-progress volume via binary search over round-robin
+    /// directories, then downloads all accumulated chunks. This gives the user
+    /// the most recent data (potentially seconds old) without starting
+    /// continuous streaming.
     fn fetch_latest_scan(&mut self, ctx: &egui::Context) {
         let site_id = self.state.viz_state.site_id.clone();
-        log::info!("Fetching latest scan for site: {}", site_id);
+        log::info!("Fetching latest scan via backfill for site: {}", site_id);
 
         self.state.status_message = "Fetching latest data...".to_string();
-        self.fetch_latest_pending = Some(site_id.clone());
-
-        let today = chrono::Utc::now().date_naive();
-        let yesterday = today - chrono::Duration::days(1);
-
-        // Fetch yesterday's listing (fallback if today has no data yet)
-        if self.archive_index.get(&site_id, &yesterday).is_none()
-            && !self
-                .download_channel
-                .is_listing_pending(&site_id, &yesterday)
-        {
-            self.download_channel
-                .fetch_listing(ctx.clone(), site_id.clone(), yesterday);
-        }
-
-        // Fetch today's listing
-        if self.archive_index.get(&site_id, &today).is_none()
-            && !self.download_channel.is_listing_pending(&site_id, &today)
-        {
-            self.download_channel
-                .fetch_listing(ctx.clone(), site_id.clone(), today);
-        }
-
-        // If both listings are already cached (unlikely on first load, but
-        // possible on site re-selection), resolve immediately.
-        self.try_resolve_fetch_latest(ctx);
-    }
-
-    /// Check if pending fetch-latest can be resolved from cached listings.
-    ///
-    /// Picks the most recent file across today's and yesterday's listings and
-    /// kicks off a download. Called after listing requests complete and also
-    /// eagerly from `fetch_latest_scan` in case listings were already cached.
-    fn try_resolve_fetch_latest(&mut self, ctx: &egui::Context) {
-        let site_id = match self.fetch_latest_pending {
-            Some(ref id) => id.clone(),
-            None => return,
-        };
-
-        let today = chrono::Utc::now().date_naive();
-        let yesterday = today - chrono::Duration::days(1);
-
-        // Don't resolve until all pending listings have arrived
-        if self.download_channel.is_listing_pending(&site_id, &today)
-            || self
-                .download_channel
-                .is_listing_pending(&site_id, &yesterday)
-        {
-            return;
-        }
-
-        // Find the most recent file across both days
-        let latest_file = [today, yesterday]
-            .iter()
-            .filter_map(|date| {
-                self.archive_index
-                    .get(&site_id, date)
-                    .and_then(|listing| listing.files.last().map(|f| (*date, f.clone())))
-            })
-            .max_by_key(|(_, f)| f.timestamp);
-
-        self.fetch_latest_pending = None;
-
-        let Some((date, file)) = latest_file else {
-            log::info!("No archive data found for site {}", site_id);
-            self.state.status_message = "No recent data available for this site".to_string();
-            return;
-        };
-
-        log::info!(
-            "Fetching latest scan for {}: {} (ts={})",
-            site_id,
-            file.name,
-            file.timestamp
-        );
-
-        // Compute scan boundary for the file
-        let boundary = self.archive_index.get(&site_id, &date).and_then(|listing| {
-            listing
-                .scan_boundaries()
-                .into_iter()
-                .zip(listing.files.iter())
-                .find(|(_, f)| f.timestamp == file.timestamp)
-                .map(|(b, _)| b)
-        });
-        let scan_end = boundary.map(|b| b.end).unwrap_or(file.timestamp + 300);
-
-        // Position playback at this scan so it renders after download
-        self.state
-            .playback_state
-            .set_playback_position(file.timestamp as f64);
-        self.state
-            .playback_state
-            .center_view_on(file.timestamp as f64);
-
-        // Track the scan end time for ghost boundary display
-        self.scan_end_times.insert(file.timestamp, scan_end);
-
-        self.state.status_message = format!("Downloading latest scan: {}", file.name);
-        self.download_channel.download_file(
-            ctx.clone(),
-            site_id,
-            date,
-            file.name,
-            file.timestamp,
-            self.data_facade.clone(),
-        );
+        self.backfill_in_progress = true;
+        self.backfill_channel.start(ctx.clone(), site_id);
     }
 
     /// Find the best elevation number for the current target_elevation.
@@ -1224,6 +1125,56 @@ impl WorkbenchApp {
             }
         }
     }
+
+    /// Handle a backfill result. Only processes ChunkData (forwarding to
+    /// the worker for ingest). Does not update live_mode_state.
+    fn handle_backfill_result(&mut self, result: nexrad::RealtimeResult, _ctx: &egui::Context) {
+        match result {
+            nexrad::RealtimeResult::ChunkData {
+                data,
+                chunk_index,
+                is_start,
+                is_end,
+                timestamp,
+            } => {
+                log::info!(
+                    "Backfill chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
+                    chunk_index,
+                    is_start,
+                    is_end,
+                    data.len(),
+                    timestamp,
+                );
+
+                if is_start {
+                    self.state.status_message = "Loading latest data...".to_string();
+                }
+
+                let site_id = self.state.viz_state.site_id.clone();
+                let file_name = format!("backfill_{}_{}.nexrad", site_id, timestamp);
+                if let Some(ref mut worker) = self.decode_worker {
+                    if is_start {
+                        self.state.session_stats.pipeline.processing = true;
+                    }
+                    worker.ingest_chunk(
+                        data,
+                        site_id,
+                        timestamp,
+                        chunk_index,
+                        is_start,
+                        is_end,
+                        file_name,
+                    );
+                }
+            }
+            nexrad::RealtimeResult::Error(msg) => {
+                log::error!("Backfill error: {}", msg);
+                self.state.status_message = format!("Failed to load latest data: {}", msg);
+            }
+            // Backfill doesn't use Started or ChunkReceived
+            _ => {}
+        }
+    }
 }
 
 impl eframe::App for WorkbenchApp {
@@ -1293,8 +1244,8 @@ impl eframe::App for WorkbenchApp {
             self.previous_site_id = self.state.viz_state.site_id.clone();
             // Clear shadow boundaries from previous site; new listings will repopulate.
             self.state.shadow_scan_boundaries.clear();
-            // Cancel any pending fetch-latest for the old site.
-            self.fetch_latest_pending = None;
+            // Cancel any in-progress backfill for the old site.
+            self.backfill_in_progress = false;
         }
 
         // Drain and dispatch commands from the queue.
@@ -1496,8 +1447,11 @@ impl eframe::App for WorkbenchApp {
                         }
                     }
                     nexrad::WorkerOutcome::ChunkIngested(result) => {
+                        let is_live = self.state.live_mode_state.is_active();
+                        let source = if is_live { "Realtime" } else { "Backfill" };
                         log::info!(
-                            "Chunk ingested: scan={} elevations_completed={:?} sweeps_stored={} is_end={} vcp={:?} available_elevs={:?} {:.1}ms",
+                            "{}: chunk ingested scan={} elevations_completed={:?} sweeps_stored={} is_end={} vcp={:?} available_elevs={:?} {:.1}ms",
+                            source,
                             result.scan_key,
                             result.elevations_completed,
                             result.sweeps_stored,
@@ -1509,7 +1463,6 @@ impl eframe::App for WorkbenchApp {
 
                         // Update scan key and available elevations
                         self.current_render_scan_key = Some(result.scan_key.clone());
-                        self.state.live_mode_state.current_scan_key = Some(result.scan_key.clone());
                         let had_elevations = !self.available_elevation_numbers.is_empty();
                         for elev in &result.elevations_completed {
                             if !self.available_elevation_numbers.contains(elev) {
@@ -1521,109 +1474,108 @@ impl eframe::App for WorkbenchApp {
                         // Update displayed timestamp
                         self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
 
-                        // Record per-elevation chunk time spans for timeline visualization
-                        if !result.chunk_elev_spans.is_empty() {
-                            self.state
-                                .live_mode_state
-                                .record_chunk_elev_spans(&result.chunk_elev_spans);
-                        }
+                        // Only update live_mode_state when actually in live mode
+                        if is_live {
+                            self.state.live_mode_state.current_scan_key = Some(result.scan_key.clone());
 
-                        // Update live mode partial scan tracking — always set volume
-                        // start on first chunk so the timeline block appears immediately,
-                        // even before a full sweep/elevation completes.
-                        //
-                        // Set the volume start time. Prefer the authoritative volume
-                        // header time from the Archive II header. Fall back to
-                        // back-calculating from chunk data time + elevation number.
-                        if self.state.live_mode_state.current_volume_start.is_none() {
-                            let vol_start =
-                                if let Some(header_time) = result.volume_header_time_secs {
-                                    header_time
-                                } else {
-                                    let chunk_data_time = result
-                                        .chunk_min_time_secs
-                                        .unwrap_or(result.context.timestamp_secs as f64);
-                                    Self::estimate_volume_start(
-                                        chunk_data_time,
-                                        result.current_elevation,
-                                        self.state.live_mode_state.expected_elevation_count,
-                                        self.state.live_mode_state.last_volume_duration_secs,
-                                    )
-                                };
-                            self.state.live_mode_state.current_volume_start = Some(vol_start);
-                        } else if let Some(header_time) = result.volume_header_time_secs {
-                            // If we already have a volume start but now get the
-                            // authoritative header time, prefer the header.
-                            self.state.live_mode_state.current_volume_start = Some(header_time);
-                        }
-                        if !result.elevations_completed.is_empty() {
-                            // Use the already-estimated volume start for consistency
-                            let vol_start_ts = self
-                                .state
-                                .live_mode_state
-                                .current_volume_start
-                                .unwrap_or(result.context.timestamp_secs as f64);
-                            self.state
-                                .live_mode_state
-                                .record_elevations(&result.elevations_completed, vol_start_ts);
-                        }
-                        if let Some(ref vcp) = result.vcp {
-                            self.state
-                                .live_mode_state
-                                .record_vcp(vcp.number, vcp.elevations.len() as u8);
-                        }
+                            if !result.chunk_elev_spans.is_empty() {
+                                self.state
+                                    .live_mode_state
+                                    .record_chunk_elev_spans(&result.chunk_elev_spans);
+                            }
 
-                        // Track in-progress elevation for partial sweep visualization
-                        self.state.live_mode_state.record_in_progress_elevation(
-                            result.current_elevation,
-                            result.current_elevation_radials,
-                        );
+                            // Set the volume start time. Prefer the authoritative volume
+                            // header time from the Archive II header. Fall back to
+                            // back-calculating from chunk data time + elevation number.
+                            if self.state.live_mode_state.current_volume_start.is_none() {
+                                let vol_start =
+                                    if let Some(header_time) = result.volume_header_time_secs {
+                                        header_time
+                                    } else {
+                                        let chunk_data_time = result
+                                            .chunk_min_time_secs
+                                            .unwrap_or(result.context.timestamp_secs as f64);
+                                        Self::estimate_volume_start(
+                                            chunk_data_time,
+                                            result.current_elevation,
+                                            self.state.live_mode_state.expected_elevation_count,
+                                            self.state.live_mode_state.last_volume_duration_secs,
+                                        )
+                                    };
+                                self.state.live_mode_state.current_volume_start = Some(vol_start);
+                            } else if let Some(header_time) = result.volume_header_time_secs {
+                                self.state.live_mode_state.current_volume_start = Some(header_time);
+                            }
+                            if !result.elevations_completed.is_empty() {
+                                let vol_start_ts = self
+                                    .state
+                                    .live_mode_state
+                                    .current_volume_start
+                                    .unwrap_or(result.context.timestamp_secs as f64);
+                                self.state
+                                    .live_mode_state
+                                    .record_elevations(&result.elevations_completed, vol_start_ts);
+                            }
+                            if let Some(ref vcp) = result.vcp {
+                                self.state
+                                    .live_mode_state
+                                    .record_vcp(vcp.number, vcp.elevations.len() as u8);
+                            }
 
-                        // Store actual sweep timing metadata for accurate timeline positioning
-                        if !result.sweeps.is_empty() {
-                            self.state
-                                .live_mode_state
-                                .update_sweep_metas(result.sweeps.clone());
+                            self.state.live_mode_state.record_in_progress_elevation(
+                                result.current_elevation,
+                                result.current_elevation_radials,
+                            );
+
+                            if !result.sweeps.is_empty() {
+                                self.state
+                                    .live_mode_state
+                                    .update_sweep_metas(result.sweeps.clone());
+                            }
+
+                            self.state.live_mode_state.record_last_radial(
+                                result.last_radial_azimuth,
+                                result.last_radial_time_secs,
+                            );
                         }
-
-                        // Track last radial position for sweep line extrapolation
-                        self.state.live_mode_state.record_last_radial(
-                            result.last_radial_azimuth,
-                            result.last_radial_time_secs,
-                        );
 
                         // Refresh timeline when new elevations are written to cache
                         if !result.elevations_completed.is_empty() {
                             log::info!(
-                                "Realtime: {} new elevation(s) cached, refreshing timeline (total available: {:?})",
+                                "{}: {} new elevation(s) cached, refreshing timeline (total available: {:?})",
+                                source,
                                 result.elevations_completed.len(),
                                 self.available_elevation_numbers,
                             );
                             self.state.push_command(state::AppCommand::RefreshTimeline {
-                                auto_position: false,
+                                auto_position: !is_live,
                             });
 
-                            // Update status to show progress
-                            self.state.status_message = format!(
-                                "Live: {} elevation(s) cached",
-                                self.available_elevation_numbers.len()
-                            );
+                            if is_live {
+                                self.state.status_message = format!(
+                                    "Live: {} elevation(s) cached",
+                                    self.available_elevation_numbers.len()
+                                );
+                            }
                         }
 
                         if result.is_end {
-                            // Volume complete: trigger render, check eviction
-                            let now = js_sys::Date::now() / 1000.0;
-                            self.state.live_mode_state.handle_volume_complete(now);
+                            if is_live {
+                                let now = js_sys::Date::now() / 1000.0;
+                                self.state.live_mode_state.handle_volume_complete(now);
+                                self.state.status_message = format!(
+                                    "Live: volume complete ({} elevations)",
+                                    self.available_elevation_numbers.len()
+                                );
+                            }
+
                             log::info!(
-                                "Realtime: volume complete — {} elevations, triggering render",
-                                self.available_elevation_numbers.len()
-                            );
-                            self.state.status_message = format!(
-                                "Live: volume complete ({} elevations)",
+                                "{}: volume complete — {} elevations, triggering render",
+                                source,
                                 self.available_elevation_numbers.len()
                             );
                             self.state.push_command(state::AppCommand::RefreshTimeline {
-                                auto_position: false,
+                                auto_position: !is_live,
                             });
                             self.state.push_command(state::AppCommand::CheckEviction);
                             self.state.session_stats.pipeline.mark_processing_done();
@@ -1639,7 +1591,8 @@ impl eframe::App for WorkbenchApp {
                         } else if !had_elevations && !self.available_elevation_numbers.is_empty() {
                             // First elevation arrived — we can render something now
                             log::info!(
-                                "Realtime: first elevation available, triggering initial render"
+                                "{}: first elevation available, triggering initial render",
+                                source
                             );
                             self.renderers.last_render_params = None;
                             self.renderers.last_volume_render_params = None;
@@ -1930,13 +1883,9 @@ impl eframe::App for WorkbenchApp {
                             self.archive_index.all_boundaries_for_site(&site_id);
                     }
 
-                    // Check if this listing completes a pending fetch-latest request
-                    self.try_resolve_fetch_latest(ctx);
                 }
                 nexrad::ListingResult::Error(msg) => {
                     log::error!("Listing request failed: {}", msg);
-                    // A failed listing may unblock fetch-latest (try with whatever we have)
-                    self.try_resolve_fetch_latest(ctx);
                 }
             }
         }
@@ -1956,6 +1905,16 @@ impl eframe::App for WorkbenchApp {
             {
                 self.process_selection_download(ctx, download_type);
             }
+        }
+
+        // Handle backfill results (one-shot initial load)
+        while let Some(result) = self.backfill_channel.try_recv() {
+            self.handle_backfill_result(result, ctx);
+        }
+        // Clear backfill flag once the channel has finished and all results drained
+        if self.backfill_in_progress && !self.backfill_channel.is_active() {
+            // Results already drained above; mark backfill complete
+            self.backfill_in_progress = false;
         }
 
         // Handle realtime streaming results
