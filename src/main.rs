@@ -387,7 +387,8 @@ impl WorkbenchApp {
             }
             Err(e) => {
                 log::warn!("Failed to create decode worker: {}", e);
-                state.worker_init_error = Some(format!("Decode worker failed to initialize: {}", e));
+                state.worker_init_error =
+                    Some(format!("Decode worker failed to initialize: {}", e));
                 None
             }
         };
@@ -1486,21 +1487,19 @@ impl eframe::App for WorkbenchApp {
                 state::AppCommand::ReorderOperation(op_id, delta) => {
                     self.state.acquisition.reorder_operation(op_id, delta);
                 }
-                state::AppCommand::RetryWorker => {
-                    match nexrad::DecodeWorker::new(ctx.clone()) {
-                        Ok(w) => {
-                            log::info!("Decode worker created successfully on retry");
-                            self.decode_worker = Some(w);
-                            self.state.worker_init_error = None;
-                            self.state.set_status("Decode worker initialized");
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to create decode worker on retry: {}", e);
-                            self.state.worker_init_error =
-                                Some(format!("Decode worker failed to initialize: {}", e));
-                        }
+                state::AppCommand::RetryWorker => match nexrad::DecodeWorker::new(ctx.clone()) {
+                    Ok(w) => {
+                        log::info!("Decode worker created successfully on retry");
+                        self.decode_worker = Some(w);
+                        self.state.worker_init_error = None;
+                        self.state.set_status("Decode worker initialized");
                     }
-                }
+                    Err(e) => {
+                        log::warn!("Failed to create decode worker on retry: {}", e);
+                        self.state.worker_init_error =
+                            Some(format!("Decode worker failed to initialize: {}", e));
+                    }
+                },
             }
         }
 
