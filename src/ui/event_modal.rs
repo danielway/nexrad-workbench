@@ -367,6 +367,9 @@ pub fn render_event_modal(
                 );
             }
 
+            // Enter key submits the form when valid
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_save;
+
             ui.add_space(12.0);
             ui.separator();
             ui.add_space(8.0);
@@ -390,7 +393,7 @@ pub fn render_event_modal(
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let save_btn = ui.add_enabled(can_save, egui::Button::new("Save"));
-                    if save_btn.clicked() {
+                    if save_btn.clicked() || enter_pressed {
                         let start = start_ts.unwrap();
                         let end = end_ts.unwrap();
                         let name = modal_state.name.trim().to_string();
