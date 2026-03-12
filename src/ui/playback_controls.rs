@@ -183,8 +183,8 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
     if !state.live_mode_state.is_active() {
         if ui
             .button(
-                RichText::new(format!("{} Live", egui_phosphor::regular::BROADCAST))
-                    .size(12.0)
+                RichText::new(egui_phosphor::regular::BROADCAST)
+                    .size(14.0)
                     .color(Color32::from_rgb(150, 150, 150)),
             )
             .on_hover_text("Start live streaming")
@@ -285,7 +285,7 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
 
     // "Now" button — jump to current wall-clock time
     if ui
-        .button(RichText::new(format!("{} Now", egui_phosphor::regular::CROSSHAIR)).size(12.0))
+        .button(RichText::new(egui_phosphor::regular::CROSSHAIR).size(14.0))
         .on_hover_text("Jump to current time")
         .clicked()
     {
@@ -312,10 +312,9 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
     ui.separator();
 
     // Speed selector
-    ui.label(RichText::new("Speed:").size(11.0));
     egui::ComboBox::from_id_salt("speed_selector")
         .selected_text(state.playback_state.speed.label())
-        .width(75.0)
+        .width(55.0)
         .show_ui(ui, |ui| {
             for speed in PlaybackSpeed::all() {
                 ui.selectable_value(&mut state.playback_state.speed, *speed, speed.label());
@@ -325,10 +324,9 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
     // Loop mode selector (only show when playback bounds are set)
     if state.playback_state.time_model.playback_bounds.is_some() {
         ui.separator();
-        ui.label(RichText::new("Loop:").size(11.0));
         egui::ComboBox::from_id_salt("loop_mode_selector")
             .selected_text(state.playback_state.time_model.loop_mode.label())
-            .width(70.0)
+            .width(55.0)
             .show_ui(ui, |ui| {
                 for mode in LoopMode::all() {
                     ui.selectable_value(
@@ -358,37 +356,26 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
     if download_in_progress {
         let label = if state.download_progress.is_batch() {
             format!(
-                "Downloading {}/{}...",
+                "{} {}/{}",
+                egui_phosphor::regular::DOWNLOAD_SIMPLE,
                 (state.download_progress.batch_completed + 1)
                     .min(state.download_progress.batch_total),
                 state.download_progress.batch_total
             )
         } else {
-            "Downloading...".to_string()
+            format!("{} ...", egui_phosphor::regular::DOWNLOAD_SIMPLE)
         };
         ui.add_enabled(false, egui::Button::new(RichText::new(label).size(11.0)));
     } else if has_selection {
         if ui
-            .button(
-                RichText::new(format!(
-                    "{} Download Selection",
-                    egui_phosphor::regular::DOWNLOAD_SIMPLE
-                ))
-                .size(11.0),
-            )
+            .button(RichText::new(egui_phosphor::regular::DOWNLOAD_SIMPLE).size(14.0))
             .on_hover_text("Download all scans in the selected time range")
             .clicked()
         {
             state.push_command(crate::state::AppCommand::DownloadSelection);
         }
     } else if ui
-        .button(
-            RichText::new(format!(
-                "{} Download",
-                egui_phosphor::regular::DOWNLOAD_SIMPLE
-            ))
-            .size(11.0),
-        )
+        .button(RichText::new(egui_phosphor::regular::DOWNLOAD_SIMPLE).size(14.0))
         .on_hover_text("Download the scan at the current playback position")
         .clicked()
     {
@@ -544,12 +531,9 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
         // Clickable to toggle acquisition drawer (subsumes network log modal)
         let queued = state.acquisition.queued_count();
         let req_text = if queued > 0 {
-            format!(
-                "{} req / {} | {} queued",
-                display_count, display_transferred, queued
-            )
+            format!("{}r / {} | {}q", display_count, display_transferred, queued)
         } else {
-            format!("{} req / {}", display_count, display_transferred)
+            format!("{}r / {}", display_count, display_transferred)
         };
 
         let drawer_icon = if state.acquisition.drawer_expanded {

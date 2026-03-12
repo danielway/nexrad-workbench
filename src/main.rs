@@ -1339,6 +1339,12 @@ impl eframe::App for WorkbenchApp {
             }
         }
 
+        // Ensure continuous repainting for time-dependent UI elements (the "now"
+        // marker on the timeline and the data-age indicators) even when the user
+        // is idle and playback is stopped.  Repaint once per second which is
+        // sufficient for these indicators while being easy on the CPU.
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+
         // Run storm cell detection on demand when toggled on with existing data
         if self.state.storm_cells_visible && self.state.detected_storm_cells.is_empty() {
             if let Some(ref renderer) = self.renderers.gpu {
@@ -1670,12 +1676,7 @@ impl eframe::App for WorkbenchApp {
                                     .record_elevations(&result.elevations_completed, vol_start_ts);
                             }
                             if let Some(ref vcp) = result.vcp {
-                                self.state
-                                    .live_mode_state
-                                    .record_vcp(vcp.number, vcp.elevations.len() as u8);
-                                if !vcp.elevations.is_empty() {
-                                    self.state.live_mode_state.record_vcp_durations(vcp);
-                                }
+                                self.state.live_mode_state.record_vcp(vcp);
                             }
 
                             self.state.live_mode_state.record_in_progress_elevation(

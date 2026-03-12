@@ -2172,7 +2172,7 @@ fn render_timeline_tooltip(
         ui.ctx().clone(),
         egui::LayerId::new(egui::Order::Tooltip, ui.id()),
         ui.id().with("tl_tooltip"),
-        hover_pos + egui::vec2(10.0, 10.0),
+        Rect::from_center_size(hover_pos, Vec2::splat(20.0)),
     )
     .show(|ui: &mut egui::Ui| {
         if let Some(sweep) = sweep {
@@ -2334,6 +2334,8 @@ fn render_realtime_volume_tooltip(
         // Replicate the sweep-to-timestamp mapping from render_realtime_progress
         // to find which elevation block contains hover_ts.
         let mut hovered_elev: Option<(u8, f64, f64)> = None;
+        let mut nearest_elev: Option<(u8, f64, f64)> = None;
+        let mut nearest_dist: f64 = f64::MAX;
         for elev_idx in 0..expected_count {
             let elev_num = (elev_idx + 1) as u8;
             let is_complete = live_state.elevations_received.contains(&elev_num);
@@ -2410,6 +2412,27 @@ fn render_realtime_volume_tooltip(
                 hovered_elev = Some((elev_num, sw_start, sw_end));
                 break;
             }
+
+            // Track nearest sweep so we can snap to it if hover_ts falls in a
+            // gap (e.g. due to timeline auto-scroll shifting hover_ts between
+            // frames). Without this, the tooltip flickers between per-sweep
+            // and volume-level content as the cursor drifts across boundaries.
+            let dist = if hover_ts < sw_start {
+                sw_start - hover_ts
+            } else {
+                hover_ts - sw_end
+            };
+            if nearest_elev.is_none() || dist < nearest_dist {
+                nearest_elev = Some((elev_num, sw_start, sw_end));
+                nearest_dist = dist;
+            }
+        }
+
+        // Snap to nearest sweep if hover_ts missed due to frame-to-frame drift
+        if hovered_elev.is_none()
+            && nearest_dist < (expected_dur / expected_count.max(1) as f64) * 0.5
+        {
+            hovered_elev = nearest_elev;
         }
 
         if let Some((elev_num, sw_start, sw_end)) = hovered_elev {
