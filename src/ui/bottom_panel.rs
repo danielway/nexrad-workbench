@@ -163,6 +163,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
 
                 // Playback controls row
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
                     render_playback_controls(ui, state);
                 });
             });
