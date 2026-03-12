@@ -177,7 +177,11 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 decompress_ms_total += t_decompress.elapsed().as_secs_f64() * 1000.0;
                 let t_radials = web_time::Instant::now();
 
-                let r = if extracted_vcp.is_none() {
+                let needs_vcp = extracted_vcp
+                    .as_ref()
+                    .map(|v| v.elevations.is_empty())
+                    .unwrap_or(true);
+                let r = if needs_vcp {
                     match decompressed.messages() {
                         Ok(msgs) => decode_with_vcp_extraction(msgs, &mut extracted_vcp),
                         Err(_) => Vec::new(),
@@ -1024,11 +1028,14 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 wasm_bindgen::JsValue::from_str(&format!("Failed to split start chunk: {}", e))
             })?;
 
-            // Check if accumulator already has VCP
-            let accum_has_vcp = CHUNK_ACCUM.with(|cell| {
+            // Check if accumulator already has a full VCP (with elevation details).
+            // A number-only VCP (empty elevations) should still allow extraction
+            // so a Message Type 5 can upgrade it.
+            let accum_has_full_vcp = CHUNK_ACCUM.with(|cell| {
                 cell.borrow()
                     .as_ref()
-                    .map(|a| a.vcp.is_some())
+                    .and_then(|a| a.vcp.as_ref())
+                    .map(|v| !v.elevations.is_empty())
                     .unwrap_or(false)
             });
 
@@ -1036,7 +1043,12 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 if record.compressed() {
                     match record.decompress() {
                         Ok(decompressed) => {
-                            if !accum_has_vcp && chunk_vcp.is_none() {
+                            if !accum_has_full_vcp
+                                && chunk_vcp
+                                    .as_ref()
+                                    .map(|v| v.elevations.is_empty())
+                                    .unwrap_or(true)
+                            {
                                 if let Ok(msgs) = decompressed.messages() {
                                     let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
                                     chunk_radials.extend(r);
@@ -1063,18 +1075,19 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             use nexrad_data::volume::Record;
             let record = Record::from_slice(&data);
 
-            // Check if accumulator already has VCP
-            let accum_has_vcp = CHUNK_ACCUM.with(|cell| {
+            // Check if accumulator already has a full VCP (with elevation details).
+            let accum_has_full_vcp = CHUNK_ACCUM.with(|cell| {
                 cell.borrow()
                     .as_ref()
-                    .map(|a| a.vcp.is_some())
+                    .and_then(|a| a.vcp.as_ref())
+                    .map(|v| !v.elevations.is_empty())
                     .unwrap_or(false)
             });
 
             if record.compressed() {
                 match record.decompress() {
                     Ok(decompressed) => {
-                        if !accum_has_vcp {
+                        if !accum_has_full_vcp {
                             if let Ok(msgs) = decompressed.messages() {
                                 let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
                                 chunk_radials.extend(r);
@@ -1150,12 +1163,21 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             accum.total_chunks += 1;
             accum.total_size_bytes += data_len as u64;
 
-            // Update VCP if newly extracted
+            // Update VCP if newly extracted or if the chunk has a fuller VCP
+            // (i.e. one with elevation details upgrading a number-only VCP).
             if chunk_has_vcp {
                 accum.has_vcp = true;
             }
-            if chunk_vcp.is_some() && accum.vcp.is_none() {
-                accum.vcp = chunk_vcp.clone();
+            if let Some(ref new_vcp) = chunk_vcp {
+                let should_upgrade = match accum.vcp {
+                    None => true,
+                    Some(ref existing) => {
+                        existing.elevations.is_empty() && !new_vcp.elevations.is_empty()
+                    }
+                };
+                if should_upgrade {
+                    accum.vcp = chunk_vcp.clone();
+                }
             }
 
             // Check for elevation transition → previous elevation is complete
@@ -1561,48 +1583,55 @@ fn decode_with_vcp_extraction<'a>(
 
     let mut radials = Vec::new();
     for msg in messages {
-        if extracted_vcp.is_none() {
-            match msg.contents() {
-                MessageContents::VolumeCoveragePattern(ref vcp_msg) => {
-                    let header = vcp_msg.header();
-                    let elevations: Vec<ExtractedVcpElevation> = vcp_msg
-                        .elevations()
-                        .iter()
-                        .map(|e| ExtractedVcpElevation {
-                            angle: e.elevation_angle() as f32,
-                            waveform: format!("{:?}", e.waveform_type()),
-                            prf_number: e.surveillance_prf_number(),
-                            is_sails: e.is_sails_cut(),
-                            is_mrle: e.is_mrle_cut(),
-                            is_base_tilt: e.is_base_tilt_cut(),
-                            azimuth_rate: {
-                                let rate = e.azimuth_rate();
-                                if rate > 0.0 {
-                                    Some(rate as f32)
-                                } else {
-                                    None
-                                }
-                            },
-                        })
-                        .collect();
-                    *extracted_vcp = Some(ExtractedVcp {
-                        number: header.pattern_number(),
-                        elevations,
-                    });
-                }
-                MessageContents::DigitalRadarData(ref m) => {
-                    if let Some(vol_block) = m.volume_data_block() {
-                        let raw = vol_block.volume_coverage_pattern_number();
-                        if raw > 0 {
-                            *extracted_vcp = Some(ExtractedVcp {
-                                number: raw,
-                                elevations: Vec::new(),
-                            });
-                        }
+        // Allow VolumeCoveragePattern (Message Type 5) to always overwrite the
+        // extracted VCP — even when a DigitalRadarData fallback already set the
+        // number — so we capture the full elevation detail.  The DRD fallback
+        // only fires when nothing has been extracted yet.
+        let has_full_vcp = extracted_vcp
+            .as_ref()
+            .map(|v| !v.elevations.is_empty())
+            .unwrap_or(false);
+
+        match msg.contents() {
+            MessageContents::VolumeCoveragePattern(ref vcp_msg) if !has_full_vcp => {
+                let header = vcp_msg.header();
+                let elevations: Vec<ExtractedVcpElevation> = vcp_msg
+                    .elevations()
+                    .iter()
+                    .map(|e| ExtractedVcpElevation {
+                        angle: e.elevation_angle() as f32,
+                        waveform: format!("{:?}", e.waveform_type()),
+                        prf_number: e.surveillance_prf_number(),
+                        is_sails: e.is_sails_cut(),
+                        is_mrle: e.is_mrle_cut(),
+                        is_base_tilt: e.is_base_tilt_cut(),
+                        azimuth_rate: {
+                            let rate = e.azimuth_rate();
+                            if rate > 0.0 {
+                                Some(rate as f32)
+                            } else {
+                                None
+                            }
+                        },
+                    })
+                    .collect();
+                *extracted_vcp = Some(ExtractedVcp {
+                    number: header.pattern_number(),
+                    elevations,
+                });
+            }
+            MessageContents::DigitalRadarData(ref m) if extracted_vcp.is_none() => {
+                if let Some(vol_block) = m.volume_data_block() {
+                    let raw = vol_block.volume_coverage_pattern_number();
+                    if raw > 0 {
+                        *extracted_vcp = Some(ExtractedVcp {
+                            number: raw,
+                            elevations: Vec::new(),
+                        });
                     }
                 }
-                _ => {}
             }
+            _ => {}
         }
         match msg.into_contents() {
             MessageContents::DigitalRadarData(m) => {

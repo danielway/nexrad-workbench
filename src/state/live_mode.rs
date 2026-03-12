@@ -116,6 +116,9 @@ pub struct LiveModeState {
     /// VCP number of the current/last volume (for projecting scan boundaries).
     pub current_vcp_number: Option<u16>,
 
+    /// Full extracted VCP pattern from Message Type 5 (for live panel display).
+    pub current_vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
+
     /// Duration of the last completed volume scan in seconds.
     pub last_volume_duration_secs: Option<f64>,
 
@@ -172,6 +175,7 @@ impl Default for LiveModeState {
             elevations_received: Vec::new(),
             expected_elevation_count: None,
             current_vcp_number: None,
+            current_vcp_pattern: None,
             last_volume_duration_secs: None,
             current_volume_start: None,
             current_scan_key: None,
@@ -430,30 +434,25 @@ impl LiveModeState {
     }
 
     /// Record VCP info from an ingest result. When a full `ExtractedVcp` with
-    /// azimuth rate data is available, computes per-elevation sweep durations.
-    pub fn record_vcp(&mut self, vcp_number: u16, elevation_count: u8) {
-        self.current_vcp_number = Some(vcp_number);
-        self.expected_elevation_count = Some(elevation_count);
-    }
+    /// elevation data is available, also computes per-elevation sweep durations.
+    pub fn record_vcp(&mut self, vcp: &crate::data::keys::ExtractedVcp) {
+        self.current_vcp_number = Some(vcp.number);
+        self.expected_elevation_count = Some(vcp.elevations.len() as u8);
+        if !vcp.elevations.is_empty() {
+            self.current_vcp_pattern = Some(vcp.clone());
 
-    /// Record per-elevation sweep duration estimates from an extracted VCP.
-    /// Uses Method A (1/azimuth_rate) weights with Method B category fallbacks.
-    ///
-    /// Also seeds `last_volume_duration_secs` from the VCP if no measured volume
-    /// duration is available yet, providing a much better initial estimate than
-    /// the hardcoded 300s fallback.
-    pub fn record_vcp_durations(&mut self, vcp: &crate::data::keys::ExtractedVcp) {
-        // Seed volume duration from VCP azimuth rates if we haven't measured one yet.
-        // This replaces the 300s fallback with sum(360°/rate_i) which is much closer
-        // to reality (~600s for clear-air VCP 35 vs ~270s for precip VCP 212).
-        if self.last_volume_duration_secs.is_none() {
-            if let Some(estimated) = vcp.estimated_volume_duration() {
-                self.last_volume_duration_secs = Some(estimated);
+            // Seed volume duration from VCP azimuth rates if we haven't measured one yet.
+            // This replaces the 300s fallback with sum(360°/rate_i) which is much closer
+            // to reality (~600s for clear-air VCP 35 vs ~270s for precip VCP 212).
+            if self.last_volume_duration_secs.is_none() {
+                if let Some(estimated) = vcp.estimated_volume_duration() {
+                    self.last_volume_duration_secs = Some(estimated);
+                }
             }
-        }
 
-        let vol_dur = self.last_volume_duration_secs.unwrap_or(300.0);
-        self.estimated_sweep_durations = vcp.sweep_durations(vol_dur);
+            let vol_dur = self.last_volume_duration_secs.unwrap_or(300.0);
+            self.estimated_sweep_durations = vcp.sweep_durations(vol_dur);
+        }
     }
 
     /// Get the estimated sweep duration for a specific elevation index (0-based).
