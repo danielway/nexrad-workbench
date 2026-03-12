@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+echo "Running cargo fmt --check..."
+cargo fmt --check
+if [ $? -ne 0 ]; then
+    echo ""
+    echo "Push rejected: code is not formatted."
+    echo "Run 'cargo fmt' to fix formatting, then commit and try again."
+    exit 1
+fi
