@@ -423,6 +423,10 @@ pub struct ExtractedVcpElevation {
     pub is_mrle: bool,
     /// BASE TILT cut.
     pub is_base_tilt: bool,
+    /// Azimuth rotation rate in degrees/second from the VCP message.
+    /// Primary input for sweep duration estimation: duration ≈ 360° / rate.
+    #[serde(default)]
+    pub azimuth_rate: Option<f32>,
 }
 
 /// Full Volume Coverage Pattern extracted from a NEXRAD VCP message (Type 5).
@@ -432,6 +436,107 @@ pub struct ExtractedVcp {
     pub number: u16,
     /// Ordered elevation cuts in this VCP.
     pub elevations: Vec<ExtractedVcpElevation>,
+}
+
+impl ExtractedVcp {
+    /// Compute per-elevation sweep durations as fractions of total volume duration.
+    ///
+    /// Uses Method A (weight = 1/azimuth_rate) when azimuth rates are available,
+    /// falling back to Method B category-based weights from empirical study, and
+    /// finally to even distribution if neither is available.
+    ///
+    /// Returns a `Vec<f64>` with one entry per elevation, each being the estimated
+    /// sweep duration in seconds for the given `total_volume_duration`.
+    pub fn sweep_durations(&self, total_volume_duration: f64) -> Vec<f64> {
+        if self.elevations.is_empty() {
+            return Vec::new();
+        }
+
+        let weights: Vec<f64> = self
+            .elevations
+            .iter()
+            .map(|e| {
+                if let Some(rate) = e.azimuth_rate {
+                    if rate > 0.0 {
+                        return 1.0 / rate as f64;
+                    }
+                }
+                // Method B fallback: use category-based weights
+                let is_clear_air = crate::state::vcp::is_clear_air_vcp(self.number);
+                1.0 / crate::state::vcp::fallback_azimuth_rate(
+                    is_clear_air,
+                    &e.waveform,
+                    e.prf_number,
+                ) as f64
+            })
+            .collect();
+
+        let total_weight: f64 = weights.iter().sum();
+        if total_weight <= 0.0 {
+            // Shouldn't happen, but fall back to even distribution
+            let even = total_volume_duration / self.elevations.len() as f64;
+            return vec![even; self.elevations.len()];
+        }
+
+        weights
+            .iter()
+            .map(|w| (w / total_weight) * total_volume_duration)
+            .collect()
+    }
+
+    /// Estimate total volume scan duration (seconds) from per-elevation azimuth rates.
+    ///
+    /// Computes `sum(360° / rate_i)` for each elevation. When azimuth rates are not
+    /// available, uses Method B fallback rates. Returns `None` if there are no elevations.
+    pub fn estimated_volume_duration(&self) -> Option<f64> {
+        if self.elevations.is_empty() {
+            return None;
+        }
+
+        let total: f64 = self
+            .elevations
+            .iter()
+            .map(|e| {
+                let rate = if let Some(r) = e.azimuth_rate {
+                    if r > 0.0 {
+                        r as f64
+                    } else {
+                        let is_clear_air = crate::state::vcp::is_clear_air_vcp(self.number);
+                        crate::state::vcp::fallback_azimuth_rate(
+                            is_clear_air,
+                            &e.waveform,
+                            e.prf_number,
+                        )
+                    }
+                } else {
+                    let is_clear_air = crate::state::vcp::is_clear_air_vcp(self.number);
+                    crate::state::vcp::fallback_azimuth_rate(
+                        is_clear_air,
+                        &e.waveform,
+                        e.prf_number,
+                    )
+                };
+                360.0 / rate
+            })
+            .sum();
+
+        Some(total)
+    }
+
+    /// Compute cumulative start offsets (in seconds from volume start) for each elevation.
+    ///
+    /// Returns a `Vec<f64>` where entry `i` is the estimated start time offset of elevation `i`.
+    #[allow(dead_code)]
+    pub fn sweep_start_offsets(&self, total_volume_duration: f64) -> Vec<f64> {
+        let durations = self.sweep_durations(total_volume_duration);
+        let mut offsets = Vec::with_capacity(durations.len());
+        let mut cumulative = 0.0;
+        for dur in &durations {
+            offsets.push(cumulative);
+            cumulative += dur;
+        }
+        offsets
+    }
 }
 
 /// Metadata for a scan stored in the scan index.

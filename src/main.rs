@@ -987,20 +987,26 @@ impl WorkbenchApp {
     fn estimate_volume_start(
         chunk_data_time: f64,
         current_elevation: Option<u8>,
-        expected_elevation_count: Option<u8>,
-        last_volume_duration_secs: Option<f64>,
+        live_state: &crate::state::LiveModeState,
     ) -> f64 {
         let elev = match current_elevation {
             Some(e) if e > 1 => e,
             _ => return chunk_data_time, // Elevation 1 or unknown — data IS the start
         };
-        let count = expected_elevation_count.unwrap_or(0) as f64;
-        let dur = last_volume_duration_secs.unwrap_or(300.0);
+
+        // Use weighted cumulative offset for the current elevation (0-based index)
+        let elev_idx = elev.saturating_sub(1) as usize;
+        if let Some(offset) = live_state.sweep_start_offset(elev_idx) {
+            return chunk_data_time - offset;
+        }
+
+        // Fallback: even distribution
+        let count = live_state.expected_elevation_count.unwrap_or(0) as f64;
+        let dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
         if count <= 0.0 || dur <= 0.0 {
             return chunk_data_time;
         }
         let sweep_dur = dur / count;
-        // Elevation numbers are 1-based; subtract time for preceding elevations
         chunk_data_time - (elev as f64 - 1.0) * sweep_dur
     }
 
@@ -1646,8 +1652,7 @@ impl eframe::App for WorkbenchApp {
                                         Self::estimate_volume_start(
                                             chunk_data_time,
                                             result.current_elevation,
-                                            self.state.live_mode_state.expected_elevation_count,
-                                            self.state.live_mode_state.last_volume_duration_secs,
+                                            &self.state.live_mode_state,
                                         )
                                     };
                                 self.state.live_mode_state.current_volume_start = Some(vol_start);

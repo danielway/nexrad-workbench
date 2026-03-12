@@ -1605,6 +1605,14 @@ fn decode_with_vcp_extraction<'a>(
                         is_sails: e.is_sails_cut(),
                         is_mrle: e.is_mrle_cut(),
                         is_base_tilt: e.is_base_tilt_cut(),
+                        azimuth_rate: {
+                            let rate = e.azimuth_rate();
+                            if rate > 0.0 {
+                                Some(rate as f32)
+                            } else {
+                                None
+                            }
+                        },
                     })
                     .collect();
                 *extracted_vcp = Some(ExtractedVcp {
