@@ -587,6 +587,11 @@ fn render_zip_entry(
 
             let mut submit = false;
 
+            // Enter key submits the form
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                submit = true;
+            }
+
             ui.horizontal(|ui| {
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut modal_state.zip_input)
@@ -594,10 +599,6 @@ fn render_zip_entry(
                         .desired_width(120.0),
                 );
                 response.request_focus();
-
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    submit = true;
-                }
 
                 if ui.button("Find Site").clicked() {
                     submit = true;
