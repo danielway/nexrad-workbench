@@ -105,7 +105,7 @@ impl Default for GlobeCamera {
         Self {
             center_lat: 0.0,
             center_lon: 0.0,
-            distance: 3.0,
+            distance: DEFAULT_SITE_DISTANCE,
             fov_y: std::f32::consts::FRAC_PI_4, // 45°
             aspect: 1.0,
             mode: CameraMode::default(),
@@ -115,7 +115,7 @@ impl Default for GlobeCamera {
             orbit_elevation: 45.0,
             tilt: 0.0,
             rotation: 0.0,
-            free_pos: Vec3::new(0.0, 0.0, 3.0),
+            free_pos: Vec3::new(0.0, 0.0, DEFAULT_SITE_DISTANCE),
             free_yaw: 0.0,
             free_pitch: 0.0,
             free_speed: 0.5,
@@ -124,9 +124,13 @@ impl Default for GlobeCamera {
 }
 
 // Distance clamp range (Earth radii).
-// 1.005 allows very close zoom (roughly matching 2D view detail levels).
-const MIN_DISTANCE: f32 = 1.005;
+// 1.001 allows very close zoom (~6.4 km above surface).
+const MIN_DISTANCE: f32 = 1.001;
 const MAX_DISTANCE: f32 = 20.0;
+
+/// Default camera distance when viewing a radar site (~637 km above surface).
+/// Provides a view comparable to the 2D flat view's ~500 km radius.
+const DEFAULT_SITE_DISTANCE: f32 = 1.10;
 
 #[allow(dead_code)]
 impl GlobeCamera {
@@ -494,13 +498,13 @@ impl GlobeCamera {
         self.center_lon = lon_deg as f32;
         self.site_lat = lat_deg as f32;
         self.site_lon = lon_deg as f32;
-        self.distance = 3.0;
+        self.distance = DEFAULT_SITE_DISTANCE;
         self.orbit_bearing = 180.0;
         self.orbit_elevation = 45.0;
         self.tilt = 0.0;
         self.rotation = 0.0;
         // Initialize free look at a reasonable position
-        let pos = Self::geo_to_world(lat_deg, lon_deg) * 3.0;
+        let pos = Self::geo_to_world(lat_deg, lon_deg) * DEFAULT_SITE_DISTANCE;
         self.free_pos = pos;
         self.free_yaw = (-lon_deg as f32 + 180.0) % 360.0 - 180.0;
         self.free_pitch = -(lat_deg as f32);
@@ -523,20 +527,21 @@ impl GlobeCamera {
             CameraMode::PlanetOrbit => {
                 self.center_lat = self.site_lat;
                 self.center_lon = self.site_lon;
-                self.distance = 3.0;
+                self.distance = DEFAULT_SITE_DISTANCE;
                 self.tilt = 0.0;
                 self.rotation = 0.0;
             }
             CameraMode::SiteOrbit => {
                 self.orbit_bearing = 180.0;
                 self.orbit_elevation = 45.0;
-                self.distance = 3.0;
+                self.distance = DEFAULT_SITE_DISTANCE;
                 self.tilt = 0.0;
                 self.rotation = 0.0;
             }
             CameraMode::FreeLook => {
                 // Reset to a default vantage point above the radar site
-                let pos = Self::geo_to_world(self.site_lat as f64, self.site_lon as f64) * 3.0;
+                let pos = Self::geo_to_world(self.site_lat as f64, self.site_lon as f64)
+                    * DEFAULT_SITE_DISTANCE;
                 self.free_pos = pos;
                 // Look toward the globe center
                 let dir = -pos.normalize();

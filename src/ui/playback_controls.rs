@@ -2,7 +2,7 @@
 
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use super::timeline::format_timestamp_full;
-use crate::state::{AppState, LiveExitReason, LivePhase, LoopMode, PlaybackSpeed};
+use crate::state::{AppState, LiveExitReason, LivePhase, LoopMode, PlaybackSpeed, TimeModel};
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Render the datetime picker popup for jumping to a specific time.
@@ -279,6 +279,32 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
         state.playback_state.set_playback_position(new_pos);
     }
 
+    // "Now" button — jump to current wall-clock time
+    if ui
+        .button(RichText::new(format!("{} Now", egui_phosphor::regular::CROSSHAIR)).size(12.0))
+        .on_hover_text("Jump to current time")
+        .clicked()
+    {
+        let now = TimeModel::wall_clock_time();
+
+        // Exit live mode if active
+        if state.live_mode_state.is_active() {
+            state.live_mode_state.stop(LiveExitReason::UserSeeked);
+            state.playback_state.time_model.disable_realtime_lock();
+        }
+
+        // Stop playback
+        state.playback_state.playing = false;
+
+        // Clear bounds so seek_to doesn't clamp
+        state.playback_state.time_model.clear_bounds();
+        state.playback_state.clear_selection();
+
+        // Jump playback position and center the view
+        state.playback_state.time_model.playback_position = now;
+        state.playback_state.center_view_on(now);
+    }
+
     ui.separator();
 
     // Speed selector
@@ -491,6 +517,17 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     render_pipeline_indicator(ui, state);
 
     // Download group: requests + transferred
+    // Use service worker aggregate if available, otherwise fall back to channel stats
+    let sw_total = state.network_aggregate.total_requests;
+    let (display_count, display_transferred) = if sw_total > 0 {
+        (
+            sw_total,
+            crate::state::format_bytes(state.network_aggregate.total_bytes),
+        )
+    } else {
+        (request_count, transferred)
+    };
+
     if active_count > 0 {
         ui.label(
             RichText::new(format!("({} active)", active_count))
@@ -499,12 +536,30 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
                 .color(ui_colors::ACTIVE),
         );
     }
-    if request_count > 0 {
-        ui.label(
-            RichText::new(format!("{} req / {}", request_count, transferred))
-                .size(10.0)
-                .color(ui_colors::value(dark)),
-        );
+    if display_count > 0 {
+        // Clickable to open network log
+        let req_text = format!("{} req / {}", display_count, display_transferred);
+        if ui
+            .add(
+                egui::Label::new(
+                    RichText::new(req_text)
+                        .size(10.0)
+                        .color(ui_colors::value(dark)),
+                )
+                .sense(egui::Sense::click()),
+            )
+            .on_hover_text("Click to view network log")
+            .clicked()
+        {
+            state.network_log_open = true;
+        }
+        ui.separator();
+    }
+
+    // Cross-origin isolation indicator
+    if state.cross_origin_isolated {
+        ui.label(RichText::new("COI").size(9.0).color(ui_colors::SUCCESS))
+            .on_hover_text("Cross-Origin Isolated: SharedArrayBuffer available");
         ui.separator();
     }
 

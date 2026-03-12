@@ -163,6 +163,9 @@ pub struct WorkbenchApp {
     /// True while a backfill is in progress. Used to prevent ChunkIngested
     /// results from updating live_mode_state.
     backfill_in_progress: bool,
+
+    /// Service worker network monitor (None if SW not available).
+    network_monitor: Option<nexrad::NetworkMonitor>,
 }
 
 // Embed shapefile data at compile time
@@ -430,7 +433,7 @@ impl WorkbenchApp {
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
 
-        Self {
+        let mut app = Self {
             state,
             geo_layers,
             renderers: Renderers {
@@ -470,7 +473,18 @@ impl WorkbenchApp {
             event_modal_state: ui::EventModalState::default(),
             backfill_channel,
             backfill_in_progress: false,
+            network_monitor: nexrad::NetworkMonitor::new(),
+        };
+
+        // Check cross-origin isolation status on startup
+        app.state.cross_origin_isolated = nexrad::is_cross_origin_isolated();
+        if app.state.cross_origin_isolated {
+            log::info!("Cross-origin isolated: SharedArrayBuffer available");
+        } else {
+            log::info!("Not cross-origin isolated: SharedArrayBuffer unavailable");
         }
+
+        app
     }
 
     /// Process selection download: download scans in the selected time range serially.
@@ -2155,6 +2169,16 @@ impl eframe::App for WorkbenchApp {
             .session_stats
             .update_from_network_stats(&network_stats);
 
+        // Drain service worker network metrics into app state
+        if let Some(ref monitor) = self.network_monitor {
+            self.state.network_aggregate = monitor.aggregate();
+            // Update the recent requests buffer (full snapshot each frame)
+            let recent = monitor.drain_recent();
+            if !recent.is_empty() {
+                self.state.recent_network_requests = recent.into();
+            }
+        }
+
         // Push current state to URL (throttled to once per second)
         {
             let now = web_time::Instant::now();
@@ -2232,6 +2256,7 @@ impl eframe::App for WorkbenchApp {
         ui::render_shortcuts_help(ctx, &mut self.state);
         ui::render_wipe_modal(ctx, &mut self.state);
         ui::render_stats_modal(ctx, &mut self.state);
+        ui::render_network_log(ctx, &mut self.state);
         ui::render_event_modal(ctx, &mut self.state, &mut self.event_modal_state);
     }
 }

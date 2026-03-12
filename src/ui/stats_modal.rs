@@ -207,6 +207,68 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
 
             ui.separator();
 
+            // --- Network section (service worker metrics) ---
+            ui.label(
+                RichText::new("Network (all traffic)")
+                    .size(12.0)
+                    .strong()
+                    .color(heading_color),
+            );
+            ui.indent("net_section", |ui| {
+                let agg = &state.network_aggregate;
+                stat_row(
+                    ui,
+                    "Requests",
+                    &format!("{}", agg.total_requests),
+                    label_color,
+                    value_color,
+                );
+                if agg.failed_requests > 0 {
+                    stat_row(
+                        ui,
+                        "Failed",
+                        &format!("{}", agg.failed_requests),
+                        label_color,
+                        Color32::from_rgb(255, 100, 100),
+                    );
+                }
+                stat_row(
+                    ui,
+                    "Transferred",
+                    &crate::state::format_bytes(agg.total_bytes),
+                    label_color,
+                    value_color,
+                );
+                let coi_label = if state.cross_origin_isolated {
+                    "active"
+                } else {
+                    "inactive"
+                };
+                let coi_color = if state.cross_origin_isolated {
+                    super::colors::ui::SUCCESS
+                } else {
+                    label_color
+                };
+                stat_row(
+                    ui,
+                    "Cross-Origin Isolation",
+                    coi_label,
+                    label_color,
+                    coi_color,
+                );
+
+                if ui
+                    .small_button("View request log")
+                    .on_hover_text("Open the full network request log")
+                    .clicked()
+                {
+                    state.network_log_open = true;
+                    state.stats_detail_open = false;
+                }
+            });
+
+            ui.separator();
+
             // --- Cache ---
             stat_row(
                 ui,

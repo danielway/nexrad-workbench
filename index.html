@@ -8,6 +8,29 @@
 
     <link data-trunk rel="rust" data-wasm-opt="2" />
     <link data-trunk rel="copy-file" href="worker.js" />
+    <link data-trunk rel="copy-file" href="service-worker.js" />
+
+    <script>
+        // Register service worker for cross-origin isolation + network monitoring.
+        // If the SW is not yet controlling this page, register it and reload so
+        // the COOP/COEP response headers take effect before the app loads.
+        if ('serviceWorker' in navigator) {
+            if (!navigator.serviceWorker.controller) {
+                navigator.serviceWorker.register('service-worker.js').then(function(reg) {
+                    var sw = reg.installing || reg.waiting;
+                    if (sw) {
+                        sw.addEventListener('statechange', function() {
+                            if (sw.state === 'activated') {
+                                window.location.reload();
+                            }
+                        });
+                    } else if (reg.active) {
+                        window.location.reload();
+                    }
+                });
+            }
+        }
+    </script>
 
     <style>
         html, body {
