@@ -113,9 +113,9 @@ pub mod timeline {
     pub fn connector() -> Color32 {
         Color32::from_rgba_unmultiplied(120, 120, 150, 60)
     }
-    /// Estimated future scan boundary (dashed, very subtle).
+    /// Estimated future scan boundary (dashed).
     pub fn estimated_boundary() -> Color32 {
-        Color32::from_rgba_unmultiplied(180, 200, 255, 50)
+        Color32::from_rgba_unmultiplied(180, 200, 255, 90)
     }
 
     // ── Scan track colors (warm palette) ──────────────────────────────
@@ -221,7 +221,17 @@ pub mod timeline {
 
     /// Pending (expected but not yet received) sweep placeholder.
     pub fn rt_pending_sweep_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(80, 120, 180, 60)
+        Color32::from_rgba_unmultiplied(80, 120, 180, 100)
+    }
+
+    /// Separator tick between chunk sub-blocks in a downloading sweep.
+    pub fn rt_chunk_separator() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 180, 255, 120)
+    }
+
+    /// Leading edge of the progress fill in a downloading sweep.
+    pub fn rt_progress_edge() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 200, 255, 160)
     }
 
     // ── Saved event overlay colors ────────────────────────────────────

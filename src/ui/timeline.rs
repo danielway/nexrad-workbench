@@ -1579,13 +1579,13 @@ fn render_realtime_progress(
         );
     }
 
-    // Projected remainder: very subtle fill
+    // Projected remainder: subtle fill indicating estimated extent
     if x_vol_end > x_now && x_now >= scan_rect.left() {
         let future_rect = Rect::from_min_max(Pos2::new(x_now, scan_block.min.y), scan_block.max);
         painter.rect_filled(
             future_rect,
             2.0,
-            Color32::from_rgba_unmultiplied(vr, vg, vb, 40),
+            Color32::from_rgba_unmultiplied(vr, vg, vb, 55),
         );
     }
 
@@ -1605,16 +1605,16 @@ fn render_realtime_progress(
     }
     // Dashed border for projected remainder
     if x_vol_end > x_now && x_now >= scan_rect.left() {
-        let dash_color = Color32::from_rgba_unmultiplied(vr, vg, vb, 60);
+        let dash_color = Color32::from_rgba_unmultiplied(vr, vg, vb, 90);
         // Dashed right edge
         let mut y = scan_block.min.y;
         while y < scan_block.max.y {
-            let y_end = (y + 3.0).min(scan_block.max.y);
+            let y_end = (y + 4.0).min(scan_block.max.y);
             painter.line_segment(
                 [Pos2::new(x_vol_end, y), Pos2::new(x_vol_end, y_end)],
-                Stroke::new(0.5, dash_color),
+                Stroke::new(1.0, dash_color),
             );
-            y += 6.0;
+            y += 7.0;
         }
         // Dashed top and bottom
         let mut x = x_now;
@@ -1672,25 +1672,26 @@ fn render_realtime_progress(
 
     // ── Projected future scan boundaries (dashed lines) ──
     if expected_dur > 30.0 {
+        let boundary_color = tl_colors::estimated_boundary();
         for i in 1..=2 {
             let projected_ts = vol_start + expected_dur * i as f64;
             let x = ts_to_x(projected_ts);
             if x >= scan_rect.left() && x <= scan_rect.right() {
                 let mut y = scan_rect.top();
                 while y < scan_rect.bottom() {
-                    let y_end = (y + 3.0).min(scan_rect.bottom());
+                    let y_end = (y + 4.0).min(scan_rect.bottom());
                     painter.line_segment(
                         [Pos2::new(x, y), Pos2::new(x, y_end)],
-                        Stroke::new(0.5, tl_colors::estimated_boundary()),
+                        Stroke::new(1.0, boundary_color),
                     );
-                    y += 6.0;
+                    y += 7.0;
                 }
                 painter.text(
-                    Pos2::new(x + 2.0, scan_rect.top() + 2.0),
+                    Pos2::new(x + 3.0, scan_rect.top() + 2.0),
                     egui::Align2::LEFT_TOP,
                     "est.",
-                    egui::FontId::monospace(8.0),
-                    tl_colors::estimated_boundary(),
+                    egui::FontId::monospace(9.0),
+                    boundary_color,
                 );
             }
         }
@@ -1865,14 +1866,40 @@ fn render_realtime_progress(
                 );
             }
 
-            painter.rect_stroke(
-                block,
-                1.0,
-                Stroke::new(1.0, border_color),
-                StrokeKind::Inside,
-            );
+            // Dashed border: the extent of the downloading sweep is estimated,
+            // so use dashes to communicate that these bounds are approximate.
+            {
+                let mut x = block.min.x;
+                while x < block.max.x {
+                    let x_seg_end = (x + 4.0).min(block.max.x);
+                    painter.line_segment(
+                        [Pos2::new(x, block.min.y), Pos2::new(x_seg_end, block.min.y)],
+                        Stroke::new(1.0, border_color),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(x, block.max.y), Pos2::new(x_seg_end, block.max.y)],
+                        Stroke::new(1.0, border_color),
+                    );
+                    x += 8.0;
+                }
+                let mut y = block.min.y;
+                while y < block.max.y {
+                    let y_end = (y + 3.0).min(block.max.y);
+                    painter.line_segment(
+                        [Pos2::new(block.min.x, y), Pos2::new(block.min.x, y_end)],
+                        Stroke::new(1.0, border_color),
+                    );
+                    painter.line_segment(
+                        [Pos2::new(block.max.x, y), Pos2::new(block.max.x, y_end)],
+                        Stroke::new(1.0, border_color),
+                    );
+                    y += 6.0;
+                }
+            }
 
-            // Draw downloaded chunks that belong to this elevation
+            // Draw downloaded chunks that belong to this elevation, with
+            // clear separators between each chunk boundary.
+            let mut prev_chunk_end_x: Option<f32> = None;
             for &(span_elev, span_start, span_end, _) in &live_state.chunk_elev_spans {
                 if span_elev != elev_num {
                     continue;
@@ -1889,7 +1916,33 @@ fn render_realtime_progress(
                         0.0,
                         Color32::from_rgba_unmultiplied(60, 140, 200, 55),
                     );
+
+                    // Separator tick at each chunk boundary
+                    if let Some(prev_x) = prev_chunk_end_x {
+                        // Draw separator at the boundary between previous and current chunk
+                        let sep_x = (prev_x + cx0) / 2.0;
+                        painter.line_segment(
+                            [
+                                Pos2::new(sep_x, block.min.y + 1.0),
+                                Pos2::new(sep_x, block.max.y - 1.0),
+                            ],
+                            Stroke::new(1.0, tl_colors::rt_chunk_separator()),
+                        );
+                    }
+                    prev_chunk_end_x = Some(cx1);
                 }
+            }
+
+            // Leading edge: bright vertical line at the progress front
+            if frac > 0.01 && frac < 0.99 {
+                let edge_x = block.min.x + (block.width() * frac);
+                painter.line_segment(
+                    [
+                        Pos2::new(edge_x, block.min.y),
+                        Pos2::new(edge_x, block.max.y),
+                    ],
+                    Stroke::new(1.5, tl_colors::rt_progress_edge()),
+                );
             }
 
             // Next-chunk countdown if we're waiting
@@ -1919,13 +1972,36 @@ fn render_realtime_progress(
                 );
             }
         } else if is_future {
-            // -- Future: dashed outline --
-            painter.rect_stroke(
-                block,
-                1.0,
-                Stroke::new(0.5, tl_colors::rt_pending_sweep_border()),
-                StrokeKind::Inside,
-            );
+            // -- Future: dashed outline to clearly indicate estimated bounds --
+            let dash_color = tl_colors::rt_pending_sweep_border();
+            // Dashed top and bottom edges
+            let mut x = block.min.x;
+            while x < block.max.x {
+                let x_seg_end = (x + 4.0).min(block.max.x);
+                painter.line_segment(
+                    [Pos2::new(x, block.min.y), Pos2::new(x_seg_end, block.min.y)],
+                    Stroke::new(0.5, dash_color),
+                );
+                painter.line_segment(
+                    [Pos2::new(x, block.max.y), Pos2::new(x_seg_end, block.max.y)],
+                    Stroke::new(0.5, dash_color),
+                );
+                x += 8.0;
+            }
+            // Dashed left and right edges
+            let mut y = block.min.y;
+            while y < block.max.y {
+                let y_end = (y + 3.0).min(block.max.y);
+                painter.line_segment(
+                    [Pos2::new(block.min.x, y), Pos2::new(block.min.x, y_end)],
+                    Stroke::new(0.5, dash_color),
+                );
+                painter.line_segment(
+                    [Pos2::new(block.max.x, y), Pos2::new(block.max.x, y_end)],
+                    Stroke::new(0.5, dash_color),
+                );
+                y += 6.0;
+            }
         }
 
         // Elevation label (for all states, when wide enough)
@@ -2084,88 +2160,14 @@ fn render_timeline_tooltip(
         if let Some(sweep) = sweep {
             render_sweep_tooltip_content(ui, sweep, sweep_parent_scan, use_local);
         } else if in_active_volume {
-            // Tooltip for in-progress real-time volume (including projected future)
-            let vol_start = live_state.current_volume_start.unwrap();
-            let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
-            let expected_end = vol_start + expected_dur;
-            let now = now_secs;
-            let past_now = hover_ts > now;
-
-            let vcp_num = live_state.current_vcp_number.unwrap_or(0);
-            let vcp_label = if vcp_num > 0 {
-                format!("VCP {}", vcp_num)
-            } else {
-                "Unknown VCP".to_string()
-            };
-            ui.label(
-                RichText::new(format!("Volume Scan In Progress ({})", vcp_label))
-                    .strong()
-                    .size(12.0),
+            render_realtime_volume_tooltip(
+                ui,
+                live_state,
+                hover_ts,
+                now_secs,
+                in_sweep_track,
+                use_local,
             );
-
-            let mode_desc = match vcp_num {
-                215 | 212 => "Precipitation Mode",
-                31 | 32 | 35 => "Clear Air Mode",
-                12 | 121 => "Severe Weather Mode",
-                _ if vcp_num > 0 => "Known Mode",
-                _ => "Unknown Mode",
-            };
-            ui.label(
-                RichText::new(format!(
-                    "Radar is actively collecting data. ({})",
-                    mode_desc
-                ))
-                .size(10.0)
-                .weak(),
-            );
-            ui.separator();
-
-            let start_str = format_timestamp_full(vol_start, use_local);
-            ui.label(format!("Started: {}", start_str));
-            // Round to whole seconds so text doesn't change every frame (avoids tooltip resize flicker)
-            let elapsed = (now - vol_start).floor();
-            let remaining = (expected_end - now).ceil();
-            if remaining > 0.0 {
-                ui.label(format!(
-                    "Elapsed: {}s / est. {:.0}s total",
-                    elapsed as i64, expected_dur
-                ));
-            } else {
-                ui.label(format!(
-                    "Elapsed: {}s (expected ~{:.0}s)",
-                    elapsed as i64, expected_dur
-                ));
-            }
-
-            let received = live_state.elevations_received.len();
-            let expected = live_state.expected_elevation_count.unwrap_or(0);
-            if expected > 0 {
-                ui.label(format!("Elevations: {}/{} received", received, expected));
-            } else if received > 0 {
-                ui.label(format!("Elevations: {} received", received));
-            }
-
-            if past_now {
-                ui.separator();
-                ui.label(
-                    RichText::new("Projected area \u{2014} data not yet collected")
-                        .size(10.0)
-                        .italics()
-                        .color(Color32::from_rgba_unmultiplied(180, 200, 180, 160)),
-                );
-                if remaining > 0.0 {
-                    ui.label(format!("Est. ~{}s remaining", remaining as i64));
-                }
-            } else {
-                ui.separator();
-                ui.label(
-                    RichText::new(format!(
-                        "Live: {}/{} elevations received",
-                        received, expected
-                    ))
-                    .color(Color32::from_rgb(100, 200, 100)),
-                );
-            }
         } else if let Some(scan) = scan {
             render_scan_tooltip_content(ui, scan, live_state, use_local);
         }
@@ -2270,6 +2272,335 @@ fn render_sweep_tooltip_content(
                 ui.label(format!("Flags: {}", flags.join(", ")));
             }
         }
+    }
+}
+
+/// Render tooltip for the in-progress realtime volume.
+///
+/// When hovering the sweep track, this identifies which realtime sweep block
+/// is under the cursor and shows per-sweep details including chunk progress.
+/// When hovering the scan track, it shows the volume-level summary.
+#[allow(clippy::too_many_arguments)]
+fn render_realtime_volume_tooltip(
+    ui: &mut egui::Ui,
+    live_state: &crate::state::LiveModeState,
+    hover_ts: f64,
+    now_secs: f64,
+    in_sweep_track: bool,
+    use_local: bool,
+) {
+    let vol_start = live_state.current_volume_start.unwrap();
+    let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
+    let expected_end = vol_start + expected_dur;
+    let now = now_secs;
+    let past_now = hover_ts > now;
+    let vcp_num = live_state.current_vcp_number.unwrap_or(0);
+    let expected_count = live_state.expected_elevation_count.unwrap_or(0) as usize;
+
+    // ── Per-sweep tooltip when hovering the sweep track ──────────────
+    if in_sweep_track && expected_count > 0 {
+        let vcp_def = crate::state::get_vcp_definition(vcp_num);
+        let sweep_dur = expected_dur / expected_count as f64;
+
+        // Replicate the sweep-to-timestamp mapping from render_realtime_progress
+        // to find which elevation block contains hover_ts.
+        let mut hovered_elev: Option<(u8, f64, f64)> = None;
+        for elev_idx in 0..expected_count {
+            let elev_num = (elev_idx + 1) as u8;
+            let is_complete = live_state.elevations_received.contains(&elev_num);
+
+            let (sw_start, sw_end) = if is_complete {
+                if let Some(meta) = live_state
+                    .completed_sweep_metas
+                    .iter()
+                    .find(|m| m.elevation_number == elev_num)
+                {
+                    (meta.start, meta.end)
+                } else {
+                    (
+                        vol_start + elev_idx as f64 * sweep_dur,
+                        vol_start + (elev_idx + 1) as f64 * sweep_dur,
+                    )
+                }
+            } else {
+                let anchor_end = live_state
+                    .completed_sweep_metas
+                    .iter()
+                    .filter(|m| m.elevation_number < elev_num)
+                    .max_by_key(|m| m.elevation_number)
+                    .map(|m| m.end);
+
+                let chunk_min = live_state
+                    .chunk_elev_spans
+                    .iter()
+                    .filter(|&&(e, _, _, _)| e == elev_num)
+                    .map(|&(_, s, _, _)| s)
+                    .reduce(f64::min);
+                let chunk_max = live_state
+                    .chunk_elev_spans
+                    .iter()
+                    .filter(|&&(e, _, _, _)| e == elev_num)
+                    .map(|&(_, _, e, _)| e)
+                    .reduce(f64::max);
+
+                let sw_start_actual = match (chunk_min, anchor_end) {
+                    (Some(cm), _) => cm,
+                    (None, Some(ae)) => {
+                        let completed_count = live_state
+                            .completed_sweep_metas
+                            .iter()
+                            .filter(|m| m.elevation_number < elev_num)
+                            .count();
+                        let steps = elev_idx - completed_count;
+                        let remaining_count = expected_count - completed_count;
+                        let remaining_dur = (vol_start + expected_dur) - ae;
+                        let est_dur = if remaining_count > 0 {
+                            remaining_dur / remaining_count as f64
+                        } else {
+                            sweep_dur
+                        };
+                        ae + steps as f64 * est_dur
+                    }
+                    (None, None) => vol_start + elev_idx as f64 * sweep_dur,
+                };
+
+                let est_sweep_end = sw_start_actual + sweep_dur;
+                let sw_end_actual = match chunk_max {
+                    Some(cm) => cm.max(est_sweep_end),
+                    None => est_sweep_end,
+                };
+
+                (sw_start_actual, sw_end_actual)
+            };
+
+            if hover_ts >= sw_start && hover_ts <= sw_end {
+                hovered_elev = Some((elev_num, sw_start, sw_end));
+                break;
+            }
+        }
+
+        if let Some((elev_num, sw_start, sw_end)) = hovered_elev {
+            let is_complete = live_state.elevations_received.contains(&elev_num);
+            let is_downloading =
+                !is_complete && live_state.current_in_progress_elevation == Some(elev_num);
+            let elev_angle = vcp_def
+                .and_then(|d| d.elevations.get(elev_num.saturating_sub(1) as usize))
+                .map(|e| e.angle)
+                .unwrap_or(0.5 * elev_num as f32);
+
+            // Header
+            let state_label = if is_complete {
+                "Complete"
+            } else if is_downloading {
+                "Collecting"
+            } else {
+                "Pending"
+            };
+            ui.label(
+                RichText::new(format!(
+                    "Elevation Sweep #{} \u{2014} {}",
+                    elev_num, state_label
+                ))
+                .strong()
+                .size(12.0),
+            );
+            ui.label(
+                RichText::new(format!(
+                    "{:.1}\u{00B0} (cut #{} of {})",
+                    elev_angle, elev_num, expected_count
+                ))
+                .size(10.0)
+                .weak(),
+            );
+            ui.separator();
+
+            if is_complete {
+                // Show actual timing for completed sweeps
+                if let Some(meta) = live_state
+                    .completed_sweep_metas
+                    .iter()
+                    .find(|m| m.elevation_number == elev_num)
+                {
+                    let duration = meta.end - meta.start;
+                    let start_str = format_timestamp_full(meta.start, use_local);
+                    ui.label(format!("Time: {} ({:.0}s)", start_str, duration));
+                }
+                ui.label(
+                    RichText::new("Data received and stored.")
+                        .size(10.0)
+                        .color(Color32::from_rgb(100, 200, 100)),
+                );
+            } else if is_downloading {
+                // Show chunk-level progress
+                let chunks_for_elev: Vec<_> = live_state
+                    .chunk_elev_spans
+                    .iter()
+                    .filter(|&&(e, _, _, _)| e == elev_num)
+                    .collect();
+                let completed_chunks = chunks_for_elev.len();
+                let in_progress_radials = live_state.current_in_progress_radials.unwrap_or(0);
+
+                let total_radials: u32 =
+                    chunks_for_elev.iter().map(|&&(_, _, _, r)| r).sum::<u32>()
+                        + in_progress_radials;
+
+                ui.label(format!("Radials: {}/360 collected", total_radials));
+
+                // Total chunks received for the whole volume gives context
+                let total_volume_chunks = live_state.chunks_received;
+
+                // Show per-chunk breakdown
+                if completed_chunks > 0 || in_progress_radials > 0 {
+                    ui.separator();
+                    let has_active = in_progress_radials > 0
+                        || live_state.phase == crate::state::LivePhase::Streaming;
+                    let display_total = if has_active {
+                        completed_chunks + 1
+                    } else {
+                        completed_chunks
+                    };
+                    ui.label(
+                        RichText::new(format!(
+                            "Chunks for this elevation ({} total in volume):",
+                            total_volume_chunks
+                        ))
+                        .size(10.0)
+                        .weak(),
+                    );
+                    for (i, &&(_, _, _, cr)) in chunks_for_elev.iter().enumerate() {
+                        let chunk_num = i + 1;
+                        let label = format!(
+                            "  Chunk {}/{}: {} radials, collected",
+                            chunk_num, display_total, cr
+                        );
+                        ui.label(RichText::new(label).size(10.0));
+                    }
+                    if has_active {
+                        let chunk_num = completed_chunks + 1;
+                        let label = format!(
+                            "  Chunk {}/{}: {} radials, collecting\u{2026}",
+                            chunk_num, display_total, in_progress_radials
+                        );
+                        ui.label(
+                            RichText::new(label)
+                                .size(10.0)
+                                .color(Color32::from_rgb(100, 180, 255)),
+                        );
+                    }
+                }
+
+                // Countdown if waiting
+                let countdown = live_state.countdown_remaining_secs(now);
+                if let Some(remaining) = countdown {
+                    ui.label(format!("Next chunk in ~{}s", remaining.ceil() as i32));
+                }
+            } else {
+                // Future/pending sweep
+                let duration = sw_end - sw_start;
+                ui.label(format!("Est. duration: ~{:.0}s", duration));
+                ui.label(
+                    RichText::new("Not yet started \u{2014} bounds are estimated.")
+                        .size(10.0)
+                        .italics()
+                        .color(Color32::from_rgba_unmultiplied(180, 200, 220, 160)),
+                );
+            }
+
+            // VCP waveform info if available
+            if let Some(vcp_def) = vcp_def {
+                if let Some(vcp_elev) = vcp_def.elevations.get(elev_num.saturating_sub(1) as usize)
+                {
+                    ui.separator();
+                    let wf_label = match vcp_elev.waveform {
+                        "CS" | "ContiguousSurveillance" => "Contiguous Surveillance",
+                        "CDW" | "ContiguousDopplerWithGating" => "Contiguous Doppler (Gated)",
+                        "CDWO" | "ContiguousDopplerWithoutGating" => "Contiguous Doppler",
+                        "B" | "Batch" => "Batch",
+                        "SPP" | "StaggeredPulsePair" => "Staggered Pulse Pair",
+                        other => other,
+                    };
+                    ui.label(format!("Waveform: {}", wf_label));
+                }
+            }
+
+            return;
+        }
+    }
+
+    // ── Volume-level tooltip (scan track or no sweep match) ──────────
+    let vcp_label = if vcp_num > 0 {
+        format!("VCP {}", vcp_num)
+    } else {
+        "Unknown VCP".to_string()
+    };
+    ui.label(
+        RichText::new(format!("Volume Scan In Progress ({})", vcp_label))
+            .strong()
+            .size(12.0),
+    );
+
+    let mode_desc = match vcp_num {
+        215 | 212 => "Precipitation Mode",
+        31 | 32 | 35 => "Clear Air Mode",
+        12 | 121 => "Severe Weather Mode",
+        _ if vcp_num > 0 => "Known Mode",
+        _ => "Unknown Mode",
+    };
+    ui.label(
+        RichText::new(format!(
+            "Radar is actively collecting data. ({})",
+            mode_desc
+        ))
+        .size(10.0)
+        .weak(),
+    );
+    ui.separator();
+
+    let start_str = format_timestamp_full(vol_start, use_local);
+    ui.label(format!("Started: {}", start_str));
+    // Round to whole seconds so text doesn't change every frame (avoids tooltip resize flicker)
+    let elapsed = (now - vol_start).floor();
+    let remaining = (expected_end - now).ceil();
+    if remaining > 0.0 {
+        ui.label(format!(
+            "Elapsed: {}s / est. {:.0}s total",
+            elapsed as i64, expected_dur
+        ));
+    } else {
+        ui.label(format!(
+            "Elapsed: {}s (expected ~{:.0}s)",
+            elapsed as i64, expected_dur
+        ));
+    }
+
+    let received = live_state.elevations_received.len();
+    let expected = live_state.expected_elevation_count.unwrap_or(0);
+    if expected > 0 {
+        ui.label(format!("Elevations: {}/{} received", received, expected));
+    } else if received > 0 {
+        ui.label(format!("Elevations: {} received", received));
+    }
+
+    if past_now {
+        ui.separator();
+        ui.label(
+            RichText::new("Projected area \u{2014} data not yet collected")
+                .size(10.0)
+                .italics()
+                .color(Color32::from_rgba_unmultiplied(180, 200, 180, 160)),
+        );
+        if remaining > 0.0 {
+            ui.label(format!("Est. ~{}s remaining", remaining as i64));
+        }
+    } else {
+        ui.separator();
+        ui.label(
+            RichText::new(format!(
+                "Live: {}/{} elevations received",
+                received, expected
+            ))
+            .color(Color32::from_rgb(100, 200, 100)),
+        );
     }
 }
 
