@@ -123,6 +123,7 @@ pub fn render_canvas_with_geo(
                             state.viz_state.center_lon,
                             gpu_renderer,
                             &state.viz_state.product,
+                            state.use_local_time,
                         );
                     }
                 }
@@ -1030,6 +1031,30 @@ fn render_nexrad_sites(
     }
 }
 
+/// Format a Unix timestamp (seconds) as a time string.
+///
+/// When `use_local` is true, formats in the browser's local timezone via `js_sys::Date`.
+/// Otherwise formats as UTC via chrono.
+fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
+    if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(ts * 1000.0);
+        let h = d.get_hours();
+        let m = d.get_minutes();
+        let s = d.get_seconds();
+        let ms = d.get_milliseconds();
+        format!("{h:02}:{m:02}:{s:02}.{ms:03} Local")
+    } else {
+        use chrono::{TimeZone, Utc};
+        let secs = ts.floor() as i64;
+        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
+        match Utc.timestamp_opt(secs, millis * 1_000_000) {
+            chrono::LocalResult::Single(dt) => dt.format("%H:%M:%S%.3f UTC").to_string(),
+            _ => format!("{:.3}s", ts),
+        }
+    }
+}
+
 /// Render inspector tooltip showing lat/lon and data value at hover position.
 #[allow(clippy::too_many_arguments)]
 fn render_inspector(
@@ -1041,6 +1066,7 @@ fn render_inspector(
     radar_lon: f64,
     gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
     product: &crate::state::RadarProduct,
+    use_local_time: bool,
 ) {
     let geo = projection.screen_to_geo(hover_pos);
     let lat = geo.y;
@@ -1052,11 +1078,15 @@ fn render_inspector(
     let range_km = (dlat * dlat + dlon * dlon).sqrt() * 111.0;
     let azimuth_deg = (dlon.atan2(dlat).to_degrees() + 360.0) % 360.0;
 
-    // Look up data value
-    let value = gpu_renderer.and_then(|r| {
-        let renderer = r.lock().expect("renderer mutex poisoned");
-        renderer.value_at_polar(azimuth_deg as f32, range_km)
-    });
+    // Look up data value and collection time
+    let (value, collection_time) = gpu_renderer
+        .map(|r| {
+            let renderer = r.lock().expect("renderer mutex poisoned");
+            let v = renderer.value_at_polar(azimuth_deg as f32, range_km);
+            let t = renderer.collection_time_at_polar(azimuth_deg as f32);
+            (v, t)
+        })
+        .unwrap_or((None, None));
 
     // Build tooltip text
     let mut lines = vec![
@@ -1070,6 +1100,9 @@ fn render_inspector(
         } else {
             lines.push(format!("{}: {:.1} {}", product.short_code(), v, unit));
         }
+    }
+    if let Some(ts) = collection_time {
+        lines.push(format_unix_timestamp(ts, use_local_time));
     }
     let text = lines.join("\n");
 

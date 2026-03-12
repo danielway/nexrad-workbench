@@ -1673,6 +1673,7 @@ impl eframe::App for WorkbenchApp {
                                     result.max_range_km,
                                     result.offset,
                                     result.scale,
+                                    &result.radial_times,
                                 );
                                 r.update_color_table(gl, &result.product);
 

@@ -192,6 +192,8 @@ pub struct PrecomputedSweep {
     pub sweep_start_secs: f64,
     pub sweep_end_secs: f64,
     pub azimuths: Vec<f32>,
+    /// Per-radial collection timestamps in Unix seconds (parallel to azimuths).
+    pub radial_times: Vec<f64>,
     pub gate_values: GateValues,
 }
 
@@ -207,11 +209,21 @@ pub struct PrecomputedSweep {
 ///  36..40   offset (f32)
 ///  40..44   radial_count (u32)
 ///  44..45   data_word_size (u8: 1 or 2)
-///  45..48   reserved (3 bytes)
+///  45..46   format_version (u8: 0 = legacy, 1 = has radial_times)
+///  46..48   reserved (2 bytes)
 ///  48..52   mean_elevation (f32)
 ///  52..56   reserved (4 bytes, f64 alignment pad)
 ///  56..64   sweep_start_secs (f64)
 ///  64..72   sweep_end_secs (f64)
+///
+/// Array layout (version 0):
+///   72..                azimuths (f32 × azimuth_count)
+///   72 + az*4..         gate_values
+///
+/// Array layout (version 1):
+///   72..                azimuths (f32 × azimuth_count)
+///   72 + az*4..         radial_times (f64 × azimuth_count)
+///   72 + az*4 + az*8..  gate_values
 const HEADER_SIZE: usize = 72;
 
 impl PrecomputedSweep {
@@ -220,8 +232,12 @@ impl PrecomputedSweep {
         let az = self.azimuth_count as usize;
         let gc = self.gate_count as usize;
         let ws = self.gate_values.word_size() as usize;
+        let has_times = !self.radial_times.is_empty();
+        let format_version: u8 = if has_times { 1 } else { 0 };
+        let times_size = if has_times { az * 8 } else { 0 };
         let size = HEADER_SIZE
             + az * 4             // azimuths (f32)
+            + times_size         // radial_times (f64), version 1 only
             + az * gc * ws; // gate_values (u8 or u16)
         let mut buf = Vec::with_capacity(size);
 
@@ -235,7 +251,8 @@ impl PrecomputedSweep {
         buf.extend_from_slice(&self.offset.to_le_bytes()); // 36..40
         buf.extend_from_slice(&self.radial_count.to_le_bytes()); // 40..44
         buf.push(self.gate_values.word_size()); // 44
-        buf.extend_from_slice(&[0u8; 3]); // 45..48 reserved
+        buf.push(format_version); // 45
+        buf.extend_from_slice(&[0u8; 2]); // 46..48 reserved
         buf.extend_from_slice(&self.mean_elevation.to_le_bytes()); // 48..52
         buf.extend_from_slice(&[0u8; 4]); // 52..56 alignment pad
         buf.extend_from_slice(&self.sweep_start_secs.to_le_bytes()); // 56..64
@@ -244,6 +261,13 @@ impl PrecomputedSweep {
         // Azimuths
         for &a in &self.azimuths {
             buf.extend_from_slice(&a.to_le_bytes());
+        }
+
+        // Radial times (version 1 only)
+        if has_times {
+            for &t in &self.radial_times {
+                buf.extend_from_slice(&t.to_le_bytes());
+            }
         }
 
         // Gate data (native word size)
@@ -279,6 +303,8 @@ pub struct SweepHeader {
     pub sweep_end_secs: f64,
     /// Byte offset to azimuths array (f32 × azimuth_count)
     pub azimuths_offset: u32,
+    /// Byte offset to radial_times array (f64 × azimuth_count), or 0 if absent.
+    pub radial_times_offset: u32,
     /// Byte offset to gate_values array (u8 or u16 × azimuth_count × gate_count)
     pub gate_values_offset: u32,
 }
@@ -304,6 +330,7 @@ pub fn parse_sweep_header(data: &[u8]) -> Result<SweepHeader, String> {
     let offset = f32::from_le_bytes(data[36..40].try_into().unwrap());
     let radial_count = u32::from_le_bytes(data[40..44].try_into().unwrap());
     let data_word_size = data[44];
+    let format_version = data[45];
     let mean_elevation = f32::from_le_bytes(data[48..52].try_into().unwrap());
     let sweep_start_secs = f64::from_le_bytes(data[56..64].try_into().unwrap());
     let sweep_end_secs = f64::from_le_bytes(data[64..72].try_into().unwrap());
@@ -311,7 +338,13 @@ pub fn parse_sweep_header(data: &[u8]) -> Result<SweepHeader, String> {
     let az = azimuth_count as usize;
 
     let azimuths_offset = HEADER_SIZE;
-    let gate_values_offset = azimuths_offset + az * 4;
+    let (radial_times_offset, gate_values_offset) = if format_version >= 1 {
+        let rt_off = azimuths_offset + az * 4;
+        let gv_off = rt_off + az * 8;
+        (rt_off, gv_off)
+    } else {
+        (0, azimuths_offset + az * 4)
+    };
 
     Ok(SweepHeader {
         azimuth_count,
@@ -327,6 +360,7 @@ pub fn parse_sweep_header(data: &[u8]) -> Result<SweepHeader, String> {
         sweep_start_secs,
         sweep_end_secs,
         azimuths_offset: azimuths_offset as u32,
+        radial_times_offset: radial_times_offset as u32,
         gate_values_offset: gate_values_offset as u32,
     })
 }
@@ -575,6 +609,7 @@ mod tests {
 
     #[test]
     fn test_precomputed_sweep_header_roundtrip() {
+        let radial_times: Vec<f64> = (0..720).map(|i| 1700000000.5 + i as f64 * 0.028).collect();
         let sweep = PrecomputedSweep {
             azimuth_count: 720,
             gate_count: 1832,
@@ -588,6 +623,7 @@ mod tests {
             sweep_start_secs: 1700000000.5,
             sweep_end_secs: 1700000020.3,
             azimuths: (0..720).map(|i| i as f32 * 0.5).collect(),
+            radial_times: radial_times.clone(),
             gate_values: GateValues::U8(vec![0u8; 720 * 1832]),
         };
 
@@ -607,7 +643,36 @@ mod tests {
         assert!((header.sweep_start_secs - 1700000000.5).abs() < 1e-10);
         assert!((header.sweep_end_secs - 1700000020.3).abs() < 1e-10);
         assert_eq!(header.azimuths_offset, 72);
-        assert_eq!(header.gate_values_offset, 72 + 720 * 4);
+        assert!(header.radial_times_offset > 0);
+        assert_eq!(header.radial_times_offset, 72 + 720 * 4);
+        assert_eq!(header.gate_values_offset, 72 + 720 * 4 + 720 * 8);
+    }
+
+    #[test]
+    fn test_precomputed_sweep_legacy_no_radial_times() {
+        let sweep = PrecomputedSweep {
+            azimuth_count: 4,
+            gate_count: 2,
+            first_gate_range_km: 1.0,
+            gate_interval_km: 0.5,
+            max_range_km: 2.0,
+            scale: 1.0,
+            offset: 0.0,
+            radial_count: 4,
+            mean_elevation: 0.5,
+            sweep_start_secs: 100.0,
+            sweep_end_secs: 110.0,
+            azimuths: vec![0.0, 90.0, 180.0, 270.0],
+            radial_times: Vec::new(),
+            gate_values: GateValues::U8(vec![0u8; 8]),
+        };
+
+        let bytes = sweep.to_bytes();
+        let header = parse_sweep_header(&bytes).unwrap();
+
+        // Version 0: no radial times
+        assert_eq!(header.radial_times_offset, 0);
+        assert_eq!(header.gate_values_offset, 72 + 4 * 4);
     }
 
     #[test]
@@ -637,6 +702,7 @@ mod tests {
             sweep_start_secs: 100.0,
             sweep_end_secs: 110.0,
             azimuths: vec![0.0, 90.0, 180.0, 270.0],
+            radial_times: vec![100.0, 102.5, 105.0, 107.5],
             gate_values: GateValues::U16(vec![100, 200, 300, 400, 500, 600, 700, 800]),
         };
 
