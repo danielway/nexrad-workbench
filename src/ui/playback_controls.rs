@@ -527,10 +527,7 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
         // Clickable to toggle acquisition drawer (subsumes network log modal)
         let queued = state.acquisition.queued_count();
         let req_text = if queued > 0 {
-            format!(
-                "{}r / {} | {}q",
-                display_count, display_transferred, queued
-            )
+            format!("{}r / {} | {}q", display_count, display_transferred, queued)
         } else {
             format!("{}r / {}", display_count, display_transferred)
         };
