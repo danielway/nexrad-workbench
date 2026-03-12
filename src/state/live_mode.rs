@@ -143,6 +143,11 @@ pub struct LiveModeState {
     /// instead of even-distribution estimates.
     pub completed_sweep_metas: Vec<crate::data::SweepMeta>,
 
+    /// Per-elevation estimated sweep durations (seconds), computed from VCP
+    /// azimuth rates using the weight = 1/rate method. Index corresponds to
+    /// elevation index (0-based). Populated when VCP data is received.
+    pub estimated_sweep_durations: Vec<f64>,
+
     /// Last known radial azimuth in degrees (0-360) from the most recent chunk.
     /// Used to extrapolate sweep line position between chunks.
     pub last_radial_azimuth: Option<f32>,
@@ -174,6 +179,7 @@ impl Default for LiveModeState {
             current_in_progress_radials: None,
             chunk_elev_spans: Vec::new(),
             completed_sweep_metas: Vec::new(),
+            estimated_sweep_durations: Vec::new(),
             last_radial_azimuth: None,
             last_radial_time_secs: None,
         }
@@ -237,6 +243,7 @@ impl LiveModeState {
         self.current_in_progress_radials = None;
         self.chunk_elev_spans.clear();
         self.completed_sweep_metas.clear();
+        self.estimated_sweep_durations.clear();
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
     }
@@ -386,6 +393,7 @@ impl LiveModeState {
         self.current_in_progress_radials = None;
         self.chunk_elev_spans.clear();
         self.completed_sweep_metas.clear();
+        self.estimated_sweep_durations.clear();
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
     }
@@ -421,10 +429,69 @@ impl LiveModeState {
         self.current_in_progress_radials = radials;
     }
 
-    /// Record VCP info from an ingest result.
+    /// Record VCP info from an ingest result. When a full `ExtractedVcp` with
+    /// azimuth rate data is available, computes per-elevation sweep durations.
     pub fn record_vcp(&mut self, vcp_number: u16, elevation_count: u8) {
         self.current_vcp_number = Some(vcp_number);
         self.expected_elevation_count = Some(elevation_count);
+    }
+
+    /// Record per-elevation sweep duration estimates from an extracted VCP.
+    /// Uses Method A (1/azimuth_rate) weights with Method B category fallbacks.
+    pub fn record_vcp_durations(&mut self, vcp: &crate::data::keys::ExtractedVcp) {
+        // Use volume duration if known, otherwise a placeholder — durations will be
+        // recomputed as fractions when consumed, so the absolute value matters less
+        // than the relative weights.
+        let vol_dur = self.last_volume_duration_secs.unwrap_or(300.0);
+        self.estimated_sweep_durations = vcp.sweep_durations(vol_dur);
+    }
+
+    /// Get the estimated sweep duration for a specific elevation index (0-based).
+    /// Falls back to even distribution if per-elevation data is not available.
+    pub fn sweep_duration_for(&self, elev_idx: usize) -> Option<f64> {
+        let vol_dur = self.last_volume_duration_secs?;
+        let count = self.expected_elevation_count? as usize;
+        if count == 0 {
+            return None;
+        }
+
+        if !self.estimated_sweep_durations.is_empty() {
+            // Recompute with current volume duration to stay in sync
+            let total_weight: f64 = self.estimated_sweep_durations.iter().sum();
+            if total_weight > 0.0 {
+                let fraction =
+                    self.estimated_sweep_durations.get(elev_idx).copied().unwrap_or(0.0)
+                        / total_weight;
+                return Some(fraction * vol_dur);
+            }
+        }
+
+        // Even distribution fallback
+        Some(vol_dur / count as f64)
+    }
+
+    /// Get the cumulative start offset (seconds from volume start) for a given
+    /// elevation index (0-based). Uses weighted durations when available.
+    pub fn sweep_start_offset(&self, elev_idx: usize) -> Option<f64> {
+        let vol_dur = self.last_volume_duration_secs?;
+        let count = self.expected_elevation_count? as usize;
+        if count == 0 || elev_idx >= count {
+            return None;
+        }
+
+        if !self.estimated_sweep_durations.is_empty() {
+            let total_weight: f64 = self.estimated_sweep_durations.iter().sum();
+            if total_weight > 0.0 {
+                let offset: f64 = self.estimated_sweep_durations[..elev_idx]
+                    .iter()
+                    .map(|d| (d / total_weight) * vol_dur)
+                    .sum();
+                return Some(offset);
+            }
+        }
+
+        // Even distribution fallback
+        Some(elev_idx as f64 * vol_dur / count as f64)
     }
 
     /// Record last radial azimuth and timestamp from a chunk.
@@ -438,21 +505,25 @@ impl LiveModeState {
     }
 
     /// Estimate the current sweep line azimuth by extrapolating from the last
-    /// known radial position. Uses the estimated sweep duration (volume duration
-    /// / elevation count) to compute rotation rate.
+    /// known radial position. Uses per-elevation sweep duration from VCP azimuth
+    /// rates when available, falling back to even distribution.
     ///
     /// Returns `None` if insufficient data is available.
     pub fn estimated_azimuth(&self, now_secs: f64) -> Option<f32> {
         let last_az = self.last_radial_azimuth?;
         let last_t = self.last_radial_time_secs?;
-        let vol_dur = self.last_volume_duration_secs?;
-        let elev_count = self.expected_elevation_count? as f64;
-        if elev_count <= 0.0 || vol_dur <= 0.0 {
+        let _vol_dur = self.last_volume_duration_secs?;
+        let elev_count = self.expected_elevation_count? as usize;
+        if elev_count == 0 {
             return None;
         }
 
-        // Approximate sweep duration and rotation rate
-        let sweep_dur = vol_dur / elev_count;
+        // Use the current elevation's sweep duration for rotation rate
+        let current_elev_idx = self
+            .current_in_progress_elevation
+            .map(|e| e.saturating_sub(1) as usize)
+            .unwrap_or(0);
+        let sweep_dur = self.sweep_duration_for(current_elev_idx)?;
         if sweep_dur <= 0.0 {
             return None;
         }
@@ -469,7 +540,8 @@ impl LiveModeState {
     }
 
     /// Estimate which elevation index (0-based) the radar is currently scanning,
-    /// based on volume progress. Returns `None` if insufficient data.
+    /// based on volume progress. Uses cumulative weighted sweep durations when
+    /// available, falling back to even distribution.
     pub fn estimated_elevation_index(&self, now_secs: f64) -> Option<usize> {
         let vol_start = self.current_volume_start?;
         let vol_dur = self.last_volume_duration_secs?;
@@ -483,6 +555,16 @@ impl LiveModeState {
             return Some(0);
         }
 
+        // Use cumulative weighted offsets to find which elevation we're in
+        for idx in (0..elev_count).rev() {
+            if let Some(offset) = self.sweep_start_offset(idx) {
+                if elapsed >= offset {
+                    return Some(idx.min(elev_count - 1));
+                }
+            }
+        }
+
+        // Fallback to even distribution
         let progress = elapsed / vol_dur;
         let idx = (progress * elev_count as f64).floor() as usize;
         Some(idx.min(elev_count - 1))

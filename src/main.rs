@@ -1536,6 +1536,11 @@ impl eframe::App for WorkbenchApp {
                                 self.state
                                     .live_mode_state
                                     .record_vcp(vcp.number, vcp.elevations.len() as u8);
+                                if !vcp.elevations.is_empty() {
+                                    self.state
+                                        .live_mode_state
+                                        .record_vcp_durations(vcp);
+                                }
                             }
 
                             self.state.live_mode_state.record_in_progress_elevation(

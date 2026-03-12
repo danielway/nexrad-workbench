@@ -239,6 +239,55 @@ pub fn get_vcp_definition(vcp: u16) -> Option<&'static VcpDefinition> {
     }
 }
 
+/// Whether a VCP number is a clear-air mode pattern.
+pub fn is_clear_air_vcp(vcp: u16) -> bool {
+    matches!(vcp, 31 | 32 | 35)
+}
+
+/// Method B fallback: estimate azimuth rate (°/s) from waveform type and PRF number
+/// when the actual azimuth rate is not available from the VCP message.
+///
+/// Based on empirical analysis of 851 sweep measurements across VCPs 12, 34, 35, 212.
+/// PRF numbers map to categories: 1-2 = Low, 3 = Med, 4-5 = High.
+pub fn fallback_azimuth_rate(is_clear_air: bool, waveform: &str, prf_number: u8) -> f64 {
+    if is_clear_air {
+        match (waveform, prf_number) {
+            ("CS", 1) => 5.0,
+            ("CS", 2) => 5.5,
+            ("CS", _) => 5.0,    // Default CS clear-air
+            ("CDW", _) => 15.7,
+            ("CDWO", _) => 8.5,
+            ("Batch", 3) => 14.6,
+            ("Batch", 4) => 17.8,
+            ("Batch", 5) => 16.9,
+            ("Batch", _) => 18.1,
+            _ => 10.0, // Conservative default for unknown clear-air waveforms
+        }
+    } else {
+        match (waveform, prf_number) {
+            ("CS", 1) => 21.1,
+            ("CS", 2) => 23.0,
+            ("CS", _) => 21.1,   // Default CS precip
+            ("CDW", _) => 18.8,
+            ("CDWO", _) => 28.5,
+            ("Batch", 3) => 26.2,
+            ("Batch", 4) => 26.9,
+            ("Batch", 5) => 27.7,
+            ("Batch", _) => 26.8,
+            _ => 22.0, // Conservative default for unknown precip waveforms
+        }
+    }
+}
+
+/// Compute even-distribution sweep durations (fallback when no VCP elevation data
+/// is available). Returns a vec of `count` equal durations summing to `total`.
+pub fn even_sweep_durations(total: f64, count: usize) -> Vec<f64> {
+    if count == 0 {
+        return Vec::new();
+    }
+    vec![total / count as f64; count]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,5 +337,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn is_clear_air_vcp_classification() {
+        assert!(is_clear_air_vcp(31));
+        assert!(is_clear_air_vcp(32));
+        assert!(is_clear_air_vcp(35));
+        assert!(!is_clear_air_vcp(12));
+        assert!(!is_clear_air_vcp(212));
+        assert!(!is_clear_air_vcp(215));
+    }
+
+    #[test]
+    fn fallback_azimuth_rate_clear_air_slower_than_precip() {
+        // Clear air CS/Low should be much slower than precip CS/Low
+        let clear_air_rate = fallback_azimuth_rate(true, "CS", 1);
+        let precip_rate = fallback_azimuth_rate(false, "CS", 1);
+        assert!(
+            clear_air_rate < precip_rate,
+            "Clear air rate {clear_air_rate} should be less than precip rate {precip_rate}"
+        );
+    }
+
+    #[test]
+    fn fallback_azimuth_rate_all_positive() {
+        for is_clear_air in [true, false] {
+            for waveform in ["CS", "CDW", "CDWO", "Batch", "Unknown"] {
+                for prf in 0..=8 {
+                    let rate = fallback_azimuth_rate(is_clear_air, waveform, prf);
+                    assert!(
+                        rate > 0.0,
+                        "Rate should be positive for is_clear_air={is_clear_air}, waveform={waveform}, prf={prf}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn even_sweep_durations_sums_to_total() {
+        let total = 300.0;
+        let durations = even_sweep_durations(total, 14);
+        assert_eq!(durations.len(), 14);
+        let sum: f64 = durations.iter().sum();
+        assert!((sum - total).abs() < 1e-10);
+    }
+
+    #[test]
+    fn even_sweep_durations_empty_for_zero_count() {
+        assert!(even_sweep_durations(300.0, 0).is_empty());
     }
 }
