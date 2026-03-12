@@ -219,7 +219,7 @@ impl SessionStats {
 }
 
 /// Which phase of the download pipeline the current file is in.
-#[derive(Default, Clone, Copy, PartialEq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
 pub enum DownloadPhase {
     #[default]
     Idle,

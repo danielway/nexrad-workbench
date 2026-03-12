@@ -31,6 +31,8 @@ pub struct NetworkRequest {
     pub timestamp_ms: f64,
     /// Error message, if the request failed.
     pub error: Option<String>,
+    /// Correlated acquisition operation ID (populated by URL matching in main loop).
+    pub operation_id: Option<crate::state::OperationId>,
 }
 
 /// Aggregate network statistics for the session.
@@ -113,6 +115,7 @@ impl NetworkMonitor {
                     ok,
                     timestamp_ms: js_sys::Date::now(),
                     error,
+                    operation_id: None,
                 };
 
                 // Update aggregate

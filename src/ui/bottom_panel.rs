@@ -1,5 +1,6 @@
 //! Bottom panel UI: orchestrates the timeline, playback controls, and session statistics.
 
+use super::acquisition_drawer::render_acquisition_drawer;
 use super::colors::{live, ui as ui_colors};
 use crate::state::{AppState, LiveExitReason};
 use eframe::egui::{self, RichText};
@@ -61,9 +62,38 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
         ctx.request_repaint();
     }
 
+    let drawer_expanded = state.acquisition.drawer_expanded;
+    let drawer_height = if drawer_expanded {
+        state.acquisition.drawer_height
+    } else {
+        0.0
+    };
+    let total_height = 104.0 + drawer_height;
+
     egui::TopBottomPanel::bottom("bottom_panel")
-        .exact_height(104.0)
+        .exact_height(total_height)
         .show(ctx, |ui| {
+            // Render acquisition drawer above normal controls when expanded
+            if drawer_expanded {
+                // Resize handle: thin draggable strip
+                let resize_response = ui.allocate_response(
+                    egui::Vec2::new(ui.available_width(), 4.0),
+                    egui::Sense::drag(),
+                );
+                if resize_response.dragged() {
+                    // Dragging up increases height, dragging down decreases
+                    let delta = -resize_response.drag_delta().y;
+                    state.acquisition.drawer_height =
+                        (state.acquisition.drawer_height + delta).clamp(100.0, 600.0);
+                }
+                if resize_response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                }
+
+                render_acquisition_drawer(ui, state, drawer_height - 4.0);
+                ui.separator();
+            }
+
             ui.vertical(|ui| {
                 // Mode and acquisition status bar
                 ui.horizontal(|ui| {

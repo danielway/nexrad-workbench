@@ -7,6 +7,7 @@
 //! - Bottom panel: Timeline, playback controls, and session stats
 //! - Right panel: Product selection, layers, and rendering controls
 
+pub(crate) mod acquisition_drawer;
 mod bottom_panel;
 mod canvas;
 pub(crate) mod colors;
