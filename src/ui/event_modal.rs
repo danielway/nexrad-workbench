@@ -368,8 +368,7 @@ pub fn render_event_modal(
             }
 
             // Enter key submits the form when valid
-            let enter_pressed =
-                ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_save;
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter)) && can_save;
 
             ui.add_space(12.0);
             ui.separator();
