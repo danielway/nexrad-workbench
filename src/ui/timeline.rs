@@ -1718,8 +1718,18 @@ fn render_realtime_progress(
             .unwrap_or(0.5 * elev_num as f32) // rough fallback
     };
 
-    // Estimated sweep duration (for non-completed sweeps that lack real timestamps)
-    let sweep_dur = expected_dur / expected_count as f64;
+    // Per-elevation sweep durations from VCP azimuth rates (Method A with B fallback).
+    // Falls back to even distribution when weighted durations aren't available.
+    let sweep_dur_for = |idx: usize| -> f64 {
+        live_state
+            .sweep_duration_for(idx)
+            .unwrap_or(expected_dur / expected_count.max(1) as f64)
+    };
+    let sweep_start_offset_for = |idx: usize| -> f64 {
+        live_state
+            .sweep_start_offset(idx)
+            .unwrap_or(idx as f64 * expected_dur / expected_count.max(1) as f64)
+    };
 
     let received = &live_state.elevations_received;
     let in_progress_elev = live_state.current_in_progress_elevation;
@@ -1729,6 +1739,7 @@ fn render_realtime_progress(
     for elev_idx in 0..expected_count {
         let elev_num = (elev_idx + 1) as u8;
         let is_complete = received.contains(&elev_num);
+        let this_sweep_dur = sweep_dur_for(elev_idx);
 
         // Use actual timestamps where available:
         // 1. Completed sweep -> use SweepMeta start/end
@@ -1742,10 +1753,8 @@ fn render_realtime_progress(
             {
                 (meta.start, meta.end)
             } else {
-                (
-                    vol_start + elev_idx as f64 * sweep_dur,
-                    vol_start + (elev_idx + 1) as f64 * sweep_dur,
-                )
+                let offset = sweep_start_offset_for(elev_idx);
+                (vol_start + offset, vol_start + offset + this_sweep_dur)
             }
         } else {
             // For non-completed sweeps, find the best anchor: the end time of
@@ -1771,45 +1780,40 @@ fn render_realtime_progress(
                 .map(|&(_, _, e, _)| e)
                 .reduce(f64::max);
 
-            // Compute per-sweep step duration: use adjusted estimate when
-            // anchoring off completed sweeps so that consecutive future blocks
-            // tile without gaps (avoids tooltip flicker).
-            let step_dur = match anchor_end {
-                Some(ae) => {
-                    let completed_count = live_state
-                        .completed_sweep_metas
-                        .iter()
-                        .filter(|m| m.elevation_number < elev_num)
-                        .count();
-                    let remaining_count = expected_count - completed_count;
-                    let remaining_dur = (vol_start + expected_dur) - ae;
-                    if remaining_count > 0 {
-                        remaining_dur / remaining_count as f64
-                    } else {
-                        sweep_dur
-                    }
-                }
-                None => sweep_dur,
-            };
-
             let sw_start_actual = match (chunk_min, anchor_end) {
                 // Have chunk data: use actual chunk start as sweep start
                 (Some(cm), _) => cm,
-                // No chunk data but have anchor: estimate from anchor
+                // No chunk data but have anchor: estimate remaining sweeps
+                // using weighted durations relative to their share of remaining time
                 (None, Some(ae)) => {
-                    let completed_count = live_state
+                    let anchor_elev_num = live_state
                         .completed_sweep_metas
                         .iter()
                         .filter(|m| m.elevation_number < elev_num)
-                        .count();
-                    let steps = elev_idx - completed_count;
-                    ae + steps as f64 * step_dur
+                        .max_by_key(|m| m.elevation_number)
+                        .map(|m| m.elevation_number)
+                        .unwrap_or(0);
+                    let anchor_idx = anchor_elev_num as usize; // elev_num is 1-based, so this is the next idx
+                    let remaining_dur = (vol_start + expected_dur) - ae;
+
+                    // Sum the weights of remaining elevations for proportional distribution
+                    let remaining_weight_sum: f64 =
+                        (anchor_idx..expected_count).map(&sweep_dur_for).sum();
+
+                    if remaining_weight_sum > 0.0 {
+                        let offset_from_anchor: f64 = (anchor_idx..elev_idx)
+                            .map(|i| (sweep_dur_for(i) / remaining_weight_sum) * remaining_dur)
+                            .sum();
+                        ae + offset_from_anchor
+                    } else {
+                        ae
+                    }
                 }
-                // No data at all: even distribution
-                (None, None) => vol_start + elev_idx as f64 * sweep_dur,
+                // No data at all: use weighted offsets from volume start
+                (None, None) => vol_start + sweep_start_offset_for(elev_idx),
             };
 
-            let est_sweep_end = sw_start_actual + step_dur;
+            let est_sweep_end = sw_start_actual + this_sweep_dur;
             let sw_end_actual = match chunk_max {
                 // If we have chunk data, extend sweep end to at least cover it,
                 // but also estimate further since we may not have all radials yet
@@ -2314,7 +2318,18 @@ fn render_realtime_volume_tooltip(
     // ── Per-sweep tooltip when hovering the sweep track ──────────────
     if in_sweep_track && expected_count > 0 {
         let vcp_def = crate::state::get_vcp_definition(vcp_num);
-        let sweep_dur = expected_dur / expected_count as f64;
+
+        // Per-elevation sweep durations (same logic as render_realtime_progress)
+        let sweep_dur_for = |idx: usize| -> f64 {
+            live_state
+                .sweep_duration_for(idx)
+                .unwrap_or(expected_dur / expected_count.max(1) as f64)
+        };
+        let sweep_start_offset_for = |idx: usize| -> f64 {
+            live_state
+                .sweep_start_offset(idx)
+                .unwrap_or(idx as f64 * expected_dur / expected_count.max(1) as f64)
+        };
 
         // Replicate the sweep-to-timestamp mapping from render_realtime_progress
         // to find which elevation block contains hover_ts.
@@ -2324,6 +2339,7 @@ fn render_realtime_volume_tooltip(
         for elev_idx in 0..expected_count {
             let elev_num = (elev_idx + 1) as u8;
             let is_complete = live_state.elevations_received.contains(&elev_num);
+            let this_sweep_dur = sweep_dur_for(elev_idx);
 
             let (sw_start, sw_end) = if is_complete {
                 if let Some(meta) = live_state
@@ -2333,10 +2349,8 @@ fn render_realtime_volume_tooltip(
                 {
                     (meta.start, meta.end)
                 } else {
-                    (
-                        vol_start + elev_idx as f64 * sweep_dur,
-                        vol_start + (elev_idx + 1) as f64 * sweep_dur,
-                    )
+                    let offset = sweep_start_offset_for(elev_idx);
+                    (vol_start + offset, vol_start + offset + this_sweep_dur)
                 }
             } else {
                 let anchor_end = live_state
@@ -2359,42 +2373,33 @@ fn render_realtime_volume_tooltip(
                     .map(|&(_, _, e, _)| e)
                     .reduce(f64::max);
 
-                // Compute per-sweep step duration: use adjusted estimate when
-                // anchoring off completed sweeps so that consecutive future
-                // blocks tile without gaps (avoids tooltip flicker).
-                let step_dur = match anchor_end {
-                    Some(ae) => {
-                        let completed_count = live_state
-                            .completed_sweep_metas
-                            .iter()
-                            .filter(|m| m.elevation_number < elev_num)
-                            .count();
-                        let remaining_count = expected_count - completed_count;
-                        let remaining_dur = (vol_start + expected_dur) - ae;
-                        if remaining_count > 0 {
-                            remaining_dur / remaining_count as f64
-                        } else {
-                            sweep_dur
-                        }
-                    }
-                    None => sweep_dur,
-                };
-
                 let sw_start_actual = match (chunk_min, anchor_end) {
                     (Some(cm), _) => cm,
                     (None, Some(ae)) => {
-                        let completed_count = live_state
+                        let anchor_elev_num = live_state
                             .completed_sweep_metas
                             .iter()
                             .filter(|m| m.elevation_number < elev_num)
-                            .count();
-                        let steps = elev_idx - completed_count;
-                        ae + steps as f64 * step_dur
+                            .max_by_key(|m| m.elevation_number)
+                            .map(|m| m.elevation_number)
+                            .unwrap_or(0);
+                        let anchor_idx = anchor_elev_num as usize;
+                        let remaining_dur = (vol_start + expected_dur) - ae;
+                        let remaining_weight_sum: f64 =
+                            (anchor_idx..expected_count).map(&sweep_dur_for).sum();
+                        if remaining_weight_sum > 0.0 {
+                            let offset_from_anchor: f64 = (anchor_idx..elev_idx)
+                                .map(|i| (sweep_dur_for(i) / remaining_weight_sum) * remaining_dur)
+                                .sum();
+                            ae + offset_from_anchor
+                        } else {
+                            ae
+                        }
                     }
-                    (None, None) => vol_start + elev_idx as f64 * sweep_dur,
+                    (None, None) => vol_start + sweep_start_offset_for(elev_idx),
                 };
 
-                let est_sweep_end = sw_start_actual + step_dur;
+                let est_sweep_end = sw_start_actual + this_sweep_dur;
                 let sw_end_actual = match chunk_max {
                     Some(cm) => cm.max(est_sweep_end),
                     None => est_sweep_end,
@@ -2424,7 +2429,9 @@ fn render_realtime_volume_tooltip(
         }
 
         // Snap to nearest sweep if hover_ts missed due to frame-to-frame drift
-        if hovered_elev.is_none() && nearest_dist < sweep_dur * 0.5 {
+        if hovered_elev.is_none()
+            && nearest_dist < (expected_dur / expected_count.max(1) as f64) * 0.5
+        {
             hovered_elev = nearest_elev;
         }
 

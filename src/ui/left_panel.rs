@@ -441,12 +441,16 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
             ui.horizontal(|ui| {
                 ui.set_min_width(available_width);
                 ui.label(RichText::new(" ").monospace().small()); // Spacer for indicator
-                ui.label(RichText::new("Elev").small().color(Color32::GRAY));
+                ui.label(RichText::new("Elev").small().color(Color32::GRAY))
+                    .on_hover_text("Elevation angle in degrees");
                 ui.add_space(6.0);
-                ui.label(RichText::new("Wf").small().color(Color32::GRAY));
-                ui.label(RichText::new("PRF").small().color(Color32::GRAY));
+                ui.label(RichText::new("Wf").small().color(Color32::GRAY))
+                    .on_hover_text("Waveform type");
+                ui.label(RichText::new("PRF").small().color(Color32::GRAY))
+                    .on_hover_text("Pulse Repetition Frequency");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new("Info").small().color(Color32::GRAY));
+                    ui.label(RichText::new("Info").small().color(Color32::GRAY))
+                        .on_hover_text("Available products for this elevation");
                 });
             });
 
@@ -634,21 +638,34 @@ fn render_elevation_row(
 
         // Waveform type
         let waveform = meta.as_ref().map(|m| m.waveform).unwrap_or("--");
-        ui.label(
+        let wf_response = ui.label(
             RichText::new(format!(" {:2}", waveform))
                 .color(dim_color)
                 .monospace()
                 .small(),
         );
+        match waveform {
+            "CS" => wf_response.on_hover_text("Contiguous Surveillance"),
+            "CD" => wf_response.on_hover_text("Contiguous Doppler"),
+            "B" => wf_response.on_hover_text("Batch"),
+            "SP" => wf_response.on_hover_text("Staggered Pulse Pair"),
+            _ => wf_response,
+        };
 
         // PRF
         let prf_short = meta.as_ref().map(|m| m.prf_short).unwrap_or("-");
-        ui.label(
+        let prf_response = ui.label(
             RichText::new(format!(" {}", prf_short))
                 .color(dim_color)
                 .monospace()
                 .small(),
         );
+        match prf_short {
+            "L" => prf_response.on_hover_text("Low PRF"),
+            "M" => prf_response.on_hover_text("Medium PRF"),
+            "H" => prf_response.on_hover_text("High PRF"),
+            _ => prf_response,
+        };
 
         // Product indicators - right aligned
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -661,12 +678,21 @@ fn render_elevation_row(
             } else {
                 // Right-to-left layout reverses order, so iterate backwards
                 for &(letter, (r, g, b)) in products.iter().rev() {
-                    ui.label(
+                    let resp = ui.label(
                         RichText::new(letter)
                             .color(Color32::from_rgb(r, g, b))
                             .monospace()
                             .small(),
                     );
+                    match letter {
+                        "R" => resp.on_hover_text("Reflectivity"),
+                        "V" => resp.on_hover_text("Velocity"),
+                        "S" => resp.on_hover_text("Spectrum Width"),
+                        "Z" => resp.on_hover_text("Differential Reflectivity"),
+                        "P" => resp.on_hover_text("Differential Phase"),
+                        "C" => resp.on_hover_text("Correlation Coefficient"),
+                        _ => resp,
+                    };
                 }
             }
         });
