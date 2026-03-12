@@ -101,8 +101,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
                             }
                         };
                         let age_text = if end_staleness < 300.0 {
-                            if let Some(start_staleness) =
-                                state.viz_state.data_staleness_start_secs
+                            if let Some(start_staleness) = state.viz_state.data_staleness_start_secs
                             {
                                 format!(
                                     "{}–{} old",

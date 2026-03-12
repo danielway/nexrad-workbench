@@ -500,26 +500,16 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
             );
             if let Some(end_secs) = state.viz_state.data_staleness_secs {
                 let color = age_color(end_secs);
-                let age_text =
-                    if end_secs < AGE_RANGE_COLLAPSE_SECS {
-                        if let Some(start_secs) = state.viz_state.data_staleness_start_secs {
-                            format!(
-                                "Age: {} – {}",
-                                format_age(start_secs),
-                                format_age(end_secs),
-                            )
-                        } else {
-                            format!("Age: {}", format_age(end_secs))
-                        }
+                let age_text = if end_secs < AGE_RANGE_COLLAPSE_SECS {
+                    if let Some(start_secs) = state.viz_state.data_staleness_start_secs {
+                        format!("Age: {} – {}", format_age(start_secs), format_age(end_secs),)
                     } else {
                         format!("Age: {}", format_age(end_secs))
-                    };
-                ui.label(
-                    RichText::new(age_text)
-                        .monospace()
-                        .size(12.0)
-                        .color(color),
-                );
+                    }
+                } else {
+                    format!("Age: {}", format_age(end_secs))
+                };
+                ui.label(RichText::new(age_text).monospace().size(12.0).color(color));
             }
         });
     });
