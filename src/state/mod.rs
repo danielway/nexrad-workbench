@@ -76,6 +76,8 @@ pub enum AppCommand {
     CancelOperation(OperationId),
     /// Reorder an operation (delta: -1 = up, +1 = down).
     ReorderOperation(OperationId, isize),
+    /// Retry initializing the decode worker after a failure.
+    RetryWorker,
 }
 
 /// Root application state containing all sub-states.
@@ -219,6 +221,10 @@ pub struct AppState {
 
     /// Unified acquisition queue state.
     pub acquisition: AcquisitionState,
+
+    /// Persistent worker initialization error message.
+    /// When set, a non-dismissable error banner is shown in the top bar.
+    pub worker_init_error: Option<String>,
 }
 
 /// Lightweight storm cell info for rendering on the canvas.

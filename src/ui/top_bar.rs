@@ -50,6 +50,28 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
 
                 ui.separator();
 
+                // Persistent worker initialization error banner
+                if let Some(ref error_msg) = state.worker_init_error {
+                    let error_color = Color32::from_rgb(220, 60, 60);
+                    ui.label(
+                        RichText::new(egui_phosphor::regular::WARNING)
+                            .size(14.0)
+                            .color(error_color),
+                    );
+                    ui.label(
+                        RichText::new(error_msg.as_str())
+                            .size(13.0)
+                            .color(error_color),
+                    );
+                    if ui
+                        .button(RichText::new("Retry").size(12.0).color(error_color))
+                        .on_hover_text("Retry worker initialization")
+                        .clicked()
+                    {
+                        state.push_command(crate::state::AppCommand::RetryWorker);
+                    }
+                }
+
                 // Show live status or regular status message
                 if state.live_mode_state.is_active() {
                     render_live_status(ui, state);
