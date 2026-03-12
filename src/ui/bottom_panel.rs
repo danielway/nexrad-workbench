@@ -74,8 +74,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     // overhead so the controls aren't pushed below the window edge.
     let drawer_spacing_overhead = 14.0;
     let drawer_height = if drawer_expanded {
-        let max_drawer =
-            (max_panel_height - controls_height - drawer_spacing_overhead).max(0.0);
+        let max_drawer = (max_panel_height - controls_height - drawer_spacing_overhead).max(0.0);
         state.acquisition.drawer_height.min(max_drawer)
     } else {
         0.0
