@@ -1972,15 +1972,13 @@ fn render_realtime_progress(
                 let remaining_sweep_width = block.max.x - edge_x;
                 let chunk_frac =
                     (chunk_interval / this_sweep_dur.max(chunk_interval)).clamp(0.0, 1.0) as f32;
-                let next_chunk_width =
-                    (remaining_sweep_width * chunk_frac).min(remaining_sweep_width).max(8.0);
+                let next_chunk_width = (remaining_sweep_width * chunk_frac)
+                    .min(remaining_sweep_width)
+                    .max(8.0);
 
                 let nc_rect = Rect::from_min_max(
                     Pos2::new(edge_x, block.min.y),
-                    Pos2::new(
-                        (edge_x + next_chunk_width).min(block.max.x),
-                        block.max.y,
-                    ),
+                    Pos2::new((edge_x + next_chunk_width).min(block.max.x), block.max.y),
                 );
                 let nc_width = nc_rect.width();
 
@@ -2080,10 +2078,7 @@ fn render_realtime_progress(
 
             // For the "next" sweep, also check it's the very first future one
             let is_first_future = is_next_sweep
-                && (elev_num == 1
-                    || received
-                        .last()
-                        .is_some_and(|&last| last == elev_num - 1));
+                && (elev_num == 1 || received.last().is_some_and(|&last| last == elev_num - 1));
 
             if is_first_future {
                 // ── Next-chunk placeholder on the first future sweep ──
