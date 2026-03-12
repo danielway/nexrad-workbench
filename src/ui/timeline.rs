@@ -1930,10 +1930,8 @@ fn render_realtime_progress(
                 let cx0 = ts_to_x(span_start).max(sweep_rect.left());
                 let cx1 = ts_to_x(span_end).min(sweep_rect.right());
                 if cx1 > cx0 {
-                    let chunk_rect = Rect::from_min_max(
-                        Pos2::new(cx0, chunk_top),
-                        Pos2::new(cx1, chunk_bot),
-                    );
+                    let chunk_rect =
+                        Rect::from_min_max(Pos2::new(cx0, chunk_top), Pos2::new(cx1, chunk_bot));
                     painter.rect_filled(
                         chunk_rect,
                         1.0,
@@ -1951,10 +1949,7 @@ fn render_realtime_progress(
                         // Draw separator at the boundary between previous and current chunk
                         let sep_x = (prev_x + cx0) / 2.0;
                         painter.line_segment(
-                            [
-                                Pos2::new(sep_x, chunk_top),
-                                Pos2::new(sep_x, chunk_bot),
-                            ],
+                            [Pos2::new(sep_x, chunk_top), Pos2::new(sep_x, chunk_bot)],
                             Stroke::new(1.0, tl_colors::rt_chunk_separator()),
                         );
                     }
