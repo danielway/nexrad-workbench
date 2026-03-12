@@ -86,10 +86,27 @@ pub struct Renderers {
     pub globe_radar: Option<std::sync::Arc<std::sync::Mutex<nexrad::GlobeRadarRenderer>>>,
     /// Volumetric ray-march renderer for 3D mode.
     pub volume_ray: Option<std::sync::Arc<std::sync::Mutex<nexrad::VolumeRayRenderer>>>,
-    /// Previous render parameters for change detection (scan_key, elev_num, product, render_mode).
-    pub last_render_params: Option<(String, u8, String, crate::state::RenderMode)>,
-    /// Previous volume render parameters for change detection (scan_key, product).
-    pub last_volume_render_params: Option<(String, String)>,
+    /// Previous render parameters for change detection.
+    pub last_render_request: Option<RenderRequest>,
+    /// Previous volume render parameters for change detection.
+    pub last_volume_render_request: Option<VolumeRenderRequest>,
+}
+
+/// Parameters for a single-elevation render request. Adding a field here
+/// automatically breaks the `PartialEq` comparison, preventing silent omissions.
+#[derive(Clone, PartialEq)]
+pub struct RenderRequest {
+    scan_key: String,
+    elevation_number: u8,
+    product: String,
+    render_mode: crate::state::RenderMode,
+}
+
+/// Parameters for a volume (all-elevations) render request.
+#[derive(Clone, PartialEq)]
+pub struct VolumeRenderRequest {
+    scan_key: String,
+    product: String,
 }
 
 /// Main application state and logic.
@@ -451,8 +468,8 @@ impl WorkbenchApp {
                 geo_line: geo_line_renderer,
                 globe_radar: globe_radar_renderer,
                 volume_ray: volume_ray_renderer,
-                last_render_params: None,
-                last_volume_render_params: None,
+                last_render_request: None,
+                last_volume_render_request: None,
             },
             data_facade,
             download_channel,
@@ -1037,15 +1054,15 @@ impl WorkbenchApp {
         }
         let product = self.state.viz_state.product.to_worker_string().to_string();
 
-        let params = (
-            scan_key.clone(),
+        let request = RenderRequest {
+            scan_key: scan_key.clone(),
             elevation_number,
-            product.clone(),
-            self.state.viz_state.render_mode,
-        );
+            product: product.clone(),
+            render_mode: self.state.viz_state.render_mode,
+        };
 
         // Skip if same as last request
-        if self.renderers.last_render_params.as_ref() == Some(&params) {
+        if self.renderers.last_render_request.as_ref() == Some(&request) {
             return;
         }
 
@@ -1057,7 +1074,7 @@ impl WorkbenchApp {
         );
 
         let scan_key = scan_key.clone();
-        self.renderers.last_render_params = Some(params);
+        self.renderers.last_render_request = Some(request);
         if !self.state.session_stats.pipeline.processing {
             self.state.session_stats.pipeline.processing = true;
         }
@@ -1083,9 +1100,12 @@ impl WorkbenchApp {
         }
 
         let product = self.state.viz_state.product.to_worker_string().to_string();
-        let params = (scan_key.clone(), product.clone());
+        let request = VolumeRenderRequest {
+            scan_key: scan_key.clone(),
+            product: product.clone(),
+        };
 
-        if self.renderers.last_volume_render_params.as_ref() == Some(&params) {
+        if self.renderers.last_volume_render_request.as_ref() == Some(&request) {
             return; // Already requested with same params
         }
 
@@ -1098,7 +1118,7 @@ impl WorkbenchApp {
 
         let scan_key = scan_key.clone();
         let elev_nums = self.available_elevation_numbers.clone();
-        self.renderers.last_volume_render_params = Some(params);
+        self.renderers.last_volume_render_request = Some(request);
 
         self.decode_worker
             .as_mut()
@@ -1598,8 +1618,8 @@ impl eframe::App for WorkbenchApp {
                         self.state.push_command(state::AppCommand::CheckEviction);
 
                         // Clear last render params to force a fresh render
-                        self.renderers.last_render_params = None;
-                        self.renderers.last_volume_render_params = None;
+                        self.renderers.last_render_request = None;
+                        self.renderers.last_volume_render_request = None;
 
                         // Trigger render for the ingested scan
                         self.request_worker_render();
@@ -1746,8 +1766,8 @@ impl eframe::App for WorkbenchApp {
 
                             // Clear last render params to force a fresh render
                             self.state.displayed_sweep_elevation_number = None;
-                            self.renderers.last_render_params = None;
-                            self.renderers.last_volume_render_params = None;
+                            self.renderers.last_render_request = None;
+                            self.renderers.last_volume_render_request = None;
                             self.request_worker_render();
                             if self.state.viz_state.volume_3d_enabled {
                                 self.request_worker_render_volume();
@@ -1758,8 +1778,8 @@ impl eframe::App for WorkbenchApp {
                                 "{}: first elevation available, triggering initial render",
                                 source
                             );
-                            self.renderers.last_render_params = None;
-                            self.renderers.last_volume_render_params = None;
+                            self.renderers.last_render_request = None;
+                            self.renderers.last_volume_render_request = None;
                             self.request_worker_render();
                             if self.state.viz_state.volume_3d_enabled {
                                 self.request_worker_render_volume();
@@ -1980,8 +2000,8 @@ impl eframe::App for WorkbenchApp {
                         }
                     }
 
-                    self.renderers.last_render_params = None; // Force fresh render
-                    self.renderers.last_volume_render_params = None;
+                    self.renderers.last_render_request = None; // Force fresh render
+                    self.renderers.last_volume_render_request = None;
                     self.request_worker_render();
                     if self.state.viz_state.volume_3d_enabled {
                         self.request_worker_render_volume();
@@ -2215,8 +2235,8 @@ impl eframe::App for WorkbenchApp {
                     if !elev_nums.is_empty() {
                         self.available_elevation_numbers = elev_nums;
                     }
-                    self.renderers.last_render_params = None; // Force fresh render
-                    self.renderers.last_volume_render_params = None;
+                    self.renderers.last_render_request = None; // Force fresh render
+                    self.renderers.last_volume_render_request = None;
                     self.request_worker_render();
                     if self.state.viz_state.volume_3d_enabled {
                         self.request_worker_render_volume();
@@ -2237,7 +2257,7 @@ impl eframe::App for WorkbenchApp {
                 self.state.displayed_scan_timestamp = None;
                 self.state.displayed_sweep_elevation_number = None;
                 self.current_render_scan_key = None;
-                self.renderers.last_render_params = None;
+                self.renderers.last_render_request = None;
                 self.state.viz_state.data_staleness_secs = None;
                 self.state.viz_state.rendered_sweep_end_secs = None;
                 self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
@@ -2288,21 +2308,22 @@ impl eframe::App for WorkbenchApp {
                                 if let Some(ref scan_key) = self.current_render_scan_key {
                                     let product =
                                         self.state.viz_state.product.to_worker_string().to_string();
-                                    let prefetch_params = (
-                                        scan_key.clone(),
-                                        next_en,
-                                        product.clone(),
-                                        self.state.viz_state.render_mode,
-                                    );
-                                    if self.renderers.last_render_params.as_ref()
-                                        != Some(&prefetch_params)
+                                    let prefetch_request = RenderRequest {
+                                        scan_key: scan_key.clone(),
+                                        elevation_number: next_en,
+                                        product: product.clone(),
+                                        render_mode: self.state.viz_state.render_mode,
+                                    };
+                                    if self.renderers.last_render_request.as_ref()
+                                        != Some(&prefetch_request)
                                     {
                                         log::debug!(
                                             "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
                                             next_en,
                                             time_to_end,
                                         );
-                                        self.renderers.last_render_params = Some(prefetch_params);
+                                        self.renderers.last_render_request =
+                                            Some(prefetch_request);
                                         self.decode_worker.as_mut().unwrap().render(
                                             scan_key.clone(),
                                             next_en,
