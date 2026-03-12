@@ -579,13 +579,10 @@ impl WorkbenchApp {
                     .filter(|item| matches!(item.state, QueueItemState::Pending))
                     .count();
                 let item = &self.selection_download_queue[idx];
-                self.state.status_message = format!(
-                    "Downloading {} ({} remaining)",
-                    item.file_name, remaining
-                );
+                self.state.status_message =
+                    format!("Downloading {} ({} remaining)", item.file_name, remaining);
                 // Update download progress for next file
-                self.state.download_progress.active_scan =
-                    Some((item.scan_start, item.scan_end));
+                self.state.download_progress.active_scan = Some((item.scan_start, item.scan_end));
                 self.state.download_progress.phase = crate::state::DownloadPhase::Downloading;
                 self.state.download_progress.batch_completed += 1;
 
@@ -2129,14 +2126,11 @@ impl eframe::App for WorkbenchApp {
             } else {
                 None // Just pumping existing queue, or nothing to do
             };
-            let queue_has_work = self.selection_download_queue.iter().any(|item| {
-                matches!(item.state, QueueItemState::Pending | QueueItemState::Active)
-            });
-            if do_download_selection
-                || do_download_at_position
-                || do_pump_queue
-                || queue_has_work
-            {
+            let queue_has_work = self
+                .selection_download_queue
+                .iter()
+                .any(|item| matches!(item.state, QueueItemState::Pending | QueueItemState::Active));
+            if do_download_selection || do_download_at_position || do_pump_queue || queue_has_work {
                 self.process_selection_download(ctx, download_type);
             }
         }
