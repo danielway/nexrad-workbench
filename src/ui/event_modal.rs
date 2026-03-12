@@ -236,7 +236,7 @@ pub fn render_event_modal(
     // Semi-transparent backdrop
     egui::Area::new(egui::Id::new("event_modal_backdrop"))
         .fixed_pos(egui::Pos2::ZERO)
-        .order(egui::Order::Foreground)
+        .order(egui::Order::Middle)
         .show(ctx, |ui| {
             let screen_rect = ctx.input(|i| i.viewport_rect());
             let (response, painter) = ui.allocate_painter(screen_rect.size(), egui::Sense::click());
