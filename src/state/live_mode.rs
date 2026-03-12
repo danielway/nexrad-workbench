@@ -116,6 +116,9 @@ pub struct LiveModeState {
     /// VCP number of the current/last volume (for projecting scan boundaries).
     pub current_vcp_number: Option<u16>,
 
+    /// Full extracted VCP pattern from Message Type 5 (for live panel display).
+    pub current_vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
+
     /// Duration of the last completed volume scan in seconds.
     pub last_volume_duration_secs: Option<f64>,
 
@@ -167,6 +170,7 @@ impl Default for LiveModeState {
             elevations_received: Vec::new(),
             expected_elevation_count: None,
             current_vcp_number: None,
+            current_vcp_pattern: None,
             last_volume_duration_secs: None,
             current_volume_start: None,
             current_scan_key: None,
@@ -422,9 +426,12 @@ impl LiveModeState {
     }
 
     /// Record VCP info from an ingest result.
-    pub fn record_vcp(&mut self, vcp_number: u16, elevation_count: u8) {
-        self.current_vcp_number = Some(vcp_number);
-        self.expected_elevation_count = Some(elevation_count);
+    pub fn record_vcp(&mut self, vcp: &crate::data::keys::ExtractedVcp) {
+        self.current_vcp_number = Some(vcp.number);
+        self.expected_elevation_count = Some(vcp.elevations.len() as u8);
+        if !vcp.elevations.is_empty() {
+            self.current_vcp_pattern = Some(vcp.clone());
+        }
     }
 
     /// Record last radial azimuth and timestamp from a chunk.

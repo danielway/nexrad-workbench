@@ -18,6 +18,8 @@ struct RadarStateAtTimestamp<'a> {
     scan_progress: Option<f32>,
     /// Reference to the current scan (for elevation list)
     scan: Option<&'a Scan>,
+    /// Extracted VCP pattern from live streaming (used when scan is None)
+    live_vcp_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
 }
 
 pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
@@ -119,6 +121,7 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                 sweep_index,
                 scan_progress,
                 scan: Some(scan),
+                live_vcp_pattern: None,
             }
         }
         None => {
@@ -143,11 +146,17 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                         }
                     })
                 });
-                // Derive elevation angle from VCP definition + estimated index
+                // Derive elevation angle: prefer extracted VCP pattern, then static definition
                 let elevation = sweep_index.and_then(|idx| {
-                    vcp.and_then(get_vcp_definition)
-                        .and_then(|def| def.elevations.get(idx))
+                    live.current_vcp_pattern
+                        .as_ref()
+                        .and_then(|p| p.elevations.get(idx))
                         .map(|e| e.angle)
+                        .or_else(|| {
+                            vcp.and_then(get_vcp_definition)
+                                .and_then(|def| def.elevations.get(idx))
+                                .map(|e| e.angle)
+                        })
                 });
 
                 RadarStateAtTimestamp {
@@ -157,6 +166,7 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                     sweep_index,
                     scan_progress,
                     scan: None,
+                    live_vcp_pattern: live.current_vcp_pattern.as_ref(),
                 }
             } else {
                 RadarStateAtTimestamp {
@@ -166,6 +176,7 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                     sweep_index: None,
                     scan_progress: None,
                     scan: None,
+                    live_vcp_pattern: None,
                 }
             }
         }
@@ -452,8 +463,11 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
 
             ui.add_space(2.0);
 
-            // Prefer extracted VCP pattern (from Message Type 5), then static definitions
-            let extracted_pattern = radar_state.scan.and_then(|s| s.vcp_pattern.as_ref());
+            // Prefer extracted VCP pattern (from Message Type 5), then live pattern, then static definitions
+            let extracted_pattern = radar_state
+                .scan
+                .and_then(|s| s.vcp_pattern.as_ref())
+                .or(radar_state.live_vcp_pattern);
             let vcp_def = get_vcp_definition(vcp);
 
             if let Some(scan) = radar_state.scan {

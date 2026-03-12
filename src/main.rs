@@ -1665,9 +1665,7 @@ impl eframe::App for WorkbenchApp {
                                     .record_elevations(&result.elevations_completed, vol_start_ts);
                             }
                             if let Some(ref vcp) = result.vcp {
-                                self.state
-                                    .live_mode_state
-                                    .record_vcp(vcp.number, vcp.elevations.len() as u8);
+                                self.state.live_mode_state.record_vcp(vcp);
                             }
 
                             self.state.live_mode_state.record_in_progress_elevation(
