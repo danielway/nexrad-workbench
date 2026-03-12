@@ -1919,7 +1919,7 @@ fn render_realtime_progress(
             // clear separators between each chunk boundary.  Chunks are
             // rendered shorter than the sweep block so they visually nest
             // inside it, making the two layers easy to distinguish.
-            let chunk_inset = 5.0_f32;
+            let chunk_inset = 3.5_f32;
             let chunk_top = block.min.y + chunk_inset;
             let chunk_bot = block.max.y - chunk_inset;
             let mut prev_chunk_end_x: Option<f32> = None;
