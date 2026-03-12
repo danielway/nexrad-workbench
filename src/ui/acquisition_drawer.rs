@@ -6,8 +6,8 @@
 
 use super::colors::{acquisition as acq_colors, ui as ui_colors};
 use crate::state::{
-    format_bytes, AcquisitionState, AppCommand, AppState, DrawerTab, OperationId, OperationStatus,
-    QueueState,
+    format_bytes, AcquisitionState, AppCommand, AppState, DrawerTab, NetworkGroupKey,
+    OperationStatus, QueueState,
 };
 use eframe::egui::{self, Color32, RichText, ScrollArea};
 use egui_phosphor::regular as icons;
@@ -275,16 +275,28 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
         });
 }
 
-/// Render the Network tab content with operations grouped by operation_id.
+/// Render the Network tab content with operations grouped by scan for realtime
+/// chunks and by operation ID for everything else.
 fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
     let label_color = ui_colors::label(dark);
     let value_color = ui_colors::value(dark);
 
-    // Group requests by operation_id
-    let mut grouped: std::collections::HashMap<Option<OperationId>, Vec<usize>> =
+    // Build groups keyed by NetworkGroupKey.
+    let mut grouped: std::collections::HashMap<NetworkGroupKey, Vec<usize>> =
         std::collections::HashMap::new();
     for (idx, req) in state.recent_network_requests.iter().enumerate() {
-        grouped.entry(req.operation_id).or_default().push(idx);
+        let key = match req.operation_id {
+            Some(op_id) => {
+                // Look up the operation to derive the group key.
+                state
+                    .acquisition
+                    .find(op_id)
+                    .map(|op| AcquisitionState::network_group_key(op))
+                    .unwrap_or(NetworkGroupKey::Operation(op_id))
+            }
+            None => NetworkGroupKey::Ungrouped,
+        };
+        grouped.entry(key).or_default().push(idx);
     }
 
     // Aggregate summary
@@ -316,16 +328,16 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                 return;
             }
 
-            // Render grouped operations first (sorted by most recent request)
-            let mut op_groups: Vec<(Option<OperationId>, Vec<usize>)> =
+            // Sort groups: named groups first (most recent first), then ungrouped
+            let mut op_groups: Vec<(NetworkGroupKey, Vec<usize>)> =
                 grouped.into_iter().collect();
             op_groups.sort_by(|a, b| {
-                // Groups with operation IDs first, then ungrouped
-                match (a.0, b.0) {
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                let a_ungrouped = matches!(a.0, NetworkGroupKey::Ungrouped);
+                let b_ungrouped = matches!(b.0, NetworkGroupKey::Ungrouped);
+                match (a_ungrouped, b_ungrouped) {
+                    (false, true) => std::cmp::Ordering::Less,
+                    (true, false) => std::cmp::Ordering::Greater,
                     _ => {
-                        // Sort by most recent request timestamp (descending)
                         let a_max =
                             a.1.iter()
                                 .filter_map(|&i| {
@@ -346,9 +358,9 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
             });
 
             // Track which groups to toggle (can't mutate during iteration)
-            let mut toggle_group: Option<Option<OperationId>> = None;
+            let mut toggle_group: Option<NetworkGroupKey> = None;
 
-            for (op_id, indices) in &op_groups {
+            for (group_key, indices) in &op_groups {
                 let group_bytes: u64 = indices
                     .iter()
                     .filter_map(|&i| state.recent_network_requests.get(i).map(|r| r.bytes))
@@ -358,7 +370,10 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                     .filter_map(|&i| state.recent_network_requests.get(i).map(|r| r.duration_ms))
                     .sum();
 
-                let is_expanded = state.acquisition.expanded_network_groups.contains(op_id);
+                let is_expanded = state
+                    .acquisition
+                    .expanded_network_groups
+                    .contains(group_key);
                 let arrow = if is_expanded {
                     icons::CARET_DOWN
                 } else {
@@ -366,13 +381,17 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                 };
 
                 // Group header
-                let group_name = match op_id {
-                    Some(id) => state
+                let group_name = match group_key {
+                    NetworkGroupKey::Operation(id) => state
                         .acquisition
                         .find(*id)
                         .map(|op| AcquisitionState::operation_description(&op.kind))
                         .unwrap_or_else(|| format!("Op #{}", id)),
-                    None => "Ungrouped".to_string(),
+                    NetworkGroupKey::RealtimeScan {
+                        site_id,
+                        scan_timestamp,
+                    } => AcquisitionState::scan_group_description(site_id, *scan_timestamp),
+                    NetworkGroupKey::Ungrouped => "Ungrouped".to_string(),
                 };
 
                 let header_text = format!(
@@ -396,65 +415,75 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                     )
                     .clicked()
                 {
-                    toggle_group = Some(*op_id);
+                    toggle_group = Some(group_key.clone());
                 }
 
-                // Expanded: show individual requests
+                // Expanded: show individual requests in a grid
                 if is_expanded {
-                    for &idx in indices {
-                        if let Some(req) = state.recent_network_requests.get(idx) {
-                            ui.horizontal(|ui| {
-                                ui.add_space(16.0);
-
-                                let short_url = shorten_url(&req.url);
-                                let status_color = http_status_color(req.status, req.ok);
-
-                                ui.label(
-                                    RichText::new(&short_url)
-                                        .size(9.0)
-                                        .monospace()
-                                        .color(value_color),
-                                )
-                                .on_hover_text(&req.url);
-
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(
-                                            RichText::new(format!("{:.0}ms", req.duration_ms))
-                                                .size(9.0)
-                                                .monospace()
-                                                .color(value_color),
-                                        );
-                                        ui.add_space(6.0);
-                                        let size_str = if req.bytes > 0 {
-                                            format_bytes(req.bytes)
-                                        } else {
-                                            "--".to_string()
-                                        };
-                                        ui.label(
-                                            RichText::new(size_str)
-                                                .size(9.0)
-                                                .monospace()
-                                                .color(value_color),
-                                        );
-                                        ui.add_space(6.0);
-                                        let status_str = if req.status > 0 {
-                                            format!("{}", req.status)
-                                        } else {
-                                            "ERR".to_string()
-                                        };
-                                        ui.label(
-                                            RichText::new(status_str)
-                                                .size(9.0)
-                                                .monospace()
-                                                .color(status_color),
-                                        );
-                                    },
-                                );
-                            });
+                    let grid_id = match group_key {
+                        NetworkGroupKey::Operation(id) => format!("net_grid_op_{}", id),
+                        NetworkGroupKey::RealtimeScan { scan_timestamp, .. } => {
+                            format!("net_grid_scan_{}", scan_timestamp)
                         }
-                    }
+                        NetworkGroupKey::Ungrouped => "net_grid_ungrouped".to_string(),
+                    };
+                    egui::Grid::new(grid_id)
+                        .num_columns(4)
+                        .spacing([8.0, 2.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for &idx in indices {
+                                if let Some(req) = state.recent_network_requests.get(idx) {
+                                    let status_color = http_status_color(req.status, req.ok);
+
+                                    // Status code
+                                    let status_str = if req.status > 0 {
+                                        format!("{}", req.status)
+                                    } else {
+                                        "ERR".to_string()
+                                    };
+                                    ui.label(
+                                        RichText::new(status_str)
+                                            .size(9.0)
+                                            .monospace()
+                                            .color(status_color),
+                                    );
+
+                                    // URL (truncated, hover for full)
+                                    let short_url = shorten_url(&req.url);
+                                    ui.label(
+                                        RichText::new(&short_url)
+                                            .size(9.0)
+                                            .monospace()
+                                            .color(value_color),
+                                    )
+                                    .on_hover_text(&req.url);
+
+                                    // Size
+                                    let size_str = if req.bytes > 0 {
+                                        format_bytes(req.bytes)
+                                    } else {
+                                        "--".to_string()
+                                    };
+                                    ui.label(
+                                        RichText::new(size_str)
+                                            .size(9.0)
+                                            .monospace()
+                                            .color(value_color),
+                                    );
+
+                                    // Duration
+                                    ui.label(
+                                        RichText::new(format!("{:.0}ms", req.duration_ms))
+                                            .size(9.0)
+                                            .monospace()
+                                            .color(value_color),
+                                    );
+
+                                    ui.end_row();
+                                }
+                            }
+                        });
                 }
             }
 
@@ -506,28 +535,29 @@ fn render_sparkline(ui: &mut egui::Ui, values: &[f64], _dark: bool) {
     }
 }
 
-/// Shorten a URL for compact display.
+/// Shorten a URL for display, keeping host and full path visible up to a
+/// generous limit. The full URL is still available on hover.
 fn shorten_url(url: &str) -> String {
-    if let Some(after_scheme) = url
+    // Strip the scheme to save space but keep the rest visible.
+    let without_scheme = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
-    {
-        let parts: Vec<&str> = after_scheme.splitn(2, '/').collect();
+        .unwrap_or(url);
+
+    const MAX_LEN: usize = 100;
+    if without_scheme.len() <= MAX_LEN {
+        without_scheme.to_string()
+    } else {
+        // Keep the host and as much of the tail as possible.
+        let parts: Vec<&str> = without_scheme.splitn(2, '/').collect();
         let host = parts[0];
         let path = parts.get(1).unwrap_or(&"");
-        let last_segment = path.rsplit('/').next().unwrap_or("");
-
-        if last_segment.is_empty() {
-            host.to_string()
-        } else if last_segment.len() > 35 {
-            format!(".../{}", &last_segment[last_segment.len() - 30..])
+        let budget = MAX_LEN.saturating_sub(host.len() + 5); // "/.../" = 5
+        if budget > 0 && path.len() > budget {
+            format!("{}/.../{}", host, &path[path.len() - budget..])
         } else {
-            format!(".../{}", last_segment)
+            format!("{}...{}", &without_scheme[..30], &without_scheme[without_scheme.len() - (MAX_LEN - 33)..])
         }
-    } else if url.len() > 50 {
-        format!("...{}", &url[url.len() - 47..])
-    } else {
-        url.to_string()
     }
 }
 

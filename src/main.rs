@@ -1191,6 +1191,7 @@ impl WorkbenchApp {
                             chunk_index,
                             is_start,
                             is_end,
+                            scan_timestamp: timestamp,
                         });
                 self.state.acquisition.mark_active(op_id);
                 self.state
@@ -1241,6 +1242,7 @@ impl WorkbenchApp {
                             chunk_index: 0,
                             is_start: false,
                             is_end: false,
+                            scan_timestamp: 0,
                         });
                 self.state.acquisition.mark_failed(op_id, msg);
             }

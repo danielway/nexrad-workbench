@@ -32,9 +32,26 @@ pub enum OperationKind {
         chunk_index: u32,
         is_start: bool,
         is_end: bool,
+        /// Volume start timestamp (Unix seconds) shared by all chunks in the same scan.
+        scan_timestamp: i64,
     },
     /// Backfill chunk download during initial volume load.
     BackfillChunk { site_id: String, chunk_index: u32 },
+}
+
+/// Key for grouping network requests in the drawer's Network tab.
+///
+/// Realtime chunks are grouped by scan (site + timestamp) so that all chunks
+/// in the same volume appear under one collapsible header.  Other operations
+/// are keyed by their individual `OperationId`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum NetworkGroupKey {
+    /// A single acquisition operation (archive download, listing, backfill).
+    Operation(OperationId),
+    /// All realtime chunks sharing the same volume/scan timestamp.
+    RealtimeScan { site_id: String, scan_timestamp: i64 },
+    /// Requests not correlated to any operation.
+    Ungrouped,
 }
 
 /// Status of an acquisition operation.
@@ -130,8 +147,8 @@ pub struct AcquisitionState {
     pub active_tab: DrawerTab,
     /// Per-chunk latency metrics for the current streaming session.
     pub chunk_latencies: Vec<ChunkLatencyMetrics>,
-    /// Set of expanded network groups in the drawer (by operation_id, None=ungrouped).
-    pub expanded_network_groups: std::collections::HashSet<Option<OperationId>>,
+    /// Set of expanded network groups in the drawer.
+    pub expanded_network_groups: std::collections::HashSet<NetworkGroupKey>,
 }
 
 impl Default for AcquisitionState {
@@ -145,7 +162,7 @@ impl Default for AcquisitionState {
             drawer_height: 250.0,
             active_tab: DrawerTab::Queue,
             chunk_latencies: Vec::new(),
-            expanded_network_groups: std::collections::HashSet::new(),
+            expanded_network_groups: std::collections::HashSet::<NetworkGroupKey>::new(),
         }
     }
 }
@@ -466,9 +483,21 @@ impl AcquisitionState {
             OperationKind::RealtimeChunk {
                 site_id,
                 chunk_index,
+                scan_timestamp,
                 ..
             } => {
-                format!("{} chunk #{}", site_id, chunk_index)
+                // Format scan timestamp as HH:MM:SS UTC for display
+                let dt = chrono::DateTime::from_timestamp(*scan_timestamp, 0);
+                if let Some(dt) = dt {
+                    format!(
+                        "{} live {} chunk #{}",
+                        site_id,
+                        dt.format("%H:%M:%S"),
+                        chunk_index
+                    )
+                } else {
+                    format!("{} chunk #{}", site_id, chunk_index)
+                }
             }
             OperationKind::BackfillChunk {
                 site_id,
@@ -476,6 +505,51 @@ impl AcquisitionState {
             } => {
                 format!("{} backfill #{}", site_id, chunk_index)
             }
+        }
+    }
+
+    /// Return the `NetworkGroupKey` for an operation.
+    ///
+    /// Realtime chunks get grouped by scan timestamp; everything else
+    /// by operation ID.
+    pub fn network_group_key(op: &AcquisitionOperation) -> NetworkGroupKey {
+        match &op.kind {
+            OperationKind::RealtimeChunk {
+                site_id,
+                scan_timestamp,
+                ..
+            } => NetworkGroupKey::RealtimeScan {
+                site_id: site_id.clone(),
+                scan_timestamp: *scan_timestamp,
+            },
+            _ => NetworkGroupKey::Operation(op.id),
+        }
+    }
+
+    /// Return a scan-level group key for an operation kind.
+    ///
+    /// For realtime chunks this returns `Some((site_id, scan_timestamp))` so
+    /// that all chunks belonging to the same volume are grouped together in
+    /// the network tab. For other operation kinds returns `None`.
+    pub fn scan_group_key(kind: &OperationKind) -> Option<(String, i64)> {
+        match kind {
+            OperationKind::RealtimeChunk {
+                site_id,
+                scan_timestamp,
+                ..
+            } => Some((site_id.clone(), *scan_timestamp)),
+            _ => None,
+        }
+    }
+
+    /// Human-readable description for a scan-level group (all chunks sharing
+    /// the same `scan_timestamp`).
+    pub fn scan_group_description(site_id: &str, scan_timestamp: i64) -> String {
+        let dt = chrono::DateTime::from_timestamp(scan_timestamp, 0);
+        if let Some(dt) = dt {
+            format!("{} live scan {}", site_id, dt.format("%H:%M:%SZ"))
+        } else {
+            format!("{} live scan {}", site_id, scan_timestamp)
         }
     }
 
