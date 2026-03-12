@@ -154,6 +154,11 @@ pub struct WorkbenchApp {
 
     /// Transient state for the event create/edit modal.
     event_modal_state: ui::EventModalState,
+
+    /// Site ID for which we're fetching the latest archive scan.
+    /// Set by `FetchLatest`, cleared once the download is kicked off
+    /// or all listings arrive with no usable data.
+    fetch_latest_pending: Option<String>,
 }
 
 // Embed shapefile data at compile time
@@ -458,6 +463,7 @@ impl WorkbenchApp {
                 sms
             },
             event_modal_state: ui::EventModalState::default(),
+            fetch_latest_pending: None,
         }
     }
 
@@ -736,27 +742,22 @@ impl WorkbenchApp {
 
     /// Fetch the latest available archive scan for the current site.
     ///
-    /// Fetches today's (and yesterday's) archive listing to find the most recent
-    /// scan, then downloads it. This gives users immediate data after site selection
-    /// without starting real-time streaming.
+    /// Kicks off archive listing requests for today and yesterday, then sets
+    /// `fetch_latest_pending` so that the listing-received handler can pick the
+    /// most recent file and download it directly. This avoids the
+    /// `DownloadAtPosition` flow which can loop infinitely when the playback
+    /// position is past the last archived scan.
     fn fetch_latest_scan(&mut self, ctx: &egui::Context) {
         let site_id = self.state.viz_state.site_id.clone();
         log::info!("Fetching latest scan for site: {}", site_id);
 
         self.state.status_message = "Fetching latest data...".to_string();
+        self.fetch_latest_pending = Some(site_id.clone());
 
-        // Position playback at current time so DownloadAtPosition finds the latest scan
-        let now = js_sys::Date::now() / 1000.0;
-        self.state.playback_state.set_playback_position(now);
-        self.state.playback_state.center_view_on(now);
-
-        // Fetch listings for today and yesterday (in case we're near midnight UTC
-        // or today has no data yet). DownloadAtPosition will fire once the listing
-        // arrives and pick the scan closest to the current playback position.
         let today = chrono::Utc::now().date_naive();
         let yesterday = today - chrono::Duration::days(1);
 
-        // Fetch yesterday's listing first (fallback)
+        // Fetch yesterday's listing (fallback if today has no data yet)
         if self.archive_index.get(&site_id, &yesterday).is_none()
             && !self
                 .download_channel
@@ -774,9 +775,90 @@ impl WorkbenchApp {
                 .fetch_listing(ctx.clone(), site_id.clone(), today);
         }
 
-        // Queue a DownloadAtPosition to fire once listings are available.
+        // If both listings are already cached (unlikely on first load, but
+        // possible on site re-selection), resolve immediately.
+        self.try_resolve_fetch_latest(ctx);
+    }
+
+    /// Check if pending fetch-latest can be resolved from cached listings.
+    ///
+    /// Picks the most recent file across today's and yesterday's listings and
+    /// kicks off a download. Called after listing requests complete and also
+    /// eagerly from `fetch_latest_scan` in case listings were already cached.
+    fn try_resolve_fetch_latest(&mut self, ctx: &egui::Context) {
+        let site_id = match self.fetch_latest_pending {
+            Some(ref id) => id.clone(),
+            None => return,
+        };
+
+        let today = chrono::Utc::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+
+        // Don't resolve until all pending listings have arrived
+        if self.download_channel.is_listing_pending(&site_id, &today)
+            || self
+                .download_channel
+                .is_listing_pending(&site_id, &yesterday)
+        {
+            return;
+        }
+
+        // Find the most recent file across both days
+        let latest_file = [today, yesterday]
+            .iter()
+            .filter_map(|date| {
+                self.archive_index
+                    .get(&site_id, date)
+                    .and_then(|listing| listing.files.last().map(|f| (*date, f.clone())))
+            })
+            .max_by_key(|(_, f)| f.timestamp);
+
+        self.fetch_latest_pending = None;
+
+        let Some((date, file)) = latest_file else {
+            log::info!("No archive data found for site {}", site_id);
+            self.state.status_message = "No recent data available for this site".to_string();
+            return;
+        };
+
+        log::info!(
+            "Fetching latest scan for {}: {} (ts={})",
+            site_id,
+            file.name,
+            file.timestamp
+        );
+
+        // Compute scan boundary for the file
+        let boundary = self.archive_index.get(&site_id, &date).and_then(|listing| {
+            listing
+                .scan_boundaries()
+                .into_iter()
+                .zip(listing.files.iter())
+                .find(|(_, f)| f.timestamp == file.timestamp)
+                .map(|(b, _)| b)
+        });
+        let scan_end = boundary.map(|b| b.end).unwrap_or(file.timestamp + 300);
+
+        // Position playback at this scan so it renders after download
         self.state
-            .push_command(state::AppCommand::DownloadAtPosition);
+            .playback_state
+            .set_playback_position(file.timestamp as f64);
+        self.state
+            .playback_state
+            .center_view_on(file.timestamp as f64);
+
+        // Track the scan end time for ghost boundary display
+        self.scan_end_times.insert(file.timestamp, scan_end);
+
+        self.state.status_message = format!("Downloading latest scan: {}", file.name);
+        self.download_channel.download_file(
+            ctx.clone(),
+            site_id,
+            date,
+            file.name,
+            file.timestamp,
+            self.data_facade.clone(),
+        );
     }
 
     /// Find the best elevation number for the current target_elevation.
@@ -1211,6 +1293,8 @@ impl eframe::App for WorkbenchApp {
             self.previous_site_id = self.state.viz_state.site_id.clone();
             // Clear shadow boundaries from previous site; new listings will repopulate.
             self.state.shadow_scan_boundaries.clear();
+            // Cancel any pending fetch-latest for the old site.
+            self.fetch_latest_pending = None;
         }
 
         // Drain and dispatch commands from the queue.
@@ -1845,9 +1929,14 @@ impl eframe::App for WorkbenchApp {
                         self.state.shadow_scan_boundaries =
                             self.archive_index.all_boundaries_for_site(&site_id);
                     }
+
+                    // Check if this listing completes a pending fetch-latest request
+                    self.try_resolve_fetch_latest(ctx);
                 }
                 nexrad::ListingResult::Error(msg) => {
                     log::error!("Listing request failed: {}", msg);
+                    // A failed listing may unblock fetch-latest (try with whatever we have)
+                    self.try_resolve_fetch_latest(ctx);
                 }
             }
         }

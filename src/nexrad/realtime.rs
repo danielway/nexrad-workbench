@@ -132,7 +132,7 @@ async fn streaming_loop(
     // requests) plus chunk fetches (~2-3 more). Each .await is a cancellation
     // point — when the timeout wins the select, the init future is dropped,
     // which drops any in-flight HTTP request future and cancels it.
-    const ACQUIRE_TIMEOUT_SECS: u32 = 15;
+    const ACQUIRE_TIMEOUT_SECS: u32 = 10;
     let init_future = ChunkIterator::start(&site_id);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
 
