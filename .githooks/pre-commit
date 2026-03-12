@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+echo "Running cargo fmt --check..."
+if ! cargo fmt --check; then
+    echo ""
+    echo "Commit rejected: code is not formatted."
+    echo "Run 'cargo fmt' to fix formatting and try again."
+    exit 1
+fi
+
+echo "Running cargo clippy..."
+if ! cargo clippy -- -D warnings; then
+    echo ""
+    echo "Commit rejected: clippy found warnings."
+    echo "Fix the issues above and try again."
+    exit 1
+fi
