@@ -76,6 +76,19 @@ pub fn decode_record_to_radials_timed(
     ))
 }
 
+/// Extract the volume start time from decoded radials.
+///
+/// Looks for a radial whose status is `ScanStart` (the first radial of a new
+/// volume scan) and returns its collection timestamp in Unix seconds. Returns
+/// `None` if no such radial is present in this set.
+pub fn extract_volume_start_time(radials: &[Radial]) -> Option<f64> {
+    use ::nexrad::model::data::RadialStatus;
+    radials
+        .iter()
+        .find(|r| matches!(r.radial_status(), RadialStatus::ScanStart))
+        .map(|r| r.collection_timestamp() as f64 / 1000.0)
+}
+
 /// Extract sorted, deduplicated elevation numbers from already-decoded radials.
 ///
 /// Use this when radials have already been decoded (e.g. after decompressing a
