@@ -2172,7 +2172,7 @@ fn render_timeline_tooltip(
         ui.ctx().clone(),
         egui::LayerId::new(egui::Order::Tooltip, ui.id()),
         ui.id().with("tl_tooltip"),
-        hover_pos + egui::vec2(10.0, 10.0),
+        Rect::from_center_size(hover_pos, Vec2::splat(20.0)),
     )
     .show(|ui: &mut egui::Ui| {
         if let Some(sweep) = sweep {
