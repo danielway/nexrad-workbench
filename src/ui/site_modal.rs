@@ -495,6 +495,19 @@ fn render_site_list(
                     .collect()
             };
 
+            // Enter key selects the site when filter narrows to exactly one result
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if enter_pressed && filtered.len() == 1 {
+                let site = &filtered[0];
+                if site.id != state.viz_state.site_id {
+                    apply_site_selection(state, site.id, site.lat, site.lon);
+                    modal_state.filter.clear();
+                    modal_state.mode = SiteModalMode::Welcome;
+                    modal_state.is_first_visit = false;
+                    selected = true;
+                }
+            }
+
             // Site count
             ui.label(
                 RichText::new(format!("{} sites", filtered.len()))
@@ -574,6 +587,11 @@ fn render_zip_entry(
 
             let mut submit = false;
 
+            // Enter key submits the form
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                submit = true;
+            }
+
             ui.horizontal(|ui| {
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut modal_state.zip_input)
@@ -581,10 +599,6 @@ fn render_zip_entry(
                         .desired_width(120.0),
                 );
                 response.request_focus();
-
-                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    submit = true;
-                }
 
                 if ui.button("Find Site").clicked() {
                     submit = true;

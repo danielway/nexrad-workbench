@@ -86,6 +86,10 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
                         ui.colored_label(Color32::from_rgb(255, 100, 100), "Invalid date/time");
                     }
 
+                    // Enter key submits the form when valid
+                    let enter_pressed =
+                        ui.input(|i| i.key_pressed(egui::Key::Enter)) && valid_ts.is_some();
+
                     ui.add_space(8.0);
 
                     // Buttons
@@ -95,7 +99,7 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
                         }
 
                         ui.add_enabled_ui(valid_ts.is_some(), |ui| {
-                            if ui.button("Jump").clicked() {
+                            if ui.button("Jump").clicked() || enter_pressed {
                                 if let Some(ts) = valid_ts {
                                     // Update playback position
                                     state.playback_state.set_playback_position(ts);
