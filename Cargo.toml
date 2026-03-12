@@ -74,6 +74,11 @@ web-sys = { version = "0.3", features = [
 js-sys = "0.3"
 egui-phosphor = { version = "0.11.0", features = ["regular"] }
 
+[dev-dependencies.cargo-husky]
+version = "1"
+default-features = false
+features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"]
+
 [profile.release]
 opt-level = "s"
 lto = true
