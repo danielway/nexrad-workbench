@@ -450,6 +450,45 @@ impl ExtractedVcp {
             .collect()
     }
 
+    /// Estimate total volume scan duration (seconds) from per-elevation azimuth rates.
+    ///
+    /// Computes `sum(360° / rate_i)` for each elevation. When azimuth rates are not
+    /// available, uses Method B fallback rates. Returns `None` if there are no elevations.
+    pub fn estimated_volume_duration(&self) -> Option<f64> {
+        if self.elevations.is_empty() {
+            return None;
+        }
+
+        let total: f64 = self
+            .elevations
+            .iter()
+            .map(|e| {
+                let rate = if let Some(r) = e.azimuth_rate {
+                    if r > 0.0 {
+                        r as f64
+                    } else {
+                        let is_clear_air = crate::state::vcp::is_clear_air_vcp(self.number);
+                        crate::state::vcp::fallback_azimuth_rate(
+                            is_clear_air,
+                            &e.waveform,
+                            e.prf_number,
+                        )
+                    }
+                } else {
+                    let is_clear_air = crate::state::vcp::is_clear_air_vcp(self.number);
+                    crate::state::vcp::fallback_azimuth_rate(
+                        is_clear_air,
+                        &e.waveform,
+                        e.prf_number,
+                    )
+                };
+                360.0 / rate
+            })
+            .sum();
+
+        Some(total)
+    }
+
     /// Compute cumulative start offsets (in seconds from volume start) for each elevation.
     ///
     /// Returns a `Vec<f64>` where entry `i` is the estimated start time offset of elevation `i`.
