@@ -1,9 +1,9 @@
 //! Site selection modal overlay.
 //!
-//! On first visit (no preferred site saved), presents a welcome screen with
-//! three ways to pick a site: browse the list, enter a zip code, or use
-//! browser geolocation. On subsequent visits the modal opens directly to the
-//! searchable site list.
+//! Always presents a welcome/selection screen with three ways to pick a site:
+//! browse the list, enter a zip code, or use browser geolocation. On first
+//! visit (no preferred site saved), shows welcome verbiage; on subsequent
+//! visits, shows a shorter "change site" heading instead.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -230,31 +230,19 @@ pub fn render_site_modal(
             LocationResult::Success(lat, lon) => {
                 if let Some(site) = nearest_site(lat, lon) {
                     apply_site_selection(state, site.id, site.lat, site.lon);
-                    modal_state.mode = if modal_state.is_first_visit {
-                        SiteModalMode::Welcome
-                    } else {
-                        SiteModalMode::SiteList
-                    };
+                    modal_state.mode = SiteModalMode::Welcome;
                     modal_state.filter.clear();
                     modal_state.zip_input.clear();
                     modal_state.error_message = None;
                     return true;
                 } else {
                     modal_state.error_message = Some("Could not find a nearby site".into());
-                    modal_state.mode = if modal_state.is_first_visit {
-                        SiteModalMode::Welcome
-                    } else {
-                        SiteModalMode::SiteList
-                    };
+                    modal_state.mode = SiteModalMode::Welcome;
                 }
             }
             LocationResult::Error(msg) => {
                 modal_state.error_message = Some(msg);
-                modal_state.mode = if modal_state.is_first_visit {
-                    SiteModalMode::Welcome
-                } else {
-                    SiteModalMode::SiteList
-                };
+                modal_state.mode = SiteModalMode::Welcome;
             }
         }
     }
@@ -269,11 +257,11 @@ pub fn render_site_modal(
                     return false;
                 }
             }
-            SiteModalMode::SiteList if modal_state.is_first_visit => {
+            SiteModalMode::SiteList => {
                 modal_state.mode = SiteModalMode::Welcome;
                 modal_state.filter.clear();
             }
-            SiteModalMode::ZipEntry if modal_state.is_first_visit => {
+            SiteModalMode::ZipEntry => {
                 modal_state.mode = SiteModalMode::Welcome;
                 modal_state.zip_input.clear();
                 modal_state.error_message = None;
@@ -326,7 +314,7 @@ pub fn render_site_modal(
     selected
 }
 
-/// Render the first-visit welcome screen with three selection paths.
+/// Render the selection method screen with three paths (location, zip, browse).
 fn render_welcome_screen(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -334,7 +322,13 @@ fn render_welcome_screen(
 ) -> bool {
     let selected = false;
 
-    egui::Window::new("Welcome to NEXRAD Workbench")
+    let title = if modal_state.is_first_visit {
+        "Welcome to NEXRAD Workbench"
+    } else {
+        "Change Radar Site"
+    };
+
+    egui::Window::new(title)
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
@@ -342,7 +336,11 @@ fn render_welcome_screen(
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             ui.add_space(4.0);
-            ui.label("Select a radar site to get started.");
+            if modal_state.is_first_visit {
+                ui.label("Select a radar site to get started.");
+            } else {
+                ui.label("Select a new radar site.");
+            }
             ui.add_space(12.0);
 
             // Show error if any
@@ -447,21 +445,19 @@ fn render_site_list(
         .show(ctx, |ui| {
             ui.add_space(4.0);
 
-            // Back button for first-visit flow
-            if modal_state.is_first_visit {
-                if ui
-                    .small_button(RichText::new(format!(
-                        "{} Back",
-                        egui_phosphor::regular::ARROW_LEFT
-                    )))
-                    .clicked()
-                {
-                    modal_state.mode = SiteModalMode::Welcome;
-                    modal_state.filter.clear();
-                    return;
-                }
-                ui.add_space(4.0);
+            // Back button to return to the selection method screen
+            if ui
+                .small_button(RichText::new(format!(
+                    "{} Back",
+                    egui_phosphor::regular::ARROW_LEFT
+                )))
+                .clicked()
+            {
+                modal_state.mode = SiteModalMode::Welcome;
+                modal_state.filter.clear();
+                return;
             }
+            ui.add_space(4.0);
 
             // Search/filter input
             ui.horizontal(|ui| {
@@ -526,11 +522,7 @@ fn render_site_list(
                         if ui.selectable_label(is_current, text).clicked() && !is_current {
                             apply_site_selection(state, site.id, site.lat, site.lon);
                             modal_state.filter.clear();
-                            modal_state.mode = if modal_state.is_first_visit {
-                                SiteModalMode::Welcome
-                            } else {
-                                SiteModalMode::SiteList
-                            };
+                            modal_state.mode = SiteModalMode::Welcome;
                             modal_state.is_first_visit = false;
                             selected = true;
                         }
@@ -556,22 +548,20 @@ fn render_zip_entry(
         .show(ctx, |ui| {
             ui.add_space(4.0);
 
-            // Back button
-            if modal_state.is_first_visit {
-                if ui
-                    .small_button(RichText::new(format!(
-                        "{} Back",
-                        egui_phosphor::regular::ARROW_LEFT
-                    )))
-                    .clicked()
-                {
-                    modal_state.mode = SiteModalMode::Welcome;
-                    modal_state.zip_input.clear();
-                    modal_state.error_message = None;
-                    return;
-                }
-                ui.add_space(4.0);
+            // Back button to return to the selection method screen
+            if ui
+                .small_button(RichText::new(format!(
+                    "{} Back",
+                    egui_phosphor::regular::ARROW_LEFT
+                )))
+                .clicked()
+            {
+                modal_state.mode = SiteModalMode::Welcome;
+                modal_state.zip_input.clear();
+                modal_state.error_message = None;
+                return;
             }
+            ui.add_space(4.0);
 
             ui.label("Enter a US zip code to find the nearest radar site:");
             ui.add_space(8.0);
