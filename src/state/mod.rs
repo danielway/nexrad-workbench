@@ -182,6 +182,18 @@ pub struct AppState {
     /// renders these as subtle markers to show where scans exist before they
     /// are actually downloaded.
     pub shadow_scan_boundaries: Vec<crate::nexrad::ScanBoundary>,
+
+    /// Aggregate network statistics from the service worker (all intercepted traffic).
+    pub network_aggregate: crate::nexrad::NetworkAggregate,
+
+    /// Recent network requests from the service worker (ring buffer for UI log).
+    pub recent_network_requests: std::collections::VecDeque<crate::nexrad::NetworkRequest>,
+
+    /// Whether the browsing context is cross-origin isolated (SharedArrayBuffer available).
+    pub cross_origin_isolated: bool,
+
+    /// Whether the network request log modal is open.
+    pub network_log_open: bool,
 }
 
 /// Lightweight storm cell info for rendering on the canvas.

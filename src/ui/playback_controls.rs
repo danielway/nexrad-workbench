@@ -491,6 +491,17 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     render_pipeline_indicator(ui, state);
 
     // Download group: requests + transferred
+    // Use service worker aggregate if available, otherwise fall back to channel stats
+    let sw_total = state.network_aggregate.total_requests;
+    let (display_count, display_transferred) = if sw_total > 0 {
+        (
+            sw_total,
+            crate::state::format_bytes(state.network_aggregate.total_bytes),
+        )
+    } else {
+        (request_count, transferred)
+    };
+
     if active_count > 0 {
         ui.label(
             RichText::new(format!("({} active)", active_count))
@@ -499,12 +510,30 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
                 .color(ui_colors::ACTIVE),
         );
     }
-    if request_count > 0 {
+    if display_count > 0 {
+        // Clickable to open network log
+        let req_text = format!("{} req / {}", display_count, display_transferred);
+        if ui
+            .add(
+                egui::Label::new(RichText::new(req_text).size(10.0).color(ui_colors::value(dark)))
+                    .sense(egui::Sense::click()),
+            )
+            .on_hover_text("Click to view network log")
+            .clicked()
+        {
+            state.network_log_open = true;
+        }
+        ui.separator();
+    }
+
+    // Cross-origin isolation indicator
+    if state.cross_origin_isolated {
         ui.label(
-            RichText::new(format!("{} req / {}", request_count, transferred))
-                .size(10.0)
-                .color(ui_colors::value(dark)),
-        );
+            RichText::new("COI")
+                .size(9.0)
+                .color(ui_colors::SUCCESS),
+        )
+        .on_hover_text("Cross-Origin Isolated: SharedArrayBuffer available");
         ui.separator();
     }
 
