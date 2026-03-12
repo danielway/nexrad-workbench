@@ -1916,7 +1916,12 @@ fn render_realtime_progress(
             }
 
             // Draw downloaded chunks that belong to this elevation, with
-            // clear separators between each chunk boundary.
+            // clear separators between each chunk boundary.  Chunks are
+            // rendered shorter than the sweep block so they visually nest
+            // inside it, making the two layers easy to distinguish.
+            let chunk_inset = 5.0_f32;
+            let chunk_top = block.min.y + chunk_inset;
+            let chunk_bot = block.max.y - chunk_inset;
             let mut prev_chunk_end_x: Option<f32> = None;
             for &(span_elev, span_start, span_end, _) in &live_state.chunk_elev_spans {
                 if span_elev != elev_num {
@@ -1926,13 +1931,19 @@ fn render_realtime_progress(
                 let cx1 = ts_to_x(span_end).min(sweep_rect.right());
                 if cx1 > cx0 {
                     let chunk_rect = Rect::from_min_max(
-                        Pos2::new(cx0, block.min.y + 1.0),
-                        Pos2::new(cx1, block.max.y - 1.0),
+                        Pos2::new(cx0, chunk_top),
+                        Pos2::new(cx1, chunk_bot),
                     );
                     painter.rect_filled(
                         chunk_rect,
-                        0.0,
-                        Color32::from_rgba_unmultiplied(60, 140, 200, 55),
+                        1.0,
+                        Color32::from_rgba_unmultiplied(80, 170, 230, 70),
+                    );
+                    painter.rect_stroke(
+                        chunk_rect,
+                        1.0,
+                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(100, 180, 255, 90)),
+                        StrokeKind::Inside,
                     );
 
                     // Separator tick at each chunk boundary
@@ -1941,8 +1952,8 @@ fn render_realtime_progress(
                         let sep_x = (prev_x + cx0) / 2.0;
                         painter.line_segment(
                             [
-                                Pos2::new(sep_x, block.min.y + 1.0),
-                                Pos2::new(sep_x, block.max.y - 1.0),
+                                Pos2::new(sep_x, chunk_top),
+                                Pos2::new(sep_x, chunk_bot),
                             ],
                             Stroke::new(1.0, tl_colors::rt_chunk_separator()),
                         );
