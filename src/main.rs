@@ -1491,7 +1491,11 @@ impl WorkbenchApp {
             }
         }
 
-        (do_download_selection, do_download_at_position, do_pump_queue)
+        (
+            do_download_selection,
+            do_download_at_position,
+            do_pump_queue,
+        )
     }
 
     /// Process results from cache loads, web workers, downloads, and archive listings.
