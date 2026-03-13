@@ -1330,10 +1330,10 @@ impl WorkbenchApp {
             _ => {}
         }
     }
-}
 
-impl eframe::App for WorkbenchApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    /// Per-frame bookkeeping: record stats, apply theme, recompute staleness,
+    /// update storm cells, and detect site changes.
+    fn apply_frame_setup(&mut self, ctx: &egui::Context) {
         // Record frame time for FPS meter
         let dt = ctx.input(|i| i.stable_dt);
         self.state.session_stats.record_frame_time(dt);
@@ -1418,8 +1418,11 @@ impl eframe::App for WorkbenchApp {
             // Cancel any in-progress backfill for the old site.
             self.backfill_in_progress = false;
         }
+    }
 
-        // Drain and dispatch commands from the queue.
+    /// Drain the command queue and execute each command.
+    /// Returns flags for (download_selection, download_at_position, pump_queue).
+    fn dispatch_commands(&mut self, ctx: &egui::Context) -> (bool, bool, bool) {
         let commands = self.state.drain_commands();
         let mut do_download_selection = false;
         let mut do_download_at_position = false;
@@ -1533,6 +1536,15 @@ impl eframe::App for WorkbenchApp {
             }
         }
 
+        (
+            do_download_selection,
+            do_download_at_position,
+            do_pump_queue,
+        )
+    }
+
+    /// Process results from cache loads, web workers, downloads, and archive listings.
+    fn handle_worker_results(&mut self, _ctx: &egui::Context) {
         // Check for completed cache load operations
         if let Some(result) = self.cache_load_channel.try_recv() {
             match result {
@@ -2103,8 +2115,16 @@ impl eframe::App for WorkbenchApp {
                 }
             }
         }
+    }
 
-        // Process selection download queue
+    /// Kick off or continue selection/position downloads.
+    fn pump_download_queue(
+        &mut self,
+        ctx: &egui::Context,
+        do_download_selection: bool,
+        do_download_at_position: bool,
+        do_pump_queue: bool,
+    ) {
         {
             let download_type = if do_download_at_position {
                 Some(true)
@@ -2121,7 +2141,10 @@ impl eframe::App for WorkbenchApp {
                 self.process_selection_download(ctx, download_type);
             }
         }
+    }
 
+    /// Drain backfill and realtime channels, manage live-mode lifecycle.
+    fn handle_streaming_results(&mut self, ctx: &egui::Context) {
         // Handle backfill results (one-shot initial load)
         while let Some(result) = self.backfill_channel.try_recv() {
             self.handle_backfill_result(result, ctx);
@@ -2152,7 +2175,10 @@ impl eframe::App for WorkbenchApp {
                     Some(now + duration.as_secs_f64());
             }
         }
+    }
 
+    /// Auto-load scans when scrubbing the timeline and prefetch upcoming sweeps.
+    fn advance_playback(&mut self) {
         // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
         // In the worker architecture, this sends a render request directly —
         // the worker reads records from IDB, decodes the target elevation, and renders.
@@ -2351,7 +2377,10 @@ impl eframe::App for WorkbenchApp {
                 }
             }
         }
+    }
 
+    /// Re-render when the user changes elevation, product, or view mode.
+    fn request_render_if_needed(&mut self) {
         // Detect elevation/product changes and trigger worker re-render.
         // If the user changes these settings and we have a current scan, we need
         // a new render from the worker.
@@ -2363,7 +2392,10 @@ impl eframe::App for WorkbenchApp {
             }
             self.request_worker_render();
         }
+    }
 
+    /// Sync network statistics from the download channel and service worker.
+    fn update_network_stats(&mut self) {
         // Update session stats from live network statistics
         let network_stats = self.download_channel.stats();
         self.state
@@ -2383,8 +2415,10 @@ impl eframe::App for WorkbenchApp {
                 self.state.recent_network_requests = recent.into();
             }
         }
+    }
 
-        // Push current state to URL (throttled to once per second)
+    /// Push current app state to the URL bar and save user preferences (throttled).
+    fn persist_url_state(&mut self) {
         {
             let now = web_time::Instant::now();
             if now.duration_since(self.last_url_push).as_secs_f64() >= 1.0 {
@@ -2433,6 +2467,20 @@ impl eframe::App for WorkbenchApp {
                 }
             }
         }
+    }
+}
+
+impl eframe::App for WorkbenchApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.apply_frame_setup(ctx);
+        let (dl_sel, dl_pos, pump) = self.dispatch_commands(ctx);
+        self.handle_worker_results(ctx);
+        self.pump_download_queue(ctx, dl_sel, dl_pos, pump);
+        self.handle_streaming_results(ctx);
+        self.advance_playback();
+        self.request_render_if_needed();
+        self.update_network_stats();
+        self.persist_url_state();
 
         // Render UI panels in the correct order for egui layout
         // Side and top/bottom panels must be rendered before CentralPanel
