@@ -8,8 +8,8 @@
 
     
 <script type="module">
-import init, * as bindings from '/nexrad-workbench/pr-preview/pr-80/nexrad-workbench-b31a038d4dba1b47.js';
-const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-80/nexrad-workbench-b31a038d4dba1b47_bg.wasm' });
+import init, * as bindings from '/nexrad-workbench/pr-preview/pr-80/nexrad-workbench-3471ae49402c182b.js';
+const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-80/nexrad-workbench-3471ae49402c182b_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -87,7 +87,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             to { transform: rotate(360deg); }
         }
     </style>
-<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-80/nexrad-workbench-b31a038d4dba1b47.js" crossorigin="anonymous" integrity="sha384-lOQ/+IrRy3fa/WHsq9LzZxpbmnFkPjgU/OEU3D1Ba8ZPNyK13XVjCG82VlO9DN+4"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-80/nexrad-workbench-b31a038d4dba1b47_bg.wasm" crossorigin="anonymous" integrity="sha384-Md0wCoX8VGi4/4mqW5/VagHL7536ek7jwOIaTfNq7jam3KYHifAj7KKq5zbDcRkL" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-80/nexrad-workbench-3471ae49402c182b.js" crossorigin="anonymous" integrity="sha384-p9gQG7G5bfNjqp3wDLFPjJ5m3qQyw+6LF8Ko7SDuZVmnNCmnOpvdnekDiOo9L+Iw"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-80/nexrad-workbench-3471ae49402c182b_bg.wasm" crossorigin="anonymous" integrity="sha384-xak25+EnjMP2erKLEJUGcAGtjijJCvjKBP7CkSFXVo3OAXhY1ebAcs9mRywl3qWb" as="fetch" type="application/wasm"></head>
 <body>
     <canvas id="app_canvas"></canvas>
     <div id="loading_text">
