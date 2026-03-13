@@ -1106,6 +1106,16 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             }
         }
 
+        // Extract volume start time from radials (available directly from the
+        // NEXRAD message header on the first radial of a volume scan). This
+        // replaces the Archive II header-only approach, giving us an
+        // authoritative timestamp from any chunk that contains the volume's
+        // first radial.
+        if volume_header_time_secs.is_none() {
+            volume_header_time_secs =
+                crate::nexrad::record_decode::extract_volume_start_time(&chunk_radials);
+        }
+
         // --- Update accumulator with this chunk's radials ---
         // Detect which elevations in this chunk's radials differ from last_elevation_number
         let chunk_elev_numbers = extract_elevation_numbers(&chunk_radials);

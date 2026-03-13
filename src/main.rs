@@ -1039,39 +1039,6 @@ impl WorkbenchApp {
         };
     }
 
-    /// Send a decode request to the worker for the current scan + settings.
-    /// Estimate the actual volume start time by back-calculating from a chunk's
-    /// data time and which elevation it contains.
-    ///
-    /// If we join mid-volume at elevation N, the data time represents the time
-    /// of that elevation's radials, not the volume start. We subtract the
-    /// estimated time for the preceding N-1 elevations.
-    fn estimate_volume_start(
-        chunk_data_time: f64,
-        current_elevation: Option<u8>,
-        live_state: &crate::state::LiveModeState,
-    ) -> f64 {
-        let elev = match current_elevation {
-            Some(e) if e > 1 => e,
-            _ => return chunk_data_time, // Elevation 1 or unknown — data IS the start
-        };
-
-        // Use weighted cumulative offset for the current elevation (0-based index)
-        let elev_idx = elev.saturating_sub(1) as usize;
-        if let Some(offset) = live_state.sweep_start_offset(elev_idx) {
-            return chunk_data_time - offset;
-        }
-
-        // Fallback: even distribution
-        let count = live_state.expected_elevation_count.unwrap_or(0) as f64;
-        let dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
-        if count <= 0.0 || dur <= 0.0 {
-            return chunk_data_time;
-        }
-        let sweep_dur = dur / count;
-        chunk_data_time - (elev as f64 - 1.0) * sweep_dur
-    }
-
     /// Send a render request to the worker for the current scan/elevation/product.
     ///
     /// Skips the request if the parameters haven't changed since the last render.
@@ -1724,25 +1691,10 @@ impl eframe::App for WorkbenchApp {
                                     .record_chunk_elev_spans(&result.chunk_elev_spans);
                             }
 
-                            // Set the volume start time. Prefer the authoritative volume
-                            // header time from the Archive II header. Fall back to
-                            // back-calculating from chunk data time + elevation number.
-                            if self.state.live_mode_state.current_volume_start.is_none() {
-                                let vol_start =
-                                    if let Some(header_time) = result.volume_header_time_secs {
-                                        header_time
-                                    } else {
-                                        let chunk_data_time = result
-                                            .chunk_min_time_secs
-                                            .unwrap_or(result.context.timestamp_secs as f64);
-                                        Self::estimate_volume_start(
-                                            chunk_data_time,
-                                            result.current_elevation,
-                                            &self.state.live_mode_state,
-                                        )
-                                    };
-                                self.state.live_mode_state.current_volume_start = Some(vol_start);
-                            } else if let Some(header_time) = result.volume_header_time_secs {
+                            // Set the volume start time from the authoritative
+                            // timestamp parsed directly from the NEXRAD message
+                            // header (the first radial of the volume scan).
+                            if let Some(header_time) = result.volume_header_time_secs {
                                 self.state.live_mode_state.current_volume_start = Some(header_time);
                             }
                             if !result.elevations_completed.is_empty() {
