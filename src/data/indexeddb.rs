@@ -17,6 +17,22 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{IdbDatabase, IdbRequest, IdbTransaction, IdbTransactionMode};
 
+/// Browser storage quota estimate from `navigator.storage.estimate()`.
+#[derive(Debug, Clone, Copy)]
+pub struct StorageQuotaEstimate {
+    /// Total quota granted by the browser (bytes).
+    pub quota: u64,
+    /// Current usage across all storage mechanisms (bytes).
+    pub usage: u64,
+}
+
+impl StorageQuotaEstimate {
+    /// Remaining bytes available.
+    pub fn remaining(&self) -> u64 {
+        self.quota.saturating_sub(self.usage)
+    }
+}
+
 /// Current database schema version.
 const DATABASE_VERSION: u32 = 3;
 
@@ -82,10 +98,34 @@ impl IndexedDbRecordStore {
     /// Batches all writes into one readwrite transaction to avoid per-transaction
     /// disk-flush overhead. Critical: no await between puts — IDB transactions
     /// auto-commit when the event loop yields in WASM.
+    ///
+    /// Checks browser storage quota before writing. If remaining quota is
+    /// insufficient for the batch, returns an error instead of silently failing.
     pub async fn put_sweeps_batch(&self, items: &[(String, Vec<u8>)]) -> Result<(), String> {
         if items.is_empty() {
             return Ok(());
         }
+
+        // Pre-write quota check: verify browser has enough storage remaining
+        let batch_size: u64 = items.iter().map(|(_, data)| data.len() as u64).sum();
+        if let Some(estimate) = estimate_browser_quota().await {
+            let remaining = estimate.remaining();
+            // Require the write size plus 5 MB headroom for IDB overhead/metadata
+            let required = batch_size + 5 * 1024 * 1024;
+            if remaining < required {
+                return Err(format!(
+                    "Insufficient storage quota: {:.1} MB remaining, need {:.1} MB \
+                     (batch: {:.1} MB). Browser quota: {:.1} MB, usage: {:.1} MB. \
+                     Free browser storage or reduce cache size.",
+                    remaining as f64 / (1024.0 * 1024.0),
+                    required as f64 / (1024.0 * 1024.0),
+                    batch_size as f64 / (1024.0 * 1024.0),
+                    estimate.quota as f64 / (1024.0 * 1024.0),
+                    estimate.usage as f64 / (1024.0 * 1024.0),
+                ));
+            }
+        }
+
         self.ensure_open().await?;
         let db = self.get_db()?;
 
@@ -590,6 +630,14 @@ impl IndexedDbRecordStore {
         Ok(count)
     }
 
+    /// Queries the browser's storage quota via `navigator.storage.estimate()`.
+    ///
+    /// Works in both Window and Worker contexts. Returns `None` if the
+    /// Storage API is unavailable (e.g. older browsers, opaque origins).
+    pub async fn estimate_storage_quota() -> Option<StorageQuotaEstimate> {
+        estimate_browser_quota().await
+    }
+
     /// Clears all data from all stores.
     pub async fn clear_all(&self) -> Result<(), String> {
         // Clear each object store rather than deleting the database.
@@ -779,4 +827,38 @@ fn deserialize_js_value<T: DeserializeOwned>(value: &JsValue) -> Option<T> {
     let json_str = js_sys::JSON::stringify(value).ok()?;
     let s = json_str.as_string()?;
     serde_json::from_str(&s).ok()
+}
+
+/// Queries `navigator.storage.estimate()` from either Window or Worker context.
+///
+/// Returns `None` if the Storage Manager API is unavailable.
+async fn estimate_browser_quota() -> Option<StorageQuotaEstimate> {
+    let global = js_sys::global();
+
+    // Try Window context first, then Worker context
+    let storage_manager = {
+        // Window context
+        let window: Result<web_sys::Window, _> = global.clone().dyn_into();
+        if let Ok(win) = window {
+            web_sys::Navigator::storage(&win.navigator())
+        } else {
+            // Worker context
+            let worker: Result<web_sys::WorkerGlobalScope, _> = global.dyn_into();
+            if let Ok(ws) = worker {
+                web_sys::WorkerNavigator::storage(&ws.navigator())
+            } else {
+                log::debug!("Storage API: not in Window or Worker context");
+                return None;
+            }
+        }
+    };
+
+    let promise = web_sys::StorageManager::estimate(&storage_manager).ok()?;
+    let result = wasm_bindgen_futures::JsFuture::from(promise).await.ok()?;
+    let estimate: web_sys::StorageEstimate = result.dyn_into().ok()?;
+
+    let quota = web_sys::StorageEstimate::get_quota(&estimate).unwrap_or(0.0) as u64;
+    let usage = web_sys::StorageEstimate::get_usage(&estimate).unwrap_or(0.0) as u64;
+
+    Some(StorageQuotaEstimate { quota, usage })
 }

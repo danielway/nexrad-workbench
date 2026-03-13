@@ -1472,9 +1472,12 @@ impl eframe::App for WorkbenchApp {
                     let ctx_clone = ctx.clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         match facade.check_and_evict(quota, target).await {
-                            Ok((evicted, count)) => {
+                            Ok((evicted, count, quota_warning)) => {
                                 if evicted {
                                     log::info!("Eviction complete: removed {} scans", count);
+                                }
+                                if let Some(warning) = quota_warning {
+                                    log::warn!("Quota warning: {}", warning);
                                 }
                             }
                             Err(e) => {
