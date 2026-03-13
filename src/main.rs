@@ -16,6 +16,37 @@ use data::DataFacade;
 use eframe::egui;
 use state::AppState;
 
+// ---------------------------------------------------------------------------
+// Tuning constants
+// ---------------------------------------------------------------------------
+
+/// Maximum age (in seconds) for a scan to be considered relevant to the current
+/// playback position. Scans older than this are not displayed when scrubbing.
+/// 15 minutes covers a full VCP cycle with margin.
+const MAX_SCAN_AGE_SECS: f64 = 15.0 * 60.0;
+
+/// Tolerance (in degrees) when matching a sweep's elevation angle to the
+/// user-selected target elevation. NEXRAD elevation angles can vary slightly
+/// from the nominal value; 0.15° accommodates that jitter without matching
+/// the wrong tilt.
+const ELEVATION_MATCH_TOLERANCE_DEG: f32 = 0.15;
+
+/// How far ahead (in real-time seconds) to prefetch the next sweep when
+/// playback is active. Multiplied by the playback speed to get the lookahead
+/// in timeline seconds. 0.5 s keeps the pipeline one decode ahead without
+/// wasting bandwidth.
+const PREFETCH_LOOKAHEAD_SECS: f64 = 0.5;
+
+/// Fallback scan duration (in seconds) used when the true end timestamp of
+/// a scan boundary is unknown. 300 s (5 minutes) is a conservative upper
+/// bound for a single volume scan.
+const FALLBACK_SCAN_DURATION_SECS: i64 = 300;
+
+/// Maximum time difference (in seconds) between a cached scan's start_time
+/// and an archive file's timestamp for them to be considered the same scan.
+/// 60 s allows for minor clock drift and timestamp rounding.
+const SCAN_CACHE_MATCH_TOLERANCE_SECS: i64 = 60;
+
 fn main() {}
 
 // Worker exports (worker_ingest, worker_render) are in nexrad::worker_api.
@@ -694,12 +725,10 @@ impl WorkbenchApp {
                 if is_position_download {
                     // Single-position: find the exact scan containing the playback position
                     if let Some((file, boundary)) = listing.find_scan_containing(sel_start_i64) {
-                        let is_cached = self
-                            .state
-                            .radar_timeline
-                            .scans
-                            .iter()
-                            .any(|s| (s.start_time as i64 - file.timestamp).abs() < 60);
+                        let is_cached = self.state.radar_timeline.scans.iter().any(|s| {
+                            (s.start_time as i64 - file.timestamp).abs()
+                                < SCAN_CACHE_MATCH_TOLERANCE_SECS
+                        });
                         if !is_cached {
                             files_to_download.push(QueueItem::new(
                                 current_date,
@@ -738,12 +767,10 @@ impl WorkbenchApp {
                 } else {
                     // Range selection: find all scans that intersect [sel_start, sel_end]
                     for (file, boundary) in listing.scans_intersecting(sel_start_i64, sel_end_i64) {
-                        let is_cached = self
-                            .state
-                            .radar_timeline
-                            .scans
-                            .iter()
-                            .any(|s| (s.start_time as i64 - file.timestamp).abs() < 60);
+                        let is_cached = self.state.radar_timeline.scans.iter().any(|s| {
+                            (s.start_time as i64 - file.timestamp).abs()
+                                < SCAN_CACHE_MATCH_TOLERANCE_SECS
+                        });
                         if !is_cached {
                             files_to_download.push(QueueItem::new(
                                 current_date,
@@ -902,11 +929,10 @@ impl WorkbenchApp {
     fn best_elevation_number(&self) -> u8 {
         // First try to match by angle using timeline sweep metadata
         let target = self.state.viz_state.target_elevation;
-        if let Some(scan) = self
-            .state
-            .radar_timeline
-            .find_recent_scan(self.state.playback_state.playback_position(), 15.0 * 60.0)
-        {
+        if let Some(scan) = self.state.radar_timeline.find_recent_scan(
+            self.state.playback_state.playback_position(),
+            MAX_SCAN_AGE_SECS,
+        ) {
             if !scan.sweeps.is_empty() {
                 // Find sweep whose angle is closest to target
                 if let Some(best) = scan.sweeps.iter().min_by(|a, b| {
@@ -954,7 +980,7 @@ impl WorkbenchApp {
         let matching = scan
             .sweeps
             .iter()
-            .filter(|s| (s.elevation - target).abs() < 0.15)
+            .filter(|s| (s.elevation - target).abs() < ELEVATION_MATCH_TOLERANCE_DEG)
             .filter(|s| s.start_time <= playback_ts)
             .max_by(|a, b| {
                 a.start_time
@@ -1987,7 +2013,7 @@ impl WorkbenchApp {
                     .iter()
                     .find(|item| item.scan_start == scan_ts)
                     .map(|item| item.scan_end)
-                    .unwrap_or(scan_ts + 300);
+                    .unwrap_or(scan_ts + FALLBACK_SCAN_DURATION_SECS);
                 self.state
                     .download_progress
                     .in_flight_scans
@@ -2187,7 +2213,7 @@ impl WorkbenchApp {
         // contain multiple sweeps at the target elevation (e.g. VCP 215 has 0.5°
         // at both elevation_number 1 and 3). As playback advances past a new
         // sweep's start_time, we re-render with that sweep's elevation_number.
-        const MAX_SCAN_AGE_SECS: f64 = 15.0 * 60.0;
+        // Uses module-level MAX_SCAN_AGE_SECS constant.
         {
             let playback_ts = self.state.playback_state.playback_position();
 
@@ -2317,8 +2343,7 @@ impl WorkbenchApp {
                 .playback_state
                 .speed
                 .timeline_seconds_per_real_second();
-            // Prefetch threshold: 0.5 real seconds * playback speed = timeline seconds ahead
-            let prefetch_lookahead = 0.5 * speed;
+            let prefetch_lookahead = PREFETCH_LOOKAHEAD_SECS * speed;
 
             if let Some(scan) = self
                 .state
