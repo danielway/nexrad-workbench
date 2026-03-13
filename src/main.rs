@@ -86,10 +86,63 @@ pub struct Renderers {
     pub globe_radar: Option<std::sync::Arc<std::sync::Mutex<nexrad::GlobeRadarRenderer>>>,
     /// Volumetric ray-march renderer for 3D mode.
     pub volume_ray: Option<std::sync::Arc<std::sync::Mutex<nexrad::VolumeRayRenderer>>>,
-    /// Previous render parameters for change detection (scan_key, elev_num, product, render_mode).
-    pub last_render_params: Option<(String, u8, String, crate::state::RenderMode)>,
-    /// Previous volume render parameters for change detection (scan_key, product).
-    pub last_volume_render_params: Option<(String, String)>,
+    /// Previous render parameters for change detection.
+    pub last_render_request: Option<RenderRequest>,
+    /// Previous volume render parameters for change detection.
+    pub last_volume_render_request: Option<VolumeRenderRequest>,
+}
+
+/// Parameters for a single-elevation render request. Adding a field here
+/// automatically breaks the `PartialEq` comparison, preventing silent omissions.
+#[derive(Clone, PartialEq)]
+pub struct RenderRequest {
+    scan_key: String,
+    elevation_number: u8,
+    product: String,
+    render_mode: crate::state::RenderMode,
+}
+
+/// Parameters for a volume (all-elevations) render request.
+#[derive(Clone, PartialEq)]
+pub struct VolumeRenderRequest {
+    scan_key: String,
+    product: String,
+}
+
+/// State of a single item in the selection download queue.
+#[derive(Clone, Debug)]
+enum QueueItemState {
+    /// Queued but not yet started.
+    Pending,
+    /// Download has been kicked off.
+    Active,
+    /// Download completed successfully.
+    Done,
+    /// Download failed with an error message.
+    #[allow(dead_code)]
+    Failed(String),
+}
+
+/// A single file in the selection download queue.
+#[derive(Clone, Debug)]
+struct QueueItem {
+    date: chrono::NaiveDate,
+    file_name: String,
+    scan_start: i64,
+    scan_end: i64,
+    state: QueueItemState,
+}
+
+impl QueueItem {
+    fn new(date: chrono::NaiveDate, file_name: String, scan_start: i64, scan_end: i64) -> Self {
+        Self {
+            date,
+            file_name,
+            scan_start,
+            scan_end,
+            state: QueueItemState::Pending,
+        }
+    }
 }
 
 /// Main application state and logic.
@@ -119,20 +172,10 @@ pub struct WorkbenchApp {
     current_scan: Option<nexrad::CachedScan>,
 
     /// Queue of files to download for selection download feature.
-    /// Each entry is (date, file_name, scan_start, scan_end).
-    selection_download_queue: Vec<(chrono::NaiveDate, String, i64, i64)>,
-
-    /// Map from scan start timestamp to computed end timestamp, populated when
-    /// building the download queue so in-flight tracking can look up boundaries.
-    scan_end_times: std::collections::HashMap<i64, i64>,
+    selection_download_queue: Vec<QueueItem>,
 
     /// Currently active acquisition operation ID (for correlating download results).
     active_download_operation_id: Option<state::OperationId>,
-
-    /// Whether the current item at queue[0] has had its download kicked off.
-    /// Used to distinguish "download finished" from "never started" when the
-    /// queue is paused and later resumed.
-    current_queue_item_started: bool,
 
     /// Previous site ID to detect site changes (for clearing volume ring)
     previous_site_id: String,
@@ -386,7 +429,9 @@ impl WorkbenchApp {
                 Some(w)
             }
             Err(e) => {
-                log::warn!("Failed to create decode worker, using main thread: {}", e);
+                log::warn!("Failed to create decode worker: {}", e);
+                state.worker_init_error =
+                    Some(format!("Decode worker failed to initialize: {}", e));
                 None
             }
         };
@@ -451,8 +496,8 @@ impl WorkbenchApp {
                 geo_line: geo_line_renderer,
                 globe_radar: globe_radar_renderer,
                 volume_ray: volume_ray_renderer,
-                last_render_params: None,
-                last_volume_render_params: None,
+                last_render_request: None,
+                last_volume_render_request: None,
             },
             data_facade,
             download_channel,
@@ -460,9 +505,7 @@ impl WorkbenchApp {
             archive_index: nexrad::ArchiveIndex::new(),
             current_scan: None,
             selection_download_queue: Vec::new(),
-            scan_end_times: std::collections::HashMap::new(),
             active_download_operation_id: None,
-            current_queue_item_started: false,
             previous_site_id: initial_site_id,
             realtime_channel,
             decode_worker,
@@ -504,26 +547,37 @@ impl WorkbenchApp {
     fn process_selection_download(&mut self, ctx: &egui::Context, download_type: Option<bool>) {
         let site_id = self.state.viz_state.site_id.clone();
 
-        // If we have items in the queue, try to download the next one
-        if !self.selection_download_queue.is_empty() {
-            // Check if current download is still in progress
-            let (_, _, timestamp, _) = &self.selection_download_queue[0];
-            let has_active_download = self
-                .download_channel
-                .is_download_pending(&site_id, *timestamp);
+        // If we have items in the queue, try to advance the state machine
+        let has_work = self
+            .selection_download_queue
+            .iter()
+            .any(|item| matches!(item.state, QueueItemState::Pending | QueueItemState::Active));
+        if has_work {
+            // If there is an Active item, check whether its download has finished
+            if let Some(active) = self
+                .selection_download_queue
+                .iter()
+                .find(|item| matches!(item.state, QueueItemState::Active))
+            {
+                let still_pending = self
+                    .download_channel
+                    .is_download_pending(&site_id, active.scan_start);
 
-            if has_active_download {
-                // Still downloading, wait
-                return;
-            }
+                if still_pending {
+                    // Still downloading, wait
+                    return;
+                }
 
-            // Only remove item[0] if its download was actually kicked off.
-            // Without this check, resuming from pause would incorrectly
-            // remove the next unstarted item (is_download_pending returns
-            // false for items that were never started).
-            if self.current_queue_item_started {
-                let _ = self.selection_download_queue.remove(0);
-                self.current_queue_item_started = false;
+                // Download finished — transition Active → Done
+                let active_start = active.scan_start;
+                self.selection_download_queue
+                    .iter_mut()
+                    .find(|item| {
+                        matches!(item.state, QueueItemState::Active)
+                            && item.scan_start == active_start
+                    })
+                    .unwrap()
+                    .state = QueueItemState::Done;
             }
 
             // Don't start next download if queue is paused (user or error)
@@ -531,16 +585,23 @@ impl WorkbenchApp {
                 return;
             }
 
-            // Start the next download if there are more items
-            if !self.selection_download_queue.is_empty() {
-                let (next_date, next_name, next_ts, next_end) = &self.selection_download_queue[0];
-                self.state.status_message = format!(
-                    "Downloading {} ({} remaining)",
-                    next_name,
-                    self.selection_download_queue.len()
-                );
+            // Find the next Pending item and kick off its download
+            let next_pending = self
+                .selection_download_queue
+                .iter()
+                .position(|item| matches!(item.state, QueueItemState::Pending));
+
+            if let Some(idx) = next_pending {
+                let remaining = self
+                    .selection_download_queue
+                    .iter()
+                    .filter(|item| matches!(item.state, QueueItemState::Pending))
+                    .count();
+                let item = &self.selection_download_queue[idx];
+                self.state.status_message =
+                    format!("Downloading {} ({} remaining)", item.file_name, remaining);
                 // Update download progress for next file
-                self.state.download_progress.active_scan = Some((*next_ts, *next_end));
+                self.state.download_progress.active_scan = Some((item.scan_start, item.scan_end));
                 self.state.download_progress.phase = crate::state::DownloadPhase::Downloading;
                 self.state.download_progress.batch_completed += 1;
 
@@ -550,17 +611,22 @@ impl WorkbenchApp {
                     self.active_download_operation_id = Some(op_id);
                 }
 
-                self.current_queue_item_started = true;
+                let date = item.date;
+                let file_name = item.file_name.clone();
+                let scan_start = item.scan_start;
+
+                self.selection_download_queue[idx].state = QueueItemState::Active;
                 self.download_channel.download_file(
                     ctx.clone(),
                     site_id.clone(),
-                    *next_date,
-                    next_name.clone(),
-                    *next_ts,
+                    date,
+                    file_name,
+                    scan_start,
                     self.data_facade.clone(),
                 );
             } else {
-                // Download queue drained, but in-flight processing may continue.
+                // All items are Done/Failed — download queue drained.
+                self.selection_download_queue.clear();
                 self.state.download_selection_in_progress = false;
                 self.state.download_progress.pending_scans.clear();
                 self.state.download_progress.active_scan = None;
@@ -620,7 +686,7 @@ impl WorkbenchApp {
         );
 
         // Collect all files whose scan boundaries intersect the selection
-        let mut files_to_download = Vec::new();
+        let mut files_to_download: Vec<QueueItem> = Vec::new();
         let mut current_date = start_date;
 
         while current_date <= end_date {
@@ -635,7 +701,7 @@ impl WorkbenchApp {
                             .iter()
                             .any(|s| (s.start_time as i64 - file.timestamp).abs() < 60);
                         if !is_cached {
-                            files_to_download.push((
+                            files_to_download.push(QueueItem::new(
                                 current_date,
                                 file.name.clone(),
                                 boundary.start,
@@ -679,7 +745,7 @@ impl WorkbenchApp {
                             .iter()
                             .any(|s| (s.start_time as i64 - file.timestamp).abs() < 60);
                         if !is_cached {
-                            files_to_download.push((
+                            files_to_download.push(QueueItem::new(
                                 current_date,
                                 file.name.clone(),
                                 boundary.start,
@@ -721,7 +787,7 @@ impl WorkbenchApp {
         }
 
         // Sort by start timestamp
-        files_to_download.sort_by_key(|(_, _, start, _)| *start);
+        files_to_download.sort_by_key(|item| item.scan_start);
 
         log::info!(
             "Queued {} files for download in selection",
@@ -734,25 +800,18 @@ impl WorkbenchApp {
         // Cancel any existing acquisition operations (selection change = cancel all + rebuild)
         self.state.acquisition.cancel_all();
         self.active_download_operation_id = None;
-        self.current_queue_item_started = false;
 
         self.selection_download_queue = files_to_download;
 
-        // Build scan_end_times lookup for in-flight tracking
-        self.scan_end_times.clear();
-        for (_, _, start, end) in &self.selection_download_queue {
-            self.scan_end_times.insert(*start, *end);
-        }
-
         // Create acquisition operations for each file in the queue
-        for (_, name, start, end) in &self.selection_download_queue {
+        for item in &self.selection_download_queue {
             self.state
                 .acquisition
                 .create_operation(state::OperationKind::ArchiveDownload {
                     site_id: site_id.clone(),
-                    file_name: name.clone(),
-                    scan_start: *start,
-                    scan_end: *end,
+                    file_name: item.file_name.clone(),
+                    scan_start: item.scan_start,
+                    scan_end: item.scan_end,
                 });
         }
 
@@ -762,20 +821,20 @@ impl WorkbenchApp {
             progress.pending_scans = self
                 .selection_download_queue
                 .iter()
-                .map(|(_, _, start, end)| (*start, *end))
+                .map(|item| (item.scan_start, item.scan_end))
                 .collect();
             progress.batch_total = self.selection_download_queue.len() as u32;
             progress.batch_completed = 0;
             progress.phase = crate::state::DownloadPhase::Downloading;
             let first = &self.selection_download_queue[0];
-            progress.active_scan = Some((first.2, first.3));
+            progress.active_scan = Some((first.scan_start, first.scan_end));
         }
 
         // Kick off first download
-        let (date, file_name, timestamp, _) = &self.selection_download_queue[0];
+        let first = &self.selection_download_queue[0];
         self.state.status_message = format!(
             "Downloading {} ({} total)",
-            file_name,
+            first.file_name,
             self.selection_download_queue.len()
         );
 
@@ -785,13 +844,16 @@ impl WorkbenchApp {
             self.active_download_operation_id = Some(op_id);
         }
 
-        self.current_queue_item_started = true;
+        let date = first.date;
+        let file_name = first.file_name.clone();
+        let scan_start = first.scan_start;
+        self.selection_download_queue[0].state = QueueItemState::Active;
         self.download_channel.download_file(
             ctx.clone(),
             site_id,
-            *date,
-            file_name.clone(),
-            *timestamp,
+            date,
+            file_name,
+            scan_start,
             self.data_facade.clone(),
         );
     }
@@ -977,39 +1039,6 @@ impl WorkbenchApp {
         };
     }
 
-    /// Send a decode request to the worker for the current scan + settings.
-    /// Estimate the actual volume start time by back-calculating from a chunk's
-    /// data time and which elevation it contains.
-    ///
-    /// If we join mid-volume at elevation N, the data time represents the time
-    /// of that elevation's radials, not the volume start. We subtract the
-    /// estimated time for the preceding N-1 elevations.
-    fn estimate_volume_start(
-        chunk_data_time: f64,
-        current_elevation: Option<u8>,
-        live_state: &crate::state::LiveModeState,
-    ) -> f64 {
-        let elev = match current_elevation {
-            Some(e) if e > 1 => e,
-            _ => return chunk_data_time, // Elevation 1 or unknown — data IS the start
-        };
-
-        // Use weighted cumulative offset for the current elevation (0-based index)
-        let elev_idx = elev.saturating_sub(1) as usize;
-        if let Some(offset) = live_state.sweep_start_offset(elev_idx) {
-            return chunk_data_time - offset;
-        }
-
-        // Fallback: even distribution
-        let count = live_state.expected_elevation_count.unwrap_or(0) as f64;
-        let dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
-        if count <= 0.0 || dur <= 0.0 {
-            return chunk_data_time;
-        }
-        let sweep_dur = dur / count;
-        chunk_data_time - (elev as f64 - 1.0) * sweep_dur
-    }
-
     /// Send a render request to the worker for the current scan/elevation/product.
     ///
     /// Skips the request if the parameters haven't changed since the last render.
@@ -1037,15 +1066,15 @@ impl WorkbenchApp {
         }
         let product = self.state.viz_state.product.to_worker_string().to_string();
 
-        let params = (
-            scan_key.clone(),
+        let request = RenderRequest {
+            scan_key: scan_key.clone(),
             elevation_number,
-            product.clone(),
-            self.state.viz_state.render_mode,
-        );
+            product: product.clone(),
+            render_mode: self.state.viz_state.render_mode,
+        };
 
         // Skip if same as last request
-        if self.renderers.last_render_params.as_ref() == Some(&params) {
+        if self.renderers.last_render_request.as_ref() == Some(&request) {
             return;
         }
 
@@ -1057,7 +1086,7 @@ impl WorkbenchApp {
         );
 
         let scan_key = scan_key.clone();
-        self.renderers.last_render_params = Some(params);
+        self.renderers.last_render_request = Some(request);
         if !self.state.session_stats.pipeline.processing {
             self.state.session_stats.pipeline.processing = true;
         }
@@ -1083,9 +1112,12 @@ impl WorkbenchApp {
         }
 
         let product = self.state.viz_state.product.to_worker_string().to_string();
-        let params = (scan_key.clone(), product.clone());
+        let request = VolumeRenderRequest {
+            scan_key: scan_key.clone(),
+            product: product.clone(),
+        };
 
-        if self.renderers.last_volume_render_params.as_ref() == Some(&params) {
+        if self.renderers.last_volume_render_request.as_ref() == Some(&request) {
             return; // Already requested with same params
         }
 
@@ -1098,7 +1130,7 @@ impl WorkbenchApp {
 
         let scan_key = scan_key.clone();
         let elev_nums = self.available_elevation_numbers.clone();
-        self.renderers.last_volume_render_params = Some(params);
+        self.renderers.last_volume_render_request = Some(request);
 
         self.decode_worker
             .as_mut()
@@ -1488,6 +1520,19 @@ impl WorkbenchApp {
                 state::AppCommand::ReorderOperation(op_id, delta) => {
                     self.state.acquisition.reorder_operation(op_id, delta);
                 }
+                state::AppCommand::RetryWorker => match nexrad::DecodeWorker::new(ctx.clone()) {
+                    Ok(w) => {
+                        log::info!("Decode worker created successfully on retry");
+                        self.decode_worker = Some(w);
+                        self.state.worker_init_error = None;
+                        self.state.set_status("Decode worker initialized");
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to create decode worker on retry: {}", e);
+                        self.state.worker_init_error =
+                            Some(format!("Decode worker failed to initialize: {}", e));
+                    }
+                },
             }
         }
 
@@ -1610,8 +1655,8 @@ impl WorkbenchApp {
                         self.state.push_command(state::AppCommand::CheckEviction);
 
                         // Clear last render params to force a fresh render
-                        self.renderers.last_render_params = None;
-                        self.renderers.last_volume_render_params = None;
+                        self.renderers.last_render_request = None;
+                        self.renderers.last_volume_render_request = None;
 
                         // Trigger render for the ingested scan
                         self.request_worker_render();
@@ -1658,25 +1703,10 @@ impl WorkbenchApp {
                                     .record_chunk_elev_spans(&result.chunk_elev_spans);
                             }
 
-                            // Set the volume start time. Prefer the authoritative volume
-                            // header time from the Archive II header. Fall back to
-                            // back-calculating from chunk data time + elevation number.
-                            if self.state.live_mode_state.current_volume_start.is_none() {
-                                let vol_start =
-                                    if let Some(header_time) = result.volume_header_time_secs {
-                                        header_time
-                                    } else {
-                                        let chunk_data_time = result
-                                            .chunk_min_time_secs
-                                            .unwrap_or(result.context.timestamp_secs as f64);
-                                        Self::estimate_volume_start(
-                                            chunk_data_time,
-                                            result.current_elevation,
-                                            &self.state.live_mode_state,
-                                        )
-                                    };
-                                self.state.live_mode_state.current_volume_start = Some(vol_start);
-                            } else if let Some(header_time) = result.volume_header_time_secs {
+                            // Set the volume start time from the authoritative
+                            // timestamp parsed directly from the NEXRAD message
+                            // header (the first radial of the volume scan).
+                            if let Some(header_time) = result.volume_header_time_secs {
                                 self.state.live_mode_state.current_volume_start = Some(header_time);
                             }
                             if !result.elevations_completed.is_empty() {
@@ -1758,8 +1788,8 @@ impl WorkbenchApp {
 
                             // Clear last render params to force a fresh render
                             self.state.displayed_sweep_elevation_number = None;
-                            self.renderers.last_render_params = None;
-                            self.renderers.last_volume_render_params = None;
+                            self.renderers.last_render_request = None;
+                            self.renderers.last_volume_render_request = None;
                             self.request_worker_render();
                             if self.state.viz_state.volume_3d_enabled {
                                 self.request_worker_render_volume();
@@ -1770,8 +1800,8 @@ impl WorkbenchApp {
                                 "{}: first elevation available, triggering initial render",
                                 source
                             );
-                            self.renderers.last_render_params = None;
-                            self.renderers.last_volume_render_params = None;
+                            self.renderers.last_render_request = None;
+                            self.renderers.last_volume_render_request = None;
                             self.request_worker_render();
                             if self.state.viz_state.volume_3d_enabled {
                                 self.request_worker_render_volume();
@@ -1953,9 +1983,10 @@ impl WorkbenchApp {
                 // visible until processing completes in the Decoded handler).
                 let scan_ts = scan.key.scan_start.as_secs();
                 let scan_end = self
-                    .scan_end_times
-                    .get(&scan_ts)
-                    .copied()
+                    .selection_download_queue
+                    .iter()
+                    .find(|item| item.scan_start == scan_ts)
+                    .map(|item| item.scan_end)
                     .unwrap_or(scan_ts + 300);
                 self.state
                     .download_progress
@@ -1992,8 +2023,8 @@ impl WorkbenchApp {
                         }
                     }
 
-                    self.renderers.last_render_params = None; // Force fresh render
-                    self.renderers.last_volume_render_params = None;
+                    self.renderers.last_render_request = None; // Force fresh render
+                    self.renderers.last_volume_render_request = None;
                     self.request_worker_render();
                     if self.state.viz_state.volume_3d_enabled {
                         self.request_worker_render_volume();
@@ -2046,8 +2077,12 @@ impl WorkbenchApp {
                     self.state.acquisition.mark_failed(op_id, msg.clone());
                 }
 
-                // Clear download progress on error (batch will continue via queue)
-                if self.selection_download_queue.is_empty() {
+                // Clear download progress on error if no more work remains
+                let has_remaining_work = self.selection_download_queue.iter().any(|item| {
+                    matches!(item.state, QueueItemState::Pending | QueueItemState::Active)
+                });
+                if !has_remaining_work {
+                    self.selection_download_queue.clear();
                     self.state.download_progress.clear();
                 }
             }
@@ -2098,11 +2133,11 @@ impl WorkbenchApp {
             } else {
                 None // Just pumping existing queue, or nothing to do
             };
-            if do_download_selection
-                || do_download_at_position
-                || do_pump_queue
-                || !self.selection_download_queue.is_empty()
-            {
+            let queue_has_work = self
+                .selection_download_queue
+                .iter()
+                .any(|item| matches!(item.state, QueueItemState::Pending | QueueItemState::Active));
+            if do_download_selection || do_download_at_position || do_pump_queue || queue_has_work {
                 self.process_selection_download(ctx, download_type);
             }
         }
@@ -2241,8 +2276,8 @@ impl WorkbenchApp {
                     if !elev_nums.is_empty() {
                         self.available_elevation_numbers = elev_nums;
                     }
-                    self.renderers.last_render_params = None; // Force fresh render
-                    self.renderers.last_volume_render_params = None;
+                    self.renderers.last_render_request = None; // Force fresh render
+                    self.renderers.last_volume_render_request = None;
                     self.request_worker_render();
                     if self.state.viz_state.volume_3d_enabled {
                         self.request_worker_render_volume();
@@ -2263,7 +2298,7 @@ impl WorkbenchApp {
                 self.state.displayed_scan_timestamp = None;
                 self.state.displayed_sweep_elevation_number = None;
                 self.current_render_scan_key = None;
-                self.renderers.last_render_params = None;
+                self.renderers.last_render_request = None;
                 self.state.viz_state.data_staleness_secs = None;
                 self.state.viz_state.rendered_sweep_end_secs = None;
                 self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
@@ -2314,21 +2349,21 @@ impl WorkbenchApp {
                                 if let Some(ref scan_key) = self.current_render_scan_key {
                                     let product =
                                         self.state.viz_state.product.to_worker_string().to_string();
-                                    let prefetch_params = (
-                                        scan_key.clone(),
-                                        next_en,
-                                        product.clone(),
-                                        self.state.viz_state.render_mode,
-                                    );
-                                    if self.renderers.last_render_params.as_ref()
-                                        != Some(&prefetch_params)
+                                    let prefetch_request = RenderRequest {
+                                        scan_key: scan_key.clone(),
+                                        elevation_number: next_en,
+                                        product: product.clone(),
+                                        render_mode: self.state.viz_state.render_mode,
+                                    };
+                                    if self.renderers.last_render_request.as_ref()
+                                        != Some(&prefetch_request)
                                     {
                                         log::debug!(
                                             "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
                                             next_en,
                                             time_to_end,
                                         );
-                                        self.renderers.last_render_params = Some(prefetch_params);
+                                        self.renderers.last_render_request = Some(prefetch_request);
                                         self.decode_worker.as_mut().unwrap().render(
                                             scan_key.clone(),
                                             next_en,

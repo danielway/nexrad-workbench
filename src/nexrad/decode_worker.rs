@@ -138,8 +138,6 @@ pub struct ChunkIngestResult {
     pub current_elevation: Option<u8>,
     /// Number of radials received so far for the current in-progress elevation.
     pub current_elevation_radials: Option<u32>,
-    /// Min data timestamp in this chunk (Unix seconds, from radial collection timestamps).
-    pub chunk_min_time_secs: Option<f64>,
     /// Last radial's azimuth angle in degrees (for sweep line extrapolation).
     pub last_radial_azimuth: Option<f32>,
     /// Timestamp of the last radial in Unix seconds (for sweep line extrapolation).
@@ -726,9 +724,6 @@ fn handle_chunk_ingested_message(
     let current_elevation = r.f64_opt("currentElevation").map(|v| v as u8);
     let current_elevation_radials = r.f64_opt("currentElevationRadials").map(|v| v as u32);
 
-    // Parse chunk data time range
-    let chunk_min_time_secs = r.f64_opt("chunkMinTimeSecs");
-
     // Parse last radial azimuth/time for sweep line extrapolation
     let last_radial_azimuth = r.f64_opt("lastRadialAzimuth").map(|v| v as f32);
     let last_radial_time_secs = r.f64_opt("lastRadialTimeSecs");
@@ -753,7 +748,6 @@ fn handle_chunk_ingested_message(
             total_ms,
             current_elevation,
             current_elevation_radials,
-            chunk_min_time_secs,
             last_radial_azimuth,
             last_radial_time_secs,
             volume_header_time_secs,
