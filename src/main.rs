@@ -725,12 +725,10 @@ impl WorkbenchApp {
                 if is_position_download {
                     // Single-position: find the exact scan containing the playback position
                     if let Some((file, boundary)) = listing.find_scan_containing(sel_start_i64) {
-                        let is_cached = self
-                            .state
-                            .radar_timeline
-                            .scans
-                            .iter()
-                            .any(|s| (s.start_time as i64 - file.timestamp).abs() < SCAN_CACHE_MATCH_TOLERANCE_SECS);
+                        let is_cached = self.state.radar_timeline.scans.iter().any(|s| {
+                            (s.start_time as i64 - file.timestamp).abs()
+                                < SCAN_CACHE_MATCH_TOLERANCE_SECS
+                        });
                         if !is_cached {
                             files_to_download.push(QueueItem::new(
                                 current_date,
@@ -769,12 +767,10 @@ impl WorkbenchApp {
                 } else {
                     // Range selection: find all scans that intersect [sel_start, sel_end]
                     for (file, boundary) in listing.scans_intersecting(sel_start_i64, sel_end_i64) {
-                        let is_cached = self
-                            .state
-                            .radar_timeline
-                            .scans
-                            .iter()
-                            .any(|s| (s.start_time as i64 - file.timestamp).abs() < SCAN_CACHE_MATCH_TOLERANCE_SECS);
+                        let is_cached = self.state.radar_timeline.scans.iter().any(|s| {
+                            (s.start_time as i64 - file.timestamp).abs()
+                                < SCAN_CACHE_MATCH_TOLERANCE_SECS
+                        });
                         if !is_cached {
                             files_to_download.push(QueueItem::new(
                                 current_date,
@@ -933,11 +929,10 @@ impl WorkbenchApp {
     fn best_elevation_number(&self) -> u8 {
         // First try to match by angle using timeline sweep metadata
         let target = self.state.viz_state.target_elevation;
-        if let Some(scan) = self
-            .state
-            .radar_timeline
-            .find_recent_scan(self.state.playback_state.playback_position(), MAX_SCAN_AGE_SECS)
-        {
+        if let Some(scan) = self.state.radar_timeline.find_recent_scan(
+            self.state.playback_state.playback_position(),
+            MAX_SCAN_AGE_SECS,
+        ) {
             if !scan.sweeps.is_empty() {
                 // Find sweep whose angle is closest to target
                 if let Some(best) = scan.sweeps.iter().min_by(|a, b| {
