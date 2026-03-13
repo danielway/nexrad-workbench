@@ -87,9 +87,7 @@ impl IndexedDbRecordStore {
         let tx = db
             .transaction_with_str_and_mode(store_name, IdbTransactionMode::Readwrite)
             .map_err(|e| format!("Failed to create readwrite transaction: {:?}", e))?;
-        let wtx = WriteTransaction::new(&tx);
-        let result = f(&wtx)?;
-        drop(wtx);
+        let result = f(&WriteTransaction::new(&tx))?;
         wait_for_transaction(&tx).await?;
         Ok(result)
     }
@@ -110,9 +108,7 @@ impl IndexedDbRecordStore {
         let tx = db
             .transaction_with_str_sequence_and_mode(&names, IdbTransactionMode::Readwrite)
             .map_err(|e| format!("Failed to create readwrite transaction: {:?}", e))?;
-        let wtx = WriteTransaction::new(&tx);
-        let result = f(&wtx)?;
-        drop(wtx);
+        let result = f(&WriteTransaction::new(&tx))?;
         wait_for_transaction(&tx).await?;
         Ok(result)
     }
