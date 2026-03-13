@@ -12,10 +12,11 @@ use crate::data::keys::*;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use serde::de::DeserializeOwned;
 use std::cell::RefCell;
+use std::marker::PhantomData;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{IdbDatabase, IdbRequest, IdbTransaction, IdbTransactionMode};
+use web_sys::{IdbDatabase, IdbObjectStore, IdbRequest, IdbTransaction, IdbTransactionMode};
 
 /// Current database schema version.
 const DATABASE_VERSION: u32 = 3;
@@ -73,6 +74,49 @@ impl IndexedDbRecordStore {
             .ok_or_else(|| "Database not open".to_string())
     }
 
+    /// Executes a readwrite transaction on a single object store.
+    ///
+    /// The closure receives a [`WriteTransaction`] and runs synchronously — no
+    /// `.await` is possible inside it, which enforces the IDB rule that
+    /// readwrite transactions must not yield to the event loop.
+    async fn write_tx<F, T>(&self, store_name: &str, f: F) -> Result<T, String>
+    where
+        F: FnOnce(&WriteTransaction) -> Result<T, String>,
+    {
+        let db = self.get_db()?;
+        let tx = db
+            .transaction_with_str_and_mode(store_name, IdbTransactionMode::Readwrite)
+            .map_err(|e| format!("Failed to create readwrite transaction: {:?}", e))?;
+        let wtx = WriteTransaction::new(&tx);
+        let result = f(&wtx)?;
+        drop(wtx);
+        wait_for_transaction(&tx).await?;
+        Ok(result)
+    }
+
+    /// Executes a readwrite transaction spanning multiple object stores.
+    ///
+    /// Same safety guarantee as [`write_tx`]: the closure is synchronous,
+    /// preventing any `.await` inside the transaction scope.
+    async fn write_tx_multi<F, T>(&self, store_names: &[&str], f: F) -> Result<T, String>
+    where
+        F: FnOnce(&WriteTransaction) -> Result<T, String>,
+    {
+        let db = self.get_db()?;
+        let names = Array::new();
+        for name in store_names {
+            names.push(&JsValue::from_str(name));
+        }
+        let tx = db
+            .transaction_with_str_sequence_and_mode(&names, IdbTransactionMode::Readwrite)
+            .map_err(|e| format!("Failed to create readwrite transaction: {:?}", e))?;
+        let wtx = WriteTransaction::new(&tx);
+        let result = f(&wtx)?;
+        drop(wtx);
+        wait_for_transaction(&tx).await?;
+        Ok(result)
+    }
+
     // ========================================================================
     // Sweep operations
     // ========================================================================
@@ -80,35 +124,27 @@ impl IndexedDbRecordStore {
     /// Stores multiple pre-computed sweep blobs in a single IDB transaction.
     ///
     /// Batches all writes into one readwrite transaction to avoid per-transaction
-    /// disk-flush overhead. Critical: no await between puts — IDB transactions
-    /// auto-commit when the event loop yields in WASM.
+    /// disk-flush overhead. The [`WriteTransaction`] closure guarantees no
+    /// `.await` between puts — IDB transactions auto-commit when the event
+    /// loop yields in WASM.
     pub async fn put_sweeps_batch(&self, items: &[(String, Vec<u8>)]) -> Result<(), String> {
         if items.is_empty() {
             return Ok(());
         }
         self.ensure_open().await?;
-        let db = self.get_db()?;
 
-        let tx = db
-            .transaction_with_str_and_mode(STORE_SWEEPS, IdbTransactionMode::Readwrite)
-            .map_err(|e| format!("Failed to create batch transaction: {:?}", e))?;
-
-        let store = tx
-            .object_store(STORE_SWEEPS)
-            .map_err(|e| format!("Failed to get sweeps store: {:?}", e))?;
-
-        // All puts synchronous — NO await between operations
-        for (key, data) in items {
-            let array = Uint8Array::from(data.as_slice());
-            let buffer = array.buffer();
-            store
-                .put_with_key(&buffer, &JsValue::from_str(key))
-                .map_err(|e| format!("Failed to put sweep '{}': {:?}", key, e))?;
-        }
-
-        // Single await — transaction commits atomically
-        wait_for_transaction(&tx).await?;
-        Ok(())
+        self.write_tx(STORE_SWEEPS, |wtx| {
+            let store = wtx.object_store(STORE_SWEEPS)?;
+            for (key, data) in items {
+                let array = Uint8Array::from(data.as_slice());
+                let buffer = array.buffer();
+                store
+                    .put_with_key(&buffer, &JsValue::from_str(key))
+                    .map_err(|e| format!("Failed to put sweep '{}': {:?}", key, e))?;
+            }
+            Ok(())
+        })
+        .await
     }
 
     /// Gets a pre-computed sweep blob by key, returning the raw JS ArrayBuffer.
@@ -148,27 +184,22 @@ impl IndexedDbRecordStore {
     /// Writes or updates a scan index entry.
     pub async fn put_scan_index_entry(&self, entry: &ScanIndexEntry) -> Result<(), String> {
         self.ensure_open().await?;
-        let db = self.get_db()?;
         let storage_key = entry.storage_key();
 
-        let tx = db
-            .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readwrite)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        let store = tx
-            .object_store(STORE_SCAN_INDEX)
-            .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
-
+        // Serialize before entering the transaction scope to keep the closure
+        // as lean as possible.
         let json =
             serde_json::to_string(entry).map_err(|e| format!("Serialization error: {}", e))?;
         let js = js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
 
-        store
-            .put_with_key(&js, &JsValue::from_str(&storage_key))
-            .map_err(|e| format!("Failed to put scan index: {:?}", e))?;
-
-        wait_for_transaction(&tx).await?;
-        Ok(())
+        self.write_tx(STORE_SCAN_INDEX, |wtx| {
+            let store = wtx.object_store(STORE_SCAN_INDEX)?;
+            store
+                .put_with_key(&js, &JsValue::from_str(&storage_key))
+                .map_err(|e| format!("Failed to put scan index: {:?}", e))?;
+            Ok(())
+        })
+        .await
     }
 
     /// Gets scan availability information.
@@ -321,7 +352,6 @@ impl IndexedDbRecordStore {
     /// Returns the number of bytes freed.
     pub async fn delete_scan(&self, scan: &ScanKey) -> Result<u64, String> {
         self.ensure_open().await?;
-        let db = self.get_db()?;
 
         let scan_storage_key = scan.to_storage_key();
 
@@ -348,33 +378,22 @@ impl IndexedDbRecordStore {
         };
 
         // Delete all sweep blobs and scan index entry in one transaction
-        let store_names = Array::new();
-        store_names.push(&JsValue::from_str(STORE_SWEEPS));
-        store_names.push(&JsValue::from_str(STORE_SCAN_INDEX));
+        self.write_tx_multi(&[STORE_SWEEPS, STORE_SCAN_INDEX], |wtx| {
+            let sweeps_store = wtx.object_store(STORE_SWEEPS)?;
+            let scan_store = wtx.object_store(STORE_SCAN_INDEX)?;
 
-        let tx = db
-            .transaction_with_str_sequence_and_mode(&store_names, IdbTransactionMode::Readwrite)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
+            for key in &sweep_keys {
+                sweeps_store
+                    .delete(&JsValue::from_str(key))
+                    .map_err(|e| format!("Failed to delete sweep: {:?}", e))?;
+            }
 
-        let sweeps_store = tx
-            .object_store(STORE_SWEEPS)
-            .map_err(|e| format!("Failed to get sweeps store: {:?}", e))?;
-
-        let scan_store = tx
-            .object_store(STORE_SCAN_INDEX)
-            .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
-
-        for key in &sweep_keys {
-            sweeps_store
-                .delete(&JsValue::from_str(key))
-                .map_err(|e| format!("Failed to delete sweep: {:?}", e))?;
-        }
-
-        scan_store
-            .delete(&JsValue::from_str(&scan_storage_key))
-            .map_err(|e| format!("Failed to delete scan index: {:?}", e))?;
-
-        wait_for_transaction(&tx).await?;
+            scan_store
+                .delete(&JsValue::from_str(&scan_storage_key))
+                .map_err(|e| format!("Failed to delete scan index: {:?}", e))?;
+            Ok(())
+        })
+        .await?;
 
         log::info!(
             "Deleted scan {} ({} sweep blobs, {} bytes freed)",
@@ -505,23 +524,19 @@ impl IndexedDbRecordStore {
             entry
         };
 
-        // --- Readwrite tx: write merged entry (no await between put and commit) ---
-        let tx = db
-            .transaction_with_str_and_mode(STORE_SCAN_INDEX, IdbTransactionMode::Readwrite)
-            .map_err(|e| format!("Failed to create readwrite transaction: {:?}", e))?;
-        let store = tx
-            .object_store(STORE_SCAN_INDEX)
-            .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?;
-
+        // --- Readwrite tx: write merged entry ---
         let json =
             serde_json::to_string(&merged).map_err(|e| format!("Serialization error: {}", e))?;
         let js = js_sys::JSON::parse(&json).map_err(|e| format!("JSON parse error: {:?}", e))?;
-        store
-            .put_with_key(&js, &JsValue::from_str(&storage_key))
-            .map_err(|e| format!("Failed to put scan index: {:?}", e))?;
 
-        wait_for_transaction(&tx).await?;
-        Ok(())
+        self.write_tx(STORE_SCAN_INDEX, |wtx| {
+            let store = wtx.object_store(STORE_SCAN_INDEX)?;
+            store
+                .put_with_key(&js, &JsValue::from_str(&storage_key))
+                .map_err(|e| format!("Failed to put scan index: {:?}", e))?;
+            Ok(())
+        })
+        .await
     }
 
     /// Deletes all existing scans for a site whose time range overlaps with the
@@ -596,29 +611,56 @@ impl IndexedDbRecordStore {
         // deleteDatabase would hang if any other connection (e.g. the worker)
         // is still open, because the delete is blocked until ALL connections close.
         self.ensure_open().await?;
-        let db = self.get_db()?;
 
-        let store_names = Array::new();
-        store_names.push(&JsValue::from_str(STORE_SWEEPS));
-        store_names.push(&JsValue::from_str(STORE_SCAN_INDEX));
+        self.write_tx_multi(&[STORE_SWEEPS, STORE_SCAN_INDEX], |wtx| {
+            wtx.object_store(STORE_SWEEPS)?
+                .clear()
+                .map_err(|e| format!("Failed to clear sweeps store: {:?}", e))?;
+            wtx.object_store(STORE_SCAN_INDEX)?
+                .clear()
+                .map_err(|e| format!("Failed to clear scan_index store: {:?}", e))?;
+            Ok(())
+        })
+        .await?;
 
-        let tx = db
-            .transaction_with_str_sequence_and_mode(&store_names, IdbTransactionMode::Readwrite)
-            .map_err(|e| format!("Failed to create transaction: {:?}", e))?;
-
-        tx.object_store(STORE_SWEEPS)
-            .map_err(|e| format!("Failed to get sweeps store: {:?}", e))?
-            .clear()
-            .map_err(|e| format!("Failed to clear sweeps store: {:?}", e))?;
-
-        tx.object_store(STORE_SCAN_INDEX)
-            .map_err(|e| format!("Failed to get scan_index store: {:?}", e))?
-            .clear()
-            .map_err(|e| format!("Failed to clear scan_index store: {:?}", e))?;
-
-        wait_for_transaction(&tx).await?;
         log::info!("Cleared all IndexedDB stores");
         Ok(())
+    }
+}
+
+// ============================================================================
+// WriteTransaction — enforces "no await inside readwrite" at the type level
+// ============================================================================
+
+/// A synchronous handle to an IDB readwrite transaction.
+///
+/// `WriteTransaction` is the sole way to perform write operations. It is
+/// handed to a closure by [`IndexedDbRecordStore::write_tx`] /
+/// [`write_tx_multi`], and because the closure is `FnOnce` (not
+/// `async FnOnce`), the compiler rejects any `.await` inside it.
+///
+/// The `PhantomData<*const ()>` marker makes the type `!Send`, which
+/// provides an additional safety net against accidental moves across
+/// threads or await points in non-WASM contexts.
+pub struct WriteTransaction<'a> {
+    tx: &'a IdbTransaction,
+    /// Prevents `Send` — extra guard against cross-await usage.
+    _not_send: PhantomData<*const ()>,
+}
+
+impl<'a> WriteTransaction<'a> {
+    fn new(tx: &'a IdbTransaction) -> Self {
+        Self {
+            tx,
+            _not_send: PhantomData,
+        }
+    }
+
+    /// Gets an object store from this transaction.
+    pub fn object_store(&self, name: &str) -> Result<IdbObjectStore, String> {
+        self.tx
+            .object_store(name)
+            .map_err(|e| format!("Failed to get store '{}': {:?}", name, e))
     }
 }
 
