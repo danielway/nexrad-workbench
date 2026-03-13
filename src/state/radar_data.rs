@@ -175,35 +175,26 @@ impl RadarTimeline {
         Some((start, end))
     }
 
-    /// Find the scan containing the given timestamp
+    /// Find the scan containing the given timestamp.
+    ///
+    /// Uses binary search on the sorted scan list for O(log n) lookup.
     pub fn find_scan_at_timestamp(&self, ts: f64) -> Option<&Scan> {
-        self.scans
-            .iter()
-            .find(|scan| ts >= scan.start_time && ts <= scan.end_time)
+        // partition_point returns the first index where start_time > ts,
+        // so the candidate scan is the one just before that.
+        let idx = self.scans.partition_point(|s| s.start_time <= ts);
+        let scan = self.scans.get(idx.wrapping_sub(1))?;
+        (ts <= scan.end_time).then_some(scan)
     }
 
     /// Find the most recent scan at or before the given timestamp, within a time window.
     ///
     /// Returns the scan whose start_time is closest to (but not after) the timestamp,
     /// as long as it's within `max_age_secs` of the timestamp.
+    /// Uses binary search on the sorted scan list for O(log n) lookup.
     pub fn find_recent_scan(&self, ts: f64, max_age_secs: f64) -> Option<&Scan> {
-        // Find all scans that start at or before the timestamp
-        let candidates: Vec<_> = self
-            .scans
-            .iter()
-            .filter(|scan| scan.start_time <= ts)
-            .collect();
-
-        // Get the most recent one (last in the sorted list)
-        let most_recent = candidates.last()?;
-
-        // Check if it's within the time window
-        let age = ts - most_recent.start_time;
-        if age <= max_age_secs {
-            Some(most_recent)
-        } else {
-            None
-        }
+        let idx = self.scans.partition_point(|s| s.start_time <= ts);
+        let most_recent = self.scans.get(idx.wrapping_sub(1))?;
+        (ts - most_recent.start_time <= max_age_secs).then_some(most_recent)
     }
 
     /// Get the timestamp of a scan for identification purposes.
