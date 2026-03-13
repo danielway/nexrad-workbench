@@ -5,58 +5,172 @@
 
 use crate::data::indexeddb::IndexedDbRecordStore;
 use crate::data::keys::*;
-
-// ---------------------------------------------------------------------------
-// JS interop helpers — typed extraction from JsValue objects
-// ---------------------------------------------------------------------------
-
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
 
-/// Extract a required string field from a JS object.
-fn js_get_string(obj: &JsValue, key: &str) -> Result<String, JsValue> {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .ok_or_else(|| JsValue::from_str(&format!("Missing {}", key)))
+// ---------------------------------------------------------------------------
+// Typed input param structs — deserialized from JS objects via serde-wasm-bindgen
+// ---------------------------------------------------------------------------
+
+/// Parameters for `worker_ingest`. The `data` ArrayBuffer is extracted separately.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IngestParams {
+    site_id: String,
+    timestamp_secs: f64,
+    #[serde(default)]
+    file_name: String,
 }
 
-/// Extract an optional string field, returning a default if absent.
-fn js_get_string_or(obj: &JsValue, key: &str, default: &str) -> String {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_else(|| default.to_string())
+/// Parameters for `worker_render`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderParams {
+    scan_key: String,
+    elevation_number: u8,
+    #[serde(default = "default_product")]
+    product: String,
 }
 
-/// Extract a required f64 field from a JS object.
-fn js_get_f64(obj: &JsValue, key: &str) -> Result<f64, JsValue> {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .ok_or_else(|| JsValue::from_str(&format!("Missing {}", key)))
+/// Parameters for `worker_render_volume`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderVolumeParams {
+    scan_key: String,
+    #[serde(default = "default_product")]
+    product: String,
+    elevation_numbers: Vec<u8>,
 }
 
-/// Extract an optional f64 field, returning a default if absent.
-fn js_get_f64_or(obj: &JsValue, key: &str, default: f64) -> f64 {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(default)
+/// Parameters for `worker_ingest_chunk`. The `data` ArrayBuffer is extracted separately.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IngestChunkParams {
+    site_id: String,
+    timestamp_secs: f64,
+    #[serde(default)]
+    chunk_index: u32,
+    #[serde(default)]
+    is_start: bool,
+    #[serde(default)]
+    is_end: bool,
+    #[serde(default)]
+    file_name: String,
 }
 
-/// Extract an optional bool field, returning a default if absent.
-fn js_get_bool_or(obj: &JsValue, key: &str, default: bool) -> bool {
-    js_sys::Reflect::get(obj, &key.into())
-        .ok()
-        .and_then(|v| v.as_bool())
-        .unwrap_or(default)
+fn default_product() -> String {
+    "reflectivity".to_string()
 }
 
-/// Extract a required ArrayBuffer field as Vec<u8>.
-fn js_get_bytes(obj: &JsValue, key: &str) -> Result<Vec<u8>, JsValue> {
-    let val = js_sys::Reflect::get(obj, &key.into())
-        .map_err(|e| JsValue::from_str(&format!("Missing {}: {:?}", key, e)))?;
+/// Extract the `data` ArrayBuffer field from a JS object as `Vec<u8>`.
+fn extract_data_bytes(obj: &JsValue) -> Result<Vec<u8>, JsValue> {
+    let val = js_sys::Reflect::get(obj, &"data".into())
+        .map_err(|e| JsValue::from_str(&format!("Missing data: {:?}", e)))?;
     Ok(js_sys::Uint8Array::new(&val).to_vec())
+}
+
+// ---------------------------------------------------------------------------
+// Typed response structs — serialized to JS objects via serde-wasm-bindgen
+// ---------------------------------------------------------------------------
+
+/// Response from `worker_ingest`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IngestResponse<'a> {
+    records_stored: u32,
+    scan_key: String,
+    elevation_numbers: &'a [u8],
+    total_ms: f64,
+    split_ms: f64,
+    decompress_ms: f64,
+    decode_ms: f64,
+    extract_ms: f64,
+    store_ms: f64,
+    index_ms: f64,
+    sweeps: &'a [SweepMeta],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vcp: Option<&'a ExtractedVcp>,
+}
+
+/// Scalar fields of the response from `worker_render`.
+/// ArrayBuffer fields (azimuths, gateValues, radialTimes) are set separately.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderResponse {
+    azimuth_count: u32,
+    gate_count: u32,
+    first_gate_range_km: f64,
+    gate_interval_km: f64,
+    max_range_km: f64,
+    product: String,
+    radial_count: u32,
+    scale: f64,
+    offset: f64,
+    mean_elevation: f64,
+    sweep_start_secs: f64,
+    sweep_end_secs: f64,
+    fetch_ms: f64,
+    deser_ms: f64,
+    total_ms: f64,
+    marshal_ms: f64,
+}
+
+/// Response from `worker_ingest_chunk`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChunkIngestResponse {
+    chunk_index: u32,
+    radials_decoded: u32,
+    sweeps_stored: u32,
+    scan_key: String,
+    is_end: bool,
+    total_ms: f64,
+    sweeps: Vec<SweepMeta>,
+    elevations_completed: Vec<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vcp: Option<ExtractedVcp>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk_min_time_secs: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk_max_time_secs: Option<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    volume_header_time_secs: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_radial_azimuth: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_radial_time_secs: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_elevation: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    current_elevation_radials: Option<u32>,
+}
+
+/// Per-sweep metadata in the volume render response.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VolumeRenderSweepMeta {
+    elevation_deg: f64,
+    azimuth_count: u32,
+    gate_count: u32,
+    first_gate_km: f64,
+    gate_interval_km: f64,
+    max_range_km: f64,
+    data_offset: u32,
+    scale: f64,
+    offset: f64,
+}
+
+/// Scalar fields of the volume render response.
+/// The `buffer` ArrayBuffer is set separately for zero-copy transfer.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VolumeRenderResponse {
+    sweep_count: u32,
+    sweep_meta: Vec<VolumeRenderSweepMeta>,
+    product: String,
+    total_ms: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +225,6 @@ async fn idb_store() -> Result<IndexedDbRecordStore, wasm_bindgen::JsValue> {
 pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     init_logger();
     wasm_bindgen_futures::future_to_promise(async move {
-        use crate::nexrad::extract_elevation_numbers;
         use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
         use nexrad_render::Product;
         use std::collections::HashMap;
@@ -119,10 +232,12 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let t_total = web_time::Instant::now();
 
         // --- Extract parameters from JS ---
-        let data = js_get_bytes(&params, "data")?;
-        let site_id = js_get_string(&params, "siteId")?;
-        let timestamp_secs = js_get_f64(&params, "timestampSecs")? as i64;
-        let file_name = js_get_string_or(&params, "fileName", "");
+        let data = extract_data_bytes(&params)?;
+        let p: IngestParams = serde_wasm_bindgen::from_value(params)
+            .map_err(|e| JsValue::from_str(&format!("Invalid ingest params: {}", e)))?;
+        let site_id = p.site_id;
+        let timestamp_secs = p.timestamp_secs as i64;
+        let file_name = p.file_name;
 
         log::info!(
             "ingest: received {} ({:.1}MB)",
@@ -157,7 +272,6 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let mut decode_only_ms = 0.0f64;
         let mut all_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
         let mut radial_metas: Vec<(i64, u8, f32)> = Vec::new();
-        let elevation_map = js_sys::Object::new();
         let mut has_vcp = false;
         let mut extracted_vcp: Option<ExtractedVcp> = None;
         let mut compressed_count = 0u32;
@@ -212,17 +326,6 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                         r.elevation_angle_degrees(),
                     ));
                 }
-                let elevation_numbers = extract_elevation_numbers(&radials);
-                let arr = js_sys::Array::new();
-                for &e in &elevation_numbers {
-                    arr.push(&wasm_bindgen::JsValue::from(e));
-                }
-                js_sys::Reflect::set(
-                    &elevation_map,
-                    &wasm_bindgen::JsValue::from(record_id),
-                    &arr,
-                )
-                .ok();
                 all_radials.extend(radials);
             }
         }
@@ -355,116 +458,23 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
 
         // --- Build JS response ---
-        Ok(build_ingest_response(
-            sweep_count,
-            &scan_key,
-            &elevation_map,
+        let response = IngestResponse {
+            records_stored: sweep_count,
+            scan_key: scan_key.to_storage_key(),
+            elevation_numbers: &elevation_numbers,
             total_ms,
             split_ms,
-            decompress_ms_total,
-            decode_only_ms,
+            decompress_ms: decompress_ms_total,
+            decode_ms: decode_only_ms,
             extract_ms,
             store_ms,
             index_ms,
-            &sweeps,
-            extracted_vcp.as_ref(),
-        )
-        .into())
+            sweeps: &sweeps,
+            vcp: extracted_vcp.as_ref(),
+        };
+        serde_wasm_bindgen::to_value(&response)
+            .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))
     })
-}
-
-/// Build the JS response object for `worker_ingest`.
-#[allow(clippy::too_many_arguments)]
-fn build_ingest_response(
-    sweep_count: u32,
-    scan_key: &ScanKey,
-    elevation_map: &js_sys::Object,
-    total_ms: f64,
-    split_ms: f64,
-    decompress_ms: f64,
-    decode_ms: f64,
-    extract_ms: f64,
-    store_ms: f64,
-    index_ms: f64,
-    sweeps: &[SweepMeta],
-    extracted_vcp: Option<&ExtractedVcp>,
-) -> js_sys::Object {
-    let result = js_sys::Object::new();
-    js_sys::Reflect::set(
-        &result,
-        &"recordsStored".into(),
-        &wasm_bindgen::JsValue::from(sweep_count),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"scanKey".into(),
-        &wasm_bindgen::JsValue::from_str(&scan_key.to_storage_key()),
-    )
-    .ok();
-    js_sys::Reflect::set(&result, &"elevationMap".into(), elevation_map).ok();
-    js_sys::Reflect::set(
-        &result,
-        &"totalMs".into(),
-        &wasm_bindgen::JsValue::from(total_ms),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"splitMs".into(),
-        &wasm_bindgen::JsValue::from(split_ms),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"decompressMs".into(),
-        &wasm_bindgen::JsValue::from(decompress_ms),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"decodeMs".into(),
-        &wasm_bindgen::JsValue::from(decode_ms),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"extractMs".into(),
-        &wasm_bindgen::JsValue::from(extract_ms),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"storeMs".into(),
-        &wasm_bindgen::JsValue::from(store_ms),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"indexMs".into(),
-        &wasm_bindgen::JsValue::from(index_ms),
-    )
-    .ok();
-
-    let sweeps_json = serde_json::to_string(sweeps).unwrap_or_else(|_| "[]".to_string());
-    js_sys::Reflect::set(
-        &result,
-        &"sweepsJson".into(),
-        &wasm_bindgen::JsValue::from_str(&sweeps_json),
-    )
-    .ok();
-
-    if let Some(vcp) = extracted_vcp {
-        let vcp_json = serde_json::to_string(vcp).unwrap_or_else(|_| "null".to_string());
-        js_sys::Reflect::set(
-            &result,
-            &"vcpJson".into(),
-            &wasm_bindgen::JsValue::from_str(&vcp_json),
-        )
-        .ok();
-    }
-
-    result
 }
 
 /// Render a specific elevation from pre-computed sweep data in IndexedDB.
@@ -480,9 +490,11 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     wasm_bindgen_futures::future_to_promise(async move {
         let t_total = web_time::Instant::now();
 
-        let scan_key_str = js_get_string(&params, "scanKey")?;
-        let elevation_number = js_get_f64(&params, "elevationNumber")? as u8;
-        let product_str = js_get_string_or(&params, "product", "reflectivity");
+        let p: RenderParams = serde_wasm_bindgen::from_value(params)
+            .map_err(|e| JsValue::from_str(&format!("Invalid render params: {}", e)))?;
+        let scan_key_str = p.scan_key;
+        let elevation_number = p.elevation_number;
+        let product_str = p.product;
 
         let scan_key = ScanKey::from_storage_key(&scan_key_str)
             .ok_or_else(|| wasm_bindgen::JsValue::from_str("Invalid scanKey format"))?;
@@ -581,137 +593,35 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             total_ms, fetch_ms, deser_ms, marshal_ms,
         );
 
-        Ok(build_render_response(
-            &az_buf,
-            &val_buf,
-            rt_buf.as_ref(),
-            &header,
-            &product_str,
+        // Serialize scalar fields, then attach ArrayBuffer fields separately
+        let response = RenderResponse {
+            azimuth_count: header.azimuth_count,
+            gate_count: header.gate_count,
+            first_gate_range_km: header.first_gate_range_km,
+            gate_interval_km: header.gate_interval_km,
+            max_range_km: header.max_range_km,
+            product: product_str,
+            radial_count: header.radial_count,
+            scale: header.scale as f64,
+            offset: header.offset as f64,
+            mean_elevation: header.mean_elevation as f64,
+            sweep_start_secs: header.sweep_start_secs,
+            sweep_end_secs: header.sweep_end_secs,
             fetch_ms,
             deser_ms,
-            marshal_ms,
             total_ms,
-        )
-        .into())
+            marshal_ms,
+        };
+        let result = serde_wasm_bindgen::to_value(&response)
+            .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))?;
+        // ArrayBuffer fields must be set directly (not serializable via serde)
+        js_sys::Reflect::set(&result, &"azimuths".into(), &az_buf).ok();
+        js_sys::Reflect::set(&result, &"gateValues".into(), &val_buf).ok();
+        if let Some(rt) = rt_buf {
+            js_sys::Reflect::set(&result, &"radialTimes".into(), &rt).ok();
+        }
+        Ok(result)
     })
-}
-
-/// Build the JS response object for `worker_render`.
-#[allow(clippy::too_many_arguments)]
-fn build_render_response(
-    az_buf: &js_sys::ArrayBuffer,
-    val_buf: &js_sys::ArrayBuffer,
-    rt_buf: Option<&js_sys::ArrayBuffer>,
-    header: &SweepHeader,
-    product_str: &str,
-    fetch_ms: f64,
-    deser_ms: f64,
-    marshal_ms: f64,
-    total_ms: f64,
-) -> js_sys::Object {
-    let result = js_sys::Object::new();
-    js_sys::Reflect::set(&result, &"azimuths".into(), az_buf).ok();
-    js_sys::Reflect::set(&result, &"gateValues".into(), val_buf).ok();
-    if let Some(rt) = rt_buf {
-        js_sys::Reflect::set(&result, &"radialTimes".into(), rt).ok();
-    }
-    js_sys::Reflect::set(
-        &result,
-        &"azimuthCount".into(),
-        &wasm_bindgen::JsValue::from(header.azimuth_count),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"gateCount".into(),
-        &wasm_bindgen::JsValue::from(header.gate_count),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"firstGateRangeKm".into(),
-        &wasm_bindgen::JsValue::from(header.first_gate_range_km),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"gateIntervalKm".into(),
-        &wasm_bindgen::JsValue::from(header.gate_interval_km),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"maxRangeKm".into(),
-        &wasm_bindgen::JsValue::from(header.max_range_km),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"product".into(),
-        &wasm_bindgen::JsValue::from_str(product_str),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"radialCount".into(),
-        &wasm_bindgen::JsValue::from(header.radial_count),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"scale".into(),
-        &wasm_bindgen::JsValue::from(header.scale as f64),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"offset".into(),
-        &wasm_bindgen::JsValue::from(header.offset as f64),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"meanElevation".into(),
-        &wasm_bindgen::JsValue::from(header.mean_elevation as f64),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"sweepStartSecs".into(),
-        &wasm_bindgen::JsValue::from(header.sweep_start_secs),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"sweepEndSecs".into(),
-        &wasm_bindgen::JsValue::from(header.sweep_end_secs),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"fetchMs".into(),
-        &wasm_bindgen::JsValue::from(fetch_ms),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"deserMs".into(),
-        &wasm_bindgen::JsValue::from(deser_ms),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"totalMs".into(),
-        &wasm_bindgen::JsValue::from(total_ms),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &result,
-        &"marshalMs".into(),
-        &wasm_bindgen::JsValue::from(marshal_ms),
-    )
-    .ok();
-    result
 }
 
 // ---------------------------------------------------------------------------
@@ -729,19 +639,11 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     wasm_bindgen_futures::future_to_promise(async move {
         let t_total = web_time::Instant::now();
 
-        let scan_key_str = js_get_string(&params, "scanKey")?;
-        let product_str = js_get_string_or(&params, "product", "reflectivity");
-
-        let elev_arr = js_sys::Reflect::get(&params, &"elevationNumbers".into())
-            .ok()
-            .ok_or_else(|| JsValue::from_str("Missing elevationNumbers"))?;
-        let elev_arr: js_sys::Array = wasm_bindgen::JsCast::unchecked_into(elev_arr);
-        let mut elevation_numbers: Vec<u8> = Vec::new();
-        for i in 0..elev_arr.length() {
-            if let Some(n) = elev_arr.get(i).as_f64() {
-                elevation_numbers.push(n as u8);
-            }
-        }
+        let p: RenderVolumeParams = serde_wasm_bindgen::from_value(params)
+            .map_err(|e| JsValue::from_str(&format!("Invalid render_volume params: {}", e)))?;
+        let scan_key_str = p.scan_key;
+        let product_str = p.product;
+        let elevation_numbers = p.elevation_numbers;
 
         let scan_key = ScanKey::from_storage_key(&scan_key_str)
             .ok_or_else(|| wasm_bindgen::JsValue::from_str("Invalid scanKey format"))?;
@@ -751,7 +653,7 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // Collect all sweep data into a packed buffer.
         // We widen everything to u16 (2 bytes per gate) so the shader only needs one format.
         let mut packed_data: Vec<u8> = Vec::new();
-        let sweep_meta_arr = js_sys::Array::new();
+        let mut sweep_meta_vec: Vec<VolumeRenderSweepMeta> = Vec::new();
         let mut data_offset: u32 = 0; // offset in u16 elements, not bytes
 
         for &elev_num in &elevation_numbers {
@@ -800,104 +702,47 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 u8_view.copy_to(&mut packed_data[prev_len..]);
             }
 
-            // Build per-sweep metadata JS object
-            let meta = js_sys::Object::new();
-            js_sys::Reflect::set(
-                &meta,
-                &"elevationDeg".into(),
-                &wasm_bindgen::JsValue::from(header.mean_elevation as f64),
-            )
-            .ok();
-            js_sys::Reflect::set(
-                &meta,
-                &"azimuthCount".into(),
-                &wasm_bindgen::JsValue::from(header.azimuth_count),
-            )
-            .ok();
-            js_sys::Reflect::set(
-                &meta,
-                &"gateCount".into(),
-                &wasm_bindgen::JsValue::from(header.gate_count),
-            )
-            .ok();
-            js_sys::Reflect::set(
-                &meta,
-                &"firstGateKm".into(),
-                &wasm_bindgen::JsValue::from(header.first_gate_range_km),
-            )
-            .ok();
-            js_sys::Reflect::set(
-                &meta,
-                &"gateIntervalKm".into(),
-                &wasm_bindgen::JsValue::from(header.gate_interval_km),
-            )
-            .ok();
-            js_sys::Reflect::set(
-                &meta,
-                &"maxRangeKm".into(),
-                &wasm_bindgen::JsValue::from(header.max_range_km),
-            )
-            .ok();
-            js_sys::Reflect::set(
-                &meta,
-                &"dataOffset".into(),
-                &wasm_bindgen::JsValue::from(data_offset),
-            )
-            .ok();
-            js_sys::Reflect::set(
-                &meta,
-                &"scale".into(),
-                &wasm_bindgen::JsValue::from(header.scale as f64),
-            )
-            .ok();
-            js_sys::Reflect::set(
-                &meta,
-                &"offset".into(),
-                &wasm_bindgen::JsValue::from(header.offset as f64),
-            )
-            .ok();
-            sweep_meta_arr.push(&meta);
+            sweep_meta_vec.push(VolumeRenderSweepMeta {
+                elevation_deg: header.mean_elevation as f64,
+                azimuth_count: header.azimuth_count,
+                gate_count: header.gate_count,
+                first_gate_km: header.first_gate_range_km,
+                gate_interval_km: header.gate_interval_km,
+                max_range_km: header.max_range_km,
+                data_offset,
+                scale: header.scale as f64,
+                offset: header.offset as f64,
+            });
 
             data_offset += total_values as u32;
         }
 
-        // Create the packed buffer as a transferable ArrayBuffer
-        let packed_u8 = js_sys::Uint8Array::from(&packed_data[..]);
-        let packed_buffer = packed_u8.buffer();
-
-        let result = js_sys::Object::new();
-        js_sys::Reflect::set(&result, &"buffer".into(), &packed_buffer).ok();
-        js_sys::Reflect::set(
-            &result,
-            &"sweepCount".into(),
-            &wasm_bindgen::JsValue::from(sweep_meta_arr.length()),
-        )
-        .ok();
-        js_sys::Reflect::set(&result, &"sweepMeta".into(), &sweep_meta_arr).ok();
-        js_sys::Reflect::set(
-            &result,
-            &"product".into(),
-            &wasm_bindgen::JsValue::from_str(&product_str),
-        )
-        .ok();
-
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-        js_sys::Reflect::set(
-            &result,
-            &"totalMs".into(),
-            &wasm_bindgen::JsValue::from(total_ms),
-        )
-        .ok();
 
         log::info!(
             "render_volume: {} sweeps, {} values packed ({:.1}KB) in {:.1}ms",
-            sweep_meta_arr.length(),
+            sweep_meta_vec.len(),
             data_offset,
             packed_data.len() as f64 / 1024.0,
             total_ms,
         );
 
-        Ok(result.into())
+        // Serialize scalar/struct fields, then attach the packed buffer separately
+        let response = VolumeRenderResponse {
+            sweep_count: sweep_meta_vec.len() as u32,
+            sweep_meta: sweep_meta_vec,
+            product: product_str,
+            total_ms,
+        };
+        let result = serde_wasm_bindgen::to_value(&response)
+            .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))?;
+
+        // ArrayBuffer must be set directly for zero-copy transfer
+        let packed_u8 = js_sys::Uint8Array::from(&packed_data[..]);
+        let packed_buffer = packed_u8.buffer();
+        js_sys::Reflect::set(&result, &"buffer".into(), &packed_buffer).ok();
+
+        Ok(result)
     })
 }
 
@@ -948,13 +793,15 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let t_total = web_time::Instant::now();
 
         // --- Extract parameters from JS ---
-        let data = js_get_bytes(&params, "data")?;
-        let site_id = js_get_string(&params, "siteId")?;
-        let timestamp_secs = js_get_f64(&params, "timestampSecs")? as i64;
-        let chunk_index = js_get_f64_or(&params, "chunkIndex", 0.0) as u32;
-        let is_start = js_get_bool_or(&params, "isStart", false);
-        let is_end = js_get_bool_or(&params, "isEnd", false);
-        let file_name = js_get_string_or(&params, "fileName", "");
+        let data = extract_data_bytes(&params)?;
+        let p: IngestChunkParams = serde_wasm_bindgen::from_value(params)
+            .map_err(|e| JsValue::from_str(&format!("Invalid ingest_chunk params: {}", e)))?;
+        let site_id = p.site_id;
+        let timestamp_secs = p.timestamp_secs as i64;
+        let chunk_index = p.chunk_index;
+        let is_start = p.is_start;
+        let is_end = p.is_end;
+        let file_name = p.file_name;
 
         let data_len = data.len();
 
@@ -1378,23 +1225,21 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         });
 
         // Build sweep metadata for all completed elevations so far
-        let all_sweeps_json = CHUNK_ACCUM.with(|cell| {
+        let all_sweeps = CHUNK_ACCUM.with(|cell| {
             let borrow = cell.borrow();
             let accum = borrow.as_ref().unwrap();
             let all_metas = build_sweep_meta(&accum.radial_metas);
             // Only include completed elevations
-            let completed: Vec<SweepMeta> = all_metas
+            all_metas
                 .into_iter()
                 .filter(|m| accum.completed_elevations.contains(&m.elevation_number))
-                .collect();
-            serde_json::to_string(&completed).unwrap_or_else(|_| "[]".to_string())
+                .collect::<Vec<SweepMeta>>()
         });
 
-        let vcp_json = CHUNK_ACCUM.with(|cell| {
+        let vcp = CHUNK_ACCUM.with(|cell| {
             cell.borrow()
                 .as_ref()
-                .and_then(|a| a.vcp.as_ref())
-                .and_then(|v| serde_json::to_string(v).ok())
+                .and_then(|a| a.vcp.clone())
         });
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
@@ -1418,6 +1263,16 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             newly_completed, sweeps_stored, total_ms,
         );
 
+        // Current in-progress elevation info
+        let current_elevation =
+            CHUNK_ACCUM.with(|c| c.borrow().as_ref().and_then(|a| a.last_elevation_number));
+        let current_elevation_radials = CHUNK_ACCUM.with(|c| {
+            c.borrow().as_ref().and_then(|a| {
+                a.last_elevation_number
+                    .map(|elev| a.radial_metas.iter().filter(|m| m.1 == elev).count() as u32)
+            })
+        });
+
         // --- Clear accumulator on end ---
         if is_end {
             CHUNK_ACCUM.with(|cell| {
@@ -1426,153 +1281,27 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         }
 
         // --- Build JS response ---
-        let result = js_sys::Object::new();
-        js_sys::Reflect::set(
-            &result,
-            &"chunkIndex".into(),
-            &wasm_bindgen::JsValue::from(chunk_index),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"radialsDecoded".into(),
-            &wasm_bindgen::JsValue::from(chunk_elev_numbers.len() as u32),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"sweepsStored".into(),
-            &wasm_bindgen::JsValue::from(sweeps_stored),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"scanKey".into(),
-            &wasm_bindgen::JsValue::from_str(&scan_key_str),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"isEnd".into(),
-            &wasm_bindgen::JsValue::from(is_end),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"totalMs".into(),
-            &wasm_bindgen::JsValue::from(total_ms),
-        )
-        .ok();
-        js_sys::Reflect::set(
-            &result,
-            &"sweepsJson".into(),
-            &wasm_bindgen::JsValue::from_str(&all_sweeps_json),
-        )
-        .ok();
-
-        // Elevations completed array
-        let completed_arr = js_sys::Array::new();
-        for &e in &newly_completed {
-            completed_arr.push(&wasm_bindgen::JsValue::from(e));
-        }
-        js_sys::Reflect::set(&result, &"elevationsCompleted".into(), &completed_arr).ok();
-
-        if let Some(vj) = vcp_json {
-            js_sys::Reflect::set(
-                &result,
-                &"vcpJson".into(),
-                &wasm_bindgen::JsValue::from_str(&vj),
-            )
-            .ok();
-        }
-
-        // Actual data time range of this chunk (from radial collection timestamps)
-        if let Some(min_ts) = chunk_min_ts_secs {
-            js_sys::Reflect::set(
-                &result,
-                &"chunkMinTimeSecs".into(),
-                &wasm_bindgen::JsValue::from(min_ts),
-            )
-            .ok();
-        }
-        if let Some(max_ts) = chunk_max_ts_secs {
-            js_sys::Reflect::set(
-                &result,
-                &"chunkMaxTimeSecs".into(),
-                &wasm_bindgen::JsValue::from(max_ts),
-            )
-            .ok();
-        }
-
-        // Per-elevation time spans within this chunk
-        if !chunk_elev_spans.is_empty() {
-            let spans_json =
-                serde_json::to_string(&chunk_elev_spans).unwrap_or_else(|_| "[]".to_string());
-            js_sys::Reflect::set(
-                &result,
-                &"chunkElevSpansJson".into(),
-                &wasm_bindgen::JsValue::from_str(&spans_json),
-            )
-            .ok();
-        }
-
-        // Volume header scan start time (only present for start chunks)
-        if let Some(t) = volume_header_time_secs {
-            js_sys::Reflect::set(
-                &result,
-                &"volumeHeaderTimeSecs".into(),
-                &wasm_bindgen::JsValue::from(t),
-            )
-            .ok();
-        }
-
-        // Last radial azimuth and time for sweep line extrapolation
-        if let Some(az) = last_radial_azimuth {
-            js_sys::Reflect::set(
-                &result,
-                &"lastRadialAzimuth".into(),
-                &wasm_bindgen::JsValue::from(az),
-            )
-            .ok();
-        }
-        if let Some(t) = last_radial_time_secs {
-            js_sys::Reflect::set(
-                &result,
-                &"lastRadialTimeSecs".into(),
-                &wasm_bindgen::JsValue::from(t),
-            )
-            .ok();
-        }
-
-        // Current in-progress elevation number (for partial sweep visualization)
-        let current_elev =
-            CHUNK_ACCUM.with(|c| c.borrow().as_ref().and_then(|a| a.last_elevation_number));
-        if let Some(elev) = current_elev {
-            js_sys::Reflect::set(
-                &result,
-                &"currentElevation".into(),
-                &wasm_bindgen::JsValue::from(elev),
-            )
-            .ok();
-        }
-
-        // Radial count for the current in-progress elevation
-        let current_elev_radials = CHUNK_ACCUM.with(|c| {
-            c.borrow().as_ref().and_then(|a| {
-                a.last_elevation_number
-                    .map(|elev| a.radial_metas.iter().filter(|m| m.1 == elev).count() as u32)
-            })
-        });
-        if let Some(count) = current_elev_radials {
-            js_sys::Reflect::set(
-                &result,
-                &"currentElevationRadials".into(),
-                &wasm_bindgen::JsValue::from(count),
-            )
-            .ok();
-        }
-
-        Ok(result.into())
+        let response = ChunkIngestResponse {
+            chunk_index,
+            radials_decoded: chunk_elev_numbers.len() as u32,
+            sweeps_stored,
+            scan_key: scan_key_str,
+            is_end,
+            total_ms,
+            sweeps: all_sweeps,
+            elevations_completed: newly_completed,
+            vcp,
+            chunk_min_time_secs: chunk_min_ts_secs,
+            chunk_max_time_secs: chunk_max_ts_secs,
+            chunk_elev_spans,
+            volume_header_time_secs,
+            last_radial_azimuth,
+            last_radial_time_secs,
+            current_elevation,
+            current_elevation_radials,
+        };
+        serde_wasm_bindgen::to_value(&response)
+            .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))
     })
 }
 

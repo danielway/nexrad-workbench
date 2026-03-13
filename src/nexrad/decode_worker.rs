@@ -7,66 +7,231 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, Worker, WorkerOptions, WorkerType};
 
 // ---------------------------------------------------------------------------
-// JS interop helpers — typed extraction from worker response objects
+// Typed structs for worker message payloads (serde-wasm-bindgen)
 // ---------------------------------------------------------------------------
 
-/// Lightweight wrapper for reading typed fields from a JS object.
-///
-/// Consolidates the 8 individual `js_get_*` functions into a single struct
-/// with clear method names, reducing boilerplate at call sites.
-struct JsObj<'a>(&'a JsValue);
+/// Envelope for all worker response messages (type + id).
+#[derive(Deserialize)]
+struct MessageEnvelope {
+    id: u64,
+}
 
-impl<'a> JsObj<'a> {
-    /// Get a raw JsValue field by key.
-    fn get(&self, key: &str) -> Option<JsValue> {
-        js_sys::Reflect::get(self.0, &key.into()).ok()
-    }
+/// Ingest result payload from the worker.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IngestResultMsg {
+    scan_key: String,
+    records_stored: u32,
+    #[serde(default)]
+    elevation_numbers: Vec<u8>,
+    #[serde(default)]
+    total_ms: f64,
+    #[serde(default)]
+    split_ms: f64,
+    #[serde(default)]
+    decompress_ms: f64,
+    #[serde(default)]
+    decode_ms: f64,
+    #[serde(default)]
+    extract_ms: f64,
+    #[serde(default)]
+    store_ms: f64,
+    #[serde(default)]
+    index_ms: f64,
+    #[serde(default)]
+    sweeps: Vec<crate::data::SweepMeta>,
+    #[serde(default)]
+    vcp: Option<crate::data::keys::ExtractedVcp>,
+}
 
-    /// Extract a string field, returning empty string if absent.
-    fn str(&self, key: &str) -> String {
-        self.get(key)
-            .and_then(|v| v.as_string())
-            .unwrap_or_default()
-    }
+/// Chunk ingest result payload from the worker.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChunkIngestResultMsg {
+    scan_key: String,
+    #[serde(default)]
+    sweeps_stored: u32,
+    #[serde(default)]
+    is_end: bool,
+    #[serde(default)]
+    total_ms: f64,
+    #[serde(default)]
+    elevations_completed: Vec<u8>,
+    #[serde(default)]
+    sweeps: Vec<crate::data::SweepMeta>,
+    #[serde(default)]
+    vcp: Option<crate::data::keys::ExtractedVcp>,
+    #[serde(default)]
+    current_elevation: Option<u8>,
+    #[serde(default)]
+    current_elevation_radials: Option<u32>,
+    #[serde(default)]
+    last_radial_azimuth: Option<f32>,
+    #[serde(default)]
+    last_radial_time_secs: Option<f64>,
+    #[serde(default)]
+    volume_header_time_secs: Option<f64>,
+    #[serde(default)]
+    chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
+}
 
-    /// Extract a string field with a fallback default.
-    fn str_or(&self, key: &str, default: &str) -> String {
-        self.get(key)
-            .and_then(|v| v.as_string())
-            .unwrap_or_else(|| default.to_string())
-    }
+/// Scalar fields of the decoded sweep response from the worker.
+/// ArrayBuffer fields (azimuths, gateValues, radialTimes) are extracted separately.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DecodedResultMsg {
+    #[serde(default)]
+    azimuth_count: u32,
+    #[serde(default)]
+    gate_count: u32,
+    #[serde(default)]
+    first_gate_range_km: f64,
+    #[serde(default)]
+    gate_interval_km: f64,
+    #[serde(default)]
+    max_range_km: f64,
+    #[serde(default = "default_product")]
+    product: String,
+    #[serde(default)]
+    radial_count: u32,
+    #[serde(default)]
+    fetch_ms: f64,
+    #[serde(default)]
+    deser_ms: f64,
+    #[serde(default)]
+    marshal_ms: f64,
+    #[serde(default)]
+    total_ms: f64,
+    #[serde(default = "default_scale")]
+    scale: f32,
+    #[serde(default)]
+    offset: f32,
+    #[serde(default)]
+    mean_elevation: f32,
+    #[serde(default)]
+    sweep_start_secs: f64,
+    #[serde(default)]
+    sweep_end_secs: f64,
+}
 
-    /// Extract an f64 field, returning 0.0 if absent.
-    fn f64(&self, key: &str) -> f64 {
-        self.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0)
-    }
+fn default_product() -> String {
+    "reflectivity".to_string()
+}
 
-    /// Extract an f64 field with a custom default.
-    fn f64_or(&self, key: &str, default: f64) -> f64 {
-        self.get(key).and_then(|v| v.as_f64()).unwrap_or(default)
-    }
+fn default_scale() -> f32 {
+    1.0
+}
 
-    /// Extract an optional f64 field.
-    fn f64_opt(&self, key: &str) -> Option<f64> {
-        self.get(key).and_then(|v| v.as_f64())
-    }
+/// Per-sweep metadata in a volume decoded response.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VolumeSweepMetaMsg {
+    #[serde(default)]
+    elevation_deg: f32,
+    #[serde(default)]
+    azimuth_count: u32,
+    #[serde(default)]
+    gate_count: u32,
+    #[serde(default)]
+    first_gate_km: f32,
+    #[serde(default)]
+    gate_interval_km: f32,
+    #[serde(default)]
+    max_range_km: f32,
+    #[serde(default)]
+    data_offset: u32,
+    #[serde(default)]
+    scale: f32,
+    #[serde(default)]
+    offset: f32,
+}
 
-    /// Extract a bool field, returning a default if absent.
-    fn bool_or(&self, key: &str, default: bool) -> bool {
-        self.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
-    }
+/// Scalar fields of the volume decoded response.
+/// The `buffer` ArrayBuffer and `sweepMeta` array are extracted separately.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VolumeDecodedResultMsg {
+    #[serde(default)]
+    total_ms: f64,
+    #[serde(default = "default_product")]
+    product: String,
+    #[serde(default)]
+    sweep_meta: Vec<VolumeSweepMetaMsg>,
+}
 
-    /// Extract a JSON-serialized field and deserialize it.
-    fn json<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
-        self.get(key)
-            .and_then(|v| v.as_string())
-            .and_then(|s| serde_json::from_str(&s).ok())
-    }
+/// Error message from the worker.
+#[derive(Deserialize)]
+struct ErrorMsg {
+    id: u64,
+    #[serde(default = "default_error_message")]
+    message: String,
+}
+
+fn default_error_message() -> String {
+    "Unknown worker error".to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Typed structs for outgoing worker requests (main → worker)
+// ---------------------------------------------------------------------------
+
+/// Request message sent to the worker for ingest operations.
+/// The `data` ArrayBuffer is set separately for zero-copy transfer.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IngestRequestMsg<'a> {
+    #[serde(rename = "type")]
+    msg_type: &'a str,
+    id: f64,
+    site_id: &'a str,
+    timestamp_secs: f64,
+    file_name: &'a str,
+}
+
+/// Request message sent to the worker for chunk ingest operations.
+/// The `data` ArrayBuffer is set separately for zero-copy transfer.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IngestChunkRequestMsg<'a> {
+    #[serde(rename = "type")]
+    msg_type: &'a str,
+    id: f64,
+    site_id: &'a str,
+    timestamp_secs: f64,
+    chunk_index: f64,
+    is_start: bool,
+    is_end: bool,
+    file_name: &'a str,
+}
+
+/// Request message sent to the worker for render operations.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderRequestMsg<'a> {
+    #[serde(rename = "type")]
+    msg_type: &'a str,
+    id: f64,
+    scan_key: &'a str,
+    elevation_number: u8,
+    product: &'a str,
+}
+
+/// Request message sent to the worker for volume render operations.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderVolumeRequestMsg<'a> {
+    #[serde(rename = "type")]
+    msg_type: &'a str,
+    id: f64,
+    scan_key: &'a str,
+    product: &'a str,
+    elevation_numbers: &'a [u8],
 }
 
 /// Unique ID for tracking worker requests.
@@ -592,8 +757,14 @@ fn handle_ingested_message(
     pending: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let d = JsObj(data);
-    let id = d.f64("id") as u64;
+    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("Failed to parse ingested envelope: {}", e);
+            return;
+        }
+    };
+    let id = envelope.id;
 
     let context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -604,77 +775,43 @@ fn handle_ingested_message(
     };
 
     let result_obj = js_sys::Reflect::get(data, &"result".into()).unwrap_or(JsValue::NULL);
-    let r = JsObj(&result_obj);
-
-    let scan_key = r.str("scanKey");
-    let records_stored = r.f64("recordsStored") as u32;
-    let total_ms = r.f64("totalMs");
-    let split_ms = r.f64("splitMs");
-    let decompress_ms = r.f64("decompressMs");
-    let decode_ms = r.f64("decodeMs");
-    let extract_ms = r.f64("extractMs");
-    let store_ms = r.f64("storeMs");
-    let index_ms = r.f64("indexMs");
-
-    // Extract unique elevation numbers from the elevationMap
-    let mut elevation_numbers: Vec<u8> = Vec::new();
-    if let Ok(elev_map) = js_sys::Reflect::get(&result_obj, &"elevationMap".into()) {
-        if !elev_map.is_undefined() && !elev_map.is_null() {
-            let elev_obj: js_sys::Object = elev_map.unchecked_into();
-            let keys = js_sys::Object::keys(&elev_obj);
-            for i in 0..keys.length() {
-                if let Some(key_str) = keys.get(i).as_string() {
-                    if let Ok(arr) = js_sys::Reflect::get(&elev_obj, &JsValue::from_str(&key_str)) {
-                        let arr: js_sys::Array = arr.unchecked_into();
-                        for j in 0..arr.length() {
-                            if let Some(n) = arr.get(j).as_f64() {
-                                let n = n as u8;
-                                if !elevation_numbers.contains(&n) {
-                                    elevation_numbers.push(n);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+    let r: IngestResultMsg = match serde_wasm_bindgen::from_value(result_obj) {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("Failed to parse ingest result: {}", e);
+            return;
         }
-    }
-    elevation_numbers.sort_unstable();
-
-    // Parse sweep metadata from JSON
-    let sweeps: Vec<crate::data::SweepMeta> = r.json("sweepsJson").unwrap_or_default();
-
-    // Parse extracted VCP pattern from JSON
-    let vcp: Option<crate::data::keys::ExtractedVcp> = r.json("vcpJson");
+    };
 
     log::info!(
         "Worker ingest complete: {} ({} records, {} elevations, {} sweeps, vcp={}, {:.0}ms)",
-        scan_key,
-        records_stored,
-        elevation_numbers.len(),
-        sweeps.len(),
-        vcp.as_ref()
+        r.scan_key,
+        r.records_stored,
+        r.elevation_numbers.len(),
+        r.sweeps.len(),
+        r.vcp
+            .as_ref()
             .map(|v| v.number.to_string())
             .unwrap_or_else(|| "none".to_string()),
-        total_ms,
+        r.total_ms,
     );
 
     results
         .borrow_mut()
         .push(WorkerOutcome::Ingested(IngestResult {
             context,
-            scan_key,
-            records_stored,
-            elevation_numbers,
-            sweeps,
-            _vcp: vcp,
-            total_ms,
-            split_ms,
-            decompress_ms,
-            decode_ms,
-            extract_ms,
-            store_ms,
-            index_ms,
+            scan_key: r.scan_key,
+            records_stored: r.records_stored,
+            elevation_numbers: r.elevation_numbers,
+            sweeps: r.sweeps,
+            _vcp: r.vcp,
+            total_ms: r.total_ms,
+            split_ms: r.split_ms,
+            decompress_ms: r.decompress_ms,
+            decode_ms: r.decode_ms,
+            extract_ms: r.extract_ms,
+            store_ms: r.store_ms,
+            index_ms: r.index_ms,
         }));
 }
 
@@ -684,8 +821,14 @@ fn handle_chunk_ingested_message(
     pending: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let d = JsObj(data);
-    let id = d.f64("id") as u64;
+    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("Failed to parse chunk_ingested envelope: {}", e);
+            return;
+        }
+    };
+    let id = envelope.id;
 
     let context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -696,62 +839,31 @@ fn handle_chunk_ingested_message(
     };
 
     let result_obj = js_sys::Reflect::get(data, &"result".into()).unwrap_or(JsValue::NULL);
-    let r = JsObj(&result_obj);
-
-    let scan_key = r.str("scanKey");
-    let sweeps_stored = r.f64("sweepsStored") as u32;
-    let is_end = r.bool_or("isEnd", false);
-    let total_ms = r.f64("totalMs");
-
-    // Parse elevations completed
-    let mut elevations_completed: Vec<u8> = Vec::new();
-    if let Ok(arr) = js_sys::Reflect::get(&result_obj, &"elevationsCompleted".into()) {
-        if !arr.is_undefined() && !arr.is_null() {
-            let arr: js_sys::Array = arr.unchecked_into();
-            for i in 0..arr.length() {
-                if let Some(n) = arr.get(i).as_f64() {
-                    elevations_completed.push(n as u8);
-                }
-            }
+    let r: ChunkIngestResultMsg = match serde_wasm_bindgen::from_value(result_obj) {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("Failed to parse chunk ingest result: {}", e);
+            return;
         }
-    }
-
-    // Parse sweep metadata and VCP from JSON
-    let sweeps: Vec<crate::data::SweepMeta> = r.json("sweepsJson").unwrap_or_default();
-    let vcp: Option<crate::data::keys::ExtractedVcp> = r.json("vcpJson");
-
-    // Parse current in-progress elevation info
-    let current_elevation = r.f64_opt("currentElevation").map(|v| v as u8);
-    let current_elevation_radials = r.f64_opt("currentElevationRadials").map(|v| v as u32);
-
-    // Parse last radial azimuth/time for sweep line extrapolation
-    let last_radial_azimuth = r.f64_opt("lastRadialAzimuth").map(|v| v as f32);
-    let last_radial_time_secs = r.f64_opt("lastRadialTimeSecs");
-
-    // Parse volume header time (authoritative scan start from Archive II header)
-    let volume_header_time_secs = r.f64_opt("volumeHeaderTimeSecs");
-
-    // Parse per-elevation chunk time spans
-    let chunk_elev_spans: Vec<(u8, f64, f64, u32)> =
-        r.json("chunkElevSpansJson").unwrap_or_default();
+    };
 
     results
         .borrow_mut()
         .push(WorkerOutcome::ChunkIngested(ChunkIngestResult {
             context,
-            scan_key,
-            elevations_completed,
-            sweeps_stored,
-            is_end,
-            sweeps,
-            vcp,
-            total_ms,
-            current_elevation,
-            current_elevation_radials,
-            last_radial_azimuth,
-            last_radial_time_secs,
-            volume_header_time_secs,
-            chunk_elev_spans,
+            scan_key: r.scan_key,
+            elevations_completed: r.elevations_completed,
+            sweeps_stored: r.sweeps_stored,
+            is_end: r.is_end,
+            sweeps: r.sweeps,
+            vcp: r.vcp,
+            total_ms: r.total_ms,
+            current_elevation: r.current_elevation,
+            current_elevation_radials: r.current_elevation_radials,
+            last_radial_azimuth: r.last_radial_azimuth,
+            last_radial_time_secs: r.last_radial_time_secs,
+            volume_header_time_secs: r.volume_header_time_secs,
+            chunk_elev_spans: r.chunk_elev_spans,
         }));
 }
 
@@ -761,8 +873,14 @@ fn handle_decoded_message(
     pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let d = JsObj(data);
-    let id = d.f64("id") as u64;
+    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("Failed to parse decoded envelope: {}", e);
+            return;
+        }
+    };
+    let id = envelope.id;
 
     let context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -772,6 +890,7 @@ fn handle_decoded_message(
         }
     };
 
+    // Extract ArrayBuffer fields (not serializable via serde)
     let az_buffer = js_sys::Reflect::get(data, &"azimuths".into()).unwrap_or(JsValue::NULL);
     let azimuths = js_sys::Float32Array::new(&az_buffer).to_vec();
 
@@ -785,32 +904,24 @@ fn handle_decoded_message(
         Vec::new()
     };
 
-    let azimuth_count = d.f64("azimuthCount") as u32;
-    let gate_count = d.f64("gateCount") as u32;
-    let first_gate_range_km = d.f64("firstGateRangeKm");
-    let gate_interval_km = d.f64("gateIntervalKm");
-    let max_range_km = d.f64("maxRangeKm");
-    let product = d.str_or("product", "reflectivity");
-    let radial_count = d.f64("radialCount") as u32;
-    let fetch_ms = d.f64("fetchMs");
-    let deser_ms = d.f64("deserMs");
-    let total_ms = d.f64("totalMs");
-    let marshal_ms = d.f64("marshalMs");
-    let scale = d.f64_or("scale", 1.0) as f32;
-    let offset = d.f64("offset") as f32;
-    let mean_elevation = d.f64("meanElevation") as f32;
-    let sweep_start_secs = d.f64("sweepStartSecs");
-    let sweep_end_secs = d.f64("sweepEndSecs");
+    // Deserialize all scalar fields via serde
+    let r: DecodedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("Failed to parse decoded result: {}", e);
+            return;
+        }
+    };
 
     log::info!(
         "Worker decode: {}x{}, {} radials, {}, {:.0}ms (fetch: {:.1}, marshal: {:.1})",
-        azimuth_count,
-        gate_count,
-        radial_count,
-        product,
-        total_ms,
-        fetch_ms,
-        marshal_ms,
+        r.azimuth_count,
+        r.gate_count,
+        r.radial_count,
+        r.product,
+        r.total_ms,
+        r.fetch_ms,
+        r.marshal_ms,
     );
 
     results
@@ -819,37 +930,44 @@ fn handle_decoded_message(
             _context: context,
             azimuths,
             gate_values,
-            azimuth_count,
-            gate_count,
-            first_gate_range_km,
-            gate_interval_km,
-            max_range_km,
-            product,
-            radial_count,
-            fetch_ms,
-            deser_ms,
-            marshal_ms,
-            total_ms,
-            scale,
-            offset,
-            mean_elevation,
-            sweep_start_secs,
-            sweep_end_secs,
+            azimuth_count: r.azimuth_count,
+            gate_count: r.gate_count,
+            first_gate_range_km: r.first_gate_range_km,
+            gate_interval_km: r.gate_interval_km,
+            max_range_km: r.max_range_km,
+            product: r.product,
+            radial_count: r.radial_count,
+            fetch_ms: r.fetch_ms,
+            deser_ms: r.deser_ms,
+            marshal_ms: r.marshal_ms,
+            total_ms: r.total_ms,
+            scale: r.scale,
+            offset: r.offset,
+            mean_elevation: r.mean_elevation,
+            sweep_start_secs: r.sweep_start_secs,
+            sweep_end_secs: r.sweep_end_secs,
             radial_times,
         }));
 }
 
 /// Handle an "error" message from the worker.
 fn handle_error_message(data: &JsValue, results: &Rc<RefCell<Vec<WorkerOutcome>>>) {
-    let d = JsObj(data);
-    let id = d.f64("id") as u64;
-    let message = d.str_or("message", "Unknown worker error");
+    let e: ErrorMsg = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(e) => e,
+        Err(err) => {
+            log::error!("Failed to parse error message: {}", err);
+            return;
+        }
+    };
 
-    log::error!("Worker error (request {}): {}", id, message);
+    log::error!("Worker error (request {}): {}", e.id, e.message);
 
     results
         .borrow_mut()
-        .push(WorkerOutcome::WorkerError { id, message });
+        .push(WorkerOutcome::WorkerError {
+            id: e.id,
+            message: e.message,
+        });
 }
 
 // ============================================================================
@@ -865,21 +983,25 @@ fn send_ingest_request(
     timestamp_secs: i64,
     file_name: &str,
 ) {
+    let request = IngestRequestMsg {
+        msg_type: "ingest",
+        id: id as f64,
+        site_id,
+        timestamp_secs: timestamp_secs as f64,
+        file_name,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&request) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize ingest request {}: {}", id, e);
+            return;
+        }
+    };
+
+    // ArrayBuffer must be set directly for zero-copy transfer
     let array = js_sys::Uint8Array::from(data);
     let buffer = array.buffer();
-
-    let msg = js_sys::Object::new();
-    js_sys::Reflect::set(&msg, &"type".into(), &"ingest".into()).ok();
-    js_sys::Reflect::set(&msg, &"id".into(), &JsValue::from(id as f64)).ok();
     js_sys::Reflect::set(&msg, &"data".into(), &buffer).ok();
-    js_sys::Reflect::set(&msg, &"siteId".into(), &JsValue::from_str(site_id)).ok();
-    js_sys::Reflect::set(
-        &msg,
-        &"timestampSecs".into(),
-        &JsValue::from(timestamp_secs as f64),
-    )
-    .ok();
-    js_sys::Reflect::set(&msg, &"fileName".into(), &JsValue::from_str(file_name)).ok();
 
     let transfer = js_sys::Array::new();
     transfer.push(&buffer);
@@ -902,29 +1024,28 @@ fn send_ingest_chunk_request(
     is_end: bool,
     file_name: &str,
 ) {
+    let request = IngestChunkRequestMsg {
+        msg_type: "ingest_chunk",
+        id: id as f64,
+        site_id,
+        timestamp_secs: timestamp_secs as f64,
+        chunk_index: chunk_index as f64,
+        is_start,
+        is_end,
+        file_name,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&request) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize ingest_chunk request {}: {}", id, e);
+            return;
+        }
+    };
+
+    // ArrayBuffer must be set directly for zero-copy transfer
     let array = js_sys::Uint8Array::from(data);
     let buffer = array.buffer();
-
-    let msg = js_sys::Object::new();
-    js_sys::Reflect::set(&msg, &"type".into(), &"ingest_chunk".into()).ok();
-    js_sys::Reflect::set(&msg, &"id".into(), &JsValue::from(id as f64)).ok();
     js_sys::Reflect::set(&msg, &"data".into(), &buffer).ok();
-    js_sys::Reflect::set(&msg, &"siteId".into(), &JsValue::from_str(site_id)).ok();
-    js_sys::Reflect::set(
-        &msg,
-        &"timestampSecs".into(),
-        &JsValue::from(timestamp_secs as f64),
-    )
-    .ok();
-    js_sys::Reflect::set(
-        &msg,
-        &"chunkIndex".into(),
-        &JsValue::from(chunk_index as f64),
-    )
-    .ok();
-    js_sys::Reflect::set(&msg, &"isStart".into(), &JsValue::from(is_start)).ok();
-    js_sys::Reflect::set(&msg, &"isEnd".into(), &JsValue::from(is_end)).ok();
-    js_sys::Reflect::set(&msg, &"fileName".into(), &JsValue::from_str(file_name)).ok();
 
     let transfer = js_sys::Array::new();
     transfer.push(&buffer);
@@ -942,17 +1063,20 @@ fn send_render_request(
     elevation_number: u8,
     product: &str,
 ) {
-    let msg = js_sys::Object::new();
-    js_sys::Reflect::set(&msg, &"type".into(), &"render".into()).ok();
-    js_sys::Reflect::set(&msg, &"id".into(), &JsValue::from(id as f64)).ok();
-    js_sys::Reflect::set(&msg, &"scanKey".into(), &JsValue::from_str(scan_key)).ok();
-    js_sys::Reflect::set(
-        &msg,
-        &"elevationNumber".into(),
-        &JsValue::from(elevation_number),
-    )
-    .ok();
-    js_sys::Reflect::set(&msg, &"product".into(), &JsValue::from_str(product)).ok();
+    let request = RenderRequestMsg {
+        msg_type: "render",
+        id: id as f64,
+        scan_key,
+        elevation_number,
+        product,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&request) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize render request {}: {}", id, e);
+            return;
+        }
+    };
 
     if let Err(e) = worker.post_message(&msg) {
         log::error!("Failed to send render request {}: {:?}", id, e);
@@ -965,8 +1089,14 @@ fn handle_volume_decoded_message(
     pending: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let d = JsObj(data);
-    let id = d.f64("id") as u64;
+    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("Failed to parse volume_decoded envelope: {}", e);
+            return;
+        }
+    };
+    let id = envelope.id;
 
     let _context = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
@@ -976,10 +1106,16 @@ fn handle_volume_decoded_message(
         }
     };
 
-    let total_ms = d.f64("totalMs");
-    let product = d.str_or("product", "reflectivity");
+    // Deserialize scalar fields and sweep metadata via serde
+    let r: VolumeDecodedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("Failed to parse volume decoded result: {}", e);
+            return;
+        }
+    };
 
-    // Extract packed buffer
+    // Extract packed buffer (ArrayBuffer, not serializable via serde)
     let buf_js = js_sys::Reflect::get(data, &"buffer".into()).unwrap_or(JsValue::NULL);
     let buffer = if !buf_js.is_null() && !buf_js.is_undefined() {
         let u8_view = js_sys::Uint8Array::new(&buf_js);
@@ -988,34 +1124,28 @@ fn handle_volume_decoded_message(
         Vec::new()
     };
 
-    // Extract per-sweep metadata
-    let meta_arr = js_sys::Reflect::get(data, &"sweepMeta".into()).unwrap_or(JsValue::NULL);
-    let mut sweeps: Vec<VolumeSweepMeta> = Vec::new();
-    if !meta_arr.is_null() && !meta_arr.is_undefined() {
-        let arr: js_sys::Array = meta_arr.unchecked_into();
-        for i in 0..arr.length() {
-            let obj = arr.get(i);
-            let s = JsObj(&obj);
-            sweeps.push(VolumeSweepMeta {
-                elevation_deg: s.f64("elevationDeg") as f32,
-                azimuth_count: s.f64("azimuthCount") as u32,
-                gate_count: s.f64("gateCount") as u32,
-                first_gate_km: s.f64("firstGateKm") as f32,
-                gate_interval_km: s.f64("gateIntervalKm") as f32,
-                max_range_km: s.f64("maxRangeKm") as f32,
-                data_offset: s.f64("dataOffset") as u32,
-                scale: s.f64("scale") as f32,
-                offset: s.f64("offset") as f32,
-            });
-        }
-    }
+    let sweeps: Vec<VolumeSweepMeta> = r
+        .sweep_meta
+        .into_iter()
+        .map(|s| VolumeSweepMeta {
+            elevation_deg: s.elevation_deg,
+            azimuth_count: s.azimuth_count,
+            gate_count: s.gate_count,
+            first_gate_km: s.first_gate_km,
+            gate_interval_km: s.gate_interval_km,
+            max_range_km: s.max_range_km,
+            data_offset: s.data_offset,
+            scale: s.scale,
+            offset: s.offset,
+        })
+        .collect();
 
     log::info!(
         "Worker volume decode: {} sweeps, {:.1}KB buffer, product={}, {:.0}ms",
         sweeps.len(),
         buffer.len() as f64 / 1024.0,
-        product,
-        total_ms,
+        r.product,
+        r.total_ms,
     );
 
     results
@@ -1023,8 +1153,8 @@ fn handle_volume_decoded_message(
         .push(WorkerOutcome::VolumeDecoded(VolumeData {
             buffer,
             sweeps,
-            product,
-            total_ms,
+            product: r.product,
+            total_ms: r.total_ms,
         }));
 }
 
@@ -1036,17 +1166,20 @@ fn send_render_volume_request(
     product: &str,
     elevation_numbers: &[u8],
 ) {
-    let msg = js_sys::Object::new();
-    js_sys::Reflect::set(&msg, &"type".into(), &"render_volume".into()).ok();
-    js_sys::Reflect::set(&msg, &"id".into(), &JsValue::from(id as f64)).ok();
-    js_sys::Reflect::set(&msg, &"scanKey".into(), &JsValue::from_str(scan_key)).ok();
-    js_sys::Reflect::set(&msg, &"product".into(), &JsValue::from_str(product)).ok();
-
-    let elev_arr = js_sys::Array::new();
-    for &e in elevation_numbers {
-        elev_arr.push(&JsValue::from(e));
-    }
-    js_sys::Reflect::set(&msg, &"elevationNumbers".into(), &elev_arr).ok();
+    let request = RenderVolumeRequestMsg {
+        msg_type: "render_volume",
+        id: id as f64,
+        scan_key,
+        product,
+        elevation_numbers,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&request) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize render_volume request {}: {}", id, e);
+            return;
+        }
+    };
 
     if let Err(e) = worker.post_message(&msg) {
         log::error!("Failed to send render_volume request {}: {:?}", id, e);
