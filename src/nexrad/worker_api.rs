@@ -787,7 +787,11 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             }
 
             let total_values = header.azimuth_count as usize * header.gate_count as usize;
-            sweep_blobs.push(SweepBlob { blob_buffer, header, total_values });
+            sweep_blobs.push(SweepBlob {
+                blob_buffer,
+                header,
+                total_values,
+            });
         }
 
         // Second pass: pack data using native word size when all u8,
