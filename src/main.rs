@@ -1967,14 +1967,9 @@ impl WorkbenchApp {
                                 .state
                                 .displayed_sweep_elevation_number
                                 .is_some_and(|e| e == result.context.elevation_number);
-                        log::debug!(
-                            "[sweep-anim] DECODED: id={} sweep=[{:.3}, {:.3}] is_current={} current_key={:?}",
-                            result_sweep_id,
-                            result.sweep_start_secs,
-                            result.sweep_end_secs,
-                            is_current_scan,
-                            self.current_render_scan_key,
-                        );
+                        if self.state.render_processing.sweep_animation && !is_current_scan {
+                            log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id,);
+                        }
                         let t_gpu = web_time::Instant::now();
                         if is_current_scan {
                             if let (Some(ref renderer), Some(ref gl)) =

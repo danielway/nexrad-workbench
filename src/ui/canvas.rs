@@ -116,32 +116,17 @@ pub fn render_canvas_with_geo(
                                     })
                                     .map(|s| (s.start_time, s.end_time))
                             });
-                        let result = match sweep_bounds {
+                        match sweep_bounds {
                             Some((s, _)) if playback_ts < s => {
-                                log::debug!(
-                                    "[sweep-anim] BEFORE sweep: playback={:.3} sweep_start={:.3} (delta={:.3}s)",
-                                    playback_ts, s, s - playback_ts
-                                );
                                 // Before sweep start: show all-prev (nothing from current)
                                 Some((0.0, 0.0))
                             }
-                            Some((s, e)) if playback_ts <= e => {
-                                log::debug!(
-                                    "[sweep-anim] MID-SWEEP: playback={:.3} range=[{:.3}, {:.3}] progress={:.1}% sweep_info={:?}",
-                                    playback_ts, s, e, (playback_ts - s) / (e - s) * 100.0, sweep_info
-                                );
+                            Some((_, e)) if playback_ts <= e => {
                                 // Mid-sweep: use computed sweep line position
                                 sweep_info
                             }
-                            _ => {
-                                log::debug!(
-                                    "[sweep-anim] PAST/NONE: playback={:.3} bounds={:?} -> full current",
-                                    playback_ts, sweep_bounds
-                                );
-                                None // past sweep end or no sweep found: show full current
-                            }
-                        };
-                        result
+                            _ => None, // past sweep end or no sweep found: show full current
+                        }
                     } else {
                         None
                     };
