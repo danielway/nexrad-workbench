@@ -74,7 +74,7 @@ uniform float u_inner_radius;   // ~1.003
 uniform float u_outer_radius;   // ~1.003 + max_beam_height/6371
 uniform float u_max_range_km;
 
-// Data texture (packed u16 values in R16UI 2D texture)
+// Data texture (packed values in R8UI or R16UI 2D texture)
 uniform usampler2D u_volume_tex;
 uniform int u_tex_width;
 uniform sampler2D u_lut_tex;
@@ -529,10 +529,13 @@ impl VolumeRayRenderer {
     }
 
     /// Upload packed volume data and sweep metadata.
+    ///
+    /// `word_size` is 1 for u8 data (R8UI) or 2 for u16 data (R16UI).
     pub fn update_volume(
         &mut self,
         gl: &glow::Context,
         buffer: &[u8],
+        word_size: u8,
         sweeps: &[VolumeSweepMeta],
         site_lat: f64,
         site_lon: f64,
@@ -546,17 +549,25 @@ impl VolumeRayRenderer {
         self.site_lon = site_lon;
         self.sweep_count = sweeps.len().min(MAX_SWEEPS) as i32;
 
+        let bytes_per_value = word_size as usize;
+
         // Determine texture dimensions
-        // buffer is packed u16 values, so total values = buffer.len() / 2
-        let total_values = buffer.len() / 2;
+        let total_values = buffer.len() / bytes_per_value;
         let tex_width = 4096i32;
         let tex_height = ((total_values as i32 + tex_width - 1) / tex_width).max(1);
         self.tex_width = tex_width;
 
         // Pad buffer to fill full texture
-        let padded_size = (tex_width * tex_height) as usize * 2;
+        let padded_size = (tex_width * tex_height) as usize * bytes_per_value;
         let mut padded = buffer.to_vec();
         padded.resize(padded_size, 0);
+
+        // Choose texture format based on word size
+        let (internal_fmt, data_type) = if word_size == 1 {
+            (glow::R8UI as i32, glow::UNSIGNED_BYTE)
+        } else {
+            (glow::R16UI as i32, glow::UNSIGNED_SHORT)
+        };
 
         unsafe {
             // Delete old texture
@@ -569,12 +580,12 @@ impl VolumeRayRenderer {
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::R16UI as i32,
+                internal_fmt,
                 tex_width,
                 tex_height,
                 0,
                 glow::RED_INTEGER,
-                glow::UNSIGNED_SHORT,
+                data_type,
                 glow::PixelUnpackData::Slice(Some(&padded)),
             );
             gl.tex_parameter_i32(
@@ -645,12 +656,13 @@ impl VolumeRayRenderer {
         self.has_data = true;
 
         log::info!(
-            "Volume texture: {}x{} ({} values, {} sweeps, {:.1}KB)",
+            "Volume texture: {}x{} ({} values, {} sweeps, {:.1}KB, {})",
             tex_width,
             tex_height,
             total_values,
             self.sweep_count,
             buffer.len() as f64 / 1024.0,
+            if word_size == 1 { "R8UI" } else { "R16UI" },
         );
     }
 

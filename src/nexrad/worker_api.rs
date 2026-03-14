@@ -168,6 +168,7 @@ struct VolumeRenderSweepMeta {
 #[serde(rename_all = "camelCase")]
 struct VolumeRenderResponse {
     sweep_count: u32,
+    word_size: u8,
     sweep_meta: Vec<VolumeRenderSweepMeta>,
     product: String,
     total_ms: f64,
@@ -651,10 +652,20 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let store = idb_store().await?;
 
         // Collect all sweep data into a packed buffer.
-        // We widen everything to u16 (2 bytes per gate) so the shader only needs one format.
+        // We keep native word size when all sweeps are u8 to halve transfer cost.
+        // Only widen to u16 when at least one sweep has u16 data.
         let mut packed_data: Vec<u8> = Vec::new();
         let mut sweep_meta_vec: Vec<VolumeRenderSweepMeta> = Vec::new();
-        let mut data_offset: u32 = 0; // offset in u16 elements, not bytes
+        let mut data_offset: u32 = 0; // offset in values (not bytes)
+        let mut has_u16 = false;
+
+        // First pass: read all sweep blobs and headers, determine word size
+        struct SweepBlob {
+            blob_buffer: js_sys::ArrayBuffer,
+            header: SweepHeader,
+            total_values: usize,
+        }
+        let mut sweep_blobs: Vec<SweepBlob> = Vec::new();
 
         for &elev_num in &elevation_numbers {
             let sweep_key = SweepDataKey::new(scan_key.clone(), elev_num, &product_str);
@@ -674,14 +685,40 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 Err(_) => continue,
             };
 
-            let az = header.azimuth_count as usize;
-            let gc = header.gate_count as usize;
-            let total_values = az * gc;
+            if header.data_word_size != 1 {
+                has_u16 = true;
+            }
 
-            // Copy raw gate values, widening u8 → u16 if needed
-            if header.data_word_size == 1 {
+            let total_values = header.azimuth_count as usize * header.gate_count as usize;
+            sweep_blobs.push(SweepBlob {
+                blob_buffer,
+                header,
+                total_values,
+            });
+        }
+
+        // Second pass: pack data using native word size when all u8,
+        // widening to u16 only when mixed.
+        let word_size: u8 = if has_u16 { 2 } else { 1 };
+
+        for sb in &sweep_blobs {
+            let header = &sb.header;
+            let total_values = sb.total_values;
+
+            if word_size == 1 {
+                // All sweeps are u8: copy raw bytes, no widening
                 let u8_view = js_sys::Uint8Array::new_with_byte_offset_and_length(
-                    &blob_buffer,
+                    &sb.blob_buffer,
+                    header.gate_values_offset,
+                    total_values as u32,
+                );
+                let prev_len = packed_data.len();
+                packed_data.resize(prev_len + total_values, 0);
+                u8_view.copy_to(&mut packed_data[prev_len..]);
+            } else if header.data_word_size == 1 {
+                // Mixed volume: widen this u8 sweep to u16
+                let u8_view = js_sys::Uint8Array::new_with_byte_offset_and_length(
+                    &sb.blob_buffer,
                     header.gate_values_offset,
                     total_values as u32,
                 );
@@ -691,9 +728,9 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     packed_data.extend_from_slice(&(val as u16).to_le_bytes());
                 }
             } else {
-                // u16: copy raw bytes directly (already little-endian)
+                // Native u16: copy raw bytes directly
                 let u8_view = js_sys::Uint8Array::new_with_byte_offset_and_length(
-                    &blob_buffer,
+                    &sb.blob_buffer,
                     header.gate_values_offset,
                     (total_values * 2) as u32,
                 );
@@ -720,16 +757,18 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
         log::info!(
-            "render_volume: {} sweeps, {} values packed ({:.1}KB) in {:.1}ms",
+            "render_volume: {} sweeps, {} values packed ({:.1}KB, u{}) in {:.1}ms",
             sweep_meta_vec.len(),
             data_offset,
             packed_data.len() as f64 / 1024.0,
+            word_size * 8,
             total_ms,
         );
 
         // Serialize scalar/struct fields, then attach the packed buffer separately
         let response = VolumeRenderResponse {
             sweep_count: sweep_meta_vec.len() as u32,
+            word_size,
             sweep_meta: sweep_meta_vec,
             product: product_str,
             total_ms,

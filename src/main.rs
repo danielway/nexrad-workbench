@@ -1939,6 +1939,7 @@ impl WorkbenchApp {
                                 r.update_volume(
                                     gl,
                                     &volume_data.buffer,
+                                    volume_data.word_size,
                                     &volume_data.sweeps,
                                     self.state.viz_state.center_lat,
                                     self.state.viz_state.center_lon,

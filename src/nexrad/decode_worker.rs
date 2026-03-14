@@ -161,8 +161,14 @@ struct VolumeDecodedResultMsg {
     total_ms: f64,
     #[serde(default = "default_product")]
     product: String,
+    #[serde(default = "default_word_size")]
+    word_size: u8,
     #[serde(default)]
     sweep_meta: Vec<VolumeSweepMetaMsg>,
+}
+
+fn default_word_size() -> u8 {
+    2
 }
 
 /// Error message from the worker.
@@ -378,8 +384,11 @@ pub struct VolumeSweepMeta {
 
 /// All-elevation packed volume data for ray-march rendering.
 pub struct VolumeData {
-    /// Packed raw gate values (u16 per value, all sweeps concatenated).
+    /// Packed raw gate values (all sweeps concatenated).
+    /// Byte width per value is determined by `word_size`.
     pub buffer: Vec<u8>,
+    /// Bytes per gate value: 1 (R8UI) when all sweeps are u8, 2 (R16UI) otherwise.
+    pub word_size: u8,
     /// Per-sweep metadata sorted by elevation.
     pub sweeps: Vec<VolumeSweepMeta>,
     pub product: String,
@@ -1118,6 +1127,7 @@ fn handle_volume_decoded_message(
             return;
         }
     };
+    let word_size = r.word_size;
 
     // Extract packed buffer (ArrayBuffer, not serializable via serde)
     let buf_js = js_sys::Reflect::get(data, &"buffer".into()).unwrap_or(JsValue::NULL);
@@ -1156,6 +1166,7 @@ fn handle_volume_decoded_message(
         .borrow_mut()
         .push(WorkerOutcome::VolumeDecoded(VolumeData {
             buffer,
+            word_size,
             sweeps,
             product: r.product,
             total_ms: r.total_ms,
