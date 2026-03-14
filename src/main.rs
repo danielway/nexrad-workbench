@@ -319,6 +319,9 @@ pub struct WorkbenchApp {
 
     /// Cache of decoded sweep data for stateless sweep animation.
     sweep_cache: SweepDataCache,
+
+    /// Key of the prev-sweep decode currently in flight, to avoid duplicate requests.
+    pending_prev_sweep_key: Option<String>,
 }
 
 // Embed shapefile data at compile time
@@ -630,6 +633,7 @@ impl WorkbenchApp {
             backfill_in_progress: false,
             network_monitor: nexrad::NetworkMonitor::new(),
             sweep_cache: SweepDataCache::new(4),
+            pending_prev_sweep_key: None,
         };
 
         // Check cross-origin isolation status on startup
@@ -1968,7 +1972,11 @@ impl WorkbenchApp {
                                 .displayed_sweep_elevation_number
                                 .is_some_and(|e| e == result.context.elevation_number);
                         if self.state.render_processing.sweep_animation && !is_current_scan {
-                            log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id,);
+                            log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id);
+                            // Clear pending tracker so sync_prev_sweep_texture can load from cache
+                            if self.pending_prev_sweep_key.as_ref() == Some(&result_sweep_id) {
+                                self.pending_prev_sweep_key = None;
+                            }
                         }
                         let t_gpu = web_time::Instant::now();
                         if is_current_scan {
@@ -2531,32 +2539,58 @@ impl WorkbenchApp {
     /// the sweep that *should* be the under-layer based on the current playback
     /// position, not based on what happened to be rendered before.
     ///
-    /// Given the playback position, the "previous sweep" is the most recent
-    /// completed sweep at the target elevation from the preceding scan.
+    /// The "previous sweep" is the one displayed just before the current one:
+    /// within the same scan that's the preceding sweep in time order. Only look
+    /// at the previous scan if the current sweep is the very first in its scan.
     fn sync_prev_sweep_texture(&mut self) {
         if !self.state.render_processing.sweep_animation {
             return;
         }
 
         let playback_ts = self.state.playback_state.playback_position();
-        let target_elev = self.state.viz_state.target_elevation;
+        let displayed_elev = match self.state.displayed_sweep_elevation_number {
+            Some(e) => e,
+            None => return,
+        };
 
-        // Find the current scan and the previous scan
-        let (prev_scan_key_ts, prev_elev_num) = {
-            let prev_scan = self.state.radar_timeline.find_previous_scan(playback_ts);
-            match prev_scan {
+        // Find the current scan and determine the preceding sweep
+        let prev_info = {
+            let current_scan = self
+                .state
+                .radar_timeline
+                .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS);
+            match current_scan {
                 Some(scan) => {
-                    // Find the sweep at target elevation in the previous scan
-                    let sweep = scan.sweeps.iter().rfind(|s| {
-                        (s.elevation - target_elev).abs() < ELEVATION_MATCH_TOLERANCE_DEG
-                    });
-                    match sweep {
-                        Some(s) => (scan.key_timestamp as i64, s.elevation_number),
-                        None => return, // no matching elevation in prev scan
+                    // Find the index of the displayed sweep in this scan
+                    let sweep_idx = scan
+                        .sweeps
+                        .iter()
+                        .position(|s| s.elevation_number == displayed_elev);
+                    match sweep_idx {
+                        Some(idx) if idx > 0 => {
+                            // Previous sweep is the one right before in the same scan
+                            let prev = &scan.sweeps[idx - 1];
+                            Some((scan.key_timestamp as i64, prev.elevation_number))
+                        }
+                        _ => {
+                            // First sweep in scan (or not found) — look at previous scan's last sweep
+                            let prev_scan =
+                                self.state.radar_timeline.find_previous_scan(playback_ts);
+                            prev_scan.and_then(|ps| {
+                                ps.sweeps
+                                    .last()
+                                    .map(|s| (ps.key_timestamp as i64, s.elevation_number))
+                            })
+                        }
                     }
                 }
-                None => return, // no previous scan
+                None => return,
             }
+        };
+
+        let (prev_scan_key_ts, prev_elev_num) = match prev_info {
+            Some(info) => info,
+            None => return, // no previous sweep exists (e.g. very first sweep ever)
         };
 
         let prev_scan_key =
@@ -2594,10 +2628,14 @@ impl WorkbenchApp {
                     );
                 }
             }
+            self.pending_prev_sweep_key = None;
             return;
         }
 
-        // Not in cache — request a decode (the worker will process it after any current request)
+        // Not in cache — request a decode, but only if we haven't already requested this key
+        if self.pending_prev_sweep_key.as_ref() == Some(&desired_prev_id) {
+            return; // already in flight
+        }
         if let Some(ref mut worker) = self.decode_worker {
             let product = self.state.viz_state.product.to_worker_string().to_string();
             log::debug!(
@@ -2606,6 +2644,7 @@ impl WorkbenchApp {
                 prev_elev_num,
             );
             worker.render(prev_scan_key, prev_elev_num, product);
+            self.pending_prev_sweep_key = Some(desired_prev_id);
         }
     }
 

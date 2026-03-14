@@ -94,25 +94,26 @@ pub fn render_canvas_with_geo(
                     //   - After sweep end / between sweeps: full current texture
                     let gpu_sweep = if state.render_processing.sweep_animation {
                         let playback_ts = state.playback_state.playback_position();
-                        // Find the sweep at the target elevation that the playback
-                        // position falls within (or is approaching). With SAILS VCPs
-                        // there can be multiple sweeps at the same elevation in one
-                        // scan, so we pick the most recent one whose start <= playback.
+                        // Find the sweep that's actually displayed (by elevation_number)
+                        // rather than filtering by target_elevation angle. This ensures
+                        // animation works correctly when the displayed sweep is at a
+                        // different elevation than the user's target (e.g. during
+                        // elevation transitions in MostRecent mode).
                         let sweep_bounds = state
                             .radar_timeline
                             .find_recent_scan(playback_ts, 15.0 * 60.0)
                             .and_then(|scan| {
-                                let target = state.viz_state.target_elevation;
-                                // Last matching sweep that has started, or first if none started
+                                let displayed_elev = state.displayed_sweep_elevation_number;
+                                // Find sweep by elevation_number (what's on screen)
                                 scan.sweeps
                                     .iter()
-                                    .filter(|s| (s.elevation - target).abs() < 0.15)
+                                    .filter(|s| Some(s.elevation_number) == displayed_elev)
                                     .rfind(|s| s.start_time <= playback_ts)
                                     .or_else(|| {
                                         // No sweep started yet — use the first upcoming one
                                         scan.sweeps
                                             .iter()
-                                            .find(|s| (s.elevation - target).abs() < 0.15)
+                                            .find(|s| Some(s.elevation_number) == displayed_elev)
                                     })
                                     .map(|s| (s.start_time, s.end_time))
                             });
