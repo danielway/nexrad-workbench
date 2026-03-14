@@ -325,6 +325,14 @@ uniform int u_edge_softening;     // 0 or 1: smooth alpha falloff at echo bounda
 uniform float u_offset;            // moment offset
 uniform float u_scale;             // moment scale (0.0 = raw values are physical)
 
+// Sweep animation (dual-texture compositing)
+uniform sampler2D u_prev_data_tex; // previous scan gate values (R32F, texture unit 3)
+uniform int u_sweep_enabled;       // 0 or 1
+uniform float u_sweep_azimuth;     // current sweep line angle in degrees
+uniform float u_sweep_start;       // azimuth where the sweep began collecting
+uniform float u_prev_offset;       // previous scan moment offset
+uniform float u_prev_scale;        // previous scan moment scale
+
 const float PI = 3.14159265359;
 
 // Sample the raw data texture at a given (gate_index, azimuth_index).
@@ -336,6 +344,21 @@ float sample_data(float g, float a) {
     float gu = (g + 0.5) / u_gate_count;
     float av = (a + 0.5) / u_azimuth_count;
     return texture(u_data_tex, vec2(gu, av)).r;
+}
+
+// Sample the previous scan's data texture at a given (gate_index, azimuth_index).
+float sample_prev_data(float g, float a) {
+    if (g < 0.0 || g >= u_gate_count || a < 0.0 || a >= u_azimuth_count) {
+        return 0.0;
+    }
+    float gu = (g + 0.5) / u_gate_count;
+    float av = (a + 0.5) / u_azimuth_count;
+    return texture(u_prev_data_tex, vec2(gu, av)).r;
+}
+
+// Route sampling to current or previous texture.
+float sample_either(float g, float a, bool use_prev) {
+    return use_prev ? sample_prev_data(g, a) : sample_data(g, a);
 }
 
 // Raw values 0 (below threshold) and 1 (range folded) are sentinels.
@@ -446,6 +469,17 @@ void main() {
         return;
     }
 
+    // Sweep animation: determine whether to sample previous or current texture.
+    // The sweep collects radials CW from u_sweep_start to u_sweep_azimuth.
+    // Pixels in that arc use the new (current) texture; everything else uses
+    // the old (previous) texture.
+    bool use_prev = false;
+    if (u_sweep_enabled == 1) {
+        float swept_arc = mod(u_sweep_azimuth - u_sweep_start, 360.0);
+        float pixel_from_start = mod(azimuth_deg - u_sweep_start, 360.0);
+        use_prev = (pixel_from_start >= swept_arc);
+    }
+
     float value;
     float edge_alpha = 1.0;
 
@@ -461,10 +495,10 @@ void main() {
         float g_hi = min(g_lo + 1.0, u_gate_count - 1.0);
         float g_frac = gate_idx - g_lo;
 
-        float v00 = sample_data(g_lo, az_lo);
-        float v10 = sample_data(g_hi, az_lo);
-        float v01 = sample_data(g_lo, az_hi);
-        float v11 = sample_data(g_hi, az_hi);
+        float v00 = sample_either(g_lo, az_lo, use_prev);
+        float v10 = sample_either(g_hi, az_lo, use_prev);
+        float v01 = sample_either(g_lo, az_hi, use_prev);
+        float v11 = sample_either(g_hi, az_hi, use_prev);
 
         // Weighted average skipping SENTINEL values
         float sum = 0.0;
@@ -497,7 +531,7 @@ void main() {
             fragColor = vec4(0.0);
             return;
         }
-        value = sample_data(floor(gate_idx), best_idx);
+        value = sample_either(floor(gate_idx), best_idx, use_prev);
     }
 
     if (!is_valid(value)) {
@@ -517,7 +551,7 @@ void main() {
                     if (dg == 0 && da == 0) continue;
                     float ng = center_g + float(dg);
                     float na = mod(center_az + float(da), u_azimuth_count);
-                    if (is_valid(sample_data(ng, na))) {
+                    if (is_valid(sample_either(ng, na, use_prev))) {
                         valid_count++;
                     }
                 }
@@ -544,7 +578,7 @@ void main() {
                 for (int da = -r; da <= r; da++) {
                     float ng = center_g + float(dg);
                     float na = mod(center_az + float(da), u_azimuth_count);
-                    float sv = sample_data(ng, na);
+                    float sv = sample_either(ng, na, use_prev);
                     if (is_valid(sv)) {
                         // Range-aware: scale azimuthal distance by normalized range
                         // so smoothing is spatially uniform (azimuths are wider at far range)
@@ -562,12 +596,14 @@ void main() {
         }
     }
 
-    // Convert raw value to physical units: physical = (raw - offset) / scale
+    // Convert raw value to physical units, using appropriate offset/scale
+    float phys_offset = use_prev ? u_prev_offset : u_offset;
+    float phys_scale = use_prev ? u_prev_scale : u_scale;
     float physical;
-    if (u_scale == 0.0) {
+    if (phys_scale == 0.0) {
         physical = value;           // raw values are already physical
     } else {
-        physical = (value - u_offset) / u_scale;
+        physical = (value - phys_offset) / phys_scale;
     }
 
     // Normalize and look up color
@@ -616,6 +652,19 @@ pub struct RadarGpuRenderer {
     u_offset: glow::UniformLocation,
     u_scale: glow::UniformLocation,
 
+    // Sweep animation uniform locations
+    u_sweep_enabled: glow::UniformLocation,
+    u_sweep_azimuth: glow::UniformLocation,
+    u_sweep_start: glow::UniformLocation,
+    u_prev_offset: glow::UniformLocation,
+    u_prev_scale: glow::UniformLocation,
+
+    // Previous scan texture (for sweep animation)
+    prev_data_texture: glow::Texture,
+    has_prev_data: bool,
+    prev_data_offset: f32,
+    prev_data_scale: f32,
+
     // Data metadata
     azimuth_count: u32,
     gate_count: u32,
@@ -629,6 +678,12 @@ pub struct RadarGpuRenderer {
     // Raw-to-physical conversion params (for CPU-side inspector/storm detection)
     data_offset: f32,
     data_scale: f32,
+
+    /// Start timestamp (Unix seconds) of the current sweep data in the GPU texture.
+    current_sweep_start_secs: f64,
+    /// End timestamp (Unix seconds) of the current sweep, used to decide whether
+    /// an incoming decode is temporally adjacent (safe to promote for sweep animation).
+    current_sweep_end_secs: f64,
 
     // CPU-side copies for inspector value lookup
     cpu_azimuths: Vec<f32>,
@@ -726,6 +781,8 @@ impl RadarGpuRenderer {
             gl.uniform_1_i32(Some(&u_lut_tex), 1);
             let u_azimuth_tex = uniform("u_azimuth_tex")?;
             gl.uniform_1_i32(Some(&u_azimuth_tex), 2);
+            let u_prev_data_tex = uniform("u_prev_data_tex")?;
+            gl.uniform_1_i32(Some(&u_prev_data_tex), 3);
 
             let u_radar_center = uniform("u_radar_center")?;
             let u_radar_radius = uniform("u_radar_radius")?;
@@ -750,6 +807,16 @@ impl RadarGpuRenderer {
             // Raw-to-physical conversion uniforms
             let u_offset = uniform("u_offset")?;
             let u_scale = uniform("u_scale")?;
+
+            // Sweep animation uniforms
+            let u_sweep_enabled = uniform("u_sweep_enabled")?;
+            let u_sweep_azimuth = uniform("u_sweep_azimuth")?;
+            let u_sweep_start = uniform("u_sweep_start")?;
+            let u_prev_offset = uniform("u_prev_offset")?;
+            let u_prev_scale = uniform("u_prev_scale")?;
+
+            // Create placeholder for previous data texture
+            let prev_data_texture = create_r32f_texture(gl, 1, 1, &[0.0]);
 
             gl.use_program(None);
 
@@ -779,6 +846,15 @@ impl RadarGpuRenderer {
                 u_edge_softening,
                 u_offset,
                 u_scale,
+                u_sweep_enabled,
+                u_sweep_azimuth,
+                u_sweep_start,
+                u_prev_offset,
+                u_prev_scale,
+                prev_data_texture,
+                has_prev_data: false,
+                prev_data_offset: 0.0,
+                prev_data_scale: 1.0,
                 azimuth_count: 0,
                 gate_count: 0,
                 first_gate_km: 0.0,
@@ -789,6 +865,8 @@ impl RadarGpuRenderer {
                 has_data: false,
                 data_offset: 0.0,
                 data_scale: 1.0,
+                current_sweep_start_secs: 0.0,
+                current_sweep_end_secs: 0.0,
                 cpu_azimuths: Vec::new(),
                 cpu_gate_values: Vec::new(),
                 cpu_radial_times: Vec::new(),
@@ -962,9 +1040,53 @@ impl RadarGpuRenderer {
     /// Clear all radar data (e.g. on site change).
     pub fn clear_data(&mut self) {
         self.has_data = false;
+        self.has_prev_data = false;
+        self.current_sweep_start_secs = 0.0;
+        self.current_sweep_end_secs = 0.0;
         self.cpu_azimuths.clear();
         self.cpu_gate_values.clear();
         self.cpu_radial_times.clear();
+    }
+
+    /// Returns true if the given sweep start time is temporally adjacent to the
+    /// currently displayed sweep (within 15 minutes). Used to decide whether
+    /// promoting the current texture for sweep animation makes visual sense.
+    pub fn is_adjacent_sweep(&self, new_sweep_start_secs: f64) -> bool {
+        if !self.has_data || self.current_sweep_end_secs == 0.0 {
+            return false;
+        }
+        let gap = (new_sweep_start_secs - self.current_sweep_end_secs).abs();
+        gap < 15.0 * 60.0
+    }
+
+    /// Record the time range of the current sweep (called after update_data).
+    pub fn set_sweep_time_range(&mut self, start_secs: f64, end_secs: f64) {
+        self.current_sweep_start_secs = start_secs;
+        self.current_sweep_end_secs = end_secs;
+    }
+
+    /// Returns the time range (start, end) of the data currently in the GPU texture.
+    /// Returns `(0, 0)` if no data is loaded.
+    pub fn current_sweep_time_range(&self) -> (f64, f64) {
+        (self.current_sweep_start_secs, self.current_sweep_end_secs)
+    }
+
+    /// Move the current data texture to the previous slot for sweep animation.
+    ///
+    /// The current texture becomes the "under-layer" that shows ahead of the
+    /// sweep line, while the next `update_data` call populates the new current
+    /// texture that shows behind the sweep line.
+    pub fn promote_current_to_previous(&mut self, gl: &glow::Context) {
+        unsafe {
+            gl.delete_texture(self.prev_data_texture);
+        }
+        self.prev_data_texture = self.data_texture;
+        self.prev_data_offset = self.data_offset;
+        self.prev_data_scale = self.data_scale;
+        self.has_prev_data = self.has_data;
+        // Create fresh placeholder so update_data doesn't delete the promoted texture
+        self.data_texture = unsafe { create_r32f_texture(gl, 1, 1, &[0.0]) };
+        self.has_data = false;
     }
 
     /// Look up the raw data value at a given polar coordinate.
@@ -1072,6 +1194,7 @@ impl RadarGpuRenderer {
         radar_radius: f32,
         viewport_size: [f32; 2],
         processing: &RenderProcessing,
+        sweep_info: Option<(f32, f32)>,
     ) {
         if !self.has_data {
             return;
@@ -1098,6 +1221,8 @@ impl RadarGpuRenderer {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.lut_texture));
             gl.active_texture(glow::TEXTURE2);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.azimuth_texture));
+            gl.active_texture(glow::TEXTURE3);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.prev_data_texture));
 
             // Set uniforms
             gl.uniform_2_f32(Some(&self.u_radar_center), radar_center[0], radar_center[1]);
@@ -1143,6 +1268,17 @@ impl RadarGpuRenderer {
             // Raw-to-physical conversion
             gl.uniform_1_f32(Some(&self.u_offset), self.data_offset);
             gl.uniform_1_f32(Some(&self.u_scale), self.data_scale);
+
+            // Sweep animation uniforms — enable even without prev data; the 1x1
+            // placeholder texture returns 0.0 (below-threshold sentinel → transparent),
+            // so the first sweep progressively reveals against a blank background.
+            let sweep_on = sweep_info.is_some();
+            gl.uniform_1_i32(Some(&self.u_sweep_enabled), sweep_on as i32);
+            let (sweep_az, sweep_start) = sweep_info.unwrap_or((0.0, 0.0));
+            gl.uniform_1_f32(Some(&self.u_sweep_azimuth), sweep_az);
+            gl.uniform_1_f32(Some(&self.u_sweep_start), sweep_start);
+            gl.uniform_1_f32(Some(&self.u_prev_offset), self.prev_data_offset);
+            gl.uniform_1_f32(Some(&self.u_prev_scale), self.prev_data_scale);
 
             // Draw fullscreen quad
             gl.draw_arrays(glow::TRIANGLES, 0, 6);

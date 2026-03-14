@@ -84,7 +84,30 @@ pub fn render_canvas_with_geo(
                     &state.layer_state.geo,
                 );
 
+                let sweep_info = compute_sweep_line_azimuth(state);
+
                 if let Some(renderer) = gpu_renderer {
+                    // Only enable sweep compositing when the playback position
+                    // falls within the time range of the data currently in the
+                    // GPU texture. Otherwise the sweep line animates over stale
+                    // data while waiting for a new decode to arrive.
+                    let gpu_sweep = if state.render_processing.sweep_animation {
+                        let playback_ts = state.playback_state.playback_position();
+                        let (tex_start, tex_end) = {
+                            let r = renderer.lock().expect("renderer mutex poisoned");
+                            r.current_sweep_time_range()
+                        };
+                        let in_texture_range = tex_end > 0.0
+                            && playback_ts >= tex_start
+                            && playback_ts <= tex_end + 30.0; // small grace period
+                        if in_texture_range {
+                            sweep_info
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
                     draw_radar_gpu(
                         ui,
                         &projection,
@@ -93,15 +116,19 @@ pub fn render_canvas_with_geo(
                         state.viz_state.center_lat,
                         state.viz_state.center_lon,
                         &state.render_processing,
+                        gpu_sweep,
                     );
+                    // Continuous repaint while sweep animation is compositing
+                    if gpu_sweep.is_some() {
+                        ui.ctx().request_repaint();
+                    }
                 }
 
                 if state.storm_cells_visible && !state.detected_storm_cells.is_empty() {
                     render_storm_cells(&painter, &projection, &state.detected_storm_cells, dark);
                 }
 
-                let sweep_azimuth = compute_sweep_line_azimuth(state);
-                render_radar_sweep(&painter, &projection, state, sweep_azimuth);
+                render_radar_sweep(&painter, &projection, state, sweep_info.map(|(az, _)| az));
 
                 if state.distance_tool_active || state.distance_start.is_some() {
                     render_distance_measurement(
@@ -315,6 +342,7 @@ fn handle_globe_interaction(response: &egui::Response, rect: &Rect, state: &mut 
 }
 
 /// Draw radar data using a GPU shader via egui PaintCallback.
+#[allow(clippy::too_many_arguments)]
 fn draw_radar_gpu(
     ui: &mut egui::Ui,
     projection: &MapProjection,
@@ -323,6 +351,7 @@ fn draw_radar_gpu(
     radar_lat: f64,
     radar_lon: f64,
     processing: &RenderProcessing,
+    sweep_info: Option<(f32, f32)>,
 ) {
     // Check if renderer has data and get the actual data range
     let max_range_km = {
@@ -378,6 +407,7 @@ fn draw_radar_gpu(
                     radius_px * px_per_point,
                     [viewport.width_px as f32, viewport.height_px as f32],
                     &processing,
+                    sweep_info,
                 );
             }
         })),
@@ -786,7 +816,11 @@ fn handle_canvas_interaction(
 /// how the radar instrument operates — the antenna changes rotation speed at
 /// different elevation cuts. If per-radial azimuth data is available, we use it
 /// for more accurate positioning.
-fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
+/// Returns `Some((current_azimuth, start_azimuth))` when the sweep line should
+/// be visible. `start_azimuth` is the azimuth where the sweep began collecting
+/// data (the first radial), so the "already swept" arc runs CW from
+/// `start_azimuth` to `current_azimuth`.
+fn compute_sweep_line_azimuth(state: &AppState) -> Option<(f32, f32)> {
     if state
         .playback_state
         .speed
@@ -805,9 +839,10 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
             if duration > 0.0 {
                 // If per-radial azimuth data is available, interpolate from actual azimuths
                 if !sweep.radials.is_empty() {
-                    let mut last_az = 0.0f32;
+                    let start_az = sweep.radials[0].azimuth;
+                    let mut last_az = start_az;
                     let mut last_time = sweep.start_time;
-                    let mut next_az = 360.0f32;
+                    let mut next_az = start_az + 360.0;
                     let mut next_time = sweep.end_time;
 
                     for radial in &sweep.radials {
@@ -831,14 +866,16 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
                     let dt = next_time - last_time;
                     if dt > 0.0 {
                         let frac = (ts - last_time) / dt;
-                        return Some(((last_az + delta_az * frac as f32) % 360.0 + 360.0) % 360.0);
+                        let az = ((last_az + delta_az * frac as f32) % 360.0 + 360.0) % 360.0;
+                        return Some((az, start_az));
                     }
-                    return Some(last_az);
+                    return Some((last_az, start_az));
                 }
 
-                // Fallback: linear interpolation assuming uniform rotation
+                // Fallback: linear interpolation assuming uniform rotation from 0°
                 let progress = (ts - sweep.start_time) / duration;
-                return Some(((progress * 360.0) as f32) % 360.0);
+                let az = ((progress * 360.0) as f32) % 360.0;
+                return Some((az, 0.0));
             }
         }
     }
@@ -846,7 +883,10 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
     // In live mode, extrapolate from the last known radial azimuth/time
     if state.live_mode_state.is_active() {
         let now = js_sys::Date::now() / 1000.0;
-        return state.live_mode_state.estimated_azimuth(now);
+        if let Some(az) = state.live_mode_state.estimated_azimuth(now) {
+            // Live mode doesn't track start azimuth; assume 0°
+            return Some((az, 0.0));
+        }
     }
 
     None

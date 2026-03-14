@@ -1859,6 +1859,15 @@ impl WorkbenchApp {
                             (&self.renderers.gpu, &self.renderers.gl)
                         {
                             if let Ok(mut r) = renderer.lock() {
+                                // Promote current texture to previous for sweep animation,
+                                // but only when the new sweep is temporally adjacent to
+                                // the current one. On timeline jumps the gap is large,
+                                // so we skip promotion and the new scan appears atomically.
+                                if self.state.render_processing.sweep_animation
+                                    && r.is_adjacent_sweep(result.sweep_start_secs)
+                                {
+                                    r.promote_current_to_previous(gl);
+                                }
                                 r.update_data(
                                     gl,
                                     &result.azimuths,
@@ -1871,6 +1880,10 @@ impl WorkbenchApp {
                                     result.offset,
                                     result.scale,
                                     &result.radial_times,
+                                );
+                                r.set_sweep_time_range(
+                                    result.sweep_start_secs,
+                                    result.sweep_end_secs,
                                 );
                                 r.update_color_table(gl, &result.product);
 

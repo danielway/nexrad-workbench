@@ -198,6 +198,14 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.add_space(4.0);
 
+            // Sweep animation
+            ui.checkbox(&mut proc.sweep_animation, "Sweep Animation")
+                .on_hover_text(
+                    "Progressively reveal new data behind the sweep line during playback",
+                );
+
+            ui.add_space(4.0);
+
             // Opacity
             let mut opacity_pct = proc.opacity * 100.0;
             if ui

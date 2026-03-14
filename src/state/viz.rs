@@ -166,6 +166,8 @@ pub struct RenderProcessing {
     pub opacity: f32,
     /// Whether edge softening is enabled (smooth alpha falloff at echo boundaries).
     pub edge_softening: bool,
+    /// Whether sweep animation is enabled (progressive radial reveal during playback).
+    pub sweep_animation: bool,
 }
 
 impl Default for RenderProcessing {
@@ -178,6 +180,7 @@ impl Default for RenderProcessing {
             despeckle_threshold: 3,
             opacity: 1.0,
             edge_softening: false,
+            sweep_animation: false,
         }
     }
 }
