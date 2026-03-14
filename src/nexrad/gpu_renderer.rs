@@ -661,9 +661,10 @@ pub struct RadarGpuRenderer {
 
     // Previous scan texture (for sweep animation)
     prev_data_texture: glow::Texture,
-    has_prev_data: bool,
     prev_data_offset: f32,
     prev_data_scale: f32,
+    /// Identity of the sweep currently in `prev_data_texture` (scan_key|elev_num).
+    prev_sweep_id: Option<String>,
 
     // Data metadata
     azimuth_count: u32,
@@ -679,11 +680,8 @@ pub struct RadarGpuRenderer {
     data_offset: f32,
     data_scale: f32,
 
-    /// Start timestamp (Unix seconds) of the current sweep data in the GPU texture.
-    current_sweep_start_secs: f64,
-    /// End timestamp (Unix seconds) of the current sweep, used to decide whether
-    /// an incoming decode is temporally adjacent (safe to promote for sweep animation).
-    current_sweep_end_secs: f64,
+    /// Identity of the sweep currently in `data_texture` (scan_key|elev_num).
+    current_sweep_id: Option<String>,
 
     // CPU-side copies for inspector value lookup
     cpu_azimuths: Vec<f32>,
@@ -852,9 +850,9 @@ impl RadarGpuRenderer {
                 u_prev_offset,
                 u_prev_scale,
                 prev_data_texture,
-                has_prev_data: false,
                 prev_data_offset: 0.0,
                 prev_data_scale: 1.0,
+                prev_sweep_id: None,
                 azimuth_count: 0,
                 gate_count: 0,
                 first_gate_km: 0.0,
@@ -865,8 +863,7 @@ impl RadarGpuRenderer {
                 has_data: false,
                 data_offset: 0.0,
                 data_scale: 1.0,
-                current_sweep_start_secs: 0.0,
-                current_sweep_end_secs: 0.0,
+                current_sweep_id: None,
                 cpu_azimuths: Vec::new(),
                 cpu_gate_values: Vec::new(),
                 cpu_radial_times: Vec::new(),
@@ -1040,53 +1037,55 @@ impl RadarGpuRenderer {
     /// Clear all radar data (e.g. on site change).
     pub fn clear_data(&mut self) {
         self.has_data = false;
-        self.has_prev_data = false;
-        self.current_sweep_start_secs = 0.0;
-        self.current_sweep_end_secs = 0.0;
+        self.current_sweep_id = None;
+        self.prev_sweep_id = None;
         self.cpu_azimuths.clear();
         self.cpu_gate_values.clear();
         self.cpu_radial_times.clear();
     }
 
-    /// Returns true if the given sweep start time is temporally adjacent to the
-    /// currently displayed sweep (within 15 minutes). Used to decide whether
-    /// promoting the current texture for sweep animation makes visual sense.
-    pub fn is_adjacent_sweep(&self, new_sweep_start_secs: f64) -> bool {
-        if !self.has_data || self.current_sweep_end_secs == 0.0 {
-            return false;
+    /// Identity of the sweep currently loaded in the primary data texture.
+    pub fn current_sweep_id(&self) -> Option<&str> {
+        self.current_sweep_id.as_deref()
+    }
+
+    /// Identity of the sweep currently loaded in the previous data texture.
+    pub fn prev_sweep_id(&self) -> Option<&str> {
+        self.prev_sweep_id.as_deref()
+    }
+
+    /// Set the identity of the current sweep (called after `update_data`).
+    pub fn set_current_sweep_id(&mut self, id: Option<String>) {
+        self.current_sweep_id = id;
+    }
+
+    /// Upload decoded radar data to the *previous* texture slot for sweep
+    /// animation compositing. Only the GPU texture and offset/scale are set;
+    /// CPU-side arrays and color table are not affected.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_previous_data(
+        &mut self,
+        gl: &glow::Context,
+        gate_values: &[f32],
+        azimuth_count: u32,
+        gate_count: u32,
+        offset: f32,
+        scale: f32,
+        sweep_id: Option<String>,
+    ) {
+        self.prev_data_offset = offset;
+        self.prev_data_scale = scale;
+        self.prev_sweep_id = sweep_id;
+
+        if azimuth_count == 0 || gate_count == 0 {
+            return;
         }
-        let gap = (new_sweep_start_secs - self.current_sweep_end_secs).abs();
-        gap < 15.0 * 60.0
-    }
 
-    /// Record the time range of the current sweep (called after update_data).
-    pub fn set_sweep_time_range(&mut self, start_secs: f64, end_secs: f64) {
-        self.current_sweep_start_secs = start_secs;
-        self.current_sweep_end_secs = end_secs;
-    }
-
-    /// Returns the time range (start, end) of the data currently in the GPU texture.
-    /// Returns `(0, 0)` if no data is loaded.
-    pub fn current_sweep_time_range(&self) -> (f64, f64) {
-        (self.current_sweep_start_secs, self.current_sweep_end_secs)
-    }
-
-    /// Move the current data texture to the previous slot for sweep animation.
-    ///
-    /// The current texture becomes the "under-layer" that shows ahead of the
-    /// sweep line, while the next `update_data` call populates the new current
-    /// texture that shows behind the sweep line.
-    pub fn promote_current_to_previous(&mut self, gl: &glow::Context) {
         unsafe {
             gl.delete_texture(self.prev_data_texture);
+            self.prev_data_texture =
+                create_r32f_texture(gl, gate_count as i32, azimuth_count as i32, gate_values);
         }
-        self.prev_data_texture = self.data_texture;
-        self.prev_data_offset = self.data_offset;
-        self.prev_data_scale = self.data_scale;
-        self.has_prev_data = self.has_data;
-        // Create fresh placeholder so update_data doesn't delete the promoted texture
-        self.data_texture = unsafe { create_r32f_texture(gl, 1, 1, &[0.0]) };
-        self.has_data = false;
     }
 
     /// Look up the raw data value at a given polar coordinate.

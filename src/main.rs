@@ -123,6 +123,74 @@ pub struct Renderers {
     pub last_volume_render_request: Option<VolumeRenderRequest>,
 }
 
+/// Cached decoded sweep data for stateless sweep animation.
+///
+/// Stores a small number of recent decode results so the renderer can load
+/// any two sweeps (current + previous) without depending on decode arrival order.
+#[allow(dead_code)] // Fields read when loading from cache into GPU
+struct CachedSweepData {
+    gate_values: Vec<f32>,
+    azimuths: Vec<f32>,
+    azimuth_count: u32,
+    gate_count: u32,
+    first_gate_range_km: f64,
+    gate_interval_km: f64,
+    max_range_km: f64,
+    offset: f32,
+    scale: f32,
+    radial_times: Vec<f64>,
+    sweep_start_secs: f64,
+    sweep_end_secs: f64,
+    product: String,
+}
+
+/// Build a sweep cache key from scan key and elevation number.
+fn sweep_cache_key(scan_key: &str, elevation_number: u8) -> String {
+    format!("{}|{}", scan_key, elevation_number)
+}
+
+/// LRU cache of decoded sweep data. Entries are evicted when the cache exceeds
+/// `max_entries`. Keys are "SCAN_KEY|ELEV_NUM".
+struct SweepDataCache {
+    entries: std::collections::HashMap<String, CachedSweepData>,
+    insertion_order: Vec<String>,
+    max_entries: usize,
+}
+
+impl SweepDataCache {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            insertion_order: Vec::new(),
+            max_entries,
+        }
+    }
+
+    fn insert(&mut self, key: String, data: CachedSweepData) {
+        if self.entries.contains_key(&key) {
+            // Move to end of insertion order
+            self.insertion_order.retain(|k| k != &key);
+        } else if self.entries.len() >= self.max_entries {
+            // Evict oldest
+            if let Some(oldest) = self.insertion_order.first().cloned() {
+                self.entries.remove(&oldest);
+                self.insertion_order.remove(0);
+            }
+        }
+        self.entries.insert(key.clone(), data);
+        self.insertion_order.push(key);
+    }
+
+    fn get(&self, key: &str) -> Option<&CachedSweepData> {
+        self.entries.get(key)
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.insertion_order.clear();
+    }
+}
+
 /// Parameters for a single-elevation render request. Adding a field here
 /// automatically breaks the `PartialEq` comparison, preventing silent omissions.
 #[derive(Clone, PartialEq)]
@@ -248,6 +316,9 @@ pub struct WorkbenchApp {
 
     /// Service worker network monitor (None if SW not available).
     network_monitor: Option<nexrad::NetworkMonitor>,
+
+    /// Cache of decoded sweep data for stateless sweep animation.
+    sweep_cache: SweepDataCache,
 }
 
 // Embed shapefile data at compile time
@@ -558,6 +629,7 @@ impl WorkbenchApp {
             backfill_channel,
             backfill_in_progress: false,
             network_monitor: nexrad::NetworkMonitor::new(),
+            sweep_cache: SweepDataCache::new(4),
         };
 
         // Check cross-origin isolation status on startup
@@ -1436,6 +1508,7 @@ impl WorkbenchApp {
                     r.clear_data();
                 }
             }
+            self.sweep_cache.clear();
             self.state.displayed_scan_timestamp = None;
             self.state.displayed_sweep_elevation_number = None;
             self.previous_site_id = self.state.viz_state.site_id.clone();
@@ -1853,47 +1926,68 @@ impl WorkbenchApp {
 
                         self.state.session_stats.record_render_time(result.total_ms);
 
-                        // Upload decoded data to GPU renderer
-                        let t_gpu = web_time::Instant::now();
-                        if let (Some(ref renderer), Some(ref gl)) =
-                            (&self.renderers.gpu, &self.renderers.gl)
-                        {
-                            if let Ok(mut r) = renderer.lock() {
-                                // Promote current texture to previous for sweep animation,
-                                // but only when the new sweep is temporally adjacent to
-                                // the current one. On timeline jumps the gap is large,
-                                // so we skip promotion and the new scan appears atomically.
-                                if self.state.render_processing.sweep_animation
-                                    && r.is_adjacent_sweep(result.sweep_start_secs)
-                                {
-                                    r.promote_current_to_previous(gl);
-                                }
-                                r.update_data(
-                                    gl,
-                                    &result.azimuths,
-                                    &result.gate_values,
-                                    result.azimuth_count,
-                                    result.gate_count,
-                                    result.first_gate_range_km,
-                                    result.gate_interval_km,
-                                    result.max_range_km,
-                                    result.offset,
-                                    result.scale,
-                                    &result.radial_times,
-                                );
-                                r.set_sweep_time_range(
-                                    result.sweep_start_secs,
-                                    result.sweep_end_secs,
-                                );
-                                r.update_color_table(gl, &result.product);
+                        // Cache decoded data for stateless sweep animation
+                        let result_sweep_id = sweep_cache_key(
+                            &result.context.scan_key,
+                            result.context.elevation_number,
+                        );
+                        self.sweep_cache.insert(
+                            result_sweep_id.clone(),
+                            CachedSweepData {
+                                gate_values: result.gate_values.clone(),
+                                azimuths: result.azimuths.clone(),
+                                azimuth_count: result.azimuth_count,
+                                gate_count: result.gate_count,
+                                first_gate_range_km: result.first_gate_range_km,
+                                gate_interval_km: result.gate_interval_km,
+                                max_range_km: result.max_range_km,
+                                offset: result.offset,
+                                scale: result.scale,
+                                radial_times: result.radial_times.clone(),
+                                sweep_start_secs: result.sweep_start_secs,
+                                sweep_end_secs: result.sweep_end_secs,
+                                product: result.product.clone(),
+                            },
+                        );
 
-                                // Run storm cell detection if enabled
-                                if self.state.storm_cells_visible {
-                                    self.state.detected_storm_cells = r.detect_storm_cells(
-                                        self.state.viz_state.center_lat,
-                                        self.state.viz_state.center_lon,
-                                        self.state.storm_cell_threshold_dbz,
+                        // Upload decoded data to GPU renderer — but only if this
+                        // result is for the currently displayed scan. Background
+                        // prev-sweep decodes are cached but not uploaded here;
+                        // sync_prev_sweep_texture picks them up next frame.
+                        let is_current_scan = self
+                            .current_render_scan_key
+                            .as_ref()
+                            .is_some_and(|k| k == &result.context.scan_key);
+                        let t_gpu = web_time::Instant::now();
+                        if is_current_scan {
+                            if let (Some(ref renderer), Some(ref gl)) =
+                                (&self.renderers.gpu, &self.renderers.gl)
+                            {
+                                if let Ok(mut r) = renderer.lock() {
+                                    r.update_data(
+                                        gl,
+                                        &result.azimuths,
+                                        &result.gate_values,
+                                        result.azimuth_count,
+                                        result.gate_count,
+                                        result.first_gate_range_km,
+                                        result.gate_interval_km,
+                                        result.max_range_km,
+                                        result.offset,
+                                        result.scale,
+                                        &result.radial_times,
                                     );
+                                    r.set_current_sweep_id(Some(result_sweep_id));
+                                    r.update_color_table(gl, &result.product);
+
+                                    // Run storm cell detection if enabled
+                                    if self.state.storm_cells_visible {
+                                        self.state.detected_storm_cells = r.detect_storm_cells(
+                                            self.state.viz_state.center_lat,
+                                            self.state.viz_state.center_lon,
+                                            self.state.storm_cell_threshold_dbz,
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -2421,6 +2515,82 @@ impl WorkbenchApp {
         }
     }
 
+    /// Stateless sweep animation: ensure the previous-sweep GPU texture matches
+    /// the sweep that *should* be the under-layer based on the current playback
+    /// position, not based on what happened to be rendered before.
+    ///
+    /// Given the playback position, the "previous sweep" is the most recent
+    /// completed sweep at the target elevation from the preceding scan.
+    fn sync_prev_sweep_texture(&mut self) {
+        if !self.state.render_processing.sweep_animation {
+            return;
+        }
+
+        let playback_ts = self.state.playback_state.playback_position();
+        let target_elev = self.state.viz_state.target_elevation;
+
+        // Find the current scan and the previous scan
+        let (prev_scan_key_ts, prev_elev_num) = {
+            let prev_scan = self.state.radar_timeline.find_previous_scan(playback_ts);
+            match prev_scan {
+                Some(scan) => {
+                    // Find the sweep at target elevation in the previous scan
+                    let sweep = scan.sweeps.iter().rfind(|s| {
+                        (s.elevation - target_elev).abs() < ELEVATION_MATCH_TOLERANCE_DEG
+                    });
+                    match sweep {
+                        Some(s) => (scan.key_timestamp as i64, s.elevation_number),
+                        None => return, // no matching elevation in prev scan
+                    }
+                }
+                None => return, // no previous scan
+            }
+        };
+
+        let prev_scan_key =
+            data::ScanKey::from_secs(&self.state.viz_state.site_id, prev_scan_key_ts)
+                .to_storage_key();
+        let desired_prev_id = sweep_cache_key(&prev_scan_key, prev_elev_num);
+
+        // Check if the GPU already has the right data
+        if let Some(ref renderer) = self.renderers.gpu {
+            if let Ok(r) = renderer.lock() {
+                if r.prev_sweep_id() == Some(desired_prev_id.as_str()) {
+                    return; // already loaded
+                }
+            }
+        }
+
+        // Try to load from cache
+        if let Some(cached) = self.sweep_cache.get(&desired_prev_id) {
+            if let (Some(ref renderer), Some(ref gl)) = (&self.renderers.gpu, &self.renderers.gl) {
+                if let Ok(mut r) = renderer.lock() {
+                    r.update_previous_data(
+                        gl,
+                        &cached.gate_values,
+                        cached.azimuth_count,
+                        cached.gate_count,
+                        cached.offset,
+                        cached.scale,
+                        Some(desired_prev_id.clone()),
+                    );
+                }
+            }
+            return;
+        }
+
+        // Not in cache — request a decode (the worker will process it after any current request)
+        if let Some(ref mut worker) = self.decode_worker {
+            let product = self.state.viz_state.product.to_worker_string().to_string();
+            log::debug!(
+                "Requesting prev sweep decode: {} elev={}",
+                prev_scan_key,
+                prev_elev_num,
+            );
+            worker.render(prev_scan_key, prev_elev_num, product);
+        }
+    }
+
     /// Re-render when the user changes elevation, product, or view mode.
     fn request_render_if_needed(&mut self) {
         // Detect elevation/product changes and trigger worker re-render.
@@ -2520,6 +2690,7 @@ impl eframe::App for WorkbenchApp {
         self.pump_download_queue(ctx, dl_sel, dl_pos, pump);
         self.handle_streaming_results(ctx);
         self.advance_playback();
+        self.sync_prev_sweep_texture();
         self.request_render_if_needed();
         self.update_network_stats();
         self.persist_url_state();

@@ -87,29 +87,34 @@ pub fn render_canvas_with_geo(
                 let sweep_info = compute_sweep_line_azimuth(state);
 
                 if let Some(renderer) = gpu_renderer {
-                    // When sweep animation is enabled, use the GPU texture's time
-                    // range to decide compositing mode:
-                    //   - Before sweep start: all pixels from prev texture (nothing
-                    //     visible if no prev data — the sweep hasn't started yet)
+                    // When sweep animation is enabled, use the timeline's sweep
+                    // boundaries (not GPU texture metadata) to decide compositing:
+                    //   - Before sweep start: all pixels from prev texture
                     //   - During sweep: normal compositing from sweep line position
-                    //   - After sweep end: full current texture (sweep complete)
-                    //   - No data loaded: disabled
+                    //   - After sweep end / between sweeps: full current texture
                     let gpu_sweep = if state.render_processing.sweep_animation {
                         let playback_ts = state.playback_state.playback_position();
-                        let (tex_start, tex_end) = {
-                            let r = renderer.lock().expect("renderer mutex poisoned");
-                            r.current_sweep_time_range()
-                        };
-                        if tex_end <= 0.0 {
-                            None // no data loaded
-                        } else if playback_ts < tex_start {
-                            // Before sweep: swept_arc = 0, all pixels use prev
-                            Some((0.0, 0.0))
-                        } else if playback_ts <= tex_end {
-                            // Mid-sweep: use computed sweep line position
-                            sweep_info
-                        } else {
-                            None // past sweep end: show full current texture
+                        // Find the first sweep at the target elevation in the current scan
+                        let sweep_bounds = state
+                            .radar_timeline
+                            .find_recent_scan(playback_ts, 15.0 * 60.0)
+                            .and_then(|scan| {
+                                let target = state.viz_state.target_elevation;
+                                scan.sweeps
+                                    .iter()
+                                    .find(|s| (s.elevation - target).abs() < 0.15)
+                                    .map(|s| (s.start_time, s.end_time))
+                            });
+                        match sweep_bounds {
+                            Some((s, _)) if playback_ts < s => {
+                                // Before sweep start: show all-prev (nothing from current)
+                                Some((0.0, 0.0))
+                            }
+                            Some((_, e)) if playback_ts <= e => {
+                                // Mid-sweep: use computed sweep line position
+                                sweep_info
+                            }
+                            _ => None, // past sweep end or no sweep found: show full current
                         }
                     } else {
                         None
