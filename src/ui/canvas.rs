@@ -87,23 +87,29 @@ pub fn render_canvas_with_geo(
                 let sweep_info = compute_sweep_line_azimuth(state);
 
                 if let Some(renderer) = gpu_renderer {
-                    // Only enable sweep compositing when the playback position
-                    // falls within the time range of the data currently in the
-                    // GPU texture. Otherwise the sweep line animates over stale
-                    // data while waiting for a new decode to arrive.
+                    // When sweep animation is enabled, use the GPU texture's time
+                    // range to decide compositing mode:
+                    //   - Before sweep start: all pixels from prev texture (nothing
+                    //     visible if no prev data — the sweep hasn't started yet)
+                    //   - During sweep: normal compositing from sweep line position
+                    //   - After sweep end: full current texture (sweep complete)
+                    //   - No data loaded: disabled
                     let gpu_sweep = if state.render_processing.sweep_animation {
                         let playback_ts = state.playback_state.playback_position();
                         let (tex_start, tex_end) = {
                             let r = renderer.lock().expect("renderer mutex poisoned");
                             r.current_sweep_time_range()
                         };
-                        let in_texture_range = tex_end > 0.0
-                            && playback_ts >= tex_start
-                            && playback_ts <= tex_end + 30.0; // small grace period
-                        if in_texture_range {
+                        if tex_end <= 0.0 {
+                            None // no data loaded
+                        } else if playback_ts < tex_start {
+                            // Before sweep: swept_arc = 0, all pixels use prev
+                            Some((0.0, 0.0))
+                        } else if playback_ts <= tex_end {
+                            // Mid-sweep: use computed sweep line position
                             sweep_info
                         } else {
-                            None
+                            None // past sweep end: show full current texture
                         }
                     } else {
                         None
