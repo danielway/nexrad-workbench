@@ -75,7 +75,7 @@ type RequestId = u64;
 /// Context for an ingest request.
 pub struct IngestContext {
     pub timestamp_secs: i64,
-    pub _file_name: String,
+    pub file_name: String,
     pub fetch_latency_ms: f64,
 }
 
@@ -92,7 +92,7 @@ pub struct IngestResult {
     pub sweeps: Vec<crate::data::SweepMeta>,
     /// Full extracted VCP pattern (from Message Type 5).
     /// Available for direct VCP inspection; primary propagation is via IDB metadata.
-    pub _vcp: Option<crate::data::keys::ExtractedVcp>,
+    pub vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Total time in worker (ms).
     pub total_ms: f64,
     /// Sub-phase timing: record splitting.
@@ -111,10 +111,10 @@ pub struct IngestResult {
 
 /// Context for a per-chunk ingest request (real-time streaming).
 pub struct ChunkIngestContext {
-    pub _site_id: String,
+    pub site_id: String,
     pub timestamp_secs: i64,
-    pub _chunk_index: u32,
-    pub _is_end: bool,
+    pub chunk_index: u32,
+    pub is_end: bool,
 }
 
 /// Successful per-chunk ingest result from the worker.
@@ -152,14 +152,14 @@ pub struct ChunkIngestResult {
 /// Context for a render/decode request.
 pub struct RenderContext {
     /// Scan storage key.
-    pub _scan_key: String,
+    pub scan_key: String,
     /// Elevation number being rendered.
-    pub _elevation_number: u8,
+    pub elevation_number: u8,
 }
 
 /// Decoded radar sweep data from the worker (raw data for GPU rendering).
 pub struct DecodeResult {
-    pub _context: RenderContext,
+    pub context: RenderContext,
     /// Sorted azimuth angles in degrees.
     pub azimuths: Vec<f32>,
     /// Flat row-major raw gate values (azimuth_count * gate_count).
@@ -240,7 +240,7 @@ pub enum WorkerOutcome {
 /// Results are polled via `try_recv()` each frame.
 /// Context for a volume render request.
 pub struct VolumeRenderContext {
-    pub _scan_key: String,
+    pub scan_key: String,
 }
 
 pub struct DecodeWorker {
@@ -411,7 +411,7 @@ impl DecodeWorker {
             id,
             IngestContext {
                 timestamp_secs,
-                _file_name: file_name.clone(),
+                file_name: file_name.clone(),
                 fetch_latency_ms,
             },
         );
@@ -442,8 +442,8 @@ impl DecodeWorker {
         self.pending_render.borrow_mut().insert(
             id,
             RenderContext {
-                _scan_key: scan_key.clone(),
-                _elevation_number: elevation_number,
+                scan_key: scan_key.clone(),
+                elevation_number,
             },
         );
 
@@ -465,7 +465,7 @@ impl DecodeWorker {
         self.pending_volume.borrow_mut().insert(
             id,
             VolumeRenderContext {
-                _scan_key: scan_key.clone(),
+                scan_key: scan_key.clone(),
             },
         );
 
@@ -497,10 +497,10 @@ impl DecodeWorker {
         self.pending_chunk_ingest.borrow_mut().insert(
             id,
             ChunkIngestContext {
-                _site_id: site_id.clone(),
+                site_id: site_id.clone(),
                 timestamp_secs,
-                _chunk_index: chunk_index,
-                _is_end: is_end,
+                chunk_index,
+                is_end,
             },
         );
 
@@ -667,7 +667,7 @@ fn handle_ingested_message(
             records_stored,
             elevation_numbers,
             sweeps,
-            _vcp: vcp,
+            vcp,
             total_ms,
             split_ms,
             decompress_ms,
@@ -816,7 +816,7 @@ fn handle_decoded_message(
     results
         .borrow_mut()
         .push(WorkerOutcome::Decoded(DecodeResult {
-            _context: context,
+            context,
             azimuths,
             gate_values,
             azimuth_count,
@@ -968,7 +968,7 @@ fn handle_volume_decoded_message(
     let d = JsObj(data);
     let id = d.f64("id") as u64;
 
-    let _context = match pending.borrow_mut().remove(&id) {
+    let _volume_ctx = match pending.borrow_mut().remove(&id) {
         Some(ctx) => ctx,
         None => {
             log::warn!("Received volume_decoded message for unknown request {}", id);
