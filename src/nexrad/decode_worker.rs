@@ -208,8 +208,11 @@ pub struct VolumeSweepMeta {
 
 /// All-elevation packed volume data for ray-march rendering.
 pub struct VolumeData {
-    /// Packed raw gate values (u16 per value, all sweeps concatenated).
+    /// Packed raw gate values (all sweeps concatenated).
+    /// Byte width per value is determined by `word_size`.
     pub buffer: Vec<u8>,
+    /// Bytes per gate value: 1 (R8UI) when all sweeps are u8, 2 (R16UI) otherwise.
+    pub word_size: u8,
     /// Per-sweep metadata sorted by elevation.
     pub sweeps: Vec<VolumeSweepMeta>,
     pub product: String,
@@ -978,6 +981,8 @@ fn handle_volume_decoded_message(
 
     let total_ms = d.f64("totalMs");
     let product = d.str_or("product", "reflectivity");
+    let word_size = d.f64("wordSize") as u8;
+    let word_size = if word_size == 1 { 1u8 } else { 2u8 };
 
     // Extract packed buffer
     let buf_js = js_sys::Reflect::get(data, &"buffer".into()).unwrap_or(JsValue::NULL);
@@ -1022,6 +1027,7 @@ fn handle_volume_decoded_message(
         .borrow_mut()
         .push(WorkerOutcome::VolumeDecoded(VolumeData {
             buffer,
+            word_size,
             sweeps,
             product,
             total_ms,
