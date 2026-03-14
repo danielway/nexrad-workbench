@@ -1236,11 +1236,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 .collect::<Vec<SweepMeta>>()
         });
 
-        let vcp = CHUNK_ACCUM.with(|cell| {
-            cell.borrow()
-                .as_ref()
-                .and_then(|a| a.vcp.clone())
-        });
+        let vcp = CHUNK_ACCUM.with(|cell| cell.borrow().as_ref().and_then(|a| a.vcp.clone()));
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 

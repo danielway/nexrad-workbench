@@ -4,10 +4,10 @@
 //! thread into a dedicated Web Worker. Communication uses `postMessage` with
 //! Transferable ArrayBuffers for zero-copy data transfer.
 
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{MessageEvent, Worker, WorkerOptions, WorkerType};
@@ -962,12 +962,10 @@ fn handle_error_message(data: &JsValue, results: &Rc<RefCell<Vec<WorkerOutcome>>
 
     log::error!("Worker error (request {}): {}", e.id, e.message);
 
-    results
-        .borrow_mut()
-        .push(WorkerOutcome::WorkerError {
-            id: e.id,
-            message: e.message,
-        });
+    results.borrow_mut().push(WorkerOutcome::WorkerError {
+        id: e.id,
+        message: e.message,
+    });
 }
 
 // ============================================================================
