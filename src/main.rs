@@ -1958,6 +1958,14 @@ impl WorkbenchApp {
                             .current_render_scan_key
                             .as_ref()
                             .is_some_and(|k| k == &result.context.scan_key);
+                        log::debug!(
+                            "[sweep-anim] DECODED: id={} sweep=[{:.3}, {:.3}] is_current={} current_key={:?}",
+                            result_sweep_id,
+                            result.sweep_start_secs,
+                            result.sweep_end_secs,
+                            is_current_scan,
+                            self.current_render_scan_key,
+                        );
                         let t_gpu = web_time::Instant::now();
                         if is_current_scan {
                             if let (Some(ref renderer), Some(ref gl)) =
@@ -2386,17 +2394,17 @@ impl WorkbenchApp {
                 if (needs_new_scan || needs_new_sweep) && self.decode_worker.is_some() {
                     if needs_new_scan {
                         log::debug!(
-                            "Scrubbing: new scan at {} elev={} (playback at {})",
+                            "[sweep-anim] ADVANCE: new_scan ts={} elev={} playback={:.3}",
                             scan_ts,
                             target_elev_num,
-                            playback_ts as i64
+                            playback_ts,
                         );
                     } else {
                         log::debug!(
-                            "Scrubbing: new sweep elev_num={} within scan {} (playback at {})",
+                            "[sweep-anim] ADVANCE: new_sweep elev_num={} within scan {} playback={:.3}",
                             target_elev_num,
                             scan_ts,
-                            playback_ts as i64
+                            playback_ts
                         );
                     }
 
@@ -2558,6 +2566,12 @@ impl WorkbenchApp {
                 if r.prev_sweep_id() == Some(desired_prev_id.as_str()) {
                     return; // already loaded
                 }
+                log::debug!(
+                    "[sweep-anim] SYNC-PREV: want={} have={:?} cached={}",
+                    desired_prev_id,
+                    r.prev_sweep_id(),
+                    self.sweep_cache.get(&desired_prev_id).is_some(),
+                );
             }
         }
 
