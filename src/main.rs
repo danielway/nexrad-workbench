@@ -1954,10 +1954,19 @@ impl WorkbenchApp {
                         // result is for the currently displayed scan. Background
                         // prev-sweep decodes are cached but not uploaded here;
                         // sync_prev_sweep_texture picks them up next frame.
+                        // Only upload to the primary GPU texture if this result
+                        // matches what advance_playback intended: same scan key AND
+                        // same elevation number. Without the elevation check, SAILS
+                        // VCPs (duplicate 0.5° at elev 1 and 2) cause oscillation
+                        // where prefetch/sync requests fight the main render path.
                         let is_current_scan = self
                             .current_render_scan_key
                             .as_ref()
-                            .is_some_and(|k| k == &result.context.scan_key);
+                            .is_some_and(|k| k == &result.context.scan_key)
+                            && self
+                                .state
+                                .displayed_sweep_elevation_number
+                                .is_some_and(|e| e == result.context.elevation_number);
                         log::debug!(
                             "[sweep-anim] DECODED: id={} sweep=[{:.3}, {:.3}] is_current={} current_key={:?}",
                             result_sweep_id,
