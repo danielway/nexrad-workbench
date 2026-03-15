@@ -320,6 +320,7 @@ uniform int u_despeckle_enabled;   // 0 or 1
 uniform int u_despeckle_threshold; // min valid neighbors to keep
 uniform float u_opacity;           // global alpha multiplier
 uniform int u_edge_softening;     // 0 or 1: smooth alpha falloff at echo boundaries
+uniform int u_data_age_indicator; // 0 or 1: desaturate oldest data behind sweep line
 
 // Raw-to-physical conversion: physical = (raw - u_offset) / u_scale
 uniform float u_offset;            // moment offset
@@ -472,7 +473,7 @@ void main() {
 
     // Age-based desaturation: oldest quadrant (270°–360° behind sweep) fades out
     float desat_factor = 0.0;
-    if (u_sweep_enabled == 1) {
+    if (u_sweep_enabled == 1 && u_data_age_indicator == 1) {
         float age = mod(u_sweep_azimuth - azimuth_deg + 360.0, 360.0) / 360.0;
         desat_factor = clamp((age - 0.75) / 0.25, 0.0, 1.0) * 0.9;
     }
@@ -794,6 +795,7 @@ pub struct RadarGpuRenderer {
     u_despeckle_threshold: glow::UniformLocation,
     u_opacity: glow::UniformLocation,
     u_edge_softening: glow::UniformLocation,
+    u_data_age_indicator: glow::UniformLocation,
 
     // Raw-to-physical conversion uniform locations
     u_offset: glow::UniformLocation,
@@ -958,6 +960,7 @@ impl RadarGpuRenderer {
             let u_despeckle_threshold = uniform("u_despeckle_threshold")?;
             let u_opacity = uniform("u_opacity")?;
             let u_edge_softening = uniform("u_edge_softening")?;
+            let u_data_age_indicator = uniform("u_data_age_indicator")?;
 
             // Raw-to-physical conversion uniforms
             let u_offset = uniform("u_offset")?;
@@ -1004,6 +1007,7 @@ impl RadarGpuRenderer {
                 u_despeckle_threshold,
                 u_opacity,
                 u_edge_softening,
+                u_data_age_indicator,
                 u_offset,
                 u_scale,
                 u_sweep_enabled,
@@ -1443,6 +1447,10 @@ impl RadarGpuRenderer {
             gl.uniform_1_i32(
                 Some(&self.u_edge_softening),
                 processing.edge_softening as i32,
+            );
+            gl.uniform_1_i32(
+                Some(&self.u_data_age_indicator),
+                processing.data_age_indicator as i32,
             );
 
             // Raw-to-physical conversion

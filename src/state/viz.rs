@@ -168,6 +168,8 @@ pub struct RenderProcessing {
     pub edge_softening: bool,
     /// Whether sweep animation is enabled (progressive radial reveal during playback).
     pub sweep_animation: bool,
+    /// Whether data age indicator is shown (desaturates oldest data behind sweep line).
+    pub data_age_indicator: bool,
 }
 
 impl Default for RenderProcessing {
@@ -181,6 +183,7 @@ impl Default for RenderProcessing {
             opacity: 1.0,
             edge_softening: false,
             sweep_animation: false,
+            data_age_indicator: true,
         }
     }
 }

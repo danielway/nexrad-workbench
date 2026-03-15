@@ -204,6 +204,16 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
                     "Progressively reveal new data behind the sweep line during playback",
                 );
 
+            // Data age indicator (only meaningful when sweep animation is on)
+            ui.add_enabled_ui(proc.sweep_animation, |ui| {
+                ui.indent("data_age_indent", |ui| {
+                    ui.checkbox(&mut proc.data_age_indicator, "Data Age Indicator")
+                        .on_hover_text(
+                            "Desaturate the oldest data behind the sweep line to indicate staleness",
+                        );
+                });
+            });
+
             ui.add_space(4.0);
 
             // Opacity
