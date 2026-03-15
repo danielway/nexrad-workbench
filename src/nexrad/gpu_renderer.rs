@@ -1226,6 +1226,12 @@ impl RadarGpuRenderer {
         self.cpu_radial_times.clear();
     }
 
+    /// Clear only the previous-sweep identity so the shader composites against
+    /// black until a new previous sweep is loaded.
+    pub fn clear_previous_data(&mut self) {
+        self.prev_sweep_id = None;
+    }
+
     /// Identity of the sweep currently loaded in the primary data texture.
     pub fn current_sweep_id(&self) -> Option<&str> {
         self.current_sweep_id.as_deref()

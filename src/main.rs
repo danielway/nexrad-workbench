@@ -2625,6 +2625,12 @@ impl WorkbenchApp {
                 self.state.viz_state.prev_sweep_overlay = None;
                 self.state.viz_state.prev_sweep_scan_timestamp = None;
                 self.state.viz_state.prev_sweep_elevation_number = None;
+                // Clear GPU previous sweep so shader composites against black
+                if let Some(ref renderer) = self.renderers.gpu {
+                    if let Ok(mut r) = renderer.lock() {
+                        r.clear_previous_data();
+                    }
+                }
                 return;
             }
         };
@@ -2641,10 +2647,13 @@ impl WorkbenchApp {
 
         // Check if the GPU already has the right data
         if let Some(ref renderer) = self.renderers.gpu {
-            if let Ok(r) = renderer.lock() {
+            if let Ok(mut r) = renderer.lock() {
                 if r.prev_sweep_id() == Some(desired_prev_id.as_str()) {
                     return; // already loaded
                 }
+                // Clear stale previous sweep immediately — don't composite old data
+                // while the correct previous sweep is being loaded
+                r.clear_previous_data();
                 log::debug!(
                     "[sweep-anim] SYNC-PREV: want={} have={:?} cached={}",
                     desired_prev_id,
