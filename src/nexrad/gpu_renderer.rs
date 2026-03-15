@@ -470,6 +470,13 @@ void main() {
         use_prev = (pixel_from_start >= swept_arc);
     }
 
+    // Age-based desaturation: oldest quadrant (270°–360° behind sweep) fades out
+    float desat_factor = 0.0;
+    if (u_sweep_enabled == 1) {
+        float age = mod(u_sweep_azimuth - azimuth_deg + 360.0, 360.0) / 360.0;
+        desat_factor = clamp((age - 0.75) / 0.25, 0.0, 1.0) * 0.9;
+    }
+
     // --- Previous sweep: same processing pipeline as current sweep, but uses
     // angle-based azimuth indexing (evenly-spaced — accurate for NEXRAD) and
     // prev-specific spatial params / data texture.
@@ -594,6 +601,10 @@ void main() {
 
         float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
         vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
+        if (desat_factor > 0.0) {
+            float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+            color.rgb = mix(color.rgb, vec3(lum), desat_factor);
+        }
         float a = color.a * u_opacity * edge_alpha;
         fragColor = vec4(color.rgb * a, a);
         return;
@@ -739,6 +750,12 @@ void main() {
     // Normalize and look up color
     float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
     vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
+
+    // Age-based desaturation for sweep animation
+    if (desat_factor > 0.0) {
+        float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+        color.rgb = mix(color.rgb, vec3(lum), desat_factor);
+    }
 
     // Apply opacity, edge softening, and output premultiplied alpha (egui requirement)
     float a = color.a * u_opacity * edge_alpha;
