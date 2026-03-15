@@ -2544,6 +2544,7 @@ impl WorkbenchApp {
     /// at the previous scan if the current sweep is the very first in its scan.
     fn sync_prev_sweep_texture(&mut self) {
         if !self.state.render_processing.sweep_animation {
+            self.state.viz_state.prev_sweep_overlay = None;
             return;
         }
 
@@ -2556,12 +2557,22 @@ impl WorkbenchApp {
         // Find the current scan and determine the preceding sweep.
         // In FixedTilt mode, "previous" means the same elevation from the prior scan.
         // In MostRecent mode, "previous" is the sweep collected just before this one.
+        // Returns (scan_key_ts, elevation_number, elevation_deg, start_time, end_time).
         let prev_info = {
             let current_scan = self
                 .state
                 .radar_timeline
                 .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS);
             let render_mode = self.state.viz_state.render_mode;
+            let sweep_to_info = |scan_key_ts: f64, s: &crate::state::radar_data::Sweep| {
+                (
+                    scan_key_ts as i64,
+                    s.elevation_number,
+                    s.elevation,
+                    s.start_time,
+                    s.end_time,
+                )
+            };
             match current_scan {
                 Some(scan) => match render_mode {
                     crate::state::RenderMode::FixedTilt => {
@@ -2571,7 +2582,7 @@ impl WorkbenchApp {
                             ps.sweeps
                                 .iter()
                                 .find(|s| s.elevation_number == displayed_elev)
-                                .map(|s| (ps.key_timestamp as i64, s.elevation_number))
+                                .map(|s| sweep_to_info(ps.key_timestamp, s))
                         })
                     }
                     crate::state::RenderMode::MostRecent => {
@@ -2583,16 +2594,14 @@ impl WorkbenchApp {
                         match sweep_idx {
                             Some(idx) if idx > 0 => {
                                 let prev = &scan.sweeps[idx - 1];
-                                Some((scan.key_timestamp as i64, prev.elevation_number))
+                                Some(sweep_to_info(scan.key_timestamp, prev))
                             }
                             _ => {
                                 // First sweep in scan (or not found) — previous scan's last sweep
                                 let prev_scan =
                                     self.state.radar_timeline.find_previous_scan(playback_ts);
                                 prev_scan.and_then(|ps| {
-                                    ps.sweeps
-                                        .last()
-                                        .map(|s| (ps.key_timestamp as i64, s.elevation_number))
+                                    ps.sweeps.last().map(|s| sweep_to_info(ps.key_timestamp, s))
                                 })
                             }
                         }
@@ -2602,10 +2611,17 @@ impl WorkbenchApp {
             }
         };
 
-        let (prev_scan_key_ts, prev_elev_num) = match prev_info {
+        let (prev_scan_key_ts, prev_elev_num, prev_elev_deg, prev_start, prev_end) = match prev_info
+        {
             Some(info) => info,
-            None => return, // no previous sweep exists (e.g. very first sweep ever)
+            None => {
+                self.state.viz_state.prev_sweep_overlay = None;
+                return;
+            }
         };
+
+        // Store previous sweep metadata for canvas overlay
+        self.state.viz_state.prev_sweep_overlay = Some((prev_elev_deg, prev_start, prev_end));
 
         let prev_scan_key =
             data::ScanKey::from_secs(&self.state.viz_state.site_id, prev_scan_key_ts)
