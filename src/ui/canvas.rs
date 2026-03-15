@@ -895,10 +895,11 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<(f32, f32)> {
                     return Some((last_az, start_az));
                 }
 
-                // Fallback: linear interpolation assuming uniform rotation from 0°
+                // Fallback: linear interpolation assuming uniform rotation from start azimuth
+                let start_az = sweep.start_azimuth;
                 let progress = (ts - sweep.start_time) / duration;
-                let az = ((progress * 360.0) as f32) % 360.0;
-                return Some((az, 0.0));
+                let az = ((start_az + progress as f32 * 360.0) % 360.0 + 360.0) % 360.0;
+                return Some((az, start_az));
             }
         }
     }

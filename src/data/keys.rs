@@ -406,6 +406,9 @@ pub struct SweepMeta {
     pub elevation: f32,
     /// Elevation number (index used for selective record querying).
     pub elevation_number: u8,
+    /// Azimuth angle (degrees) of the chronologically first radial in this sweep.
+    #[serde(default)]
+    pub start_azimuth: f32,
 }
 
 /// A single elevation cut extracted from a VCP message (Message Type 5).

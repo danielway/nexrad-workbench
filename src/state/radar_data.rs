@@ -53,6 +53,8 @@ pub struct Sweep {
     pub elevation: f32,
     /// Elevation number (index into the VCP elevation list)
     pub elevation_number: u8,
+    /// Azimuth angle (degrees) of the chronologically first radial in this sweep.
+    pub start_azimuth: f32,
     /// Individual radials in this sweep
     pub radials: Vec<Radial>,
 }
@@ -262,6 +264,7 @@ impl RadarTimeline {
                     end_time: sweep_end,
                     elevation,
                     elevation_number: (elev_idx + 1) as u8,
+                    start_azimuth: radials.first().map(|r| r.azimuth).unwrap_or(0.0),
                     radials,
                 });
 
@@ -410,6 +413,7 @@ impl RadarTimeline {
                         end_time: sm.end,
                         elevation: sm.elevation,
                         elevation_number: sm.elevation_number,
+                        start_azimuth: sm.start_azimuth,
                         radials: Vec::new(),
                     })
                     .collect();
@@ -489,6 +493,7 @@ mod tests {
             end_time: end,
             elevation,
             elevation_number: elev_num,
+            start_azimuth: 0.0,
             radials: Vec::new(),
         }
     }

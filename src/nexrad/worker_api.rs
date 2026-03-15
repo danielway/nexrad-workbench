@@ -272,7 +272,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let mut decompress_ms_total = 0.0f64;
         let mut decode_only_ms = 0.0f64;
         let mut all_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
-        let mut radial_metas: Vec<(i64, u8, f32)> = Vec::new();
+        let mut radial_metas: Vec<(i64, u8, f32, f32)> = Vec::new();
         let mut has_vcp = false;
         let mut extracted_vcp: Option<ExtractedVcp> = None;
         let mut compressed_count = 0u32;
@@ -325,6 +325,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                         r.collection_timestamp(),
                         r.elevation_number(),
                         r.elevation_angle_degrees(),
+                        r.azimuth_angle_degrees(),
                     ));
                 }
                 all_radials.extend(radials);
@@ -796,7 +797,7 @@ struct ChunkAccumulator {
     scan_key: ScanKey,
     site_id: String,
     all_radials: Vec<::nexrad::model::data::Radial>,
-    radial_metas: Vec<(i64, u8, f32)>,
+    radial_metas: Vec<(i64, u8, f32, f32)>,
     completed_elevations: std::collections::HashSet<u8>,
     last_elevation_number: Option<u8>,
     vcp: Option<ExtractedVcp>,
@@ -1092,6 +1093,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     r.collection_timestamp(),
                     r.elevation_number(),
                     r.elevation_angle_degrees(),
+                    r.azimuth_angle_degrees(),
                 ));
             }
             accum.all_radials.extend(chunk_radials);
@@ -1186,21 +1188,28 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                         }
 
                         // Build sweep meta for this elevation
-                        let elev_metas: Vec<&(i64, u8, f32)> = accum
+                        let elev_metas: Vec<&(i64, u8, f32, f32)> = accum
                             .radial_metas
                             .iter()
-                            .filter(|(_, en, _)| *en == elev_num)
+                            .filter(|(_, en, _, _)| *en == elev_num)
                             .collect();
                         if !elev_metas.is_empty() {
-                            let min_ts = elev_metas.iter().map(|(t, _, _)| *t).min().unwrap();
-                            let max_ts = elev_metas.iter().map(|(t, _, _)| *t).max().unwrap();
-                            let angle_sum: f64 = elev_metas.iter().map(|(_, _, a)| *a as f64).sum();
+                            let min_ts = elev_metas.iter().map(|(t, _, _, _)| *t).min().unwrap();
+                            let max_ts = elev_metas.iter().map(|(t, _, _, _)| *t).max().unwrap();
+                            let angle_sum: f64 =
+                                elev_metas.iter().map(|(_, _, a, _)| *a as f64).sum();
                             let count = elev_metas.len();
+                            let first_az = elev_metas
+                                .iter()
+                                .min_by_key(|(t, _, _, _)| *t)
+                                .map(|(_, _, _, az)| *az)
+                                .unwrap_or(0.0);
                             metas.push(SweepMeta {
                                 start: min_ts as f64 / 1000.0,
                                 end: max_ts as f64 / 1000.0,
                                 elevation: (angle_sum / count as f64) as f32,
                                 elevation_number: elev_num,
+                                start_azimuth: first_az,
                             });
                         }
                     }
@@ -1426,8 +1435,8 @@ fn decode_with_vcp_extraction<'a>(
 
 /// Build `SweepMeta` entries by grouping radial metadata by elevation number.
 ///
-/// Each tuple is `(timestamp_ms, elevation_number, elevation_angle_degrees)`.
-fn build_sweep_meta(radial_metas: &[(i64, u8, f32)]) -> Vec<SweepMeta> {
+/// Each tuple is `(timestamp_ms, elevation_number, elevation_angle_degrees, azimuth_angle_degrees)`.
+fn build_sweep_meta(radial_metas: &[(i64, u8, f32, f32)]) -> Vec<SweepMeta> {
     use std::collections::BTreeMap;
 
     struct Accum {
@@ -1435,18 +1444,24 @@ fn build_sweep_meta(radial_metas: &[(i64, u8, f32)]) -> Vec<SweepMeta> {
         max_ts_ms: i64,
         angle_sum: f64,
         count: u32,
+        /// Azimuth of the radial with the earliest timestamp.
+        first_azimuth: f32,
     }
 
     let mut groups: BTreeMap<u8, Accum> = BTreeMap::new();
 
-    for &(ts_ms, elev_num, elev_angle) in radial_metas {
+    for &(ts_ms, elev_num, elev_angle, azimuth) in radial_metas {
         let entry = groups.entry(elev_num).or_insert(Accum {
             min_ts_ms: ts_ms,
             max_ts_ms: ts_ms,
             angle_sum: 0.0,
             count: 0,
+            first_azimuth: azimuth,
         });
-        entry.min_ts_ms = entry.min_ts_ms.min(ts_ms);
+        if ts_ms < entry.min_ts_ms {
+            entry.min_ts_ms = ts_ms;
+            entry.first_azimuth = azimuth;
+        }
         entry.max_ts_ms = entry.max_ts_ms.max(ts_ms);
         entry.angle_sum += elev_angle as f64;
         entry.count += 1;
@@ -1459,6 +1474,7 @@ fn build_sweep_meta(radial_metas: &[(i64, u8, f32)]) -> Vec<SweepMeta> {
             end: acc.max_ts_ms as f64 / 1000.0,
             elevation: (acc.angle_sum / acc.count as f64) as f32,
             elevation_number: elev_num,
+            start_azimuth: acc.first_azimuth,
         })
         .collect()
 }
