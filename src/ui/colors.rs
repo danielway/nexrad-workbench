@@ -50,6 +50,18 @@ pub mod radar {
 
     /// Active sweep line.
     pub const SWEEP_LINE: Color32 = Color32::from_rgb(100, 255, 100);
+    /// Sweep start boundary line (blue-purple, matches previous sweep arc).
+    pub fn sweep_start_line() -> Color32 {
+        Color32::from_rgba_unmultiplied(160, 160, 220, 180)
+    }
+    /// Stale sweep line (muted grey, shown between sweeps).
+    pub fn sweep_line_stale() -> Color32 {
+        Color32::from_rgba_unmultiplied(120, 120, 120, 140)
+    }
+    /// Stale sweep start line (muted grey-blue, shown between sweeps).
+    pub fn sweep_start_line_stale() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 100, 120, 100)
+    }
 }
 
 /// Colors for timeline visualization.
@@ -101,6 +113,8 @@ pub mod timeline {
     pub const SELECTION: Color32 = Color32::from_rgb(255, 100, 100);
     /// Active sweep highlight (theme-independent).
     pub const ACTIVE_SWEEP: Color32 = Color32::from_rgb(255, 255, 100);
+    /// Previous active sweep highlight during sweep animation (theme-independent).
+    pub const PREV_ACTIVE_SWEEP: Color32 = Color32::from_rgb(160, 200, 255);
     /// "Now" marker (current wall-clock time).
     pub const NOW_MARKER: Color32 = Color32::from_rgb(180, 200, 255);
     /// Selection range boundary label color.

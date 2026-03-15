@@ -84,6 +84,50 @@ pub fn render_canvas_with_geo(
                     &state.layer_state.geo,
                 );
 
+                let sweep_info = compute_sweep_line_azimuth(state);
+
+                // Compute sweep animation compositing state (used for GPU rendering
+                // and sweep-aware inspector lookups).
+                let gpu_sweep = if state.render_processing.sweep_animation {
+                    let playback_ts = state.playback_state.playback_position();
+                    let sweep_bounds = state
+                        .radar_timeline
+                        .find_recent_scan(playback_ts, 15.0 * 60.0)
+                        .and_then(|scan| {
+                            let displayed_elev = state.displayed_sweep_elevation_number;
+                            scan.sweeps
+                                .iter()
+                                .filter(|s| Some(s.elevation_number) == displayed_elev)
+                                .rfind(|s| s.start_time <= playback_ts)
+                                .or_else(|| {
+                                    scan.sweeps
+                                        .iter()
+                                        .find(|s| Some(s.elevation_number) == displayed_elev)
+                                })
+                                .map(|s| (s.start_time, s.end_time))
+                        });
+                    match sweep_bounds {
+                        Some((s, _)) if playback_ts < s => Some((0.0, 0.0)),
+                        Some((_, e)) if playback_ts <= e => sweep_info,
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                // Cache sweep position for between-sweep display
+                if let Some((az, start)) = gpu_sweep {
+                    if az != 0.0 || start != 0.0 {
+                        state.viz_state.last_sweep_line_cache = Some((az, start));
+                    }
+                }
+                if !state.render_processing.sweep_animation {
+                    state.viz_state.last_sweep_line_cache = None;
+                }
+                let between_sweeps = state.render_processing.sweep_animation
+                    && gpu_sweep.is_none()
+                    && state.viz_state.last_sweep_line_cache.is_some();
+
                 if let Some(renderer) = gpu_renderer {
                     draw_radar_gpu(
                         ui,
@@ -93,15 +137,25 @@ pub fn render_canvas_with_geo(
                         state.viz_state.center_lat,
                         state.viz_state.center_lon,
                         &state.render_processing,
+                        gpu_sweep,
                     );
+                    // Continuous repaint while sweep animation is compositing
+                    if gpu_sweep.is_some() || between_sweeps {
+                        ui.ctx().request_repaint();
+                    }
                 }
 
                 if state.storm_cells_visible && !state.detected_storm_cells.is_empty() {
                     render_storm_cells(&painter, &projection, &state.detected_storm_cells, dark);
                 }
 
-                let sweep_azimuth = compute_sweep_line_azimuth(state);
-                render_radar_sweep(&painter, &projection, state, sweep_azimuth);
+                // Show sweep line when actively revealing, or stale position between sweeps
+                let (sweep_line_info, sweep_stale) = match gpu_sweep {
+                    Some((az, start)) if az != 0.0 || start != 0.0 => (Some((az, start)), false),
+                    _ if between_sweeps => (state.viz_state.last_sweep_line_cache, true),
+                    _ => (None, false),
+                };
+                render_radar_sweep(&painter, &projection, state, sweep_line_info, sweep_stale);
 
                 if state.distance_tool_active || state.distance_start.is_some() {
                     render_distance_measurement(
@@ -124,6 +178,7 @@ pub fn render_canvas_with_geo(
                             gpu_renderer,
                             &state.viz_state.product,
                             state.use_local_time,
+                            gpu_sweep,
                         );
                     }
                 }
@@ -315,6 +370,7 @@ fn handle_globe_interaction(response: &egui::Response, rect: &Rect, state: &mut 
 }
 
 /// Draw radar data using a GPU shader via egui PaintCallback.
+#[allow(clippy::too_many_arguments)]
 fn draw_radar_gpu(
     ui: &mut egui::Ui,
     projection: &MapProjection,
@@ -323,6 +379,7 @@ fn draw_radar_gpu(
     radar_lat: f64,
     radar_lon: f64,
     processing: &RenderProcessing,
+    sweep_info: Option<(f32, f32)>,
 ) {
     // Check if renderer has data and get the actual data range
     let max_range_km = {
@@ -378,6 +435,7 @@ fn draw_radar_gpu(
                     radius_px * px_per_point,
                     [viewport.width_px as f32, viewport.height_px as f32],
                     &processing,
+                    sweep_info,
                 );
             }
         })),
@@ -461,8 +519,10 @@ const ARCHIVE_AGE_THRESHOLD_SECS: f64 = 3600.0;
 const AGE_RANGE_COLLAPSE_SECS: f64 = 300.0;
 
 fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
+    let has_prev = state.viz_state.prev_sweep_overlay.is_some();
     let overlay_pos = rect.left_top() + Vec2::new(10.0, 10.0);
-    let overlay_rect = Rect::from_min_size(overlay_pos, Vec2::new(260.0, 90.0));
+    let overlay_height = if has_prev { 130.0 } else { 90.0 };
+    let overlay_rect = Rect::from_min_size(overlay_pos, Vec2::new(290.0, overlay_height));
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(overlay_rect), |ui| {
         ui.vertical(|ui| {
@@ -481,23 +541,25 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
                 );
             }
 
+            let info_color = Color32::from_rgb(200, 200, 220);
+            let label = if has_prev { "Current" } else { "Site" };
             ui.label(
-                RichText::new(format!("Site: {}", state.viz_state.site_id))
+                RichText::new(format!("{}: {}", label, state.viz_state.site_id))
                     .monospace()
                     .size(12.0)
-                    .color(Color32::from_rgb(200, 200, 220)),
+                    .color(info_color),
             );
             ui.label(
                 RichText::new(format!("Time: {}", state.viz_state.timestamp))
                     .monospace()
                     .size(12.0)
-                    .color(Color32::from_rgb(200, 200, 220)),
+                    .color(info_color),
             );
             ui.label(
                 RichText::new(format!("Elev: {}", state.viz_state.elevation))
                     .monospace()
                     .size(12.0)
-                    .color(Color32::from_rgb(200, 200, 220)),
+                    .color(info_color),
             );
             if let Some(end_secs) = state.viz_state.data_staleness_secs {
                 let color = age_color(end_secs);
@@ -511,6 +573,34 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
                     format!("Age: {}", format_age(end_secs))
                 };
                 ui.label(RichText::new(age_text).monospace().size(12.0).color(color));
+            }
+
+            // Previous sweep info during sweep animation
+            if let Some((prev_elev, prev_start, prev_end)) = state.viz_state.prev_sweep_overlay {
+                ui.add_space(2.0);
+                let prev_color = Color32::from_rgb(170, 170, 190);
+                ui.label(
+                    RichText::new("Previous")
+                        .monospace()
+                        .size(12.0)
+                        .color(prev_color),
+                );
+                let prev_time = format_unix_timestamp_with_date(
+                    (prev_start + prev_end) / 2.0,
+                    state.use_local_time,
+                );
+                ui.label(
+                    RichText::new(format!("Time: {}", prev_time))
+                        .monospace()
+                        .size(12.0)
+                        .color(prev_color),
+                );
+                ui.label(
+                    RichText::new(format!("Elev: {:.1}\u{00B0}", prev_elev))
+                        .monospace()
+                        .size(12.0)
+                        .color(prev_color),
+                );
             }
         });
     });
@@ -786,7 +876,11 @@ fn handle_canvas_interaction(
 /// how the radar instrument operates — the antenna changes rotation speed at
 /// different elevation cuts. If per-radial azimuth data is available, we use it
 /// for more accurate positioning.
-fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
+/// Returns `Some((current_azimuth, start_azimuth))` when the sweep line should
+/// be visible. `start_azimuth` is the azimuth where the sweep began collecting
+/// data (the first radial), so the "already swept" arc runs CW from
+/// `start_azimuth` to `current_azimuth`.
+fn compute_sweep_line_azimuth(state: &AppState) -> Option<(f32, f32)> {
     if state
         .playback_state
         .speed
@@ -805,9 +899,10 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
             if duration > 0.0 {
                 // If per-radial azimuth data is available, interpolate from actual azimuths
                 if !sweep.radials.is_empty() {
-                    let mut last_az = 0.0f32;
+                    let start_az = sweep.radials[0].azimuth;
+                    let mut last_az = start_az;
                     let mut last_time = sweep.start_time;
-                    let mut next_az = 360.0f32;
+                    let mut next_az = start_az + 360.0;
                     let mut next_time = sweep.end_time;
 
                     for radial in &sweep.radials {
@@ -831,14 +926,17 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
                     let dt = next_time - last_time;
                     if dt > 0.0 {
                         let frac = (ts - last_time) / dt;
-                        return Some(((last_az + delta_az * frac as f32) % 360.0 + 360.0) % 360.0);
+                        let az = ((last_az + delta_az * frac as f32) % 360.0 + 360.0) % 360.0;
+                        return Some((az, start_az));
                     }
-                    return Some(last_az);
+                    return Some((last_az, start_az));
                 }
 
-                // Fallback: linear interpolation assuming uniform rotation
+                // Fallback: linear interpolation assuming uniform rotation from start azimuth
+                let start_az = sweep.start_azimuth;
                 let progress = (ts - sweep.start_time) / duration;
-                return Some(((progress * 360.0) as f32) % 360.0);
+                let az = ((start_az + progress as f32 * 360.0) % 360.0 + 360.0) % 360.0;
+                return Some((az, start_az));
             }
         }
     }
@@ -846,7 +944,10 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<f32> {
     // In live mode, extrapolate from the last known radial azimuth/time
     if state.live_mode_state.is_active() {
         let now = js_sys::Date::now() / 1000.0;
-        return state.live_mode_state.estimated_azimuth(now);
+        if let Some(az) = state.live_mode_state.estimated_azimuth(now) {
+            // Live mode doesn't track start azimuth; assume 0°
+            return Some((az, 0.0));
+        }
     }
 
     None
@@ -856,7 +957,8 @@ fn render_radar_sweep(
     painter: &Painter,
     projection: &MapProjection,
     state: &AppState,
-    azimuth: Option<f32>,
+    sweep_info: Option<(f32, f32)>,
+    stale: bool,
 ) {
     let radar_lat = state.viz_state.center_lat;
     let radar_lon = state.viz_state.center_lon;
@@ -950,17 +1052,384 @@ fn render_radar_sweep(
         Stroke::new(1.0, canvas_colors::center_marker_stroke(dark)),
     );
 
-    // Draw the sweep line if we have azimuth data
-    if let Some(az) = azimuth {
+    // Draw the sweep line and donut chart if sweep animation is active
+    if let Some((az, start_az)) = sweep_info {
+        let (start_line_color, sweep_line_color, sweep_line_width) = if stale {
+            (
+                radar::sweep_start_line_stale(),
+                radar::sweep_line_stale(),
+                2.0,
+            )
+        } else {
+            (radar::sweep_start_line(), radar::SWEEP_LINE, 3.0)
+        };
+
+        // Thin line at sweep start boundary
+        let start_angle_rad = (start_az - 90.0) * PI / 180.0;
+        let start_end = Pos2::new(
+            center.x + radius * start_angle_rad.cos(),
+            center.y + radius * start_angle_rad.sin(),
+        );
+        painter.line_segment([center, start_end], Stroke::new(1.5, start_line_color));
+
+        // Main sweep line
         let angle_rad = (az - 90.0) * PI / 180.0;
         let end_x = center.x + radius * angle_rad.cos();
         let end_y = center.y + radius * angle_rad.sin();
-
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
-            Stroke::new(3.0, radar::SWEEP_LINE),
+            Stroke::new(sweep_line_width, sweep_line_color),
+        );
+
+        // Donut chart showing current vs previous sweep regions
+        if state.render_processing.sweep_animation {
+            if stale {
+                draw_sweep_donut_stale(painter, center, radius);
+            } else {
+                draw_sweep_donut(painter, center, radius, az, start_az, state);
+            }
+        }
+    }
+}
+
+/// Draw a color-coded boundary label at a given angle around the donut.
+///
+/// Renders `left_text` in `left_color`, an optional dim `" | "` separator,
+/// and `right_text` in `right_color`, all within a single background box.
+#[allow(clippy::too_many_arguments)]
+fn draw_boundary_label(
+    painter: &Painter,
+    center: Pos2,
+    label_radius: f32,
+    azimuth_deg: f32,
+    left_text: &str,
+    right_text: Option<&str>,
+    left_color: Color32,
+    right_color: Color32,
+    font: &egui::FontId,
+) {
+    let label_angle = (azimuth_deg - 90.0) * PI / 180.0;
+    let label_pos = Pos2::new(
+        center.x + label_radius * label_angle.cos(),
+        center.y + label_radius * label_angle.sin(),
+    );
+    let align = sweep_label_align(azimuth_deg);
+
+    // Build a LayoutJob with colored segments
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        left_text,
+        0.0,
+        egui::TextFormat {
+            font_id: font.clone(),
+            color: left_color,
+            ..Default::default()
+        },
+    );
+    if let Some(right) = right_text {
+        job.append(
+            " | ",
+            0.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color: Color32::from_rgb(120, 120, 140),
+                ..Default::default()
+            },
+        );
+        job.append(
+            right,
+            0.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color: right_color,
+                ..Default::default()
+            },
         );
     }
+
+    let galley = painter.layout_job(job);
+    let text_size = galley.size();
+    let bg_pos = align_pos(label_pos, text_size, align);
+    let padding = Vec2::new(3.0, 2.0);
+    painter.rect_filled(
+        Rect::from_min_size(bg_pos - padding, text_size + padding * 2.0),
+        3.0,
+        Color32::from_rgba_unmultiplied(15, 15, 25, 200),
+    );
+    painter.galley(bg_pos, galley, Color32::WHITE);
+}
+
+/// Draw a uniform muted donut ring between sweeps (no current/previous split, no labels).
+fn draw_sweep_donut_stale(painter: &Painter, center: Pos2, radius: f32) {
+    let donut_inner = radius + 4.0;
+    let donut_outer = radius + 10.0;
+    let donut_mid = (donut_inner + donut_outer) / 2.0;
+    let donut_width = donut_outer - donut_inner;
+
+    let color = Color32::from_rgba_unmultiplied(100, 100, 110, 80);
+    let segments = 180;
+
+    for i in 0..segments {
+        let frac_start = i as f32 / segments as f32;
+        let frac_end = (i + 1) as f32 / segments as f32;
+
+        let a1 = (frac_start * 360.0 - 90.0) * PI / 180.0;
+        let a2 = (frac_end * 360.0 - 90.0) * PI / 180.0;
+
+        let p1 = Pos2::new(
+            center.x + donut_mid * a1.cos(),
+            center.y + donut_mid * a1.sin(),
+        );
+        let p2 = Pos2::new(
+            center.x + donut_mid * a2.cos(),
+            center.y + donut_mid * a2.sin(),
+        );
+
+        painter.line_segment([p1, p2], Stroke::new(donut_width, color));
+    }
+}
+
+/// Draw a donut-chart ring around the radar showing which azimuthal regions
+/// belong to the current sweep vs the previous sweep, with time labels at
+/// both discontinuity boundaries.
+fn draw_sweep_donut(
+    painter: &Painter,
+    center: Pos2,
+    radius: f32,
+    sweep_az: f32,
+    sweep_start: f32,
+    state: &AppState,
+) {
+    let donut_inner = radius + 4.0;
+    let donut_outer = radius + 10.0;
+    let donut_mid = (donut_inner + donut_outer) / 2.0;
+    let donut_width = donut_outer - donut_inner;
+
+    // Current sweep arc: from sweep_start CW to sweep_az
+    let current_color = Color32::from_rgba_unmultiplied(80, 200, 120, 160);
+    // Previous sweep arc: from sweep_az CW to sweep_start (the rest)
+    let prev_color = Color32::from_rgba_unmultiplied(120, 120, 180, 120);
+
+    // Draw arcs as series of short line segments
+    let segments = 180;
+    let swept_arc_deg = (sweep_az - sweep_start).rem_euclid(360.0);
+
+    for i in 0..segments {
+        let frac_start = i as f32 / segments as f32;
+        let frac_end = (i + 1) as f32 / segments as f32;
+        let deg_start = frac_start * 360.0;
+        let deg_end = frac_end * 360.0;
+
+        // Is this segment in the current sweep region?
+        let mid_deg = (deg_start + deg_end) / 2.0;
+        let is_current = mid_deg < swept_arc_deg;
+
+        let color = if is_current {
+            current_color
+        } else {
+            prev_color
+        };
+
+        let a1 = ((sweep_start + deg_start) - 90.0) * PI / 180.0;
+        let a2 = ((sweep_start + deg_end) - 90.0) * PI / 180.0;
+
+        let p1 = Pos2::new(
+            center.x + donut_mid * a1.cos(),
+            center.y + donut_mid * a1.sin(),
+        );
+        let p2 = Pos2::new(
+            center.x + donut_mid * a2.cos(),
+            center.y + donut_mid * a2.sin(),
+        );
+
+        painter.line_segment([p1, p2], Stroke::new(donut_width, color));
+    }
+
+    // Color constants for boundary label text
+    let current_text_color = Color32::from_rgb(100, 220, 140); // green for current sweep
+    let prev_text_color = Color32::from_rgb(160, 160, 220); // purple for previous sweep
+
+    // Time labels at both discontinuity boundaries
+    let label_radius = donut_outer + 14.0;
+    let label_font = egui::FontId::monospace(10.0);
+    let use_local = state.use_local_time;
+
+    // Boundary 1: sweep line (sweep_az) — playback time | prev sweep time at this azimuth
+    let playback_ts = state.playback_state.playback_position();
+    let mut playback_time_str = format_time_short(playback_ts, use_local);
+    if let Some(age) = format_age_compact(playback_ts) {
+        playback_time_str.push(' ');
+        playback_time_str.push_str(&age);
+    }
+
+    let prev_at_az_str = state
+        .viz_state
+        .prev_sweep_overlay
+        .map(|(_, prev_start, prev_end)| {
+            let frac = (swept_arc_deg / 360.0).clamp(0.0, 1.0) as f64;
+            let prev_time_at_az = prev_start + frac * (prev_end - prev_start);
+            let mut s = format_time_short(prev_time_at_az, use_local);
+            if let Some(age) = format_age_compact(prev_time_at_az) {
+                s.push(' ');
+                s.push_str(&age);
+            }
+            s
+        });
+
+    draw_boundary_label(
+        painter,
+        center,
+        label_radius,
+        sweep_az,
+        &playback_time_str,
+        prev_at_az_str.as_deref(),
+        current_text_color,
+        prev_text_color,
+        &label_font,
+    );
+
+    // Boundary 2: sweep start (sweep_start) — current sweep start | prev sweep end
+    // Look up the current sweep's actual start time from the timeline
+    let displayed_elev = state.displayed_sweep_elevation_number;
+    let current_sweep_start_secs = state
+        .radar_timeline
+        .find_recent_scan(playback_ts, 15.0 * 60.0)
+        .and_then(|scan| {
+            scan.sweeps
+                .iter()
+                .filter(|s| Some(s.elevation_number) == displayed_elev)
+                .rfind(|s| s.start_time <= playback_ts)
+                .or_else(|| {
+                    scan.sweeps
+                        .iter()
+                        .find(|s| Some(s.elevation_number) == displayed_elev)
+                })
+                .map(|s| s.start_time)
+        });
+
+    if swept_arc_deg >= 30.0 {
+        if let Some((_, _, prev_end)) = state.viz_state.prev_sweep_overlay {
+            // Both sweeps: current start (green) | prev end (purple)
+            let start_time_str = current_sweep_start_secs.map(|s| {
+                let mut t = format_time_short(s, use_local);
+                if let Some(age) = format_age_compact(s) {
+                    t.push(' ');
+                    t.push_str(&age);
+                }
+                t
+            });
+            let mut prev_end_str = format_time_short(prev_end, use_local);
+            if let Some(age) = format_age_compact(prev_end) {
+                prev_end_str.push(' ');
+                prev_end_str.push_str(&age);
+            }
+
+            let (left, right, left_c, right_c) = match start_time_str {
+                Some(ref start) => (
+                    start.as_str(),
+                    Some(prev_end_str.as_str()),
+                    current_text_color,
+                    prev_text_color,
+                ),
+                None => (
+                    prev_end_str.as_str(),
+                    None,
+                    prev_text_color,
+                    prev_text_color,
+                ),
+            };
+            draw_boundary_label(
+                painter,
+                center,
+                label_radius,
+                sweep_start,
+                left,
+                right,
+                left_c,
+                right_c,
+                &label_font,
+            );
+        } else if let Some(start_secs) = current_sweep_start_secs {
+            // Single sweep only: show start time in green (no separator)
+            let mut start_str = format_time_short(start_secs, use_local);
+            if let Some(age) = format_age_compact(start_secs) {
+                start_str.push(' ');
+                start_str.push_str(&age);
+            }
+            draw_boundary_label(
+                painter,
+                center,
+                label_radius,
+                sweep_start,
+                &start_str,
+                None,
+                current_text_color,
+                current_text_color,
+                &label_font,
+            );
+        }
+    }
+}
+
+/// Format a timestamp as HH:MM:SS for compact display.
+fn format_time_short(ts: f64, use_local: bool) -> String {
+    if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(ts * 1000.0);
+        format!(
+            "{:02}:{:02}:{:02}.{:03}",
+            d.get_hours(),
+            d.get_minutes(),
+            d.get_seconds(),
+            d.get_milliseconds()
+        )
+    } else {
+        use chrono::{TimeZone, Timelike, Utc};
+        let secs = ts.floor() as i64;
+        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
+        match Utc.timestamp_opt(secs, millis * 1_000_000) {
+            chrono::LocalResult::Single(dt) => {
+                format!(
+                    "{:02}:{:02}:{:02}.{:03}",
+                    dt.hour(),
+                    dt.minute(),
+                    dt.second(),
+                    millis
+                )
+            }
+            _ => format!("{:.0}", ts),
+        }
+    }
+}
+
+/// Choose text alignment for a sweep boundary label based on its angle.
+fn sweep_label_align(az_deg: f32) -> egui::Align2 {
+    // Determine which quadrant the label falls in
+    let az = az_deg.rem_euclid(360.0);
+    if !(45.0..315.0).contains(&az) {
+        egui::Align2::CENTER_BOTTOM // top
+    } else if az < 135.0 {
+        egui::Align2::LEFT_CENTER // right
+    } else if az < 225.0 {
+        egui::Align2::CENTER_TOP // bottom
+    } else {
+        egui::Align2::RIGHT_CENTER // left
+    }
+}
+
+/// Convert an Align2 + position into a top-left position for rect placement.
+fn align_pos(pos: Pos2, size: Vec2, align: egui::Align2) -> Pos2 {
+    let x = match align.x() {
+        egui::Align::Min => pos.x,
+        egui::Align::Center => pos.x - size.x / 2.0,
+        egui::Align::Max => pos.x - size.x,
+    };
+    let y = match align.y() {
+        egui::Align::Min => pos.y,
+        egui::Align::Center => pos.y - size.y / 2.0,
+        egui::Align::Max => pos.y - size.y,
+    };
+    Pos2::new(x, y)
 }
 
 /// Render NEXRAD radar site markers on the map.
@@ -1055,6 +1524,57 @@ fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
     }
 }
 
+/// Format a Unix timestamp (seconds) as a full date+time string with milliseconds.
+///
+/// Produces the same format as `update_overlay_from_sweep` in main.rs:
+/// `YYYY-MM-DD HH:MM:SS.mmm` (local) or `YYYY-MM-DD HH:MM:SS.mmm UTC`.
+fn format_unix_timestamp_with_date(ts: f64, use_local: bool) -> String {
+    if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(ts * 1000.0);
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+            d.get_full_year(),
+            d.get_month() + 1,
+            d.get_date(),
+            d.get_hours(),
+            d.get_minutes(),
+            d.get_seconds(),
+            d.get_milliseconds()
+        )
+    } else {
+        use chrono::{Datelike, TimeZone, Timelike, Utc};
+        let secs = ts.floor() as i64;
+        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
+        match Utc.timestamp_opt(secs, millis * 1_000_000) {
+            chrono::LocalResult::Single(dt) => format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} UTC",
+                dt.year(),
+                dt.month(),
+                dt.day(),
+                dt.hour(),
+                dt.minute(),
+                dt.second(),
+                millis
+            ),
+            _ => format!("{:.3}s", ts),
+        }
+    }
+}
+
+/// Format a compact age suffix for recent data, e.g. `"(3s)"` or `"(1m2s)"`.
+///
+/// Returns `None` for archive data (age >= 300s) or future timestamps.
+fn format_age_compact(ts_secs: f64) -> Option<String> {
+    let now = js_sys::Date::now() / 1000.0;
+    let age = now - ts_secs;
+    if (0.0..300.0).contains(&age) {
+        Some(format!("({})", format_age(age)))
+    } else {
+        None
+    }
+}
+
 /// Render inspector tooltip showing lat/lon and data value at hover position.
 #[allow(clippy::too_many_arguments)]
 fn render_inspector(
@@ -1067,6 +1587,7 @@ fn render_inspector(
     gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
     product: &crate::state::RadarProduct,
     use_local_time: bool,
+    sweep_params: Option<(f32, f32)>,
 ) {
     let geo = projection.screen_to_geo(hover_pos);
     let lat = geo.y;
@@ -1078,12 +1599,12 @@ fn render_inspector(
     let range_km = (dlat * dlat + dlon * dlon).sqrt() * 111.0;
     let azimuth_deg = (dlon.atan2(dlat).to_degrees() + 360.0) % 360.0;
 
-    // Look up data value and collection time
+    // Look up data value and collection time (sweep-aware when animating)
     let (value, collection_time) = gpu_renderer
         .map(|r| {
             let renderer = r.lock().expect("renderer mutex poisoned");
-            let v = renderer.value_at_polar(azimuth_deg as f32, range_km);
-            let t = renderer.collection_time_at_polar(azimuth_deg as f32);
+            let v = renderer.value_at_polar_sweep_aware(azimuth_deg as f32, range_km, sweep_params);
+            let t = renderer.collection_time_at_polar_sweep_aware(azimuth_deg as f32, sweep_params);
             (v, t)
         })
         .unwrap_or((None, None));

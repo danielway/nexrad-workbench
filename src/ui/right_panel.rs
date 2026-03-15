@@ -163,27 +163,13 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.add_space(8.0);
 
-            // Smoothing
-            ui.checkbox(&mut proc.smoothing_enabled, "Smoothing");
-            if proc.smoothing_enabled {
-                ui.indent("smoothing_indent", |ui| {
-                    ui.add(
-                        egui::Slider::new(&mut proc.smoothing_radius, 1.0..=10.0)
-                            .text("Radius")
-                            .step_by(0.5),
-                    );
-                });
-            }
-
-            ui.add_space(4.0);
-
             // Despeckle
             ui.checkbox(&mut proc.despeckle_enabled, "Despeckle");
             if proc.despeckle_enabled {
                 ui.indent("despeckle_indent", |ui| {
                     let mut threshold = proc.despeckle_threshold as i32;
                     if ui
-                        .add(egui::Slider::new(&mut threshold, 1..=8).text("Threshold"))
+                        .add(egui::Slider::new(&mut threshold, 1..=16).text("Threshold"))
                         .changed()
                     {
                         proc.despeckle_threshold = threshold as u32;
@@ -193,8 +179,21 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.add_space(4.0);
 
-            // Edge softening
-            ui.checkbox(&mut proc.edge_softening, "Edge Softening");
+            // Sweep animation
+            ui.checkbox(&mut proc.sweep_animation, "Sweep Animation")
+                .on_hover_text(
+                    "Progressively reveal new data behind the sweep line during playback",
+                );
+
+            // Data age indicator (only meaningful when sweep animation is on)
+            ui.add_enabled_ui(proc.sweep_animation, |ui| {
+                ui.indent("data_age_indent", |ui| {
+                    ui.checkbox(&mut proc.data_age_indicator, "Data Age Indicator")
+                        .on_hover_text(
+                            "Desaturate the oldest data behind the sweep line to indicate staleness",
+                        );
+                });
+            });
 
             ui.add_space(4.0);
 

@@ -127,7 +127,7 @@ impl RenderMode {
 }
 
 /// Interpolation mode for radar rendering.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InterpolationMode {
     /// Raw nearest-neighbor sampling (blocky, traditional).
     #[default]
@@ -154,30 +154,27 @@ impl InterpolationMode {
 pub struct RenderProcessing {
     /// Interpolation mode (nearest vs bilinear).
     pub interpolation: InterpolationMode,
-    /// Whether Gaussian smoothing is enabled.
-    pub smoothing_enabled: bool,
-    /// Smoothing kernel radius in samples (1.0..5.0).
-    pub smoothing_radius: f32,
     /// Whether despeckle filtering is enabled.
     pub despeckle_enabled: bool,
-    /// Minimum valid neighbors to keep a pixel (1..6).
+    /// Minimum valid neighbors to keep a pixel (1..8).
     pub despeckle_threshold: u32,
     /// Global opacity for radar data (0.0..1.0).
     pub opacity: f32,
-    /// Whether edge softening is enabled (smooth alpha falloff at echo boundaries).
-    pub edge_softening: bool,
+    /// Whether sweep animation is enabled (progressive radial reveal during playback).
+    pub sweep_animation: bool,
+    /// Whether data age indicator is shown (desaturates oldest data behind sweep line).
+    pub data_age_indicator: bool,
 }
 
 impl Default for RenderProcessing {
     fn default() -> Self {
         Self {
             interpolation: InterpolationMode::Nearest,
-            smoothing_enabled: false,
-            smoothing_radius: 2.0,
             despeckle_enabled: false,
             despeckle_threshold: 3,
             opacity: 1.0,
-            edge_softening: false,
+            sweep_animation: false,
+            data_age_indicator: true,
         }
     }
 }
@@ -244,6 +241,19 @@ pub struct VizState {
     /// Used to recompute `data_staleness_secs` every frame so the age counter ticks.
     pub rendered_sweep_end_secs: Option<f64>,
 
+    /// Previous sweep info for overlay display during sweep animation.
+    /// Contains (elevation_deg, start_time_secs, end_time_secs).
+    pub prev_sweep_overlay: Option<(f32, f64, f64)>,
+
+    /// Scan timestamp of the previous sweep (for timeline secondary highlight).
+    pub prev_sweep_scan_timestamp: Option<i64>,
+
+    /// Elevation number of the previous sweep (for timeline secondary highlight).
+    pub prev_sweep_elevation_number: Option<u8>,
+
+    /// Cached last sweep line position (azimuth, start_azimuth) for between-sweep display.
+    pub last_sweep_line_cache: Option<(f32, f32)>,
+
     /// Whether 3D volumetric rendering is enabled (ray-marched volume).
     pub volume_3d_enabled: bool,
 
@@ -270,6 +280,10 @@ impl Default for VizState {
             data_staleness_start_secs: None,
             rendered_sweep_start_secs: None,
             rendered_sweep_end_secs: None,
+            prev_sweep_overlay: None,
+            prev_sweep_scan_timestamp: None,
+            prev_sweep_elevation_number: None,
+            last_sweep_line_cache: None,
             volume_3d_enabled: false,
             volume_density_cutoff: 5.0,
         }

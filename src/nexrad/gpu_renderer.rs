@@ -314,16 +314,29 @@ uniform sampler2D u_azimuth_tex;   // azimuth angles (R32F, Nx1)
 
 // Processing uniforms
 uniform int u_interpolation;       // 0=nearest, 1=bilinear
-uniform int u_smoothing_enabled;   // 0 or 1
-uniform float u_smoothing_radius;  // kernel radius in samples
 uniform int u_despeckle_enabled;   // 0 or 1
 uniform int u_despeckle_threshold; // min valid neighbors to keep
 uniform float u_opacity;           // global alpha multiplier
-uniform int u_edge_softening;     // 0 or 1: smooth alpha falloff at echo boundaries
+uniform int u_data_age_indicator; // 0 or 1: desaturate oldest data behind sweep line
 
 // Raw-to-physical conversion: physical = (raw - u_offset) / u_scale
 uniform float u_offset;            // moment offset
 uniform float u_scale;             // moment scale (0.0 = raw values are physical)
+
+// Sweep animation (dual-texture compositing)
+uniform sampler2D u_prev_data_tex;    // previous scan gate values (R32F, texture unit 3)
+uniform sampler2D u_prev_azimuth_tex; // previous scan azimuths (R32F, texture unit 4)
+uniform int u_sweep_enabled;       // 0 or 1
+uniform float u_sweep_azimuth;     // current sweep line angle in degrees
+uniform float u_sweep_start;       // azimuth where the sweep began collecting
+uniform float u_prev_offset;       // previous scan moment offset
+uniform float u_prev_scale;        // previous scan moment scale
+// Previous sweep spatial params (may differ from current sweep)
+uniform float u_prev_gate_count;
+uniform float u_prev_azimuth_count;
+uniform float u_prev_first_gate_km;
+uniform float u_prev_gate_interval_km;
+uniform float u_prev_max_range_km;
 
 const float PI = 3.14159265359;
 
@@ -336,6 +349,17 @@ float sample_data(float g, float a) {
     float gu = (g + 0.5) / u_gate_count;
     float av = (a + 0.5) / u_azimuth_count;
     return texture(u_data_tex, vec2(gu, av)).r;
+}
+
+// Sample the previous scan's data texture at a given (gate_index, azimuth_index).
+// Uses prev-texture dimensions for correct UV mapping when sweeps differ.
+float sample_prev_data(float g, float a) {
+    if (g < 0.0 || g >= u_prev_gate_count || a < 0.0 || a >= u_prev_azimuth_count) {
+        return 0.0;
+    }
+    float gu = (g + 0.5) / u_prev_gate_count;
+    float av = (a + 0.5) / u_prev_azimuth_count;
+    return texture(u_prev_data_tex, vec2(gu, av)).r;
 }
 
 // Raw values 0 (below threshold) and 1 (range folded) are sentinels.
@@ -427,46 +451,157 @@ bool find_bracket_az(float azimuth_deg, out float idx_lo, out float idx_hi, out 
     return true;
 }
 
+// Previous-sweep azimuth lookup (mirrors find_nearest_az using prev textures).
+float find_nearest_prev_az(float azimuth_deg, out float out_az) {
+    float az_spacing = 360.0 / u_prev_azimuth_count;
+    float est_idx = azimuth_deg / az_spacing;
+    float inv_count = 1.0 / u_prev_azimuth_count;
+
+    float best_idx = 0.0;
+    float best_dist = 360.0;
+    float best_az = 0.0;
+
+    for (float offset = -2.0; offset <= 2.0; offset += 1.0) {
+        float i = floor(mod(est_idx + offset, u_prev_azimuth_count));
+        float tex_az = texture(u_prev_azimuth_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
+        float d = abs(azimuth_deg - tex_az);
+        d = min(d, 360.0 - d);
+        if (d < best_dist) {
+            best_dist = d;
+            best_idx = i;
+            best_az = tex_az;
+        }
+    }
+
+    if (best_dist > az_spacing * 1.5) {
+        out_az = 0.0;
+        return -1.0;
+    }
+    out_az = best_az;
+    return best_idx;
+}
+
+// Previous-sweep bracket lookup (mirrors find_bracket_az using prev textures).
+bool find_bracket_prev_az(float azimuth_deg, out float idx_lo, out float idx_hi, out float frac) {
+    float az_spacing = 360.0 / u_prev_azimuth_count;
+    float est_idx = azimuth_deg / az_spacing;
+    float inv_count = 1.0 / u_prev_azimuth_count;
+
+    float cand_idx[5];
+    float cand_az[5];
+    for (int k = 0; k < 5; k++) {
+        float i = floor(mod(est_idx + float(k - 2), u_prev_azimuth_count));
+        cand_idx[k] = i;
+        cand_az[k] = texture(u_prev_azimuth_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
+    }
+
+    float lo_idx = -1.0, hi_idx = -1.0;
+    float lo_dist = 360.0, hi_dist = 360.0;
+
+    for (int k = 0; k < 5; k++) {
+        float az = cand_az[k];
+        float diff = azimuth_deg - az;
+        diff = mod(diff + 540.0, 360.0) - 180.0;
+
+        if (diff >= 0.0 && diff < lo_dist) {
+            lo_dist = diff;
+            lo_idx = cand_idx[k];
+        }
+        if (diff <= 0.0 && (-diff) < hi_dist) {
+            hi_dist = -diff;
+            hi_idx = cand_idx[k];
+        }
+    }
+
+    if (lo_idx < 0.0 || hi_idx < 0.0) return false;
+
+    float span = lo_dist + hi_dist;
+    if (span > az_spacing * 1.5) return false;
+
+    idx_lo = lo_idx;
+    idx_hi = hi_idx;
+    frac = (span > 0.001) ? lo_dist / span : 0.0;
+    return true;
+}
+
 void main() {
     vec2 delta = v_screen_pos - u_radar_center;
     float dist_px = length(delta);
     float dist_km = (dist_px / u_radar_radius) * u_max_range_km;
 
-    if (dist_km < u_first_gate_km || dist_km >= u_max_range_km) {
-        fragColor = vec4(0.0);
-        return;
-    }
-
     float azimuth_rad = atan(delta.x, -delta.y);
     float azimuth_deg = mod(degrees(azimuth_rad) + 360.0, 360.0);
-    float gate_idx = (dist_km - u_first_gate_km) / u_gate_interval_km;
 
-    if (gate_idx < 0.0 || gate_idx >= u_gate_count) {
+    // Sweep animation: determine whether to sample previous or current texture.
+    // Must be computed before range/gate checks because the two textures may
+    // have different spatial extents (e.g. 0.5° at 460 km vs 0.9° at 298 km).
+    bool use_prev = false;
+    if (u_sweep_enabled == 1) {
+        float swept_arc = mod(u_sweep_azimuth - u_sweep_start, 360.0);
+        float pixel_from_start = mod(azimuth_deg - u_sweep_start, 360.0);
+        use_prev = (pixel_from_start >= swept_arc);
+    }
+
+    // Age-based desaturation: oldest quadrant (270°-360° behind sweep) fades out
+    float desat_factor = 0.0;
+    if (u_sweep_enabled == 1 && u_data_age_indicator == 1) {
+        float age = mod(u_sweep_azimuth - azimuth_deg + 360.0, 360.0) / 360.0;
+        desat_factor = clamp((age - 0.75) / 0.25, 0.0, 1.0) * 0.9;
+    }
+
+    // --- Unified sweep pipeline: select spatial params based on use_prev ---
+    float s_gate_count    = use_prev ? u_prev_gate_count    : u_gate_count;
+    float s_azimuth_count = use_prev ? u_prev_azimuth_count : u_azimuth_count;
+    float s_first_gate_km = use_prev ? u_prev_first_gate_km : u_first_gate_km;
+    float s_gate_interval = use_prev ? u_prev_gate_interval_km : u_gate_interval_km;
+    float s_max_range_km  = use_prev ? u_prev_max_range_km  : u_max_range_km;
+    float s_offset        = use_prev ? u_prev_offset        : u_offset;
+    float s_scale         = use_prev ? u_prev_scale         : u_scale;
+
+    // Range check
+    if (dist_km < s_first_gate_km || dist_km >= s_max_range_km) {
         fragColor = vec4(0.0);
         return;
     }
 
+    float gate_idx = (dist_km - s_first_gate_km) / s_gate_interval;
+    if (gate_idx < 0.0 || gate_idx >= s_gate_count) {
+        fragColor = vec4(0.0);
+        return;
+    }
+
+    // Azimuth lookup + value sampling
     float value;
-    float edge_alpha = 1.0;
 
     if (u_interpolation == 1) {
-        // ---- Bilinear interpolation ----
+        // Bilinear interpolation
         float az_lo, az_hi, az_frac;
-        if (!find_bracket_az(azimuth_deg, az_lo, az_hi, az_frac)) {
+        bool bracket_ok = use_prev
+            ? find_bracket_prev_az(azimuth_deg, az_lo, az_hi, az_frac)
+            : find_bracket_az(azimuth_deg, az_lo, az_hi, az_frac);
+        if (!bracket_ok) {
             fragColor = vec4(0.0);
             return;
         }
 
         float g_lo = floor(gate_idx);
-        float g_hi = min(g_lo + 1.0, u_gate_count - 1.0);
+        float g_hi = min(g_lo + 1.0, s_gate_count - 1.0);
         float g_frac = gate_idx - g_lo;
 
-        float v00 = sample_data(g_lo, az_lo);
-        float v10 = sample_data(g_hi, az_lo);
-        float v01 = sample_data(g_lo, az_hi);
-        float v11 = sample_data(g_hi, az_hi);
+        float v00, v10, v01, v11;
+        if (use_prev) {
+            v00 = sample_prev_data(g_lo, az_lo);
+            v10 = sample_prev_data(g_hi, az_lo);
+            v01 = sample_prev_data(g_lo, az_hi);
+            v11 = sample_prev_data(g_hi, az_hi);
+        } else {
+            v00 = sample_data(g_lo, az_lo);
+            v10 = sample_data(g_hi, az_lo);
+            v01 = sample_data(g_lo, az_hi);
+            v11 = sample_data(g_hi, az_hi);
+        }
 
-        // Weighted average skipping SENTINEL values
+        // Weighted average skipping sentinel values
         float sum = 0.0;
         float wsum = 0.0;
         float w00 = (1.0 - g_frac) * (1.0 - az_frac);
@@ -484,20 +619,19 @@ void main() {
             return;
         }
         value = sum / wsum;
-
-        // Edge softening: fade alpha at echo boundaries where some neighbors are invalid
-        if (u_edge_softening == 1) {
-            edge_alpha = clamp(wsum * 1.5, 0.0, 1.0);
-        }
     } else {
-        // ---- Nearest neighbor (original) ----
+        // Nearest neighbor
         float dummy_az;
-        float best_idx = find_nearest_az(azimuth_deg, dummy_az);
+        float best_idx = use_prev
+            ? find_nearest_prev_az(azimuth_deg, dummy_az)
+            : find_nearest_az(azimuth_deg, dummy_az);
         if (best_idx < 0.0) {
             fragColor = vec4(0.0);
             return;
         }
-        value = sample_data(floor(gate_idx), best_idx);
+        value = use_prev
+            ? sample_prev_data(floor(gate_idx), best_idx)
+            : sample_data(floor(gate_idx), best_idx);
     }
 
     if (!is_valid(value)) {
@@ -505,10 +639,12 @@ void main() {
         return;
     }
 
-    // ---- Despeckle filter ----
+    // Despeckle filter
     if (u_despeckle_enabled == 1) {
         float dummy_az2;
-        float center_az = find_nearest_az(azimuth_deg, dummy_az2);
+        float center_az = use_prev
+            ? find_nearest_prev_az(azimuth_deg, dummy_az2)
+            : find_nearest_az(azimuth_deg, dummy_az2);
         float center_g = floor(gate_idx);
         if (center_az >= 0.0) {
             int valid_count = 0;
@@ -516,9 +652,11 @@ void main() {
                 for (int da = -1; da <= 1; da++) {
                     if (dg == 0 && da == 0) continue;
                     float ng = center_g + float(dg);
-                    float na = mod(center_az + float(da), u_azimuth_count);
-                    if (is_valid(sample_data(ng, na))) {
-                        valid_count++;
+                    float na = mod(center_az + float(da), s_azimuth_count);
+                    if (use_prev) {
+                        if (is_valid(sample_prev_data(ng, na))) valid_count++;
+                    } else {
+                        if (is_valid(sample_data(ng, na))) valid_count++;
                     }
                 }
             }
@@ -529,53 +667,26 @@ void main() {
         }
     }
 
-    // ---- Gaussian smoothing ----
-    if (u_smoothing_enabled == 1) {
-        float dummy_az3;
-        float center_az = find_nearest_az(azimuth_deg, dummy_az3);
-        float center_g = floor(gate_idx);
-        if (center_az >= 0.0) {
-            float sigma = u_smoothing_radius * 0.5;
-            float sigma2 = 2.0 * sigma * sigma;
-            int r = int(ceil(u_smoothing_radius));
-            float wsum = 0.0;
-            float vsum = 0.0;
-            for (int dg = -r; dg <= r; dg++) {
-                for (int da = -r; da <= r; da++) {
-                    float ng = center_g + float(dg);
-                    float na = mod(center_az + float(da), u_azimuth_count);
-                    float sv = sample_data(ng, na);
-                    if (is_valid(sv)) {
-                        // Range-aware: scale azimuthal distance by normalized range
-                        // so smoothing is spatially uniform (azimuths are wider at far range)
-                        float range_norm = max(center_g / u_gate_count, 0.1);
-                        float d2 = float(dg * dg) + float(da * da) * (range_norm * range_norm);
-                        float w = exp(-d2 / sigma2);
-                        vsum += sv * w;
-                        wsum += w;
-                    }
-                }
-            }
-            if (wsum > 0.001) {
-                value = vsum / wsum;
-            }
-        }
-    }
-
-    // Convert raw value to physical units: physical = (raw - offset) / scale
+    // Convert raw value to physical units
     float physical;
-    if (u_scale == 0.0) {
-        physical = value;           // raw values are already physical
+    if (s_scale == 0.0) {
+        physical = value;
     } else {
-        physical = (value - u_offset) / u_scale;
+        physical = (value - s_offset) / s_scale;
     }
 
     // Normalize and look up color
     float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
     vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
 
-    // Apply opacity, edge softening, and output premultiplied alpha (egui requirement)
-    float a = color.a * u_opacity * edge_alpha;
+    // Age-based desaturation for sweep animation
+    if (desat_factor > 0.0) {
+        float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+        color.rgb = mix(color.rgb, vec3(lum), desat_factor);
+    }
+
+    // Apply opacity and output premultiplied alpha (egui requirement)
+    float a = color.a * u_opacity;
     fragColor = vec4(color.rgb * a, a);
 }
 "#;
@@ -605,16 +716,39 @@ pub struct RadarGpuRenderer {
 
     // Processing uniform locations
     u_interpolation: glow::UniformLocation,
-    u_smoothing_enabled: glow::UniformLocation,
-    u_smoothing_radius: glow::UniformLocation,
     u_despeckle_enabled: glow::UniformLocation,
     u_despeckle_threshold: glow::UniformLocation,
     u_opacity: glow::UniformLocation,
-    u_edge_softening: glow::UniformLocation,
+    u_data_age_indicator: glow::UniformLocation,
 
     // Raw-to-physical conversion uniform locations
     u_offset: glow::UniformLocation,
     u_scale: glow::UniformLocation,
+
+    // Sweep animation uniform locations
+    u_sweep_enabled: glow::UniformLocation,
+    u_sweep_azimuth: glow::UniformLocation,
+    u_sweep_start: glow::UniformLocation,
+    u_prev_offset: glow::UniformLocation,
+    u_prev_scale: glow::UniformLocation,
+    u_prev_gate_count: glow::UniformLocation,
+    u_prev_azimuth_count: glow::UniformLocation,
+    u_prev_first_gate_km: glow::UniformLocation,
+    u_prev_gate_interval_km: glow::UniformLocation,
+    u_prev_max_range_km: glow::UniformLocation,
+
+    // Previous scan textures (for sweep animation)
+    prev_data_texture: glow::Texture,
+    prev_azimuth_texture: glow::Texture,
+    prev_data_offset: f32,
+    prev_data_scale: f32,
+    prev_azimuth_count: u32,
+    prev_gate_count: u32,
+    prev_first_gate_km: f64,
+    prev_gate_interval_km: f64,
+    prev_max_range_km: f64,
+    /// Identity of the sweep currently in `prev_data_texture` (scan_key|elev_num).
+    prev_sweep_id: Option<String>,
 
     // Data metadata
     azimuth_count: u32,
@@ -630,11 +764,18 @@ pub struct RadarGpuRenderer {
     data_offset: f32,
     data_scale: f32,
 
+    /// Identity of the sweep currently in `data_texture` (scan_key|elev_num).
+    current_sweep_id: Option<String>,
+
     // CPU-side copies for inspector value lookup
     cpu_azimuths: Vec<f32>,
     cpu_gate_values: Vec<f32>,
     /// Per-radial collection timestamps in Unix seconds (parallel to cpu_azimuths).
     cpu_radial_times: Vec<f64>,
+
+    // CPU-side copies of previous sweep data for sweep-aware inspector
+    prev_cpu_gate_values: Vec<f32>,
+    prev_cpu_radial_times: Vec<f64>,
 }
 
 impl RadarGpuRenderer {
@@ -726,6 +867,10 @@ impl RadarGpuRenderer {
             gl.uniform_1_i32(Some(&u_lut_tex), 1);
             let u_azimuth_tex = uniform("u_azimuth_tex")?;
             gl.uniform_1_i32(Some(&u_azimuth_tex), 2);
+            let u_prev_data_tex = uniform("u_prev_data_tex")?;
+            gl.uniform_1_i32(Some(&u_prev_data_tex), 3);
+            let u_prev_azimuth_tex = uniform("u_prev_azimuth_tex")?;
+            gl.uniform_1_i32(Some(&u_prev_azimuth_tex), 4);
 
             let u_radar_center = uniform("u_radar_center")?;
             let u_radar_radius = uniform("u_radar_radius")?;
@@ -740,16 +885,30 @@ impl RadarGpuRenderer {
 
             // Processing uniforms
             let u_interpolation = uniform("u_interpolation")?;
-            let u_smoothing_enabled = uniform("u_smoothing_enabled")?;
-            let u_smoothing_radius = uniform("u_smoothing_radius")?;
             let u_despeckle_enabled = uniform("u_despeckle_enabled")?;
             let u_despeckle_threshold = uniform("u_despeckle_threshold")?;
             let u_opacity = uniform("u_opacity")?;
-            let u_edge_softening = uniform("u_edge_softening")?;
+            let u_data_age_indicator = uniform("u_data_age_indicator")?;
 
             // Raw-to-physical conversion uniforms
             let u_offset = uniform("u_offset")?;
             let u_scale = uniform("u_scale")?;
+
+            // Sweep animation uniforms
+            let u_sweep_enabled = uniform("u_sweep_enabled")?;
+            let u_sweep_azimuth = uniform("u_sweep_azimuth")?;
+            let u_sweep_start = uniform("u_sweep_start")?;
+            let u_prev_offset = uniform("u_prev_offset")?;
+            let u_prev_scale = uniform("u_prev_scale")?;
+            let u_prev_gate_count = uniform("u_prev_gate_count")?;
+            let u_prev_azimuth_count = uniform("u_prev_azimuth_count")?;
+            let u_prev_first_gate_km = uniform("u_prev_first_gate_km")?;
+            let u_prev_gate_interval_km = uniform("u_prev_gate_interval_km")?;
+            let u_prev_max_range_km = uniform("u_prev_max_range_km")?;
+
+            // Create placeholders for previous sweep textures
+            let prev_data_texture = create_r32f_texture(gl, 1, 1, &[0.0]);
+            let prev_azimuth_texture = create_r32f_texture(gl, 1, 1, &[0.0]);
 
             gl.use_program(None);
 
@@ -771,14 +930,32 @@ impl RadarGpuRenderer {
                 u_value_range,
                 u_viewport_size,
                 u_interpolation,
-                u_smoothing_enabled,
-                u_smoothing_radius,
                 u_despeckle_enabled,
                 u_despeckle_threshold,
                 u_opacity,
-                u_edge_softening,
+                u_data_age_indicator,
                 u_offset,
                 u_scale,
+                u_sweep_enabled,
+                u_sweep_azimuth,
+                u_sweep_start,
+                u_prev_offset,
+                u_prev_scale,
+                u_prev_gate_count,
+                u_prev_azimuth_count,
+                u_prev_first_gate_km,
+                u_prev_gate_interval_km,
+                u_prev_max_range_km,
+                prev_data_texture,
+                prev_azimuth_texture,
+                prev_data_offset: 0.0,
+                prev_data_scale: 1.0,
+                prev_azimuth_count: 0,
+                prev_gate_count: 0,
+                prev_first_gate_km: 0.0,
+                prev_gate_interval_km: 0.0,
+                prev_max_range_km: 0.0,
+                prev_sweep_id: None,
                 azimuth_count: 0,
                 gate_count: 0,
                 first_gate_km: 0.0,
@@ -789,9 +966,12 @@ impl RadarGpuRenderer {
                 has_data: false,
                 data_offset: 0.0,
                 data_scale: 1.0,
+                current_sweep_id: None,
                 cpu_azimuths: Vec::new(),
                 cpu_gate_values: Vec::new(),
                 cpu_radial_times: Vec::new(),
+                prev_cpu_gate_values: Vec::new(),
+                prev_cpu_radial_times: Vec::new(),
             })
         }
     }
@@ -962,9 +1142,77 @@ impl RadarGpuRenderer {
     /// Clear all radar data (e.g. on site change).
     pub fn clear_data(&mut self) {
         self.has_data = false;
+        self.current_sweep_id = None;
+        self.prev_sweep_id = None;
         self.cpu_azimuths.clear();
         self.cpu_gate_values.clear();
         self.cpu_radial_times.clear();
+    }
+
+    /// Clear only the previous-sweep identity so the shader composites against
+    /// black until a new previous sweep is loaded.
+    pub fn clear_previous_data(&mut self) {
+        self.prev_sweep_id = None;
+    }
+
+    /// Identity of the sweep currently loaded in the primary data texture.
+    pub fn current_sweep_id(&self) -> Option<&str> {
+        self.current_sweep_id.as_deref()
+    }
+
+    /// Identity of the sweep currently loaded in the previous data texture.
+    pub fn prev_sweep_id(&self) -> Option<&str> {
+        self.prev_sweep_id.as_deref()
+    }
+
+    /// Set the identity of the current sweep (called after `update_data`).
+    pub fn set_current_sweep_id(&mut self, id: Option<String>) {
+        self.current_sweep_id = id;
+    }
+
+    /// Upload decoded radar data to the *previous* texture slot for sweep
+    /// animation compositing. Stores per-sweep spatial metadata so the shader
+    /// can sample the previous texture with correct gate/range mapping even
+    /// when the current and previous sweeps have different dimensions.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_previous_data(
+        &mut self,
+        gl: &glow::Context,
+        azimuths: &[f32],
+        gate_values: &[f32],
+        azimuth_count: u32,
+        gate_count: u32,
+        first_gate_km: f64,
+        gate_interval_km: f64,
+        max_range_km: f64,
+        offset: f32,
+        scale: f32,
+        sweep_id: Option<String>,
+        radial_times: &[f64],
+    ) {
+        self.prev_data_offset = offset;
+        self.prev_data_scale = scale;
+        self.prev_azimuth_count = azimuth_count;
+        self.prev_gate_count = gate_count;
+        self.prev_first_gate_km = first_gate_km;
+        self.prev_gate_interval_km = gate_interval_km;
+        self.prev_max_range_km = max_range_km;
+        self.prev_sweep_id = sweep_id;
+        self.prev_cpu_gate_values = gate_values.to_vec();
+        self.prev_cpu_radial_times = radial_times.to_vec();
+
+        if azimuth_count == 0 || gate_count == 0 {
+            return;
+        }
+
+        unsafe {
+            gl.delete_texture(self.prev_data_texture);
+            self.prev_data_texture =
+                create_r32f_texture(gl, gate_count as i32, azimuth_count as i32, gate_values);
+
+            gl.delete_texture(self.prev_azimuth_texture);
+            self.prev_azimuth_texture = create_r32f_texture(gl, azimuth_count as i32, 1, azimuths);
+        }
     }
 
     /// Look up the raw data value at a given polar coordinate.
@@ -1058,6 +1306,93 @@ impl RadarGpuRenderer {
         self.cpu_radial_times.get(best_idx).copied()
     }
 
+    /// Sweep-aware value lookup for the inspector.
+    ///
+    /// When `sweep_params` is `Some((sweep_azimuth, sweep_start))`, determines
+    /// whether the queried position falls in the previous-sweep region and
+    /// returns the appropriate value.
+    pub fn value_at_polar_sweep_aware(
+        &self,
+        azimuth_deg: f32,
+        range_km: f64,
+        sweep_params: Option<(f32, f32)>,
+    ) -> Option<f32> {
+        if let Some((sweep_az, sweep_start)) = sweep_params {
+            let swept_arc = (sweep_az - sweep_start).rem_euclid(360.0);
+            let pixel_from_start = (azimuth_deg - sweep_start).rem_euclid(360.0);
+            if pixel_from_start >= swept_arc {
+                // In the previous-sweep region — use prev CPU data
+                return self.prev_value_at_polar(azimuth_deg, range_km);
+            }
+        }
+        self.value_at_polar(azimuth_deg, range_km)
+    }
+
+    /// Sweep-aware collection time lookup for the inspector.
+    pub fn collection_time_at_polar_sweep_aware(
+        &self,
+        azimuth_deg: f32,
+        sweep_params: Option<(f32, f32)>,
+    ) -> Option<f64> {
+        if let Some((sweep_az, sweep_start)) = sweep_params {
+            let swept_arc = (sweep_az - sweep_start).rem_euclid(360.0);
+            let pixel_from_start = (azimuth_deg - sweep_start).rem_euclid(360.0);
+            if pixel_from_start >= swept_arc {
+                return self.prev_collection_time_at_polar(azimuth_deg);
+            }
+        }
+        self.collection_time_at_polar(azimuth_deg)
+    }
+
+    /// Look up value in the previous sweep's CPU data using evenly-spaced azimuth indexing.
+    fn prev_value_at_polar(&self, azimuth_deg: f32, range_km: f64) -> Option<f32> {
+        let az_count = self.prev_azimuth_count as usize;
+        let gate_count = self.prev_gate_count as usize;
+        if az_count == 0 || gate_count == 0 || self.prev_cpu_gate_values.is_empty() {
+            return None;
+        }
+
+        if range_km < self.prev_first_gate_km || range_km >= self.prev_max_range_km {
+            return None;
+        }
+
+        // Evenly-spaced azimuth indexing (same as GPU shader for prev sweep)
+        let az_idx = ((azimuth_deg * az_count as f32 / 360.0).round() as usize) % az_count;
+
+        let gate_idx =
+            ((range_km - self.prev_first_gate_km) / self.prev_gate_interval_km).floor() as usize;
+        if gate_idx >= gate_count {
+            return None;
+        }
+
+        let offset = az_idx * gate_count + gate_idx;
+        if offset >= self.prev_cpu_gate_values.len() {
+            return None;
+        }
+
+        let raw = self.prev_cpu_gate_values[offset];
+        if raw <= 1.0 {
+            return None;
+        }
+
+        if self.prev_data_scale == 0.0 {
+            Some(raw)
+        } else {
+            Some((raw - self.prev_data_offset) / self.prev_data_scale)
+        }
+    }
+
+    /// Look up collection time in the previous sweep's CPU data.
+    fn prev_collection_time_at_polar(&self, azimuth_deg: f32) -> Option<f64> {
+        let az_count = self.prev_azimuth_count as usize;
+        if az_count == 0 || self.prev_cpu_radial_times.is_empty() {
+            return None;
+        }
+
+        let az_idx = ((azimuth_deg * az_count as f32 / 360.0).round() as usize) % az_count;
+        self.prev_cpu_radial_times.get(az_idx).copied()
+    }
+
     /// Render the radar data using the current GL context.
     ///
     /// Called from within an `egui_glow::CallbackFn`.
@@ -1072,6 +1407,7 @@ impl RadarGpuRenderer {
         radar_radius: f32,
         viewport_size: [f32; 2],
         processing: &RenderProcessing,
+        sweep_info: Option<(f32, f32)>,
     ) {
         if !self.has_data {
             return;
@@ -1098,6 +1434,10 @@ impl RadarGpuRenderer {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.lut_texture));
             gl.active_texture(glow::TEXTURE2);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.azimuth_texture));
+            gl.active_texture(glow::TEXTURE3);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.prev_data_texture));
+            gl.active_texture(glow::TEXTURE4);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.prev_azimuth_texture));
 
             // Set uniforms
             gl.uniform_2_f32(Some(&self.u_radar_center), radar_center[0], radar_center[1]);
@@ -1122,11 +1462,6 @@ impl RadarGpuRenderer {
             };
             gl.uniform_1_i32(Some(&self.u_interpolation), interp_mode);
             gl.uniform_1_i32(
-                Some(&self.u_smoothing_enabled),
-                processing.smoothing_enabled as i32,
-            );
-            gl.uniform_1_f32(Some(&self.u_smoothing_radius), processing.smoothing_radius);
-            gl.uniform_1_i32(
                 Some(&self.u_despeckle_enabled),
                 processing.despeckle_enabled as i32,
             );
@@ -1136,13 +1471,41 @@ impl RadarGpuRenderer {
             );
             gl.uniform_1_f32(Some(&self.u_opacity), processing.opacity);
             gl.uniform_1_i32(
-                Some(&self.u_edge_softening),
-                processing.edge_softening as i32,
+                Some(&self.u_data_age_indicator),
+                processing.data_age_indicator as i32,
             );
 
             // Raw-to-physical conversion
             gl.uniform_1_f32(Some(&self.u_offset), self.data_offset);
             gl.uniform_1_f32(Some(&self.u_scale), self.data_scale);
+
+            // Sweep animation uniforms — enable even without prev data; the 1x1
+            // placeholder texture returns 0.0 (below-threshold sentinel → transparent),
+            // so the first sweep progressively reveals against a blank background.
+            let sweep_on = sweep_info.is_some();
+            gl.uniform_1_i32(Some(&self.u_sweep_enabled), sweep_on as i32);
+            let (sweep_az, sweep_start) = sweep_info.unwrap_or((0.0, 0.0));
+            gl.uniform_1_f32(Some(&self.u_sweep_azimuth), sweep_az);
+            gl.uniform_1_f32(Some(&self.u_sweep_start), sweep_start);
+            gl.uniform_1_f32(Some(&self.u_prev_offset), self.prev_data_offset);
+            gl.uniform_1_f32(Some(&self.u_prev_scale), self.prev_data_scale);
+            gl.uniform_1_f32(Some(&self.u_prev_gate_count), self.prev_gate_count as f32);
+            gl.uniform_1_f32(
+                Some(&self.u_prev_azimuth_count),
+                self.prev_azimuth_count as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.u_prev_first_gate_km),
+                self.prev_first_gate_km as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.u_prev_gate_interval_km),
+                self.prev_gate_interval_km as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.u_prev_max_range_km),
+                self.prev_max_range_km as f32,
+            );
 
             // Draw fullscreen quad
             gl.draw_arrays(glow::TRIANGLES, 0, 6);

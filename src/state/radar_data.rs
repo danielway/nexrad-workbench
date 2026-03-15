@@ -53,6 +53,8 @@ pub struct Sweep {
     pub elevation: f32,
     /// Elevation number (index into the VCP elevation list)
     pub elevation_number: u8,
+    /// Azimuth angle (degrees) of the chronologically first radial in this sweep.
+    pub start_azimuth: f32,
     /// Individual radials in this sweep
     pub radials: Vec<Radial>,
 }
@@ -197,6 +199,21 @@ impl RadarTimeline {
         (ts - most_recent.start_time <= max_age_secs).then_some(most_recent)
     }
 
+    /// Find the scan immediately before the one containing `ts`, within a time window.
+    ///
+    /// Returns `None` if `ts` is before or within the first scan, or if the
+    /// previous scan is older than `max_age_secs` from `ts`.
+    pub fn find_previous_scan(&self, ts: f64, max_age_secs: f64) -> Option<&Scan> {
+        let idx = self.scans.partition_point(|s| s.start_time <= ts);
+        // idx-1 is the scan containing ts; idx-2 is the one before it
+        if idx >= 2 {
+            let scan = self.scans.get(idx - 2)?;
+            (ts - scan.start_time <= max_age_secs).then_some(scan)
+        } else {
+            None
+        }
+    }
+
     /// Get the timestamp of a scan for identification purposes.
     /// Used to check if we need to load a different scan.
     #[allow(dead_code)] // Utility method
@@ -249,6 +266,7 @@ impl RadarTimeline {
                     end_time: sweep_end,
                     elevation,
                     elevation_number: (elev_idx + 1) as u8,
+                    start_azimuth: radials.first().map(|r| r.azimuth).unwrap_or(0.0),
                     radials,
                 });
 
@@ -273,36 +291,6 @@ impl RadarTimeline {
         }
 
         Self { scans }
-    }
-
-    /// Find the nearest scan or sweep boundary to a given timestamp.
-    /// Returns the snapped timestamp if a boundary is within `max_dist_secs`.
-    pub fn snap_to_boundary(&self, ts: f64, max_dist_secs: f64) -> Option<f64> {
-        let mut best: Option<f64> = None;
-        let mut best_dist = max_dist_secs;
-
-        for scan in &self.scans {
-            // Check scan boundaries
-            for &boundary in &[scan.start_time, scan.end_time] {
-                let dist = (ts - boundary).abs();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best = Some(boundary);
-                }
-            }
-            // Check sweep boundaries
-            for sweep in &scan.sweeps {
-                for &boundary in &[sweep.start_time, sweep.end_time] {
-                    let dist = (ts - boundary).abs();
-                    if dist < best_dist {
-                        best_dist = dist;
-                        best = Some(boundary);
-                    }
-                }
-            }
-        }
-
-        best
     }
 
     /// Find the end time of the next matching sweep after the given timestamp.
@@ -397,6 +385,7 @@ impl RadarTimeline {
                         end_time: sm.end,
                         elevation: sm.elevation,
                         elevation_number: sm.elevation_number,
+                        start_azimuth: sm.start_azimuth,
                         radials: Vec::new(),
                     })
                     .collect();
@@ -476,6 +465,7 @@ mod tests {
             end_time: end,
             elevation,
             elevation_number: elev_num,
+            start_azimuth: 0.0,
             radials: Vec::new(),
         }
     }
@@ -632,21 +622,6 @@ mod tests {
 
         // Too old
         assert!(tl.find_recent_scan(2500.0, 600.0).is_none());
-    }
-
-    #[test]
-    fn snap_to_boundary() {
-        let tl = RadarTimeline {
-            scans: vec![scan_with_sweeps(
-                1000.0,
-                1030.0,
-                vec![sweep(1000.0, 1010.0, 0.5, 1), sweep(1010.0, 1020.0, 0.9, 2)],
-            )],
-        };
-        // Close to sweep boundary at 1010
-        assert_eq!(tl.snap_to_boundary(1011.0, 5.0), Some(1010.0));
-        // Too far from any boundary
-        assert_eq!(tl.snap_to_boundary(1015.0, 2.0), None);
     }
 
     #[test]

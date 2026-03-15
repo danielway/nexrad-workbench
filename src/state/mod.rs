@@ -346,7 +346,7 @@ impl AppState {
         let mut commands = std::collections::VecDeque::new();
         // Request timeline refresh on startup to load from cache
         commands.push_back(AppCommand::RefreshTimeline {
-            auto_position: true,
+            auto_position: false,
         });
 
         let mut state = Self {
@@ -362,7 +362,7 @@ impl AppState {
             is_dark,
             storm_cell_threshold_dbz: 35.0,
             commands,
-            auto_position_on_timeline_load: true,
+            auto_position_on_timeline_load: false,
             ..Default::default()
         };
 
