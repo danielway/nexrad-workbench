@@ -398,7 +398,7 @@ impl WorkbenchApp {
                     .center_on(site_info.lat, site_info.lon);
             }
             state.push_command(state::AppCommand::RefreshTimeline {
-                auto_position: true,
+                auto_position: false,
             });
         }
         if let Some(lat) = url_params.lat {

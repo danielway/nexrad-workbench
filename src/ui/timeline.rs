@@ -1155,16 +1155,10 @@ fn handle_timeline_interaction(
 
             let clicked_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
 
-            let snap_dist_secs = 10.0 / zoom;
-            let snapped_ts = state
-                .radar_timeline
-                .snap_to_boundary(clicked_ts, snap_dist_secs)
-                .unwrap_or(clicked_ts);
-
-            state.playback_state.set_playback_position(snapped_ts);
+            state.playback_state.set_playback_position(clicked_ts);
             state.playback_state.clear_selection();
 
-            if let Some(frame) = state.playback_state.timestamp_to_frame(snapped_ts as i64) {
+            if let Some(frame) = state.playback_state.timestamp_to_frame(clicked_ts as i64) {
                 state.playback_state.current_frame = frame;
             }
         }

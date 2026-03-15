@@ -225,17 +225,13 @@ impl TimeModel {
         self.locked_to_realtime = false;
     }
 
-    /// Seek to a specific position, respecting bounds.
+    /// Seek to a specific position.
     pub fn seek_to(&mut self, position: f64) {
         if self.locked_to_realtime {
             return; // Can't seek in real-time mode
         }
 
-        if let Some((start, end)) = self.playback_bounds {
-            self.playback_position = position.clamp(start, end);
-        } else {
-            self.playback_position = position;
-        }
+        self.playback_position = position;
     }
 }
 

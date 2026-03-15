@@ -291,36 +291,6 @@ impl RadarTimeline {
         Self { scans }
     }
 
-    /// Find the nearest scan or sweep boundary to a given timestamp.
-    /// Returns the snapped timestamp if a boundary is within `max_dist_secs`.
-    pub fn snap_to_boundary(&self, ts: f64, max_dist_secs: f64) -> Option<f64> {
-        let mut best: Option<f64> = None;
-        let mut best_dist = max_dist_secs;
-
-        for scan in &self.scans {
-            // Check scan boundaries
-            for &boundary in &[scan.start_time, scan.end_time] {
-                let dist = (ts - boundary).abs();
-                if dist < best_dist {
-                    best_dist = dist;
-                    best = Some(boundary);
-                }
-            }
-            // Check sweep boundaries
-            for sweep in &scan.sweeps {
-                for &boundary in &[sweep.start_time, sweep.end_time] {
-                    let dist = (ts - boundary).abs();
-                    if dist < best_dist {
-                        best_dist = dist;
-                        best = Some(boundary);
-                    }
-                }
-            }
-        }
-
-        best
-    }
-
     /// Find the end time of the next matching sweep after the given timestamp.
     ///
     /// "Matching" means the sweep's elevation is within `elev_tolerance` of
@@ -650,21 +620,6 @@ mod tests {
 
         // Too old
         assert!(tl.find_recent_scan(2500.0, 600.0).is_none());
-    }
-
-    #[test]
-    fn snap_to_boundary() {
-        let tl = RadarTimeline {
-            scans: vec![scan_with_sweeps(
-                1000.0,
-                1030.0,
-                vec![sweep(1000.0, 1010.0, 0.5, 1), sweep(1010.0, 1020.0, 0.9, 2)],
-            )],
-        };
-        // Close to sweep boundary at 1010
-        assert_eq!(tl.snap_to_boundary(1011.0, 5.0), Some(1010.0));
-        // Too far from any boundary
-        assert_eq!(tl.snap_to_boundary(1015.0, 2.0), None);
     }
 
     #[test]
