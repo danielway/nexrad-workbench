@@ -101,6 +101,8 @@ pub mod timeline {
     pub const SELECTION: Color32 = Color32::from_rgb(255, 100, 100);
     /// Active sweep highlight (theme-independent).
     pub const ACTIVE_SWEEP: Color32 = Color32::from_rgb(255, 255, 100);
+    /// Previous active sweep highlight during sweep animation (theme-independent).
+    pub const PREV_ACTIVE_SWEEP: Color32 = Color32::from_rgb(160, 200, 255);
     /// "Now" marker (current wall-clock time).
     pub const NOW_MARKER: Color32 = Color32::from_rgb(180, 200, 255);
     /// Selection range boundary label color.

@@ -136,7 +136,12 @@ pub fn render_canvas_with_geo(
                     render_storm_cells(&painter, &projection, &state.detected_storm_cells, dark);
                 }
 
-                render_radar_sweep(&painter, &projection, state, sweep_info);
+                // Only show sweep line when actively revealing (not before sweep starts or after it ends)
+                let sweep_line_info = match gpu_sweep {
+                    Some((az, start)) if az != 0.0 || start != 0.0 => Some((az, start)),
+                    _ => None,
+                };
+                render_radar_sweep(&painter, &projection, state, sweep_line_info);
 
                 if state.distance_tool_active || state.distance_start.is_some() {
                     render_distance_measurement(
@@ -1048,9 +1053,36 @@ fn render_radar_sweep(
     }
 }
 
+/// Draw a background-boxed label at a given angle around the donut.
+fn draw_boundary_label(
+    painter: &Painter,
+    center: Pos2,
+    label_radius: f32,
+    azimuth_deg: f32,
+    text: &str,
+    font: &egui::FontId,
+) {
+    let label_angle = (azimuth_deg - 90.0) * PI / 180.0;
+    let label_pos = Pos2::new(
+        center.x + label_radius * label_angle.cos(),
+        center.y + label_radius * label_angle.sin(),
+    );
+    let align = sweep_label_align(azimuth_deg);
+    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE);
+    let text_size = galley.size();
+    let bg_pos = align_pos(label_pos, text_size, align);
+    let padding = Vec2::new(3.0, 2.0);
+    painter.rect_filled(
+        Rect::from_min_size(bg_pos - padding, text_size + padding * 2.0),
+        3.0,
+        Color32::from_rgba_unmultiplied(15, 15, 25, 200),
+    );
+    painter.galley(bg_pos, galley, Color32::WHITE);
+}
+
 /// Draw a donut-chart ring around the radar showing which azimuthal regions
 /// belong to the current sweep vs the previous sweep, with time labels at
-/// the boundaries.
+/// both discontinuity boundaries.
 fn draw_sweep_donut(
     painter: &Painter,
     center: Pos2,
@@ -1104,48 +1136,83 @@ fn draw_sweep_donut(
         painter.line_segment([p1, p2], Stroke::new(donut_width, color));
     }
 
-    // Time labels at the sweep line (boundary between current and previous)
+    // Time labels at both discontinuity boundaries
     let label_radius = donut_outer + 14.0;
     let label_font = egui::FontId::monospace(10.0);
+    let use_local = state.use_local_time;
 
-    // Format timestamps for current and previous sweeps
-    let current_time_str = state
-        .viz_state
-        .rendered_sweep_end_secs
-        .map(|end_secs| format_time_short(end_secs, state.use_local_time));
-    let prev_time_str = state
+    // Boundary 1: sweep line (sweep_az) — playback time | prev sweep time at this azimuth
+    // The data right after the sweep line is from the previous sweep at the same
+    // azimuth. Interpolate into the previous sweep's time range based on where
+    // the sweep line sits relative to the sweep start azimuth (both sweeps rotate
+    // through the same azimuths in the same order).
+    let playback_time_str = format_time_short(state.playback_state.playback_position(), use_local);
+    let prev_at_az_str = state
         .viz_state
         .prev_sweep_overlay
-        .map(|(_, _, prev_end)| format_time_short(prev_end, state.use_local_time));
+        .map(|(_, prev_start, prev_end)| {
+            // swept_arc_deg is how far the current sweep has progressed (0..360).
+            // The previous sweep data at the sweep line was collected at the same
+            // fractional position through its own rotation.
+            let frac = (swept_arc_deg / 360.0).clamp(0.0, 1.0) as f64;
+            let prev_time_at_az = prev_start + frac * (prev_end - prev_start);
+            format_time_short(prev_time_at_az, use_local)
+        });
 
-    // Label at the sweep line position
-    if current_time_str.is_some() || prev_time_str.is_some() {
-        let label_angle = (sweep_az - 90.0) * PI / 180.0;
-        let label_pos = Pos2::new(
-            center.x + label_radius * label_angle.cos(),
-            center.y + label_radius * label_angle.sin(),
-        );
+    let sweep_line_label = match prev_at_az_str {
+        Some(ref prev) => format!("{} | {}", playback_time_str, prev),
+        None => playback_time_str,
+    };
+    draw_boundary_label(
+        painter,
+        center,
+        label_radius,
+        sweep_az,
+        &sweep_line_label,
+        &label_font,
+    );
 
-        // Pick alignment based on which quadrant the label is in
-        let align = sweep_label_align(sweep_az);
+    // Boundary 2: sweep start (sweep_start) — current sweep start | prev sweep end
+    // Only draw when prev_sweep_overlay exists (compositing two sweeps) and
+    // the swept arc is wide enough to avoid overlapping text.
+    if swept_arc_deg >= 30.0 {
+        if let Some((_, _, prev_end)) = state.viz_state.prev_sweep_overlay {
+            // Look up the current sweep's actual start time from the timeline
+            // (rendered_sweep_start_secs tracks the last decoded sweep, which may
+            // be stale or from a different elevation).
+            let playback_ts = state.playback_state.playback_position();
+            let displayed_elev = state.displayed_sweep_elevation_number;
+            let current_sweep_start_secs = state
+                .radar_timeline
+                .find_recent_scan(playback_ts, 15.0 * 60.0)
+                .and_then(|scan| {
+                    scan.sweeps
+                        .iter()
+                        .filter(|s| Some(s.elevation_number) == displayed_elev)
+                        .rfind(|s| s.start_time <= playback_ts)
+                        .or_else(|| {
+                            scan.sweeps
+                                .iter()
+                                .find(|s| Some(s.elevation_number) == displayed_elev)
+                        })
+                        .map(|s| s.start_time)
+                });
 
-        if let Some(ref cur) = current_time_str {
-            if let Some(ref prev) = prev_time_str {
-                // Show both times separated by a pipe
-                let text = format!("{} | {}", cur, prev);
-                // Background
-                let galley =
-                    painter.layout_no_wrap(text.clone(), label_font.clone(), Color32::WHITE);
-                let text_size = galley.size();
-                let bg_pos = align_pos(label_pos, text_size, align);
-                let padding = Vec2::new(3.0, 2.0);
-                painter.rect_filled(
-                    Rect::from_min_size(bg_pos - padding, text_size + padding * 2.0),
-                    3.0,
-                    Color32::from_rgba_unmultiplied(15, 15, 25, 200),
-                );
-                painter.galley(bg_pos, galley, Color32::WHITE);
-            }
+            let start_time_str = current_sweep_start_secs.map(|s| format_time_short(s, use_local));
+            let prev_end_str2 = format_time_short(prev_end, use_local);
+
+            let start_label = match start_time_str {
+                Some(ref start) => format!("{} | {}", start, prev_end_str2),
+                None => prev_end_str2,
+            };
+            draw_boundary_label(
+                painter,
+                center,
+                label_radius,
+                sweep_start,
+                &start_label,
+                &label_font,
+            );
         }
     }
 }

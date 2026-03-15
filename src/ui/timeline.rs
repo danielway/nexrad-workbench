@@ -207,6 +207,7 @@ fn render_sweep_track(
     active_sweep: Option<(i64, u8)>,
     target_elevation: f32,
     active_scan_key_ts: Option<f64>,
+    prev_active_sweep: Option<(i64, u8)>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
@@ -237,9 +238,17 @@ fn render_sweep_track(
             let is_active = active_sweep.is_some_and(|(scan_ts, elev_num)| {
                 scan.key_timestamp as i64 == scan_ts && sweep.elevation_number == elev_num
             });
+            let is_prev_active = !is_active
+                && prev_active_sweep.is_some_and(|(scan_ts, elev_num)| {
+                    scan.key_timestamp as i64 == scan_ts && sweep.elevation_number == elev_num
+                });
 
             let fill = tl_colors::sweep_fill(sweep.elevation, matches_elevation);
-            let border = tl_colors::sweep_border(sweep.elevation, is_active);
+            let border = if is_prev_active {
+                tl_colors::PREV_ACTIVE_SWEEP
+            } else {
+                tl_colors::sweep_border(sweep.elevation, is_active)
+            };
 
             let sweep_rect = Rect::from_min_max(
                 Pos2::new(x_start, rect.top() + 2.0),
@@ -249,8 +258,14 @@ fn render_sweep_track(
             painter.rect_filled(sweep_rect, 1.0, fill);
 
             if width > 3.0 {
-                let stroke_width = if is_active { 2.0 } else { 0.5 };
-                let stroke_kind = if is_active {
+                let stroke_width = if is_active {
+                    2.0
+                } else if is_prev_active {
+                    1.5
+                } else {
+                    0.5
+                };
+                let stroke_kind = if is_active || is_prev_active {
                     StrokeKind::Outside
                 } else {
                     StrokeKind::Inside
@@ -690,6 +705,17 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     );
 
     // ── Render sweep track (only at Sweeps detail) ────────────────────
+    let prev_active_sweep = if state.render_processing.sweep_animation {
+        match (
+            state.viz_state.prev_sweep_scan_timestamp,
+            state.viz_state.prev_sweep_elevation_number,
+        ) {
+            (Some(ts), Some(en)) => Some((ts, en)),
+            _ => None,
+        }
+    } else {
+        None
+    };
     if detail_level == DetailLevel::Sweeps {
         render_sweep_track(
             &painter,
@@ -701,6 +727,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             active_sweep,
             state.viz_state.target_elevation,
             active_scan_key_ts,
+            prev_active_sweep,
         );
         render_connector_lines(
             &painter,
@@ -751,6 +778,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             frame_now_secs,
             state.viz_state.target_elevation,
             active_sweep,
+            prev_active_sweep,
         );
         ui.ctx().request_repaint();
     }
@@ -1526,6 +1554,7 @@ fn render_realtime_progress(
     now_secs: f64,
     target_elevation: f32,
     active_sweep: Option<(i64, u8)>,
+    prev_active_sweep: Option<(i64, u8)>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
     let now = now_secs;
@@ -1838,12 +1867,24 @@ fn render_realtime_progress(
         if is_complete {
             // -- Complete: filled with cool elevation colors --
             let is_active = active_sweep.is_some_and(|(_, active_en)| active_en == elev_num);
+            let is_prev_active =
+                !is_active && prev_active_sweep.is_some_and(|(_, active_en)| active_en == elev_num);
             let fill = tl_colors::sweep_fill(elev_angle, matches_target);
-            let border = tl_colors::sweep_border(elev_angle, is_active);
+            let border = if is_prev_active {
+                tl_colors::PREV_ACTIVE_SWEEP
+            } else {
+                tl_colors::sweep_border(elev_angle, is_active)
+            };
             painter.rect_filled(block, 1.0, fill);
             if width > 3.0 {
-                let stroke_width = if is_active { 2.0 } else { 0.5 };
-                let stroke_kind = if is_active {
+                let stroke_width = if is_active {
+                    2.0
+                } else if is_prev_active {
+                    1.5
+                } else {
+                    0.5
+                };
+                let stroke_kind = if is_active || is_prev_active {
                     StrokeKind::Outside
                 } else {
                     StrokeKind::Inside

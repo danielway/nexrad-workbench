@@ -254,6 +254,12 @@ pub struct VizState {
     /// Contains (elevation_deg, start_time_secs, end_time_secs).
     pub prev_sweep_overlay: Option<(f32, f64, f64)>,
 
+    /// Scan timestamp of the previous sweep (for timeline secondary highlight).
+    pub prev_sweep_scan_timestamp: Option<i64>,
+
+    /// Elevation number of the previous sweep (for timeline secondary highlight).
+    pub prev_sweep_elevation_number: Option<u8>,
+
     /// Whether 3D volumetric rendering is enabled (ray-marched volume).
     pub volume_3d_enabled: bool,
 
@@ -281,6 +287,8 @@ impl Default for VizState {
             rendered_sweep_start_secs: None,
             rendered_sweep_end_secs: None,
             prev_sweep_overlay: None,
+            prev_sweep_scan_timestamp: None,
+            prev_sweep_elevation_number: None,
             volume_3d_enabled: false,
             volume_density_cutoff: 5.0,
         }

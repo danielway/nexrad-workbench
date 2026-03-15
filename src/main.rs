@@ -2545,6 +2545,8 @@ impl WorkbenchApp {
     fn sync_prev_sweep_texture(&mut self) {
         if !self.state.render_processing.sweep_animation {
             self.state.viz_state.prev_sweep_overlay = None;
+            self.state.viz_state.prev_sweep_scan_timestamp = None;
+            self.state.viz_state.prev_sweep_elevation_number = None;
             return;
         }
 
@@ -2616,12 +2618,16 @@ impl WorkbenchApp {
             Some(info) => info,
             None => {
                 self.state.viz_state.prev_sweep_overlay = None;
+                self.state.viz_state.prev_sweep_scan_timestamp = None;
+                self.state.viz_state.prev_sweep_elevation_number = None;
                 return;
             }
         };
 
-        // Store previous sweep metadata for canvas overlay
+        // Store previous sweep metadata for canvas overlay and timeline highlight
         self.state.viz_state.prev_sweep_overlay = Some((prev_elev_deg, prev_start, prev_end));
+        self.state.viz_state.prev_sweep_scan_timestamp = Some(prev_scan_key_ts);
+        self.state.viz_state.prev_sweep_elevation_number = Some(prev_elev_num);
 
         let prev_scan_key =
             data::ScanKey::from_secs(&self.state.viz_state.site_id, prev_scan_key_ts)
