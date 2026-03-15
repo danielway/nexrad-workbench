@@ -2406,22 +2406,6 @@ impl WorkbenchApp {
             )) = scrub_action
             {
                 if (needs_new_scan || needs_new_sweep) && self.decode_worker.is_some() {
-                    if needs_new_scan {
-                        log::debug!(
-                            "[sweep-anim] ADVANCE: new_scan ts={} elev={} playback={:.3}",
-                            scan_ts,
-                            target_elev_num,
-                            playback_ts,
-                        );
-                    } else {
-                        log::debug!(
-                            "[sweep-anim] ADVANCE: new_sweep elev_num={} within scan {} playback={:.3}",
-                            target_elev_num,
-                            scan_ts,
-                            playback_ts
-                        );
-                    }
-
                     // Update canvas overlay from sweep metadata
                     if let Some((start, end, elev)) = sweep_overlay {
                         self.update_overlay_from_sweep(start, end, elev);
@@ -2444,11 +2428,6 @@ impl WorkbenchApp {
                 }
             } else if self.state.displayed_scan_timestamp.is_some() {
                 // No scan found within range — clear stale render
-                log::debug!(
-                    "No scan within {}s of playback at {}, clearing render",
-                    MAX_SCAN_AGE_SECS,
-                    playback_ts as i64
-                );
                 if let Some(ref renderer) = self.renderers.gpu {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_data();
@@ -2656,12 +2635,6 @@ impl WorkbenchApp {
                 // Clear stale previous sweep immediately — don't composite old data
                 // while the correct previous sweep is being loaded
                 r.clear_previous_data();
-                log::debug!(
-                    "[sweep-anim] SYNC-PREV: want={} have={:?} cached={}",
-                    desired_prev_id,
-                    r.prev_sweep_id(),
-                    self.sweep_cache.get(&desired_prev_id).is_some(),
-                );
             }
         }
 
@@ -2671,6 +2644,7 @@ impl WorkbenchApp {
                 if let Ok(mut r) = renderer.lock() {
                     r.update_previous_data(
                         gl,
+                        &cached.azimuths,
                         &cached.gate_values,
                         cached.azimuth_count,
                         cached.gate_count,
@@ -2694,11 +2668,6 @@ impl WorkbenchApp {
         }
         if let Some(ref mut worker) = self.decode_worker {
             let product = self.state.viz_state.product.to_worker_string().to_string();
-            log::debug!(
-                "Requesting prev sweep decode: {} elev={}",
-                prev_scan_key,
-                prev_elev_num,
-            );
             worker.render(prev_scan_key, prev_elev_num, product);
             self.pending_prev_sweep_key = Some(desired_prev_id);
         }

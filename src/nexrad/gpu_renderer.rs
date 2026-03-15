@@ -324,7 +324,8 @@ uniform float u_offset;            // moment offset
 uniform float u_scale;             // moment scale (0.0 = raw values are physical)
 
 // Sweep animation (dual-texture compositing)
-uniform sampler2D u_prev_data_tex; // previous scan gate values (R32F, texture unit 3)
+uniform sampler2D u_prev_data_tex;    // previous scan gate values (R32F, texture unit 3)
+uniform sampler2D u_prev_azimuth_tex; // previous scan azimuths (R32F, texture unit 4)
 uniform int u_sweep_enabled;       // 0 or 1
 uniform float u_sweep_azimuth;     // current sweep line angle in degrees
 uniform float u_sweep_start;       // azimuth where the sweep began collecting
@@ -450,6 +451,79 @@ bool find_bracket_az(float azimuth_deg, out float idx_lo, out float idx_hi, out 
     return true;
 }
 
+// Previous-sweep azimuth lookup (mirrors find_nearest_az using prev textures).
+float find_nearest_prev_az(float azimuth_deg, out float out_az) {
+    float az_spacing = 360.0 / u_prev_azimuth_count;
+    float est_idx = azimuth_deg / az_spacing;
+    float inv_count = 1.0 / u_prev_azimuth_count;
+
+    float best_idx = 0.0;
+    float best_dist = 360.0;
+    float best_az = 0.0;
+
+    for (float offset = -2.0; offset <= 2.0; offset += 1.0) {
+        float i = floor(mod(est_idx + offset, u_prev_azimuth_count));
+        float tex_az = texture(u_prev_azimuth_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
+        float d = abs(azimuth_deg - tex_az);
+        d = min(d, 360.0 - d);
+        if (d < best_dist) {
+            best_dist = d;
+            best_idx = i;
+            best_az = tex_az;
+        }
+    }
+
+    if (best_dist > az_spacing * 1.5) {
+        out_az = 0.0;
+        return -1.0;
+    }
+    out_az = best_az;
+    return best_idx;
+}
+
+// Previous-sweep bracket lookup (mirrors find_bracket_az using prev textures).
+bool find_bracket_prev_az(float azimuth_deg, out float idx_lo, out float idx_hi, out float frac) {
+    float az_spacing = 360.0 / u_prev_azimuth_count;
+    float est_idx = azimuth_deg / az_spacing;
+    float inv_count = 1.0 / u_prev_azimuth_count;
+
+    float cand_idx[5];
+    float cand_az[5];
+    for (int k = 0; k < 5; k++) {
+        float i = floor(mod(est_idx + float(k - 2), u_prev_azimuth_count));
+        cand_idx[k] = i;
+        cand_az[k] = texture(u_prev_azimuth_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
+    }
+
+    float lo_idx = -1.0, hi_idx = -1.0;
+    float lo_dist = 360.0, hi_dist = 360.0;
+
+    for (int k = 0; k < 5; k++) {
+        float az = cand_az[k];
+        float diff = azimuth_deg - az;
+        diff = mod(diff + 540.0, 360.0) - 180.0;
+
+        if (diff >= 0.0 && diff < lo_dist) {
+            lo_dist = diff;
+            lo_idx = cand_idx[k];
+        }
+        if (diff <= 0.0 && (-diff) < hi_dist) {
+            hi_dist = -diff;
+            hi_idx = cand_idx[k];
+        }
+    }
+
+    if (lo_idx < 0.0 || hi_idx < 0.0) return false;
+
+    float span = lo_dist + hi_dist;
+    if (span > az_spacing * 1.5) return false;
+
+    idx_lo = lo_idx;
+    idx_hi = hi_idx;
+    frac = (span > 0.001) ? lo_dist / span : 0.0;
+    return true;
+}
+
 void main() {
     vec2 delta = v_screen_pos - u_radar_center;
     float dist_px = length(delta);
@@ -468,146 +542,66 @@ void main() {
         use_prev = (pixel_from_start >= swept_arc);
     }
 
-    // Age-based desaturation: oldest quadrant (270°–360° behind sweep) fades out
+    // Age-based desaturation: oldest quadrant (270°-360° behind sweep) fades out
     float desat_factor = 0.0;
     if (u_sweep_enabled == 1 && u_data_age_indicator == 1) {
         float age = mod(u_sweep_azimuth - azimuth_deg + 360.0, 360.0) / 360.0;
         desat_factor = clamp((age - 0.75) / 0.25, 0.0, 1.0) * 0.9;
     }
 
-    // --- Previous sweep: same processing pipeline as current sweep, but uses
-    // angle-based azimuth indexing (evenly-spaced — accurate for NEXRAD) and
-    // prev-specific spatial params / data texture.
-    if (use_prev) {
-        if (dist_km < u_prev_first_gate_km || dist_km >= u_prev_max_range_km) {
-            fragColor = vec4(0.0);
-            return;
-        }
-        float prev_gate_idx = (dist_km - u_prev_first_gate_km) / u_prev_gate_interval_km;
-        if (prev_gate_idx < 0.0 || prev_gate_idx >= u_prev_gate_count) {
-            fragColor = vec4(0.0);
-            return;
-        }
+    // --- Unified sweep pipeline: select spatial params based on use_prev ---
+    float s_gate_count    = use_prev ? u_prev_gate_count    : u_gate_count;
+    float s_azimuth_count = use_prev ? u_prev_azimuth_count : u_azimuth_count;
+    float s_first_gate_km = use_prev ? u_prev_first_gate_km : u_first_gate_km;
+    float s_gate_interval = use_prev ? u_prev_gate_interval_km : u_gate_interval_km;
+    float s_max_range_km  = use_prev ? u_prev_max_range_km  : u_max_range_km;
+    float s_offset        = use_prev ? u_prev_offset        : u_offset;
+    float s_scale         = use_prev ? u_prev_scale         : u_scale;
 
-        float value;
-        float prev_az_exact = azimuth_deg * u_prev_azimuth_count / 360.0;
-
-        if (u_interpolation == 1) {
-            // Bilinear interpolation using angle-based azimuth indices
-            float az_lo = floor(mod(prev_az_exact, u_prev_azimuth_count));
-            float az_hi = floor(mod(az_lo + 1.0, u_prev_azimuth_count));
-            float az_frac = fract(prev_az_exact);
-
-            float g_lo = floor(prev_gate_idx);
-            float g_hi = min(g_lo + 1.0, u_prev_gate_count - 1.0);
-            float g_frac = prev_gate_idx - g_lo;
-
-            float v00 = sample_prev_data(g_lo, az_lo);
-            float v10 = sample_prev_data(g_hi, az_lo);
-            float v01 = sample_prev_data(g_lo, az_hi);
-            float v11 = sample_prev_data(g_hi, az_hi);
-
-            float sum = 0.0;
-            float wsum = 0.0;
-            float w00 = (1.0 - g_frac) * (1.0 - az_frac);
-            float w10 = g_frac * (1.0 - az_frac);
-            float w01 = (1.0 - g_frac) * az_frac;
-            float w11 = g_frac * az_frac;
-
-            if (is_valid(v00)) { sum += v00 * w00; wsum += w00; }
-            if (is_valid(v10)) { sum += v10 * w10; wsum += w10; }
-            if (is_valid(v01)) { sum += v01 * w01; wsum += w01; }
-            if (is_valid(v11)) { sum += v11 * w11; wsum += w11; }
-
-            if (wsum < 0.001) {
-                fragColor = vec4(0.0);
-                return;
-            }
-            value = sum / wsum;
-        } else {
-            // Nearest neighbor
-            float prev_az_idx = floor(mod(prev_az_exact, u_prev_azimuth_count));
-            value = sample_prev_data(floor(prev_gate_idx), prev_az_idx);
-        }
-
-        if (!is_valid(value)) {
-            fragColor = vec4(0.0);
-            return;
-        }
-
-        // Despeckle filter
-        if (u_despeckle_enabled == 1) {
-            float center_az = floor(mod(prev_az_exact, u_prev_azimuth_count));
-            float center_g = floor(prev_gate_idx);
-            int valid_count = 0;
-            for (int dg = -1; dg <= 1; dg++) {
-                for (int da = -1; da <= 1; da++) {
-                    if (dg == 0 && da == 0) continue;
-                    float ng = center_g + float(dg);
-                    float na = mod(center_az + float(da), u_prev_azimuth_count);
-                    if (is_valid(sample_prev_data(ng, na))) {
-                        valid_count++;
-                    }
-                }
-            }
-            if (valid_count < u_despeckle_threshold) {
-                fragColor = vec4(0.0);
-                return;
-            }
-        }
-
-        // Convert raw value to physical units
-        float physical;
-        if (u_prev_scale == 0.0) {
-            physical = value;
-        } else {
-            physical = (value - u_prev_offset) / u_prev_scale;
-        }
-
-        float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
-        vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
-        if (desat_factor > 0.0) {
-            float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
-            color.rgb = mix(color.rgb, vec3(lum), desat_factor);
-        }
-        float a = color.a * u_opacity;
-        fragColor = vec4(color.rgb * a, a);
-        return;
-    }
-
-    // --- Current sweep: full pipeline with bilinear, despeckle, smoothing ---
-    if (dist_km < u_first_gate_km || dist_km >= u_max_range_km) {
+    // Range check
+    if (dist_km < s_first_gate_km || dist_km >= s_max_range_km) {
         fragColor = vec4(0.0);
         return;
     }
 
-    float gate_idx = (dist_km - u_first_gate_km) / u_gate_interval_km;
-
-    if (gate_idx < 0.0 || gate_idx >= u_gate_count) {
+    float gate_idx = (dist_km - s_first_gate_km) / s_gate_interval;
+    if (gate_idx < 0.0 || gate_idx >= s_gate_count) {
         fragColor = vec4(0.0);
         return;
     }
 
+    // Azimuth lookup + value sampling
     float value;
 
     if (u_interpolation == 1) {
-        // ---- Bilinear interpolation ----
+        // Bilinear interpolation
         float az_lo, az_hi, az_frac;
-        if (!find_bracket_az(azimuth_deg, az_lo, az_hi, az_frac)) {
+        bool bracket_ok = use_prev
+            ? find_bracket_prev_az(azimuth_deg, az_lo, az_hi, az_frac)
+            : find_bracket_az(azimuth_deg, az_lo, az_hi, az_frac);
+        if (!bracket_ok) {
             fragColor = vec4(0.0);
             return;
         }
 
         float g_lo = floor(gate_idx);
-        float g_hi = min(g_lo + 1.0, u_gate_count - 1.0);
+        float g_hi = min(g_lo + 1.0, s_gate_count - 1.0);
         float g_frac = gate_idx - g_lo;
 
-        float v00 = sample_data(g_lo, az_lo);
-        float v10 = sample_data(g_hi, az_lo);
-        float v01 = sample_data(g_lo, az_hi);
-        float v11 = sample_data(g_hi, az_hi);
+        float v00, v10, v01, v11;
+        if (use_prev) {
+            v00 = sample_prev_data(g_lo, az_lo);
+            v10 = sample_prev_data(g_hi, az_lo);
+            v01 = sample_prev_data(g_lo, az_hi);
+            v11 = sample_prev_data(g_hi, az_hi);
+        } else {
+            v00 = sample_data(g_lo, az_lo);
+            v10 = sample_data(g_hi, az_lo);
+            v01 = sample_data(g_lo, az_hi);
+            v11 = sample_data(g_hi, az_hi);
+        }
 
-        // Weighted average skipping SENTINEL values
+        // Weighted average skipping sentinel values
         float sum = 0.0;
         float wsum = 0.0;
         float w00 = (1.0 - g_frac) * (1.0 - az_frac);
@@ -626,14 +620,18 @@ void main() {
         }
         value = sum / wsum;
     } else {
-        // ---- Nearest neighbor (original) ----
+        // Nearest neighbor
         float dummy_az;
-        float best_idx = find_nearest_az(azimuth_deg, dummy_az);
+        float best_idx = use_prev
+            ? find_nearest_prev_az(azimuth_deg, dummy_az)
+            : find_nearest_az(azimuth_deg, dummy_az);
         if (best_idx < 0.0) {
             fragColor = vec4(0.0);
             return;
         }
-        value = sample_data(floor(gate_idx), best_idx);
+        value = use_prev
+            ? sample_prev_data(floor(gate_idx), best_idx)
+            : sample_data(floor(gate_idx), best_idx);
     }
 
     if (!is_valid(value)) {
@@ -641,10 +639,12 @@ void main() {
         return;
     }
 
-    // ---- Despeckle filter ----
+    // Despeckle filter
     if (u_despeckle_enabled == 1) {
         float dummy_az2;
-        float center_az = find_nearest_az(azimuth_deg, dummy_az2);
+        float center_az = use_prev
+            ? find_nearest_prev_az(azimuth_deg, dummy_az2)
+            : find_nearest_az(azimuth_deg, dummy_az2);
         float center_g = floor(gate_idx);
         if (center_az >= 0.0) {
             int valid_count = 0;
@@ -652,9 +652,11 @@ void main() {
                 for (int da = -1; da <= 1; da++) {
                     if (dg == 0 && da == 0) continue;
                     float ng = center_g + float(dg);
-                    float na = mod(center_az + float(da), u_azimuth_count);
-                    if (is_valid(sample_data(ng, na))) {
-                        valid_count++;
+                    float na = mod(center_az + float(da), s_azimuth_count);
+                    if (use_prev) {
+                        if (is_valid(sample_prev_data(ng, na))) valid_count++;
+                    } else {
+                        if (is_valid(sample_data(ng, na))) valid_count++;
                     }
                 }
             }
@@ -667,10 +669,10 @@ void main() {
 
     // Convert raw value to physical units
     float physical;
-    if (u_scale == 0.0) {
-        physical = value;           // raw values are already physical
+    if (s_scale == 0.0) {
+        physical = value;
     } else {
-        physical = (value - u_offset) / u_scale;
+        physical = (value - s_offset) / s_scale;
     }
 
     // Normalize and look up color
@@ -735,8 +737,9 @@ pub struct RadarGpuRenderer {
     u_prev_gate_interval_km: glow::UniformLocation,
     u_prev_max_range_km: glow::UniformLocation,
 
-    // Previous scan texture (for sweep animation)
+    // Previous scan textures (for sweep animation)
     prev_data_texture: glow::Texture,
+    prev_azimuth_texture: glow::Texture,
     prev_data_offset: f32,
     prev_data_scale: f32,
     prev_azimuth_count: u32,
@@ -866,6 +869,8 @@ impl RadarGpuRenderer {
             gl.uniform_1_i32(Some(&u_azimuth_tex), 2);
             let u_prev_data_tex = uniform("u_prev_data_tex")?;
             gl.uniform_1_i32(Some(&u_prev_data_tex), 3);
+            let u_prev_azimuth_tex = uniform("u_prev_azimuth_tex")?;
+            gl.uniform_1_i32(Some(&u_prev_azimuth_tex), 4);
 
             let u_radar_center = uniform("u_radar_center")?;
             let u_radar_radius = uniform("u_radar_radius")?;
@@ -901,8 +906,9 @@ impl RadarGpuRenderer {
             let u_prev_gate_interval_km = uniform("u_prev_gate_interval_km")?;
             let u_prev_max_range_km = uniform("u_prev_max_range_km")?;
 
-            // Create placeholder for previous data texture
+            // Create placeholders for previous sweep textures
             let prev_data_texture = create_r32f_texture(gl, 1, 1, &[0.0]);
+            let prev_azimuth_texture = create_r32f_texture(gl, 1, 1, &[0.0]);
 
             gl.use_program(None);
 
@@ -941,6 +947,7 @@ impl RadarGpuRenderer {
                 u_prev_gate_interval_km,
                 u_prev_max_range_km,
                 prev_data_texture,
+                prev_azimuth_texture,
                 prev_data_offset: 0.0,
                 prev_data_scale: 1.0,
                 prev_azimuth_count: 0,
@@ -1171,6 +1178,7 @@ impl RadarGpuRenderer {
     pub fn update_previous_data(
         &mut self,
         gl: &glow::Context,
+        azimuths: &[f32],
         gate_values: &[f32],
         azimuth_count: u32,
         gate_count: u32,
@@ -1201,6 +1209,9 @@ impl RadarGpuRenderer {
             gl.delete_texture(self.prev_data_texture);
             self.prev_data_texture =
                 create_r32f_texture(gl, gate_count as i32, azimuth_count as i32, gate_values);
+
+            gl.delete_texture(self.prev_azimuth_texture);
+            self.prev_azimuth_texture = create_r32f_texture(gl, azimuth_count as i32, 1, azimuths);
         }
     }
 
@@ -1425,6 +1436,8 @@ impl RadarGpuRenderer {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.azimuth_texture));
             gl.active_texture(glow::TEXTURE3);
             gl.bind_texture(glow::TEXTURE_2D, Some(self.prev_data_texture));
+            gl.active_texture(glow::TEXTURE4);
+            gl.bind_texture(glow::TEXTURE_2D, Some(self.prev_azimuth_texture));
 
             // Set uniforms
             gl.uniform_2_f32(Some(&self.u_radar_center), radar_center[0], radar_center[1]);
