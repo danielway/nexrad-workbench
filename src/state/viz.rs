@@ -127,7 +127,7 @@ impl RenderMode {
 }
 
 /// Interpolation mode for radar rendering.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InterpolationMode {
     /// Raw nearest-neighbor sampling (blocky, traditional).
     #[default]
