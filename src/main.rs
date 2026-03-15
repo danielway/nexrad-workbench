@@ -2553,37 +2553,51 @@ impl WorkbenchApp {
             None => return,
         };
 
-        // Find the current scan and determine the preceding sweep
+        // Find the current scan and determine the preceding sweep.
+        // In FixedTilt mode, "previous" means the same elevation from the prior scan.
+        // In MostRecent mode, "previous" is the sweep collected just before this one.
         let prev_info = {
             let current_scan = self
                 .state
                 .radar_timeline
                 .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS);
+            let render_mode = self.state.viz_state.render_mode;
             match current_scan {
-                Some(scan) => {
-                    // Find the index of the displayed sweep in this scan
-                    let sweep_idx = scan
-                        .sweeps
-                        .iter()
-                        .position(|s| s.elevation_number == displayed_elev);
-                    match sweep_idx {
-                        Some(idx) if idx > 0 => {
-                            // Previous sweep is the one right before in the same scan
-                            let prev = &scan.sweeps[idx - 1];
-                            Some((scan.key_timestamp as i64, prev.elevation_number))
-                        }
-                        _ => {
-                            // First sweep in scan (or not found) — look at previous scan's last sweep
-                            let prev_scan =
-                                self.state.radar_timeline.find_previous_scan(playback_ts);
-                            prev_scan.and_then(|ps| {
-                                ps.sweeps
-                                    .last()
-                                    .map(|s| (ps.key_timestamp as i64, s.elevation_number))
-                            })
+                Some(scan) => match render_mode {
+                    crate::state::RenderMode::FixedTilt => {
+                        // Same elevation from the previous scan
+                        let prev_scan = self.state.radar_timeline.find_previous_scan(playback_ts);
+                        prev_scan.and_then(|ps| {
+                            ps.sweeps
+                                .iter()
+                                .find(|s| s.elevation_number == displayed_elev)
+                                .map(|s| (ps.key_timestamp as i64, s.elevation_number))
+                        })
+                    }
+                    crate::state::RenderMode::MostRecent => {
+                        // Previous sweep in time order within the same scan
+                        let sweep_idx = scan
+                            .sweeps
+                            .iter()
+                            .position(|s| s.elevation_number == displayed_elev);
+                        match sweep_idx {
+                            Some(idx) if idx > 0 => {
+                                let prev = &scan.sweeps[idx - 1];
+                                Some((scan.key_timestamp as i64, prev.elevation_number))
+                            }
+                            _ => {
+                                // First sweep in scan (or not found) — previous scan's last sweep
+                                let prev_scan =
+                                    self.state.radar_timeline.find_previous_scan(playback_ts);
+                                prev_scan.and_then(|ps| {
+                                    ps.sweeps
+                                        .last()
+                                        .map(|s| (ps.key_timestamp as i64, s.elevation_number))
+                                })
+                            }
                         }
                     }
-                }
+                },
                 None => return,
             }
         };
