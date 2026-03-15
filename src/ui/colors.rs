@@ -54,6 +54,14 @@ pub mod radar {
     pub fn sweep_start_line() -> Color32 {
         Color32::from_rgba_unmultiplied(160, 160, 220, 180)
     }
+    /// Stale sweep line (muted grey, shown between sweeps).
+    pub fn sweep_line_stale() -> Color32 {
+        Color32::from_rgba_unmultiplied(120, 120, 120, 140)
+    }
+    /// Stale sweep start line (muted grey-blue, shown between sweeps).
+    pub fn sweep_start_line_stale() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 100, 120, 100)
+    }
 }
 
 /// Colors for timeline visualization.

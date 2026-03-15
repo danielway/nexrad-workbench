@@ -251,6 +251,9 @@ pub struct VizState {
     /// Elevation number of the previous sweep (for timeline secondary highlight).
     pub prev_sweep_elevation_number: Option<u8>,
 
+    /// Cached last sweep line position (azimuth, start_azimuth) for between-sweep display.
+    pub last_sweep_line_cache: Option<(f32, f32)>,
+
     /// Whether 3D volumetric rendering is enabled (ray-marched volume).
     pub volume_3d_enabled: bool,
 
@@ -280,6 +283,7 @@ impl Default for VizState {
             prev_sweep_overlay: None,
             prev_sweep_scan_timestamp: None,
             prev_sweep_elevation_number: None,
+            last_sweep_line_cache: None,
             volume_3d_enabled: false,
             volume_density_cutoff: 5.0,
         }

@@ -2528,6 +2528,7 @@ impl WorkbenchApp {
             self.state.viz_state.prev_sweep_overlay = None;
             self.state.viz_state.prev_sweep_scan_timestamp = None;
             self.state.viz_state.prev_sweep_elevation_number = None;
+            self.state.viz_state.last_sweep_line_cache = None;
             return;
         }
 

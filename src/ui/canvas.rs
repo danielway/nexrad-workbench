@@ -115,6 +115,19 @@ pub fn render_canvas_with_geo(
                     None
                 };
 
+                // Cache sweep position for between-sweep display
+                if let Some((az, start)) = gpu_sweep {
+                    if az != 0.0 || start != 0.0 {
+                        state.viz_state.last_sweep_line_cache = Some((az, start));
+                    }
+                }
+                if !state.render_processing.sweep_animation {
+                    state.viz_state.last_sweep_line_cache = None;
+                }
+                let between_sweeps = state.render_processing.sweep_animation
+                    && gpu_sweep.is_none()
+                    && state.viz_state.last_sweep_line_cache.is_some();
+
                 if let Some(renderer) = gpu_renderer {
                     draw_radar_gpu(
                         ui,
@@ -127,7 +140,7 @@ pub fn render_canvas_with_geo(
                         gpu_sweep,
                     );
                     // Continuous repaint while sweep animation is compositing
-                    if gpu_sweep.is_some() {
+                    if gpu_sweep.is_some() || between_sweeps {
                         ui.ctx().request_repaint();
                     }
                 }
@@ -136,12 +149,13 @@ pub fn render_canvas_with_geo(
                     render_storm_cells(&painter, &projection, &state.detected_storm_cells, dark);
                 }
 
-                // Only show sweep line when actively revealing (not before sweep starts or after it ends)
-                let sweep_line_info = match gpu_sweep {
-                    Some((az, start)) if az != 0.0 || start != 0.0 => Some((az, start)),
-                    _ => None,
+                // Show sweep line when actively revealing, or stale position between sweeps
+                let (sweep_line_info, sweep_stale) = match gpu_sweep {
+                    Some((az, start)) if az != 0.0 || start != 0.0 => (Some((az, start)), false),
+                    _ if between_sweeps => (state.viz_state.last_sweep_line_cache, true),
+                    _ => (None, false),
                 };
-                render_radar_sweep(&painter, &projection, state, sweep_line_info);
+                render_radar_sweep(&painter, &projection, state, sweep_line_info, sweep_stale);
 
                 if state.distance_tool_active || state.distance_start.is_some() {
                     render_distance_measurement(
@@ -944,6 +958,7 @@ fn render_radar_sweep(
     projection: &MapProjection,
     state: &AppState,
     sweep_info: Option<(f32, f32)>,
+    stale: bool,
 ) {
     let radar_lat = state.viz_state.center_lat;
     let radar_lon = state.viz_state.center_lon;
@@ -1039,29 +1054,40 @@ fn render_radar_sweep(
 
     // Draw the sweep line and donut chart if sweep animation is active
     if let Some((az, start_az)) = sweep_info {
-        // Thin line at sweep start boundary (blue-purple)
+        let (start_line_color, sweep_line_color, sweep_line_width) = if stale {
+            (
+                radar::sweep_start_line_stale(),
+                radar::sweep_line_stale(),
+                2.0,
+            )
+        } else {
+            (radar::sweep_start_line(), radar::SWEEP_LINE, 3.0)
+        };
+
+        // Thin line at sweep start boundary
         let start_angle_rad = (start_az - 90.0) * PI / 180.0;
         let start_end = Pos2::new(
             center.x + radius * start_angle_rad.cos(),
             center.y + radius * start_angle_rad.sin(),
         );
-        painter.line_segment(
-            [center, start_end],
-            Stroke::new(1.5, radar::sweep_start_line()),
-        );
+        painter.line_segment([center, start_end], Stroke::new(1.5, start_line_color));
 
-        // Main sweep line (bright green)
+        // Main sweep line
         let angle_rad = (az - 90.0) * PI / 180.0;
         let end_x = center.x + radius * angle_rad.cos();
         let end_y = center.y + radius * angle_rad.sin();
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
-            Stroke::new(3.0, radar::SWEEP_LINE),
+            Stroke::new(sweep_line_width, sweep_line_color),
         );
 
         // Donut chart showing current vs previous sweep regions
         if state.render_processing.sweep_animation {
-            draw_sweep_donut(painter, center, radius, az, start_az, state);
+            if stale {
+                draw_sweep_donut_stale(painter, center, radius);
+            } else {
+                draw_sweep_donut(painter, center, radius, az, start_az, state);
+            }
         }
     }
 }
@@ -1131,6 +1157,36 @@ fn draw_boundary_label(
         Color32::from_rgba_unmultiplied(15, 15, 25, 200),
     );
     painter.galley(bg_pos, galley, Color32::WHITE);
+}
+
+/// Draw a uniform muted donut ring between sweeps (no current/previous split, no labels).
+fn draw_sweep_donut_stale(painter: &Painter, center: Pos2, radius: f32) {
+    let donut_inner = radius + 4.0;
+    let donut_outer = radius + 10.0;
+    let donut_mid = (donut_inner + donut_outer) / 2.0;
+    let donut_width = donut_outer - donut_inner;
+
+    let color = Color32::from_rgba_unmultiplied(100, 100, 110, 80);
+    let segments = 180;
+
+    for i in 0..segments {
+        let frac_start = i as f32 / segments as f32;
+        let frac_end = (i + 1) as f32 / segments as f32;
+
+        let a1 = (frac_start * 360.0 - 90.0) * PI / 180.0;
+        let a2 = (frac_end * 360.0 - 90.0) * PI / 180.0;
+
+        let p1 = Pos2::new(
+            center.x + donut_mid * a1.cos(),
+            center.y + donut_mid * a1.sin(),
+        );
+        let p2 = Pos2::new(
+            center.x + donut_mid * a2.cos(),
+            center.y + donut_mid * a2.sin(),
+        );
+
+        painter.line_segment([p1, p2], Stroke::new(donut_width, color));
+    }
 }
 
 /// Draw a donut-chart ring around the radar showing which azimuthal regions
