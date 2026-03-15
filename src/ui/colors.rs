@@ -50,6 +50,10 @@ pub mod radar {
 
     /// Active sweep line.
     pub const SWEEP_LINE: Color32 = Color32::from_rgb(100, 255, 100);
+    /// Sweep start boundary line (blue-purple, matches previous sweep arc).
+    pub fn sweep_start_line() -> Color32 {
+        Color32::from_rgba_unmultiplied(160, 160, 220, 180)
+    }
 }
 
 /// Colors for timeline visualization.

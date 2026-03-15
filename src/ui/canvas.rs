@@ -508,7 +508,7 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
     let has_prev = state.viz_state.prev_sweep_overlay.is_some();
     let overlay_pos = rect.left_top() + Vec2::new(10.0, 10.0);
     let overlay_height = if has_prev { 130.0 } else { 90.0 };
-    let overlay_rect = Rect::from_min_size(overlay_pos, Vec2::new(260.0, overlay_height));
+    let overlay_rect = Rect::from_min_size(overlay_pos, Vec2::new(290.0, overlay_height));
 
     ui.scope_builder(egui::UiBuilder::new().max_rect(overlay_rect), |ui| {
         ui.vertical(|ui| {
@@ -571,8 +571,10 @@ fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
                         .size(12.0)
                         .color(prev_color),
                 );
-                let prev_time =
-                    format_unix_timestamp((prev_start + prev_end) / 2.0, state.use_local_time);
+                let prev_time = format_unix_timestamp_with_date(
+                    (prev_start + prev_end) / 2.0,
+                    state.use_local_time,
+                );
                 ui.label(
                     RichText::new(format!("Time: {}", prev_time))
                         .monospace()
@@ -1037,10 +1039,21 @@ fn render_radar_sweep(
 
     // Draw the sweep line and donut chart if sweep animation is active
     if let Some((az, start_az)) = sweep_info {
+        // Thin line at sweep start boundary (blue-purple)
+        let start_angle_rad = (start_az - 90.0) * PI / 180.0;
+        let start_end = Pos2::new(
+            center.x + radius * start_angle_rad.cos(),
+            center.y + radius * start_angle_rad.sin(),
+        );
+        painter.line_segment(
+            [center, start_end],
+            Stroke::new(1.5, radar::sweep_start_line()),
+        );
+
+        // Main sweep line (bright green)
         let angle_rad = (az - 90.0) * PI / 180.0;
         let end_x = center.x + radius * angle_rad.cos();
         let end_y = center.y + radius * angle_rad.sin();
-
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
             Stroke::new(3.0, radar::SWEEP_LINE),
@@ -1053,13 +1066,20 @@ fn render_radar_sweep(
     }
 }
 
-/// Draw a background-boxed label at a given angle around the donut.
+/// Draw a color-coded boundary label at a given angle around the donut.
+///
+/// Renders `left_text` in `left_color`, an optional dim `" | "` separator,
+/// and `right_text` in `right_color`, all within a single background box.
+#[allow(clippy::too_many_arguments)]
 fn draw_boundary_label(
     painter: &Painter,
     center: Pos2,
     label_radius: f32,
     azimuth_deg: f32,
-    text: &str,
+    left_text: &str,
+    right_text: Option<&str>,
+    left_color: Color32,
+    right_color: Color32,
     font: &egui::FontId,
 ) {
     let label_angle = (azimuth_deg - 90.0) * PI / 180.0;
@@ -1068,7 +1088,40 @@ fn draw_boundary_label(
         center.y + label_radius * label_angle.sin(),
     );
     let align = sweep_label_align(azimuth_deg);
-    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE);
+
+    // Build a LayoutJob with colored segments
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        left_text,
+        0.0,
+        egui::TextFormat {
+            font_id: font.clone(),
+            color: left_color,
+            ..Default::default()
+        },
+    );
+    if let Some(right) = right_text {
+        job.append(
+            " | ",
+            0.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color: Color32::from_rgb(120, 120, 140),
+                ..Default::default()
+            },
+        );
+        job.append(
+            right,
+            0.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color: right_color,
+                ..Default::default()
+            },
+        );
+    }
+
+    let galley = painter.layout_job(job);
     let text_size = galley.size();
     let bg_pos = align_pos(label_pos, text_size, align);
     let padding = Vec2::new(3.0, 2.0);
@@ -1136,81 +1189,126 @@ fn draw_sweep_donut(
         painter.line_segment([p1, p2], Stroke::new(donut_width, color));
     }
 
+    // Color constants for boundary label text
+    let current_text_color = Color32::from_rgb(100, 220, 140); // green for current sweep
+    let prev_text_color = Color32::from_rgb(160, 160, 220); // purple for previous sweep
+
     // Time labels at both discontinuity boundaries
     let label_radius = donut_outer + 14.0;
     let label_font = egui::FontId::monospace(10.0);
     let use_local = state.use_local_time;
 
     // Boundary 1: sweep line (sweep_az) — playback time | prev sweep time at this azimuth
-    // The data right after the sweep line is from the previous sweep at the same
-    // azimuth. Interpolate into the previous sweep's time range based on where
-    // the sweep line sits relative to the sweep start azimuth (both sweeps rotate
-    // through the same azimuths in the same order).
-    let playback_time_str = format_time_short(state.playback_state.playback_position(), use_local);
+    let playback_ts = state.playback_state.playback_position();
+    let mut playback_time_str = format_time_short(playback_ts, use_local);
+    if let Some(age) = format_age_compact(playback_ts) {
+        playback_time_str.push(' ');
+        playback_time_str.push_str(&age);
+    }
+
     let prev_at_az_str = state
         .viz_state
         .prev_sweep_overlay
         .map(|(_, prev_start, prev_end)| {
-            // swept_arc_deg is how far the current sweep has progressed (0..360).
-            // The previous sweep data at the sweep line was collected at the same
-            // fractional position through its own rotation.
             let frac = (swept_arc_deg / 360.0).clamp(0.0, 1.0) as f64;
             let prev_time_at_az = prev_start + frac * (prev_end - prev_start);
-            format_time_short(prev_time_at_az, use_local)
+            let mut s = format_time_short(prev_time_at_az, use_local);
+            if let Some(age) = format_age_compact(prev_time_at_az) {
+                s.push(' ');
+                s.push_str(&age);
+            }
+            s
         });
 
-    let sweep_line_label = match prev_at_az_str {
-        Some(ref prev) => format!("{} | {}", playback_time_str, prev),
-        None => playback_time_str,
-    };
     draw_boundary_label(
         painter,
         center,
         label_radius,
         sweep_az,
-        &sweep_line_label,
+        &playback_time_str,
+        prev_at_az_str.as_deref(),
+        current_text_color,
+        prev_text_color,
         &label_font,
     );
 
     // Boundary 2: sweep start (sweep_start) — current sweep start | prev sweep end
-    // Only draw when prev_sweep_overlay exists (compositing two sweeps) and
-    // the swept arc is wide enough to avoid overlapping text.
-    if swept_arc_deg >= 30.0 {
-        if let Some((_, _, prev_end)) = state.viz_state.prev_sweep_overlay {
-            // Look up the current sweep's actual start time from the timeline
-            // (rendered_sweep_start_secs tracks the last decoded sweep, which may
-            // be stale or from a different elevation).
-            let playback_ts = state.playback_state.playback_position();
-            let displayed_elev = state.displayed_sweep_elevation_number;
-            let current_sweep_start_secs = state
-                .radar_timeline
-                .find_recent_scan(playback_ts, 15.0 * 60.0)
-                .and_then(|scan| {
+    // Look up the current sweep's actual start time from the timeline
+    let displayed_elev = state.displayed_sweep_elevation_number;
+    let current_sweep_start_secs = state
+        .radar_timeline
+        .find_recent_scan(playback_ts, 15.0 * 60.0)
+        .and_then(|scan| {
+            scan.sweeps
+                .iter()
+                .filter(|s| Some(s.elevation_number) == displayed_elev)
+                .rfind(|s| s.start_time <= playback_ts)
+                .or_else(|| {
                     scan.sweeps
                         .iter()
-                        .filter(|s| Some(s.elevation_number) == displayed_elev)
-                        .rfind(|s| s.start_time <= playback_ts)
-                        .or_else(|| {
-                            scan.sweeps
-                                .iter()
-                                .find(|s| Some(s.elevation_number) == displayed_elev)
-                        })
-                        .map(|s| s.start_time)
-                });
+                        .find(|s| Some(s.elevation_number) == displayed_elev)
+                })
+                .map(|s| s.start_time)
+        });
 
-            let start_time_str = current_sweep_start_secs.map(|s| format_time_short(s, use_local));
-            let prev_end_str2 = format_time_short(prev_end, use_local);
+    if swept_arc_deg >= 30.0 {
+        if let Some((_, _, prev_end)) = state.viz_state.prev_sweep_overlay {
+            // Both sweeps: current start (green) | prev end (purple)
+            let start_time_str = current_sweep_start_secs.map(|s| {
+                let mut t = format_time_short(s, use_local);
+                if let Some(age) = format_age_compact(s) {
+                    t.push(' ');
+                    t.push_str(&age);
+                }
+                t
+            });
+            let mut prev_end_str = format_time_short(prev_end, use_local);
+            if let Some(age) = format_age_compact(prev_end) {
+                prev_end_str.push(' ');
+                prev_end_str.push_str(&age);
+            }
 
-            let start_label = match start_time_str {
-                Some(ref start) => format!("{} | {}", start, prev_end_str2),
-                None => prev_end_str2,
+            let (left, right, left_c, right_c) = match start_time_str {
+                Some(ref start) => (
+                    start.as_str(),
+                    Some(prev_end_str.as_str()),
+                    current_text_color,
+                    prev_text_color,
+                ),
+                None => (
+                    prev_end_str.as_str(),
+                    None,
+                    prev_text_color,
+                    prev_text_color,
+                ),
             };
             draw_boundary_label(
                 painter,
                 center,
                 label_radius,
                 sweep_start,
-                &start_label,
+                left,
+                right,
+                left_c,
+                right_c,
+                &label_font,
+            );
+        } else if let Some(start_secs) = current_sweep_start_secs {
+            // Single sweep only: show start time in green (no separator)
+            let mut start_str = format_time_short(start_secs, use_local);
+            if let Some(age) = format_age_compact(start_secs) {
+                start_str.push(' ');
+                start_str.push_str(&age);
+            }
+            draw_boundary_label(
+                painter,
+                center,
+                label_radius,
+                sweep_start,
+                &start_str,
+                None,
+                current_text_color,
+                current_text_color,
                 &label_font,
             );
         }
@@ -1223,17 +1321,25 @@ fn format_time_short(ts: f64, use_local: bool) -> String {
         let d = js_sys::Date::new_0();
         d.set_time(ts * 1000.0);
         format!(
-            "{:02}:{:02}:{:02}",
+            "{:02}:{:02}:{:02}.{:03}",
             d.get_hours(),
             d.get_minutes(),
-            d.get_seconds()
+            d.get_seconds(),
+            d.get_milliseconds()
         )
     } else {
         use chrono::{TimeZone, Timelike, Utc};
         let secs = ts.floor() as i64;
-        match Utc.timestamp_opt(secs, 0) {
+        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
+        match Utc.timestamp_opt(secs, millis * 1_000_000) {
             chrono::LocalResult::Single(dt) => {
-                format!("{:02}:{:02}:{:02}", dt.hour(), dt.minute(), dt.second())
+                format!(
+                    "{:02}:{:02}:{:02}.{:03}",
+                    dt.hour(),
+                    dt.minute(),
+                    dt.second(),
+                    millis
+                )
             }
             _ => format!("{:.0}", ts),
         }
@@ -1359,6 +1465,57 @@ fn format_unix_timestamp(ts: f64, use_local: bool) -> String {
             chrono::LocalResult::Single(dt) => dt.format("%H:%M:%S%.3f UTC").to_string(),
             _ => format!("{:.3}s", ts),
         }
+    }
+}
+
+/// Format a Unix timestamp (seconds) as a full date+time string with milliseconds.
+///
+/// Produces the same format as `update_overlay_from_sweep` in main.rs:
+/// `YYYY-MM-DD HH:MM:SS.mmm` (local) or `YYYY-MM-DD HH:MM:SS.mmm UTC`.
+fn format_unix_timestamp_with_date(ts: f64, use_local: bool) -> String {
+    if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(ts * 1000.0);
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+            d.get_full_year(),
+            d.get_month() + 1,
+            d.get_date(),
+            d.get_hours(),
+            d.get_minutes(),
+            d.get_seconds(),
+            d.get_milliseconds()
+        )
+    } else {
+        use chrono::{Datelike, TimeZone, Timelike, Utc};
+        let secs = ts.floor() as i64;
+        let millis = ((ts - ts.floor()) * 1000.0).round() as u32;
+        match Utc.timestamp_opt(secs, millis * 1_000_000) {
+            chrono::LocalResult::Single(dt) => format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} UTC",
+                dt.year(),
+                dt.month(),
+                dt.day(),
+                dt.hour(),
+                dt.minute(),
+                dt.second(),
+                millis
+            ),
+            _ => format!("{:.3}s", ts),
+        }
+    }
+}
+
+/// Format a compact age suffix for recent data, e.g. `"(3s)"` or `"(1m2s)"`.
+///
+/// Returns `None` for archive data (age >= 300s) or future timestamps.
+fn format_age_compact(ts_secs: f64) -> Option<String> {
+    let now = js_sys::Date::now() / 1000.0;
+    let age = now - ts_secs;
+    if (0.0..300.0).contains(&age) {
+        Some(format!("({})", format_age(age)))
+    } else {
+        None
     }
 }
 

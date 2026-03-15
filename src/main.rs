@@ -1102,23 +1102,25 @@ impl WorkbenchApp {
         let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(mid_ms));
         if self.state.use_local_time {
             self.state.viz_state.timestamp = format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
                 date.get_full_year(),
                 date.get_month() + 1, // JS months are 0-indexed
                 date.get_date(),
                 date.get_hours(),
                 date.get_minutes(),
-                date.get_seconds()
+                date.get_seconds(),
+                date.get_milliseconds()
             );
         } else {
             self.state.viz_state.timestamp = format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC",
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} UTC",
                 date.get_utc_full_year(),
                 date.get_utc_month() + 1, // JS months are 0-indexed
                 date.get_utc_date(),
                 date.get_utc_hours(),
                 date.get_utc_minutes(),
-                date.get_utc_seconds()
+                date.get_utc_seconds(),
+                date.get_utc_milliseconds()
             );
         }
 
