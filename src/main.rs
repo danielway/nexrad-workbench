@@ -2642,6 +2642,7 @@ impl WorkbenchApp {
                         cached.offset,
                         cached.scale,
                         Some(desired_prev_id.clone()),
+                        &cached.radial_times,
                     );
                 }
             }

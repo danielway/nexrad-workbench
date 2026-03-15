@@ -86,51 +86,36 @@ pub fn render_canvas_with_geo(
 
                 let sweep_info = compute_sweep_line_azimuth(state);
 
+                // Compute sweep animation compositing state (used for GPU rendering
+                // and sweep-aware inspector lookups).
+                let gpu_sweep = if state.render_processing.sweep_animation {
+                    let playback_ts = state.playback_state.playback_position();
+                    let sweep_bounds = state
+                        .radar_timeline
+                        .find_recent_scan(playback_ts, 15.0 * 60.0)
+                        .and_then(|scan| {
+                            let displayed_elev = state.displayed_sweep_elevation_number;
+                            scan.sweeps
+                                .iter()
+                                .filter(|s| Some(s.elevation_number) == displayed_elev)
+                                .rfind(|s| s.start_time <= playback_ts)
+                                .or_else(|| {
+                                    scan.sweeps
+                                        .iter()
+                                        .find(|s| Some(s.elevation_number) == displayed_elev)
+                                })
+                                .map(|s| (s.start_time, s.end_time))
+                        });
+                    match sweep_bounds {
+                        Some((s, _)) if playback_ts < s => Some((0.0, 0.0)),
+                        Some((_, e)) if playback_ts <= e => sweep_info,
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
                 if let Some(renderer) = gpu_renderer {
-                    // When sweep animation is enabled, use the timeline's sweep
-                    // boundaries (not GPU texture metadata) to decide compositing:
-                    //   - Before sweep start: all pixels from prev texture
-                    //   - During sweep: normal compositing from sweep line position
-                    //   - After sweep end / between sweeps: full current texture
-                    let gpu_sweep = if state.render_processing.sweep_animation {
-                        let playback_ts = state.playback_state.playback_position();
-                        // Find the sweep that's actually displayed (by elevation_number)
-                        // rather than filtering by target_elevation angle. This ensures
-                        // animation works correctly when the displayed sweep is at a
-                        // different elevation than the user's target (e.g. during
-                        // elevation transitions in MostRecent mode).
-                        let sweep_bounds = state
-                            .radar_timeline
-                            .find_recent_scan(playback_ts, 15.0 * 60.0)
-                            .and_then(|scan| {
-                                let displayed_elev = state.displayed_sweep_elevation_number;
-                                // Find sweep by elevation_number (what's on screen)
-                                scan.sweeps
-                                    .iter()
-                                    .filter(|s| Some(s.elevation_number) == displayed_elev)
-                                    .rfind(|s| s.start_time <= playback_ts)
-                                    .or_else(|| {
-                                        // No sweep started yet — use the first upcoming one
-                                        scan.sweeps
-                                            .iter()
-                                            .find(|s| Some(s.elevation_number) == displayed_elev)
-                                    })
-                                    .map(|s| (s.start_time, s.end_time))
-                            });
-                        match sweep_bounds {
-                            Some((s, _)) if playback_ts < s => {
-                                // Before sweep start: show all-prev (nothing from current)
-                                Some((0.0, 0.0))
-                            }
-                            Some((_, e)) if playback_ts <= e => {
-                                // Mid-sweep: use computed sweep line position
-                                sweep_info
-                            }
-                            _ => None, // past sweep end or no sweep found: show full current
-                        }
-                    } else {
-                        None
-                    };
                     draw_radar_gpu(
                         ui,
                         &projection,
@@ -174,6 +159,7 @@ pub fn render_canvas_with_geo(
                             gpu_renderer,
                             &state.viz_state.product,
                             state.use_local_time,
+                            gpu_sweep,
                         );
                     }
                 }
@@ -1131,6 +1117,7 @@ fn render_inspector(
     gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
     product: &crate::state::RadarProduct,
     use_local_time: bool,
+    sweep_params: Option<(f32, f32)>,
 ) {
     let geo = projection.screen_to_geo(hover_pos);
     let lat = geo.y;
@@ -1142,12 +1129,12 @@ fn render_inspector(
     let range_km = (dlat * dlat + dlon * dlon).sqrt() * 111.0;
     let azimuth_deg = (dlon.atan2(dlat).to_degrees() + 360.0) % 360.0;
 
-    // Look up data value and collection time
+    // Look up data value and collection time (sweep-aware when animating)
     let (value, collection_time) = gpu_renderer
         .map(|r| {
             let renderer = r.lock().expect("renderer mutex poisoned");
-            let v = renderer.value_at_polar(azimuth_deg as f32, range_km);
-            let t = renderer.collection_time_at_polar(azimuth_deg as f32);
+            let v = renderer.value_at_polar_sweep_aware(azimuth_deg as f32, range_km, sweep_params);
+            let t = renderer.collection_time_at_polar_sweep_aware(azimuth_deg as f32, sweep_params);
             (v, t)
         })
         .unwrap_or((None, None));

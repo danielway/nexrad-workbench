@@ -847,6 +847,10 @@ pub struct RadarGpuRenderer {
     cpu_gate_values: Vec<f32>,
     /// Per-radial collection timestamps in Unix seconds (parallel to cpu_azimuths).
     cpu_radial_times: Vec<f64>,
+
+    // CPU-side copies of previous sweep data for sweep-aware inspector
+    prev_cpu_gate_values: Vec<f32>,
+    prev_cpu_radial_times: Vec<f64>,
 }
 
 impl RadarGpuRenderer {
@@ -1043,6 +1047,8 @@ impl RadarGpuRenderer {
                 cpu_azimuths: Vec::new(),
                 cpu_gate_values: Vec::new(),
                 cpu_radial_times: Vec::new(),
+                prev_cpu_gate_values: Vec::new(),
+                prev_cpu_radial_times: Vec::new(),
             })
         }
     }
@@ -1252,6 +1258,7 @@ impl RadarGpuRenderer {
         offset: f32,
         scale: f32,
         sweep_id: Option<String>,
+        radial_times: &[f64],
     ) {
         self.prev_data_offset = offset;
         self.prev_data_scale = scale;
@@ -1261,6 +1268,8 @@ impl RadarGpuRenderer {
         self.prev_gate_interval_km = gate_interval_km;
         self.prev_max_range_km = max_range_km;
         self.prev_sweep_id = sweep_id;
+        self.prev_cpu_gate_values = gate_values.to_vec();
+        self.prev_cpu_radial_times = radial_times.to_vec();
 
         if azimuth_count == 0 || gate_count == 0 {
             return;
@@ -1362,6 +1371,93 @@ impl RadarGpuRenderer {
         }
 
         self.cpu_radial_times.get(best_idx).copied()
+    }
+
+    /// Sweep-aware value lookup for the inspector.
+    ///
+    /// When `sweep_params` is `Some((sweep_azimuth, sweep_start))`, determines
+    /// whether the queried position falls in the previous-sweep region and
+    /// returns the appropriate value.
+    pub fn value_at_polar_sweep_aware(
+        &self,
+        azimuth_deg: f32,
+        range_km: f64,
+        sweep_params: Option<(f32, f32)>,
+    ) -> Option<f32> {
+        if let Some((sweep_az, sweep_start)) = sweep_params {
+            let swept_arc = (sweep_az - sweep_start).rem_euclid(360.0);
+            let pixel_from_start = (azimuth_deg - sweep_start).rem_euclid(360.0);
+            if pixel_from_start >= swept_arc {
+                // In the previous-sweep region — use prev CPU data
+                return self.prev_value_at_polar(azimuth_deg, range_km);
+            }
+        }
+        self.value_at_polar(azimuth_deg, range_km)
+    }
+
+    /// Sweep-aware collection time lookup for the inspector.
+    pub fn collection_time_at_polar_sweep_aware(
+        &self,
+        azimuth_deg: f32,
+        sweep_params: Option<(f32, f32)>,
+    ) -> Option<f64> {
+        if let Some((sweep_az, sweep_start)) = sweep_params {
+            let swept_arc = (sweep_az - sweep_start).rem_euclid(360.0);
+            let pixel_from_start = (azimuth_deg - sweep_start).rem_euclid(360.0);
+            if pixel_from_start >= swept_arc {
+                return self.prev_collection_time_at_polar(azimuth_deg);
+            }
+        }
+        self.collection_time_at_polar(azimuth_deg)
+    }
+
+    /// Look up value in the previous sweep's CPU data using evenly-spaced azimuth indexing.
+    fn prev_value_at_polar(&self, azimuth_deg: f32, range_km: f64) -> Option<f32> {
+        let az_count = self.prev_azimuth_count as usize;
+        let gate_count = self.prev_gate_count as usize;
+        if az_count == 0 || gate_count == 0 || self.prev_cpu_gate_values.is_empty() {
+            return None;
+        }
+
+        if range_km < self.prev_first_gate_km || range_km >= self.prev_max_range_km {
+            return None;
+        }
+
+        // Evenly-spaced azimuth indexing (same as GPU shader for prev sweep)
+        let az_idx = ((azimuth_deg * az_count as f32 / 360.0).round() as usize) % az_count;
+
+        let gate_idx =
+            ((range_km - self.prev_first_gate_km) / self.prev_gate_interval_km).floor() as usize;
+        if gate_idx >= gate_count {
+            return None;
+        }
+
+        let offset = az_idx * gate_count + gate_idx;
+        if offset >= self.prev_cpu_gate_values.len() {
+            return None;
+        }
+
+        let raw = self.prev_cpu_gate_values[offset];
+        if raw <= 1.0 {
+            return None;
+        }
+
+        if self.prev_data_scale == 0.0 {
+            Some(raw)
+        } else {
+            Some((raw - self.prev_data_offset) / self.prev_data_scale)
+        }
+    }
+
+    /// Look up collection time in the previous sweep's CPU data.
+    fn prev_collection_time_at_polar(&self, azimuth_deg: f32) -> Option<f64> {
+        let az_count = self.prev_azimuth_count as usize;
+        if az_count == 0 || self.prev_cpu_radial_times.is_empty() {
+            return None;
+        }
+
+        let az_idx = ((azimuth_deg * az_count as f32 / 360.0).round() as usize) % az_count;
+        self.prev_cpu_radial_times.get(az_idx).copied()
     }
 
     /// Render the radar data using the current GL context.
