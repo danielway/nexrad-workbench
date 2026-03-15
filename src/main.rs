@@ -2579,7 +2579,10 @@ impl WorkbenchApp {
                 Some(scan) => match render_mode {
                     crate::state::RenderMode::FixedTilt => {
                         // Same elevation from the previous scan
-                        let prev_scan = self.state.radar_timeline.find_previous_scan(playback_ts);
+                        let prev_scan = self
+                            .state
+                            .radar_timeline
+                            .find_previous_scan(playback_ts, MAX_SCAN_AGE_SECS);
                         prev_scan.and_then(|ps| {
                             ps.sweeps
                                 .iter()
@@ -2600,8 +2603,10 @@ impl WorkbenchApp {
                             }
                             _ => {
                                 // First sweep in scan (or not found) — previous scan's last sweep
-                                let prev_scan =
-                                    self.state.radar_timeline.find_previous_scan(playback_ts);
+                                let prev_scan = self
+                                    .state
+                                    .radar_timeline
+                                    .find_previous_scan(playback_ts, MAX_SCAN_AGE_SECS);
                                 prev_scan.and_then(|ps| {
                                     ps.sweeps.last().map(|s| sweep_to_info(ps.key_timestamp, s))
                                 })

@@ -199,14 +199,16 @@ impl RadarTimeline {
         (ts - most_recent.start_time <= max_age_secs).then_some(most_recent)
     }
 
-    /// Find the scan immediately before the one containing `ts`.
+    /// Find the scan immediately before the one containing `ts`, within a time window.
     ///
-    /// Returns `None` if `ts` is before or within the first scan.
-    pub fn find_previous_scan(&self, ts: f64) -> Option<&Scan> {
+    /// Returns `None` if `ts` is before or within the first scan, or if the
+    /// previous scan is older than `max_age_secs` from `ts`.
+    pub fn find_previous_scan(&self, ts: f64, max_age_secs: f64) -> Option<&Scan> {
         let idx = self.scans.partition_point(|s| s.start_time <= ts);
         // idx-1 is the scan containing ts; idx-2 is the one before it
         if idx >= 2 {
-            self.scans.get(idx - 2)
+            let scan = self.scans.get(idx - 2)?;
+            (ts - scan.start_time <= max_age_secs).then_some(scan)
         } else {
             None
         }
