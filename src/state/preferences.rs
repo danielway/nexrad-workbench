@@ -35,17 +35,11 @@ pub struct UserPreferences {
     #[serde(default)]
     pub interpolation: InterpolationMode,
     #[serde(default)]
-    pub smoothing_enabled: bool,
-    #[serde(default = "default_smoothing_radius")]
-    pub smoothing_radius: f32,
-    #[serde(default)]
     pub despeckle_enabled: bool,
     #[serde(default = "default_despeckle_threshold")]
     pub despeckle_threshold: u32,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
-    #[serde(default)]
-    pub edge_softening: bool,
     #[serde(default)]
     pub sweep_animation: bool,
     #[serde(default = "default_true")]
@@ -54,10 +48,6 @@ pub struct UserPreferences {
 
 fn default_true() -> bool {
     true
-}
-
-fn default_smoothing_radius() -> f32 {
-    2.0
 }
 
 fn default_despeckle_threshold() -> u32 {
@@ -81,12 +71,9 @@ impl Default for UserPreferences {
             use_local_time: false,
             preferred_site: None,
             interpolation: InterpolationMode::default(),
-            smoothing_enabled: false,
-            smoothing_radius: 2.0,
             despeckle_enabled: false,
             despeckle_threshold: 3,
             opacity: 1.0,
-            edge_softening: false,
             sweep_animation: false,
             data_age_indicator: true,
         }
@@ -109,12 +96,9 @@ impl UserPreferences {
             use_local_time: state.use_local_time,
             preferred_site: state.preferred_site.clone(),
             interpolation: state.render_processing.interpolation,
-            smoothing_enabled: state.render_processing.smoothing_enabled,
-            smoothing_radius: state.render_processing.smoothing_radius,
             despeckle_enabled: state.render_processing.despeckle_enabled,
             despeckle_threshold: state.render_processing.despeckle_threshold,
             opacity: state.render_processing.opacity,
-            edge_softening: state.render_processing.edge_softening,
             sweep_animation: state.render_processing.sweep_animation,
             data_age_indicator: state.render_processing.data_age_indicator,
         }
@@ -132,12 +116,9 @@ impl UserPreferences {
         state.use_local_time = self.use_local_time;
         state.preferred_site = self.preferred_site.clone();
         state.render_processing.interpolation = self.interpolation;
-        state.render_processing.smoothing_enabled = self.smoothing_enabled;
-        state.render_processing.smoothing_radius = self.smoothing_radius;
         state.render_processing.despeckle_enabled = self.despeckle_enabled;
         state.render_processing.despeckle_threshold = self.despeckle_threshold;
         state.render_processing.opacity = self.opacity;
-        state.render_processing.edge_softening = self.edge_softening;
         state.render_processing.sweep_animation = self.sweep_animation;
         state.render_processing.data_age_indicator = self.data_age_indicator;
     }

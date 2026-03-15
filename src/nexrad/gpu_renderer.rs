@@ -314,12 +314,9 @@ uniform sampler2D u_azimuth_tex;   // azimuth angles (R32F, Nx1)
 
 // Processing uniforms
 uniform int u_interpolation;       // 0=nearest, 1=bilinear
-uniform int u_smoothing_enabled;   // 0 or 1
-uniform float u_smoothing_radius;  // kernel radius in samples
 uniform int u_despeckle_enabled;   // 0 or 1
 uniform int u_despeckle_threshold; // min valid neighbors to keep
 uniform float u_opacity;           // global alpha multiplier
-uniform int u_edge_softening;     // 0 or 1: smooth alpha falloff at echo boundaries
 uniform int u_data_age_indicator; // 0 or 1: desaturate oldest data behind sweep line
 
 // Raw-to-physical conversion: physical = (raw - u_offset) / u_scale
@@ -493,7 +490,6 @@ void main() {
         }
 
         float value;
-        float edge_alpha = 1.0;
         float prev_az_exact = azimuth_deg * u_prev_azimuth_count / 360.0;
 
         if (u_interpolation == 1) {
@@ -528,10 +524,6 @@ void main() {
                 return;
             }
             value = sum / wsum;
-
-            if (u_edge_softening == 1) {
-                edge_alpha = clamp(wsum * 1.5, 0.0, 1.0);
-            }
         } else {
             // Nearest neighbor
             float prev_az_idx = floor(mod(prev_az_exact, u_prev_azimuth_count));
@@ -564,34 +556,6 @@ void main() {
             }
         }
 
-        // Gaussian smoothing
-        if (u_smoothing_enabled == 1) {
-            float center_az = floor(mod(prev_az_exact, u_prev_azimuth_count));
-            float center_g = floor(prev_gate_idx);
-            float sigma = u_smoothing_radius * 0.5;
-            float sigma2 = 2.0 * sigma * sigma;
-            int r = int(ceil(u_smoothing_radius));
-            float wsum = 0.0;
-            float vsum = 0.0;
-            for (int dg = -r; dg <= r; dg++) {
-                for (int da = -r; da <= r; da++) {
-                    float ng = center_g + float(dg);
-                    float na = mod(center_az + float(da), u_prev_azimuth_count);
-                    float sv = sample_prev_data(ng, na);
-                    if (is_valid(sv)) {
-                        float range_norm = max(center_g / u_prev_gate_count, 0.1);
-                        float d2 = float(dg * dg) + float(da * da) * (range_norm * range_norm);
-                        float w = exp(-d2 / sigma2);
-                        vsum += sv * w;
-                        wsum += w;
-                    }
-                }
-            }
-            if (wsum > 0.001) {
-                value = vsum / wsum;
-            }
-        }
-
         // Convert raw value to physical units
         float physical;
         if (u_prev_scale == 0.0) {
@@ -606,7 +570,7 @@ void main() {
             float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
             color.rgb = mix(color.rgb, vec3(lum), desat_factor);
         }
-        float a = color.a * u_opacity * edge_alpha;
+        float a = color.a * u_opacity;
         fragColor = vec4(color.rgb * a, a);
         return;
     }
@@ -625,7 +589,6 @@ void main() {
     }
 
     float value;
-    float edge_alpha = 1.0;
 
     if (u_interpolation == 1) {
         // ---- Bilinear interpolation ----
@@ -662,11 +625,6 @@ void main() {
             return;
         }
         value = sum / wsum;
-
-        // Edge softening: fade alpha at echo boundaries where some neighbors are invalid
-        if (u_edge_softening == 1) {
-            edge_alpha = clamp(wsum * 1.5, 0.0, 1.0);
-        }
     } else {
         // ---- Nearest neighbor (original) ----
         float dummy_az;
@@ -707,39 +665,6 @@ void main() {
         }
     }
 
-    // ---- Gaussian smoothing ----
-    if (u_smoothing_enabled == 1) {
-        float dummy_az3;
-        float center_az = find_nearest_az(azimuth_deg, dummy_az3);
-        float center_g = floor(gate_idx);
-        if (center_az >= 0.0) {
-            float sigma = u_smoothing_radius * 0.5;
-            float sigma2 = 2.0 * sigma * sigma;
-            int r = int(ceil(u_smoothing_radius));
-            float wsum = 0.0;
-            float vsum = 0.0;
-            for (int dg = -r; dg <= r; dg++) {
-                for (int da = -r; da <= r; da++) {
-                    float ng = center_g + float(dg);
-                    float na = mod(center_az + float(da), u_azimuth_count);
-                    float sv = sample_data(ng, na);
-                    if (is_valid(sv)) {
-                        // Range-aware: scale azimuthal distance by normalized range
-                        // so smoothing is spatially uniform (azimuths are wider at far range)
-                        float range_norm = max(center_g / u_gate_count, 0.1);
-                        float d2 = float(dg * dg) + float(da * da) * (range_norm * range_norm);
-                        float w = exp(-d2 / sigma2);
-                        vsum += sv * w;
-                        wsum += w;
-                    }
-                }
-            }
-            if (wsum > 0.001) {
-                value = vsum / wsum;
-            }
-        }
-    }
-
     // Convert raw value to physical units
     float physical;
     if (u_scale == 0.0) {
@@ -758,8 +683,8 @@ void main() {
         color.rgb = mix(color.rgb, vec3(lum), desat_factor);
     }
 
-    // Apply opacity, edge softening, and output premultiplied alpha (egui requirement)
-    float a = color.a * u_opacity * edge_alpha;
+    // Apply opacity and output premultiplied alpha (egui requirement)
+    float a = color.a * u_opacity;
     fragColor = vec4(color.rgb * a, a);
 }
 "#;
@@ -789,12 +714,9 @@ pub struct RadarGpuRenderer {
 
     // Processing uniform locations
     u_interpolation: glow::UniformLocation,
-    u_smoothing_enabled: glow::UniformLocation,
-    u_smoothing_radius: glow::UniformLocation,
     u_despeckle_enabled: glow::UniformLocation,
     u_despeckle_threshold: glow::UniformLocation,
     u_opacity: glow::UniformLocation,
-    u_edge_softening: glow::UniformLocation,
     u_data_age_indicator: glow::UniformLocation,
 
     // Raw-to-physical conversion uniform locations
@@ -958,12 +880,9 @@ impl RadarGpuRenderer {
 
             // Processing uniforms
             let u_interpolation = uniform("u_interpolation")?;
-            let u_smoothing_enabled = uniform("u_smoothing_enabled")?;
-            let u_smoothing_radius = uniform("u_smoothing_radius")?;
             let u_despeckle_enabled = uniform("u_despeckle_enabled")?;
             let u_despeckle_threshold = uniform("u_despeckle_threshold")?;
             let u_opacity = uniform("u_opacity")?;
-            let u_edge_softening = uniform("u_edge_softening")?;
             let u_data_age_indicator = uniform("u_data_age_indicator")?;
 
             // Raw-to-physical conversion uniforms
@@ -1005,12 +924,9 @@ impl RadarGpuRenderer {
                 u_value_range,
                 u_viewport_size,
                 u_interpolation,
-                u_smoothing_enabled,
-                u_smoothing_radius,
                 u_despeckle_enabled,
                 u_despeckle_threshold,
                 u_opacity,
-                u_edge_softening,
                 u_data_age_indicator,
                 u_offset,
                 u_scale,
@@ -1533,11 +1449,6 @@ impl RadarGpuRenderer {
             };
             gl.uniform_1_i32(Some(&self.u_interpolation), interp_mode);
             gl.uniform_1_i32(
-                Some(&self.u_smoothing_enabled),
-                processing.smoothing_enabled as i32,
-            );
-            gl.uniform_1_f32(Some(&self.u_smoothing_radius), processing.smoothing_radius);
-            gl.uniform_1_i32(
                 Some(&self.u_despeckle_enabled),
                 processing.despeckle_enabled as i32,
             );
@@ -1546,10 +1457,6 @@ impl RadarGpuRenderer {
                 processing.despeckle_threshold as i32,
             );
             gl.uniform_1_f32(Some(&self.u_opacity), processing.opacity);
-            gl.uniform_1_i32(
-                Some(&self.u_edge_softening),
-                processing.edge_softening as i32,
-            );
             gl.uniform_1_i32(
                 Some(&self.u_data_age_indicator),
                 processing.data_age_indicator as i32,

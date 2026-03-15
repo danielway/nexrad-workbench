@@ -59,12 +59,9 @@ uniform sampler2D u_lut_tex;
 uniform sampler2D u_azimuth_tex;
 
 uniform int u_interpolation;
-uniform int u_smoothing_enabled;
-uniform float u_smoothing_radius;
 uniform int u_despeckle_enabled;
 uniform int u_despeckle_threshold;
 uniform float u_opacity;
-uniform int u_edge_softening;
 
 uniform float u_offset;
 uniform float u_scale;
@@ -173,7 +170,6 @@ void main() {
     }
 
     float value;
-    float edge_alpha = 1.0;
 
     if (u_interpolation == 1) {
         float az_lo, az_hi, az_frac;
@@ -206,10 +202,6 @@ void main() {
             discard;
         }
         value = sum / wsum;
-
-        if (u_edge_softening == 1) {
-            edge_alpha = clamp(wsum * 1.5, 0.0, 1.0);
-        }
     } else {
         float dummy_az;
         float best_idx = find_nearest_az(azimuth_deg, dummy_az);
@@ -246,37 +238,6 @@ void main() {
         }
     }
 
-    // Gaussian smoothing
-    if (u_smoothing_enabled == 1) {
-        float dummy_az3;
-        float center_az = find_nearest_az(azimuth_deg, dummy_az3);
-        float center_g = floor(gate_idx);
-        if (center_az >= 0.0) {
-            float sigma = u_smoothing_radius * 0.5;
-            float sigma2 = 2.0 * sigma * sigma;
-            int r = int(ceil(u_smoothing_radius));
-            float wsum = 0.0;
-            float vsum = 0.0;
-            for (int dg = -r; dg <= r; dg++) {
-                for (int da = -r; da <= r; da++) {
-                    float ng = center_g + float(dg);
-                    float na = mod(center_az + float(da), u_azimuth_count);
-                    float sv = sample_data(ng, na);
-                    if (is_valid(sv)) {
-                        float range_norm = max(center_g / u_gate_count, 0.1);
-                        float d2 = float(dg * dg) + float(da * da) * (range_norm * range_norm);
-                        float w = exp(-d2 / sigma2);
-                        vsum += sv * w;
-                        wsum += w;
-                    }
-                }
-            }
-            if (wsum > 0.001) {
-                value = vsum / wsum;
-            }
-        }
-    }
-
     // Raw → physical conversion
     float physical;
     if (u_scale == 0.0) {
@@ -290,7 +251,7 @@ void main() {
     vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
 
     // Premultiplied alpha output
-    float a = color.a * u_opacity * edge_alpha;
+    float a = color.a * u_opacity;
     fragColor = vec4(color.rgb * a, a);
 }
 "#;
@@ -313,12 +274,9 @@ pub struct GlobeRadarRenderer {
     u_value_min: glow::UniformLocation,
     u_value_range: glow::UniformLocation,
     u_interpolation: glow::UniformLocation,
-    u_smoothing_enabled: glow::UniformLocation,
-    u_smoothing_radius: glow::UniformLocation,
     u_despeckle_enabled: glow::UniformLocation,
     u_despeckle_threshold: glow::UniformLocation,
     u_opacity: glow::UniformLocation,
-    u_edge_softening: glow::UniformLocation,
     u_offset: glow::UniformLocation,
     u_scale: glow::UniformLocation,
 
@@ -355,12 +313,6 @@ impl GlobeRadarRenderer {
         let u_value_min = gl.get_uniform_location(program, "u_value_min").unwrap();
         let u_value_range = gl.get_uniform_location(program, "u_value_range").unwrap();
         let u_interpolation = gl.get_uniform_location(program, "u_interpolation").unwrap();
-        let u_smoothing_enabled = gl
-            .get_uniform_location(program, "u_smoothing_enabled")
-            .unwrap();
-        let u_smoothing_radius = gl
-            .get_uniform_location(program, "u_smoothing_radius")
-            .unwrap();
         let u_despeckle_enabled = gl
             .get_uniform_location(program, "u_despeckle_enabled")
             .unwrap();
@@ -368,9 +320,6 @@ impl GlobeRadarRenderer {
             .get_uniform_location(program, "u_despeckle_threshold")
             .unwrap();
         let u_opacity = gl.get_uniform_location(program, "u_opacity").unwrap();
-        let u_edge_softening = gl
-            .get_uniform_location(program, "u_edge_softening")
-            .unwrap();
         let u_offset = gl.get_uniform_location(program, "u_offset").unwrap();
         let u_scale = gl.get_uniform_location(program, "u_scale").unwrap();
 
@@ -423,12 +372,9 @@ impl GlobeRadarRenderer {
             u_value_min,
             u_value_range,
             u_interpolation,
-            u_smoothing_enabled,
-            u_smoothing_radius,
             u_despeckle_enabled,
             u_despeckle_threshold,
             u_opacity,
-            u_edge_softening,
             u_offset,
             u_scale,
             site_lat: 0.0,
@@ -548,11 +494,6 @@ impl GlobeRadarRenderer {
             };
             gl.uniform_1_i32(Some(&self.u_interpolation), interp_mode);
             gl.uniform_1_i32(
-                Some(&self.u_smoothing_enabled),
-                processing.smoothing_enabled as i32,
-            );
-            gl.uniform_1_f32(Some(&self.u_smoothing_radius), processing.smoothing_radius);
-            gl.uniform_1_i32(
                 Some(&self.u_despeckle_enabled),
                 processing.despeckle_enabled as i32,
             );
@@ -561,10 +502,6 @@ impl GlobeRadarRenderer {
                 processing.despeckle_threshold as i32,
             );
             gl.uniform_1_f32(Some(&self.u_opacity), processing.opacity);
-            gl.uniform_1_i32(
-                Some(&self.u_edge_softening),
-                processing.edge_softening as i32,
-            );
 
             // Raw-to-physical conversion
             gl.uniform_1_f32(Some(&self.u_offset), flat_renderer.data_offset());
