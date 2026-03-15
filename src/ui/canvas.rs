@@ -136,7 +136,7 @@ pub fn render_canvas_with_geo(
                     render_storm_cells(&painter, &projection, &state.detected_storm_cells, dark);
                 }
 
-                render_radar_sweep(&painter, &projection, state, sweep_info.map(|(az, _)| az));
+                render_radar_sweep(&painter, &projection, state, sweep_info);
 
                 if state.distance_tool_active || state.distance_start.is_some() {
                     render_distance_measurement(
@@ -936,7 +936,7 @@ fn render_radar_sweep(
     painter: &Painter,
     projection: &MapProjection,
     state: &AppState,
-    azimuth: Option<f32>,
+    sweep_info: Option<(f32, f32)>,
 ) {
     let radar_lat = state.viz_state.center_lat;
     let radar_lon = state.viz_state.center_lon;
@@ -1030,8 +1030,8 @@ fn render_radar_sweep(
         Stroke::new(1.0, canvas_colors::center_marker_stroke(dark)),
     );
 
-    // Draw the sweep line if we have azimuth data
-    if let Some(az) = azimuth {
+    // Draw the sweep line and donut chart if sweep animation is active
+    if let Some((az, start_az)) = sweep_info {
         let angle_rad = (az - 90.0) * PI / 180.0;
         let end_x = center.x + radius * angle_rad.cos();
         let end_y = center.y + radius * angle_rad.sin();
@@ -1040,7 +1040,167 @@ fn render_radar_sweep(
             [center, Pos2::new(end_x, end_y)],
             Stroke::new(3.0, radar::SWEEP_LINE),
         );
+
+        // Donut chart showing current vs previous sweep regions
+        if state.render_processing.sweep_animation {
+            draw_sweep_donut(painter, center, radius, az, start_az, state);
+        }
     }
+}
+
+/// Draw a donut-chart ring around the radar showing which azimuthal regions
+/// belong to the current sweep vs the previous sweep, with time labels at
+/// the boundaries.
+fn draw_sweep_donut(
+    painter: &Painter,
+    center: Pos2,
+    radius: f32,
+    sweep_az: f32,
+    sweep_start: f32,
+    state: &AppState,
+) {
+    let donut_inner = radius + 4.0;
+    let donut_outer = radius + 10.0;
+    let donut_mid = (donut_inner + donut_outer) / 2.0;
+    let donut_width = donut_outer - donut_inner;
+
+    // Current sweep arc: from sweep_start CW to sweep_az
+    let current_color = Color32::from_rgba_unmultiplied(80, 200, 120, 160);
+    // Previous sweep arc: from sweep_az CW to sweep_start (the rest)
+    let prev_color = Color32::from_rgba_unmultiplied(120, 120, 180, 120);
+
+    // Draw arcs as series of short line segments
+    let segments = 180;
+    let swept_arc_deg = (sweep_az - sweep_start).rem_euclid(360.0);
+
+    for i in 0..segments {
+        let frac_start = i as f32 / segments as f32;
+        let frac_end = (i + 1) as f32 / segments as f32;
+        let deg_start = frac_start * 360.0;
+        let deg_end = frac_end * 360.0;
+
+        // Is this segment in the current sweep region?
+        let mid_deg = (deg_start + deg_end) / 2.0;
+        let is_current = mid_deg < swept_arc_deg;
+
+        let color = if is_current {
+            current_color
+        } else {
+            prev_color
+        };
+
+        let a1 = ((sweep_start + deg_start) - 90.0) * PI / 180.0;
+        let a2 = ((sweep_start + deg_end) - 90.0) * PI / 180.0;
+
+        let p1 = Pos2::new(
+            center.x + donut_mid * a1.cos(),
+            center.y + donut_mid * a1.sin(),
+        );
+        let p2 = Pos2::new(
+            center.x + donut_mid * a2.cos(),
+            center.y + donut_mid * a2.sin(),
+        );
+
+        painter.line_segment([p1, p2], Stroke::new(donut_width, color));
+    }
+
+    // Time labels at the sweep line (boundary between current and previous)
+    let label_radius = donut_outer + 14.0;
+    let label_font = egui::FontId::monospace(10.0);
+
+    // Format timestamps for current and previous sweeps
+    let current_time_str = state
+        .viz_state
+        .rendered_sweep_end_secs
+        .map(|end_secs| format_time_short(end_secs, state.use_local_time));
+    let prev_time_str = state
+        .viz_state
+        .prev_sweep_overlay
+        .map(|(_, _, prev_end)| format_time_short(prev_end, state.use_local_time));
+
+    // Label at the sweep line position
+    if current_time_str.is_some() || prev_time_str.is_some() {
+        let label_angle = (sweep_az - 90.0) * PI / 180.0;
+        let label_pos = Pos2::new(
+            center.x + label_radius * label_angle.cos(),
+            center.y + label_radius * label_angle.sin(),
+        );
+
+        // Pick alignment based on which quadrant the label is in
+        let align = sweep_label_align(sweep_az);
+
+        if let Some(ref cur) = current_time_str {
+            if let Some(ref prev) = prev_time_str {
+                // Show both times separated by a pipe
+                let text = format!("{} | {}", cur, prev);
+                // Background
+                let galley =
+                    painter.layout_no_wrap(text.clone(), label_font.clone(), Color32::WHITE);
+                let text_size = galley.size();
+                let bg_pos = align_pos(label_pos, text_size, align);
+                let padding = Vec2::new(3.0, 2.0);
+                painter.rect_filled(
+                    Rect::from_min_size(bg_pos - padding, text_size + padding * 2.0),
+                    3.0,
+                    Color32::from_rgba_unmultiplied(15, 15, 25, 200),
+                );
+                painter.galley(bg_pos, galley, Color32::WHITE);
+            }
+        }
+    }
+}
+
+/// Format a timestamp as HH:MM:SS for compact display.
+fn format_time_short(ts: f64, use_local: bool) -> String {
+    if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(ts * 1000.0);
+        format!(
+            "{:02}:{:02}:{:02}",
+            d.get_hours(),
+            d.get_minutes(),
+            d.get_seconds()
+        )
+    } else {
+        use chrono::{TimeZone, Timelike, Utc};
+        let secs = ts.floor() as i64;
+        match Utc.timestamp_opt(secs, 0) {
+            chrono::LocalResult::Single(dt) => {
+                format!("{:02}:{:02}:{:02}", dt.hour(), dt.minute(), dt.second())
+            }
+            _ => format!("{:.0}", ts),
+        }
+    }
+}
+
+/// Choose text alignment for a sweep boundary label based on its angle.
+fn sweep_label_align(az_deg: f32) -> egui::Align2 {
+    // Determine which quadrant the label falls in
+    let az = az_deg.rem_euclid(360.0);
+    if !(45.0..315.0).contains(&az) {
+        egui::Align2::CENTER_BOTTOM // top
+    } else if az < 135.0 {
+        egui::Align2::LEFT_CENTER // right
+    } else if az < 225.0 {
+        egui::Align2::CENTER_TOP // bottom
+    } else {
+        egui::Align2::RIGHT_CENTER // left
+    }
+}
+
+/// Convert an Align2 + position into a top-left position for rect placement.
+fn align_pos(pos: Pos2, size: Vec2, align: egui::Align2) -> Pos2 {
+    let x = match align.x() {
+        egui::Align::Min => pos.x,
+        egui::Align::Center => pos.x - size.x / 2.0,
+        egui::Align::Max => pos.x - size.x,
+    };
+    let y = match align.y() {
+        egui::Align::Min => pos.y,
+        egui::Align::Center => pos.y - size.y / 2.0,
+        egui::Align::Max => pos.y - size.y,
+    };
+    Pos2::new(x, y)
 }
 
 /// Render NEXRAD radar site markers on the map.
