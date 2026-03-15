@@ -470,10 +470,9 @@ void main() {
         use_prev = (pixel_from_start >= swept_arc);
     }
 
-    // --- Previous sweep: self-contained branch with its own spatial params ---
-    // Uses nearest-neighbor with angle-based azimuth index (no LUT needed for
-    // the background layer). This correctly handles sweeps with different gate
-    // counts, range extents, and azimuth counts.
+    // --- Previous sweep: same processing pipeline as current sweep, but uses
+    // angle-based azimuth indexing (evenly-spaced — accurate for NEXRAD) and
+    // prev-specific spatial params / data texture.
     if (use_prev) {
         if (dist_km < u_prev_first_gate_km || dist_km >= u_prev_max_range_km) {
             fragColor = vec4(0.0);
@@ -484,15 +483,108 @@ void main() {
             fragColor = vec4(0.0);
             return;
         }
-        // Compute azimuth index from angle (evenly-spaced assumption — accurate for NEXRAD)
-        float prev_az_idx = floor(mod(azimuth_deg * u_prev_azimuth_count / 360.0, u_prev_azimuth_count));
-        float value = sample_prev_data(floor(prev_gate_idx), prev_az_idx);
+
+        float value;
+        float edge_alpha = 1.0;
+        float prev_az_exact = azimuth_deg * u_prev_azimuth_count / 360.0;
+
+        if (u_interpolation == 1) {
+            // Bilinear interpolation using angle-based azimuth indices
+            float az_lo = floor(mod(prev_az_exact, u_prev_azimuth_count));
+            float az_hi = floor(mod(az_lo + 1.0, u_prev_azimuth_count));
+            float az_frac = fract(prev_az_exact);
+
+            float g_lo = floor(prev_gate_idx);
+            float g_hi = min(g_lo + 1.0, u_prev_gate_count - 1.0);
+            float g_frac = prev_gate_idx - g_lo;
+
+            float v00 = sample_prev_data(g_lo, az_lo);
+            float v10 = sample_prev_data(g_hi, az_lo);
+            float v01 = sample_prev_data(g_lo, az_hi);
+            float v11 = sample_prev_data(g_hi, az_hi);
+
+            float sum = 0.0;
+            float wsum = 0.0;
+            float w00 = (1.0 - g_frac) * (1.0 - az_frac);
+            float w10 = g_frac * (1.0 - az_frac);
+            float w01 = (1.0 - g_frac) * az_frac;
+            float w11 = g_frac * az_frac;
+
+            if (is_valid(v00)) { sum += v00 * w00; wsum += w00; }
+            if (is_valid(v10)) { sum += v10 * w10; wsum += w10; }
+            if (is_valid(v01)) { sum += v01 * w01; wsum += w01; }
+            if (is_valid(v11)) { sum += v11 * w11; wsum += w11; }
+
+            if (wsum < 0.001) {
+                fragColor = vec4(0.0);
+                return;
+            }
+            value = sum / wsum;
+
+            if (u_edge_softening == 1) {
+                edge_alpha = clamp(wsum * 1.5, 0.0, 1.0);
+            }
+        } else {
+            // Nearest neighbor
+            float prev_az_idx = floor(mod(prev_az_exact, u_prev_azimuth_count));
+            value = sample_prev_data(floor(prev_gate_idx), prev_az_idx);
+        }
 
         if (!is_valid(value)) {
             fragColor = vec4(0.0);
             return;
         }
 
+        // Despeckle filter
+        if (u_despeckle_enabled == 1) {
+            float center_az = floor(mod(prev_az_exact, u_prev_azimuth_count));
+            float center_g = floor(prev_gate_idx);
+            int valid_count = 0;
+            for (int dg = -1; dg <= 1; dg++) {
+                for (int da = -1; da <= 1; da++) {
+                    if (dg == 0 && da == 0) continue;
+                    float ng = center_g + float(dg);
+                    float na = mod(center_az + float(da), u_prev_azimuth_count);
+                    if (is_valid(sample_prev_data(ng, na))) {
+                        valid_count++;
+                    }
+                }
+            }
+            if (valid_count < u_despeckle_threshold) {
+                fragColor = vec4(0.0);
+                return;
+            }
+        }
+
+        // Gaussian smoothing
+        if (u_smoothing_enabled == 1) {
+            float center_az = floor(mod(prev_az_exact, u_prev_azimuth_count));
+            float center_g = floor(prev_gate_idx);
+            float sigma = u_smoothing_radius * 0.5;
+            float sigma2 = 2.0 * sigma * sigma;
+            int r = int(ceil(u_smoothing_radius));
+            float wsum = 0.0;
+            float vsum = 0.0;
+            for (int dg = -r; dg <= r; dg++) {
+                for (int da = -r; da <= r; da++) {
+                    float ng = center_g + float(dg);
+                    float na = mod(center_az + float(da), u_prev_azimuth_count);
+                    float sv = sample_prev_data(ng, na);
+                    if (is_valid(sv)) {
+                        float range_norm = max(center_g / u_prev_gate_count, 0.1);
+                        float d2 = float(dg * dg) + float(da * da) * (range_norm * range_norm);
+                        float w = exp(-d2 / sigma2);
+                        vsum += sv * w;
+                        wsum += w;
+                    }
+                }
+            }
+            if (wsum > 0.001) {
+                value = vsum / wsum;
+            }
+        }
+
+        // Convert raw value to physical units
         float physical;
         if (u_prev_scale == 0.0) {
             physical = value;
@@ -502,7 +594,7 @@ void main() {
 
         float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
         vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
-        float a = color.a * u_opacity;
+        float a = color.a * u_opacity * edge_alpha;
         fragColor = vec4(color.rgb * a, a);
         return;
     }
