@@ -118,8 +118,9 @@ async fn streaming_loop(
     site_id: String,
     state: Rc<RefCell<RealtimeState>>,
     stats: NetworkStats,
-    _facade: DataFacade,
+    facade: DataFacade,
 ) {
+    use crate::data::keys::{SiteId, UnixMillis};
     use nexrad_data::aws::realtime::{
         download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType,
     };
@@ -198,6 +199,42 @@ async fn streaming_loop(
         let start_data = start_chunk.chunk.data().to_vec();
         current_scan_start_secs = current_timestamp();
 
+        // Parse volume header time from the start chunk for skip detection
+        let volume_header_time_secs: Option<f64> = {
+            let file = nexrad_data::volume::File::new(start_data.clone());
+            file.header()
+                .and_then(|h| h.date_time())
+                .map(|dt| dt.timestamp() as f64)
+        };
+
+        // Query IDB for existing sweep data to compute a skip point
+        let skip_before_secs: Option<f64> = if let Some(vol_start) = volume_header_time_secs {
+            let vol_start_ms = UnixMillis((vol_start * 1000.0) as i64);
+            let window_end_ms = UnixMillis(vol_start_ms.0 + 600_000); // +10 min
+            match facade
+                .list_scans(&SiteId::new(&site_id), vol_start_ms, window_end_ms)
+                .await
+            {
+                Ok(scans) => {
+                    let result = scans
+                        .iter()
+                        .filter_map(|s| s.end_timestamp_secs)
+                        .max()
+                        .map(|t| t as f64);
+                    if let Some(skip_ts) = result {
+                        log::info!(
+                            "Streaming backfill: found existing scan data, skip point = {:.0}s",
+                            skip_ts
+                        );
+                    }
+                    result
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
         log::info!(
             "Init: emitting start_chunk ({} bytes) for mid-volume join",
             start_data.len()
@@ -230,6 +267,7 @@ async fn streaming_loop(
                         .collect();
 
                     let total_backfill = intermediates.len();
+                    let mut skipped = 0u32;
                     log::info!(
                         "Backfill: downloading {} intermediate chunks (seq 2..{})",
                         total_backfill,
@@ -239,6 +277,22 @@ async fn streaming_loop(
                     for chunk_id in &intermediates {
                         if state.borrow().stop_requested {
                             break;
+                        }
+
+                        // Skip chunks whose estimated time falls before existing data
+                        if let (Some(skip_ts), Some(vol_start)) =
+                            (skip_before_secs, volume_header_time_secs)
+                        {
+                            let vol_duration_est = 300.0; // conservative 5-min estimate
+                            let total_chunks = (latest_seq - 1) as f64;
+                            let chunk_end_est = vol_start
+                                + (chunk_id.sequence() as f64 / total_chunks.max(1.0))
+                                    * vol_duration_est;
+                            let chunk_dur = vol_duration_est / total_chunks.max(1.0);
+                            if chunk_end_est + chunk_dur < skip_ts {
+                                skipped += 1;
+                                continue;
+                            }
                         }
 
                         match download_chunk(&site_id, chunk_id).await {
@@ -275,8 +329,9 @@ async fn streaming_loop(
                     }
 
                     log::info!(
-                        "Backfill: completed, {} chunks downloaded",
-                        chunks_in_volume - 1
+                        "Backfill: completed, {} chunks downloaded, {} skipped (already in IDB)",
+                        chunks_in_volume - 1,
+                        skipped
                     );
                 }
                 Err(e) => {
@@ -526,7 +581,7 @@ impl BackfillChannel {
         self.state.borrow().active
     }
 
-    pub fn start(&self, ctx: egui::Context, site_id: String) {
+    pub fn start(&self, ctx: egui::Context, site_id: String, facade: DataFacade) {
         {
             let mut state = self.state.borrow_mut();
             state.active = true;
@@ -537,7 +592,7 @@ impl BackfillChannel {
         let stats = self.stats.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            backfill_loop(ctx, site_id, state, stats).await;
+            backfill_loop(ctx, site_id, state, stats, facade).await;
         });
     }
 
@@ -556,7 +611,9 @@ async fn backfill_loop(
     site_id: String,
     state: Rc<RefCell<BackfillState>>,
     stats: NetworkStats,
+    facade: DataFacade,
 ) {
+    use crate::data::keys::{SiteId, UnixMillis};
     use nexrad_data::aws::realtime::{
         download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType,
     };
@@ -619,6 +676,42 @@ async fn backfill_loop(
         let start_data = start_chunk.chunk.data().to_vec();
         chunks_in_volume = 1;
 
+        // Parse volume header time from the start chunk for skip detection
+        let volume_header_time_secs: Option<f64> = {
+            let file = nexrad_data::volume::File::new(start_data.clone());
+            file.header()
+                .and_then(|h| h.date_time())
+                .map(|dt| dt.timestamp() as f64)
+        };
+
+        // Query IDB for existing sweep data to compute a skip point
+        let skip_before_secs: Option<f64> = if let Some(vol_start) = volume_header_time_secs {
+            let vol_start_ms = UnixMillis((vol_start * 1000.0) as i64);
+            let window_end_ms = UnixMillis(vol_start_ms.0 + 600_000); // +10 min
+            match facade
+                .list_scans(&SiteId::new(&site_id), vol_start_ms, window_end_ms)
+                .await
+            {
+                Ok(scans) => {
+                    let result = scans
+                        .iter()
+                        .filter_map(|s| s.end_timestamp_secs)
+                        .max()
+                        .map(|t| t as f64);
+                    if let Some(skip_ts) = result {
+                        log::info!(
+                            "Backfill: found existing scan data, skip point = {:.0}s",
+                            skip_ts
+                        );
+                    }
+                    result
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
         log::info!(
             "Backfill: emitting start_chunk ({} bytes) for mid-volume join",
             start_data.len()
@@ -647,13 +740,31 @@ async fn backfill_loop(
                         .filter(|id| id.sequence() > 1 && id.sequence() < latest_seq)
                         .collect();
 
+                    let total_backfill = intermediates.len();
+                    let mut skipped = 0u32;
                     log::info!(
                         "Backfill: downloading {} intermediate chunks (seq 2..{})",
-                        intermediates.len(),
+                        total_backfill,
                         latest_seq - 1
                     );
 
                     for chunk_id in &intermediates {
+                        // Skip chunks whose estimated time falls before existing data
+                        if let (Some(skip_ts), Some(vol_start)) =
+                            (skip_before_secs, volume_header_time_secs)
+                        {
+                            let vol_duration_est = 300.0; // conservative 5-min estimate
+                            let total_chunks = (latest_seq - 1) as f64;
+                            let chunk_end_est = vol_start
+                                + (chunk_id.sequence() as f64 / total_chunks.max(1.0))
+                                    * vol_duration_est;
+                            let chunk_dur = vol_duration_est / total_chunks.max(1.0);
+                            if chunk_end_est + chunk_dur < skip_ts {
+                                skipped += 1;
+                                continue;
+                            }
+                        }
+
                         match download_chunk(&site_id, chunk_id).await {
                             Ok((_id, chunk)) => {
                                 chunks_in_volume += 1;
@@ -685,6 +796,12 @@ async fn backfill_loop(
                             }
                         }
                     }
+
+                    log::info!(
+                        "Backfill: completed, {} chunks downloaded, {} skipped (already in IDB)",
+                        chunks_in_volume - 1,
+                        skipped
+                    );
                 }
                 Err(e) => {
                     log::warn!("Backfill: failed to list chunks: {}, skipping", e);

@@ -293,22 +293,69 @@ impl RadarTimeline {
         Self { scans }
     }
 
-    /// Find the end time of the next matching sweep after the given timestamp.
+    /// Collect all sweep end-times matching the given elevation number.
     ///
-    /// "Matching" means the sweep's elevation is within `elev_tolerance` of
-    /// `target_elevation`. Returns the sweep's end_time so the cursor lands
-    /// at the completion of that sweep.
-    pub fn next_matching_sweep_end(
+    /// Returns a sorted, deduplicated `Vec<f64>` of `end_time` values for sweeps
+    /// whose `elevation_number` matches exactly. If `bounds` is provided, only
+    /// sweeps within that time range are included.
+    pub fn matching_sweep_end_times_by_number(
         &self,
-        ts: f64,
-        target_elevation: f32,
-        elev_tolerance: f32,
-    ) -> Option<f64> {
+        elevation_number: u8,
+        bounds: Option<(f64, f64)>,
+    ) -> Vec<f64> {
+        let mut times: Vec<f64> = Vec::new();
+        for scan in &self.scans {
+            if let Some((start, end)) = bounds {
+                if scan.end_time < start || scan.start_time > end {
+                    continue;
+                }
+            }
+            for sweep in &scan.sweeps {
+                if sweep.elevation_number == elevation_number {
+                    if let Some((start, end)) = bounds {
+                        if sweep.end_time < start || sweep.end_time > end {
+                            continue;
+                        }
+                    }
+                    times.push(sweep.end_time);
+                }
+            }
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        times.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        times
+    }
+
+    /// Collect all sweep end-times (regardless of elevation).
+    ///
+    /// Used by Latest/auto mode where every sweep is a frame.
+    pub fn all_sweep_end_times(&self, bounds: Option<(f64, f64)>) -> Vec<f64> {
+        let mut times: Vec<f64> = Vec::new();
+        for scan in &self.scans {
+            if let Some((start, end)) = bounds {
+                if scan.end_time < start || scan.start_time > end {
+                    continue;
+                }
+            }
+            for sweep in &scan.sweeps {
+                if let Some((start, end)) = bounds {
+                    if sweep.end_time < start || sweep.end_time > end {
+                        continue;
+                    }
+                }
+                times.push(sweep.end_time);
+            }
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        times.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        times
+    }
+
+    /// Find the end time of the next sweep matching `elevation_number` after `ts`.
+    pub fn next_matching_sweep_end_by_number(&self, ts: f64, elevation_number: u8) -> Option<f64> {
         for scan in &self.scans {
             for sweep in &scan.sweeps {
-                if (sweep.elevation - target_elevation).abs() < elev_tolerance
-                    && sweep.end_time > ts + 0.5
-                {
+                if sweep.elevation_number == elevation_number && sweep.end_time > ts + 0.5 {
                     return Some(sweep.end_time);
                 }
             }
@@ -316,23 +363,12 @@ impl RadarTimeline {
         None
     }
 
-    /// Find the end time of the previous matching sweep before the given timestamp.
-    ///
-    /// Searches backward through sweeps to find the most recent matching sweep
-    /// whose end_time is before the current position.
-    pub fn prev_matching_sweep_end(
-        &self,
-        ts: f64,
-        target_elevation: f32,
-        elev_tolerance: f32,
-    ) -> Option<f64> {
+    /// Find the end time of the previous sweep matching `elevation_number` before `ts`.
+    pub fn prev_matching_sweep_end_by_number(&self, ts: f64, elevation_number: u8) -> Option<f64> {
         let mut best: Option<f64> = None;
         for scan in self.scans.iter().rev() {
             for sweep in scan.sweeps.iter().rev() {
-                if (sweep.elevation - target_elevation).abs() < elev_tolerance
-                    && sweep.end_time < ts - 0.5
-                {
-                    // First match scanning backward is the most recent
+                if sweep.elevation_number == elevation_number && sweep.end_time < ts - 0.5 {
                     match best {
                         None => best = Some(sweep.end_time),
                         Some(b) if sweep.end_time > b => best = Some(sweep.end_time),
@@ -340,7 +376,40 @@ impl RadarTimeline {
                     }
                 }
             }
-            // If we found one and this scan ends before what we found, no need to keep looking
+            if let Some(b) = best {
+                if scan.end_time < b {
+                    break;
+                }
+            }
+        }
+        best
+    }
+
+    /// Find the end time of the next sweep of any elevation after `ts`.
+    pub fn next_any_sweep_end(&self, ts: f64) -> Option<f64> {
+        for scan in &self.scans {
+            for sweep in &scan.sweeps {
+                if sweep.end_time > ts + 0.5 {
+                    return Some(sweep.end_time);
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the end time of the previous sweep of any elevation before `ts`.
+    pub fn prev_any_sweep_end(&self, ts: f64) -> Option<f64> {
+        let mut best: Option<f64> = None;
+        for scan in self.scans.iter().rev() {
+            for sweep in scan.sweeps.iter().rev() {
+                if sweep.end_time < ts - 0.5 {
+                    match best {
+                        None => best = Some(sweep.end_time),
+                        Some(b) if sweep.end_time > b => best = Some(sweep.end_time),
+                        _ => {}
+                    }
+                }
+            }
             if let Some(b) = best {
                 if scan.end_time < b {
                     break;
@@ -625,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn next_matching_sweep_end() {
+    fn next_matching_sweep_end_by_number() {
         let tl = RadarTimeline {
             scans: vec![scan_with_sweeps(
                 1000.0,
@@ -633,19 +702,31 @@ mod tests {
                 vec![
                     sweep(1000.0, 1010.0, 0.5, 1),
                     sweep(1010.0, 1020.0, 0.9, 2),
-                    sweep(1020.0, 1030.0, 0.5, 3), // same elevation as first
+                    sweep(1020.0, 1030.0, 0.5, 3), // same angle, different number
                     sweep(1030.0, 1040.0, 0.9, 4),
                 ],
             )],
         };
-        // From ts=1005, next 0.5° sweep end is at 1030
-        assert_eq!(tl.next_matching_sweep_end(1005.0, 0.5, 0.1), Some(1030.0));
-        // From ts=1005, next 0.9° sweep end is at 1020
-        assert_eq!(tl.next_matching_sweep_end(1005.0, 0.9, 0.1), Some(1020.0));
+        // From ts=1005, next elev_num=1 sweep end is at 1010 (already past) — none
+        // Actually 1010 > 1005 + 0.5 = 1005.5, so 1010 qualifies
+        assert_eq!(
+            tl.next_matching_sweep_end_by_number(1005.0, 1),
+            Some(1010.0)
+        );
+        // From ts=1005, next elev_num=3 sweep end is at 1030
+        assert_eq!(
+            tl.next_matching_sweep_end_by_number(1005.0, 3),
+            Some(1030.0)
+        );
+        // From ts=1005, next elev_num=2 sweep end is at 1020
+        assert_eq!(
+            tl.next_matching_sweep_end_by_number(1005.0, 2),
+            Some(1020.0)
+        );
     }
 
     #[test]
-    fn prev_matching_sweep_end() {
+    fn prev_matching_sweep_end_by_number() {
         let tl = RadarTimeline {
             scans: vec![scan_with_sweeps(
                 1000.0,
@@ -658,10 +739,98 @@ mod tests {
                 ],
             )],
         };
-        // From ts=1035, prev 0.5° sweep end is at 1030
-        assert_eq!(tl.prev_matching_sweep_end(1035.0, 0.5, 0.1), Some(1030.0));
-        // From ts=1025, prev 0.9° sweep end is at 1020
-        assert_eq!(tl.prev_matching_sweep_end(1025.0, 0.9, 0.1), Some(1020.0));
+        // From ts=1035, prev elev_num=3 sweep end is at 1030
+        assert_eq!(
+            tl.prev_matching_sweep_end_by_number(1035.0, 3),
+            Some(1030.0)
+        );
+        // From ts=1025, prev elev_num=2 sweep end is at 1020
+        assert_eq!(
+            tl.prev_matching_sweep_end_by_number(1025.0, 2),
+            Some(1020.0)
+        );
+    }
+
+    #[test]
+    fn matching_sweep_end_times_by_number_basic() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(
+                    1000.0,
+                    1040.0,
+                    vec![
+                        sweep(1000.0, 1010.0, 0.5, 1),
+                        sweep(1010.0, 1020.0, 0.9, 2),
+                        sweep(1020.0, 1030.0, 0.5, 3),
+                        sweep(1030.0, 1040.0, 0.9, 4),
+                    ],
+                ),
+                scan_with_sweeps(
+                    1300.0,
+                    1340.0,
+                    vec![sweep(1300.0, 1310.0, 0.5, 1), sweep(1310.0, 1320.0, 0.9, 2)],
+                ),
+            ],
+        };
+        // All elev_num=1 sweeps, no bounds
+        let times = tl.matching_sweep_end_times_by_number(1, None);
+        assert_eq!(times, vec![1010.0, 1310.0]);
+
+        // All elev_num=2 sweeps, no bounds
+        let times = tl.matching_sweep_end_times_by_number(2, None);
+        assert_eq!(times, vec![1020.0, 1320.0]);
+    }
+
+    #[test]
+    fn matching_sweep_end_times_by_number_with_bounds() {
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1040.0,
+                vec![
+                    sweep(1000.0, 1010.0, 0.5, 1),
+                    sweep(1010.0, 1020.0, 0.9, 2),
+                    sweep(1020.0, 1030.0, 0.5, 3),
+                    sweep(1030.0, 1040.0, 0.9, 4),
+                ],
+            )],
+        };
+        // elev_num=1 sweeps within bounds [1005, 1025]
+        let times = tl.matching_sweep_end_times_by_number(1, Some((1005.0, 1025.0)));
+        assert_eq!(times, vec![1010.0]);
+    }
+
+    #[test]
+    fn all_sweep_end_times_basic() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(
+                    1000.0,
+                    1040.0,
+                    vec![
+                        sweep(1000.0, 1010.0, 0.5, 1),
+                        sweep(1010.0, 1020.0, 0.9, 2),
+                        sweep(1020.0, 1030.0, 0.5, 3),
+                        sweep(1030.0, 1040.0, 0.9, 4),
+                    ],
+                ),
+                scan_with_sweeps(
+                    1300.0,
+                    1320.0,
+                    vec![sweep(1300.0, 1310.0, 0.5, 1), sweep(1310.0, 1320.0, 0.9, 2)],
+                ),
+            ],
+        };
+        // All sweeps (Latest mode): every sweep is a frame
+        let times = tl.all_sweep_end_times(None);
+        assert_eq!(times, vec![1010.0, 1020.0, 1030.0, 1040.0, 1310.0, 1320.0]);
+    }
+
+    #[test]
+    fn matching_sweep_end_times_empty() {
+        let tl = RadarTimeline { scans: vec![] };
+        let times = tl.matching_sweep_end_times_by_number(1, None);
+        assert!(times.is_empty());
     }
 
     #[test]

@@ -151,6 +151,19 @@ pub struct LiveModeState {
     /// elevation index (0-based). Populated when VCP data is received.
     pub estimated_sweep_durations: Vec<f64>,
 
+    /// Per-chunk azimuth ranges for the current in-progress elevation.
+    /// Each entry: (first_az, last_az, radial_count). Reset on elevation change.
+    pub current_elev_chunks: Vec<(f32, f32, u32)>,
+
+    /// Starting azimuth of the current in-progress sweep (first radial).
+    /// Used to set the sweep compositing start angle for live partial rendering.
+    pub sweep_start_azimuth: Option<f32>,
+
+    /// Azimuth range of the last live-decoded partial sweep data.
+    /// (first_azimuth, last_azimuth) from the actual sorted radials.
+    /// Used for accurate sweep compositing instead of estimation.
+    pub live_data_azimuth_range: Option<(f32, f32)>,
+
     /// Last known radial azimuth in degrees (0-360) from the most recent chunk.
     /// Used to extrapolate sweep line position between chunks.
     pub last_radial_azimuth: Option<f32>,
@@ -184,6 +197,9 @@ impl Default for LiveModeState {
             chunk_elev_spans: Vec::new(),
             completed_sweep_metas: Vec::new(),
             estimated_sweep_durations: Vec::new(),
+            current_elev_chunks: Vec::new(),
+            sweep_start_azimuth: None,
+            live_data_azimuth_range: None,
             last_radial_azimuth: None,
             last_radial_time_secs: None,
         }
@@ -248,6 +264,9 @@ impl LiveModeState {
         self.chunk_elev_spans.clear();
         self.completed_sweep_metas.clear();
         self.estimated_sweep_durations.clear();
+        self.current_elev_chunks.clear();
+        self.sweep_start_azimuth = None;
+        self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
     }
@@ -398,6 +417,9 @@ impl LiveModeState {
         self.chunk_elev_spans.clear();
         self.completed_sweep_metas.clear();
         self.estimated_sweep_durations.clear();
+        self.current_elev_chunks.clear();
+        self.sweep_start_azimuth = None;
+        self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
     }
@@ -428,7 +450,15 @@ impl LiveModeState {
     }
 
     /// Record which elevation is currently being accumulated (partial sweep).
+    /// Resets `sweep_start_azimuth` when the elevation changes.
     pub fn record_in_progress_elevation(&mut self, elevation: Option<u8>, radials: Option<u32>) {
+        if elevation != self.current_in_progress_elevation {
+            self.current_elev_chunks.clear();
+            self.sweep_start_azimuth = None;
+            // Keep live_data_azimuth_range until the LiveDecoded result arrives
+            // with the new elevation's data. Clearing it here would disable
+            // shader compositing for 1-2 frames, causing a visible flash.
+        }
         self.current_in_progress_elevation = elevation;
         self.current_in_progress_radials = radials;
     }
@@ -542,8 +572,14 @@ impl LiveModeState {
         let degrees_per_sec = 360.0 / sweep_dur;
 
         let dt = now_secs - last_t;
-        // Don't extrapolate more than one sweep duration ahead
-        if dt < 0.0 || dt > sweep_dur {
+        if dt < 0.0 {
+            return None;
+        }
+        // The sweep line represents "now" — the radar is always scanning.
+        // Let the line keep rotating; new chunks arrive every ~12s and reset
+        // the position. The modular arithmetic handles wrapping naturally.
+        // Only stop extrapolating after 120s with no data (something is wrong).
+        if dt > 120.0 {
             return None;
         }
 

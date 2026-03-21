@@ -25,12 +25,6 @@ use state::AppState;
 /// 15 minutes covers a full VCP cycle with margin.
 const MAX_SCAN_AGE_SECS: f64 = 15.0 * 60.0;
 
-/// Tolerance (in degrees) when matching a sweep's elevation angle to the
-/// user-selected target elevation. NEXRAD elevation angles can vary slightly
-/// from the nominal value; 0.15° accommodates that jitter without matching
-/// the wrong tilt.
-const ELEVATION_MATCH_TOLERANCE_DEG: f32 = 0.15;
-
 /// How far ahead (in real-time seconds) to prefetch the next sweep when
 /// playback is active. Multiplied by the playback speed to get the lookahead
 /// in timeline seconds. 0.5 s keeps the pipeline one decode ahead without
@@ -198,7 +192,7 @@ pub struct RenderRequest {
     scan_key: String,
     elevation_number: u8,
     product: String,
-    render_mode: crate::state::RenderMode,
+    is_auto: bool,
 }
 
 /// Parameters for a volume (all-elevations) render request.
@@ -995,38 +989,35 @@ impl WorkbenchApp {
         self.state.status_message = "Fetching latest data...".to_string();
         self.backfill_in_progress = true;
 
-        self.backfill_channel.start(ctx.clone(), site_id);
+        self.backfill_channel
+            .start(ctx.clone(), site_id, self.data_facade.clone());
     }
 
-    /// Find the best elevation number for the current target_elevation.
+    /// Find the best elevation number for the current elevation selection.
     ///
-    /// If sweep metadata with angles is available, picks the number whose angle
-    /// is closest to target_elevation. Otherwise falls back to the lowest available number.
+    /// In Fixed mode, returns the selected elevation_number directly.
+    /// In Latest mode, delegates to most_recent_sweep_elevation.
     fn best_elevation_number(&self) -> u8 {
-        // First try to match by angle using timeline sweep metadata
-        let target = self.state.viz_state.target_elevation;
-        if let Some(scan) = self.state.radar_timeline.find_recent_scan(
-            self.state.playback_state.playback_position(),
-            MAX_SCAN_AGE_SECS,
-        ) {
-            if !scan.sweeps.is_empty() {
-                // Find sweep whose angle is closest to target
-                if let Some(best) = scan.sweeps.iter().min_by(|a, b| {
-                    (a.elevation - target)
-                        .abs()
-                        .partial_cmp(&(b.elevation - target).abs())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                }) {
-                    return best.elevation_number;
+        match &self.state.viz_state.elevation_selection {
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            } => *elevation_number,
+            crate::state::ElevationSelection::Latest => {
+                // Try to find the most recent sweep at playback position
+                let playback_ts = self.state.playback_state.playback_position();
+                if let Some(scan) = self
+                    .state
+                    .radar_timeline
+                    .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
+                {
+                    return self.most_recent_sweep_elevation(scan, playback_ts);
                 }
+                self.available_elevation_numbers
+                    .first()
+                    .copied()
+                    .unwrap_or(1)
             }
         }
-
-        // Fallback: use lowest available elevation number
-        self.available_elevation_numbers
-            .first()
-            .copied()
-            .unwrap_or(1)
     }
 
     /// Pick the closest available elevation to the requested one.
@@ -1040,36 +1031,43 @@ impl WorkbenchApp {
 
     /// Find the best elevation number for a scan given the playback position.
     ///
-    /// In FixedTilt mode, finds the most recent sweep at the target elevation
-    /// whose start_time <= playback_ts. A scan may contain multiple sweeps at the
-    /// same elevation (e.g. VCP 215 has 0.5° at elevation_number 1 and 3).
+    /// In Fixed mode, filters by exact elevation_number match (no angle tolerance),
+    /// then picks the most recent sweep that has started. This eliminates
+    /// SAILS/MRLE ambiguity where CS and CD sweeps share the same angle.
     fn best_elevation_at_playback(
         &self,
         scan: &crate::state::radar_data::Scan,
         playback_ts: f64,
     ) -> u8 {
-        let target = self.state.viz_state.target_elevation;
+        match &self.state.viz_state.elevation_selection {
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            } => {
+                // Filter sweeps by exact elevation_number match
+                // then filter to those that have started (start_time <= playback_ts)
+                // pick the one with the latest start_time (most recent instance)
+                let matching = scan
+                    .sweeps
+                    .iter()
+                    .filter(|s| s.elevation_number == *elevation_number)
+                    .filter(|s| s.start_time <= playback_ts)
+                    .max_by(|a, b| {
+                        a.start_time
+                            .partial_cmp(&b.start_time)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
 
-        // Filter sweeps matching target elevation (within 0.15° tolerance)
-        // then filter to those that have started (start_time <= playback_ts)
-        // pick the one with the latest start_time (most recent instance)
-        let matching = scan
-            .sweeps
-            .iter()
-            .filter(|s| (s.elevation - target).abs() < ELEVATION_MATCH_TOLERANCE_DEG)
-            .filter(|s| s.start_time <= playback_ts)
-            .max_by(|a, b| {
-                a.start_time
-                    .partial_cmp(&b.start_time)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+                if let Some(sweep) = matching {
+                    return sweep.elevation_number;
+                }
 
-        if let Some(sweep) = matching {
-            return sweep.elevation_number;
+                // No matching sweep started yet — return selected number
+                *elevation_number
+            }
+            crate::state::ElevationSelection::Latest => {
+                self.most_recent_sweep_elevation(scan, playback_ts)
+            }
         }
-
-        // No matching sweep started yet — fall back to best_elevation_number()
-        self.best_elevation_number()
     }
 
     /// Find the most recent sweep (any elevation) at or before the playback position.
@@ -1091,6 +1089,57 @@ impl WorkbenchApp {
             })
             .map(|s| s.elevation_number)
             .unwrap_or_else(|| self.best_elevation_number())
+    }
+
+    /// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
+    fn build_elevation_list(
+        scan: &crate::state::radar_data::Scan,
+    ) -> Vec<crate::state::ElevationListEntry> {
+        // 1. Prefer extracted VCP pattern (has waveform, SAILS, MRLE info)
+        if let Some(ref pattern) = scan.vcp_pattern {
+            if !pattern.elevations.is_empty() {
+                return pattern
+                    .elevations
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| crate::state::ElevationListEntry {
+                        elevation_number: (i + 1) as u8,
+                        angle: e.angle,
+                        waveform: e.waveform.clone(),
+                        is_sails: e.is_sails,
+                        is_mrle: e.is_mrle,
+                    })
+                    .collect();
+            }
+        }
+
+        // 2. Fall back to static VCP definition
+        if let Some(def) = crate::state::get_vcp_definition(scan.vcp) {
+            return def
+                .elevations
+                .iter()
+                .enumerate()
+                .map(|(i, e)| crate::state::ElevationListEntry {
+                    elevation_number: (i + 1) as u8,
+                    angle: e.angle,
+                    waveform: e.waveform.to_string(),
+                    is_sails: false,
+                    is_mrle: false,
+                })
+                .collect();
+        }
+
+        // 3. Fall back to sweep metadata
+        scan.sweeps
+            .iter()
+            .map(|s| crate::state::ElevationListEntry {
+                elevation_number: s.elevation_number,
+                angle: s.elevation,
+                waveform: String::new(),
+                is_sails: false,
+                is_mrle: false,
+            })
+            .collect()
     }
 
     /// Update the canvas overlay text with sweep timing and elevation info.
@@ -1174,7 +1223,7 @@ impl WorkbenchApp {
             scan_key: scan_key.clone(),
             elevation_number,
             product: product.clone(),
-            render_mode: self.state.viz_state.render_mode,
+            is_auto: self.state.viz_state.elevation_selection.is_auto(),
         };
 
         // Skip if same as last request
@@ -1836,6 +1885,25 @@ impl WorkbenchApp {
                                 result.current_elevation_radials,
                             );
 
+                            // Record per-chunk azimuth ranges for the current elevation
+                            if let Some(cur_elev) = result.current_elevation {
+                                for &(elev, first_az, last_az) in &result.chunk_elev_az_ranges {
+                                    if elev == cur_elev {
+                                        let radial_count = result
+                                            .chunk_elev_spans
+                                            .iter()
+                                            .find(|&&(e, _, _, _)| e == elev)
+                                            .map(|&(_, _, _, c)| c)
+                                            .unwrap_or(0);
+                                        self.state.live_mode_state.current_elev_chunks.push((
+                                            first_az,
+                                            last_az,
+                                            radial_count,
+                                        ));
+                                    }
+                                }
+                            }
+
                             if !result.sweeps.is_empty() {
                                 self.state
                                     .live_mode_state
@@ -1846,6 +1914,20 @@ impl WorkbenchApp {
                                 result.last_radial_azimuth,
                                 result.last_radial_time_secs,
                             );
+
+                            // Request live partial-sweep render if mid-sweep.
+                            // Always render whatever elevation is currently being
+                            // accumulated — the user expects to see live progress
+                            // regardless of which elevation was previously displayed.
+                            if !result.is_end {
+                                if let Some(target_elev) = result.current_elevation {
+                                    let product =
+                                        self.state.viz_state.product.to_worker_string().to_string();
+                                    if let Some(ref mut worker) = self.decode_worker {
+                                        worker.render_live(target_elev, product);
+                                    }
+                                }
+                            }
                         }
 
                         // Refresh timeline when new elevations are written to cache
@@ -1870,6 +1952,16 @@ impl WorkbenchApp {
 
                         if result.is_end {
                             if is_live {
+                                // Promote current GPU texture → previous before clearing live state,
+                                // so the new volume's first chunks composite against the old volume's
+                                // final complete sweep rather than stale/empty data.
+                                if let (Some(ref renderer), Some(ref gl)) =
+                                    (&self.renderers.gpu, &self.renderers.gl)
+                                {
+                                    if let Ok(mut r) = renderer.lock() {
+                                        r.promote_current_to_previous(gl);
+                                    }
+                                }
                                 let now = js_sys::Date::now() / 1000.0;
                                 self.state.live_mode_state.handle_volume_complete(now);
                                 self.state.status_message = format!(
@@ -1898,9 +1990,11 @@ impl WorkbenchApp {
                             self.state.displayed_sweep_elevation_number = None;
                             self.renderers.last_render_request = None;
                             self.renderers.last_volume_render_request = None;
-                            self.request_worker_render();
-                            if self.state.viz_state.volume_3d_enabled {
-                                self.request_worker_render_volume();
+                            if !is_live {
+                                self.request_worker_render();
+                                if self.state.viz_state.volume_3d_enabled {
+                                    self.request_worker_render_volume();
+                                }
                             }
                         } else if !had_elevations && !self.available_elevation_numbers.is_empty() {
                             // First elevation arrived — we can render something now
@@ -1910,9 +2004,11 @@ impl WorkbenchApp {
                             );
                             self.renderers.last_render_request = None;
                             self.renderers.last_volume_render_request = None;
-                            self.request_worker_render();
-                            if self.state.viz_state.volume_3d_enabled {
-                                self.request_worker_render_volume();
+                            if !is_live {
+                                self.request_worker_render();
+                                if self.state.viz_state.volume_3d_enabled {
+                                    self.request_worker_render_volume();
+                                }
                             }
                         }
                     }
@@ -1973,7 +2069,7 @@ impl WorkbenchApp {
                                 .state
                                 .displayed_sweep_elevation_number
                                 .is_some_and(|e| e == result.context.elevation_number);
-                        if self.state.render_processing.sweep_animation && !is_current_scan {
+                        if self.state.effective_sweep_animation() && !is_current_scan {
                             log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id);
                             // Clear pending tracker so sync_prev_sweep_texture can load from cache
                             if self.pending_prev_sweep_key.as_ref() == Some(&result_sweep_id) {
@@ -1981,7 +2077,11 @@ impl WorkbenchApp {
                             }
                         }
                         let t_gpu = web_time::Instant::now();
-                        if is_current_scan {
+                        // In live mode, LiveDecoded drives the GPU — skip Decoded
+                        // uploads so completed-elevation IDB renders don't overwrite
+                        // the current partial sweep.
+                        let skip_gpu_upload = self.state.live_mode_state.is_active();
+                        if is_current_scan && !skip_gpu_upload {
                             if let (Some(ref renderer), Some(ref gl)) =
                                 (&self.renderers.gpu, &self.renderers.gl)
                             {
@@ -2049,6 +2149,111 @@ impl WorkbenchApp {
                                 result.sweep_end_secs,
                                 result.mean_elevation,
                             );
+                        }
+                    }
+                    nexrad::WorkerOutcome::LiveDecoded(result) => {
+                        log::info!(
+                            "Live decode: {}x{}, {} radials, {}, {:.0}ms",
+                            result.azimuth_count,
+                            result.gate_count,
+                            result.radial_count,
+                            result.product,
+                            result.total_ms,
+                        );
+
+                        // Pad partial sweep to a full 360° azimuth grid before GPU upload.
+                        // The shader's find_nearest_az estimates index as az/(360/N),
+                        // which breaks when N radials cluster in a small arc (e.g., 120
+                        // radials covering 60° gives 3° estimated spacing instead of 0.5°).
+                        // Padding to 720 slots at 0.5° makes the estimate correct; empty
+                        // slots have sentinel gate values (0 = transparent).
+                        let gate_count = result.gate_count as usize;
+                        let full_az_count: u32 = 720;
+                        let step = 360.0f32 / full_az_count as f32;
+
+                        let mut padded_az = Vec::with_capacity(full_az_count as usize);
+                        let mut padded_gates = vec![0.0f32; full_az_count as usize * gate_count];
+                        let mut padded_times = vec![0.0f64; full_az_count as usize];
+
+                        for i in 0..full_az_count as usize {
+                            padded_az.push(i as f32 * step);
+                        }
+
+                        for (src_row, &az) in result.azimuths.iter().enumerate() {
+                            let dst_row = ((az / step).round() as usize) % full_az_count as usize;
+                            padded_az[dst_row] = az;
+                            let src_start = src_row * gate_count;
+                            let dst_start = dst_row * gate_count;
+                            if src_start + gate_count <= result.gate_values.len() {
+                                padded_gates[dst_start..dst_start + gate_count].copy_from_slice(
+                                    &result.gate_values[src_start..src_start + gate_count],
+                                );
+                            }
+                            if src_row < result.radial_times.len() {
+                                padded_times[dst_row] = result.radial_times[src_row];
+                            }
+                        }
+
+                        if let (Some(ref renderer), Some(ref gl)) =
+                            (&self.renderers.gpu, &self.renderers.gl)
+                        {
+                            if let Ok(mut r) = renderer.lock() {
+                                // Build a live sweep ID so we can detect elevation transitions
+                                let live_elev = result.context.elevation_number;
+                                let live_sweep_id = format!("live|{}", live_elev);
+
+                                // If the current texture has data from a different sweep
+                                // (complete or different live elevation), promote it to previous
+                                // so it becomes the background for compositing partial data.
+                                let should_promote =
+                                    r.current_sweep_id().is_some_and(|id| id != live_sweep_id);
+                                if should_promote {
+                                    r.promote_current_to_previous(gl);
+                                }
+
+                                r.update_data(
+                                    gl,
+                                    &padded_az,
+                                    &padded_gates,
+                                    full_az_count,
+                                    result.gate_count,
+                                    result.first_gate_range_km,
+                                    result.gate_interval_km,
+                                    result.max_range_km,
+                                    result.offset,
+                                    result.scale,
+                                    &padded_times,
+                                );
+                                r.set_current_sweep_id(Some(live_sweep_id));
+                                r.update_color_table(gl, &result.product);
+                            }
+                        }
+
+                        // Update overlay staleness so the age counter reflects
+                        // the most recently received live data.
+                        if result.sweep_end_secs > 0.0 {
+                            self.update_overlay_from_sweep(
+                                result.sweep_start_secs,
+                                result.sweep_end_secs,
+                                result.mean_elevation,
+                            );
+                        }
+
+                        // Store actual azimuth range and sweep start for sweep line
+                        if !result.azimuths.is_empty() {
+                            let first_az = result.azimuths[0];
+                            let last_az = *result.azimuths.last().unwrap();
+                            log::info!(
+                                "Live azimuth range: first={:.1} last={:.1} count={}/{} sweep=({:.1},{:.1})",
+                                first_az, last_az, result.azimuths.len(), full_az_count,
+                                last_az, first_az,
+                            );
+                            self.state.live_mode_state.live_data_azimuth_range =
+                                Some((first_az, last_az));
+                            // Record sweep start azimuth for sweep line animation
+                            if self.state.live_mode_state.sweep_start_azimuth.is_none() {
+                                self.state.live_mode_state.sweep_start_azimuth = Some(first_az);
+                            }
                         }
                     }
                     nexrad::WorkerOutcome::VolumeDecoded(volume_data) => {
@@ -2338,6 +2543,61 @@ impl WorkbenchApp {
 
     /// Auto-load scans when scrubbing the timeline and prefetch upcoming sweeps.
     fn advance_playback(&mut self) {
+        // Live mode drives rendering via ChunkIngested/LiveDecoded — skip playback-driven renders.
+        if self.state.live_mode_state.is_active() {
+            return;
+        }
+        // Rebuild macro frame list when dirty (elevation selection, bounds, or scan count changed)
+        if self.state.playback_state.playback_mode() == crate::state::PlaybackMode::Macro {
+            let mp = &self.state.playback_state.macro_playback;
+            let elev_sel = self.state.viz_state.elevation_selection.clone();
+            let bounds = self.state.playback_state.time_model.playback_bounds;
+            let scan_count = self.state.radar_timeline.scans.len();
+
+            let dirty = mp.cached_elevation_selection != elev_sel
+                || mp.cached_bounds != bounds
+                || mp.cached_scan_count != scan_count;
+
+            if dirty {
+                let frames = match &elev_sel {
+                    crate::state::ElevationSelection::Fixed {
+                        elevation_number, ..
+                    } => self
+                        .state
+                        .radar_timeline
+                        .matching_sweep_end_times_by_number(*elevation_number, bounds),
+                    crate::state::ElevationSelection::Latest => {
+                        self.state.radar_timeline.all_sweep_end_times(bounds)
+                    }
+                };
+                self.state.playback_state.macro_playback.sweep_frames = frames;
+                self.state
+                    .playback_state
+                    .macro_playback
+                    .cached_elevation_selection = elev_sel;
+                self.state.playback_state.macro_playback.cached_bounds = bounds;
+                self.state.playback_state.macro_playback.cached_scan_count = scan_count;
+                self.state.playback_state.sync_macro_frame_index();
+            }
+
+            // Detect manual seek: if playback position changed externally
+            // (user clicked timeline, jog, etc.) re-sync frame index.
+            let pos = self.state.playback_state.playback_position();
+            let cached_pos = self
+                .state
+                .playback_state
+                .macro_playback
+                .cached_playback_position;
+            if (pos - cached_pos).abs() > 0.5 {
+                self.state.playback_state.sync_macro_frame_index();
+                self.state.playback_state.macro_playback.frame_accumulator = 0.0;
+            }
+            self.state
+                .playback_state
+                .macro_playback
+                .cached_playback_position = pos;
+        }
+
         // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
         // In the worker architecture, this sends a render request directly —
         // the worker reads records from IDB, decodes the target elevation, and renders.
@@ -2357,11 +2617,11 @@ impl WorkbenchApp {
                 .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
                 .map(|scan| {
                     let scan_ts = scan.key_timestamp as i64;
-                    let target_elev_num = match self.state.viz_state.render_mode {
-                        crate::state::RenderMode::FixedTilt => {
+                    let target_elev_num = match &self.state.viz_state.elevation_selection {
+                        crate::state::ElevationSelection::Fixed { .. } => {
                             self.best_elevation_at_playback(scan, playback_ts)
                         }
-                        crate::state::RenderMode::MostRecent => {
+                        crate::state::ElevationSelection::Latest => {
                             self.most_recent_sweep_elevation(scan, playback_ts)
                         }
                     };
@@ -2386,6 +2646,13 @@ impl WorkbenchApp {
                     elev_nums.sort_unstable();
                     elev_nums.dedup();
 
+                    // Build elevation list for new scans
+                    let new_elev_list = if needs_new_scan {
+                        Some(Self::build_elevation_list(scan))
+                    } else {
+                        None
+                    };
+
                     (
                         scan_ts,
                         target_elev_num,
@@ -2393,6 +2660,7 @@ impl WorkbenchApp {
                         needs_new_sweep,
                         sweep_overlay,
                         elev_nums,
+                        new_elev_list,
                     )
                 });
 
@@ -2403,6 +2671,7 @@ impl WorkbenchApp {
                 needs_new_sweep,
                 sweep_overlay,
                 elev_nums,
+                new_elev_list,
             )) = scrub_action
             {
                 if (needs_new_scan || needs_new_sweep) && self.decode_worker.is_some() {
@@ -2418,6 +2687,14 @@ impl WorkbenchApp {
                     self.state.displayed_sweep_elevation_number = Some(target_elev_num);
                     if !elev_nums.is_empty() {
                         self.available_elevation_numbers = elev_nums;
+                    }
+                    // Update cached VCP elevation list on scan change
+                    if let Some(entries) = new_elev_list {
+                        self.state.viz_state.cached_vcp_elevations = entries.clone();
+                        self.state
+                            .viz_state
+                            .elevation_selection
+                            .resolve_for_vcp(&entries);
                     }
                     self.renderers.last_render_request = None; // Force fresh render
                     self.renderers.last_volume_render_request = None;
@@ -2447,8 +2724,12 @@ impl WorkbenchApp {
         // Pre-render next sweep: when playing and near the end of the current sweep,
         // preemptively send a render request for the upcoming sweep so the result
         // is ready when the boundary is crossed, reducing perceived stutter.
+        // Skip in macro mode — frame jumps are instant and the frame list handles sequencing.
         #[allow(clippy::unnecessary_unwrap)]
-        if self.state.playback_state.playing && self.decode_worker.is_some() {
+        if self.state.playback_state.playing
+            && self.decode_worker.is_some()
+            && self.state.playback_state.playback_mode() == crate::state::PlaybackMode::Micro
+        {
             let playback_ts = self.state.playback_state.playback_position();
             let speed = self
                 .state
@@ -2490,7 +2771,7 @@ impl WorkbenchApp {
                                         scan_key: scan_key.clone(),
                                         elevation_number: next_en,
                                         product: product.clone(),
-                                        render_mode: self.state.viz_state.render_mode,
+                                        is_auto: self.state.viz_state.elevation_selection.is_auto(),
                                     };
                                     if self.renderers.last_render_request.as_ref()
                                         != Some(&prefetch_request)
@@ -2524,7 +2805,14 @@ impl WorkbenchApp {
     /// within the same scan that's the preceding sweep in time order. Only look
     /// at the previous scan if the current sweep is the very first in its scan.
     fn sync_prev_sweep_texture(&mut self) {
-        if !self.state.render_processing.sweep_animation {
+        // In live mode, the previous sweep texture is managed by
+        // promote_current_to_previous in the LiveDecoded handler —
+        // don't let the timeline-based sync overwrite or clear it.
+        if self.state.live_mode_state.is_active() {
+            return;
+        }
+
+        if !self.state.effective_sweep_animation() {
             self.state.viz_state.prev_sweep_overlay = None;
             self.state.viz_state.prev_sweep_scan_timestamp = None;
             self.state.viz_state.prev_sweep_elevation_number = None;
@@ -2539,15 +2827,15 @@ impl WorkbenchApp {
         };
 
         // Find the current scan and determine the preceding sweep.
-        // In FixedTilt mode, "previous" means the same elevation from the prior scan.
-        // In MostRecent mode, "previous" is the sweep collected just before this one.
+        // In Fixed mode, "previous" means the same elevation from the prior scan.
+        // In Latest mode, "previous" is the sweep collected just before this one.
         // Returns (scan_key_ts, elevation_number, elevation_deg, start_time, end_time).
         let prev_info = {
             let current_scan = self
                 .state
                 .radar_timeline
                 .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS);
-            let render_mode = self.state.viz_state.render_mode;
+            let is_auto = self.state.viz_state.elevation_selection.is_auto();
             let sweep_to_info = |scan_key_ts: f64, s: &crate::state::radar_data::Sweep| {
                 (
                     scan_key_ts as i64,
@@ -2558,9 +2846,9 @@ impl WorkbenchApp {
                 )
             };
             match current_scan {
-                Some(scan) => match render_mode {
-                    crate::state::RenderMode::FixedTilt => {
-                        // Same elevation from the previous scan
+                Some(scan) => {
+                    if !is_auto {
+                        // Fixed: same elevation from the previous scan
                         let prev_scan = self
                             .state
                             .radar_timeline
@@ -2571,9 +2859,8 @@ impl WorkbenchApp {
                                 .find(|s| s.elevation_number == displayed_elev)
                                 .map(|s| sweep_to_info(ps.key_timestamp, s))
                         })
-                    }
-                    crate::state::RenderMode::MostRecent => {
-                        // Previous sweep in time order within the same scan
+                    } else {
+                        // Latest: previous sweep in time order within the same scan
                         let sweep_idx = scan
                             .sweeps
                             .iter()
@@ -2595,7 +2882,7 @@ impl WorkbenchApp {
                             }
                         }
                     }
-                },
+                }
                 None => return,
             }
         };
@@ -2676,6 +2963,10 @@ impl WorkbenchApp {
 
     /// Re-render when the user changes elevation, product, or view mode.
     fn request_render_if_needed(&mut self) {
+        // Live mode re-renders on the next ChunkIngested (~12s) — no IDB-based render needed.
+        if self.state.live_mode_state.is_active() {
+            return;
+        }
         // Detect elevation/product changes and trigger worker re-render.
         // If the user changes these settings and we have a current scan, we need
         // a new render from the worker.

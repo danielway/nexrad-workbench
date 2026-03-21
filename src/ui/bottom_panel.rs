@@ -2,7 +2,7 @@
 
 use super::acquisition_drawer::render_acquisition_drawer;
 use super::colors::{live, ui as ui_colors};
-use crate::state::{AppState, LiveExitReason};
+use crate::state::{AppState, LiveExitReason, PlaybackMode, PlaybackSpeed};
 use eframe::egui::{self, RichText};
 
 use super::playback_controls::render_playback_controls;
@@ -41,7 +41,32 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     // Advance playback position when playing
     // The time_model handles real-time lock mode internally
     if state.playback_state.playing {
-        state.playback_state.advance(dt as f64);
+        let mode = state.playback_state.playback_mode();
+        let was_macro = state.playback_state.macro_playback.was_macro;
+
+        // Detect mode transitions and auto-adjust speed
+        if mode == PlaybackMode::Macro && !was_macro {
+            // Entering macro: promote disallowed speeds to nearest macro speed
+            if state
+                .playback_state
+                .speed
+                .macro_frames_per_second()
+                .is_none()
+            {
+                state.playback_state.speed = PlaybackSpeed::Quarter;
+            }
+            // Reset accumulator on transition
+            state.playback_state.macro_playback.frame_accumulator = 0.0;
+        } else if mode == PlaybackMode::Micro && was_macro {
+            // Entering micro: map fps-based speed to a reasonable timeline speed.
+            // Keep the same PlaybackSpeed variant — the labels just change.
+        }
+        state.playback_state.macro_playback.was_macro = mode == PlaybackMode::Macro;
+
+        match mode {
+            PlaybackMode::Micro => state.playback_state.advance(dt as f64),
+            PlaybackMode::Macro => state.playback_state.advance_macro(dt as f64),
+        }
 
         // Pin playback position on the visible timeline during playback.
         // In live/real-time mode, pin at 75% from left (right quarter) so more

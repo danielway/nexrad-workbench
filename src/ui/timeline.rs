@@ -205,7 +205,7 @@ fn render_sweep_track(
     view_end: f64,
     zoom: f64,
     active_sweep: Option<(i64, u8)>,
-    target_elevation: f32,
+    selected_elevation_number: Option<u8>,
     active_scan_key_ts: Option<f64>,
     prev_active_sweep: Option<(i64, u8)>,
 ) {
@@ -234,7 +234,8 @@ fn render_sweep_track(
                 continue;
             }
 
-            let matches_elevation = (sweep.elevation - target_elevation).abs() < 0.3;
+            let matches_elevation =
+                selected_elevation_number.is_none_or(|num| sweep.elevation_number == num);
             let is_active = active_sweep.is_some_and(|(scan_ts, elev_num)| {
                 scan.key_timestamp as i64 == scan_ts && sweep.elevation_number == elev_num
             });
@@ -705,7 +706,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     );
 
     // ── Render sweep track (only at Sweeps detail) ────────────────────
-    let prev_active_sweep = if state.render_processing.sweep_animation {
+    let prev_active_sweep = if state.effective_sweep_animation() {
         match (
             state.viz_state.prev_sweep_scan_timestamp,
             state.viz_state.prev_sweep_elevation_number,
@@ -725,7 +726,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             view_end,
             zoom,
             active_sweep,
-            state.viz_state.target_elevation,
+            state.viz_state.elevation_selection.elevation_number(),
             active_scan_key_ts,
             prev_active_sweep,
         );
@@ -776,7 +777,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             zoom,
             anim_time,
             frame_now_secs,
-            state.viz_state.target_elevation,
+            state.viz_state.elevation_selection.elevation_number(),
             active_sweep,
             prev_active_sweep,
         );
@@ -1552,7 +1553,7 @@ fn render_realtime_progress(
     zoom: f64,
     _anim_time: f64,
     now_secs: f64,
-    target_elevation: f32,
+    selected_elevation_number: Option<u8>,
     active_sweep: Option<(i64, u8)>,
     prev_active_sweep: Option<(i64, u8)>,
 ) {
@@ -1854,7 +1855,7 @@ fn render_realtime_progress(
         }
 
         let elev_angle = elev_angle_for(elev_num);
-        let matches_target = (elev_angle - target_elevation).abs() < 0.3;
+        let matches_target = selected_elevation_number.is_none_or(|num| elev_num == num);
         let is_downloading = !is_complete && in_progress_elev == Some(elev_num);
         let is_future = !is_complete && !is_downloading;
 

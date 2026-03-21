@@ -2,7 +2,9 @@
 
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use super::timeline::format_timestamp_full;
-use crate::state::{AppState, LiveExitReason, LivePhase, LoopMode, PlaybackSpeed, TimeModel};
+use crate::state::{
+    AppState, LiveExitReason, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed, TimeModel,
+};
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Render the datetime picker popup for jumping to a specific time.
@@ -224,8 +226,6 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
 
     // Jog: jump to end of next/previous matching sweep for current elevation
     let current_pos = state.playback_state.playback_position();
-    let target_elev = state.viz_state.target_elevation;
-    const ELEV_TOLERANCE: f32 = 0.3;
 
     // Step backward
     if ui
@@ -242,17 +242,31 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
         }
-        let new_pos = state
-            .radar_timeline
-            .prev_matching_sweep_end(current_pos, target_elev, ELEV_TOLERANCE)
-            .unwrap_or(
-                current_pos
+        match state.playback_state.playback_mode() {
+            PlaybackMode::Macro => {
+                state.playback_state.step_macro_frame(-1);
+            }
+            PlaybackMode::Micro => {
+                let fallback = current_pos
                     - state
                         .playback_state
                         .speed
-                        .timeline_seconds_per_real_second(),
-            );
-        state.playback_state.set_playback_position(new_pos);
+                        .timeline_seconds_per_real_second();
+                let new_pos = match &state.viz_state.elevation_selection {
+                    crate::state::ElevationSelection::Fixed {
+                        elevation_number, ..
+                    } => state
+                        .radar_timeline
+                        .prev_matching_sweep_end_by_number(current_pos, *elevation_number)
+                        .unwrap_or(fallback),
+                    crate::state::ElevationSelection::Latest => state
+                        .radar_timeline
+                        .prev_any_sweep_end(current_pos)
+                        .unwrap_or(fallback),
+                };
+                state.playback_state.set_playback_position(new_pos);
+            }
+        }
     }
 
     // Step forward
@@ -270,17 +284,31 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
         }
-        let new_pos = state
-            .radar_timeline
-            .next_matching_sweep_end(current_pos, target_elev, ELEV_TOLERANCE)
-            .unwrap_or(
-                current_pos
+        match state.playback_state.playback_mode() {
+            PlaybackMode::Macro => {
+                state.playback_state.step_macro_frame(1);
+            }
+            PlaybackMode::Micro => {
+                let fallback = current_pos
                     + state
                         .playback_state
                         .speed
-                        .timeline_seconds_per_real_second(),
-            );
-        state.playback_state.set_playback_position(new_pos);
+                        .timeline_seconds_per_real_second();
+                let new_pos = match &state.viz_state.elevation_selection {
+                    crate::state::ElevationSelection::Fixed {
+                        elevation_number, ..
+                    } => state
+                        .radar_timeline
+                        .next_matching_sweep_end_by_number(current_pos, *elevation_number)
+                        .unwrap_or(fallback),
+                    crate::state::ElevationSelection::Latest => state
+                        .radar_timeline
+                        .next_any_sweep_end(current_pos)
+                        .unwrap_or(fallback),
+                };
+                state.playback_state.set_playback_position(new_pos);
+            }
+        }
     }
 
     // "Now" button — jump to current wall-clock time
@@ -311,13 +339,26 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
 
     ui.separator();
 
-    // Speed selector
+    // Speed selector (mode-aware: macro shows fps labels, micro shows timeline speed)
+    let mode = state.playback_state.playback_mode();
+    let selected_label = match mode {
+        PlaybackMode::Macro => state.playback_state.speed.macro_label(),
+        PlaybackMode::Micro => state.playback_state.speed.label(),
+    };
     egui::ComboBox::from_id_salt("speed_selector")
-        .selected_text(state.playback_state.speed.label())
+        .selected_text(selected_label)
         .width(55.0)
         .show_ui(ui, |ui| {
-            for speed in PlaybackSpeed::all() {
-                ui.selectable_value(&mut state.playback_state.speed, *speed, speed.label());
+            let speeds: &[PlaybackSpeed] = match mode {
+                PlaybackMode::Macro => PlaybackSpeed::macro_speeds(),
+                PlaybackMode::Micro => PlaybackSpeed::all(),
+            };
+            for speed in speeds {
+                let label = match mode {
+                    PlaybackMode::Macro => speed.macro_label(),
+                    PlaybackMode::Micro => speed.label(),
+                };
+                ui.selectable_value(&mut state.playback_state.speed, *speed, label);
             }
         });
 

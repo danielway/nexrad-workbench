@@ -135,6 +135,8 @@ struct ChunkIngestResponse {
     chunk_max_time_secs: Option<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    chunk_elev_az_ranges: Vec<(u8, f32, f32)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     volume_header_time_secs: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -627,6 +629,156 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 }
 
 // ---------------------------------------------------------------------------
+// Live (partial sweep) render from in-memory ChunkAccumulator
+// ---------------------------------------------------------------------------
+
+/// Parameters for `worker_render_live`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderLiveParams {
+    #[serde(default = "default_product")]
+    product: String,
+    #[serde(default)]
+    elevation_number: Option<u8>,
+}
+
+/// Render the current partial sweep from the in-memory ChunkAccumulator.
+///
+/// This reads directly from memory (no IDB), so it's very fast (~1ms).
+/// Returns the same RenderResponse shape as `worker_render`.
+///
+/// Parameters (JS object): `{ product: string, elevationNumber?: number }`
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsValue> {
+    use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
+    use nexrad_render::Product;
+
+    let t_total = web_time::Instant::now();
+
+    let p: RenderLiveParams = serde_wasm_bindgen::from_value(params)
+        .map_err(|e| JsValue::from_str(&format!("Invalid render_live params: {}", e)))?;
+
+    let product = match p.product.as_str() {
+        "velocity" => Product::Velocity,
+        "spectrum_width" => Product::SpectrumWidth,
+        "differential_reflectivity" => Product::DifferentialReflectivity,
+        "differential_phase" => Product::DifferentialPhase,
+        "correlation_coefficient" => Product::CorrelationCoefficient,
+        "clutter_filter_power" => Product::ClutterFilterPower,
+        _ => Product::Reflectivity,
+    };
+
+    CHUNK_ACCUM.with(|cell| {
+        let borrow = cell.borrow();
+        let accum = borrow
+            .as_ref()
+            .ok_or_else(|| JsValue::from_str("No chunk accumulator active"))?;
+
+        let target_elev = p
+            .elevation_number
+            .or(accum.last_elevation_number)
+            .ok_or_else(|| JsValue::from_str("No elevation available in accumulator"))?;
+
+        // Filter and sort radials for the target elevation
+        let mut sorted: Vec<&::nexrad::model::data::Radial> = accum
+            .all_radials
+            .iter()
+            .filter(|r| r.elevation_number() == target_elev)
+            .collect();
+
+        if sorted.is_empty() {
+            return Err(JsValue::from_str(&format!(
+                "No radials for elevation {} in accumulator",
+                target_elev
+            )));
+        }
+
+        sorted.sort_by(|a, b| {
+            a.azimuth_angle_degrees()
+                .partial_cmp(&b.azimuth_angle_degrees())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let sweep = extract_sweep_data_from_sorted(&sorted, product).ok_or_else(|| {
+            JsValue::from_str(&format!(
+                "No {} data for elevation {} in accumulator",
+                p.product, target_elev
+            ))
+        })?;
+
+        // Marshal PrecomputedSweep into the same JS response format as worker_render
+        let t_marshal = web_time::Instant::now();
+
+        // Convert gate values to f32 array
+        let gate_values_f32: Vec<f32> = match &sweep.gate_values {
+            crate::data::keys::GateValues::U8(v) => v.iter().map(|&x| x as f32).collect(),
+            crate::data::keys::GateValues::U16(v) => v.iter().map(|&x| x as f32).collect(),
+        };
+
+        let az_array = js_sys::Float32Array::from(sweep.azimuths.as_slice());
+        let az_buf = az_array.buffer();
+
+        let val_array = js_sys::Float32Array::from(gate_values_f32.as_slice());
+        let val_buf = val_array.buffer();
+
+        let rt_array = js_sys::Float64Array::from(sweep.radial_times.as_slice());
+        let rt_buf = rt_array.buffer();
+
+        let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
+        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+
+        let accum_total = accum.all_radials.len();
+        let elev_radials = sorted.len();
+        let product_radials = sweep.azimuth_count;
+        let expected_values = sweep.azimuth_count as usize * sweep.gate_count as usize;
+        let actual_values = gate_values_f32.len();
+        log::info!(
+            "render_live: elev={} {} {}x{} accum_total={} elev_radials={} product_radials={} vals={}/{} az=[{:.1}..{:.1}] offset={} scale={} in {:.1}ms (marshal: {:.1}ms)",
+            target_elev,
+            p.product,
+            sweep.azimuth_count,
+            sweep.gate_count,
+            accum_total,
+            elev_radials,
+            product_radials,
+            actual_values,
+            expected_values,
+            sweep.azimuths.first().copied().unwrap_or(f32::NAN),
+            sweep.azimuths.last().copied().unwrap_or(f32::NAN),
+            sweep.offset,
+            sweep.scale,
+            total_ms,
+            marshal_ms,
+        );
+
+        let response = RenderResponse {
+            azimuth_count: sweep.azimuth_count,
+            gate_count: sweep.gate_count,
+            first_gate_range_km: sweep.first_gate_range_km,
+            gate_interval_km: sweep.gate_interval_km,
+            max_range_km: sweep.max_range_km,
+            product: p.product,
+            radial_count: sweep.radial_count,
+            scale: sweep.scale as f64,
+            offset: sweep.offset as f64,
+            mean_elevation: sweep.mean_elevation as f64,
+            sweep_start_secs: sweep.sweep_start_secs,
+            sweep_end_secs: sweep.sweep_end_secs,
+            fetch_ms: 0.0,
+            deser_ms: 0.0,
+            total_ms,
+            marshal_ms,
+        };
+        let result = serde_wasm_bindgen::to_value(&response)
+            .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))?;
+        js_sys::Reflect::set(&result, &"azimuths".into(), &az_buf).ok();
+        js_sys::Reflect::set(&result, &"gateValues".into(), &val_buf).ok();
+        js_sys::Reflect::set(&result, &"radialTimes".into(), &rt_buf).ok();
+        Ok(result)
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Volume render (all elevations packed for ray marching)
 // ---------------------------------------------------------------------------
 
@@ -1043,13 +1195,59 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 .collect()
         };
 
+        // Per-elevation azimuth ranges within this chunk: (elevation, first_az, last_az).
+        // Radials arrive in sweep order, so first/last in arrival order give the angular extent.
+        let chunk_elev_az_ranges: Vec<(u8, f32, f32)> = {
+            let mut map: std::collections::BTreeMap<u8, (f32, f32)> =
+                std::collections::BTreeMap::new();
+            for r in &chunk_radials {
+                let elev = r.elevation_number();
+                let az = r.azimuth_angle_degrees();
+                map.entry(elev)
+                    .and_modify(|(_, last)| *last = az)
+                    .or_insert((az, az));
+            }
+            map.into_iter()
+                .map(|(elev, (first, last))| (elev, first, last))
+                .collect()
+        };
+
         // Last radial's azimuth and timestamp — used to extrapolate sweep line position
         // between chunks during real-time streaming.
+        let first_radial_azimuth: Option<f32> =
+            chunk_radials.first().map(|r| r.azimuth_angle_degrees());
         let last_radial_azimuth: Option<f32> =
             chunk_radials.last().map(|r| r.azimuth_angle_degrees());
         let last_radial_time_secs: Option<f64> = chunk_radials
             .last()
             .map(|r| r.collection_timestamp() as f64 / 1000.0);
+
+        // Detailed chunk diagnostics for real-time streaming debugging
+        {
+            let radial_count = chunk_radials.len();
+            let elev_summary: Vec<String> = chunk_elev_spans
+                .iter()
+                .map(|(elev, _start, _end, count)| format!("e{}:{}r", elev, count))
+                .collect();
+            let total_accum_radials = CHUNK_ACCUM.with(|cell| {
+                cell.borrow()
+                    .as_ref()
+                    .map(|a| a.all_radials.len())
+                    .unwrap_or(0)
+            });
+            log::info!(
+                "Chunk#{} elev=[{}] radials={} az_range=[{:.1}..{:.1}] accum_total={} is_start={} is_end={} size={}B",
+                chunk_index,
+                elev_summary.join(", "),
+                radial_count,
+                first_radial_azimuth.unwrap_or(0.0),
+                last_radial_azimuth.unwrap_or(0.0),
+                total_accum_radials,
+                is_start,
+                is_end,
+                data_len,
+            );
+        }
 
         CHUNK_ACCUM.with(|cell| {
             let mut borrow = cell.borrow_mut();
@@ -1300,11 +1498,98 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 })
                 .unwrap_or((0, false, None))
         });
+        // Build per-elevation summary of the full accumulator state
+        let chunk_detail = {
+            use std::collections::BTreeMap;
+            CHUNK_ACCUM.with(|cell| {
+                let borrow = cell.borrow();
+                let Some(accum) = borrow.as_ref() else {
+                    return String::from("no accum");
+                };
+
+                // Per-elevation stats from this chunk's contribution
+                // We know chunk added radials at indices [prev_count..current_count]
+                // But we don't have prev_count here. Instead, summarize the
+                // per-elevation state of the full accumulator.
+                let mut by_elev: BTreeMap<u8, Vec<f32>> = BTreeMap::new();
+                for r in &accum.all_radials {
+                    by_elev
+                        .entry(r.elevation_number())
+                        .or_default()
+                        .push(r.azimuth_angle_degrees());
+                }
+
+                let mut parts: Vec<String> = Vec::new();
+                for (elev, mut azimuths) in by_elev {
+                    azimuths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    let count = azimuths.len();
+                    let min_az = azimuths.first().copied().unwrap_or(0.0);
+                    let max_az = azimuths.last().copied().unwrap_or(0.0);
+                    // Compute total angular span (handles wrap-around)
+                    let span = if count <= 1 {
+                        0.0
+                    } else {
+                        // Use sorted gaps to detect wrap
+                        let mut max_gap = 0.0f32;
+                        for i in 1..azimuths.len() {
+                            let gap = azimuths[i] - azimuths[i - 1];
+                            if gap > max_gap {
+                                max_gap = gap;
+                            }
+                        }
+                        let wrap_gap = (360.0 - max_az + min_az).max(0.0);
+                        if wrap_gap > max_gap {
+                            // No wrap: span is simply max - min
+                            max_az - min_az
+                        } else {
+                            // Wraps through 0: span is 360 - largest_gap
+                            360.0 - max_gap
+                        }
+                    };
+                    let completed = if accum.completed_elevations.contains(&elev) {
+                        " done"
+                    } else {
+                        ""
+                    };
+                    parts.push(format!(
+                        "e{}:{}az {:.0}-{:.0}({:.0}°){}",
+                        elev, count, min_az, max_az, span, completed
+                    ));
+                }
+
+                // Product summary: check which products are present in the accumulator
+                let mut products_present: Vec<&str> = Vec::new();
+                let sample = accum.all_radials.first();
+                if let Some(r) = sample {
+                    use nexrad_render::Product;
+                    for (p, name) in [
+                        (Product::Reflectivity, "REF"),
+                        (Product::Velocity, "VEL"),
+                        (Product::SpectrumWidth, "SW"),
+                        (Product::DifferentialReflectivity, "ZDR"),
+                        (Product::CorrelationCoefficient, "CC"),
+                        (Product::DifferentialPhase, "PHI"),
+                    ] {
+                        if p.moment_data(r).is_some() || p.cfp_moment_data(r).is_some() {
+                            products_present.push(name);
+                        }
+                    }
+                }
+
+                format!(
+                    "[{}] products=[{}]",
+                    parts.join(" | "),
+                    products_present.join(",")
+                )
+            })
+        };
+
         log::info!(
-            "ingest_chunk: chunk={} is_start={} is_end={} radials={} vcp={:?} has_vcp={} completed_elevs={:?} sweeps_stored={} {:.1}ms",
+            "ingest_chunk: chunk={} is_start={} is_end={} radials={} vcp={:?} has_vcp={} completed_elevs={:?} sweeps_stored={} {:.1}ms {}",
             chunk_index, is_start, is_end,
             accum_info.0, accum_info.2, accum_info.1,
             newly_completed, sweeps_stored, total_ms,
+            chunk_detail,
         );
 
         // Current in-progress elevation info
@@ -1338,6 +1623,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             chunk_min_time_secs: chunk_min_ts_secs,
             chunk_max_time_secs: chunk_max_ts_secs,
             chunk_elev_spans,
+            chunk_elev_az_ranges,
             volume_header_time_secs,
             last_radial_azimuth,
             last_radial_time_secs,
