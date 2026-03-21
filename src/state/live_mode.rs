@@ -151,6 +151,15 @@ pub struct LiveModeState {
     /// elevation index (0-based). Populated when VCP data is received.
     pub estimated_sweep_durations: Vec<f64>,
 
+    /// Starting azimuth of the current in-progress sweep (first radial).
+    /// Used to set the sweep compositing start angle for live partial rendering.
+    pub sweep_start_azimuth: Option<f32>,
+
+    /// Azimuth range of the last live-decoded partial sweep data.
+    /// (first_azimuth, last_azimuth) from the actual sorted radials.
+    /// Used for accurate sweep compositing instead of estimation.
+    pub live_data_azimuth_range: Option<(f32, f32)>,
+
     /// Last known radial azimuth in degrees (0-360) from the most recent chunk.
     /// Used to extrapolate sweep line position between chunks.
     pub last_radial_azimuth: Option<f32>,
@@ -184,6 +193,8 @@ impl Default for LiveModeState {
             chunk_elev_spans: Vec::new(),
             completed_sweep_metas: Vec::new(),
             estimated_sweep_durations: Vec::new(),
+            sweep_start_azimuth: None,
+            live_data_azimuth_range: None,
             last_radial_azimuth: None,
             last_radial_time_secs: None,
         }
@@ -248,6 +259,8 @@ impl LiveModeState {
         self.chunk_elev_spans.clear();
         self.completed_sweep_metas.clear();
         self.estimated_sweep_durations.clear();
+        self.sweep_start_azimuth = None;
+        self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
     }
@@ -398,6 +411,8 @@ impl LiveModeState {
         self.chunk_elev_spans.clear();
         self.completed_sweep_metas.clear();
         self.estimated_sweep_durations.clear();
+        self.sweep_start_azimuth = None;
+        self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
     }
@@ -428,7 +443,12 @@ impl LiveModeState {
     }
 
     /// Record which elevation is currently being accumulated (partial sweep).
+    /// Resets `sweep_start_azimuth` when the elevation changes.
     pub fn record_in_progress_elevation(&mut self, elevation: Option<u8>, radials: Option<u32>) {
+        if elevation != self.current_in_progress_elevation {
+            self.sweep_start_azimuth = None;
+            self.live_data_azimuth_range = None;
+        }
         self.current_in_progress_elevation = elevation;
         self.current_in_progress_radials = radials;
     }

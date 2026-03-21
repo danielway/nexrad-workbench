@@ -403,6 +403,8 @@ pub enum WorkerOutcome {
     ChunkIngested(ChunkIngestResult),
     /// Decode completed (raw data for GPU rendering).
     Decoded(DecodeResult),
+    /// Live partial sweep decoded (from in-memory accumulator, not IDB).
+    LiveDecoded(DecodeResult),
     /// Volume decode completed (all elevations packed for ray marching).
     VolumeDecoded(VolumeData),
     /// Error from any operation.
@@ -430,6 +432,7 @@ pub struct DecodeWorker {
     pending_ingest: Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_chunk_ingest: Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_render_live: Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     pending_volume: Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     results: Rc<RefCell<Vec<WorkerOutcome>>>,
     /// Requests queued before the worker was ready.
@@ -441,6 +444,7 @@ enum QueuedRequest {
     Ingest(RequestId, Vec<u8>, String, i64, String),
     IngestChunk(RequestId, Vec<u8>, String, i64, u32, bool, bool, String),
     Render(RequestId, String, u8, String),
+    RenderLive(RequestId, u8, String),
     RenderVolume(RequestId, String, String, Vec<u8>),
 }
 
@@ -477,6 +481,8 @@ impl DecodeWorker {
             Rc::new(RefCell::new(HashMap::new()));
         let pending_render: Rc<RefCell<HashMap<RequestId, RenderContext>>> =
             Rc::new(RefCell::new(HashMap::new()));
+        let pending_render_live: Rc<RefCell<HashMap<RequestId, RenderContext>>> =
+            Rc::new(RefCell::new(HashMap::new()));
         let pending_volume: Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>> =
             Rc::new(RefCell::new(HashMap::new()));
         let results: Rc<RefCell<Vec<WorkerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
@@ -487,6 +493,7 @@ impl DecodeWorker {
             let pending_ingest_c = pending_ingest.clone();
             let pending_chunk_ingest_c = pending_chunk_ingest.clone();
             let pending_render_c = pending_render.clone();
+            let pending_render_live_c = pending_render_live.clone();
             let pending_volume_c = pending_volume.clone();
             let results_c = results.clone();
             let ctx_c = ctx.clone();
@@ -512,6 +519,10 @@ impl DecodeWorker {
                     }
                     Some("decoded") => {
                         handle_decoded_message(&data, &pending_render_c, &results_c);
+                        ctx_c.request_repaint();
+                    }
+                    Some("live_decoded") => {
+                        handle_live_decoded_message(&data, &pending_render_live_c, &results_c);
                         ctx_c.request_repaint();
                     }
                     Some("volume_decoded") => {
@@ -565,6 +576,7 @@ impl DecodeWorker {
             pending_ingest,
             pending_chunk_ingest,
             pending_render,
+            pending_render_live,
             pending_volume,
             results,
             queue: Vec::new(),
@@ -636,6 +648,25 @@ impl DecodeWorker {
                 elevation_number,
                 product,
             ));
+        }
+    }
+
+    /// Submit a live (partial sweep) render request: reads from in-memory accumulator.
+    pub fn render_live(&mut self, elevation_number: u8, product: String) {
+        let id = self.next_request_id();
+        self.pending_render_live.borrow_mut().insert(
+            id,
+            RenderContext {
+                scan_key: String::new(), // Not used for live renders
+                elevation_number,
+            },
+        );
+
+        if *self.ready.borrow() {
+            send_render_live_request(&self.worker, id, elevation_number, &product);
+        } else {
+            self.queue
+                .push(QueuedRequest::RenderLive(id, elevation_number, product));
         }
     }
 
@@ -744,6 +775,9 @@ impl DecodeWorker {
                     }
                     QueuedRequest::Render(id, scan_key, elev, product) => {
                         send_render_request(&self.worker, id, &scan_key, elev, &product);
+                    }
+                    QueuedRequest::RenderLive(id, elev, product) => {
+                        send_render_live_request(&self.worker, id, elev, &product);
                     }
                     QueuedRequest::RenderVolume(id, scan_key, product, elev_nums) => {
                         send_render_volume_request(
@@ -1171,6 +1205,118 @@ fn handle_volume_decoded_message(
             product: r.product,
             total_ms: r.total_ms,
         }));
+}
+
+/// Handle a "live_decoded" message from the worker.
+fn handle_live_decoded_message(
+    data: &JsValue,
+    pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
+) {
+    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("Failed to parse live_decoded envelope: {}", e);
+            return;
+        }
+    };
+    let id = envelope.id;
+
+    let context = match pending.borrow_mut().remove(&id) {
+        Some(ctx) => ctx,
+        None => {
+            log::warn!("Received live_decoded message for unknown request {}", id);
+            return;
+        }
+    };
+
+    // Extract ArrayBuffer fields (same as handle_decoded_message)
+    let az_buffer = js_sys::Reflect::get(data, &"azimuths".into()).unwrap_or(JsValue::NULL);
+    let azimuths = js_sys::Float32Array::new(&az_buffer).to_vec();
+
+    let val_buffer = js_sys::Reflect::get(data, &"gateValues".into()).unwrap_or(JsValue::NULL);
+    let gate_values = js_sys::Float32Array::new(&val_buffer).to_vec();
+
+    let rt_js = js_sys::Reflect::get(data, &"radialTimes".into()).unwrap_or(JsValue::NULL);
+    let radial_times = if rt_js.is_object() && !rt_js.is_null() {
+        js_sys::Float64Array::new(&rt_js).to_vec()
+    } else {
+        Vec::new()
+    };
+
+    let r: DecodedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("Failed to parse live_decoded result: {}", e);
+            return;
+        }
+    };
+
+    log::info!(
+        "Worker live_decoded: {}x{}, {} radials, {}, {:.0}ms",
+        r.azimuth_count,
+        r.gate_count,
+        r.radial_count,
+        r.product,
+        r.total_ms,
+    );
+
+    results
+        .borrow_mut()
+        .push(WorkerOutcome::LiveDecoded(DecodeResult {
+            context,
+            azimuths,
+            gate_values,
+            azimuth_count: r.azimuth_count,
+            gate_count: r.gate_count,
+            first_gate_range_km: r.first_gate_range_km,
+            gate_interval_km: r.gate_interval_km,
+            max_range_km: r.max_range_km,
+            product: r.product,
+            radial_count: r.radial_count,
+            fetch_ms: r.fetch_ms,
+            deser_ms: r.deser_ms,
+            marshal_ms: r.marshal_ms,
+            total_ms: r.total_ms,
+            scale: r.scale,
+            offset: r.offset,
+            mean_elevation: r.mean_elevation,
+            sweep_start_secs: r.sweep_start_secs,
+            sweep_end_secs: r.sweep_end_secs,
+            radial_times,
+        }));
+}
+
+/// Request message sent to the worker for live render operations.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderLiveRequestMsg<'a> {
+    #[serde(rename = "type")]
+    msg_type: &'a str,
+    id: f64,
+    elevation_number: u8,
+    product: &'a str,
+}
+
+/// Send a render_live request to the worker.
+fn send_render_live_request(worker: &Worker, id: u64, elevation_number: u8, product: &str) {
+    let request = RenderLiveRequestMsg {
+        msg_type: "render_live",
+        id: id as f64,
+        elevation_number,
+        product,
+    };
+    let msg = match serde_wasm_bindgen::to_value(&request) {
+        Ok(v) => v,
+        Err(e) => {
+            log::error!("Failed to serialize render_live request {}: {}", id, e);
+            return;
+        }
+    };
+
+    if let Err(e) = worker.post_message(&msg) {
+        log::error!("Failed to send render_live request {}: {:?}", id, e);
+    }
 }
 
 /// Send a render_volume request to the worker.

@@ -88,7 +88,16 @@ pub fn render_canvas_with_geo(
 
                 // Compute sweep animation compositing state (used for GPU rendering
                 // and sweep-aware inspector lookups).
-                let gpu_sweep = if state.effective_sweep_animation() {
+                // Live mode with partial data takes priority over timeline sweep animation.
+                let gpu_sweep = if let Some((first_az, last_az)) = state
+                    .live_mode_state
+                    .live_data_azimuth_range
+                    .filter(|_| state.live_mode_state.is_active())
+                {
+                    // Live mode: composite partial sweep on top of previous complete sweep.
+                    // Use the actual azimuth range from decoded data.
+                    Some((last_az, first_az))
+                } else if state.effective_sweep_animation() {
                     let playback_ts = state.playback_state.playback_position();
                     let sweep_bounds = state
                         .radar_timeline
@@ -114,6 +123,23 @@ pub fn render_canvas_with_geo(
                 } else {
                     None
                 };
+
+                // Debug: log gpu_sweep once per change
+                if state.live_mode_state.is_active() {
+                    if let Some((az, start)) = gpu_sweep {
+                        let prev_cache = state.viz_state.last_sweep_line_cache;
+                        if prev_cache.is_none_or(|(pa, ps)| {
+                            (pa - az).abs() > 1.0 || (ps - start).abs() > 1.0
+                        }) {
+                            log::info!(
+                                "gpu_sweep live: az={:.1} start={:.1} swept_arc={:.1}",
+                                az,
+                                start,
+                                ((az - start) % 360.0 + 360.0) % 360.0,
+                            );
+                        }
+                    }
+                }
 
                 // Cache sweep position for between-sweep display
                 if let Some((az, start)) = gpu_sweep {
@@ -143,17 +169,33 @@ pub fn render_canvas_with_geo(
                     if gpu_sweep.is_some() || between_sweeps {
                         ui.ctx().request_repaint();
                     }
+                    // Continuous repaint during live streaming (partial sweep + sweep line animation)
+                    if state.live_mode_state.is_active() {
+                        ui.ctx().request_repaint();
+                    }
                 }
 
                 if state.storm_cells_visible && !state.detected_storm_cells.is_empty() {
                     render_storm_cells(&painter, &projection, &state.detected_storm_cells, dark);
                 }
 
-                // Show sweep line when actively revealing, or stale position between sweeps
-                let (sweep_line_info, sweep_stale) = match gpu_sweep {
-                    Some((az, start)) if az != 0.0 || start != 0.0 => (Some((az, start)), false),
-                    _ if between_sweeps => (state.viz_state.last_sweep_line_cache, true),
-                    _ => (None, false),
+                // Show sweep line when actively revealing, between sweeps, or during live streaming
+                let (sweep_line_info, sweep_stale) = if state.live_mode_state.is_active() {
+                    // Live mode: show estimated sweep line based on extrapolated radar position
+                    let now = js_sys::Date::now() / 1000.0;
+                    let live_sweep = state.live_mode_state.estimated_azimuth(now).map(|az| {
+                        let start = state.live_mode_state.sweep_start_azimuth.unwrap_or(0.0);
+                        (az, start)
+                    });
+                    (live_sweep, false)
+                } else {
+                    match gpu_sweep {
+                        Some((az, start)) if az != 0.0 || start != 0.0 => {
+                            (Some((az, start)), false)
+                        }
+                        _ if between_sweeps => (state.viz_state.last_sweep_line_cache, true),
+                        _ => (None, false),
+                    }
                 };
                 render_radar_sweep(&painter, &projection, state, sweep_line_info, sweep_stale);
 
@@ -1562,13 +1604,15 @@ fn format_unix_timestamp_with_date(ts: f64, use_local: bool) -> String {
     }
 }
 
-/// Format a compact age suffix for recent data, e.g. `"(3s)"` or `"(1m2s)"`.
+/// Format a compact age suffix for recent data, e.g. `"(3s)"` or `"(now)"`.
 ///
 /// Returns `None` for archive data (age >= 300s) or future timestamps.
 fn format_age_compact(ts_secs: f64) -> Option<String> {
     let now = js_sys::Date::now() / 1000.0;
     let age = now - ts_secs;
-    if (0.0..300.0).contains(&age) {
+    if (0.0..1.5).contains(&age) {
+        Some("(now)".to_string())
+    } else if (0.0..300.0).contains(&age) {
         Some(format!("({})", format_age(age)))
     } else {
         None

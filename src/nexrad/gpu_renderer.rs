@@ -1032,12 +1032,31 @@ impl RadarGpuRenderer {
         let upload_ms = t_upload.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
+        let expected_len = (azimuth_count * gate_count) as usize;
+        let actual_len = gate_values.len();
+        let az_first = azimuths.first().copied().unwrap_or(f32::NAN);
+        let az_last = azimuths.last().copied().unwrap_or(f32::NAN);
+        if actual_len != expected_len {
+            log::warn!(
+                "GPU update_data: dimension MISMATCH — {}x{} expects {} values, got {} (diff={})",
+                azimuth_count,
+                gate_count,
+                expected_len,
+                actual_len,
+                actual_len as i64 - expected_len as i64,
+            );
+        }
         log::info!(
-            "GPU update_data: {}x{} (az x gates), range {:.1}-{:.1} km, {:.1}ms (copy: {:.1}ms, upload: {:.1}ms)",
+            "GPU update_data: {}x{} (az x gates), azimuths=[{:.1}..{:.1}], vals={}, range {:.1}-{:.1} km, offset={} scale={}, {:.1}ms (copy: {:.1}ms, upload: {:.1}ms)",
             azimuth_count,
             gate_count,
+            az_first,
+            az_last,
+            actual_len,
             first_gate_km,
             max_range_km,
+            offset,
+            scale,
             total_ms,
             copy_ms,
             upload_ms,
@@ -1153,6 +1172,30 @@ impl RadarGpuRenderer {
     /// black until a new previous sweep is loaded.
     pub fn clear_previous_data(&mut self) {
         self.prev_sweep_id = None;
+    }
+
+    /// Promote the current texture to the previous texture slot.
+    ///
+    /// Called at elevation transitions during live streaming so the just-completed
+    /// sweep becomes the background for compositing partial data on top.
+    pub fn promote_current_to_previous(&mut self, gl: &glow::Context) {
+        if !self.has_data || self.cpu_azimuths.is_empty() {
+            return;
+        }
+        self.update_previous_data(
+            gl,
+            &self.cpu_azimuths.clone(),
+            &self.cpu_gate_values.clone(),
+            self.azimuth_count,
+            self.gate_count,
+            self.first_gate_km,
+            self.gate_interval_km,
+            self.max_range_km,
+            self.data_offset,
+            self.data_scale,
+            self.current_sweep_id.clone(),
+            &self.cpu_radial_times.clone(),
+        );
     }
 
     /// Identity of the sweep currently loaded in the primary data texture.

@@ -118,4 +118,25 @@ self.onmessage = async function (e) {
         }
         return;
     }
+
+    if (msg.type === 'render_live') {
+        try {
+            // worker_render_live: JsValue -> JsValue (synchronous, reads from memory)
+            const result = wasm.worker_render_live({
+                product: msg.product,
+                elevationNumber: msg.elevationNumber,
+            });
+
+            const { azimuths, gateValues } = result;
+            const transferList = [azimuths, gateValues];
+            const payload = Object.assign({}, result, {
+                type: 'live_decoded',
+                id: msg.id,
+            });
+            self.postMessage(payload, transferList);
+        } catch (err) {
+            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+        }
+        return;
+    }
 };

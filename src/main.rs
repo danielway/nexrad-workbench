@@ -989,7 +989,8 @@ impl WorkbenchApp {
         self.state.status_message = "Fetching latest data...".to_string();
         self.backfill_in_progress = true;
 
-        self.backfill_channel.start(ctx.clone(), site_id);
+        self.backfill_channel
+            .start(ctx.clone(), site_id, self.data_facade.clone());
     }
 
     /// Find the best elevation number for the current elevation selection.
@@ -1894,6 +1895,20 @@ impl WorkbenchApp {
                                 result.last_radial_azimuth,
                                 result.last_radial_time_secs,
                             );
+
+                            // Request live partial-sweep render if mid-sweep.
+                            // Always render whatever elevation is currently being
+                            // accumulated — the user expects to see live progress
+                            // regardless of which elevation was previously displayed.
+                            if !result.is_end {
+                                if let Some(target_elev) = result.current_elevation {
+                                    let product =
+                                        self.state.viz_state.product.to_worker_string().to_string();
+                                    if let Some(ref mut worker) = self.decode_worker {
+                                        worker.render_live(target_elev, product);
+                                    }
+                                }
+                            }
                         }
 
                         // Refresh timeline when new elevations are written to cache
@@ -2029,7 +2044,11 @@ impl WorkbenchApp {
                             }
                         }
                         let t_gpu = web_time::Instant::now();
-                        if is_current_scan {
+                        // In live mode, LiveDecoded drives the GPU — skip Decoded
+                        // uploads so completed-elevation IDB renders don't overwrite
+                        // the current partial sweep.
+                        let skip_gpu_upload = self.state.live_mode_state.is_active();
+                        if is_current_scan && !skip_gpu_upload {
                             if let (Some(ref renderer), Some(ref gl)) =
                                 (&self.renderers.gpu, &self.renderers.gl)
                             {
@@ -2097,6 +2116,111 @@ impl WorkbenchApp {
                                 result.sweep_end_secs,
                                 result.mean_elevation,
                             );
+                        }
+                    }
+                    nexrad::WorkerOutcome::LiveDecoded(result) => {
+                        log::info!(
+                            "Live decode: {}x{}, {} radials, {}, {:.0}ms",
+                            result.azimuth_count,
+                            result.gate_count,
+                            result.radial_count,
+                            result.product,
+                            result.total_ms,
+                        );
+
+                        // Pad partial sweep to a full 360° azimuth grid before GPU upload.
+                        // The shader's find_nearest_az estimates index as az/(360/N),
+                        // which breaks when N radials cluster in a small arc (e.g., 120
+                        // radials covering 60° gives 3° estimated spacing instead of 0.5°).
+                        // Padding to 720 slots at 0.5° makes the estimate correct; empty
+                        // slots have sentinel gate values (0 = transparent).
+                        let gate_count = result.gate_count as usize;
+                        let full_az_count: u32 = 720;
+                        let step = 360.0f32 / full_az_count as f32;
+
+                        let mut padded_az = Vec::with_capacity(full_az_count as usize);
+                        let mut padded_gates = vec![0.0f32; full_az_count as usize * gate_count];
+                        let mut padded_times = vec![0.0f64; full_az_count as usize];
+
+                        for i in 0..full_az_count as usize {
+                            padded_az.push(i as f32 * step);
+                        }
+
+                        for (src_row, &az) in result.azimuths.iter().enumerate() {
+                            let dst_row = ((az / step).round() as usize) % full_az_count as usize;
+                            padded_az[dst_row] = az;
+                            let src_start = src_row * gate_count;
+                            let dst_start = dst_row * gate_count;
+                            if src_start + gate_count <= result.gate_values.len() {
+                                padded_gates[dst_start..dst_start + gate_count].copy_from_slice(
+                                    &result.gate_values[src_start..src_start + gate_count],
+                                );
+                            }
+                            if src_row < result.radial_times.len() {
+                                padded_times[dst_row] = result.radial_times[src_row];
+                            }
+                        }
+
+                        if let (Some(ref renderer), Some(ref gl)) =
+                            (&self.renderers.gpu, &self.renderers.gl)
+                        {
+                            if let Ok(mut r) = renderer.lock() {
+                                // Build a live sweep ID so we can detect elevation transitions
+                                let live_elev = result.context.elevation_number;
+                                let live_sweep_id = format!("live|{}", live_elev);
+
+                                // If the current texture has data from a different sweep
+                                // (complete or different live elevation), promote it to previous
+                                // so it becomes the background for compositing partial data.
+                                let should_promote =
+                                    r.current_sweep_id().is_some_and(|id| id != live_sweep_id);
+                                if should_promote {
+                                    r.promote_current_to_previous(gl);
+                                }
+
+                                r.update_data(
+                                    gl,
+                                    &padded_az,
+                                    &padded_gates,
+                                    full_az_count,
+                                    result.gate_count,
+                                    result.first_gate_range_km,
+                                    result.gate_interval_km,
+                                    result.max_range_km,
+                                    result.offset,
+                                    result.scale,
+                                    &padded_times,
+                                );
+                                r.set_current_sweep_id(Some(live_sweep_id));
+                                r.update_color_table(gl, &result.product);
+                            }
+                        }
+
+                        // Update overlay staleness so the age counter reflects
+                        // the most recently received live data.
+                        if result.sweep_end_secs > 0.0 {
+                            self.update_overlay_from_sweep(
+                                result.sweep_start_secs,
+                                result.sweep_end_secs,
+                                result.mean_elevation,
+                            );
+                        }
+
+                        // Store actual azimuth range and sweep start for sweep line
+                        if !result.azimuths.is_empty() {
+                            let first_az = result.azimuths[0];
+                            let last_az = *result.azimuths.last().unwrap();
+                            log::info!(
+                                "Live azimuth range: first={:.1} last={:.1} count={}/{} sweep=({:.1},{:.1})",
+                                first_az, last_az, result.azimuths.len(), full_az_count,
+                                last_az, first_az,
+                            );
+                            self.state.live_mode_state.live_data_azimuth_range =
+                                Some((first_az, last_az));
+                            // Record sweep start azimuth for sweep line animation
+                            if self.state.live_mode_state.sweep_start_azimuth.is_none() {
+                                self.state.live_mode_state.sweep_start_azimuth = Some(first_az);
+                            }
                         }
                     }
                     nexrad::WorkerOutcome::VolumeDecoded(volume_data) => {
