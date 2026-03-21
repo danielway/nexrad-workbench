@@ -21,7 +21,6 @@ mod realtime;
 pub(crate) mod record_decode;
 pub(crate) mod render_coordinator;
 pub(crate) mod render_request;
-mod shader_common;
 pub(crate) mod streaming_manager;
 mod types;
 pub(crate) mod volume_ray_renderer;

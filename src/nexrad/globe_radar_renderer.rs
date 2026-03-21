@@ -42,7 +42,7 @@ void main() {
 /// (azimuth_deg, range_km) as interpolated vertex attributes
 /// instead of computing them from screen-space pixel position.
 fn build_globe_fragment_shader() -> String {
-    use super::shader_common::*;
+    use super::gpu_renderer::shaders::*;
     format!(
         r#"#version 300 es
 precision highp float;
