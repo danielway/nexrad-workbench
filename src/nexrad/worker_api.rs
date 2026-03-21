@@ -228,10 +228,6 @@ async fn idb_store() -> Result<IndexedDbRecordStore, wasm_bindgen::JsValue> {
 pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     init_logger();
     wasm_bindgen_futures::future_to_promise(async move {
-        use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
-        use nexrad_render::Product;
-        use std::collections::HashMap;
-
         let t_total = web_time::Instant::now();
 
         // --- Extract parameters from JS ---
@@ -271,71 +267,17 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // --- Phase 1: Decompress + decode all records into radials ---
         let t_decode = web_time::Instant::now();
-        let mut decompress_ms_total = 0.0f64;
-        let mut decode_only_ms = 0.0f64;
-        let mut all_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
-        let mut radial_metas: Vec<(i64, u8, f32, f32)> = Vec::new();
-        let mut has_vcp = false;
-        let mut extracted_vcp: Option<ExtractedVcp> = None;
-        let mut compressed_count = 0u32;
-
-        for (record_id, record) in records.iter().enumerate() {
-            let record_id = record_id as u32;
-
-            let radials = if record.compressed() {
-                compressed_count += 1;
-                let t_decompress = web_time::Instant::now();
-                let decompressed = record.decompress().map_err(|e| {
-                    wasm_bindgen::JsValue::from_str(&format!(
-                        "Failed to decompress record {}: {}",
-                        record_id, e
-                    ))
-                })?;
-                decompress_ms_total += t_decompress.elapsed().as_secs_f64() * 1000.0;
-                let t_radials = web_time::Instant::now();
-
-                let needs_vcp = extracted_vcp
-                    .as_ref()
-                    .map(|v| v.elevations.is_empty())
-                    .unwrap_or(true);
-                let r = if needs_vcp {
-                    match decompressed.messages() {
-                        Ok(msgs) => decode_with_vcp_extraction(msgs, &mut extracted_vcp),
-                        Err(_) => Vec::new(),
-                    }
-                } else {
-                    decompressed.radials().unwrap_or_default()
-                };
-
-                decode_only_ms += t_radials.elapsed().as_secs_f64() * 1000.0;
-                r
-            } else {
-                use crate::nexrad::record_decode::decode_record_to_radials;
-                let t_radials = web_time::Instant::now();
-                let r = decode_record_to_radials(record.data()).unwrap_or_default();
-                decode_only_ms += t_radials.elapsed().as_secs_f64() * 1000.0;
-                r
-            };
-
-            if record_id == 0 {
-                has_vcp = true;
-            }
-
-            if !radials.is_empty() {
-                for r in &radials {
-                    radial_metas.push((
-                        r.collection_timestamp(),
-                        r.elevation_number(),
-                        r.elevation_angle_degrees(),
-                        r.azimuth_angle_degrees(),
-                    ));
-                }
-                all_radials.extend(radials);
-            }
-        }
+        let decoded = crate::nexrad::ingest_phases::decompress_and_decode_records(&records)?;
+        let all_radials = decoded.all_radials;
+        let radial_metas = decoded.radial_metas;
+        let decompress_ms_total = decoded.decompress_ms;
+        let decode_only_ms = decoded.decode_ms;
+        let compressed_count = decoded.compressed_count;
+        let extracted_vcp = decoded.extracted_vcp;
+        let has_vcp = decoded.has_vcp;
         let phase1_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
-        let sweeps = build_sweep_meta(&radial_metas);
+        let sweeps = crate::nexrad::ingest_phases::build_sweep_meta(&radial_metas);
         let elevation_numbers: Vec<u8> = sweeps.iter().map(|s| s.elevation_number).collect();
         let end_timestamp_secs = sweeps
             .iter()
@@ -355,50 +297,19 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // --- Phase 2: Extract sweep data for all (elevation, product) pairs ---
         let t_extract = web_time::Instant::now();
-
-        let products = [
-            (Product::Reflectivity, "reflectivity"),
-            (Product::Velocity, "velocity"),
-            (Product::SpectrumWidth, "spectrum_width"),
-            (
-                Product::DifferentialReflectivity,
-                "differential_reflectivity",
-            ),
-            (Product::CorrelationCoefficient, "correlation_coefficient"),
-            (Product::DifferentialPhase, "differential_phase"),
-        ];
-
-        // Group radials by elevation in one pass, sort each group by azimuth once
-        let mut by_elevation: HashMap<u8, Vec<&::nexrad::model::data::Radial>> = HashMap::new();
-        for radial in &all_radials {
-            by_elevation
-                .entry(radial.elevation_number())
-                .or_default()
-                .push(radial);
-        }
-        for group in by_elevation.values_mut() {
-            group.sort_by(|a, b| {
-                a.azimuth_angle_degrees()
-                    .partial_cmp(&b.azimuth_angle_degrees())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
-        }
-
-        let mut sweep_blobs: Vec<(String, Vec<u8>)> = Vec::new();
-        for &elev_num in &elevation_numbers {
-            if let Some(sorted_radials) = by_elevation.get(&elev_num) {
-                for (product, product_name) in &products {
-                    if let Some(sweep) = extract_sweep_data_from_sorted(sorted_radials, *product) {
-                        let key = SweepDataKey::new(scan_key.clone(), elev_num, *product_name);
-                        sweep_blobs.push((key.to_storage_key(), sweep.to_bytes()));
-                    }
-                }
-            }
-        }
+        let by_elevation = crate::nexrad::ingest_phases::group_radials_by_elevation(&all_radials);
+        let sweep_blobs = crate::nexrad::ingest_phases::extract_sweep_blobs(
+            &by_elevation,
+            &elevation_numbers,
+            &scan_key,
+        );
         let extract_ms = t_extract.elapsed().as_secs_f64() * 1000.0;
 
         let sweep_count = sweep_blobs.len() as u32;
-        let total_sweep_bytes: u64 = sweep_blobs.iter().map(|(_, b)| b.len() as u64).sum();
+        let total_sweep_bytes: u64 = sweep_blobs
+            .iter()
+            .map(|(_, b): &(String, Vec<u8>)| b.len() as u64)
+            .sum();
 
         log::info!(
             "ingest: extracted {} sweeps ({:.1}MB) in {:.1}ms",
@@ -978,9 +889,6 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     init_logger();
     wasm_bindgen_futures::future_to_promise(async move {
         use crate::nexrad::extract_elevation_numbers;
-        use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
-        use nexrad_render::Product;
-        use std::collections::HashMap;
 
         let t_total = web_time::Instant::now();
 
@@ -998,23 +906,14 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let data_len = data.len();
 
         // --- Decode the chunk's record(s) into radials ---
-        let mut chunk_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
-        let mut chunk_vcp: Option<ExtractedVcp> = None;
-        let mut chunk_has_vcp = false;
-
-        // Volume header scan start time (extracted from start chunk only)
-        let mut volume_header_time_secs: Option<f64> = None;
+        let (chunk_radials, chunk_vcp, chunk_has_vcp, mut volume_header_time_secs);
 
         if is_start {
-            // Start chunk = volume header + first compressed record
-            let file = nexrad_data::volume::File::new(data);
-
-            // Extract the volume scan start time from the Archive II header
-            if let Some(header) = file.header() {
-                if let Some(dt) = header.date_time() {
-                    volume_header_time_secs = Some(dt.timestamp() as f64);
-                }
-            }
+            let result = crate::nexrad::ingest_phases::decode_start_chunk(data, false);
+            chunk_radials = result.chunk_radials;
+            chunk_vcp = result.chunk_vcp;
+            chunk_has_vcp = result.chunk_has_vcp;
+            volume_header_time_secs = result.volume_header_time_secs;
 
             // --- Delete any overlapping scans so we don't double-store ---
             let scan_key = ScanKey::new(site_id.as_str(), UnixMillis::from_secs(timestamp_secs));
@@ -1062,59 +961,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     timestamp_secs,
                 });
             });
-
-            let records = file.records().map_err(|e| {
-                wasm_bindgen::JsValue::from_str(&format!("Failed to split start chunk: {}", e))
-            })?;
-
-            // Check if accumulator already has a full VCP (with elevation details).
-            // A number-only VCP (empty elevations) should still allow extraction
-            // so a Message Type 5 can upgrade it.
-            let accum_has_full_vcp = CHUNK_ACCUM.with(|cell| {
-                cell.borrow()
-                    .as_ref()
-                    .and_then(|a| a.vcp.as_ref())
-                    .map(|v| !v.elevations.is_empty())
-                    .unwrap_or(false)
-            });
-
-            for (i, record) in records.iter().enumerate() {
-                if record.compressed() {
-                    match record.decompress() {
-                        Ok(decompressed) => {
-                            if !accum_has_full_vcp
-                                && chunk_vcp
-                                    .as_ref()
-                                    .map(|v| v.elevations.is_empty())
-                                    .unwrap_or(true)
-                            {
-                                if let Ok(msgs) = decompressed.messages() {
-                                    let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
-                                    chunk_radials.extend(r);
-                                }
-                            } else {
-                                chunk_radials.extend(decompressed.radials().unwrap_or_default());
-                            }
-                        }
-                        Err(e) => {
-                            log::warn!("Failed to decompress record {} in start chunk: {}", i, e);
-                        }
-                    }
-                } else {
-                    use crate::nexrad::record_decode::decode_record_to_radials;
-                    chunk_radials
-                        .extend(decode_record_to_radials(record.data()).unwrap_or_default());
-                }
-                if chunk_vcp.is_some() {
-                    chunk_has_vcp = true;
-                }
-            }
         } else {
-            // Subsequent chunk = single compressed LDM record
-            use nexrad_data::volume::Record;
-            let record = Record::from_slice(&data);
-
-            // Check if accumulator already has a full VCP (with elevation details).
             let accum_has_full_vcp = CHUNK_ACCUM.with(|cell| {
                 cell.borrow()
                     .as_ref()
@@ -1123,104 +970,34 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     .unwrap_or(false)
             });
 
-            if record.compressed() {
-                match record.decompress() {
-                    Ok(decompressed) => {
-                        if !accum_has_full_vcp {
-                            if let Ok(msgs) = decompressed.messages() {
-                                let r = decode_with_vcp_extraction(msgs, &mut chunk_vcp);
-                                chunk_radials.extend(r);
-                            }
-                        } else {
-                            chunk_radials.extend(decompressed.radials().unwrap_or_default());
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("Failed to decompress chunk {}: {}", chunk_index, e);
-                    }
-                }
-            } else {
-                use crate::nexrad::record_decode::decode_record_to_radials;
-                chunk_radials.extend(decode_record_to_radials(record.data()).unwrap_or_default());
-            }
+            let result = crate::nexrad::ingest_phases::decode_subsequent_chunk(
+                &data,
+                accum_has_full_vcp,
+                chunk_index,
+            );
+            chunk_radials = result.chunk_radials;
+            chunk_vcp = result.chunk_vcp;
+            chunk_has_vcp = result.chunk_has_vcp;
+            volume_header_time_secs = result.volume_header_time_secs;
         }
 
-        // Extract volume start time from radials (available directly from the
-        // NEXRAD message header on the first radial of a volume scan). This
-        // replaces the Archive II header-only approach, giving us an
-        // authoritative timestamp from any chunk that contains the volume's
-        // first radial.
         if volume_header_time_secs.is_none() {
             volume_header_time_secs =
                 crate::nexrad::record_decode::extract_volume_start_time(&chunk_radials);
         }
 
         // --- Update accumulator with this chunk's radials ---
-        // Detect which elevations in this chunk's radials differ from last_elevation_number
         let chunk_elev_numbers = extract_elevation_numbers(&chunk_radials);
         let mut newly_completed: Vec<u8> = Vec::new();
 
-        // Compute the actual data time range of this chunk from radial timestamps (ms → secs).
-        let chunk_min_ts_secs: Option<f64> = chunk_radials
-            .iter()
-            .map(|r| r.collection_timestamp() as f64 / 1000.0)
-            .reduce(f64::min);
-        let chunk_max_ts_secs: Option<f64> = chunk_radials
-            .iter()
-            .map(|r| r.collection_timestamp() as f64 / 1000.0)
-            .reduce(f64::max);
-
-        // Compute per-elevation time spans within this chunk.
-        // Each entry: (elevation_number, min_time_secs, max_time_secs, radial_count)
-        let chunk_elev_spans: Vec<(u8, f64, f64, u32)> = {
-            let mut map: std::collections::BTreeMap<u8, (f64, f64, u32)> =
-                std::collections::BTreeMap::new();
-            for r in &chunk_radials {
-                let elev = r.elevation_number();
-                let t = r.collection_timestamp() as f64 / 1000.0;
-                map.entry(elev)
-                    .and_modify(|(min, max, count)| {
-                        if t < *min {
-                            *min = t;
-                        }
-                        if t > *max {
-                            *max = t;
-                        }
-                        *count += 1;
-                    })
-                    .or_insert((t, t, 1));
-            }
-            map.into_iter()
-                .map(|(elev, (min, max, count))| (elev, min, max, count))
-                .collect()
-        };
-
-        // Per-elevation azimuth ranges within this chunk: (elevation, first_az, last_az).
-        // Radials arrive in sweep order, so first/last in arrival order give the angular extent.
-        let chunk_elev_az_ranges: Vec<(u8, f32, f32)> = {
-            let mut map: std::collections::BTreeMap<u8, (f32, f32)> =
-                std::collections::BTreeMap::new();
-            for r in &chunk_radials {
-                let elev = r.elevation_number();
-                let az = r.azimuth_angle_degrees();
-                map.entry(elev)
-                    .and_modify(|(_, last)| *last = az)
-                    .or_insert((az, az));
-            }
-            map.into_iter()
-                .map(|(elev, (first, last))| (elev, first, last))
-                .collect()
-        };
-
-        // Last radial's azimuth and timestamp — used to extrapolate sweep line position
-        // between chunks during real-time streaming.
-        let first_radial_azimuth: Option<f32> =
-            chunk_radials.first().map(|r| r.azimuth_angle_degrees());
-        let last_radial_azimuth: Option<f32> =
-            chunk_radials.last().map(|r| r.azimuth_angle_degrees());
-        let last_radial_time_secs: Option<f64> = chunk_radials
-            .last()
-            .map(|r| r.collection_timestamp() as f64 / 1000.0);
+        let time_spans = crate::nexrad::ingest_phases::compute_chunk_time_spans(&chunk_radials);
+        let chunk_min_ts_secs = time_spans.chunk_min_ts_secs;
+        let chunk_max_ts_secs = time_spans.chunk_max_ts_secs;
+        let chunk_elev_spans = time_spans.chunk_elev_spans;
+        let chunk_elev_az_ranges = time_spans.chunk_elev_az_ranges;
+        let first_radial_azimuth = time_spans.first_radial_azimuth;
+        let last_radial_azimuth = time_spans.last_radial_azimuth;
+        let last_radial_time_secs = time_spans.last_radial_time_secs;
 
         // Detailed chunk diagnostics for real-time streaming debugging
         {
@@ -1333,87 +1110,16 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         if !newly_completed.is_empty() {
             let store = idb_store().await?;
 
-            let products = [
-                (Product::Reflectivity, "reflectivity"),
-                (Product::Velocity, "velocity"),
-                (Product::SpectrumWidth, "spectrum_width"),
-                (
-                    Product::DifferentialReflectivity,
-                    "differential_reflectivity",
-                ),
-                (Product::CorrelationCoefficient, "correlation_coefficient"),
-                (Product::DifferentialPhase, "differential_phase"),
-            ];
-
             // Build sweep blobs for completed elevations
-            let (sweep_blobs, sweep_metas, _scan_key_clone) = CHUNK_ACCUM.with(|cell| {
+            let (sweep_blobs, sweep_metas) = CHUNK_ACCUM.with(|cell| {
                 let borrow = cell.borrow();
                 let accum = borrow.as_ref().unwrap();
-
-                // Group radials by elevation
-                let mut by_elevation: HashMap<u8, Vec<&::nexrad::model::data::Radial>> =
-                    HashMap::new();
-                for radial in &accum.all_radials {
-                    by_elevation
-                        .entry(radial.elevation_number())
-                        .or_default()
-                        .push(radial);
-                }
-                for group in by_elevation.values_mut() {
-                    group.sort_by(|a, b| {
-                        a.azimuth_angle_degrees()
-                            .partial_cmp(&b.azimuth_angle_degrees())
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                }
-
-                let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
-                let mut metas: Vec<SweepMeta> = Vec::new();
-
-                for &elev_num in &newly_completed {
-                    if let Some(sorted_radials) = by_elevation.get(&elev_num) {
-                        for (product, product_name) in &products {
-                            if let Some(sweep) =
-                                extract_sweep_data_from_sorted(sorted_radials, *product)
-                            {
-                                let key = SweepDataKey::new(
-                                    accum.scan_key.clone(),
-                                    elev_num,
-                                    *product_name,
-                                );
-                                blobs.push((key.to_storage_key(), sweep.to_bytes()));
-                            }
-                        }
-
-                        // Build sweep meta for this elevation
-                        let elev_metas: Vec<&(i64, u8, f32, f32)> = accum
-                            .radial_metas
-                            .iter()
-                            .filter(|(_, en, _, _)| *en == elev_num)
-                            .collect();
-                        if !elev_metas.is_empty() {
-                            let min_ts = elev_metas.iter().map(|(t, _, _, _)| *t).min().unwrap();
-                            let max_ts = elev_metas.iter().map(|(t, _, _, _)| *t).max().unwrap();
-                            let angle_sum: f64 =
-                                elev_metas.iter().map(|(_, _, a, _)| *a as f64).sum();
-                            let count = elev_metas.len();
-                            let first_az = elev_metas
-                                .iter()
-                                .min_by_key(|(t, _, _, _)| *t)
-                                .map(|(_, _, _, az)| *az)
-                                .unwrap_or(0.0);
-                            metas.push(SweepMeta {
-                                start: min_ts as f64 / 1000.0,
-                                end: max_ts as f64 / 1000.0,
-                                elevation: (angle_sum / count as f64) as f32,
-                                elevation_number: elev_num,
-                                start_azimuth: first_az,
-                            });
-                        }
-                    }
-                }
-
-                (blobs, metas, accum.scan_key.clone())
+                crate::nexrad::ingest_phases::build_flush_sweep_blobs(
+                    &accum.all_radials,
+                    &accum.radial_metas,
+                    &newly_completed,
+                    &accum.scan_key,
+                )
             });
 
             new_size_bytes = sweep_blobs.iter().map(|(_, b)| b.len() as u64).sum();
@@ -1474,7 +1180,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let all_sweeps = CHUNK_ACCUM.with(|cell| {
             let borrow = cell.borrow();
             let accum = borrow.as_ref().unwrap();
-            let all_metas = build_sweep_meta(&accum.radial_metas);
+            let all_metas = crate::nexrad::ingest_phases::build_sweep_meta(&accum.radial_metas);
             // Only include completed elevations
             all_metas
                 .into_iter()
@@ -1633,134 +1339,4 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         serde_wasm_bindgen::to_value(&response)
             .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))
     })
-}
-
-// ---------------------------------------------------------------------------
-// Helper functions
-// ---------------------------------------------------------------------------
-
-/// Decode messages from a decompressed record, extracting VCP pattern in the same pass.
-///
-/// The `messages` iterator comes from `DecompressedRecord::messages()`. We accept
-/// the already-resolved iterator to avoid naming the `DecompressedRecord` type
-/// which is not publicly exported.
-fn decode_with_vcp_extraction<'a>(
-    messages: impl IntoIterator<Item = nexrad_decode::messages::Message<'a>>,
-    extracted_vcp: &mut Option<ExtractedVcp>,
-) -> Vec<::nexrad::model::data::Radial> {
-    use nexrad_decode::messages::MessageContents;
-
-    let mut radials = Vec::new();
-    for msg in messages {
-        // Allow VolumeCoveragePattern (Message Type 5) to always overwrite the
-        // extracted VCP — even when a DigitalRadarData fallback already set the
-        // number — so we capture the full elevation detail.  The DRD fallback
-        // only fires when nothing has been extracted yet.
-        let has_full_vcp = extracted_vcp
-            .as_ref()
-            .map(|v| !v.elevations.is_empty())
-            .unwrap_or(false);
-
-        match msg.contents() {
-            MessageContents::VolumeCoveragePattern(ref vcp_msg) if !has_full_vcp => {
-                let header = vcp_msg.header();
-                let elevations: Vec<ExtractedVcpElevation> = vcp_msg
-                    .elevations()
-                    .iter()
-                    .map(|e| ExtractedVcpElevation {
-                        angle: e.elevation_angle() as f32,
-                        waveform: format!("{:?}", e.waveform_type()),
-                        prf_number: e.surveillance_prf_number(),
-                        is_sails: e.is_sails_cut(),
-                        is_mrle: e.is_mrle_cut(),
-                        is_base_tilt: e.is_base_tilt_cut(),
-                        azimuth_rate: {
-                            let rate = e.azimuth_rate();
-                            if rate > 0.0 {
-                                Some(rate as f32)
-                            } else {
-                                None
-                            }
-                        },
-                    })
-                    .collect();
-                *extracted_vcp = Some(ExtractedVcp {
-                    number: header.pattern_number(),
-                    elevations,
-                });
-            }
-            MessageContents::DigitalRadarData(ref m) if extracted_vcp.is_none() => {
-                if let Some(vol_block) = m.volume_data_block() {
-                    let raw = vol_block.volume_coverage_pattern_number();
-                    if raw > 0 {
-                        *extracted_vcp = Some(ExtractedVcp {
-                            number: raw,
-                            elevations: Vec::new(),
-                        });
-                    }
-                }
-            }
-            _ => {}
-        }
-        match msg.into_contents() {
-            MessageContents::DigitalRadarData(m) => {
-                if let Ok(radial) = m.into_radial() {
-                    radials.push(radial);
-                }
-            }
-            MessageContents::DigitalRadarDataLegacy(m) => {
-                if let Ok(radial) = m.into_radial() {
-                    radials.push(radial);
-                }
-            }
-            _ => {}
-        }
-    }
-    radials
-}
-
-/// Build `SweepMeta` entries by grouping radial metadata by elevation number.
-///
-/// Each tuple is `(timestamp_ms, elevation_number, elevation_angle_degrees, azimuth_angle_degrees)`.
-fn build_sweep_meta(radial_metas: &[(i64, u8, f32, f32)]) -> Vec<SweepMeta> {
-    use std::collections::BTreeMap;
-
-    struct Accum {
-        min_ts_ms: i64,
-        max_ts_ms: i64,
-        angle_sum: f64,
-        count: u32,
-        /// Azimuth of the radial with the earliest timestamp.
-        first_azimuth: f32,
-    }
-
-    let mut groups: BTreeMap<u8, Accum> = BTreeMap::new();
-
-    for &(ts_ms, elev_num, elev_angle, azimuth) in radial_metas {
-        let entry = groups.entry(elev_num).or_insert(Accum {
-            min_ts_ms: ts_ms,
-            max_ts_ms: ts_ms,
-            angle_sum: 0.0,
-            count: 0,
-            first_azimuth: azimuth,
-        });
-        if ts_ms < entry.min_ts_ms {
-            entry.min_ts_ms = ts_ms;
-            entry.first_azimuth = azimuth;
-        }
-        entry.max_ts_ms = entry.max_ts_ms.max(ts_ms);
-        entry.angle_sum += elev_angle as f64;
-        entry.count += 1;
-    }
-
-    groups
-        .into_iter()
-        .map(|(elev_num, acc)| SweepMeta {
-            start: acc.min_ts_ms as f64 / 1000.0,
-            end: acc.max_ts_ms as f64 / 1000.0,
-            elevation: (acc.angle_sum / acc.count as f64) as f32,
-            elevation_number: elev_num,
-            start_azimuth: acc.first_azimuth,
-        })
-        .collect()
 }

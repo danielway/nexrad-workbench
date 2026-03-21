@@ -29,7 +29,10 @@ void main() {
 }
 "#;
 
-const FRAGMENT_SHADER: &str = r#"#version 300 es
+fn build_flat_fragment_shader() -> String {
+    use super::shader_common::*;
+    format!(
+        r#"#version 300 es
 precision highp float;
 
 in vec2 v_screen_pos;
@@ -37,28 +40,9 @@ out vec4 fragColor;
 
 uniform vec2 u_radar_center;       // radar center in screen pixels
 uniform float u_radar_radius;      // max coverage radius in screen pixels
-uniform float u_gate_count;
-uniform float u_azimuth_count;
-uniform float u_first_gate_km;
-uniform float u_gate_interval_km;
-uniform float u_max_range_km;
-uniform float u_value_min;
-uniform float u_value_range;
-
-uniform sampler2D u_data_tex;      // gate values (R32F, width=gates, height=azimuths)
-uniform sampler2D u_lut_tex;       // color LUT (RGBA8, 256x1)
-uniform sampler2D u_azimuth_tex;   // azimuth angles (R32F, Nx1)
-
+{FRAGMENT_PREAMBLE}
 // Processing uniforms
-uniform int u_interpolation;       // 0=nearest, 1=bilinear
-uniform int u_despeckle_enabled;   // 0 or 1
-uniform int u_despeckle_threshold; // min valid neighbors to keep
-uniform float u_opacity;           // global alpha multiplier
 uniform int u_data_age_indicator; // 0 or 1: desaturate oldest data behind sweep line
-
-// Raw-to-physical conversion: physical = (raw - u_offset) / u_scale
-uniform float u_offset;            // moment offset
-uniform float u_scale;             // moment scale (0.0 = raw values are physical)
 
 // Sweep animation (dual-texture compositing)
 uniform sampler2D u_prev_data_tex;    // previous scan gate values (R32F, texture unit 3)
@@ -75,104 +59,11 @@ uniform float u_prev_first_gate_km;
 uniform float u_prev_gate_interval_km;
 uniform float u_prev_max_range_km;
 
-const float PI = 3.14159265359;
-
-// Sample a data texture at a given (gate_index, azimuth_index).
-// Parameterized by sampler and dimensions so the same function works for
-// both current and previous sweep textures.
-float sample_data_p(sampler2D data_tex, float gate_count, float azimuth_count, float g, float a) {
-    if (g < 0.0 || g >= gate_count || a < 0.0 || a >= azimuth_count) {
-        return 0.0;
-    }
-    float gu = (g + 0.5) / gate_count;
-    float av = (a + 0.5) / azimuth_count;
-    return texture(data_tex, vec2(gu, av)).r;
-}
-
-// Raw values 0 (below threshold) and 1 (range folded) are sentinels.
-bool is_valid(float v) {
-    return v > 1.5;
-}
-
-// Find the nearest azimuth index for a given angle in degrees.
-// Parameterized by azimuth count and sampler.
-// Returns -1.0 if no radial is close enough (gap).
-float find_nearest_az_p(float azimuth_deg, float az_count, sampler2D az_tex, out float out_az) {
-    float az_spacing = 360.0 / az_count;
-    float est_idx = azimuth_deg / az_spacing;
-    float inv_count = 1.0 / az_count;
-
-    float best_idx = 0.0;
-    float best_dist = 360.0;
-    float best_az = 0.0;
-
-    for (float offset = -2.0; offset <= 2.0; offset += 1.0) {
-        float i = floor(mod(est_idx + offset, az_count));
-        float tex_az = texture(az_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
-        float d = abs(azimuth_deg - tex_az);
-        d = min(d, 360.0 - d);
-        if (d < best_dist) {
-            best_dist = d;
-            best_idx = i;
-            best_az = tex_az;
-        }
-    }
-
-    if (best_dist > az_spacing * 1.5) {
-        out_az = 0.0;
-        return -1.0;
-    }
-    out_az = best_az;
-    return best_idx;
-}
-
-// Find the two nearest azimuth indices that bracket the given angle.
-// Parameterized by azimuth count and sampler.
-// Returns false if in a gap region.
-bool find_bracket_az_p(float azimuth_deg, float az_count, sampler2D az_tex,
-                       out float idx_lo, out float idx_hi, out float frac) {
-    float az_spacing = 360.0 / az_count;
-    float est_idx = azimuth_deg / az_spacing;
-    float inv_count = 1.0 / az_count;
-
-    float cand_idx[5];
-    float cand_az[5];
-    for (int k = 0; k < 5; k++) {
-        float i = floor(mod(est_idx + float(k - 2), az_count));
-        cand_idx[k] = i;
-        cand_az[k] = texture(az_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
-    }
-
-    float lo_idx = -1.0, hi_idx = -1.0;
-    float lo_dist = 360.0, hi_dist = 360.0;
-
-    for (int k = 0; k < 5; k++) {
-        float az = cand_az[k];
-        float diff = azimuth_deg - az;
-        diff = mod(diff + 540.0, 360.0) - 180.0;
-
-        if (diff >= 0.0 && diff < lo_dist) {
-            lo_dist = diff;
-            lo_idx = cand_idx[k];
-        }
-        if (diff <= 0.0 && (-diff) < hi_dist) {
-            hi_dist = -diff;
-            hi_idx = cand_idx[k];
-        }
-    }
-
-    if (lo_idx < 0.0 || hi_idx < 0.0) return false;
-
-    float span = lo_dist + hi_dist;
-    if (span > az_spacing * 1.5) return false;
-
-    idx_lo = lo_idx;
-    idx_hi = hi_idx;
-    frac = (span > 0.001) ? lo_dist / span : 0.0;
-    return true;
-}
-
-void main() {
+{SAMPLE_DATA_P}
+{IS_VALID}
+{FIND_NEAREST_AZ_P}
+{FIND_BRACKET_AZ_P}
+void main() {{
     vec2 delta = v_screen_pos - u_radar_center;
     float dist_px = length(delta);
     float dist_km = (dist_px / u_radar_radius) * u_max_range_km;
@@ -184,18 +75,18 @@ void main() {
     // Must be computed before range/gate checks because the two textures may
     // have different spatial extents (e.g. 0.5° at 460 km vs 0.9° at 298 km).
     bool use_prev = false;
-    if (u_sweep_enabled == 1) {
+    if (u_sweep_enabled == 1) {{
         float swept_arc = mod(u_sweep_azimuth - u_sweep_start, 360.0);
         float pixel_from_start = mod(azimuth_deg - u_sweep_start, 360.0);
         use_prev = (pixel_from_start >= swept_arc);
-    }
+    }}
 
     // Age-based desaturation: oldest quadrant (270°-360° behind sweep) fades out
     float desat_factor = 0.0;
-    if (u_sweep_enabled == 1 && u_data_age_indicator == 1) {
+    if (u_sweep_enabled == 1 && u_data_age_indicator == 1) {{
         float age = mod(u_sweep_azimuth - azimuth_deg + 360.0, 360.0) / 360.0;
         desat_factor = clamp((age - 0.75) / 0.25, 0.0, 1.0) * 0.9;
-    }
+    }}
 
     // --- Unified sweep pipeline: select spatial params and samplers based on use_prev ---
     float s_gate_count    = use_prev ? u_prev_gate_count    : u_gate_count;
@@ -207,16 +98,16 @@ void main() {
     float s_scale         = use_prev ? u_prev_scale         : u_scale;
 
     // Range check
-    if (dist_km < s_first_gate_km || dist_km >= s_max_range_km) {
+    if (dist_km < s_first_gate_km || dist_km >= s_max_range_km) {{
         fragColor = vec4(0.0);
         return;
-    }
+    }}
 
     float gate_idx = (dist_km - s_first_gate_km) / s_gate_interval;
-    if (gate_idx < 0.0 || gate_idx >= s_gate_count) {
+    if (gate_idx < 0.0 || gate_idx >= s_gate_count) {{
         fragColor = vec4(0.0);
         return;
-    }
+    }}
 
     // Select the active samplers for the chosen sweep (current or previous).
     // GLSL ES 3.00 requires sampler access in uniform control flow, but
@@ -224,36 +115,36 @@ void main() {
     // we use explicit if/else to satisfy the compiler.
     float value;
 
-    if (u_interpolation == 1) {
+    if (u_interpolation == 1) {{
         // Bilinear interpolation
         float az_lo, az_hi, az_frac;
         bool bracket_ok;
-        if (use_prev) {
+        if (use_prev) {{
             bracket_ok = find_bracket_az_p(azimuth_deg, s_azimuth_count, u_prev_azimuth_tex, az_lo, az_hi, az_frac);
-        } else {
+        }} else {{
             bracket_ok = find_bracket_az_p(azimuth_deg, s_azimuth_count, u_azimuth_tex, az_lo, az_hi, az_frac);
-        }
-        if (!bracket_ok) {
+        }}
+        if (!bracket_ok) {{
             fragColor = vec4(0.0);
             return;
-        }
+        }}
 
         float g_lo = floor(gate_idx);
         float g_hi = min(g_lo + 1.0, s_gate_count - 1.0);
         float g_frac = gate_idx - g_lo;
 
         float v00, v10, v01, v11;
-        if (use_prev) {
+        if (use_prev) {{
             v00 = sample_data_p(u_prev_data_tex, s_gate_count, s_azimuth_count, g_lo, az_lo);
             v10 = sample_data_p(u_prev_data_tex, s_gate_count, s_azimuth_count, g_hi, az_lo);
             v01 = sample_data_p(u_prev_data_tex, s_gate_count, s_azimuth_count, g_lo, az_hi);
             v11 = sample_data_p(u_prev_data_tex, s_gate_count, s_azimuth_count, g_hi, az_hi);
-        } else {
+        }} else {{
             v00 = sample_data_p(u_data_tex, s_gate_count, s_azimuth_count, g_lo, az_lo);
             v10 = sample_data_p(u_data_tex, s_gate_count, s_azimuth_count, g_hi, az_lo);
             v01 = sample_data_p(u_data_tex, s_gate_count, s_azimuth_count, g_lo, az_hi);
             v11 = sample_data_p(u_data_tex, s_gate_count, s_azimuth_count, g_hi, az_hi);
-        }
+        }}
 
         // Weighted average skipping sentinel values
         float sum = 0.0;
@@ -263,95 +154,87 @@ void main() {
         float w01 = (1.0 - g_frac) * az_frac;
         float w11 = g_frac * az_frac;
 
-        if (is_valid(v00)) { sum += v00 * w00; wsum += w00; }
-        if (is_valid(v10)) { sum += v10 * w10; wsum += w10; }
-        if (is_valid(v01)) { sum += v01 * w01; wsum += w01; }
-        if (is_valid(v11)) { sum += v11 * w11; wsum += w11; }
+        if (is_valid(v00)) {{ sum += v00 * w00; wsum += w00; }}
+        if (is_valid(v10)) {{ sum += v10 * w10; wsum += w10; }}
+        if (is_valid(v01)) {{ sum += v01 * w01; wsum += w01; }}
+        if (is_valid(v11)) {{ sum += v11 * w11; wsum += w11; }}
 
-        if (wsum < 0.001) {
+        if (wsum < 0.001) {{
             fragColor = vec4(0.0);
             return;
-        }
+        }}
         value = sum / wsum;
-    } else {
+    }} else {{
         // Nearest neighbor
         float dummy_az;
         float best_idx;
-        if (use_prev) {
+        if (use_prev) {{
             best_idx = find_nearest_az_p(azimuth_deg, s_azimuth_count, u_prev_azimuth_tex, dummy_az);
-        } else {
+        }} else {{
             best_idx = find_nearest_az_p(azimuth_deg, s_azimuth_count, u_azimuth_tex, dummy_az);
-        }
-        if (best_idx < 0.0) {
+        }}
+        if (best_idx < 0.0) {{
             fragColor = vec4(0.0);
             return;
-        }
-        if (use_prev) {
+        }}
+        if (use_prev) {{
             value = sample_data_p(u_prev_data_tex, s_gate_count, s_azimuth_count, floor(gate_idx), best_idx);
-        } else {
+        }} else {{
             value = sample_data_p(u_data_tex, s_gate_count, s_azimuth_count, floor(gate_idx), best_idx);
-        }
-    }
+        }}
+    }}
 
-    if (!is_valid(value)) {
+    if (!is_valid(value)) {{
         fragColor = vec4(0.0);
         return;
-    }
+    }}
 
     // Despeckle filter
-    if (u_despeckle_enabled == 1) {
+    if (u_despeckle_enabled == 1) {{
         float dummy_az2;
         float center_az;
-        if (use_prev) {
+        if (use_prev) {{
             center_az = find_nearest_az_p(azimuth_deg, s_azimuth_count, u_prev_azimuth_tex, dummy_az2);
-        } else {
+        }} else {{
             center_az = find_nearest_az_p(azimuth_deg, s_azimuth_count, u_azimuth_tex, dummy_az2);
-        }
+        }}
         float center_g = floor(gate_idx);
-        if (center_az >= 0.0) {
+        if (center_az >= 0.0) {{
             int valid_count = 0;
-            for (int dg = -1; dg <= 1; dg++) {
-                for (int da = -1; da <= 1; da++) {
+            for (int dg = -1; dg <= 1; dg++) {{
+                for (int da = -1; da <= 1; da++) {{
                     if (dg == 0 && da == 0) continue;
                     float ng = center_g + float(dg);
                     float na = mod(center_az + float(da), s_azimuth_count);
-                    if (use_prev) {
+                    if (use_prev) {{
                         if (is_valid(sample_data_p(u_prev_data_tex, s_gate_count, s_azimuth_count, ng, na))) valid_count++;
-                    } else {
+                    }} else {{
                         if (is_valid(sample_data_p(u_data_tex, s_gate_count, s_azimuth_count, ng, na))) valid_count++;
-                    }
-                }
-            }
-            if (valid_count < u_despeckle_threshold) {
+                    }}
+                }}
+            }}
+            if (valid_count < u_despeckle_threshold) {{
                 fragColor = vec4(0.0);
                 return;
-            }
-        }
-    }
+            }}
+        }}
+    }}
 
-    // Convert raw value to physical units
-    float physical;
-    if (s_scale == 0.0) {
-        physical = value;
-    } else {
-        physical = (value - s_offset) / s_scale;
-    }
-
-    // Normalize and look up color
-    float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
-    vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
-
+{RAW_TO_PHYSICAL}
+{COLOR_LOOKUP}
     // Age-based desaturation for sweep animation
-    if (desat_factor > 0.0) {
+    if (desat_factor > 0.0) {{
         float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
         color.rgb = mix(color.rgb, vec3(lum), desat_factor);
-    }
+    }}
 
     // Apply opacity and output premultiplied alpha (egui requirement)
     float a = color.a * u_opacity;
     fragColor = vec4(color.rgb * a, a);
+}}
+"#
+    )
 }
-"#;
 
 /// Find the nearest azimuth index in an array of azimuth angles.
 ///
@@ -494,7 +377,8 @@ impl RadarGpuRenderer {
             let frag = gl
                 .create_shader(glow::FRAGMENT_SHADER)
                 .map_err(|e| format!("Cannot create fragment shader: {}", e))?;
-            gl.shader_source(frag, FRAGMENT_SHADER);
+            let frag_src = build_flat_fragment_shader();
+            gl.shader_source(frag, &frag_src);
             gl.compile_shader(frag);
             if !gl.get_shader_compile_status(frag) {
                 let info = gl.get_shader_info_log(frag);

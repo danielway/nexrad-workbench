@@ -828,7 +828,6 @@ fn extract_pending_context<C>(
     }
 }
 
-#[allow(dead_code)]
 fn extract_decode_arrays(data: &JsValue) -> (Vec<f32>, Vec<f32>, Vec<f64>) {
     let az_buffer = js_sys::Reflect::get(data, &"azimuths".into()).unwrap_or(JsValue::NULL);
     let azimuths = js_sys::Float32Array::new(&az_buffer).to_vec();
@@ -846,7 +845,6 @@ fn extract_decode_arrays(data: &JsValue) -> (Vec<f32>, Vec<f32>, Vec<f64>) {
     (azimuths, gate_values, radial_times)
 }
 
-#[allow(dead_code)]
 fn build_decode_result(
     context: RenderContext,
     r: DecodedResultMsg,
@@ -1142,30 +1140,16 @@ fn send_render_request(
     }
 }
 
-/// Handle a "volume_decoded" message from the worker.
 fn handle_volume_decoded_message(
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
-        Ok(e) => e,
-        Err(e) => {
-            log::warn!("Failed to parse volume_decoded envelope: {}", e);
-            return;
-        }
-    };
-    let id = envelope.id;
-
-    let _volume_ctx = match pending.borrow_mut().remove(&id) {
+    let _volume_ctx = match extract_pending_context(data, "volume_decoded", pending) {
         Some(ctx) => ctx,
-        None => {
-            log::warn!("Received volume_decoded message for unknown request {}", id);
-            return;
-        }
+        None => return,
     };
 
-    // Deserialize scalar fields and sweep metadata via serde
     let r: VolumeDecodedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
         Ok(r) => r,
         Err(e) => {
@@ -1175,7 +1159,6 @@ fn handle_volume_decoded_message(
     };
     let word_size = r.word_size;
 
-    // Extract packed buffer (ArrayBuffer, not serializable via serde)
     let buf_js = js_sys::Reflect::get(data, &"buffer".into()).unwrap_or(JsValue::NULL);
     let buffer = if !buf_js.is_null() && !buf_js.is_undefined() {
         let u8_view = js_sys::Uint8Array::new(&buf_js);
@@ -1219,42 +1202,17 @@ fn handle_volume_decoded_message(
         }));
 }
 
-/// Handle a "live_decoded" message from the worker.
 fn handle_live_decoded_message(
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
-        Ok(e) => e,
-        Err(e) => {
-            log::warn!("Failed to parse live_decoded envelope: {}", e);
-            return;
-        }
-    };
-    let id = envelope.id;
-
-    let context = match pending.borrow_mut().remove(&id) {
+    let context = match extract_pending_context(data, "live_decoded", pending) {
         Some(ctx) => ctx,
-        None => {
-            log::warn!("Received live_decoded message for unknown request {}", id);
-            return;
-        }
+        None => return,
     };
 
-    // Extract ArrayBuffer fields (same as handle_decoded_message)
-    let az_buffer = js_sys::Reflect::get(data, &"azimuths".into()).unwrap_or(JsValue::NULL);
-    let azimuths = js_sys::Float32Array::new(&az_buffer).to_vec();
-
-    let val_buffer = js_sys::Reflect::get(data, &"gateValues".into()).unwrap_or(JsValue::NULL);
-    let gate_values = js_sys::Float32Array::new(&val_buffer).to_vec();
-
-    let rt_js = js_sys::Reflect::get(data, &"radialTimes".into()).unwrap_or(JsValue::NULL);
-    let radial_times = if rt_js.is_object() && !rt_js.is_null() {
-        js_sys::Float64Array::new(&rt_js).to_vec()
-    } else {
-        Vec::new()
-    };
+    let (azimuths, gate_values, radial_times) = extract_decode_arrays(data);
 
     let r: DecodedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
         Ok(r) => r,
@@ -1275,28 +1233,13 @@ fn handle_live_decoded_message(
 
     results
         .borrow_mut()
-        .push(WorkerOutcome::LiveDecoded(DecodeResult {
+        .push(WorkerOutcome::LiveDecoded(build_decode_result(
             context,
+            r,
             azimuths,
             gate_values,
-            azimuth_count: r.azimuth_count,
-            gate_count: r.gate_count,
-            first_gate_range_km: r.first_gate_range_km,
-            gate_interval_km: r.gate_interval_km,
-            max_range_km: r.max_range_km,
-            product: r.product,
-            radial_count: r.radial_count,
-            fetch_ms: r.fetch_ms,
-            deser_ms: r.deser_ms,
-            marshal_ms: r.marshal_ms,
-            total_ms: r.total_ms,
-            scale: r.scale,
-            offset: r.offset,
-            mean_elevation: r.mean_elevation,
-            sweep_start_secs: r.sweep_start_secs,
-            sweep_end_secs: r.sweep_end_secs,
             radial_times,
-        }));
+        )));
 }
 
 /// Request message sent to the worker for live render operations.

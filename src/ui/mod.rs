@@ -10,6 +10,9 @@
 pub(crate) mod acquisition_drawer;
 mod bottom_panel;
 mod canvas;
+mod canvas_inspector;
+mod canvas_interaction;
+mod canvas_overlays;
 pub(crate) mod colors;
 mod event_modal;
 mod left_panel;

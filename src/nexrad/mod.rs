@@ -12,16 +12,21 @@ mod decode_worker;
 mod download;
 pub(crate) mod globe_radar_renderer;
 pub(crate) mod gpu_renderer;
+pub(crate) mod ingest_phases;
 pub(crate) mod network_monitor;
 mod realtime;
 pub(crate) mod record_decode;
+mod shader_common;
 mod types;
 pub(crate) mod volume_ray_renderer;
 mod worker_api;
 
 pub use archive_index::{ArchiveIndex, ScanBoundary};
 pub use cache_channel::{CacheLoadChannel, CacheLoadResult};
-pub use decode_worker::{DecodeWorker, VolumeSweepMeta, WorkerOutcome};
+pub use decode_worker::{
+    ChunkIngestResult, DecodeResult, DecodeWorker, IngestResult, VolumeData, VolumeSweepMeta,
+    WorkerOutcome,
+};
 pub use download::{DownloadChannel, ListingResult, NetworkStats};
 pub use globe_radar_renderer::GlobeRadarRenderer;
 pub use gpu_renderer::RadarGpuRenderer;
