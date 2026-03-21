@@ -79,6 +79,8 @@ struct ChunkIngestResultMsg {
     volume_header_time_secs: Option<f64>,
     #[serde(default)]
     chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
+    #[serde(default)]
+    chunk_elev_az_ranges: Vec<(u8, f32, f32)>,
 }
 
 /// Scalar fields of the decoded sweep response from the worker.
@@ -321,6 +323,9 @@ pub struct ChunkIngestResult {
     /// Per-elevation time spans within this chunk:
     /// (elevation_number, start_secs, end_secs, radial_count).
     pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
+    /// Per-elevation azimuth ranges within this chunk:
+    /// (elevation_number, first_azimuth, last_azimuth).
+    pub chunk_elev_az_ranges: Vec<(u8, f32, f32)>,
 }
 
 /// Context for a render/decode request.
@@ -913,6 +918,7 @@ fn handle_chunk_ingested_message(
             last_radial_time_secs: r.last_radial_time_secs,
             volume_header_time_secs: r.volume_header_time_secs,
             chunk_elev_spans: r.chunk_elev_spans,
+            chunk_elev_az_ranges: r.chunk_elev_az_ranges,
         }));
 }
 

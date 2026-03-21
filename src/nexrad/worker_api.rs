@@ -135,6 +135,8 @@ struct ChunkIngestResponse {
     chunk_max_time_secs: Option<f64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    chunk_elev_az_ranges: Vec<(u8, f32, f32)>,
     #[serde(skip_serializing_if = "Option::is_none")]
     volume_header_time_secs: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1193,6 +1195,23 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 .collect()
         };
 
+        // Per-elevation azimuth ranges within this chunk: (elevation, first_az, last_az).
+        // Radials arrive in sweep order, so first/last in arrival order give the angular extent.
+        let chunk_elev_az_ranges: Vec<(u8, f32, f32)> = {
+            let mut map: std::collections::BTreeMap<u8, (f32, f32)> =
+                std::collections::BTreeMap::new();
+            for r in &chunk_radials {
+                let elev = r.elevation_number();
+                let az = r.azimuth_angle_degrees();
+                map.entry(elev)
+                    .and_modify(|(_, last)| *last = az)
+                    .or_insert((az, az));
+            }
+            map.into_iter()
+                .map(|(elev, (first, last))| (elev, first, last))
+                .collect()
+        };
+
         // Last radial's azimuth and timestamp — used to extrapolate sweep line position
         // between chunks during real-time streaming.
         let first_radial_azimuth: Option<f32> =
@@ -1604,6 +1623,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             chunk_min_time_secs: chunk_min_ts_secs,
             chunk_max_time_secs: chunk_max_ts_secs,
             chunk_elev_spans,
+            chunk_elev_az_ranges,
             volume_header_time_secs,
             last_radial_azimuth,
             last_radial_time_secs,

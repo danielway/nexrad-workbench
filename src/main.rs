@@ -1885,6 +1885,25 @@ impl WorkbenchApp {
                                 result.current_elevation_radials,
                             );
 
+                            // Record per-chunk azimuth ranges for the current elevation
+                            if let Some(cur_elev) = result.current_elevation {
+                                for &(elev, first_az, last_az) in &result.chunk_elev_az_ranges {
+                                    if elev == cur_elev {
+                                        let radial_count = result
+                                            .chunk_elev_spans
+                                            .iter()
+                                            .find(|&&(e, _, _, _)| e == elev)
+                                            .map(|&(_, _, _, c)| c)
+                                            .unwrap_or(0);
+                                        self.state.live_mode_state.current_elev_chunks.push((
+                                            first_az,
+                                            last_az,
+                                            radial_count,
+                                        ));
+                                    }
+                                }
+                            }
+
                             if !result.sweeps.is_empty() {
                                 self.state
                                     .live_mode_state
@@ -1933,6 +1952,16 @@ impl WorkbenchApp {
 
                         if result.is_end {
                             if is_live {
+                                // Promote current GPU texture → previous before clearing live state,
+                                // so the new volume's first chunks composite against the old volume's
+                                // final complete sweep rather than stale/empty data.
+                                if let (Some(ref renderer), Some(ref gl)) =
+                                    (&self.renderers.gpu, &self.renderers.gl)
+                                {
+                                    if let Ok(mut r) = renderer.lock() {
+                                        r.promote_current_to_previous(gl);
+                                    }
+                                }
                                 let now = js_sys::Date::now() / 1000.0;
                                 self.state.live_mode_state.handle_volume_complete(now);
                                 self.state.status_message = format!(
@@ -1961,9 +1990,11 @@ impl WorkbenchApp {
                             self.state.displayed_sweep_elevation_number = None;
                             self.renderers.last_render_request = None;
                             self.renderers.last_volume_render_request = None;
-                            self.request_worker_render();
-                            if self.state.viz_state.volume_3d_enabled {
-                                self.request_worker_render_volume();
+                            if !is_live {
+                                self.request_worker_render();
+                                if self.state.viz_state.volume_3d_enabled {
+                                    self.request_worker_render_volume();
+                                }
                             }
                         } else if !had_elevations && !self.available_elevation_numbers.is_empty() {
                             // First elevation arrived — we can render something now
@@ -1973,9 +2004,11 @@ impl WorkbenchApp {
                             );
                             self.renderers.last_render_request = None;
                             self.renderers.last_volume_render_request = None;
-                            self.request_worker_render();
-                            if self.state.viz_state.volume_3d_enabled {
-                                self.request_worker_render_volume();
+                            if !is_live {
+                                self.request_worker_render();
+                                if self.state.viz_state.volume_3d_enabled {
+                                    self.request_worker_render_volume();
+                                }
                             }
                         }
                     }
@@ -2510,6 +2543,10 @@ impl WorkbenchApp {
 
     /// Auto-load scans when scrubbing the timeline and prefetch upcoming sweeps.
     fn advance_playback(&mut self) {
+        // Live mode drives rendering via ChunkIngested/LiveDecoded — skip playback-driven renders.
+        if self.state.live_mode_state.is_active() {
+            return;
+        }
         // Rebuild macro frame list when dirty (elevation selection, bounds, or scan count changed)
         if self.state.playback_state.playback_mode() == crate::state::PlaybackMode::Macro {
             let mp = &self.state.playback_state.macro_playback;
@@ -2768,6 +2805,13 @@ impl WorkbenchApp {
     /// within the same scan that's the preceding sweep in time order. Only look
     /// at the previous scan if the current sweep is the very first in its scan.
     fn sync_prev_sweep_texture(&mut self) {
+        // In live mode, the previous sweep texture is managed by
+        // promote_current_to_previous in the LiveDecoded handler —
+        // don't let the timeline-based sync overwrite or clear it.
+        if self.state.live_mode_state.is_active() {
+            return;
+        }
+
         if !self.state.effective_sweep_animation() {
             self.state.viz_state.prev_sweep_overlay = None;
             self.state.viz_state.prev_sweep_scan_timestamp = None;
@@ -2919,6 +2963,10 @@ impl WorkbenchApp {
 
     /// Re-render when the user changes elevation, product, or view mode.
     fn request_render_if_needed(&mut self) {
+        // Live mode re-renders on the next ChunkIngested (~12s) — no IDB-based render needed.
+        if self.state.live_mode_state.is_active() {
+            return;
+        }
         // Detect elevation/product changes and trigger worker re-render.
         // If the user changes these settings and we have a current scan, we need
         // a new render from the worker.
