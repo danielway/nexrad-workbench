@@ -117,73 +117,7 @@ pub struct Renderers {
     pub last_volume_render_request: Option<VolumeRenderRequest>,
 }
 
-/// Cached decoded sweep data for stateless sweep animation.
-///
-/// Stores a small number of recent decode results so the renderer can load
-/// any two sweeps (current + previous) without depending on decode arrival order.
-#[allow(dead_code)] // Fields read when loading from cache into GPU
-struct CachedSweepData {
-    gate_values: Vec<f32>,
-    azimuths: Vec<f32>,
-    azimuth_count: u32,
-    gate_count: u32,
-    first_gate_range_km: f64,
-    gate_interval_km: f64,
-    max_range_km: f64,
-    offset: f32,
-    scale: f32,
-    radial_times: Vec<f64>,
-    sweep_start_secs: f64,
-    sweep_end_secs: f64,
-    product: String,
-}
-
-/// Build a sweep cache key from scan key and elevation number.
-fn sweep_cache_key(scan_key: &str, elevation_number: u8) -> String {
-    format!("{}|{}", scan_key, elevation_number)
-}
-
-/// LRU cache of decoded sweep data. Entries are evicted when the cache exceeds
-/// `max_entries`. Keys are "SCAN_KEY|ELEV_NUM".
-struct SweepDataCache {
-    entries: std::collections::HashMap<String, CachedSweepData>,
-    insertion_order: Vec<String>,
-    max_entries: usize,
-}
-
-impl SweepDataCache {
-    fn new(max_entries: usize) -> Self {
-        Self {
-            entries: std::collections::HashMap::new(),
-            insertion_order: Vec::new(),
-            max_entries,
-        }
-    }
-
-    fn insert(&mut self, key: String, data: CachedSweepData) {
-        if self.entries.contains_key(&key) {
-            // Move to end of insertion order
-            self.insertion_order.retain(|k| k != &key);
-        } else if self.entries.len() >= self.max_entries {
-            // Evict oldest
-            if let Some(oldest) = self.insertion_order.first().cloned() {
-                self.entries.remove(&oldest);
-                self.insertion_order.remove(0);
-            }
-        }
-        self.entries.insert(key.clone(), data);
-        self.insertion_order.push(key);
-    }
-
-    fn get(&self, key: &str) -> Option<&CachedSweepData> {
-        self.entries.get(key)
-    }
-
-    fn clear(&mut self) {
-        self.entries.clear();
-        self.insertion_order.clear();
-    }
-}
+use state::playback_manager::{sweep_cache_key, CachedSweepData, PlaybackManager, PrevSweepAction};
 
 /// Parameters for a single-elevation render request. Adding a field here
 /// automatically breaks the `PartialEq` comparison, preventing silent omissions.
@@ -202,41 +136,7 @@ pub struct VolumeRenderRequest {
     product: String,
 }
 
-/// State of a single item in the selection download queue.
-#[derive(Clone, Debug)]
-enum QueueItemState {
-    /// Queued but not yet started.
-    Pending,
-    /// Download has been kicked off.
-    Active,
-    /// Download completed successfully.
-    Done,
-    /// Download failed with an error message.
-    #[allow(dead_code)]
-    Failed(String),
-}
-
-/// A single file in the selection download queue.
-#[derive(Clone, Debug)]
-struct QueueItem {
-    date: chrono::NaiveDate,
-    file_name: String,
-    scan_start: i64,
-    scan_end: i64,
-    state: QueueItemState,
-}
-
-impl QueueItem {
-    fn new(date: chrono::NaiveDate, file_name: String, scan_start: i64, scan_end: i64) -> Self {
-        Self {
-            date,
-            file_name,
-            scan_start,
-            scan_end,
-            state: QueueItemState::Pending,
-        }
-    }
-}
+use nexrad::download_queue::{DownloadQueueManager, QueueAction, QueueItem};
 
 /// Main application state and logic.
 pub struct WorkbenchApp {
@@ -264,11 +164,8 @@ pub struct WorkbenchApp {
     /// Currently loaded NEXRAD scan
     current_scan: Option<nexrad::CachedScan>,
 
-    /// Queue of files to download for selection download feature.
-    selection_download_queue: Vec<QueueItem>,
-
-    /// Currently active acquisition operation ID (for correlating download results).
-    active_download_operation_id: Option<state::OperationId>,
+    /// Manages the queue of files to download for selection/position downloads.
+    download_queue: DownloadQueueManager,
 
     /// Previous site ID to detect site changes (for clearing volume ring)
     previous_site_id: String,
@@ -311,11 +208,8 @@ pub struct WorkbenchApp {
     /// Service worker network monitor (None if SW not available).
     network_monitor: Option<nexrad::NetworkMonitor>,
 
-    /// Cache of decoded sweep data for stateless sweep animation.
-    sweep_cache: SweepDataCache,
-
-    /// Key of the prev-sweep decode currently in flight, to avoid duplicate requests.
-    pending_prev_sweep_key: Option<String>,
+    /// Sweep cache and previous-sweep resolution for sweep animation.
+    playback_manager: PlaybackManager,
 }
 
 // Embed shapefile data at compile time
@@ -603,8 +497,7 @@ impl WorkbenchApp {
             cache_load_channel,
             archive_index: nexrad::ArchiveIndex::new(),
             current_scan: None,
-            selection_download_queue: Vec::new(),
-            active_download_operation_id: None,
+            download_queue: DownloadQueueManager::new(),
             previous_site_id: initial_site_id,
             realtime_channel,
             decode_worker,
@@ -626,8 +519,7 @@ impl WorkbenchApp {
             backfill_channel,
             backfill_in_progress: false,
             network_monitor: nexrad::NetworkMonitor::new(),
-            sweep_cache: SweepDataCache::new(4),
-            pending_prev_sweep_key: None,
+            playback_manager: PlaybackManager::new(),
         };
 
         // Check cross-origin isolation status on startup
@@ -649,17 +541,9 @@ impl WorkbenchApp {
         let site_id = self.state.viz_state.site_id.clone();
 
         // If we have items in the queue, try to advance the state machine
-        let has_work = self
-            .selection_download_queue
-            .iter()
-            .any(|item| matches!(item.state, QueueItemState::Pending | QueueItemState::Active));
-        if has_work {
+        if self.download_queue.has_work() {
             // If there is an Active item, check whether its download has finished
-            if let Some(active) = self
-                .selection_download_queue
-                .iter()
-                .find(|item| matches!(item.state, QueueItemState::Active))
-            {
+            if let Some(active) = self.download_queue.active_item() {
                 let still_pending = self
                     .download_channel
                     .is_download_pending(&site_id, active.scan_start);
@@ -671,73 +555,56 @@ impl WorkbenchApp {
 
                 // Download finished — transition Active → Done
                 let active_start = active.scan_start;
-                self.selection_download_queue
-                    .iter_mut()
-                    .find(|item| {
-                        matches!(item.state, QueueItemState::Active)
-                            && item.scan_start == active_start
-                    })
-                    .unwrap()
-                    .state = QueueItemState::Done;
+                self.download_queue.mark_active_done(active_start);
             }
 
-            // Don't start next download if queue is paused (user or error)
-            if self.state.acquisition.is_paused() {
-                return;
-            }
-
-            // Find the next Pending item and kick off its download
-            let next_pending = self
-                .selection_download_queue
-                .iter()
-                .position(|item| matches!(item.state, QueueItemState::Pending));
-
-            if let Some(idx) = next_pending {
-                let remaining = self
-                    .selection_download_queue
-                    .iter()
-                    .filter(|item| matches!(item.state, QueueItemState::Pending))
-                    .count();
-                let item = &self.selection_download_queue[idx];
-                self.state.status_message =
-                    format!("Downloading {} ({} remaining)", item.file_name, remaining);
-                // Update download progress for next file
-                self.state.download_progress.active_scan = Some((item.scan_start, item.scan_end));
-                self.state.download_progress.phase = crate::state::DownloadPhase::Downloading;
-                self.state.download_progress.batch_completed += 1;
-
-                // Mark next acquisition operation as active
-                if let Some(op_id) = self.state.acquisition.next_queued_id() {
-                    self.state.acquisition.mark_active(op_id);
-                    self.active_download_operation_id = Some(op_id);
-                }
-
-                let date = item.date;
-                let file_name = item.file_name.clone();
-                let scan_start = item.scan_start;
-
-                self.selection_download_queue[idx].state = QueueItemState::Active;
-                self.download_channel.download_file(
-                    ctx.clone(),
-                    site_id.clone(),
+            // Advance the queue (handles pause check internally)
+            let is_paused = self.state.acquisition.is_paused();
+            match self.download_queue.advance(is_paused) {
+                QueueAction::StartDownload {
+                    idx: _,
                     date,
                     file_name,
                     scan_start,
-                    self.data_facade.clone(),
-                );
-            } else {
-                // All items are Done/Failed — download queue drained.
-                self.selection_download_queue.clear();
-                self.state.download_selection_in_progress = false;
-                self.state.download_progress.pending_scans.clear();
-                self.state.download_progress.active_scan = None;
-                self.state.download_progress.phase = crate::state::DownloadPhase::Done;
-                // Full clear only if no in-flight scans remain.
-                if self.state.download_progress.in_flight_scans.is_empty() {
-                    self.state.download_progress.clear();
+                    scan_end,
+                    remaining,
+                } => {
+                    self.state.status_message =
+                        format!("Downloading {} ({} remaining)", file_name, remaining);
+                    self.state.download_progress.active_scan = Some((scan_start, scan_end));
+                    self.state.download_progress.phase = crate::state::DownloadPhase::Downloading;
+                    self.state.download_progress.batch_completed += 1;
+
+                    // Mark next acquisition operation as active
+                    if let Some(op_id) = self.state.acquisition.next_queued_id() {
+                        self.state.acquisition.mark_active(op_id);
+                        self.download_queue.set_active_operation_id(Some(op_id));
+                    }
+
+                    self.download_channel.download_file(
+                        ctx.clone(),
+                        site_id.clone(),
+                        date,
+                        file_name,
+                        scan_start,
+                        self.data_facade.clone(),
+                    );
                 }
-                self.state.status_message = "Selection download complete".to_string();
-                log::info!("Selection download complete");
+                QueueAction::Complete => {
+                    self.state.download_selection_in_progress = false;
+                    self.state.download_progress.pending_scans.clear();
+                    self.state.download_progress.active_scan = None;
+                    self.state.download_progress.phase = crate::state::DownloadPhase::Done;
+                    // Full clear only if no in-flight scans remain.
+                    if self.state.download_progress.in_flight_scans.is_empty() {
+                        self.state.download_progress.clear();
+                    }
+                    self.state.status_message = "Selection download complete".to_string();
+                    log::info!("Selection download complete");
+                }
+                QueueAction::Paused | QueueAction::StillDownloading => {
+                    return;
+                }
             }
             return;
         }
@@ -896,12 +763,10 @@ impl WorkbenchApp {
 
         // Cancel any existing acquisition operations (selection change = cancel all + rebuild)
         self.state.acquisition.cancel_all();
-        self.active_download_operation_id = None;
-
-        self.selection_download_queue = files_to_download;
+        self.download_queue.set_queue(files_to_download);
 
         // Create acquisition operations for each file in the queue
-        for item in &self.selection_download_queue {
+        for item in self.download_queue.items() {
             self.state
                 .acquisition
                 .create_operation(state::OperationKind::ArchiveDownload {
@@ -916,43 +781,45 @@ impl WorkbenchApp {
         {
             let progress = &mut self.state.download_progress;
             progress.pending_scans = self
-                .selection_download_queue
+                .download_queue
+                .items()
                 .iter()
                 .map(|item| (item.scan_start, item.scan_end))
                 .collect();
-            progress.batch_total = self.selection_download_queue.len() as u32;
+            progress.batch_total = self.download_queue.len() as u32;
             progress.batch_completed = 0;
             progress.phase = crate::state::DownloadPhase::Downloading;
-            let first = &self.selection_download_queue[0];
+            let first = &self.download_queue.items()[0];
             progress.active_scan = Some((first.scan_start, first.scan_end));
         }
 
         // Kick off first download
-        let first = &self.selection_download_queue[0];
-        self.state.status_message = format!(
-            "Downloading {} ({} total)",
-            first.file_name,
-            self.selection_download_queue.len()
-        );
-
-        // Mark the first acquisition operation as active
-        if let Some(op_id) = self.state.acquisition.next_queued_id() {
-            self.state.acquisition.mark_active(op_id);
-            self.active_download_operation_id = Some(op_id);
-        }
-
-        let date = first.date;
-        let file_name = first.file_name.clone();
-        let scan_start = first.scan_start;
-        self.selection_download_queue[0].state = QueueItemState::Active;
-        self.download_channel.download_file(
-            ctx.clone(),
-            site_id,
+        if let Some(QueueAction::StartDownload {
+            idx: _,
             date,
             file_name,
             scan_start,
-            self.data_facade.clone(),
-        );
+            scan_end: _,
+            remaining,
+        }) = self.download_queue.start_first()
+        {
+            self.state.status_message = format!("Downloading {} ({} total)", file_name, remaining);
+
+            // Mark the first acquisition operation as active
+            if let Some(op_id) = self.state.acquisition.next_queued_id() {
+                self.state.acquisition.mark_active(op_id);
+                self.download_queue.set_active_operation_id(Some(op_id));
+            }
+
+            self.download_channel.download_file(
+                ctx.clone(),
+                site_id,
+                date,
+                file_name,
+                scan_start,
+                self.data_facade.clone(),
+            );
+        }
     }
 
     /// Start live mode streaming for the current site.
@@ -1030,116 +897,37 @@ impl WorkbenchApp {
     }
 
     /// Find the best elevation number for a scan given the playback position.
-    ///
-    /// In Fixed mode, filters by exact elevation_number match (no angle tolerance),
-    /// then picks the most recent sweep that has started. This eliminates
-    /// SAILS/MRLE ambiguity where CS and CD sweeps share the same angle.
+    /// Delegates to the free function in `playback_manager`.
     fn best_elevation_at_playback(
         &self,
         scan: &crate::state::radar_data::Scan,
         playback_ts: f64,
     ) -> u8 {
-        match &self.state.viz_state.elevation_selection {
-            crate::state::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => {
-                // Filter sweeps by exact elevation_number match
-                // then filter to those that have started (start_time <= playback_ts)
-                // pick the one with the latest start_time (most recent instance)
-                let matching = scan
-                    .sweeps
-                    .iter()
-                    .filter(|s| s.elevation_number == *elevation_number)
-                    .filter(|s| s.start_time <= playback_ts)
-                    .max_by(|a, b| {
-                        a.start_time
-                            .partial_cmp(&b.start_time)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    });
-
-                if let Some(sweep) = matching {
-                    return sweep.elevation_number;
-                }
-
-                // No matching sweep started yet — return selected number
-                *elevation_number
-            }
-            crate::state::ElevationSelection::Latest => {
-                self.most_recent_sweep_elevation(scan, playback_ts)
-            }
-        }
+        state::playback_manager::best_elevation_at_playback(
+            &self.state.viz_state.elevation_selection,
+            scan,
+            playback_ts,
+            &self.available_elevation_numbers,
+        )
     }
 
     /// Find the most recent sweep (any elevation) at or before the playback position.
-    ///
-    /// Used by MostRecent render mode to always show the latest available data
-    /// regardless of elevation.
+    /// Delegates to the free function in `playback_manager`.
     fn most_recent_sweep_elevation(
         &self,
         scan: &crate::state::radar_data::Scan,
         playback_ts: f64,
     ) -> u8 {
-        scan.sweeps
-            .iter()
-            .filter(|s| s.start_time <= playback_ts)
-            .max_by(|a, b| {
-                a.start_time
-                    .partial_cmp(&b.start_time)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|s| s.elevation_number)
-            .unwrap_or_else(|| self.best_elevation_number())
+        let fallback = self.best_elevation_number();
+        state::playback_manager::most_recent_sweep_elevation(scan, playback_ts, fallback)
     }
 
     /// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
+    /// Delegates to the free function in `playback_manager`.
     fn build_elevation_list(
         scan: &crate::state::radar_data::Scan,
     ) -> Vec<crate::state::ElevationListEntry> {
-        // 1. Prefer extracted VCP pattern (has waveform, SAILS, MRLE info)
-        if let Some(ref pattern) = scan.vcp_pattern {
-            if !pattern.elevations.is_empty() {
-                return pattern
-                    .elevations
-                    .iter()
-                    .enumerate()
-                    .map(|(i, e)| crate::state::ElevationListEntry {
-                        elevation_number: (i + 1) as u8,
-                        angle: e.angle,
-                        waveform: e.waveform.clone(),
-                        is_sails: e.is_sails,
-                        is_mrle: e.is_mrle,
-                    })
-                    .collect();
-            }
-        }
-
-        // 2. Fall back to static VCP definition
-        if let Some(def) = crate::state::get_vcp_definition(scan.vcp) {
-            return def
-                .elevations
-                .iter()
-                .enumerate()
-                .map(|(i, e)| crate::state::ElevationListEntry {
-                    elevation_number: (i + 1) as u8,
-                    angle: e.angle,
-                    waveform: e.waveform.to_string(),
-                    is_sails: false,
-                    is_mrle: false,
-                })
-                .collect();
-        }
-
-        // 3. Fall back to sweep metadata
-        scan.sweeps
-            .iter()
-            .map(|s| crate::state::ElevationListEntry {
-                elevation_number: s.elevation_number,
-                angle: s.elevation,
-                waveform: String::new(),
-                is_sails: false,
-                is_mrle: false,
-            })
-            .collect()
+        state::playback_manager::build_elevation_list(scan)
     }
 
     /// Update the canvas overlay text with sweep timing and elevation info.
@@ -1563,7 +1351,7 @@ impl WorkbenchApp {
                     r.clear_data();
                 }
             }
-            self.sweep_cache.clear();
+            self.playback_manager.clear_cache();
             self.state.displayed_scan_timestamp = None;
             self.state.displayed_sweep_elevation_number = None;
             self.previous_site_id = self.state.viz_state.site_id.clone();
@@ -2062,7 +1850,7 @@ impl WorkbenchApp {
         // Cache decoded data for stateless sweep animation
         let result_sweep_id =
             sweep_cache_key(&result.context.scan_key, result.context.elevation_number);
-        self.sweep_cache.insert(
+        self.playback_manager.cache_sweep(
             result_sweep_id.clone(),
             CachedSweepData {
                 gate_values: result.gate_values.clone(),
@@ -2101,8 +1889,8 @@ impl WorkbenchApp {
         if self.state.effective_sweep_animation() && !is_current_scan {
             log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id);
             // Clear pending tracker so sync_prev_sweep_texture can load from cache
-            if self.pending_prev_sweep_key.as_ref() == Some(&result_sweep_id) {
-                self.pending_prev_sweep_key = None;
+            if self.playback_manager.pending_prev_sweep_key() == Some(&result_sweep_id) {
+                self.playback_manager.set_pending_prev_sweep_key(None);
             }
         }
         let t_gpu = web_time::Instant::now();
@@ -2368,9 +2156,8 @@ impl WorkbenchApp {
             // visible until processing completes in the Decoded handler).
             let scan_ts = scan.key.scan_start.as_secs();
             let scan_end = self
-                .selection_download_queue
-                .iter()
-                .find(|item| item.scan_start == scan_ts)
+                .download_queue
+                .find_by_scan_start(scan_ts)
                 .map(|item| item.scan_end)
                 .unwrap_or(scan_ts + FALLBACK_SCAN_DURATION_SECS);
             self.state
@@ -2446,7 +2233,7 @@ impl WorkbenchApp {
 
         // Mark acquisition operation completed on success
         if let Some(scan) = scan_opt {
-            if let Some(op_id) = self.active_download_operation_id.take() {
+            if let Some(op_id) = self.download_queue.take_active_operation_id() {
                 self.state
                     .acquisition
                     .mark_completed(op_id, scan.data.len() as u64);
@@ -2458,17 +2245,13 @@ impl WorkbenchApp {
             log::error!("Download failed: {}", msg);
 
             // Mark acquisition operation as failed and error-pause
-            if let Some(op_id) = self.active_download_operation_id.take() {
+            if let Some(op_id) = self.download_queue.take_active_operation_id() {
                 self.state.acquisition.mark_failed(op_id, msg.clone());
             }
 
             // Clear download progress on error if no more work remains
-            let has_remaining_work = self
-                .selection_download_queue
-                .iter()
-                .any(|item| matches!(item.state, QueueItemState::Pending | QueueItemState::Active));
-            if !has_remaining_work {
-                self.selection_download_queue.clear();
+            if !self.download_queue.has_work() {
+                self.download_queue.clear();
                 self.state.download_progress.clear();
             }
         }
@@ -2517,10 +2300,7 @@ impl WorkbenchApp {
             } else {
                 None // Just pumping existing queue, or nothing to do
             };
-            let queue_has_work = self
-                .selection_download_queue
-                .iter()
-                .any(|item| matches!(item.state, QueueItemState::Pending | QueueItemState::Active));
+            let queue_has_work = self.download_queue.has_work();
             if do_download_selection || do_download_at_position || do_pump_queue || queue_has_work {
                 self.process_selection_download(ctx, download_type);
             }
@@ -2846,66 +2626,16 @@ impl WorkbenchApp {
             None => return,
         };
 
-        // Find the current scan and determine the preceding sweep.
-        // In Fixed mode, "previous" means the same elevation from the prior scan.
-        // In Latest mode, "previous" is the sweep collected just before this one.
-        // Returns (scan_key_ts, elevation_number, elevation_deg, start_time, end_time).
-        let prev_info = {
-            let current_scan = self
-                .state
-                .radar_timeline
-                .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS);
-            let is_auto = self.state.viz_state.elevation_selection.is_auto();
-            let sweep_to_info = |scan_key_ts: f64, s: &crate::state::radar_data::Sweep| {
-                (
-                    scan_key_ts as i64,
-                    s.elevation_number,
-                    s.elevation,
-                    s.start_time,
-                    s.end_time,
-                )
-            };
-            match current_scan {
-                Some(scan) => {
-                    if !is_auto {
-                        // Fixed: same elevation from the previous scan
-                        let prev_scan = self
-                            .state
-                            .radar_timeline
-                            .find_previous_scan(playback_ts, MAX_SCAN_AGE_SECS);
-                        prev_scan.and_then(|ps| {
-                            ps.sweeps
-                                .iter()
-                                .find(|s| s.elevation_number == displayed_elev)
-                                .map(|s| sweep_to_info(ps.key_timestamp, s))
-                        })
-                    } else {
-                        // Latest: previous sweep in time order within the same scan
-                        let sweep_idx = scan
-                            .sweeps
-                            .iter()
-                            .position(|s| s.elevation_number == displayed_elev);
-                        match sweep_idx {
-                            Some(idx) if idx > 0 => {
-                                let prev = &scan.sweeps[idx - 1];
-                                Some(sweep_to_info(scan.key_timestamp, prev))
-                            }
-                            _ => {
-                                // First sweep in scan (or not found) — previous scan's last sweep
-                                let prev_scan = self
-                                    .state
-                                    .radar_timeline
-                                    .find_previous_scan(playback_ts, MAX_SCAN_AGE_SECS);
-                                prev_scan.and_then(|ps| {
-                                    ps.sweeps.last().map(|s| sweep_to_info(ps.key_timestamp, s))
-                                })
-                            }
-                        }
-                    }
-                }
-                None => return,
-            }
-        };
+        let is_auto = self.state.viz_state.elevation_selection.is_auto();
+
+        // Determine which sweep should be the previous-sweep under-layer.
+        let prev_info = PlaybackManager::find_prev_sweep(
+            &self.state.radar_timeline,
+            playback_ts,
+            displayed_elev,
+            is_auto,
+            MAX_SCAN_AGE_SECS,
+        );
 
         let (prev_scan_key_ts, prev_elev_num, prev_elev_deg, prev_start, prev_end) = match prev_info
         {
@@ -2932,52 +2662,77 @@ impl WorkbenchApp {
         let prev_scan_key =
             data::ScanKey::from_secs(&self.state.viz_state.site_id, prev_scan_key_ts)
                 .to_storage_key();
-        let desired_prev_id = sweep_cache_key(&prev_scan_key, prev_elev_num);
 
-        // Check if the GPU already has the right data
-        if let Some(ref renderer) = self.renderers.gpu {
-            if let Ok(mut r) = renderer.lock() {
-                if r.prev_sweep_id() == Some(desired_prev_id.as_str()) {
-                    return; // already loaded
+        // Get current GPU prev sweep ID for comparison
+        let current_gpu_prev_id = self.renderers.gpu.as_ref().and_then(|renderer| {
+            renderer
+                .lock()
+                .ok()
+                .and_then(|r| r.prev_sweep_id().map(String::from))
+        });
+
+        let product = self.state.viz_state.product.to_worker_string().to_string();
+        let action = self.playback_manager.resolve_prev_sweep(
+            &prev_scan_key,
+            prev_elev_num,
+            current_gpu_prev_id.as_deref(),
+            &product,
+        );
+
+        match action {
+            PrevSweepAction::AlreadyLoaded => {}
+            PrevSweepAction::UploadFromCache(cache_key) => {
+                // Clear stale previous sweep immediately
+                if let Some(ref renderer) = self.renderers.gpu {
+                    if let Ok(mut r) = renderer.lock() {
+                        r.clear_previous_data();
+                    }
                 }
-                // Clear stale previous sweep immediately — don't composite old data
-                // while the correct previous sweep is being loaded
-                r.clear_previous_data();
-            }
-        }
-
-        // Try to load from cache
-        if let Some(cached) = self.sweep_cache.get(&desired_prev_id) {
-            if let (Some(ref renderer), Some(ref gl)) = (&self.renderers.gpu, &self.renderers.gl) {
-                if let Ok(mut r) = renderer.lock() {
-                    r.update_previous_data(
-                        gl,
-                        &cached.azimuths,
-                        &cached.gate_values,
-                        cached.azimuth_count,
-                        cached.gate_count,
-                        cached.first_gate_range_km,
-                        cached.gate_interval_km,
-                        cached.max_range_km,
-                        cached.offset,
-                        cached.scale,
-                        Some(desired_prev_id.clone()),
-                        &cached.radial_times,
-                    );
+                if let Some(cached) = self.playback_manager.get_cached_sweep(&cache_key) {
+                    if let (Some(ref renderer), Some(ref gl)) =
+                        (&self.renderers.gpu, &self.renderers.gl)
+                    {
+                        if let Ok(mut r) = renderer.lock() {
+                            r.update_previous_data(
+                                gl,
+                                &cached.azimuths,
+                                &cached.gate_values,
+                                cached.azimuth_count,
+                                cached.gate_count,
+                                cached.first_gate_range_km,
+                                cached.gate_interval_km,
+                                cached.max_range_km,
+                                cached.offset,
+                                cached.scale,
+                                Some(cache_key),
+                                &cached.radial_times,
+                            );
+                        }
+                    }
                 }
             }
-            self.pending_prev_sweep_key = None;
-            return;
-        }
-
-        // Not in cache — request a decode, but only if we haven't already requested this key
-        if self.pending_prev_sweep_key.as_ref() == Some(&desired_prev_id) {
-            return; // already in flight
-        }
-        if let Some(ref mut worker) = self.decode_worker {
-            let product = self.state.viz_state.product.to_worker_string().to_string();
-            worker.render(prev_scan_key, prev_elev_num, product);
-            self.pending_prev_sweep_key = Some(desired_prev_id);
+            PrevSweepAction::FetchFromWorker {
+                scan_key,
+                elevation_number,
+                product,
+            } => {
+                // Clear stale previous sweep immediately
+                if let Some(ref renderer) = self.renderers.gpu {
+                    if let Ok(mut r) = renderer.lock() {
+                        r.clear_previous_data();
+                    }
+                }
+                if let Some(ref mut worker) = self.decode_worker {
+                    worker.render(scan_key, elevation_number, product);
+                }
+            }
+            PrevSweepAction::Clear => {
+                if let Some(ref renderer) = self.renderers.gpu {
+                    if let Ok(mut r) = renderer.lock() {
+                        r.clear_previous_data();
+                    }
+                }
+            }
         }
     }
 

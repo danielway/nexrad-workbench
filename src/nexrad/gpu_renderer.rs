@@ -266,6 +266,72 @@ fn find_nearest_azimuth_index(
     Some(best_idx)
 }
 
+/// All uniform locations for the radar shader program.
+struct UniformLocations {
+    radar_center: glow::UniformLocation,
+    radar_radius: glow::UniformLocation,
+    gate_count: glow::UniformLocation,
+    azimuth_count: glow::UniformLocation,
+    first_gate_km: glow::UniformLocation,
+    gate_interval_km: glow::UniformLocation,
+    max_range_km: glow::UniformLocation,
+    value_min: glow::UniformLocation,
+    value_range: glow::UniformLocation,
+    viewport_size: glow::UniformLocation,
+    interpolation: glow::UniformLocation,
+    despeckle_enabled: glow::UniformLocation,
+    despeckle_threshold: glow::UniformLocation,
+    opacity: glow::UniformLocation,
+    data_age_indicator: glow::UniformLocation,
+    offset: glow::UniformLocation,
+    scale: glow::UniformLocation,
+    sweep_enabled: glow::UniformLocation,
+    sweep_azimuth: glow::UniformLocation,
+    sweep_start: glow::UniformLocation,
+    prev_offset: glow::UniformLocation,
+    prev_scale: glow::UniformLocation,
+    prev_gate_count: glow::UniformLocation,
+    prev_azimuth_count: glow::UniformLocation,
+    prev_first_gate_km: glow::UniformLocation,
+    prev_gate_interval_km: glow::UniformLocation,
+    prev_max_range_km: glow::UniformLocation,
+}
+
+/// Spatial metadata for a single sweep (current or previous).
+struct SweepState {
+    azimuth_count: u32,
+    gate_count: u32,
+    first_gate_km: f64,
+    gate_interval_km: f64,
+    max_range_km: f64,
+    data_offset: f32,
+    data_scale: f32,
+    sweep_id: Option<String>,
+}
+
+impl Default for SweepState {
+    fn default() -> Self {
+        Self {
+            azimuth_count: 0,
+            gate_count: 0,
+            first_gate_km: 0.0,
+            gate_interval_km: 0.0,
+            max_range_km: 0.0,
+            data_offset: 0.0,
+            data_scale: 1.0,
+            sweep_id: None,
+        }
+    }
+}
+
+/// CPU-side shadow copies of sweep data for inspector/detection lookups.
+#[derive(Default)]
+struct CpuShadowData {
+    azimuths: Vec<f32>,
+    gate_values: Vec<f32>,
+    radial_times: Vec<f64>,
+}
+
 /// GPU-based radar renderer using WebGL2 shaders.
 pub struct RadarGpuRenderer {
     program: glow::Program,
@@ -277,80 +343,19 @@ pub struct RadarGpuRenderer {
     lut_texture: glow::Texture,
     azimuth_texture: glow::Texture,
 
-    // Uniform locations
-    u_radar_center: glow::UniformLocation,
-    u_radar_radius: glow::UniformLocation,
-    u_gate_count: glow::UniformLocation,
-    u_azimuth_count: glow::UniformLocation,
-    u_first_gate_km: glow::UniformLocation,
-    u_gate_interval_km: glow::UniformLocation,
-    u_max_range_km: glow::UniformLocation,
-    u_value_min: glow::UniformLocation,
-    u_value_range: glow::UniformLocation,
-    u_viewport_size: glow::UniformLocation,
-
-    // Processing uniform locations
-    u_interpolation: glow::UniformLocation,
-    u_despeckle_enabled: glow::UniformLocation,
-    u_despeckle_threshold: glow::UniformLocation,
-    u_opacity: glow::UniformLocation,
-    u_data_age_indicator: glow::UniformLocation,
-
-    // Raw-to-physical conversion uniform locations
-    u_offset: glow::UniformLocation,
-    u_scale: glow::UniformLocation,
-
-    // Sweep animation uniform locations
-    u_sweep_enabled: glow::UniformLocation,
-    u_sweep_azimuth: glow::UniformLocation,
-    u_sweep_start: glow::UniformLocation,
-    u_prev_offset: glow::UniformLocation,
-    u_prev_scale: glow::UniformLocation,
-    u_prev_gate_count: glow::UniformLocation,
-    u_prev_azimuth_count: glow::UniformLocation,
-    u_prev_first_gate_km: glow::UniformLocation,
-    u_prev_gate_interval_km: glow::UniformLocation,
-    u_prev_max_range_km: glow::UniformLocation,
-
     // Previous scan textures (for sweep animation)
     prev_data_texture: glow::Texture,
     prev_azimuth_texture: glow::Texture,
-    prev_data_offset: f32,
-    prev_data_scale: f32,
-    prev_azimuth_count: u32,
-    prev_gate_count: u32,
-    prev_first_gate_km: f64,
-    prev_gate_interval_km: f64,
-    prev_max_range_km: f64,
-    /// Identity of the sweep currently in `prev_data_texture` (scan_key|elev_num).
-    prev_sweep_id: Option<String>,
 
-    // Data metadata
-    azimuth_count: u32,
-    gate_count: u32,
-    first_gate_km: f64,
-    gate_interval_km: f64,
-    max_range_km: f64,
+    uniforms: UniformLocations,
+    current: SweepState,
+    prev: SweepState,
+    cpu: CpuShadowData,
+    prev_cpu: CpuShadowData,
+
+    has_data: bool,
     value_min: f32,
     value_range: f32,
-    has_data: bool,
-
-    // Raw-to-physical conversion params (for CPU-side inspector/storm detection)
-    data_offset: f32,
-    data_scale: f32,
-
-    /// Identity of the sweep currently in `data_texture` (scan_key|elev_num).
-    current_sweep_id: Option<String>,
-
-    // CPU-side copies for inspector value lookup
-    cpu_azimuths: Vec<f32>,
-    cpu_gate_values: Vec<f32>,
-    /// Per-radial collection timestamps in Unix seconds (parallel to cpu_azimuths).
-    cpu_radial_times: Vec<f64>,
-
-    // CPU-side copies of previous sweep data for sweep-aware inspector
-    prev_cpu_gate_values: Vec<f32>,
-    prev_cpu_radial_times: Vec<f64>,
 }
 
 impl RadarGpuRenderer {
@@ -448,39 +453,35 @@ impl RadarGpuRenderer {
             let u_prev_azimuth_tex = uniform("u_prev_azimuth_tex")?;
             gl.uniform_1_i32(Some(&u_prev_azimuth_tex), 4);
 
-            let u_radar_center = uniform("u_radar_center")?;
-            let u_radar_radius = uniform("u_radar_radius")?;
-            let u_gate_count = uniform("u_gate_count")?;
-            let u_azimuth_count = uniform("u_azimuth_count")?;
-            let u_first_gate_km = uniform("u_first_gate_km")?;
-            let u_gate_interval_km = uniform("u_gate_interval_km")?;
-            let u_max_range_km = uniform("u_max_range_km")?;
-            let u_value_min = uniform("u_value_min")?;
-            let u_value_range = uniform("u_value_range")?;
-            let u_viewport_size = uniform("u_viewport_size")?;
-
-            // Processing uniforms
-            let u_interpolation = uniform("u_interpolation")?;
-            let u_despeckle_enabled = uniform("u_despeckle_enabled")?;
-            let u_despeckle_threshold = uniform("u_despeckle_threshold")?;
-            let u_opacity = uniform("u_opacity")?;
-            let u_data_age_indicator = uniform("u_data_age_indicator")?;
-
-            // Raw-to-physical conversion uniforms
-            let u_offset = uniform("u_offset")?;
-            let u_scale = uniform("u_scale")?;
-
-            // Sweep animation uniforms
-            let u_sweep_enabled = uniform("u_sweep_enabled")?;
-            let u_sweep_azimuth = uniform("u_sweep_azimuth")?;
-            let u_sweep_start = uniform("u_sweep_start")?;
-            let u_prev_offset = uniform("u_prev_offset")?;
-            let u_prev_scale = uniform("u_prev_scale")?;
-            let u_prev_gate_count = uniform("u_prev_gate_count")?;
-            let u_prev_azimuth_count = uniform("u_prev_azimuth_count")?;
-            let u_prev_first_gate_km = uniform("u_prev_first_gate_km")?;
-            let u_prev_gate_interval_km = uniform("u_prev_gate_interval_km")?;
-            let u_prev_max_range_km = uniform("u_prev_max_range_km")?;
+            let uniforms = UniformLocations {
+                radar_center: uniform("u_radar_center")?,
+                radar_radius: uniform("u_radar_radius")?,
+                gate_count: uniform("u_gate_count")?,
+                azimuth_count: uniform("u_azimuth_count")?,
+                first_gate_km: uniform("u_first_gate_km")?,
+                gate_interval_km: uniform("u_gate_interval_km")?,
+                max_range_km: uniform("u_max_range_km")?,
+                value_min: uniform("u_value_min")?,
+                value_range: uniform("u_value_range")?,
+                viewport_size: uniform("u_viewport_size")?,
+                interpolation: uniform("u_interpolation")?,
+                despeckle_enabled: uniform("u_despeckle_enabled")?,
+                despeckle_threshold: uniform("u_despeckle_threshold")?,
+                opacity: uniform("u_opacity")?,
+                data_age_indicator: uniform("u_data_age_indicator")?,
+                offset: uniform("u_offset")?,
+                scale: uniform("u_scale")?,
+                sweep_enabled: uniform("u_sweep_enabled")?,
+                sweep_azimuth: uniform("u_sweep_azimuth")?,
+                sweep_start: uniform("u_sweep_start")?,
+                prev_offset: uniform("u_prev_offset")?,
+                prev_scale: uniform("u_prev_scale")?,
+                prev_gate_count: uniform("u_prev_gate_count")?,
+                prev_azimuth_count: uniform("u_prev_azimuth_count")?,
+                prev_first_gate_km: uniform("u_prev_first_gate_km")?,
+                prev_gate_interval_km: uniform("u_prev_gate_interval_km")?,
+                prev_max_range_km: uniform("u_prev_max_range_km")?,
+            };
 
             // Create placeholders for previous sweep textures
             let prev_data_texture = create_r32f_texture(gl, 1, 1, &[0.0]);
@@ -495,59 +496,16 @@ impl RadarGpuRenderer {
                 data_texture,
                 lut_texture,
                 azimuth_texture,
-                u_radar_center,
-                u_radar_radius,
-                u_gate_count,
-                u_azimuth_count,
-                u_first_gate_km,
-                u_gate_interval_km,
-                u_max_range_km,
-                u_value_min,
-                u_value_range,
-                u_viewport_size,
-                u_interpolation,
-                u_despeckle_enabled,
-                u_despeckle_threshold,
-                u_opacity,
-                u_data_age_indicator,
-                u_offset,
-                u_scale,
-                u_sweep_enabled,
-                u_sweep_azimuth,
-                u_sweep_start,
-                u_prev_offset,
-                u_prev_scale,
-                u_prev_gate_count,
-                u_prev_azimuth_count,
-                u_prev_first_gate_km,
-                u_prev_gate_interval_km,
-                u_prev_max_range_km,
                 prev_data_texture,
                 prev_azimuth_texture,
-                prev_data_offset: 0.0,
-                prev_data_scale: 1.0,
-                prev_azimuth_count: 0,
-                prev_gate_count: 0,
-                prev_first_gate_km: 0.0,
-                prev_gate_interval_km: 0.0,
-                prev_max_range_km: 0.0,
-                prev_sweep_id: None,
-                azimuth_count: 0,
-                gate_count: 0,
-                first_gate_km: 0.0,
-                gate_interval_km: 0.0,
-                max_range_km: 0.0,
+                uniforms,
+                current: SweepState::default(),
+                prev: SweepState::default(),
+                cpu: CpuShadowData::default(),
+                prev_cpu: CpuShadowData::default(),
+                has_data: false,
                 value_min: 0.0,
                 value_range: 1.0,
-                has_data: false,
-                data_offset: 0.0,
-                data_scale: 1.0,
-                current_sweep_id: None,
-                cpu_azimuths: Vec::new(),
-                cpu_gate_values: Vec::new(),
-                cpu_radial_times: Vec::new(),
-                prev_cpu_gate_values: Vec::new(),
-                prev_cpu_radial_times: Vec::new(),
             })
         }
     }
@@ -574,20 +532,20 @@ impl RadarGpuRenderer {
     ) {
         let t_total = web_time::Instant::now();
 
-        self.azimuth_count = azimuth_count;
-        self.gate_count = gate_count;
-        self.first_gate_km = first_gate_km;
-        self.gate_interval_km = gate_interval_km;
-        self.max_range_km = max_range_km;
-        self.data_offset = offset;
-        self.data_scale = scale;
+        self.current.azimuth_count = azimuth_count;
+        self.current.gate_count = gate_count;
+        self.current.first_gate_km = first_gate_km;
+        self.current.gate_interval_km = gate_interval_km;
+        self.current.max_range_km = max_range_km;
+        self.current.data_offset = offset;
+        self.current.data_scale = scale;
         self.has_data = azimuth_count > 0 && gate_count > 0;
 
         // Keep CPU copies for inspector value lookup
         let t_copy = web_time::Instant::now();
-        self.cpu_azimuths = azimuths.to_vec();
-        self.cpu_gate_values = gate_values.to_vec();
-        self.cpu_radial_times = radial_times.to_vec();
+        self.cpu.azimuths = azimuths.to_vec();
+        self.cpu.gate_values = gate_values.to_vec();
+        self.cpu.radial_times = radial_times.to_vec();
         let copy_ms = t_copy.elapsed().as_secs_f64() * 1000.0;
 
         if !self.has_data {
@@ -695,22 +653,22 @@ impl RadarGpuRenderer {
 
     /// Maximum range of the currently loaded data in km.
     pub fn max_range_km(&self) -> f64 {
-        self.max_range_km
+        self.current.max_range_km
     }
 
     // --- Accessors for globe radar renderer ---
 
     pub fn gate_count(&self) -> u32 {
-        self.gate_count
+        self.current.gate_count
     }
     pub fn azimuth_count(&self) -> u32 {
-        self.azimuth_count
+        self.current.azimuth_count
     }
     pub fn first_gate_km(&self) -> f64 {
-        self.first_gate_km
+        self.current.first_gate_km
     }
     pub fn gate_interval_km(&self) -> f64 {
-        self.gate_interval_km
+        self.current.gate_interval_km
     }
     pub fn value_min(&self) -> f32 {
         self.value_min
@@ -719,10 +677,10 @@ impl RadarGpuRenderer {
         self.value_range
     }
     pub fn data_offset(&self) -> f32 {
-        self.data_offset
+        self.current.data_offset
     }
     pub fn data_scale(&self) -> f32 {
-        self.data_scale
+        self.current.data_scale
     }
     pub fn data_texture(&self) -> glow::Texture {
         self.data_texture
@@ -737,17 +695,17 @@ impl RadarGpuRenderer {
     /// Clear all radar data (e.g. on site change).
     pub fn clear_data(&mut self) {
         self.has_data = false;
-        self.current_sweep_id = None;
-        self.prev_sweep_id = None;
-        self.cpu_azimuths.clear();
-        self.cpu_gate_values.clear();
-        self.cpu_radial_times.clear();
+        self.current.sweep_id = None;
+        self.prev.sweep_id = None;
+        self.cpu.azimuths.clear();
+        self.cpu.gate_values.clear();
+        self.cpu.radial_times.clear();
     }
 
     /// Clear only the previous-sweep identity so the shader composites against
     /// black until a new previous sweep is loaded.
     pub fn clear_previous_data(&mut self) {
-        self.prev_sweep_id = None;
+        self.prev.sweep_id = None;
     }
 
     /// Promote the current texture to the previous texture slot.
@@ -755,38 +713,38 @@ impl RadarGpuRenderer {
     /// Called at elevation transitions during live streaming so the just-completed
     /// sweep becomes the background for compositing partial data on top.
     pub fn promote_current_to_previous(&mut self, gl: &glow::Context) {
-        if !self.has_data || self.cpu_azimuths.is_empty() {
+        if !self.has_data || self.cpu.azimuths.is_empty() {
             return;
         }
         self.update_previous_data(
             gl,
-            &self.cpu_azimuths.clone(),
-            &self.cpu_gate_values.clone(),
-            self.azimuth_count,
-            self.gate_count,
-            self.first_gate_km,
-            self.gate_interval_km,
-            self.max_range_km,
-            self.data_offset,
-            self.data_scale,
-            self.current_sweep_id.clone(),
-            &self.cpu_radial_times.clone(),
+            &self.cpu.azimuths.clone(),
+            &self.cpu.gate_values.clone(),
+            self.current.azimuth_count,
+            self.current.gate_count,
+            self.current.first_gate_km,
+            self.current.gate_interval_km,
+            self.current.max_range_km,
+            self.current.data_offset,
+            self.current.data_scale,
+            self.current.sweep_id.clone(),
+            &self.cpu.radial_times.clone(),
         );
     }
 
     /// Identity of the sweep currently loaded in the primary data texture.
     pub fn current_sweep_id(&self) -> Option<&str> {
-        self.current_sweep_id.as_deref()
+        self.current.sweep_id.as_deref()
     }
 
     /// Identity of the sweep currently loaded in the previous data texture.
     pub fn prev_sweep_id(&self) -> Option<&str> {
-        self.prev_sweep_id.as_deref()
+        self.prev.sweep_id.as_deref()
     }
 
     /// Set the identity of the current sweep (called after `update_data`).
     pub fn set_current_sweep_id(&mut self, id: Option<String>) {
-        self.current_sweep_id = id;
+        self.current.sweep_id = id;
     }
 
     /// Upload decoded radar data to the *previous* texture slot for sweep
@@ -809,16 +767,16 @@ impl RadarGpuRenderer {
         sweep_id: Option<String>,
         radial_times: &[f64],
     ) {
-        self.prev_data_offset = offset;
-        self.prev_data_scale = scale;
-        self.prev_azimuth_count = azimuth_count;
-        self.prev_gate_count = gate_count;
-        self.prev_first_gate_km = first_gate_km;
-        self.prev_gate_interval_km = gate_interval_km;
-        self.prev_max_range_km = max_range_km;
-        self.prev_sweep_id = sweep_id;
-        self.prev_cpu_gate_values = gate_values.to_vec();
-        self.prev_cpu_radial_times = radial_times.to_vec();
+        self.prev.data_offset = offset;
+        self.prev.data_scale = scale;
+        self.prev.azimuth_count = azimuth_count;
+        self.prev.gate_count = gate_count;
+        self.prev.first_gate_km = first_gate_km;
+        self.prev.gate_interval_km = gate_interval_km;
+        self.prev.max_range_km = max_range_km;
+        self.prev.sweep_id = sweep_id;
+        self.prev_cpu.gate_values = gate_values.to_vec();
+        self.prev_cpu.radial_times = radial_times.to_vec();
 
         if azimuth_count == 0 || gate_count == 0 {
             return;
@@ -836,68 +794,10 @@ impl RadarGpuRenderer {
 
     /// Look up the raw data value at a given polar coordinate.
     ///
-    /// Returns `None` if outside the data range or if the value is the no-data sentinel.
-    pub fn value_at_polar(&self, azimuth_deg: f32, range_km: f64) -> Option<f32> {
-        if !self.has_data || self.cpu_azimuths.is_empty() {
-            return None;
-        }
-
-        if range_km < self.first_gate_km || range_km >= self.max_range_km {
-            return None;
-        }
-
-        let az_idx = find_nearest_azimuth_index(
-            &self.cpu_azimuths,
-            self.azimuth_count as usize,
-            azimuth_deg,
-        )?;
-
-        let gate_count = self.gate_count as usize;
-        let gate_idx = ((range_km - self.first_gate_km) / self.gate_interval_km).floor() as usize;
-        if gate_idx >= gate_count {
-            return None;
-        }
-
-        let offset = az_idx * gate_count + gate_idx;
-        if offset >= self.cpu_gate_values.len() {
-            return None;
-        }
-
-        let raw = self.cpu_gate_values[offset];
-        if raw <= 1.0 {
-            return None;
-        }
-
-        if self.data_scale == 0.0 {
-            Some(raw)
-        } else {
-            Some((raw - self.data_offset) / self.data_scale)
-        }
-    }
-
-    /// Look up the radial collection timestamp (Unix seconds) at a given azimuth.
-    ///
-    /// Returns `None` if radial times are not available or azimuth is out of range.
-    pub fn collection_time_at_polar(&self, azimuth_deg: f32) -> Option<f64> {
-        if self.cpu_radial_times.is_empty() || self.cpu_azimuths.is_empty() {
-            return None;
-        }
-
-        let az_idx = find_nearest_azimuth_index(
-            &self.cpu_azimuths,
-            self.azimuth_count as usize,
-            azimuth_deg,
-        )?;
-
-        self.cpu_radial_times.get(az_idx).copied()
-    }
-
-    /// Sweep-aware value lookup for the inspector.
-    ///
     /// When `sweep_params` is `Some((sweep_azimuth, sweep_start))`, determines
     /// whether the queried position falls in the previous-sweep region and
-    /// returns the appropriate value.
-    pub fn value_at_polar_sweep_aware(
+    /// returns the appropriate value. Pass `None` for non-animated lookups.
+    pub fn value_at_polar(
         &self,
         azimuth_deg: f32,
         range_km: f64,
@@ -907,15 +807,53 @@ impl RadarGpuRenderer {
             let swept_arc = (sweep_az - sweep_start).rem_euclid(360.0);
             let pixel_from_start = (azimuth_deg - sweep_start).rem_euclid(360.0);
             if pixel_from_start >= swept_arc {
-                // In the previous-sweep region — use prev CPU data
                 return self.prev_value_at_polar(azimuth_deg, range_km);
             }
         }
-        self.value_at_polar(azimuth_deg, range_km)
+        if !self.has_data || self.cpu.azimuths.is_empty() {
+            return None;
+        }
+
+        if range_km < self.current.first_gate_km || range_km >= self.current.max_range_km {
+            return None;
+        }
+
+        let az_idx = find_nearest_azimuth_index(
+            &self.cpu.azimuths,
+            self.current.azimuth_count as usize,
+            azimuth_deg,
+        )?;
+
+        let gate_count = self.current.gate_count as usize;
+        let gate_idx = ((range_km - self.current.first_gate_km) / self.current.gate_interval_km)
+            .floor() as usize;
+        if gate_idx >= gate_count {
+            return None;
+        }
+
+        let offset = az_idx * gate_count + gate_idx;
+        if offset >= self.cpu.gate_values.len() {
+            return None;
+        }
+
+        let raw = self.cpu.gate_values[offset];
+        if raw <= 1.0 {
+            return None;
+        }
+
+        if self.current.data_scale == 0.0 {
+            Some(raw)
+        } else {
+            Some((raw - self.current.data_offset) / self.current.data_scale)
+        }
     }
 
-    /// Sweep-aware collection time lookup for the inspector.
-    pub fn collection_time_at_polar_sweep_aware(
+    /// Look up the radial collection timestamp (Unix seconds) at a given azimuth.
+    ///
+    /// When `sweep_params` is `Some((sweep_azimuth, sweep_start))`, determines
+    /// whether the queried position falls in the previous-sweep region and
+    /// returns the appropriate timestamp. Pass `None` for non-animated lookups.
+    pub fn collection_time_at_polar(
         &self,
         azimuth_deg: f32,
         sweep_params: Option<(f32, f32)>,
@@ -927,18 +865,28 @@ impl RadarGpuRenderer {
                 return self.prev_collection_time_at_polar(azimuth_deg);
             }
         }
-        self.collection_time_at_polar(azimuth_deg)
+        if self.cpu.radial_times.is_empty() || self.cpu.azimuths.is_empty() {
+            return None;
+        }
+
+        let az_idx = find_nearest_azimuth_index(
+            &self.cpu.azimuths,
+            self.current.azimuth_count as usize,
+            azimuth_deg,
+        )?;
+
+        self.cpu.radial_times.get(az_idx).copied()
     }
 
     /// Look up value in the previous sweep's CPU data using evenly-spaced azimuth indexing.
     fn prev_value_at_polar(&self, azimuth_deg: f32, range_km: f64) -> Option<f32> {
-        let az_count = self.prev_azimuth_count as usize;
-        let gate_count = self.prev_gate_count as usize;
-        if az_count == 0 || gate_count == 0 || self.prev_cpu_gate_values.is_empty() {
+        let az_count = self.prev.azimuth_count as usize;
+        let gate_count = self.prev.gate_count as usize;
+        if az_count == 0 || gate_count == 0 || self.prev_cpu.gate_values.is_empty() {
             return None;
         }
 
-        if range_km < self.prev_first_gate_km || range_km >= self.prev_max_range_km {
+        if range_km < self.prev.first_gate_km || range_km >= self.prev.max_range_km {
             return None;
         }
 
@@ -946,37 +894,37 @@ impl RadarGpuRenderer {
         let az_idx = ((azimuth_deg * az_count as f32 / 360.0).round() as usize) % az_count;
 
         let gate_idx =
-            ((range_km - self.prev_first_gate_km) / self.prev_gate_interval_km).floor() as usize;
+            ((range_km - self.prev.first_gate_km) / self.prev.gate_interval_km).floor() as usize;
         if gate_idx >= gate_count {
             return None;
         }
 
         let offset = az_idx * gate_count + gate_idx;
-        if offset >= self.prev_cpu_gate_values.len() {
+        if offset >= self.prev_cpu.gate_values.len() {
             return None;
         }
 
-        let raw = self.prev_cpu_gate_values[offset];
+        let raw = self.prev_cpu.gate_values[offset];
         if raw <= 1.0 {
             return None;
         }
 
-        if self.prev_data_scale == 0.0 {
+        if self.prev.data_scale == 0.0 {
             Some(raw)
         } else {
-            Some((raw - self.prev_data_offset) / self.prev_data_scale)
+            Some((raw - self.prev.data_offset) / self.prev.data_scale)
         }
     }
 
     /// Look up collection time in the previous sweep's CPU data.
     fn prev_collection_time_at_polar(&self, azimuth_deg: f32) -> Option<f64> {
-        let az_count = self.prev_azimuth_count as usize;
-        if az_count == 0 || self.prev_cpu_radial_times.is_empty() {
+        let az_count = self.prev.azimuth_count as usize;
+        if az_count == 0 || self.prev_cpu.radial_times.is_empty() {
             return None;
         }
 
         let az_idx = ((azimuth_deg * az_count as f32 / 360.0).round() as usize) % az_count;
-        self.prev_cpu_radial_times.get(az_idx).copied()
+        self.prev_cpu.radial_times.get(az_idx).copied()
     }
 
     /// Render the radar data using the current GL context.
@@ -1026,17 +974,36 @@ impl RadarGpuRenderer {
             gl.bind_texture(glow::TEXTURE_2D, Some(self.prev_azimuth_texture));
 
             // Set uniforms
-            gl.uniform_2_f32(Some(&self.u_radar_center), radar_center[0], radar_center[1]);
-            gl.uniform_1_f32(Some(&self.u_radar_radius), radar_radius);
-            gl.uniform_1_f32(Some(&self.u_gate_count), self.gate_count as f32);
-            gl.uniform_1_f32(Some(&self.u_azimuth_count), self.azimuth_count as f32);
-            gl.uniform_1_f32(Some(&self.u_first_gate_km), self.first_gate_km as f32);
-            gl.uniform_1_f32(Some(&self.u_gate_interval_km), self.gate_interval_km as f32);
-            gl.uniform_1_f32(Some(&self.u_max_range_km), self.max_range_km as f32);
-            gl.uniform_1_f32(Some(&self.u_value_min), self.value_min);
-            gl.uniform_1_f32(Some(&self.u_value_range), self.value_range);
             gl.uniform_2_f32(
-                Some(&self.u_viewport_size),
+                Some(&self.uniforms.radar_center),
+                radar_center[0],
+                radar_center[1],
+            );
+            gl.uniform_1_f32(Some(&self.uniforms.radar_radius), radar_radius);
+            gl.uniform_1_f32(
+                Some(&self.uniforms.gate_count),
+                self.current.gate_count as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.uniforms.azimuth_count),
+                self.current.azimuth_count as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.uniforms.first_gate_km),
+                self.current.first_gate_km as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.uniforms.gate_interval_km),
+                self.current.gate_interval_km as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.uniforms.max_range_km),
+                self.current.max_range_km as f32,
+            );
+            gl.uniform_1_f32(Some(&self.uniforms.value_min), self.value_min);
+            gl.uniform_1_f32(Some(&self.uniforms.value_range), self.value_range);
+            gl.uniform_2_f32(
+                Some(&self.uniforms.viewport_size),
                 viewport_size[0],
                 viewport_size[1],
             );
@@ -1046,51 +1013,54 @@ impl RadarGpuRenderer {
                 crate::state::InterpolationMode::Nearest => 0,
                 crate::state::InterpolationMode::Bilinear => 1,
             };
-            gl.uniform_1_i32(Some(&self.u_interpolation), interp_mode);
+            gl.uniform_1_i32(Some(&self.uniforms.interpolation), interp_mode);
             gl.uniform_1_i32(
-                Some(&self.u_despeckle_enabled),
+                Some(&self.uniforms.despeckle_enabled),
                 processing.despeckle_enabled as i32,
             );
             gl.uniform_1_i32(
-                Some(&self.u_despeckle_threshold),
+                Some(&self.uniforms.despeckle_threshold),
                 processing.despeckle_threshold as i32,
             );
-            gl.uniform_1_f32(Some(&self.u_opacity), processing.opacity);
+            gl.uniform_1_f32(Some(&self.uniforms.opacity), processing.opacity);
             gl.uniform_1_i32(
-                Some(&self.u_data_age_indicator),
+                Some(&self.uniforms.data_age_indicator),
                 processing.data_age_indicator as i32,
             );
 
             // Raw-to-physical conversion
-            gl.uniform_1_f32(Some(&self.u_offset), self.data_offset);
-            gl.uniform_1_f32(Some(&self.u_scale), self.data_scale);
+            gl.uniform_1_f32(Some(&self.uniforms.offset), self.current.data_offset);
+            gl.uniform_1_f32(Some(&self.uniforms.scale), self.current.data_scale);
 
             // Sweep animation uniforms — enable even without prev data; the 1x1
-            // placeholder texture returns 0.0 (below-threshold sentinel → transparent),
+            // placeholder texture returns 0.0 (below-threshold sentinel -> transparent),
             // so the first sweep progressively reveals against a blank background.
             let sweep_on = sweep_info.is_some();
-            gl.uniform_1_i32(Some(&self.u_sweep_enabled), sweep_on as i32);
+            gl.uniform_1_i32(Some(&self.uniforms.sweep_enabled), sweep_on as i32);
             let (sweep_az, sweep_start) = sweep_info.unwrap_or((0.0, 0.0));
-            gl.uniform_1_f32(Some(&self.u_sweep_azimuth), sweep_az);
-            gl.uniform_1_f32(Some(&self.u_sweep_start), sweep_start);
-            gl.uniform_1_f32(Some(&self.u_prev_offset), self.prev_data_offset);
-            gl.uniform_1_f32(Some(&self.u_prev_scale), self.prev_data_scale);
-            gl.uniform_1_f32(Some(&self.u_prev_gate_count), self.prev_gate_count as f32);
+            gl.uniform_1_f32(Some(&self.uniforms.sweep_azimuth), sweep_az);
+            gl.uniform_1_f32(Some(&self.uniforms.sweep_start), sweep_start);
+            gl.uniform_1_f32(Some(&self.uniforms.prev_offset), self.prev.data_offset);
+            gl.uniform_1_f32(Some(&self.uniforms.prev_scale), self.prev.data_scale);
             gl.uniform_1_f32(
-                Some(&self.u_prev_azimuth_count),
-                self.prev_azimuth_count as f32,
+                Some(&self.uniforms.prev_gate_count),
+                self.prev.gate_count as f32,
             );
             gl.uniform_1_f32(
-                Some(&self.u_prev_first_gate_km),
-                self.prev_first_gate_km as f32,
+                Some(&self.uniforms.prev_azimuth_count),
+                self.prev.azimuth_count as f32,
             );
             gl.uniform_1_f32(
-                Some(&self.u_prev_gate_interval_km),
-                self.prev_gate_interval_km as f32,
+                Some(&self.uniforms.prev_first_gate_km),
+                self.prev.first_gate_km as f32,
             );
             gl.uniform_1_f32(
-                Some(&self.u_prev_max_range_km),
-                self.prev_max_range_km as f32,
+                Some(&self.uniforms.prev_gate_interval_km),
+                self.prev.gate_interval_km as f32,
+            );
+            gl.uniform_1_f32(
+                Some(&self.uniforms.prev_max_range_km),
+                self.prev.max_range_km as f32,
             );
 
             // Draw fullscreen quad
@@ -1113,14 +1083,14 @@ impl RadarGpuRenderer {
         radar_lon: f64,
         threshold_dbz: f32,
     ) -> Vec<crate::state::StormCellInfo> {
-        if !self.has_data || self.cpu_azimuths.is_empty() {
+        if !self.has_data || self.cpu.azimuths.is_empty() {
             return Vec::new();
         }
 
         let t_total = web_time::Instant::now();
 
-        let az_count = self.azimuth_count as usize;
-        let gate_count = self.gate_count as usize;
+        let az_count = self.current.azimuth_count as usize;
+        let gate_count = self.current.gate_count as usize;
 
         // Compute azimuth spacing
         let az_spacing = if az_count > 1 {
@@ -1135,25 +1105,25 @@ impl RadarGpuRenderer {
             "Reflectivity",
             "dBZ",
             0.5, // elevation doesn't matter for 2D detection
-            self.cpu_azimuths.clone(),
+            self.cpu.azimuths.clone(),
             az_spacing,
-            self.first_gate_km,
-            self.gate_interval_km,
+            self.current.first_gate_km,
+            self.current.gate_interval_km,
             gate_count,
         );
 
-        // Populate the field with our gate values (convert raw → physical)
+        // Populate the field with our gate values (convert raw -> physical)
         let mut valid_gates = 0u32;
         for az_idx in 0..az_count {
             let row_start = az_idx * gate_count;
             for g in 0..gate_count {
-                let raw = self.cpu_gate_values[row_start + g];
+                let raw = self.cpu.gate_values[row_start + g];
                 // Raw sentinels: 0 = below threshold, 1 = range folded
                 if raw > 1.0 {
-                    let physical = if self.data_scale == 0.0 {
+                    let physical = if self.current.data_scale == 0.0 {
                         raw
                     } else {
-                        (raw - self.data_offset) / self.data_scale
+                        (raw - self.current.data_offset) / self.current.data_scale
                     };
                     field.set(az_idx, g, physical, nexrad_model::data::GateStatus::Valid);
                     valid_gates += 1;

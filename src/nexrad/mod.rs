@@ -10,6 +10,7 @@ mod cache_channel;
 pub(crate) mod color_table;
 mod decode_worker;
 mod download;
+pub(crate) mod download_queue;
 pub(crate) mod globe_radar_renderer;
 pub(crate) mod gpu_renderer;
 pub(crate) mod ingest_phases;

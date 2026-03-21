@@ -34,8 +34,8 @@ pub(crate) fn render_inspector(
     let (value, collection_time) = gpu_renderer
         .map(|r| {
             let renderer = r.lock().expect("renderer mutex poisoned");
-            let v = renderer.value_at_polar_sweep_aware(azimuth_deg as f32, range_km, sweep_params);
-            let t = renderer.collection_time_at_polar_sweep_aware(azimuth_deg as f32, sweep_params);
+            let v = renderer.value_at_polar(azimuth_deg as f32, range_km, sweep_params);
+            let t = renderer.collection_time_at_polar(azimuth_deg as f32, sweep_params);
             (v, t)
         })
         .unwrap_or((None, None));

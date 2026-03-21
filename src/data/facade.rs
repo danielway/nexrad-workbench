@@ -2,11 +2,11 @@
 //!
 //! Wraps `IndexedDbRecordStore` with cache eviction logic.
 
-use crate::data::indexeddb::IndexedDbRecordStore;
+use crate::data::indexeddb::{DataError, IndexedDbRecordStore};
 use crate::data::keys::*;
 
 /// Result type for cache operations.
-pub type CacheResult<T> = Result<T, String>;
+pub type CacheResult<T> = Result<T, DataError>;
 
 /// Data facade for accessing radar data in IndexedDB.
 #[derive(Clone)]

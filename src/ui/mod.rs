@@ -16,6 +16,7 @@ mod canvas_overlays;
 pub(crate) mod colors;
 mod event_modal;
 mod left_panel;
+mod modal_helper;
 mod network_panel;
 mod playback_controls;
 mod right_panel;

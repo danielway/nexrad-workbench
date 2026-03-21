@@ -132,20 +132,24 @@ fn build_precomputed_sweep(target: &[&Radial], product: Product) -> Option<Preco
     let mut max_ts = f64::NEG_INFINITY;
     let mut elev_sum: f64 = 0.0;
 
+    // Collect shared radial metadata in a single pass
+    for radial in target.iter() {
+        azimuths.push(radial.azimuth_angle_degrees());
+        let ts = radial.collection_timestamp() as f64;
+        radial_times.push(ts / 1000.0);
+        if ts < min_ts {
+            min_ts = ts;
+        }
+        if ts > max_ts {
+            max_ts = ts;
+        }
+        elev_sum += radial.elevation_angle_degrees() as f64;
+    }
+
+    // Extract gate values — branch only for the word-size-specific fill
     let gate_values = if data_word_size == 16 {
         let mut vals: Vec<u16> = vec![0; total]; // 0 = below threshold sentinel
         for (row, radial) in target.iter().enumerate() {
-            azimuths.push(radial.azimuth_angle_degrees());
-            let ts = radial.collection_timestamp() as f64;
-            radial_times.push(ts / 1000.0);
-            if ts < min_ts {
-                min_ts = ts;
-            }
-            if ts > max_ts {
-                max_ts = ts;
-            }
-            elev_sum += radial.elevation_angle_degrees() as f64;
-
             if let Some(bytes) = moment_raw_values(product, radial) {
                 let dest = &mut vals[row * gate_count..(row + 1) * gate_count];
                 let n = (bytes.len() / 2).min(gate_count);
@@ -158,17 +162,6 @@ fn build_precomputed_sweep(target: &[&Radial], product: Product) -> Option<Preco
     } else {
         let mut vals: Vec<u8> = vec![0; total]; // 0 = below threshold sentinel
         for (row, radial) in target.iter().enumerate() {
-            azimuths.push(radial.azimuth_angle_degrees());
-            let ts = radial.collection_timestamp() as f64;
-            radial_times.push(ts / 1000.0);
-            if ts < min_ts {
-                min_ts = ts;
-            }
-            if ts > max_ts {
-                max_ts = ts;
-            }
-            elev_sum += radial.elevation_angle_degrees() as f64;
-
             if let Some(bytes) = moment_raw_values(product, radial) {
                 let dest = &mut vals[row * gate_count..(row + 1) * gate_count];
                 let n = bytes.len().min(gate_count);

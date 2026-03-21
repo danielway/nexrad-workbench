@@ -9,6 +9,7 @@ pub(crate) mod acquisition;
 mod layer;
 mod live_mode;
 mod playback;
+pub(crate) mod playback_manager;
 mod preferences;
 pub(crate) mod radar_data;
 mod saved_events;
