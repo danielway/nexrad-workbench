@@ -113,7 +113,7 @@ pub struct GpuResources {
     pub volume_ray: Option<std::sync::Arc<std::sync::Mutex<nexrad::VolumeRayRenderer>>>,
 }
 
-use nexrad::download_queue::{DownloadQueueManager, QueueAction, QueueItem};
+use nexrad::download_queue::{QueueAction, QueueItem};
 use nexrad::RenderRequest;
 use state::playback_manager::{sweep_cache_key, CachedSweepData, PlaybackManager, PrevSweepAction};
 
@@ -131,50 +131,20 @@ pub struct WorkbenchApp {
     /// Render coordinator: owns the decode worker, scan key, elevations, and render dedup.
     render: nexrad::RenderCoordinator,
 
-    /// Record-based data facade
-    data_facade: DataFacade,
+    /// Download pipeline: channels, queue, archive index, current scan.
+    acquisition: nexrad::AcquisitionCoordinator,
 
-    /// Channel for async NEXRAD download operations
-    download_channel: nexrad::DownloadChannel,
+    /// Live streaming and backfill lifecycle manager.
+    streaming: nexrad::StreamingManager,
 
-    /// Channel for async cache metadata loading
-    cache_load_channel: nexrad::CacheLoadChannel,
-
-    /// Cache for archive file listings (by site/date)
-    archive_index: nexrad::ArchiveIndex,
-
-    /// Currently loaded NEXRAD scan
-    current_scan: Option<nexrad::CachedScan>,
-
-    /// Manages the queue of files to download for selection/position downloads.
-    download_queue: DownloadQueueManager,
-
-    /// Previous site ID to detect site changes (for clearing volume ring)
-    previous_site_id: String,
-
-    /// Channel for real-time streaming
-    realtime_channel: nexrad::RealtimeChannel,
-
-    /// Monotonic instant of last URL push (for throttling to ~1/sec).
-    last_url_push: web_time::Instant,
-
-    /// Last-saved user preferences snapshot (for change detection).
-    last_saved_preferences: state::UserPreferences,
+    /// URL state, preferences, and site change detection.
+    persistence: nexrad::PersistenceManager,
 
     /// Transient state for the site selection modal.
     site_modal_state: ui::SiteModalState,
 
     /// Transient state for the event create/edit modal.
     event_modal_state: ui::EventModalState,
-
-    /// Channel for one-shot backfill of the latest in-progress volume.
-    /// Used by `FetchLatest` to download current realtime chunks without
-    /// starting continuous streaming.
-    backfill_channel: nexrad::BackfillChannel,
-
-    /// True while a backfill is in progress. Used to prevent ChunkIngested
-    /// results from updating live_mode_state.
-    backfill_in_progress: bool,
 
     /// Service worker network monitor (None if SW not available).
     network_monitor: Option<nexrad::NetworkMonitor>,
@@ -366,10 +336,9 @@ impl WorkbenchApp {
 
         let initial_site_id = state.viz_state.site_id.clone();
         let data_facade = DataFacade::new();
-        let cache_load_channel = nexrad::CacheLoadChannel::new();
-        let download_channel = nexrad::DownloadChannel::new();
-        let realtime_channel = nexrad::RealtimeChannel::with_stats(download_channel.stats());
-        let backfill_channel = nexrad::BackfillChannel::with_stats(download_channel.stats());
+        let acquisition = nexrad::AcquisitionCoordinator::new(data_facade.clone());
+        let realtime_channel = nexrad::RealtimeChannel::with_stats(acquisition.download_stats());
+        let backfill_channel = nexrad::BackfillChannel::with_stats(acquisition.download_stats());
 
         // Open the record cache database
         {
@@ -462,29 +431,17 @@ impl WorkbenchApp {
                 volume_ray: volume_ray_renderer,
             },
             render: nexrad::RenderCoordinator::new(decode_worker),
-            data_facade,
-            download_channel,
-            cache_load_channel,
-            archive_index: nexrad::ArchiveIndex::new(),
-            current_scan: None,
-            download_queue: DownloadQueueManager::new(),
-            previous_site_id: initial_site_id,
-            realtime_channel,
-            last_url_push: web_time::Instant::now(),
-            last_saved_preferences: initial_prefs,
+            acquisition,
+            streaming: nexrad::StreamingManager::new(realtime_channel, backfill_channel),
+            persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             site_modal_state: {
                 let mut sms = ui::SiteModalState::default();
-                // If the user already has a preferred site, they're not a first-time
-                // visitor. The modal still opens to the Welcome screen (with all
-                // three selection paths), but without the first-visit verbiage.
                 if has_preferred_site {
                     sms.is_first_visit = false;
                 }
                 sms
             },
             event_modal_state: ui::EventModalState::default(),
-            backfill_channel,
-            backfill_in_progress: false,
             network_monitor: nexrad::NetworkMonitor::new(),
             playback_manager: PlaybackManager::new(),
         };
@@ -508,10 +465,11 @@ impl WorkbenchApp {
         let site_id = self.state.viz_state.site_id.clone();
 
         // If we have items in the queue, try to advance the state machine
-        if self.download_queue.has_work() {
+        if self.acquisition.download_queue.has_work() {
             // If there is an Active item, check whether its download has finished
-            if let Some(active) = self.download_queue.active_item() {
+            if let Some(active) = self.acquisition.download_queue.active_item() {
                 let still_pending = self
+                    .acquisition
                     .download_channel
                     .is_download_pending(&site_id, active.scan_start);
 
@@ -522,12 +480,14 @@ impl WorkbenchApp {
 
                 // Download finished — transition Active → Done
                 let active_start = active.scan_start;
-                self.download_queue.mark_active_done(active_start);
+                self.acquisition
+                    .download_queue
+                    .mark_active_done(active_start);
             }
 
             // Advance the queue (handles pause check internally)
             let is_paused = self.state.acquisition.is_paused();
-            match self.download_queue.advance(is_paused) {
+            match self.acquisition.download_queue.advance(is_paused) {
                 QueueAction::StartDownload {
                     idx: _,
                     date,
@@ -545,16 +505,18 @@ impl WorkbenchApp {
                     // Mark next acquisition operation as active
                     if let Some(op_id) = self.state.acquisition.next_queued_id() {
                         self.state.acquisition.mark_active(op_id);
-                        self.download_queue.set_active_operation_id(Some(op_id));
+                        self.acquisition
+                            .download_queue
+                            .set_active_operation_id(Some(op_id));
                     }
 
-                    self.download_channel.download_file(
+                    self.acquisition.download_channel.download_file(
                         ctx.clone(),
                         site_id.clone(),
                         date,
                         file_name,
                         scan_start,
-                        self.data_facade.clone(),
+                        self.acquisition.facade().clone(),
                     );
                 }
                 QueueAction::Complete => {
@@ -625,7 +587,7 @@ impl WorkbenchApp {
         let mut current_date = start_date;
 
         while current_date <= end_date {
-            if let Some(listing) = self.archive_index.get(&site_id, &current_date) {
+            if let Some(listing) = self.acquisition.archive_index.get(&site_id, &current_date) {
                 if is_position_download {
                     // Single-position: find the exact scan containing the playback position
                     if let Some((file, boundary)) = listing.find_scan_containing(sel_start_i64) {
@@ -651,12 +613,15 @@ impl WorkbenchApp {
                             site_id,
                             current_date
                         );
-                        self.archive_index.remove(&site_id, &current_date);
+                        self.acquisition
+                            .archive_index
+                            .remove(&site_id, &current_date);
                         if !self
+                            .acquisition
                             .download_channel
                             .is_listing_pending(&site_id, &current_date)
                         {
-                            self.download_channel.fetch_listing(
+                            self.acquisition.download_channel.fetch_listing(
                                 ctx.clone(),
                                 site_id.clone(),
                                 current_date,
@@ -688,12 +653,16 @@ impl WorkbenchApp {
             } else {
                 // Need to fetch the listing first
                 if !self
+                    .acquisition
                     .download_channel
                     .is_listing_pending(&site_id, &current_date)
                 {
                     log::info!("Fetching listing for {}/{}", site_id, current_date);
-                    self.download_channel
-                        .fetch_listing(ctx.clone(), site_id.clone(), current_date);
+                    self.acquisition.download_channel.fetch_listing(
+                        ctx.clone(),
+                        site_id.clone(),
+                        current_date,
+                    );
                 }
                 // Re-trigger once listing arrives — preserve the download type
                 if is_position_download {
@@ -730,10 +699,10 @@ impl WorkbenchApp {
 
         // Cancel any existing acquisition operations (selection change = cancel all + rebuild)
         self.state.acquisition.cancel_all();
-        self.download_queue.set_queue(files_to_download);
+        self.acquisition.download_queue.set_queue(files_to_download);
 
         // Create acquisition operations for each file in the queue
-        for item in self.download_queue.items() {
+        for item in self.acquisition.download_queue.items() {
             self.state
                 .acquisition
                 .create_operation(state::OperationKind::ArchiveDownload {
@@ -748,15 +717,16 @@ impl WorkbenchApp {
         {
             let progress = &mut self.state.download_progress;
             progress.pending_scans = self
+                .acquisition
                 .download_queue
                 .items()
                 .iter()
                 .map(|item| (item.scan_start, item.scan_end))
                 .collect();
-            progress.batch_total = self.download_queue.len() as u32;
+            progress.batch_total = self.acquisition.download_queue.len() as u32;
             progress.batch_completed = 0;
             progress.phase = crate::state::DownloadPhase::Downloading;
-            let first = &self.download_queue.items()[0];
+            let first = &self.acquisition.download_queue.items()[0];
             progress.active_scan = Some((first.scan_start, first.scan_end));
         }
 
@@ -768,23 +738,25 @@ impl WorkbenchApp {
             scan_start,
             scan_end: _,
             remaining,
-        }) = self.download_queue.start_first()
+        }) = self.acquisition.download_queue.start_first()
         {
             self.state.status_message = format!("Downloading {} ({} total)", file_name, remaining);
 
             // Mark the first acquisition operation as active
             if let Some(op_id) = self.state.acquisition.next_queued_id() {
                 self.state.acquisition.mark_active(op_id);
-                self.download_queue.set_active_operation_id(Some(op_id));
+                self.acquisition
+                    .download_queue
+                    .set_active_operation_id(Some(op_id));
             }
 
-            self.download_channel.download_file(
+            self.acquisition.download_channel.download_file(
                 ctx.clone(),
                 site_id,
                 date,
                 file_name,
                 scan_start,
-                self.data_facade.clone(),
+                self.acquisition.facade().clone(),
             );
         }
     }
@@ -804,27 +776,18 @@ impl WorkbenchApp {
         self.state.playback_state.playing = true;
         self.state.status_message = "Connecting to live stream...".to_string();
 
-        // Start the realtime channel with DataFacade for record storage
-        self.realtime_channel
-            .start(ctx.clone(), site_id, self.data_facade.clone());
+        self.streaming
+            .start_live(ctx.clone(), site_id, self.acquisition.facade().clone());
     }
 
     /// Fetch the latest available data for the current site.
-    ///
-    /// Uses the realtime chunk backfill approach: `ChunkIterator::start()`
-    /// finds the latest in-progress volume via binary search over round-robin
-    /// directories, then downloads all accumulated chunks. This gives the user
-    /// the most recent data (potentially seconds old) without starting
-    /// continuous streaming.
     fn fetch_latest_scan(&mut self, ctx: &egui::Context) {
         let site_id = self.state.viz_state.site_id.clone();
         log::info!("Fetching latest scan via backfill for site: {}", site_id);
 
         self.state.status_message = "Fetching latest data...".to_string();
-        self.backfill_in_progress = true;
-
-        self.backfill_channel
-            .start(ctx.clone(), site_id, self.data_facade.clone());
+        self.streaming
+            .start_backfill(ctx.clone(), site_id, self.acquisition.facade().clone());
     }
 
     /// Find the best elevation number for the current elevation selection.
@@ -937,7 +900,7 @@ impl WorkbenchApp {
 
         self.state.live_mode_state.stop(reason);
         self.state.playback_state.time_model.disable_realtime_lock();
-        self.realtime_channel.stop();
+        self.streaming.stop_realtime();
 
         self.state.status_message = self
             .state
@@ -1191,12 +1154,10 @@ impl WorkbenchApp {
         }
 
         // Detect site changes and clear volume ring
-        if self.state.viz_state.site_id != self.previous_site_id {
-            log::info!(
-                "Site changed from {} to {}",
-                self.previous_site_id,
-                self.state.viz_state.site_id
-            );
+        if self
+            .persistence
+            .detect_site_change(&self.state.viz_state.site_id)
+        {
             if let Some(ref renderer) = self.gpu.gpu {
                 if let Ok(mut r) = renderer.lock() {
                     r.clear_data();
@@ -1206,11 +1167,8 @@ impl WorkbenchApp {
             self.render.clear_for_site_change();
             self.state.viz_state.displayed_scan_timestamp = None;
             self.state.viz_state.displayed_sweep_elevation_number = None;
-            self.previous_site_id = self.state.viz_state.site_id.clone();
-            // Clear shadow boundaries from previous site; new listings will repopulate.
             self.state.shadow_scan_boundaries.clear();
-            // Cancel any in-progress backfill for the old site.
-            self.backfill_in_progress = false;
+            self.streaming.cancel_backfill();
         }
     }
 
@@ -1224,16 +1182,17 @@ impl WorkbenchApp {
         for cmd in commands {
             match cmd {
                 state::AppCommand::ClearCache => {
-                    if !self.cache_load_channel.is_loading() {
-                        self.cache_load_channel
-                            .clear_cache(ctx.clone(), self.data_facade.clone());
+                    if !self.acquisition.cache_load_channel.is_loading() {
+                        self.acquisition
+                            .cache_load_channel
+                            .clear_cache(ctx.clone(), self.acquisition.facade().clone());
                     } else {
                         // Re-enqueue if channel is busy
                         self.state.push_command(state::AppCommand::ClearCache);
                     }
                 }
                 state::AppCommand::WipeAll => {
-                    let facade = self.data_facade.clone();
+                    let facade = self.acquisition.facade().clone();
                     wasm_bindgen_futures::spawn_local(async move {
                         if let Err(e) = facade.clear_all().await {
                             log::error!("Failed to clear IndexedDB: {}", e);
@@ -1250,10 +1209,10 @@ impl WorkbenchApp {
                     if auto_position {
                         self.state.auto_position_on_timeline_load = true;
                     }
-                    if !self.cache_load_channel.is_loading() {
-                        self.cache_load_channel.load_site_timeline(
+                    if !self.acquisition.cache_load_channel.is_loading() {
+                        self.acquisition.cache_load_channel.load_site_timeline(
                             ctx.clone(),
-                            self.data_facade.clone(),
+                            self.acquisition.facade().clone(),
                             self.state.viz_state.site_id.clone(),
                         );
                     } else {
@@ -1263,7 +1222,7 @@ impl WorkbenchApp {
                     }
                 }
                 state::AppCommand::CheckEviction => {
-                    let facade = self.data_facade.clone();
+                    let facade = self.acquisition.facade().clone();
                     let quota = self.state.storage_settings.quota_bytes;
                     let target = self.state.storage_settings.eviction_target_bytes;
                     let ctx_clone = ctx.clone();
@@ -1338,7 +1297,7 @@ impl WorkbenchApp {
 
     /// Process results from cache loads, web workers, downloads, and archive listings.
     fn handle_worker_results(&mut self, _ctx: &egui::Context) {
-        if let Some(result) = self.cache_load_channel.try_recv() {
+        if let Some(result) = self.acquisition.cache_load_channel.try_recv() {
             self.handle_cache_load_outcome(result);
         }
 
@@ -1365,11 +1324,11 @@ impl WorkbenchApp {
             }
         }
 
-        if let Some(result) = self.download_channel.try_recv() {
+        if let Some(result) = self.acquisition.download_channel.try_recv() {
             self.handle_download_outcome(result);
         }
 
-        if let Some(result) = self.download_channel.try_recv_listing() {
+        if let Some(result) = self.acquisition.download_channel.try_recv_listing() {
             self.handle_listing_outcome(result);
         }
     }
@@ -1982,6 +1941,7 @@ impl WorkbenchApp {
             // visible until processing completes in the Decoded handler).
             let scan_ts = scan.key.scan_start.as_secs();
             let scan_end = self
+                .acquisition
                 .download_queue
                 .find_by_scan_start(scan_ts)
                 .map(|item| item.scan_end)
@@ -2046,7 +2006,7 @@ impl WorkbenchApp {
                 );
             }
 
-            self.current_scan = Some(scan.clone());
+            self.acquisition.current_scan = Some(scan.clone());
 
             // Refresh timeline to show the new/loaded scan
             self.state.push_command(state::AppCommand::RefreshTimeline {
@@ -2056,7 +2016,7 @@ impl WorkbenchApp {
 
         // Mark acquisition operation completed on success
         if let Some(scan) = scan_opt {
-            if let Some(op_id) = self.download_queue.take_active_operation_id() {
+            if let Some(op_id) = self.acquisition.download_queue.take_active_operation_id() {
                 self.state
                     .acquisition
                     .mark_completed(op_id, scan.data.len() as u64);
@@ -2068,13 +2028,13 @@ impl WorkbenchApp {
             log::error!("Download failed: {}", msg);
 
             // Mark acquisition operation as failed and error-pause
-            if let Some(op_id) = self.download_queue.take_active_operation_id() {
+            if let Some(op_id) = self.acquisition.download_queue.take_active_operation_id() {
                 self.state.acquisition.mark_failed(op_id, msg.clone());
             }
 
             // Clear download progress on error if no more work remains
-            if !self.download_queue.has_work() {
-                self.download_queue.clear();
+            if !self.acquisition.download_queue.has_work() {
+                self.acquisition.download_queue.clear();
                 self.state.download_progress.clear();
             }
         }
@@ -2093,12 +2053,16 @@ impl WorkbenchApp {
                     site_id,
                     date
                 );
-                self.archive_index.insert(&site_id, date, listing);
+                self.acquisition
+                    .archive_index
+                    .insert(&site_id, date, listing);
 
                 // Rebuild shadow scan boundaries for the timeline
                 if site_id == self.state.viz_state.site_id {
-                    self.state.shadow_scan_boundaries =
-                        self.archive_index.all_boundaries_for_site(&site_id);
+                    self.state.shadow_scan_boundaries = self
+                        .acquisition
+                        .archive_index
+                        .all_boundaries_for_site(&site_id);
                 }
             }
             nexrad::ListingResult::Error(msg) => {
@@ -2123,7 +2087,7 @@ impl WorkbenchApp {
             } else {
                 None // Just pumping existing queue, or nothing to do
             };
-            let queue_has_work = self.download_queue.has_work();
+            let queue_has_work = self.acquisition.download_queue.has_work();
             if do_download_selection || do_download_at_position || do_pump_queue || queue_has_work {
                 self.process_selection_download(ctx, download_type);
             }
@@ -2132,32 +2096,28 @@ impl WorkbenchApp {
 
     /// Drain backfill and realtime channels, manage live-mode lifecycle.
     fn handle_streaming_results(&mut self, ctx: &egui::Context) {
-        // Handle backfill results (one-shot initial load)
-        while let Some(result) = self.backfill_channel.try_recv() {
-            self.handle_backfill_result(result, ctx);
-        }
-        // Clear backfill flag once the channel has finished and all results drained
-        if self.backfill_in_progress && !self.backfill_channel.is_active() {
-            // Results already drained above; mark backfill complete
-            self.backfill_in_progress = false;
-        }
-
-        // Handle realtime streaming results
-        while let Some(result) = self.realtime_channel.try_recv() {
-            self.handle_realtime_result(result, ctx);
+        for event in self.streaming.poll() {
+            match event {
+                nexrad::StreamingEvent::Backfill(result) => {
+                    self.handle_backfill_result(result, ctx);
+                }
+                nexrad::StreamingEvent::Realtime(result) => {
+                    self.handle_realtime_result(result, ctx);
+                }
+                nexrad::StreamingEvent::BackfillComplete => {}
+            }
         }
 
         // Stop realtime channel if live mode was stopped by UI
-        if !self.state.live_mode_state.is_active() && self.realtime_channel.is_active() {
+        if !self.state.live_mode_state.is_active() && self.streaming.is_realtime_active() {
             log::info!("Stopping realtime channel (live mode ended)");
-            self.realtime_channel.stop();
+            self.streaming.stop_realtime();
         }
 
         // Update live mode countdown from realtime channel
         if self.state.live_mode_state.is_active() {
-            if let Some(duration) = self.realtime_channel.time_until_next() {
+            if let Some(duration) = self.streaming.time_until_next() {
                 let now = js_sys::Date::now() / 1000.0;
-
                 self.state.live_mode_state.next_chunk_expected_at =
                     Some(now + duration.as_secs_f64());
             }
@@ -2564,7 +2524,7 @@ impl WorkbenchApp {
     /// Sync network statistics from the download channel and service worker.
     fn update_network_stats(&mut self) {
         // Update session stats from live network statistics
-        let network_stats = self.download_channel.stats();
+        let network_stats = self.acquisition.download_channel.stats();
         self.state
             .session_stats
             .update_from_network_stats(&network_stats);
@@ -2586,54 +2546,7 @@ impl WorkbenchApp {
 
     /// Push current app state to the URL bar and save user preferences (throttled).
     fn persist_url_state(&mut self) {
-        {
-            let now = web_time::Instant::now();
-            if now.duration_since(self.last_url_push).as_secs_f64() >= 1.0 {
-                self.last_url_push = now;
-                let cam = &self.state.viz_state.camera;
-                let view = state::url_state::ViewState {
-                    mz: Some(self.state.viz_state.zoom),
-                    tz: Some(self.state.playback_state.timeline_zoom),
-                    vm: Some(match self.state.viz_state.view_mode {
-                        state::ViewMode::Flat2D => 0,
-                        state::ViewMode::Globe3D => 1,
-                    }),
-                    cm: Some(match cam.mode {
-                        state::CameraMode::PlanetOrbit => 0,
-                        state::CameraMode::SiteOrbit => 1,
-                        state::CameraMode::FreeLook => 2,
-                    }),
-                    cd: Some(cam.distance),
-                    clat: Some(cam.center_lat),
-                    clon: Some(cam.center_lon),
-                    ct: Some(cam.tilt),
-                    cr: Some(cam.rotation),
-                    ob: Some(cam.orbit_bearing),
-                    oe: Some(cam.orbit_elevation),
-                    fp: Some([cam.free_pos.x, cam.free_pos.y, cam.free_pos.z]),
-                    fy: Some(cam.free_yaw),
-                    fpt: Some(cam.free_pitch),
-                    fs: Some(cam.free_speed),
-                    v3d: Some(self.state.viz_state.volume_3d_enabled),
-                    vdc: Some(self.state.viz_state.volume_density_cutoff),
-                };
-                state::url_state::push_to_url(
-                    &self.state.viz_state.site_id,
-                    self.state.playback_state.playback_position(),
-                    self.state.viz_state.product.short_code(),
-                    self.state.viz_state.center_lat,
-                    self.state.viz_state.center_lon,
-                    &view,
-                );
-
-                // Save user preferences if changed (piggyback on URL throttle)
-                let current_prefs = state::UserPreferences::from_app_state(&self.state);
-                if current_prefs != self.last_saved_preferences {
-                    current_prefs.save();
-                    self.last_saved_preferences = current_prefs;
-                }
-            }
-        }
+        self.persistence.persist_if_due(&self.state);
     }
 }
 
