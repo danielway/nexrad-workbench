@@ -1973,7 +1973,7 @@ impl WorkbenchApp {
                                 .state
                                 .displayed_sweep_elevation_number
                                 .is_some_and(|e| e == result.context.elevation_number);
-                        if self.state.render_processing.sweep_animation && !is_current_scan {
+                        if self.state.effective_sweep_animation() && !is_current_scan {
                             log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id);
                             // Clear pending tracker so sync_prev_sweep_texture can load from cache
                             if self.pending_prev_sweep_key.as_ref() == Some(&result_sweep_id) {
@@ -2338,6 +2338,56 @@ impl WorkbenchApp {
 
     /// Auto-load scans when scrubbing the timeline and prefetch upcoming sweeps.
     fn advance_playback(&mut self) {
+        // Rebuild macro frame list when dirty (elevation, bounds, render mode, or scan count changed)
+        if self.state.playback_state.playback_mode() == crate::state::PlaybackMode::Macro {
+            let mp = &self.state.playback_state.macro_playback;
+            let target_elev = self.state.viz_state.target_elevation;
+            let bounds = self.state.playback_state.time_model.playback_bounds;
+            let scan_count = self.state.radar_timeline.scans.len();
+            let filter_elevation =
+                self.state.viz_state.render_mode == crate::state::RenderMode::FixedTilt;
+
+            let dirty = (mp.cached_elevation - target_elev).abs() > 0.01
+                || mp.cached_bounds != bounds
+                || mp.cached_scan_count != scan_count
+                || mp.cached_filter_elevation != filter_elevation;
+
+            if dirty {
+                let frames = self.state.radar_timeline.matching_sweep_end_times(
+                    target_elev,
+                    ELEVATION_MATCH_TOLERANCE_DEG,
+                    bounds,
+                    filter_elevation,
+                );
+                self.state.playback_state.macro_playback.sweep_frames = frames;
+                self.state.playback_state.macro_playback.cached_elevation = target_elev;
+                self.state.playback_state.macro_playback.cached_bounds = bounds;
+                self.state.playback_state.macro_playback.cached_scan_count = scan_count;
+                self.state
+                    .playback_state
+                    .macro_playback
+                    .cached_filter_elevation = filter_elevation;
+                self.state.playback_state.sync_macro_frame_index();
+            }
+
+            // Detect manual seek: if playback position changed externally
+            // (user clicked timeline, jog, etc.) re-sync frame index.
+            let pos = self.state.playback_state.playback_position();
+            let cached_pos = self
+                .state
+                .playback_state
+                .macro_playback
+                .cached_playback_position;
+            if (pos - cached_pos).abs() > 0.5 {
+                self.state.playback_state.sync_macro_frame_index();
+                self.state.playback_state.macro_playback.frame_accumulator = 0.0;
+            }
+            self.state
+                .playback_state
+                .macro_playback
+                .cached_playback_position = pos;
+        }
+
         // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
         // In the worker architecture, this sends a render request directly —
         // the worker reads records from IDB, decodes the target elevation, and renders.
@@ -2447,8 +2497,12 @@ impl WorkbenchApp {
         // Pre-render next sweep: when playing and near the end of the current sweep,
         // preemptively send a render request for the upcoming sweep so the result
         // is ready when the boundary is crossed, reducing perceived stutter.
+        // Skip in macro mode — frame jumps are instant and the frame list handles sequencing.
         #[allow(clippy::unnecessary_unwrap)]
-        if self.state.playback_state.playing && self.decode_worker.is_some() {
+        if self.state.playback_state.playing
+            && self.decode_worker.is_some()
+            && self.state.playback_state.playback_mode() == crate::state::PlaybackMode::Micro
+        {
             let playback_ts = self.state.playback_state.playback_position();
             let speed = self
                 .state
@@ -2524,7 +2578,7 @@ impl WorkbenchApp {
     /// within the same scan that's the preceding sweep in time order. Only look
     /// at the previous scan if the current sweep is the very first in its scan.
     fn sync_prev_sweep_texture(&mut self) {
-        if !self.state.render_processing.sweep_animation {
+        if !self.state.effective_sweep_animation() {
             self.state.viz_state.prev_sweep_overlay = None;
             self.state.viz_state.prev_sweep_scan_timestamp = None;
             self.state.viz_state.prev_sweep_elevation_number = None;

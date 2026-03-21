@@ -145,6 +145,7 @@ fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
+    let in_macro = state.playback_state.playback_mode() == crate::state::PlaybackMode::Macro;
     egui::CollapsingHeader::new(RichText::new("Rendering").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -179,14 +180,19 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.add_space(4.0);
 
-            // Sweep animation
-            ui.checkbox(&mut proc.sweep_animation, "Sweep Animation")
-                .on_hover_text(
-                    "Progressively reveal new data behind the sweep line during playback",
-                );
+            // Sweep animation (disabled in macro mode — not meaningful when
+            // playback jumps between complete frames)
+            ui.add_enabled_ui(!in_macro, |ui| {
+                ui.checkbox(&mut proc.sweep_animation, "Sweep Animation")
+                    .on_hover_text(if in_macro {
+                        "Sweep animation is disabled at this zoom level (macro playback mode)"
+                    } else {
+                        "Progressively reveal new data behind the sweep line during playback"
+                    });
+            });
 
             // Data age indicator (only meaningful when sweep animation is on)
-            ui.add_enabled_ui(proc.sweep_animation, |ui| {
+            ui.add_enabled_ui(proc.sweep_animation && !in_macro, |ui| {
                 ui.indent("data_age_indent", |ui| {
                     ui.checkbox(&mut proc.data_age_indicator, "Data Age Indicator")
                         .on_hover_text(

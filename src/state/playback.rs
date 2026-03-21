@@ -3,6 +3,50 @@
 //! Implements a dual-time model separating playback position from wall-clock time,
 //! with timeline bounds enforcement and zoom-based feature restrictions.
 
+/// Playback mode derived from timeline zoom level.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlaybackMode {
+    /// Frame-stepping between matching sweeps (zoomed out, < 1.0 px/sec)
+    Macro,
+    /// Continuous time-based playback (zoomed in, >= 1.0 px/sec)
+    Micro,
+}
+
+/// State for macro (frame-stepping) playback.
+pub struct MacroPlaybackState {
+    /// Sorted sweep end-times matching the user's elevation filter.
+    pub sweep_frames: Vec<f64>,
+    /// Current index into sweep_frames.
+    pub current_frame_index: usize,
+    /// Fractional frame accumulator for sub-frame advancement.
+    pub frame_accumulator: f64,
+    /// Cached filter params for dirty-checking.
+    pub cached_elevation: f32,
+    pub cached_bounds: Option<(f64, f64)>,
+    pub cached_scan_count: usize,
+    pub cached_filter_elevation: bool,
+    /// Last known playback position, used to detect manual seeks.
+    pub cached_playback_position: f64,
+    /// Whether the previous frame was in macro mode (for transition detection).
+    pub was_macro: bool,
+}
+
+impl Default for MacroPlaybackState {
+    fn default() -> Self {
+        Self {
+            sweep_frames: Vec::new(),
+            current_frame_index: 0,
+            frame_accumulator: 0.0,
+            cached_elevation: 0.0,
+            cached_bounds: None,
+            cached_scan_count: 0,
+            cached_filter_elevation: true,
+            cached_playback_position: 0.0,
+            was_macro: false,
+        }
+    }
+}
+
 /// Playback speed multiplier options.
 #[derive(Default, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PlaybackSpeed {
@@ -35,6 +79,43 @@ impl PlaybackSpeed {
         &[
             PlaybackSpeed::Realtime,
             PlaybackSpeed::ThirtyToOne,
+            PlaybackSpeed::Quarter,
+            PlaybackSpeed::Half,
+            PlaybackSpeed::Normal,
+            PlaybackSpeed::Double,
+            PlaybackSpeed::Quadruple,
+        ]
+    }
+
+    /// Returns the frames-per-second for macro mode, or None if this speed
+    /// is not available in macro mode (Realtime and ThirtyToOne).
+    pub fn macro_frames_per_second(&self) -> Option<f64> {
+        match self {
+            PlaybackSpeed::Realtime | PlaybackSpeed::ThirtyToOne => None,
+            PlaybackSpeed::Quarter => Some(1.0),
+            PlaybackSpeed::Half => Some(2.0),
+            PlaybackSpeed::Normal => Some(5.0),
+            PlaybackSpeed::Double => Some(10.0),
+            PlaybackSpeed::Quadruple => Some(15.0),
+        }
+    }
+
+    /// Label for macro mode display (fps-based).
+    pub fn macro_label(&self) -> &'static str {
+        match self {
+            PlaybackSpeed::Realtime => "1x (real)",
+            PlaybackSpeed::ThirtyToOne => "30s/s",
+            PlaybackSpeed::Quarter => "1 fps",
+            PlaybackSpeed::Half => "2 fps",
+            PlaybackSpeed::Normal => "5 fps",
+            PlaybackSpeed::Double => "10 fps",
+            PlaybackSpeed::Quadruple => "15 fps",
+        }
+    }
+
+    /// Speeds available in macro mode (Quarter through Quadruple).
+    pub fn macro_speeds() -> &'static [PlaybackSpeed] {
+        &[
             PlaybackSpeed::Quarter,
             PlaybackSpeed::Half,
             PlaybackSpeed::Normal,
@@ -277,6 +358,9 @@ pub struct PlaybackState {
     /// Actual pixel width of the timeline widget (set by render_timeline each frame).
     /// Used for accurate view centering calculations outside the render function.
     pub timeline_width_px: f64,
+
+    /// State for macro (frame-stepping) playback mode.
+    pub macro_playback: MacroPlaybackState,
 }
 
 impl Default for PlaybackState {
@@ -299,6 +383,7 @@ impl Default for PlaybackState {
             current_frame: 0,
             total_frames: 0,
             timeline_width_px: 1000.0,
+            macro_playback: MacroPlaybackState::default(),
         }
     }
 }
@@ -345,11 +430,143 @@ impl PlaybackState {
         self.timeline_zoom >= 0.1
     }
 
-    /// Advance playback by delta time.
+    /// Derive the current playback mode from timeline zoom level.
+    pub fn playback_mode(&self) -> PlaybackMode {
+        if self.timeline_zoom < 1.0 {
+            PlaybackMode::Macro
+        } else {
+            PlaybackMode::Micro
+        }
+    }
+
+    /// Advance playback by delta time (micro/continuous mode).
     pub fn advance(&mut self, delta_secs: f64) {
         if self.playing {
             self.time_model.advance(delta_secs, self.speed);
         }
+    }
+
+    /// Advance playback in macro mode: step through frames at constant fps.
+    pub fn advance_macro(&mut self, delta_secs: f64) {
+        if !self.playing {
+            return;
+        }
+        let frames = &self.macro_playback.sweep_frames;
+        if frames.is_empty() {
+            return;
+        }
+
+        let fps = self.speed.macro_frames_per_second().unwrap_or(5.0);
+        self.macro_playback.frame_accumulator += delta_secs * fps;
+
+        while self.macro_playback.frame_accumulator >= 1.0 {
+            self.macro_playback.frame_accumulator -= 1.0;
+            let delta = match self.time_model.direction {
+                PlaybackDirection::Forward => 1,
+                PlaybackDirection::Backward => -1,
+            };
+            let stepped = self.step_macro_frame_internal(delta);
+            if !stepped {
+                break;
+            }
+        }
+    }
+
+    /// Step the macro frame index by `delta` (+1 = forward, -1 = backward).
+    /// Snaps playback_position to the frame's timestamp.
+    pub fn step_macro_frame(&mut self, delta: isize) {
+        let frames = &self.macro_playback.sweep_frames;
+        if frames.is_empty() {
+            return;
+        }
+        self.step_macro_frame_internal(delta);
+    }
+
+    /// Internal frame step, returns false if playback should stop (Once mode at boundary).
+    fn step_macro_frame_internal(&mut self, delta: isize) -> bool {
+        let len = self.macro_playback.sweep_frames.len();
+        if len == 0 {
+            return false;
+        }
+        let idx = self.macro_playback.current_frame_index;
+        let new_idx = idx as isize + delta;
+
+        if new_idx >= len as isize {
+            // Past end
+            match self.time_model.loop_mode {
+                LoopMode::Loop => {
+                    self.macro_playback.current_frame_index = 0;
+                }
+                LoopMode::PingPong => {
+                    self.time_model.direction = PlaybackDirection::Backward;
+                    self.macro_playback.current_frame_index = len.saturating_sub(1);
+                }
+                LoopMode::Once => {
+                    self.macro_playback.current_frame_index = len - 1;
+                    self.playing = false;
+                    self.snap_playback_to_macro_frame();
+                    return false;
+                }
+            }
+        } else if new_idx < 0 {
+            // Before start
+            match self.time_model.loop_mode {
+                LoopMode::Loop => {
+                    self.macro_playback.current_frame_index = len.saturating_sub(1);
+                }
+                LoopMode::PingPong => {
+                    self.time_model.direction = PlaybackDirection::Forward;
+                    self.macro_playback.current_frame_index = 0;
+                }
+                LoopMode::Once => {
+                    self.macro_playback.current_frame_index = 0;
+                    self.playing = false;
+                    self.snap_playback_to_macro_frame();
+                    return false;
+                }
+            }
+        } else {
+            self.macro_playback.current_frame_index = new_idx as usize;
+        }
+
+        self.snap_playback_to_macro_frame();
+        true
+    }
+
+    /// Snap playback position to the current macro frame's timestamp.
+    fn snap_playback_to_macro_frame(&mut self) {
+        if let Some(&ts) = self
+            .macro_playback
+            .sweep_frames
+            .get(self.macro_playback.current_frame_index)
+        {
+            self.time_model.playback_position = ts;
+        }
+    }
+
+    /// Sync the macro frame index to the nearest frame matching the current playback position.
+    pub fn sync_macro_frame_index(&mut self) {
+        let frames = &self.macro_playback.sweep_frames;
+        if frames.is_empty() {
+            self.macro_playback.current_frame_index = 0;
+            return;
+        }
+        let pos = self.time_model.playback_position;
+        // Binary search for the closest frame
+        let idx = frames.partition_point(|&t| t < pos);
+        let best = if idx >= frames.len() {
+            frames.len() - 1
+        } else if idx == 0 {
+            0
+        } else {
+            // Compare distance to idx-1 and idx
+            if (frames[idx] - pos).abs() < (frames[idx - 1] - pos).abs() {
+                idx
+            } else {
+                idx - 1
+            }
+        };
+        self.macro_playback.current_frame_index = best;
     }
 
     /// Get the normalized selection range (start <= end), if any.

@@ -705,7 +705,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     );
 
     // ── Render sweep track (only at Sweeps detail) ────────────────────
-    let prev_active_sweep = if state.render_processing.sweep_animation {
+    let prev_active_sweep = if state.effective_sweep_animation() {
         match (
             state.viz_state.prev_sweep_scan_timestamp,
             state.viz_state.prev_sweep_elevation_number,

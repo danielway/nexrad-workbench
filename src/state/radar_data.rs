@@ -350,6 +350,58 @@ impl RadarTimeline {
         best
     }
 
+    /// Collect all sweep end-times matching the given elevation filter.
+    ///
+    /// Returns a sorted, deduplicated `Vec<f64>` of `end_time` values for sweeps
+    /// whose elevation is within `tolerance` of `target_elevation`. If `bounds`
+    /// is provided, only sweeps within that time range are included.
+    ///
+    /// When `filter_elevation` is false (MostRecent render mode), all sweeps are
+    /// included regardless of elevation — every sweep is a frame.
+    pub fn matching_sweep_end_times(
+        &self,
+        target_elevation: f32,
+        tolerance: f32,
+        bounds: Option<(f64, f64)>,
+        filter_elevation: bool,
+    ) -> Vec<f64> {
+        let mut times: Vec<f64> = Vec::new();
+        for scan in &self.scans {
+            // Skip scans entirely outside bounds
+            if let Some((start, end)) = bounds {
+                if scan.end_time < start || scan.start_time > end {
+                    continue;
+                }
+            }
+            if filter_elevation {
+                for sweep in &scan.sweeps {
+                    if (sweep.elevation - target_elevation).abs() < tolerance {
+                        if let Some((start, end)) = bounds {
+                            if sweep.end_time < start || sweep.end_time > end {
+                                continue;
+                            }
+                        }
+                        times.push(sweep.end_time);
+                    }
+                }
+            } else {
+                // MostRecent mode: every sweep is a frame (step through all
+                // elevations in order, showing whatever just completed).
+                for sweep in &scan.sweeps {
+                    if let Some((start, end)) = bounds {
+                        if sweep.end_time < start || sweep.end_time > end {
+                            continue;
+                        }
+                    }
+                    times.push(sweep.end_time);
+                }
+            }
+        }
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        times.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+        times
+    }
+
     /// Find scans that overlap with the given time range
     pub fn scans_in_range(&self, start: f64, end: f64) -> impl Iterator<Item = &Scan> {
         self.scans
@@ -662,6 +714,88 @@ mod tests {
         assert_eq!(tl.prev_matching_sweep_end(1035.0, 0.5, 0.1), Some(1030.0));
         // From ts=1025, prev 0.9° sweep end is at 1020
         assert_eq!(tl.prev_matching_sweep_end(1025.0, 0.9, 0.1), Some(1020.0));
+    }
+
+    #[test]
+    fn matching_sweep_end_times_basic() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(
+                    1000.0,
+                    1040.0,
+                    vec![
+                        sweep(1000.0, 1010.0, 0.5, 1),
+                        sweep(1010.0, 1020.0, 0.9, 2),
+                        sweep(1020.0, 1030.0, 0.5, 3),
+                        sweep(1030.0, 1040.0, 0.9, 4),
+                    ],
+                ),
+                scan_with_sweeps(
+                    1300.0,
+                    1340.0,
+                    vec![sweep(1300.0, 1310.0, 0.5, 1), sweep(1310.0, 1320.0, 0.9, 2)],
+                ),
+            ],
+        };
+        // All 0.5° sweeps, no bounds
+        let times = tl.matching_sweep_end_times(0.5, 0.1, None, true);
+        assert_eq!(times, vec![1010.0, 1030.0, 1310.0]);
+
+        // All 0.9° sweeps, no bounds
+        let times = tl.matching_sweep_end_times(0.9, 0.1, None, true);
+        assert_eq!(times, vec![1020.0, 1040.0, 1320.0]);
+    }
+
+    #[test]
+    fn matching_sweep_end_times_with_bounds() {
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1040.0,
+                vec![
+                    sweep(1000.0, 1010.0, 0.5, 1),
+                    sweep(1010.0, 1020.0, 0.9, 2),
+                    sweep(1020.0, 1030.0, 0.5, 3),
+                    sweep(1030.0, 1040.0, 0.9, 4),
+                ],
+            )],
+        };
+        // 0.5° sweeps within bounds [1005, 1025]
+        let times = tl.matching_sweep_end_times(0.5, 0.1, Some((1005.0, 1025.0)), true);
+        assert_eq!(times, vec![1010.0]);
+    }
+
+    #[test]
+    fn matching_sweep_end_times_most_recent() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(
+                    1000.0,
+                    1040.0,
+                    vec![
+                        sweep(1000.0, 1010.0, 0.5, 1),
+                        sweep(1010.0, 1020.0, 0.9, 2),
+                        sweep(1020.0, 1030.0, 0.5, 3),
+                        sweep(1030.0, 1040.0, 0.9, 4),
+                    ],
+                ),
+                scan_with_sweeps(
+                    1300.0,
+                    1320.0,
+                    vec![sweep(1300.0, 1310.0, 0.5, 1), sweep(1310.0, 1320.0, 0.9, 2)],
+                ),
+            ],
+        };
+        // MostRecent mode: every sweep is a frame
+        let times = tl.matching_sweep_end_times(0.5, 0.1, None, false);
+        assert_eq!(times, vec![1010.0, 1020.0, 1030.0, 1040.0, 1310.0, 1320.0]);
+    }
+
+    #[test]
+    fn matching_sweep_end_times_empty() {
+        let tl = RadarTimeline { scans: vec![] };
+        let times = tl.matching_sweep_end_times(0.5, 0.1, None, true);
+        assert!(times.is_empty());
     }
 
     #[test]

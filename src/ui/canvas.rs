@@ -88,7 +88,7 @@ pub fn render_canvas_with_geo(
 
                 // Compute sweep animation compositing state (used for GPU rendering
                 // and sweep-aware inspector lookups).
-                let gpu_sweep = if state.render_processing.sweep_animation {
+                let gpu_sweep = if state.effective_sweep_animation() {
                     let playback_ts = state.playback_state.playback_position();
                     let sweep_bounds = state
                         .radar_timeline
@@ -121,10 +121,10 @@ pub fn render_canvas_with_geo(
                         state.viz_state.last_sweep_line_cache = Some((az, start));
                     }
                 }
-                if !state.render_processing.sweep_animation {
+                if !state.effective_sweep_animation() {
                     state.viz_state.last_sweep_line_cache = None;
                 }
-                let between_sweeps = state.render_processing.sweep_animation
+                let between_sweeps = state.effective_sweep_animation()
                     && gpu_sweep.is_none()
                     && state.viz_state.last_sweep_line_cache.is_some();
 
@@ -1082,7 +1082,7 @@ fn render_radar_sweep(
         );
 
         // Donut chart showing current vs previous sweep regions
-        if state.render_processing.sweep_animation {
+        if state.effective_sweep_animation() {
             if stale {
                 draw_sweep_donut_stale(painter, center, radius);
             } else {

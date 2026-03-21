@@ -26,7 +26,7 @@ pub use acquisition::{
 };
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
-pub use playback::{LoopMode, PlaybackSpeed, PlaybackState, TimeModel};
+pub use playback::{LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
 pub use saved_events::{SavedEvent, SavedEvents};
@@ -381,6 +381,14 @@ impl AppState {
     /// Drain all pending commands from the queue.
     pub fn drain_commands(&mut self) -> Vec<AppCommand> {
         self.commands.drain(..).collect()
+    }
+
+    /// Whether sweep animation is effectively enabled: requires both the user
+    /// preference AND micro playback mode (zoomed in). In macro mode, sweep
+    /// animation is suppressed regardless of the user preference.
+    pub fn effective_sweep_animation(&self) -> bool {
+        self.render_processing.sweep_animation
+            && self.playback_state.playback_mode() == PlaybackMode::Micro
     }
 
     /// Set the status message and record the timestamp for auto-dismissal.
