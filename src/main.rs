@@ -918,7 +918,11 @@ impl WorkbenchApp {
         scan: &crate::state::radar_data::Scan,
         playback_ts: f64,
     ) -> u8 {
-        let fallback = self.best_elevation_number();
+        let fallback = self
+            .available_elevation_numbers
+            .first()
+            .copied()
+            .unwrap_or(1);
         state::playback_manager::most_recent_sweep_elevation(scan, playback_ts, fallback)
     }
 
