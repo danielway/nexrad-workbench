@@ -9,15 +9,6 @@ use nexrad_data::volume::Record;
 use nexrad_model::data::DataMoment;
 use nexrad_render::Product;
 
-/// Sub-timings for the decode pipeline.
-#[allow(dead_code)]
-pub struct DecodeTimings {
-    /// Time spent on bzip2 decompression (ms).
-    pub decompress_ms: f64,
-    /// Time spent decoding radials from decompressed messages (ms).
-    pub decode_ms: f64,
-}
-
 /// Decode a single LDM record into radials.
 ///
 /// Accepts either compressed records (4-byte size prefix + bzip2 data, as
@@ -28,52 +19,21 @@ pub struct DecodeTimings {
 /// Returns the decoded radials (may be empty if the record contains only
 /// non-radial messages like VCP metadata).
 pub fn decode_record_to_radials(record_bytes: &[u8]) -> Result<Vec<Radial>, String> {
-    let (radials, _) = decode_record_to_radials_timed(record_bytes)?;
-    Ok(radials)
-}
-
-/// Like [`decode_record_to_radials`] but also returns sub-timings for
-/// decompression and radial decoding.
-pub fn decode_record_to_radials_timed(
-    record_bytes: &[u8],
-) -> Result<(Vec<Radial>, DecodeTimings), String> {
     let record = Record::from_slice(record_bytes);
 
     if !record.compressed() {
-        // Uncompressed record (e.g. legacy CTM) — decode directly
-        let t_decode = web_time::Instant::now();
-        let radials = record
+        return record
             .radials()
-            .map_err(|e| format!("Failed to decode uncompressed record: {}", e))?;
-        let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
-        return Ok((
-            radials,
-            DecodeTimings {
-                decompress_ms: 0.0,
-                decode_ms,
-            },
-        ));
+            .map_err(|e| format!("Failed to decode uncompressed record: {}", e));
     }
 
-    let t_decompress = web_time::Instant::now();
     let decompressed = record
         .decompress()
         .map_err(|e| format!("Failed to decompress record: {}", e))?;
-    let decompress_ms = t_decompress.elapsed().as_secs_f64() * 1000.0;
 
-    let t_decode = web_time::Instant::now();
-    let radials = decompressed
+    decompressed
         .radials()
-        .map_err(|e| format!("Failed to decode record radials: {}", e))?;
-    let decode_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
-
-    Ok((
-        radials,
-        DecodeTimings {
-            decompress_ms,
-            decode_ms,
-        },
-    ))
+        .map_err(|e| format!("Failed to decode record radials: {}", e))
 }
 
 /// Extract the volume start time from decoded radials.
@@ -98,41 +58,6 @@ pub fn extract_elevation_numbers(radials: &[Radial]) -> Vec<u8> {
     elevations.sort_unstable();
     elevations.dedup();
     elevations
-}
-
-/// Extract a pre-computed sweep from decoded radials for a given elevation and product.
-///
-/// Filters radials to the target elevation/product, sorts by azimuth, and
-/// stores raw gate values in native width (u8 or u16). Returns `None` if no
-/// matching radials.
-///
-/// For bulk extraction of many (elevation, product) pairs, prefer
-/// `extract_sweep_data_from_sorted` with pre-grouped radials for better performance.
-#[allow(dead_code)]
-pub fn extract_sweep_data(
-    radials: &[Radial],
-    elevation_number: u8,
-    product: Product,
-) -> Option<PrecomputedSweep> {
-    let mut target: Vec<&Radial> = radials
-        .iter()
-        .filter(|r| {
-            r.elevation_number() == elevation_number
-                && (product.moment_data(r).is_some() || product.cfp_moment_data(r).is_some())
-        })
-        .collect();
-
-    if target.is_empty() {
-        return None;
-    }
-
-    target.sort_by(|a, b| {
-        a.azimuth_angle_degrees()
-            .partial_cmp(&b.azimuth_angle_degrees())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    build_precomputed_sweep(&target, product)
 }
 
 /// Extract a pre-computed sweep from radials already filtered to one elevation

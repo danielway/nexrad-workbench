@@ -7,6 +7,7 @@
 
 mod archive_index;
 mod cache_channel;
+pub(crate) mod color_table;
 mod decode_worker;
 mod download;
 pub(crate) mod globe_radar_renderer;

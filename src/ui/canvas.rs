@@ -12,17 +12,17 @@ use std::f32::consts::PI;
 use std::sync::{Arc, Mutex};
 
 /// Render canvas with optional geographic layers and NEXRAD data.
-#[allow(clippy::too_many_arguments)]
 pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
     geo_layers: Option<&GeoLayerSet>,
-    gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
-    globe_renderer: Option<&Arc<Mutex<GlobeRenderer>>>,
-    geo_line_renderer: Option<&Arc<Mutex<GeoLineRenderer>>>,
-    globe_radar_renderer: Option<&Arc<Mutex<crate::nexrad::GlobeRadarRenderer>>>,
-    volume_ray_renderer: Option<&Arc<Mutex<crate::nexrad::VolumeRayRenderer>>>,
+    renderers: &crate::Renderers,
 ) {
+    let gpu_renderer = renderers.gpu.as_ref();
+    let globe_renderer = renderers.globe.as_ref();
+    let geo_line_renderer = renderers.geo_line.as_ref();
+    let globe_radar_renderer = renderers.globe_radar.as_ref();
+    let volume_ray_renderer = renderers.volume_ray.as_ref();
     egui::CentralPanel::default().show(ctx, |ui| {
         let available_size = ui.available_size();
 
@@ -85,74 +85,7 @@ pub fn render_canvas_with_geo(
                 );
 
                 let sweep_info = compute_sweep_line_azimuth(state);
-
-                // Compute sweep animation compositing state (used for GPU rendering
-                // and sweep-aware inspector lookups).
-                // Live mode with partial data takes priority over timeline sweep animation.
-                let gpu_sweep = if let Some((first_az, last_az)) = state
-                    .live_mode_state
-                    .live_data_azimuth_range
-                    .filter(|_| state.live_mode_state.is_active())
-                {
-                    // Live mode: composite partial sweep on top of previous complete sweep.
-                    // Use the actual azimuth range from decoded data.
-                    Some((last_az, first_az))
-                } else if state.effective_sweep_animation() {
-                    let playback_ts = state.playback_state.playback_position();
-                    let sweep_bounds = state
-                        .radar_timeline
-                        .find_recent_scan(playback_ts, 15.0 * 60.0)
-                        .and_then(|scan| {
-                            let displayed_elev = state.displayed_sweep_elevation_number;
-                            scan.sweeps
-                                .iter()
-                                .filter(|s| Some(s.elevation_number) == displayed_elev)
-                                .rfind(|s| s.start_time <= playback_ts)
-                                .or_else(|| {
-                                    scan.sweeps
-                                        .iter()
-                                        .find(|s| Some(s.elevation_number) == displayed_elev)
-                                })
-                                .map(|s| (s.start_time, s.end_time))
-                        });
-                    match sweep_bounds {
-                        Some((s, _)) if playback_ts < s => Some((0.0, 0.0)),
-                        Some((_, e)) if playback_ts <= e => sweep_info,
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
-                // Debug: log gpu_sweep once per change
-                if state.live_mode_state.is_active() {
-                    if let Some((az, start)) = gpu_sweep {
-                        let prev_cache = state.viz_state.last_sweep_line_cache;
-                        if prev_cache.is_none_or(|(pa, ps)| {
-                            (pa - az).abs() > 1.0 || (ps - start).abs() > 1.0
-                        }) {
-                            log::info!(
-                                "gpu_sweep live: az={:.1} start={:.1} swept_arc={:.1}",
-                                az,
-                                start,
-                                ((az - start) % 360.0 + 360.0) % 360.0,
-                            );
-                        }
-                    }
-                }
-
-                // Cache sweep position for between-sweep display
-                if let Some((az, start)) = gpu_sweep {
-                    if az != 0.0 || start != 0.0 {
-                        state.viz_state.last_sweep_line_cache = Some((az, start));
-                    }
-                }
-                if !state.effective_sweep_animation() {
-                    state.viz_state.last_sweep_line_cache = None;
-                }
-                let between_sweeps = state.effective_sweep_animation()
-                    && gpu_sweep.is_none()
-                    && state.viz_state.last_sweep_line_cache.is_some();
+                let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(state, sweep_info);
 
                 if let Some(renderer) = gpu_renderer {
                     draw_radar_gpu(
@@ -730,7 +663,7 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera) {
 
 /// Draw a vertical color scale legend on the right side of the canvas.
 fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::state::RadarProduct) {
-    use crate::nexrad::gpu_renderer::{build_reflectivity_lut, product_value_range};
+    use crate::nexrad::color_table::{build_reflectivity_lut, product_value_range};
     use nexrad_render::Product;
 
     let product_nr = match product {
@@ -749,7 +682,7 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::state::Rada
     let lut = if matches!(product, crate::state::RadarProduct::Reflectivity) {
         build_reflectivity_lut(min_val, max_val)
     } else {
-        let color_scale = super::super::nexrad::gpu_renderer::continuous_color_scale(product_nr);
+        let color_scale = crate::nexrad::color_table::continuous_color_scale(product_nr);
         let lut_size = 1024usize;
         let mut data = Vec::with_capacity(lut_size * 4);
         for i in 0..lut_size {
@@ -903,10 +836,82 @@ fn handle_canvas_interaction(
     }
 }
 
-/// Render the radar sweep visualization (range rings, radial lines, cardinal labels).
+/// Compute the GPU sweep compositing state for the current frame.
 ///
-/// Uses the same MapProjection as the GPU radar and geo layers so everything
-/// pans and zooms together.
+/// Returns `(gpu_sweep, between_sweeps)`:
+/// - `gpu_sweep`: `Some((sweep_azimuth, sweep_start))` when actively compositing
+/// - `between_sweeps`: true if sweep animation is on but we're between sweep bounds
+///
+/// Also updates the sweep line cache in `state.viz_state`.
+fn compute_gpu_sweep_state(
+    state: &mut AppState,
+    sweep_info: Option<(f32, f32)>,
+) -> (Option<(f32, f32)>, bool) {
+    // Live mode with partial data takes priority over timeline sweep animation.
+    let gpu_sweep = if let Some((first_az, last_az)) = state
+        .live_mode_state
+        .live_data_azimuth_range
+        .filter(|_| state.live_mode_state.is_active())
+    {
+        Some((last_az, first_az))
+    } else if state.effective_sweep_animation() {
+        let playback_ts = state.playback_state.playback_position();
+        let sweep_bounds = state
+            .radar_timeline
+            .find_recent_scan(playback_ts, 15.0 * 60.0)
+            .and_then(|scan| {
+                let displayed_elev = state.displayed_sweep_elevation_number;
+                scan.sweeps
+                    .iter()
+                    .filter(|s| Some(s.elevation_number) == displayed_elev)
+                    .rfind(|s| s.start_time <= playback_ts)
+                    .or_else(|| {
+                        scan.sweeps
+                            .iter()
+                            .find(|s| Some(s.elevation_number) == displayed_elev)
+                    })
+                    .map(|s| (s.start_time, s.end_time))
+            });
+        match sweep_bounds {
+            Some((s, _)) if playback_ts < s => Some((0.0, 0.0)),
+            Some((_, e)) if playback_ts <= e => sweep_info,
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    // Debug: log gpu_sweep once per change
+    if state.live_mode_state.is_active() {
+        if let Some((az, start)) = gpu_sweep {
+            let prev_cache = state.viz_state.last_sweep_line_cache;
+            if prev_cache.is_none_or(|(pa, ps)| (pa - az).abs() > 1.0 || (ps - start).abs() > 1.0) {
+                log::info!(
+                    "gpu_sweep live: az={:.1} start={:.1} swept_arc={:.1}",
+                    az,
+                    start,
+                    ((az - start) % 360.0 + 360.0) % 360.0,
+                );
+            }
+        }
+    }
+
+    // Cache sweep position for between-sweep display
+    if let Some((az, start)) = gpu_sweep {
+        if az != 0.0 || start != 0.0 {
+            state.viz_state.last_sweep_line_cache = Some((az, start));
+        }
+    }
+    if !state.effective_sweep_animation() {
+        state.viz_state.last_sweep_line_cache = None;
+    }
+    let between_sweeps = state.effective_sweep_animation()
+        && gpu_sweep.is_none()
+        && state.viz_state.last_sweep_line_cache.is_some();
+
+    (gpu_sweep, between_sweeps)
+}
+
 /// Compute the sweep line azimuth for the current playback position.
 ///
 /// Returns `Some(azimuth_degrees)` when playing at slow speeds (<= 30s/s)

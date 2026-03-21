@@ -3081,11 +3081,7 @@ impl eframe::App for WorkbenchApp {
             ctx,
             &mut self.state,
             Some(&self.geo_layers),
-            self.renderers.gpu.as_ref(),
-            self.renderers.globe.as_ref(),
-            self.renderers.geo_line.as_ref(),
-            self.renderers.globe_radar.as_ref(),
-            self.renderers.volume_ray.as_ref(),
+            &self.renderers,
         );
 
         // Process keyboard shortcuts
