@@ -21,10 +21,9 @@ pub struct MacroPlaybackState {
     /// Fractional frame accumulator for sub-frame advancement.
     pub frame_accumulator: f64,
     /// Cached filter params for dirty-checking.
-    pub cached_elevation: f32,
+    pub cached_elevation_selection: super::viz::ElevationSelection,
     pub cached_bounds: Option<(f64, f64)>,
     pub cached_scan_count: usize,
-    pub cached_filter_elevation: bool,
     /// Last known playback position, used to detect manual seeks.
     pub cached_playback_position: f64,
     /// Whether the previous frame was in macro mode (for transition detection).
@@ -37,10 +36,9 @@ impl Default for MacroPlaybackState {
             sweep_frames: Vec::new(),
             current_frame_index: 0,
             frame_accumulator: 0.0,
-            cached_elevation: 0.0,
+            cached_elevation_selection: super::viz::ElevationSelection::default(),
             cached_bounds: None,
             cached_scan_count: 0,
-            cached_filter_elevation: true,
             cached_playback_position: 0.0,
             was_macro: false,
         }

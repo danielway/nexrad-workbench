@@ -25,12 +25,6 @@ use state::AppState;
 /// 15 minutes covers a full VCP cycle with margin.
 const MAX_SCAN_AGE_SECS: f64 = 15.0 * 60.0;
 
-/// Tolerance (in degrees) when matching a sweep's elevation angle to the
-/// user-selected target elevation. NEXRAD elevation angles can vary slightly
-/// from the nominal value; 0.15° accommodates that jitter without matching
-/// the wrong tilt.
-const ELEVATION_MATCH_TOLERANCE_DEG: f32 = 0.15;
-
 /// How far ahead (in real-time seconds) to prefetch the next sweep when
 /// playback is active. Multiplied by the playback speed to get the lookahead
 /// in timeline seconds. 0.5 s keeps the pipeline one decode ahead without
@@ -198,7 +192,7 @@ pub struct RenderRequest {
     scan_key: String,
     elevation_number: u8,
     product: String,
-    render_mode: crate::state::RenderMode,
+    is_auto: bool,
 }
 
 /// Parameters for a volume (all-elevations) render request.
@@ -998,35 +992,31 @@ impl WorkbenchApp {
         self.backfill_channel.start(ctx.clone(), site_id);
     }
 
-    /// Find the best elevation number for the current target_elevation.
+    /// Find the best elevation number for the current elevation selection.
     ///
-    /// If sweep metadata with angles is available, picks the number whose angle
-    /// is closest to target_elevation. Otherwise falls back to the lowest available number.
+    /// In Fixed mode, returns the selected elevation_number directly.
+    /// In Latest mode, delegates to most_recent_sweep_elevation.
     fn best_elevation_number(&self) -> u8 {
-        // First try to match by angle using timeline sweep metadata
-        let target = self.state.viz_state.target_elevation;
-        if let Some(scan) = self.state.radar_timeline.find_recent_scan(
-            self.state.playback_state.playback_position(),
-            MAX_SCAN_AGE_SECS,
-        ) {
-            if !scan.sweeps.is_empty() {
-                // Find sweep whose angle is closest to target
-                if let Some(best) = scan.sweeps.iter().min_by(|a, b| {
-                    (a.elevation - target)
-                        .abs()
-                        .partial_cmp(&(b.elevation - target).abs())
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                }) {
-                    return best.elevation_number;
+        match &self.state.viz_state.elevation_selection {
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            } => *elevation_number,
+            crate::state::ElevationSelection::Latest => {
+                // Try to find the most recent sweep at playback position
+                let playback_ts = self.state.playback_state.playback_position();
+                if let Some(scan) = self
+                    .state
+                    .radar_timeline
+                    .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
+                {
+                    return self.most_recent_sweep_elevation(scan, playback_ts);
                 }
+                self.available_elevation_numbers
+                    .first()
+                    .copied()
+                    .unwrap_or(1)
             }
         }
-
-        // Fallback: use lowest available elevation number
-        self.available_elevation_numbers
-            .first()
-            .copied()
-            .unwrap_or(1)
     }
 
     /// Pick the closest available elevation to the requested one.
@@ -1040,36 +1030,43 @@ impl WorkbenchApp {
 
     /// Find the best elevation number for a scan given the playback position.
     ///
-    /// In FixedTilt mode, finds the most recent sweep at the target elevation
-    /// whose start_time <= playback_ts. A scan may contain multiple sweeps at the
-    /// same elevation (e.g. VCP 215 has 0.5° at elevation_number 1 and 3).
+    /// In Fixed mode, filters by exact elevation_number match (no angle tolerance),
+    /// then picks the most recent sweep that has started. This eliminates
+    /// SAILS/MRLE ambiguity where CS and CD sweeps share the same angle.
     fn best_elevation_at_playback(
         &self,
         scan: &crate::state::radar_data::Scan,
         playback_ts: f64,
     ) -> u8 {
-        let target = self.state.viz_state.target_elevation;
+        match &self.state.viz_state.elevation_selection {
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            } => {
+                // Filter sweeps by exact elevation_number match
+                // then filter to those that have started (start_time <= playback_ts)
+                // pick the one with the latest start_time (most recent instance)
+                let matching = scan
+                    .sweeps
+                    .iter()
+                    .filter(|s| s.elevation_number == *elevation_number)
+                    .filter(|s| s.start_time <= playback_ts)
+                    .max_by(|a, b| {
+                        a.start_time
+                            .partial_cmp(&b.start_time)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
 
-        // Filter sweeps matching target elevation (within 0.15° tolerance)
-        // then filter to those that have started (start_time <= playback_ts)
-        // pick the one with the latest start_time (most recent instance)
-        let matching = scan
-            .sweeps
-            .iter()
-            .filter(|s| (s.elevation - target).abs() < ELEVATION_MATCH_TOLERANCE_DEG)
-            .filter(|s| s.start_time <= playback_ts)
-            .max_by(|a, b| {
-                a.start_time
-                    .partial_cmp(&b.start_time)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+                if let Some(sweep) = matching {
+                    return sweep.elevation_number;
+                }
 
-        if let Some(sweep) = matching {
-            return sweep.elevation_number;
+                // No matching sweep started yet — return selected number
+                *elevation_number
+            }
+            crate::state::ElevationSelection::Latest => {
+                self.most_recent_sweep_elevation(scan, playback_ts)
+            }
         }
-
-        // No matching sweep started yet — fall back to best_elevation_number()
-        self.best_elevation_number()
     }
 
     /// Find the most recent sweep (any elevation) at or before the playback position.
@@ -1091,6 +1088,57 @@ impl WorkbenchApp {
             })
             .map(|s| s.elevation_number)
             .unwrap_or_else(|| self.best_elevation_number())
+    }
+
+    /// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
+    fn build_elevation_list(
+        scan: &crate::state::radar_data::Scan,
+    ) -> Vec<crate::state::ElevationListEntry> {
+        // 1. Prefer extracted VCP pattern (has waveform, SAILS, MRLE info)
+        if let Some(ref pattern) = scan.vcp_pattern {
+            if !pattern.elevations.is_empty() {
+                return pattern
+                    .elevations
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| crate::state::ElevationListEntry {
+                        elevation_number: (i + 1) as u8,
+                        angle: e.angle,
+                        waveform: e.waveform.clone(),
+                        is_sails: e.is_sails,
+                        is_mrle: e.is_mrle,
+                    })
+                    .collect();
+            }
+        }
+
+        // 2. Fall back to static VCP definition
+        if let Some(def) = crate::state::get_vcp_definition(scan.vcp) {
+            return def
+                .elevations
+                .iter()
+                .enumerate()
+                .map(|(i, e)| crate::state::ElevationListEntry {
+                    elevation_number: (i + 1) as u8,
+                    angle: e.angle,
+                    waveform: e.waveform.to_string(),
+                    is_sails: false,
+                    is_mrle: false,
+                })
+                .collect();
+        }
+
+        // 3. Fall back to sweep metadata
+        scan.sweeps
+            .iter()
+            .map(|s| crate::state::ElevationListEntry {
+                elevation_number: s.elevation_number,
+                angle: s.elevation,
+                waveform: String::new(),
+                is_sails: false,
+                is_mrle: false,
+            })
+            .collect()
     }
 
     /// Update the canvas overlay text with sweep timing and elevation info.
@@ -1174,7 +1222,7 @@ impl WorkbenchApp {
             scan_key: scan_key.clone(),
             elevation_number,
             product: product.clone(),
-            render_mode: self.state.viz_state.render_mode,
+            is_auto: self.state.viz_state.elevation_selection.is_auto(),
         };
 
         // Skip if same as last request
@@ -2338,35 +2386,36 @@ impl WorkbenchApp {
 
     /// Auto-load scans when scrubbing the timeline and prefetch upcoming sweeps.
     fn advance_playback(&mut self) {
-        // Rebuild macro frame list when dirty (elevation, bounds, render mode, or scan count changed)
+        // Rebuild macro frame list when dirty (elevation selection, bounds, or scan count changed)
         if self.state.playback_state.playback_mode() == crate::state::PlaybackMode::Macro {
             let mp = &self.state.playback_state.macro_playback;
-            let target_elev = self.state.viz_state.target_elevation;
+            let elev_sel = self.state.viz_state.elevation_selection.clone();
             let bounds = self.state.playback_state.time_model.playback_bounds;
             let scan_count = self.state.radar_timeline.scans.len();
-            let filter_elevation =
-                self.state.viz_state.render_mode == crate::state::RenderMode::FixedTilt;
 
-            let dirty = (mp.cached_elevation - target_elev).abs() > 0.01
+            let dirty = mp.cached_elevation_selection != elev_sel
                 || mp.cached_bounds != bounds
-                || mp.cached_scan_count != scan_count
-                || mp.cached_filter_elevation != filter_elevation;
+                || mp.cached_scan_count != scan_count;
 
             if dirty {
-                let frames = self.state.radar_timeline.matching_sweep_end_times(
-                    target_elev,
-                    ELEVATION_MATCH_TOLERANCE_DEG,
-                    bounds,
-                    filter_elevation,
-                );
+                let frames = match &elev_sel {
+                    crate::state::ElevationSelection::Fixed {
+                        elevation_number, ..
+                    } => self
+                        .state
+                        .radar_timeline
+                        .matching_sweep_end_times_by_number(*elevation_number, bounds),
+                    crate::state::ElevationSelection::Latest => {
+                        self.state.radar_timeline.all_sweep_end_times(bounds)
+                    }
+                };
                 self.state.playback_state.macro_playback.sweep_frames = frames;
-                self.state.playback_state.macro_playback.cached_elevation = target_elev;
-                self.state.playback_state.macro_playback.cached_bounds = bounds;
-                self.state.playback_state.macro_playback.cached_scan_count = scan_count;
                 self.state
                     .playback_state
                     .macro_playback
-                    .cached_filter_elevation = filter_elevation;
+                    .cached_elevation_selection = elev_sel;
+                self.state.playback_state.macro_playback.cached_bounds = bounds;
+                self.state.playback_state.macro_playback.cached_scan_count = scan_count;
                 self.state.playback_state.sync_macro_frame_index();
             }
 
@@ -2407,11 +2456,11 @@ impl WorkbenchApp {
                 .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
                 .map(|scan| {
                     let scan_ts = scan.key_timestamp as i64;
-                    let target_elev_num = match self.state.viz_state.render_mode {
-                        crate::state::RenderMode::FixedTilt => {
+                    let target_elev_num = match &self.state.viz_state.elevation_selection {
+                        crate::state::ElevationSelection::Fixed { .. } => {
                             self.best_elevation_at_playback(scan, playback_ts)
                         }
-                        crate::state::RenderMode::MostRecent => {
+                        crate::state::ElevationSelection::Latest => {
                             self.most_recent_sweep_elevation(scan, playback_ts)
                         }
                     };
@@ -2436,6 +2485,13 @@ impl WorkbenchApp {
                     elev_nums.sort_unstable();
                     elev_nums.dedup();
 
+                    // Build elevation list for new scans
+                    let new_elev_list = if needs_new_scan {
+                        Some(Self::build_elevation_list(scan))
+                    } else {
+                        None
+                    };
+
                     (
                         scan_ts,
                         target_elev_num,
@@ -2443,6 +2499,7 @@ impl WorkbenchApp {
                         needs_new_sweep,
                         sweep_overlay,
                         elev_nums,
+                        new_elev_list,
                     )
                 });
 
@@ -2453,6 +2510,7 @@ impl WorkbenchApp {
                 needs_new_sweep,
                 sweep_overlay,
                 elev_nums,
+                new_elev_list,
             )) = scrub_action
             {
                 if (needs_new_scan || needs_new_sweep) && self.decode_worker.is_some() {
@@ -2468,6 +2526,14 @@ impl WorkbenchApp {
                     self.state.displayed_sweep_elevation_number = Some(target_elev_num);
                     if !elev_nums.is_empty() {
                         self.available_elevation_numbers = elev_nums;
+                    }
+                    // Update cached VCP elevation list on scan change
+                    if let Some(entries) = new_elev_list {
+                        self.state.viz_state.cached_vcp_elevations = entries.clone();
+                        self.state
+                            .viz_state
+                            .elevation_selection
+                            .resolve_for_vcp(&entries);
                     }
                     self.renderers.last_render_request = None; // Force fresh render
                     self.renderers.last_volume_render_request = None;
@@ -2544,7 +2610,7 @@ impl WorkbenchApp {
                                         scan_key: scan_key.clone(),
                                         elevation_number: next_en,
                                         product: product.clone(),
-                                        render_mode: self.state.viz_state.render_mode,
+                                        is_auto: self.state.viz_state.elevation_selection.is_auto(),
                                     };
                                     if self.renderers.last_render_request.as_ref()
                                         != Some(&prefetch_request)
@@ -2593,15 +2659,15 @@ impl WorkbenchApp {
         };
 
         // Find the current scan and determine the preceding sweep.
-        // In FixedTilt mode, "previous" means the same elevation from the prior scan.
-        // In MostRecent mode, "previous" is the sweep collected just before this one.
+        // In Fixed mode, "previous" means the same elevation from the prior scan.
+        // In Latest mode, "previous" is the sweep collected just before this one.
         // Returns (scan_key_ts, elevation_number, elevation_deg, start_time, end_time).
         let prev_info = {
             let current_scan = self
                 .state
                 .radar_timeline
                 .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS);
-            let render_mode = self.state.viz_state.render_mode;
+            let is_auto = self.state.viz_state.elevation_selection.is_auto();
             let sweep_to_info = |scan_key_ts: f64, s: &crate::state::radar_data::Sweep| {
                 (
                     scan_key_ts as i64,
@@ -2612,9 +2678,9 @@ impl WorkbenchApp {
                 )
             };
             match current_scan {
-                Some(scan) => match render_mode {
-                    crate::state::RenderMode::FixedTilt => {
-                        // Same elevation from the previous scan
+                Some(scan) => {
+                    if !is_auto {
+                        // Fixed: same elevation from the previous scan
                         let prev_scan = self
                             .state
                             .radar_timeline
@@ -2625,9 +2691,8 @@ impl WorkbenchApp {
                                 .find(|s| s.elevation_number == displayed_elev)
                                 .map(|s| sweep_to_info(ps.key_timestamp, s))
                         })
-                    }
-                    crate::state::RenderMode::MostRecent => {
-                        // Previous sweep in time order within the same scan
+                    } else {
+                        // Latest: previous sweep in time order within the same scan
                         let sweep_idx = scan
                             .sweeps
                             .iter()
@@ -2649,7 +2714,7 @@ impl WorkbenchApp {
                             }
                         }
                     }
-                },
+                }
                 None => return,
             }
         };

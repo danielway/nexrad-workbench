@@ -200,28 +200,42 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
     }
 
     let current_pos = state.playback_state.playback_position();
-    let target_elev = state.viz_state.target_elevation;
     let jog_fallback = state
         .playback_state
         .speed
         .timeline_seconds_per_real_second();
-    const ELEV_TOLERANCE: f32 = 0.3;
 
     if step_back {
         exit_live_if_active(state, LiveExitReason::UserJogged);
-        let new_pos = state
-            .radar_timeline
-            .prev_matching_sweep_end(current_pos, target_elev, ELEV_TOLERANCE)
-            .unwrap_or(current_pos - jog_fallback);
+        let new_pos = match &state.viz_state.elevation_selection {
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            } => state
+                .radar_timeline
+                .prev_matching_sweep_end_by_number(current_pos, *elevation_number)
+                .unwrap_or(current_pos - jog_fallback),
+            crate::state::ElevationSelection::Latest => state
+                .radar_timeline
+                .prev_any_sweep_end(current_pos)
+                .unwrap_or(current_pos - jog_fallback),
+        };
         state.playback_state.set_playback_position(new_pos);
     }
 
     if step_fwd {
         exit_live_if_active(state, LiveExitReason::UserJogged);
-        let new_pos = state
-            .radar_timeline
-            .next_matching_sweep_end(current_pos, target_elev, ELEV_TOLERANCE)
-            .unwrap_or(current_pos + jog_fallback);
+        let new_pos = match &state.viz_state.elevation_selection {
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            } => state
+                .radar_timeline
+                .next_matching_sweep_end_by_number(current_pos, *elevation_number)
+                .unwrap_or(current_pos + jog_fallback),
+            crate::state::ElevationSelection::Latest => state
+                .radar_timeline
+                .next_any_sweep_end(current_pos)
+                .unwrap_or(current_pos + jog_fallback),
+        };
         state.playback_state.set_playback_position(new_pos);
     }
 
@@ -269,8 +283,25 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
     // E cycles elevation in 2D mode (where Q/E vertical movement doesn't apply).
     // In 3D mode, E is reserved for upward camera movement.
     if cycle_elevation && state.viz_state.view_mode == ViewMode::Flat2D {
-        let new_elev = state.viz_state.target_elevation + 0.5;
-        state.viz_state.target_elevation = if new_elev > 19.5 { 0.5 } else { new_elev };
+        let entries = &state.viz_state.cached_vcp_elevations;
+        if !entries.is_empty() {
+            // Find current index and advance
+            let current_idx = match &state.viz_state.elevation_selection {
+                crate::state::ElevationSelection::Fixed {
+                    elevation_number, ..
+                } => entries
+                    .iter()
+                    .position(|e| e.elevation_number == *elevation_number)
+                    .unwrap_or(0),
+                crate::state::ElevationSelection::Latest => 0,
+            };
+            let next_idx = (current_idx + 1) % entries.len();
+            let entry = &entries[next_idx];
+            state.viz_state.elevation_selection = crate::state::ElevationSelection::Fixed {
+                elevation_number: entry.elevation_number,
+                angle: entry.angle,
+            };
+        }
     }
 
     // S opens site modal only in 2D mode. In 3D, S is reserved for backward movement.

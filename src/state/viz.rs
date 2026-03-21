@@ -95,35 +95,74 @@ impl RadarProduct {
     }
 }
 
-/// Radar rendering mode.
-#[derive(Default, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-pub enum RenderMode {
-    /// Fixed elevation - shows complete sweep at a specific tilt.
-    #[default]
-    FixedTilt,
-
-    /// Most recent sweep regardless of elevation.
-    MostRecent,
+/// User's elevation selection — by specific VCP cut or auto (latest) mode.
+#[derive(Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub enum ElevationSelection {
+    /// A specific VCP elevation number. The f32 is the angle at time of
+    /// selection, used for resilience when VCP changes.
+    Fixed { elevation_number: u8, angle: f32 },
+    /// Auto: show the most recently completed sweep (any elevation).
+    Latest,
 }
 
-impl RenderMode {
-    pub fn label(&self) -> &'static str {
+impl Default for ElevationSelection {
+    fn default() -> Self {
+        ElevationSelection::Fixed {
+            elevation_number: 1,
+            angle: 0.5,
+        }
+    }
+}
+
+impl ElevationSelection {
+    pub fn is_auto(&self) -> bool {
+        matches!(self, ElevationSelection::Latest)
+    }
+
+    pub fn elevation_number(&self) -> Option<u8> {
         match self {
-            RenderMode::FixedTilt => "Fixed Tilt",
-            RenderMode::MostRecent => "Most Recent",
+            ElevationSelection::Fixed {
+                elevation_number, ..
+            } => Some(*elevation_number),
+            ElevationSelection::Latest => None,
         }
     }
 
-    pub fn description(&self) -> &'static str {
+    pub fn angle(&self) -> f32 {
         match self {
-            RenderMode::FixedTilt => "Shows complete sweep at selected elevation",
-            RenderMode::MostRecent => "Shows most recent sweep regardless of elevation",
+            ElevationSelection::Fixed { angle, .. } => *angle,
+            ElevationSelection::Latest => 0.5,
         }
     }
 
-    pub fn all() -> &'static [RenderMode] {
-        &[RenderMode::FixedTilt, RenderMode::MostRecent]
+    /// On VCP change, find the closest angle match and update elevation_number.
+    pub fn resolve_for_vcp(&mut self, entries: &[ElevationListEntry]) {
+        if let ElevationSelection::Fixed {
+            angle,
+            elevation_number,
+        } = self
+        {
+            if let Some(best) = entries.iter().min_by(|a, b| {
+                (a.angle - *angle)
+                    .abs()
+                    .partial_cmp(&(b.angle - *angle).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }) {
+                *elevation_number = best.elevation_number;
+                *angle = best.angle;
+            }
+        }
     }
+}
+
+/// One row in the elevation list UI.
+#[derive(Clone, Debug)]
+pub struct ElevationListEntry {
+    pub elevation_number: u8,
+    pub angle: f32,
+    pub waveform: String,
+    pub is_sails: bool,
+    pub is_mrle: bool,
 }
 
 /// Interpolation mode for radar rendering.
@@ -206,11 +245,14 @@ pub struct VizState {
     /// Selected radar product
     pub product: RadarProduct,
 
-    /// Render mode (fixed-tilt vs most-recent)
-    pub render_mode: RenderMode,
+    /// Elevation selection (specific VCP cut or auto/latest mode)
+    pub elevation_selection: ElevationSelection,
 
-    /// Target elevation for fixed-tilt mode (degrees)
-    pub target_elevation: f32,
+    /// Cached elevation list from the current VCP, for the UI list.
+    pub cached_vcp_elevations: Vec<ElevationListEntry>,
+
+    /// Stored Fixed selection to restore when toggling off auto mode.
+    pub last_fixed_selection: Option<(u8, f32)>,
 
     /// Overlay info: radar site ID
     pub site_id: String,
@@ -269,8 +311,9 @@ impl Default for VizState {
             pan_offset: Vec2::ZERO,
             camera: GlobeCamera::centered_on(41.7312, -93.7229),
             product: RadarProduct::default(),
-            render_mode: RenderMode::default(),
-            target_elevation: 0.5,
+            elevation_selection: ElevationSelection::default(),
+            cached_vcp_elevations: Vec::new(),
+            last_fixed_selection: None,
             site_id: "KDMX".to_string(),
             timestamp: "--:--:-- UTC".to_string(),
             elevation: "-- deg".to_string(),

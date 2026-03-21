@@ -38,7 +38,10 @@ pub use stats::{
 // AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
-pub use viz::{InterpolationMode, RadarProduct, RenderMode, RenderProcessing, ViewMode, VizState};
+pub use viz::{
+    ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct, RenderProcessing,
+    ViewMode, VizState,
+};
 
 /// Commands dispatched by UI code and consumed by the main update loop.
 ///

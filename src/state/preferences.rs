@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{AppState, InterpolationMode, PlaybackSpeed, RenderMode};
+use super::{AppState, ElevationSelection, InterpolationMode, PlaybackSpeed};
 
 /// User preferences that persist across page reloads.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -13,7 +13,9 @@ pub struct UserPreferences {
     #[serde(default)]
     pub speed: PlaybackSpeed,
     #[serde(default)]
-    pub render_mode: RenderMode,
+    pub elevation_auto: bool,
+    #[serde(default = "default_elevation_angle")]
+    pub preferred_elevation_angle: f32,
     #[serde(default = "default_true")]
     pub layer_states: bool,
     #[serde(default = "default_true")]
@@ -50,6 +52,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_elevation_angle() -> f32 {
+    0.5
+}
+
 fn default_despeckle_threshold() -> u32 {
     3
 }
@@ -62,7 +68,8 @@ impl Default for UserPreferences {
     fn default() -> Self {
         Self {
             speed: PlaybackSpeed::default(),
-            render_mode: RenderMode::default(),
+            elevation_auto: false,
+            preferred_elevation_angle: 0.5,
             layer_states: true,
             layer_counties: true,
             layer_labels: true,
@@ -87,7 +94,8 @@ impl UserPreferences {
     pub fn from_app_state(state: &AppState) -> Self {
         Self {
             speed: state.playback_state.speed,
-            render_mode: state.viz_state.render_mode,
+            elevation_auto: state.viz_state.elevation_selection.is_auto(),
+            preferred_elevation_angle: state.viz_state.elevation_selection.angle(),
             layer_states: state.layer_state.geo.states,
             layer_counties: state.layer_state.geo.counties,
             layer_labels: state.layer_state.geo.labels,
@@ -107,7 +115,15 @@ impl UserPreferences {
     /// Apply loaded preferences to application state.
     pub fn apply_to(&self, state: &mut AppState) {
         state.playback_state.speed = self.speed;
-        state.viz_state.render_mode = self.render_mode;
+        if self.elevation_auto {
+            state.viz_state.elevation_selection = ElevationSelection::Latest;
+        } else {
+            state.viz_state.elevation_selection = ElevationSelection::Fixed {
+                elevation_number: 1,
+                angle: self.preferred_elevation_angle,
+            };
+            // Will be re-resolved when VCP data arrives
+        }
         state.layer_state.geo.states = self.layer_states;
         state.layer_state.geo.counties = self.layer_counties;
         state.layer_state.geo.labels = self.layer_labels;

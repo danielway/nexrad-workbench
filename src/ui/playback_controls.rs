@@ -226,8 +226,6 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
 
     // Jog: jump to end of next/previous matching sweep for current elevation
     let current_pos = state.playback_state.playback_position();
-    let target_elev = state.viz_state.target_elevation;
-    const ELEV_TOLERANCE: f32 = 0.3;
 
     // Step backward
     if ui
@@ -249,16 +247,23 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
                 state.playback_state.step_macro_frame(-1);
             }
             PlaybackMode::Micro => {
-                let new_pos = state
-                    .radar_timeline
-                    .prev_matching_sweep_end(current_pos, target_elev, ELEV_TOLERANCE)
-                    .unwrap_or(
-                        current_pos
-                            - state
-                                .playback_state
-                                .speed
-                                .timeline_seconds_per_real_second(),
-                    );
+                let fallback = current_pos
+                    - state
+                        .playback_state
+                        .speed
+                        .timeline_seconds_per_real_second();
+                let new_pos = match &state.viz_state.elevation_selection {
+                    crate::state::ElevationSelection::Fixed {
+                        elevation_number, ..
+                    } => state
+                        .radar_timeline
+                        .prev_matching_sweep_end_by_number(current_pos, *elevation_number)
+                        .unwrap_or(fallback),
+                    crate::state::ElevationSelection::Latest => state
+                        .radar_timeline
+                        .prev_any_sweep_end(current_pos)
+                        .unwrap_or(fallback),
+                };
                 state.playback_state.set_playback_position(new_pos);
             }
         }
@@ -284,16 +289,23 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
                 state.playback_state.step_macro_frame(1);
             }
             PlaybackMode::Micro => {
-                let new_pos = state
-                    .radar_timeline
-                    .next_matching_sweep_end(current_pos, target_elev, ELEV_TOLERANCE)
-                    .unwrap_or(
-                        current_pos
-                            + state
-                                .playback_state
-                                .speed
-                                .timeline_seconds_per_real_second(),
-                    );
+                let fallback = current_pos
+                    + state
+                        .playback_state
+                        .speed
+                        .timeline_seconds_per_real_second();
+                let new_pos = match &state.viz_state.elevation_selection {
+                    crate::state::ElevationSelection::Fixed {
+                        elevation_number, ..
+                    } => state
+                        .radar_timeline
+                        .next_matching_sweep_end_by_number(current_pos, *elevation_number)
+                        .unwrap_or(fallback),
+                    crate::state::ElevationSelection::Latest => state
+                        .radar_timeline
+                        .next_any_sweep_end(current_pos)
+                        .unwrap_or(fallback),
+                };
                 state.playback_state.set_playback_position(new_pos);
             }
         }

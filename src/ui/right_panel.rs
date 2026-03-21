@@ -1,8 +1,7 @@
 //! Right panel UI: product selection, layers, and rendering controls.
 
 use crate::state::{
-    format_bytes, get_vcp_definition, AppState, InterpolationMode, RadarProduct, RenderMode,
-    StorageSettings,
+    format_bytes, AppState, ElevationSelection, InterpolationMode, RadarProduct, StorageSettings,
 };
 use eframe::egui::{self, RichText, ScrollArea};
 
@@ -64,71 +63,122 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.add_space(8.0);
 
-            ui.label("Render Mode:");
-            egui::ComboBox::from_id_salt("render_mode_selector")
-                .selected_text(state.viz_state.render_mode.label())
-                .width(150.0)
-                .show_ui(ui, |ui| {
-                    for mode in RenderMode::all() {
-                        ui.selectable_value(&mut state.viz_state.render_mode, *mode, mode.label());
+            // Auto (latest sweep) checkbox
+            let mut is_auto = state.viz_state.elevation_selection.is_auto();
+            if ui
+                .checkbox(&mut is_auto, "Auto (latest sweep)")
+                .on_hover_text("Show the most recently completed sweep regardless of elevation")
+                .changed()
+            {
+                if is_auto {
+                    // Save current Fixed selection before switching to Latest
+                    if let ElevationSelection::Fixed {
+                        elevation_number,
+                        angle,
+                    } = &state.viz_state.elevation_selection
+                    {
+                        state.viz_state.last_fixed_selection = Some((*elevation_number, *angle));
                     }
-                });
-
-            ui.label(
-                RichText::new(state.viz_state.render_mode.description())
-                    .small()
-                    .weak(),
-            );
-
-            if matches!(state.viz_state.render_mode, RenderMode::FixedTilt) {
-                ui.add_space(8.0);
-                ui.label("Target Elevation:");
-
-                let playback_ts = state.playback_state.playback_position();
-                let current_scan = state.radar_timeline.find_scan_at_timestamp(playback_ts);
-
-                // Collect elevation angles: prefer extracted VCP, then static, then slider
-                let elevation_angles: Option<Vec<f32>> = current_scan.and_then(|scan| {
-                    // First try extracted VCP pattern
-                    if let Some(ref pattern) = scan.vcp_pattern {
-                        if !pattern.elevations.is_empty() {
-                            return Some(pattern.elevations.iter().map(|e| e.angle).collect());
-                        }
-                    }
-                    // Fall back to static VCP definition
-                    get_vcp_definition(scan.vcp)
-                        .map(|def| def.elevations.iter().map(|e| e.angle).collect())
-                });
-
-                // Slider for elevation selection; snaps to known VCP
-                // elevation angles when available.
-                let max_elev = elevation_angles
-                    .as_ref()
-                    .and_then(|a| a.last().copied())
-                    .unwrap_or(19.5)
-                    .max(19.5);
-
-                let slider =
-                    egui::Slider::new(&mut state.viz_state.target_elevation, 0.5..=max_elev)
-                        .suffix("\u{00B0}")
-                        .step_by(0.1);
-
-                let resp = ui.add(slider);
-
-                // Snap to nearest VCP elevation on release
-                if resp.drag_stopped() || resp.lost_focus() {
-                    if let Some(ref angles) = elevation_angles {
-                        let current = state.viz_state.target_elevation;
-                        if let Some(closest) = angles.iter().min_by(|a, b| {
-                            ((**a - current).abs())
-                                .partial_cmp(&((**b - current).abs()))
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        }) {
-                            state.viz_state.target_elevation = *closest;
-                        }
-                    }
+                    state.viz_state.elevation_selection = ElevationSelection::Latest;
+                } else {
+                    // Restore previous Fixed selection
+                    let (num, angle) = state.viz_state.last_fixed_selection.unwrap_or((1, 0.5));
+                    state.viz_state.elevation_selection = ElevationSelection::Fixed {
+                        elevation_number: num,
+                        angle,
+                    };
                 }
             }
+
+            ui.separator();
+
+            // Elevation list
+            let entries = state.viz_state.cached_vcp_elevations.clone();
+            let list_enabled = !is_auto;
+
+            ui.add_enabled_ui(list_enabled, |ui| {
+                if entries.is_empty() {
+                    // Pre-data: show default
+                    let selected = matches!(
+                        state.viz_state.elevation_selection,
+                        ElevationSelection::Fixed {
+                            elevation_number: 1,
+                            ..
+                        }
+                    );
+                    let resp = ui.selectable_label(selected, "1   0.5\u{00B0} (default)");
+                    if resp.clicked() {
+                        state.viz_state.elevation_selection = ElevationSelection::Fixed {
+                            elevation_number: 1,
+                            angle: 0.5,
+                        };
+                    }
+                } else {
+                    egui::ScrollArea::vertical()
+                        .max_height(250.0)
+                        .id_salt("elevation_list")
+                        .show(ui, |ui| {
+                            for entry in &entries {
+                                let is_selected = matches!(
+                                    &state.viz_state.elevation_selection,
+                                    ElevationSelection::Fixed { elevation_number, .. }
+                                        if *elevation_number == entry.elevation_number
+                                );
+
+                                ui.horizontal(|ui| {
+                                    // Build the label text
+                                    let num_str = format!(
+                                        "{:<3} {:.1}\u{00B0}",
+                                        entry.elevation_number, entry.angle
+                                    );
+
+                                    let resp =
+                                        ui.selectable_label(is_selected, RichText::new(&num_str));
+
+                                    // Waveform badge
+                                    if !entry.waveform.is_empty() {
+                                        let wf_color = match entry.waveform.as_str() {
+                                            "CS" => egui::Color32::from_rgb(100, 200, 100),
+                                            _ => egui::Color32::from_rgb(100, 150, 255),
+                                        };
+                                        ui.label(
+                                            RichText::new(&entry.waveform).small().color(wf_color),
+                                        );
+                                    }
+
+                                    // SAILS/MRLE badge
+                                    if entry.is_sails {
+                                        ui.label(
+                                            RichText::new("SAILS")
+                                                .small()
+                                                .color(egui::Color32::from_rgb(220, 180, 60)),
+                                        )
+                                        .on_hover_text(
+                                            "Supplemental Adaptive Intra-Volume Low-Level Scan — \
+                                             CD waveform, lower range resolution than CS base tilt",
+                                        );
+                                    }
+                                    if entry.is_mrle {
+                                        ui.label(
+                                            RichText::new("MRLE")
+                                                .small()
+                                                .color(egui::Color32::from_rgb(220, 180, 60)),
+                                        )
+                                        .on_hover_text("Mid-Volume Rescan of Low-Level Elevations");
+                                    }
+
+                                    if resp.clicked() {
+                                        state.viz_state.elevation_selection =
+                                            ElevationSelection::Fixed {
+                                                elevation_number: entry.elevation_number,
+                                                angle: entry.angle,
+                                            };
+                                    }
+                                });
+                            }
+                        });
+                }
+            });
         });
 }
 
