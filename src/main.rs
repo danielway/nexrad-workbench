@@ -98,7 +98,7 @@ pub async fn start() {
 }
 
 /// All GPU renderers and their shared GL context, grouped for clarity.
-pub struct Renderers {
+pub struct GpuResources {
     /// GPU renderer for radar data (None if GL not available).
     pub gpu: Option<std::sync::Arc<std::sync::Mutex<nexrad::RadarGpuRenderer>>>,
     /// GL context for uploading data to GPU textures.
@@ -111,32 +111,11 @@ pub struct Renderers {
     pub globe_radar: Option<std::sync::Arc<std::sync::Mutex<nexrad::GlobeRadarRenderer>>>,
     /// Volumetric ray-march renderer for 3D mode.
     pub volume_ray: Option<std::sync::Arc<std::sync::Mutex<nexrad::VolumeRayRenderer>>>,
-    /// Previous render parameters for change detection.
-    pub last_render_request: Option<RenderRequest>,
-    /// Previous volume render parameters for change detection.
-    pub last_volume_render_request: Option<VolumeRenderRequest>,
-}
-
-use state::playback_manager::{sweep_cache_key, CachedSweepData, PlaybackManager, PrevSweepAction};
-
-/// Parameters for a single-elevation render request. Adding a field here
-/// automatically breaks the `PartialEq` comparison, preventing silent omissions.
-#[derive(Clone, PartialEq)]
-pub struct RenderRequest {
-    scan_key: String,
-    elevation_number: u8,
-    product: String,
-    is_auto: bool,
-}
-
-/// Parameters for a volume (all-elevations) render request.
-#[derive(Clone, PartialEq)]
-pub struct VolumeRenderRequest {
-    scan_key: String,
-    product: String,
 }
 
 use nexrad::download_queue::{DownloadQueueManager, QueueAction, QueueItem};
+use nexrad::RenderRequest;
+use state::playback_manager::{sweep_cache_key, CachedSweepData, PlaybackManager, PrevSweepAction};
 
 /// Main application state and logic.
 pub struct WorkbenchApp {
@@ -147,7 +126,10 @@ pub struct WorkbenchApp {
     geo_layers: geo::GeoLayerSet,
 
     /// All GPU renderers and their GL context.
-    renderers: Renderers,
+    gpu: GpuResources,
+
+    /// Render coordinator: owns the decode worker, scan key, elevations, and render dedup.
+    render: nexrad::RenderCoordinator,
 
     /// Record-based data facade
     data_facade: DataFacade,
@@ -172,17 +154,6 @@ pub struct WorkbenchApp {
 
     /// Channel for real-time streaming
     realtime_channel: nexrad::RealtimeChannel,
-
-    /// Web Worker for offloading expensive NEXRAD operations.
-    /// None if the worker failed to initialize.
-    decode_worker: Option<nexrad::DecodeWorker>,
-
-    /// Scan key of the currently displayed scan (data storage format "SITE|TIMESTAMP_MS").
-    /// Used to send render requests to the worker.
-    current_render_scan_key: Option<String>,
-
-    /// Available elevation numbers for the current scan (from ingest).
-    available_elevation_numbers: Vec<u8>,
 
     /// Monotonic instant of last URL push (for throttling to ~1/sec).
     last_url_push: web_time::Instant,
@@ -482,16 +453,15 @@ impl WorkbenchApp {
         let mut app = Self {
             state,
             geo_layers,
-            renderers: Renderers {
+            gpu: GpuResources {
                 gpu: gpu_renderer,
                 gl: gpu_renderer_gl,
                 globe: globe_renderer,
                 geo_line: geo_line_renderer,
                 globe_radar: globe_radar_renderer,
                 volume_ray: volume_ray_renderer,
-                last_render_request: None,
-                last_volume_render_request: None,
             },
+            render: nexrad::RenderCoordinator::new(decode_worker),
             data_facade,
             download_channel,
             cache_load_channel,
@@ -500,9 +470,6 @@ impl WorkbenchApp {
             download_queue: DownloadQueueManager::new(),
             previous_site_id: initial_site_id,
             realtime_channel,
-            decode_worker,
-            current_render_scan_key: None,
-            available_elevation_numbers: Vec::new(),
             last_url_push: web_time::Instant::now(),
             last_saved_preferences: initial_prefs,
             site_modal_state: {
@@ -861,16 +828,12 @@ impl WorkbenchApp {
     }
 
     /// Find the best elevation number for the current elevation selection.
-    ///
-    /// In Fixed mode, returns the selected elevation_number directly.
-    /// In Latest mode, delegates to most_recent_sweep_elevation.
     fn best_elevation_number(&self) -> u8 {
         match &self.state.viz_state.elevation_selection {
             crate::state::ElevationSelection::Fixed {
                 elevation_number, ..
             } => *elevation_number,
             crate::state::ElevationSelection::Latest => {
-                // Try to find the most recent sweep at playback position
                 let playback_ts = self.state.playback_state.playback_position();
                 if let Some(scan) = self
                     .state
@@ -879,7 +842,8 @@ impl WorkbenchApp {
                 {
                     return self.most_recent_sweep_elevation(scan, playback_ts);
                 }
-                self.available_elevation_numbers
+                self.render
+                    .available_elevations()
                     .first()
                     .copied()
                     .unwrap_or(1)
@@ -887,17 +851,7 @@ impl WorkbenchApp {
         }
     }
 
-    /// Pick the closest available elevation to the requested one.
-    fn best_available_elevation(&self, requested: u8) -> u8 {
-        self.available_elevation_numbers
-            .iter()
-            .copied()
-            .min_by_key(|&e| (e as i16 - requested as i16).unsigned_abs())
-            .unwrap_or(requested)
-    }
-
     /// Find the best elevation number for a scan given the playback position.
-    /// Delegates to the free function in `playback_manager`.
     fn best_elevation_at_playback(
         &self,
         scan: &crate::state::radar_data::Scan,
@@ -907,27 +861,26 @@ impl WorkbenchApp {
             &self.state.viz_state.elevation_selection,
             scan,
             playback_ts,
-            &self.available_elevation_numbers,
+            self.render.available_elevations(),
         )
     }
 
     /// Find the most recent sweep (any elevation) at or before the playback position.
-    /// Delegates to the free function in `playback_manager`.
     fn most_recent_sweep_elevation(
         &self,
         scan: &crate::state::radar_data::Scan,
         playback_ts: f64,
     ) -> u8 {
         let fallback = self
-            .available_elevation_numbers
+            .render
+            .available_elevations()
             .first()
             .copied()
             .unwrap_or(1);
         state::playback_manager::most_recent_sweep_elevation(scan, playback_ts, fallback)
     }
 
-    /// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
-    /// Delegates to the free function in `playback_manager`.
+    /// Build the elevation list from a scan's VCP data.
     fn build_elevation_list(
         scan: &crate::state::radar_data::Scan,
     ) -> Vec<crate::state::ElevationListEntry> {
@@ -936,151 +889,45 @@ impl WorkbenchApp {
 
     /// Update the canvas overlay text with sweep timing and elevation info.
     fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
-        self.state.viz_state.elevation = format!("{:.1}\u{00B0}", elevation_deg);
-
-        // Format midpoint timestamp with full date and time
-        let mid_ms = ((start + end) / 2.0) * 1000.0;
-        let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(mid_ms));
-        if self.state.use_local_time {
-            self.state.viz_state.timestamp = format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-                date.get_full_year(),
-                date.get_month() + 1, // JS months are 0-indexed
-                date.get_date(),
-                date.get_hours(),
-                date.get_minutes(),
-                date.get_seconds(),
-                date.get_milliseconds()
-            );
-        } else {
-            self.state.viz_state.timestamp = format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} UTC",
-                date.get_utc_full_year(),
-                date.get_utc_month() + 1, // JS months are 0-indexed
-                date.get_utc_date(),
-                date.get_utc_hours(),
-                date.get_utc_minutes(),
-                date.get_utc_seconds(),
-                date.get_utc_milliseconds()
-            );
-        }
-
-        // Store sweep start/end times so staleness can be recomputed each frame
-        self.state.viz_state.rendered_sweep_start_secs = Some(start);
-        self.state.viz_state.rendered_sweep_end_secs = Some(end);
-        // Staleness is recomputed per-frame in update(); seed it here for immediate display
-        let now = js_sys::Date::now() / 1000.0;
-        let staleness_end = now - end;
-        let staleness_start = now - start;
-        self.state.viz_state.data_staleness_secs = if staleness_end >= 0.0 {
-            Some(staleness_end)
-        } else {
-            None
-        };
-        self.state.viz_state.data_staleness_start_secs = if staleness_start >= 0.0 {
-            Some(staleness_start)
-        } else {
-            None
-        };
+        self.state
+            .viz_state
+            .update_overlay(start, end, elevation_deg, self.state.use_local_time);
     }
 
     /// Send a render request to the worker for the current scan/elevation/product.
-    ///
-    /// Skips the request if the parameters haven't changed since the last render.
     fn request_worker_render(&mut self) {
-        let Some(ref scan_key) = self.current_render_scan_key else {
-            return;
-        };
-        if self.decode_worker.is_none() {
-            return;
-        }
-
         let mut elevation_number = self
             .state
+            .viz_state
             .displayed_sweep_elevation_number
             .unwrap_or_else(|| self.best_elevation_number());
 
-        // During real-time streaming, best_elevation_number() may return an
-        // elevation from a previous completed scan that doesn't exist yet in the
-        // in-progress scan. Constrain to what's actually available.
+        // During real-time streaming, constrain to what's actually available.
         if self.state.live_mode_state.is_active()
-            && !self.available_elevation_numbers.is_empty()
-            && !self.available_elevation_numbers.contains(&elevation_number)
+            && !self.render.available_elevations().is_empty()
+            && !self
+                .render
+                .available_elevations()
+                .contains(&elevation_number)
         {
-            elevation_number = self.best_available_elevation(elevation_number);
+            elevation_number = self.render.best_available_elevation(elevation_number);
         }
         let product = self.state.viz_state.product.to_worker_string().to_string();
+        let is_auto = self.state.viz_state.elevation_selection.is_auto();
 
-        let request = RenderRequest {
-            scan_key: scan_key.clone(),
-            elevation_number,
-            product: product.clone(),
-            is_auto: self.state.viz_state.elevation_selection.is_auto(),
-        };
-
-        // Skip if same as last request
-        if self.renderers.last_render_request.as_ref() == Some(&request) {
-            return;
-        }
-
-        log::info!(
-            "Requesting worker decode: {} elev={} product={}",
-            scan_key,
-            elevation_number,
-            product,
-        );
-
-        let scan_key = scan_key.clone();
-        self.renderers.last_render_request = Some(request);
-        if !self.state.session_stats.pipeline.processing {
+        if self
+            .render
+            .request_render(elevation_number, &product, is_auto)
+            && !self.state.session_stats.pipeline.processing
+        {
             self.state.session_stats.pipeline.processing = true;
         }
-        self.decode_worker
-            .as_mut()
-            .unwrap()
-            .render(scan_key, elevation_number, product);
     }
 
     /// Request volume render (all elevations for ray marching).
     fn request_worker_render_volume(&mut self) {
-        let Some(ref scan_key) = self.current_render_scan_key else {
-            log::debug!("Volume render skipped: no scan key");
-            return;
-        };
-        if self.decode_worker.is_none() {
-            log::debug!("Volume render skipped: no worker");
-            return;
-        }
-        if self.available_elevation_numbers.is_empty() {
-            log::warn!("Volume render skipped: no elevation numbers available");
-            return;
-        }
-
         let product = self.state.viz_state.product.to_worker_string().to_string();
-        let request = VolumeRenderRequest {
-            scan_key: scan_key.clone(),
-            product: product.clone(),
-        };
-
-        if self.renderers.last_volume_render_request.as_ref() == Some(&request) {
-            return; // Already requested with same params
-        }
-
-        log::info!(
-            "Requesting volume render: {} product={} elevations={:?}",
-            scan_key,
-            product,
-            self.available_elevation_numbers,
-        );
-
-        let scan_key = scan_key.clone();
-        let elev_nums = self.available_elevation_numbers.clone();
-        self.renderers.last_volume_render_request = Some(request);
-
-        self.decode_worker
-            .as_mut()
-            .unwrap()
-            .render_volume(scan_key, product, elev_nums);
+        self.render.request_volume_render(&product);
     }
 
     /// Stop live mode streaming.
@@ -1183,26 +1030,24 @@ impl WorkbenchApp {
                 // Forward chunk to worker for incremental ingest
                 let site_id = self.state.viz_state.site_id.clone();
                 let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
-                if let Some(ref mut worker) = self.decode_worker {
-                    if is_start {
-                        self.state.session_stats.pipeline.processing = true;
-                    }
-                    log::info!(
-                        "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={})",
-                        chunk_index,
-                        site_id,
-                        timestamp
-                    );
-                    worker.ingest_chunk(
-                        data,
-                        site_id,
-                        timestamp,
-                        chunk_index,
-                        is_start,
-                        is_end,
-                        file_name,
-                    );
+                if is_start {
+                    self.state.session_stats.pipeline.processing = true;
                 }
+                log::info!(
+                    "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={})",
+                    chunk_index,
+                    site_id,
+                    timestamp
+                );
+                self.render.ingest_chunk(
+                    data,
+                    site_id,
+                    timestamp,
+                    chunk_index,
+                    is_start,
+                    is_end,
+                    file_name,
+                );
             }
             nexrad::RealtimeResult::Error(msg) => {
                 log::error!("Realtime streaming error: {}", msg);
@@ -1252,20 +1097,18 @@ impl WorkbenchApp {
 
                 let site_id = self.state.viz_state.site_id.clone();
                 let file_name = format!("backfill_{}_{}.nexrad", site_id, timestamp);
-                if let Some(ref mut worker) = self.decode_worker {
-                    if is_start {
-                        self.state.session_stats.pipeline.processing = true;
-                    }
-                    worker.ingest_chunk(
-                        data,
-                        site_id,
-                        timestamp,
-                        chunk_index,
-                        is_start,
-                        is_end,
-                        file_name,
-                    );
+                if is_start {
+                    self.state.session_stats.pipeline.processing = true;
                 }
+                self.render.ingest_chunk(
+                    data,
+                    site_id,
+                    timestamp,
+                    chunk_index,
+                    is_start,
+                    is_end,
+                    file_name,
+                );
             }
             nexrad::RealtimeResult::Error(msg) => {
                 log::error!("Backfill error: {}", msg);
@@ -1325,22 +1168,26 @@ impl WorkbenchApp {
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
 
         // Run storm cell detection on demand when toggled on with existing data
-        if self.state.storm_cells_visible && self.state.detected_storm_cells.is_empty() {
-            if let Some(ref renderer) = self.renderers.gpu {
+        if self.state.viz_state.storm_cells_visible
+            && self.state.viz_state.detected_storm_cells.is_empty()
+        {
+            if let Some(ref renderer) = self.gpu.gpu {
                 if let Ok(r) = renderer.lock() {
                     if r.has_data() {
-                        self.state.detected_storm_cells = r.detect_storm_cells(
+                        self.state.viz_state.detected_storm_cells = r.detect_storm_cells(
                             self.state.viz_state.center_lat,
                             self.state.viz_state.center_lon,
-                            self.state.storm_cell_threshold_dbz,
+                            self.state.viz_state.storm_cell_threshold_dbz,
                         );
                     }
                 }
             }
         }
         // Clear cached cells when toggle is off
-        if !self.state.storm_cells_visible && !self.state.detected_storm_cells.is_empty() {
-            self.state.detected_storm_cells.clear();
+        if !self.state.viz_state.storm_cells_visible
+            && !self.state.viz_state.detected_storm_cells.is_empty()
+        {
+            self.state.viz_state.detected_storm_cells.clear();
         }
 
         // Detect site changes and clear volume ring
@@ -1350,14 +1197,15 @@ impl WorkbenchApp {
                 self.previous_site_id,
                 self.state.viz_state.site_id
             );
-            if let Some(ref renderer) = self.renderers.gpu {
+            if let Some(ref renderer) = self.gpu.gpu {
                 if let Ok(mut r) = renderer.lock() {
                     r.clear_data();
                 }
             }
             self.playback_manager.clear_cache();
-            self.state.displayed_scan_timestamp = None;
-            self.state.displayed_sweep_elevation_number = None;
+            self.render.clear_for_site_change();
+            self.state.viz_state.displayed_scan_timestamp = None;
+            self.state.viz_state.displayed_sweep_elevation_number = None;
             self.previous_site_id = self.state.viz_state.site_id.clone();
             // Clear shadow boundaries from previous site; new listings will repopulate.
             self.state.shadow_scan_boundaries.clear();
@@ -1469,17 +1317,13 @@ impl WorkbenchApp {
                 state::AppCommand::ReorderOperation(op_id, delta) => {
                     self.state.acquisition.reorder_operation(op_id, delta);
                 }
-                state::AppCommand::RetryWorker => match nexrad::DecodeWorker::new(ctx.clone()) {
-                    Ok(w) => {
-                        log::info!("Decode worker created successfully on retry");
-                        self.decode_worker = Some(w);
+                state::AppCommand::RetryWorker => match self.render.create_worker(ctx.clone()) {
+                    Ok(()) => {
                         self.state.worker_init_error = None;
                         self.state.set_status("Decode worker initialized");
                     }
-                    Err(e) => {
-                        log::warn!("Failed to create decode worker on retry: {}", e);
-                        self.state.worker_init_error =
-                            Some(format!("Decode worker failed to initialize: {}", e));
+                    Err(msg) => {
+                        self.state.worker_init_error = Some(msg);
                     }
                 },
             }
@@ -1498,27 +1342,25 @@ impl WorkbenchApp {
             self.handle_cache_load_outcome(result);
         }
 
-        if let Some(ref mut worker) = self.decode_worker {
-            for outcome in worker.try_recv() {
-                match outcome {
-                    nexrad::WorkerOutcome::Ingested(result) => {
-                        self.handle_ingested_outcome(result);
-                    }
-                    nexrad::WorkerOutcome::ChunkIngested(result) => {
-                        self.handle_chunk_ingested_outcome(result);
-                    }
-                    nexrad::WorkerOutcome::Decoded(result) => {
-                        self.handle_decoded_outcome(result);
-                    }
-                    nexrad::WorkerOutcome::LiveDecoded(result) => {
-                        self.handle_live_decoded_outcome(result);
-                    }
-                    nexrad::WorkerOutcome::VolumeDecoded(volume_data) => {
-                        self.handle_volume_decoded_outcome(volume_data);
-                    }
-                    nexrad::WorkerOutcome::WorkerError { id, message } => {
-                        self.handle_worker_error_outcome(id, message);
-                    }
+        for outcome in self.render.try_recv() {
+            match outcome {
+                nexrad::WorkerOutcome::Ingested(result) => {
+                    self.handle_ingested_outcome(result);
+                }
+                nexrad::WorkerOutcome::ChunkIngested(result) => {
+                    self.handle_chunk_ingested_outcome(result);
+                }
+                nexrad::WorkerOutcome::Decoded(result) => {
+                    self.handle_decoded_outcome(result);
+                }
+                nexrad::WorkerOutcome::LiveDecoded(result) => {
+                    self.handle_live_decoded_outcome(result);
+                }
+                nexrad::WorkerOutcome::VolumeDecoded(volume_data) => {
+                    self.handle_volume_decoded_outcome(volume_data);
+                }
+                nexrad::WorkerOutcome::WorkerError { id, message } => {
+                    self.handle_worker_error_outcome(id, message);
                 }
             }
         }
@@ -1621,13 +1463,11 @@ impl WorkbenchApp {
         });
 
         // Track the scan for render requests
-        self.current_render_scan_key = Some(result.scan_key.clone());
-        self.available_elevation_numbers = result.elevation_numbers;
-        self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
-        self.state.displayed_sweep_elevation_number = None;
-        // Refresh timeline to include the new scan (sweeps
-        // were persisted to IDB during ingest and will be
-        // loaded by from_metadata on the next refresh).
+        self.render
+            .set_scan(result.scan_key.clone(), result.elevation_numbers);
+        self.state.viz_state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
+        self.state.viz_state.displayed_sweep_elevation_number = None;
+        // Refresh timeline to include the new scan
         self.state.push_command(state::AppCommand::RefreshTimeline {
             auto_position: false,
         });
@@ -1635,9 +1475,8 @@ impl WorkbenchApp {
         // Request eviction check
         self.state.push_command(state::AppCommand::CheckEviction);
 
-        // Clear last render params to force a fresh render
-        self.renderers.last_render_request = None;
-        self.renderers.last_volume_render_request = None;
+        // Force a fresh render
+        self.render.force_fresh_render();
 
         // Trigger render for the ingested scan
         self.request_worker_render();
@@ -1657,22 +1496,17 @@ impl WorkbenchApp {
             result.sweeps_stored,
             result.is_end,
             result.vcp.as_ref().map(|v| v.number),
-            self.available_elevation_numbers,
+            self.render.available_elevations(),
             result.total_ms,
         );
 
         // Update scan key and available elevations
-        self.current_render_scan_key = Some(result.scan_key.clone());
-        let had_elevations = !self.available_elevation_numbers.is_empty();
-        for elev in &result.elevations_completed {
-            if !self.available_elevation_numbers.contains(elev) {
-                self.available_elevation_numbers.push(*elev);
-                self.available_elevation_numbers.sort_unstable();
-            }
-        }
+        self.render.set_scan_key(result.scan_key.clone());
+        let had_elevations = !self.render.available_elevations().is_empty();
+        self.render.add_elevations(&result.elevations_completed);
 
         // Update displayed timestamp
-        self.state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
+        self.state.viz_state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
 
         // Only update live_mode_state when actually in live mode
         if is_live {
@@ -1745,9 +1579,7 @@ impl WorkbenchApp {
             if !result.is_end {
                 if let Some(target_elev) = result.current_elevation {
                     let product = self.state.viz_state.product.to_worker_string().to_string();
-                    if let Some(ref mut worker) = self.decode_worker {
-                        worker.render_live(target_elev, product);
-                    }
+                    self.render.render_live(target_elev, product);
                 }
             }
         }
@@ -1758,7 +1590,7 @@ impl WorkbenchApp {
                 "{}: {} new elevation(s) cached, refreshing timeline (total available: {:?})",
                 source,
                 result.elevations_completed.len(),
-                self.available_elevation_numbers,
+                self.render.available_elevations(),
             );
             self.state.push_command(state::AppCommand::RefreshTimeline {
                 auto_position: !is_live,
@@ -1767,19 +1599,14 @@ impl WorkbenchApp {
             if is_live {
                 self.state.status_message = format!(
                     "Live: {} elevation(s) cached",
-                    self.available_elevation_numbers.len()
+                    self.render.available_elevations().len()
                 );
             }
         }
 
         if result.is_end {
             if is_live {
-                // Promote current GPU texture → previous before clearing live state,
-                // so the new volume's first chunks composite against the old volume's
-                // final complete sweep rather than stale/empty data.
-                if let (Some(ref renderer), Some(ref gl)) =
-                    (&self.renderers.gpu, &self.renderers.gl)
-                {
+                if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
                     if let Ok(mut r) = renderer.lock() {
                         r.promote_current_to_previous(gl);
                     }
@@ -1788,10 +1615,9 @@ impl WorkbenchApp {
                 self.state.live_mode_state.handle_volume_complete(now);
                 self.state.status_message = format!(
                     "Live: volume complete ({} elevations)",
-                    self.available_elevation_numbers.len()
+                    self.render.available_elevations().len()
                 );
             } else {
-                // Backfill complete — jump playback to "now"
                 let now = js_sys::Date::now() / 1000.0;
                 self.state.playback_state.set_playback_position(now);
                 self.state.playback_state.center_view_on(now);
@@ -1800,7 +1626,7 @@ impl WorkbenchApp {
             log::info!(
                 "{}: volume complete — {} elevations, triggering render",
                 source,
-                self.available_elevation_numbers.len()
+                self.render.available_elevations().len()
             );
             self.state.push_command(state::AppCommand::RefreshTimeline {
                 auto_position: !is_live,
@@ -1808,24 +1634,20 @@ impl WorkbenchApp {
             self.state.push_command(state::AppCommand::CheckEviction);
             self.state.session_stats.pipeline.mark_processing_done();
 
-            // Clear last render params to force a fresh render
-            self.state.displayed_sweep_elevation_number = None;
-            self.renderers.last_render_request = None;
-            self.renderers.last_volume_render_request = None;
+            self.state.viz_state.displayed_sweep_elevation_number = None;
+            self.render.force_fresh_render();
             if !is_live {
                 self.request_worker_render();
                 if self.state.viz_state.volume_3d_enabled {
                     self.request_worker_render_volume();
                 }
             }
-        } else if !had_elevations && !self.available_elevation_numbers.is_empty() {
-            // First elevation arrived — we can render something now
+        } else if !had_elevations && !self.render.available_elevations().is_empty() {
             log::info!(
                 "{}: first elevation available, triggering initial render",
                 source
             );
-            self.renderers.last_render_request = None;
-            self.renderers.last_volume_render_request = None;
+            self.render.force_fresh_render();
             if !is_live {
                 self.request_worker_render();
                 if self.state.viz_state.volume_3d_enabled {
@@ -1883,11 +1705,12 @@ impl WorkbenchApp {
         // VCPs (duplicate 0.5° at elev 1 and 2) cause oscillation
         // where prefetch/sync requests fight the main render path.
         let is_current_scan = self
-            .current_render_scan_key
-            .as_ref()
-            .is_some_and(|k| k == &result.context.scan_key)
+            .render
+            .scan_key()
+            .is_some_and(|k| k == result.context.scan_key)
             && self
                 .state
+                .viz_state
                 .displayed_sweep_elevation_number
                 .is_some_and(|e| e == result.context.elevation_number);
         if self.state.effective_sweep_animation() && !is_current_scan {
@@ -1903,7 +1726,7 @@ impl WorkbenchApp {
         // the current partial sweep.
         let skip_gpu_upload = self.state.live_mode_state.is_active();
         if is_current_scan && !skip_gpu_upload {
-            if let (Some(ref renderer), Some(ref gl)) = (&self.renderers.gpu, &self.renderers.gl) {
+            if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
                 if let Ok(mut r) = renderer.lock() {
                     r.update_data(
                         gl,
@@ -1922,11 +1745,11 @@ impl WorkbenchApp {
                     r.update_color_table(gl, &result.product);
 
                     // Run storm cell detection if enabled
-                    if self.state.storm_cells_visible {
-                        self.state.detected_storm_cells = r.detect_storm_cells(
+                    if self.state.viz_state.storm_cells_visible {
+                        self.state.viz_state.detected_storm_cells = r.detect_storm_cells(
                             self.state.viz_state.center_lat,
                             self.state.viz_state.center_lon,
-                            self.state.storm_cell_threshold_dbz,
+                            self.state.viz_state.storm_cell_threshold_dbz,
                         );
                     }
                 }
@@ -1946,7 +1769,7 @@ impl WorkbenchApp {
         self.state.session_stats.pipeline.mark_render_done();
 
         // Remove this scan from in-flight ghost tracking.
-        if let Some(displayed_ts) = self.state.displayed_scan_timestamp {
+        if let Some(displayed_ts) = self.state.viz_state.displayed_scan_timestamp {
             self.state
                 .download_progress
                 .in_flight_scans
@@ -2012,7 +1835,7 @@ impl WorkbenchApp {
             }
         }
 
-        if let (Some(ref renderer), Some(ref gl)) = (&self.renderers.gpu, &self.renderers.gl) {
+        if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
                 // Build a live sweep ID so we can detect elevation transitions
                 let live_elev = result.context.elevation_number;
@@ -2085,8 +1908,7 @@ impl WorkbenchApp {
         );
 
         // Upload to volume ray renderer
-        if let (Some(ref renderer), Some(ref gl)) = (&self.renderers.volume_ray, &self.renderers.gl)
-        {
+        if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.volume_ray, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
                 r.update_volume(
                     gl,
@@ -2100,7 +1922,7 @@ impl WorkbenchApp {
         }
 
         // Update LUT for the volume product
-        if let (Some(ref renderer), Some(ref gl)) = (&self.renderers.gpu, &self.renderers.gl) {
+        if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
                 r.update_color_table(gl, &volume_data.product);
             }
@@ -2112,7 +1934,7 @@ impl WorkbenchApp {
         self.state.status_message = format!("Worker error: {}", message);
 
         // Clean up ghost and progress for the failed scan.
-        if let Some(displayed_ts) = self.state.displayed_scan_timestamp {
+        if let Some(displayed_ts) = self.state.viz_state.displayed_scan_timestamp {
             self.state
                 .download_progress
                 .in_flight_scans
@@ -2171,7 +1993,7 @@ impl WorkbenchApp {
 
             // Track which scan is being processed so error cleanup
             // can remove the correct ghost.
-            self.state.displayed_scan_timestamp = Some(scan_ts);
+            self.state.viz_state.displayed_scan_timestamp = Some(scan_ts);
 
             if is_cache_hit {
                 self.state.status_message = format!("Loaded from cache: {}", scan.file_name);
@@ -2181,8 +2003,8 @@ impl WorkbenchApp {
                 self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
 
                 // Cache hit: records already in IDB. Send render request directly.
-                self.current_render_scan_key = Some(scan.key.to_storage_key());
-                self.state.displayed_sweep_elevation_number = None;
+                self.render.set_scan_key(scan.key.to_storage_key());
+                self.state.viz_state.displayed_sweep_elevation_number = None;
 
                 // Populate elevation numbers from timeline metadata if available
                 if let Some(tl_scan) = self
@@ -2195,12 +2017,11 @@ impl WorkbenchApp {
                     elev_nums.sort_unstable();
                     elev_nums.dedup();
                     if !elev_nums.is_empty() {
-                        self.available_elevation_numbers = elev_nums;
+                        self.render.set_elevations(elev_nums);
                     }
                 }
 
-                self.renderers.last_render_request = None; // Force fresh render
-                self.renderers.last_volume_render_request = None;
+                self.render.force_fresh_render();
                 self.request_worker_render();
                 if self.state.viz_state.volume_3d_enabled {
                     self.request_worker_render_volume();
@@ -2215,16 +2036,14 @@ impl WorkbenchApp {
                 // Fresh download: send raw bytes to worker for ingest.
                 // Worker splits records, probes elevations, stores in IDB,
                 // then returns metadata. We render on the Ingested callback.
-                if let Some(ref mut worker) = self.decode_worker {
-                    self.state.session_stats.pipeline.processing = true;
-                    worker.ingest(
-                        scan.data.clone(),
-                        scan.key.site.0.clone(),
-                        scan.key.scan_start.as_secs(),
-                        scan.file_name.clone(),
-                        fetch_latency,
-                    );
-                }
+                self.state.session_stats.pipeline.processing = true;
+                self.render.ingest(
+                    scan.data.clone(),
+                    scan.key.site.0.clone(),
+                    scan.key.scan_start.as_secs(),
+                    scan.file_name.clone(),
+                    fetch_latency,
+                );
             }
 
             self.current_scan = Some(scan.clone());
@@ -2430,12 +2249,13 @@ impl WorkbenchApp {
                         }
                     };
 
-                    let needs_new_scan = match self.state.displayed_scan_timestamp {
+                    let needs_new_scan = match self.state.viz_state.displayed_scan_timestamp {
                         Some(displayed) => displayed != scan_ts,
                         None => true,
                     };
                     let needs_new_sweep = !needs_new_scan
-                        && self.state.displayed_sweep_elevation_number != Some(target_elev_num);
+                        && self.state.viz_state.displayed_sweep_elevation_number
+                            != Some(target_elev_num);
 
                     // Capture overlay data from the matching sweep
                     let sweep_overlay = scan
@@ -2478,21 +2298,18 @@ impl WorkbenchApp {
                 new_elev_list,
             )) = scrub_action
             {
-                if (needs_new_scan || needs_new_sweep) && self.decode_worker.is_some() {
-                    // Update canvas overlay from sweep metadata
+                if (needs_new_scan || needs_new_sweep) && self.render.has_worker() {
                     if let Some((start, end, elev)) = sweep_overlay {
                         self.update_overlay_from_sweep(start, end, elev);
                     }
 
-                    // Build scan key in data storage format: "SITE|TIMESTAMP_MS"
                     let scan_key = data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts);
-                    self.current_render_scan_key = Some(scan_key.to_storage_key());
-                    self.state.displayed_scan_timestamp = Some(scan_ts);
-                    self.state.displayed_sweep_elevation_number = Some(target_elev_num);
+                    self.render.set_scan_key(scan_key.to_storage_key());
+                    self.state.viz_state.displayed_scan_timestamp = Some(scan_ts);
+                    self.state.viz_state.displayed_sweep_elevation_number = Some(target_elev_num);
                     if !elev_nums.is_empty() {
-                        self.available_elevation_numbers = elev_nums;
+                        self.render.set_elevations(elev_nums);
                     }
-                    // Update cached VCP elevation list on scan change
                     if let Some(entries) = new_elev_list {
                         self.state.viz_state.cached_vcp_elevations = entries.clone();
                         self.state
@@ -2500,24 +2317,21 @@ impl WorkbenchApp {
                             .elevation_selection
                             .resolve_for_vcp(&entries);
                     }
-                    self.renderers.last_render_request = None; // Force fresh render
-                    self.renderers.last_volume_render_request = None;
+                    self.render.force_fresh_render();
                     self.request_worker_render();
                     if self.state.viz_state.volume_3d_enabled {
                         self.request_worker_render_volume();
                     }
                 }
-            } else if self.state.displayed_scan_timestamp.is_some() {
-                // No scan found within range — clear stale render
-                if let Some(ref renderer) = self.renderers.gpu {
+            } else if self.state.viz_state.displayed_scan_timestamp.is_some() {
+                if let Some(ref renderer) = self.gpu.gpu {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_data();
                     }
                 }
-                self.state.displayed_scan_timestamp = None;
-                self.state.displayed_sweep_elevation_number = None;
-                self.current_render_scan_key = None;
-                self.renderers.last_render_request = None;
+                self.state.viz_state.displayed_scan_timestamp = None;
+                self.state.viz_state.displayed_sweep_elevation_number = None;
+                self.render.clear_scan_key();
                 self.state.viz_state.data_staleness_secs = None;
                 self.state.viz_state.rendered_sweep_end_secs = None;
                 self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
@@ -2529,9 +2343,8 @@ impl WorkbenchApp {
         // preemptively send a render request for the upcoming sweep so the result
         // is ready when the boundary is crossed, reducing perceived stutter.
         // Skip in macro mode — frame jumps are instant and the frame list handles sequencing.
-        #[allow(clippy::unnecessary_unwrap)]
         if self.state.playback_state.playing
-            && self.decode_worker.is_some()
+            && self.render.has_worker()
             && self.state.playback_state.playback_mode() == crate::state::PlaybackMode::Micro
         {
             let playback_ts = self.state.playback_state.playback_position();
@@ -2550,12 +2363,9 @@ impl WorkbenchApp {
                 if let Some((sweep_idx, sweep)) = scan.find_sweep_at_timestamp(playback_ts) {
                     let time_to_end = sweep.end_time - playback_ts;
                     if time_to_end > 0.0 && time_to_end < prefetch_lookahead {
-                        // We're near the end of this sweep — figure out the next one
                         let next_elev_num = if sweep_idx + 1 < scan.sweeps.len() {
-                            // Next sweep in same scan
                             Some(scan.sweeps[sweep_idx + 1].elevation_number)
                         } else {
-                            // End of scan — next scan's first sweep at target elevation
                             let future_ts = playback_ts + prefetch_lookahead;
                             self.state
                                 .radar_timeline
@@ -2566,9 +2376,12 @@ impl WorkbenchApp {
                         };
 
                         if let Some(next_en) = next_elev_num {
-                            // Only prefetch if it differs from what we're currently showing
-                            if self.state.displayed_sweep_elevation_number != Some(next_en) {
-                                if let Some(ref scan_key) = self.current_render_scan_key {
+                            if self.state.viz_state.displayed_sweep_elevation_number
+                                != Some(next_en)
+                            {
+                                if let Some(scan_key) =
+                                    self.render.scan_key().map(|s| s.to_string())
+                                {
                                     let product =
                                         self.state.viz_state.product.to_worker_string().to_string();
                                     let prefetch_request = RenderRequest {
@@ -2577,21 +2390,13 @@ impl WorkbenchApp {
                                         product: product.clone(),
                                         is_auto: self.state.viz_state.elevation_selection.is_auto(),
                                     };
-                                    if self.renderers.last_render_request.as_ref()
-                                        != Some(&prefetch_request)
-                                    {
-                                        log::debug!(
-                                            "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
-                                            next_en,
-                                            time_to_end,
-                                        );
-                                        self.renderers.last_render_request = Some(prefetch_request);
-                                        self.decode_worker.as_mut().unwrap().render(
-                                            scan_key.clone(),
-                                            next_en,
-                                            product,
-                                        );
-                                    }
+                                    log::debug!(
+                                        "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
+                                        next_en,
+                                        time_to_end,
+                                    );
+                                    self.render.set_last_render(prefetch_request);
+                                    self.render.render_direct(scan_key, next_en, product);
                                 }
                             }
                         }
@@ -2625,7 +2430,7 @@ impl WorkbenchApp {
         }
 
         let playback_ts = self.state.playback_state.playback_position();
-        let displayed_elev = match self.state.displayed_sweep_elevation_number {
+        let displayed_elev = match self.state.viz_state.displayed_sweep_elevation_number {
             Some(e) => e,
             None => return,
         };
@@ -2649,7 +2454,7 @@ impl WorkbenchApp {
                 self.state.viz_state.prev_sweep_scan_timestamp = None;
                 self.state.viz_state.prev_sweep_elevation_number = None;
                 // Clear GPU previous sweep so shader composites against black
-                if let Some(ref renderer) = self.renderers.gpu {
+                if let Some(ref renderer) = self.gpu.gpu {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
@@ -2668,7 +2473,7 @@ impl WorkbenchApp {
                 .to_storage_key();
 
         // Get current GPU prev sweep ID for comparison
-        let current_gpu_prev_id = self.renderers.gpu.as_ref().and_then(|renderer| {
+        let current_gpu_prev_id = self.gpu.gpu.as_ref().and_then(|renderer| {
             renderer
                 .lock()
                 .ok()
@@ -2687,15 +2492,13 @@ impl WorkbenchApp {
             PrevSweepAction::AlreadyLoaded => {}
             PrevSweepAction::UploadFromCache(cache_key) => {
                 // Clear stale previous sweep immediately
-                if let Some(ref renderer) = self.renderers.gpu {
+                if let Some(ref renderer) = self.gpu.gpu {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
                 }
                 if let Some(cached) = self.playback_manager.get_cached_sweep(&cache_key) {
-                    if let (Some(ref renderer), Some(ref gl)) =
-                        (&self.renderers.gpu, &self.renderers.gl)
-                    {
+                    if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
                         if let Ok(mut r) = renderer.lock() {
                             r.update_previous_data(
                                 gl,
@@ -2721,17 +2524,16 @@ impl WorkbenchApp {
                 product,
             } => {
                 // Clear stale previous sweep immediately
-                if let Some(ref renderer) = self.renderers.gpu {
+                if let Some(ref renderer) = self.gpu.gpu {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
                 }
-                if let Some(ref mut worker) = self.decode_worker {
-                    worker.render(scan_key, elevation_number, product);
-                }
+                self.render
+                    .render_direct(scan_key, elevation_number, product);
             }
             PrevSweepAction::Clear => {
-                if let Some(ref renderer) = self.renderers.gpu {
+                if let Some(ref renderer) = self.gpu.gpu {
                     if let Ok(mut r) = renderer.lock() {
                         r.clear_previous_data();
                     }
@@ -2749,7 +2551,7 @@ impl WorkbenchApp {
         // Detect elevation/product changes and trigger worker re-render.
         // If the user changes these settings and we have a current scan, we need
         // a new render from the worker.
-        if self.current_render_scan_key.is_some() && self.decode_worker.is_some() {
+        if self.render.scan_key().is_some() && self.render.has_worker() {
             if self.state.viz_state.volume_3d_enabled
                 && self.state.viz_state.view_mode == state::ViewMode::Globe3D
             {
@@ -2856,12 +2658,7 @@ impl eframe::App for WorkbenchApp {
         ui::render_right_panel(ctx, &mut self.state);
 
         // Render canvas with GPU-based radar rendering
-        ui::render_canvas_with_geo(
-            ctx,
-            &mut self.state,
-            Some(&self.geo_layers),
-            &self.renderers,
-        );
+        ui::render_canvas_with_geo(ctx, &mut self.state, Some(&self.geo_layers), &self.gpu);
 
         // Process keyboard shortcuts
         ui::handle_shortcuts(ctx, &mut self.state);

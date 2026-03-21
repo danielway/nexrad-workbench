@@ -41,7 +41,7 @@ pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
 pub use viz::{
     ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct, RenderProcessing,
-    ViewMode, VizState,
+    StormCellInfo, ViewMode, VizState,
 };
 
 /// Commands dispatched by UI code and consumed by the main update loop.
@@ -161,33 +161,6 @@ pub struct AppState {
     /// GPU rendering processing options (interpolation, smoothing, etc.).
     pub render_processing: RenderProcessing,
 
-    /// Whether the inspector tool is active (hover shows lat/lon and data value).
-    pub inspector_enabled: bool,
-
-    /// Whether the distance measurement tool is active.
-    pub distance_tool_active: bool,
-
-    /// Distance measurement start point (lat, lon).
-    pub distance_start: Option<(f64, f64)>,
-
-    /// Distance measurement end point (lat, lon).
-    pub distance_end: Option<(f64, f64)>,
-
-    /// Whether storm cell detection overlay is visible.
-    pub storm_cells_visible: bool,
-
-    /// Minimum dBZ threshold for storm cell detection.
-    pub storm_cell_threshold_dbz: f32,
-
-    /// Cached storm cell detection results (centroid lat, lon, max dBZ, area km2).
-    pub detected_storm_cells: Vec<StormCellInfo>,
-
-    /// Timestamp of the currently displayed scan (seconds since epoch).
-    pub displayed_scan_timestamp: Option<i64>,
-
-    /// Elevation number of the currently displayed sweep.
-    pub displayed_sweep_elevation_number: Option<u8>,
-
     /// Whether to display times in local timezone (false = UTC).
     pub use_local_time: bool,
 
@@ -229,22 +202,6 @@ pub struct AppState {
     /// Persistent worker initialization error message.
     /// When set, a non-dismissable error banner is shown in the top bar.
     pub worker_init_error: Option<String>,
-}
-
-/// Lightweight storm cell info for rendering on the canvas.
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct StormCellInfo {
-    /// Centroid latitude.
-    pub lat: f64,
-    /// Centroid longitude.
-    pub lon: f64,
-    /// Maximum reflectivity (dBZ).
-    pub max_dbz: f32,
-    /// Cell area in km^2.
-    pub area_km2: f32,
-    /// Bounding box (min_lat, min_lon, max_lat, max_lon).
-    pub bounds: (f64, f64, f64, f64),
 }
 
 /// State for the datetime jump picker popup.
@@ -364,7 +321,6 @@ impl AppState {
             right_sidebar_visible: true,
             theme_mode,
             is_dark,
-            storm_cell_threshold_dbz: 35.0,
             commands,
             auto_position_on_timeline_load: false,
             ..Default::default()

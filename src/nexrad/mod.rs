@@ -17,6 +17,8 @@ pub(crate) mod ingest_phases;
 pub(crate) mod network_monitor;
 mod realtime;
 pub(crate) mod record_decode;
+pub(crate) mod render_coordinator;
+pub(crate) mod render_request;
 mod shader_common;
 mod types;
 pub(crate) mod volume_ray_renderer;
@@ -36,6 +38,8 @@ pub use network_monitor::{
 };
 pub use realtime::{BackfillChannel, RealtimeChannel, RealtimeResult};
 pub use record_decode::extract_elevation_numbers;
+pub use render_coordinator::RenderCoordinator;
+pub use render_request::RenderRequest;
 pub use types::{CachedScan, DownloadResult, ScanMetadata};
 pub use volume_ray_renderer::VolumeRayRenderer;
 

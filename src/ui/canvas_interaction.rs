@@ -82,16 +82,16 @@ pub(crate) fn handle_canvas_interaction(
     projection: &MapProjection,
 ) {
     // Distance tool: click to place points
-    if state.distance_tool_active && response.clicked() {
+    if state.viz_state.distance_tool_active && response.clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
             let geo = projection.screen_to_geo(click_pos);
-            if state.distance_start.is_none() || state.distance_end.is_some() {
+            if state.viz_state.distance_start.is_none() || state.viz_state.distance_end.is_some() {
                 // First click or restart: set start, clear end
-                state.distance_start = Some((geo.y, geo.x));
-                state.distance_end = None;
+                state.viz_state.distance_start = Some((geo.y, geo.x));
+                state.viz_state.distance_end = None;
             } else {
                 // Second click: set end
-                state.distance_end = Some((geo.y, geo.x));
+                state.viz_state.distance_end = Some((geo.y, geo.x));
             }
         }
     }

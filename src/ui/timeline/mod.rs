@@ -338,8 +338,8 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
     let active_sweep = if detail_level == DetailLevel::Sweeps {
         match (
-            state.displayed_scan_timestamp,
-            state.displayed_sweep_elevation_number,
+            state.viz_state.displayed_scan_timestamp,
+            state.viz_state.displayed_sweep_elevation_number,
         ) {
             (Some(ts), Some(en)) => Some((ts, en)),
             _ => None,

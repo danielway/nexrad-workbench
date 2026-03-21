@@ -349,7 +349,7 @@ fn draw_sweep_donut(
 
     // Boundary 2: sweep start (sweep_start) — current sweep start | prev sweep end
     // Look up the current sweep's actual start time from the timeline
-    let displayed_elev = state.displayed_sweep_elevation_number;
+    let displayed_elev = state.viz_state.displayed_sweep_elevation_number;
     let current_sweep_start_secs = state
         .radar_timeline
         .find_recent_scan(playback_ts, 15.0 * 60.0)

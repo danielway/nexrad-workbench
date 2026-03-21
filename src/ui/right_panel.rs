@@ -302,23 +302,26 @@ fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CollapsingHeader::new(RichText::new("Tools").strong())
         .default_open(true)
         .show(ui, |ui| {
-            ui.checkbox(&mut state.inspector_enabled, "Inspector")
+            ui.checkbox(&mut state.viz_state.inspector_enabled, "Inspector")
                 .on_hover_text("Hover over radar to see position and data value");
 
-            let was_active = state.distance_tool_active;
-            ui.checkbox(&mut state.distance_tool_active, "Distance Measure")
-                .on_hover_text("Click two points on the map to measure distance");
+            let was_active = state.viz_state.distance_tool_active;
+            ui.checkbox(
+                &mut state.viz_state.distance_tool_active,
+                "Distance Measure",
+            )
+            .on_hover_text("Click two points on the map to measure distance");
             // Clear measurement points when tool is toggled off
-            if was_active && !state.distance_tool_active {
-                state.distance_start = None;
-                state.distance_end = None;
+            if was_active && !state.viz_state.distance_tool_active {
+                state.viz_state.distance_start = None;
+                state.viz_state.distance_end = None;
             }
 
-            ui.checkbox(&mut state.storm_cells_visible, "Storm Cells")
+            ui.checkbox(&mut state.viz_state.storm_cells_visible, "Storm Cells")
                 .on_hover_text("Detect and display storm cells on the radar");
-            if state.storm_cells_visible {
+            if state.viz_state.storm_cells_visible {
                 ui.indent("storm_cell_indent", |ui| {
-                    let mut threshold = state.storm_cell_threshold_dbz;
+                    let mut threshold = state.viz_state.storm_cell_threshold_dbz;
                     if ui
                         .add(
                             egui::Slider::new(&mut threshold, 20.0..=60.0)
@@ -327,9 +330,9 @@ fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
                         )
                         .changed()
                     {
-                        state.storm_cell_threshold_dbz = threshold;
+                        state.viz_state.storm_cell_threshold_dbz = threshold;
                         // Clear cached results so detection re-runs with new threshold
-                        state.detected_storm_cells.clear();
+                        state.viz_state.detected_storm_cells.clear();
                     }
                 });
             }

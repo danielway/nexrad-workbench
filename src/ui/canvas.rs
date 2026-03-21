@@ -19,13 +19,13 @@ pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
     geo_layers: Option<&GeoLayerSet>,
-    renderers: &crate::Renderers,
+    gpu: &crate::GpuResources,
 ) {
-    let gpu_renderer = renderers.gpu.as_ref();
-    let globe_renderer = renderers.globe.as_ref();
-    let geo_line_renderer = renderers.geo_line.as_ref();
-    let globe_radar_renderer = renderers.globe_radar.as_ref();
-    let volume_ray_renderer = renderers.volume_ray.as_ref();
+    let gpu_renderer = gpu.gpu.as_ref();
+    let globe_renderer = gpu.globe.as_ref();
+    let geo_line_renderer = gpu.geo_line.as_ref();
+    let globe_radar_renderer = gpu.globe_radar.as_ref();
+    let volume_ray_renderer = gpu.volume_ray.as_ref();
     egui::CentralPanel::default().show(ctx, |ui| {
         let available_size = ui.available_size();
 
@@ -111,8 +111,15 @@ pub fn render_canvas_with_geo(
                     }
                 }
 
-                if state.storm_cells_visible && !state.detected_storm_cells.is_empty() {
-                    render_storm_cells(&painter, &projection, &state.detected_storm_cells, dark);
+                if state.viz_state.storm_cells_visible
+                    && !state.viz_state.detected_storm_cells.is_empty()
+                {
+                    render_storm_cells(
+                        &painter,
+                        &projection,
+                        &state.viz_state.detected_storm_cells,
+                        dark,
+                    );
                 }
 
                 // Show sweep line when actively revealing, between sweeps, or during live streaming
@@ -135,16 +142,17 @@ pub fn render_canvas_with_geo(
                 };
                 render_radar_sweep(&painter, &projection, state, sweep_line_info, sweep_stale);
 
-                if state.distance_tool_active || state.distance_start.is_some() {
+                if state.viz_state.distance_tool_active || state.viz_state.distance_start.is_some()
+                {
                     render_distance_measurement(
                         &painter,
                         &projection,
-                        state.distance_start,
-                        state.distance_end,
+                        state.viz_state.distance_start,
+                        state.viz_state.distance_end,
                     );
                 }
 
-                if state.inspector_enabled {
+                if state.viz_state.inspector_enabled {
                     if let Some(hover_pos) = response.hover_pos() {
                         render_inspector(
                             ui,
@@ -329,7 +337,7 @@ fn compute_gpu_sweep_state(
             .radar_timeline
             .find_recent_scan(playback_ts, 15.0 * 60.0)
             .and_then(|scan| {
-                let displayed_elev = state.displayed_sweep_elevation_number;
+                let displayed_elev = state.viz_state.displayed_sweep_elevation_number;
                 scan.sweeps
                     .iter()
                     .filter(|s| Some(s.elevation_number) == displayed_elev)
