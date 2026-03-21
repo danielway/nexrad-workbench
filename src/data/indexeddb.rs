@@ -289,24 +289,14 @@ impl IndexedDbRecordStore {
         let result = wait_for_request(&request).await?;
         let array = Array::from(&result);
 
-        let mut scans = Vec::new();
-        for i in 0..array.length() {
-            let value = array.get(i);
-            if let Ok(json_str) = js_sys::JSON::stringify(&value) {
-                if let Some(s) = json_str.as_string() {
-                    if let Ok(entry) = serde_json::from_str::<ScanIndexEntry>(&s) {
-                        if entry.scan.site.0 != site.0 {
-                            continue;
-                        }
-
-                        let scan_time = entry.scan.scan_start;
-                        if scan_time >= start && scan_time <= end {
-                            scans.push(entry);
-                        }
-                    }
-                }
-            }
-        }
+        let mut scans: Vec<ScanIndexEntry> = deserialize_js_array(&array)
+            .into_iter()
+            .filter(|entry: &ScanIndexEntry| {
+                entry.scan.site.0 == site.0
+                    && entry.scan.scan_start >= start
+                    && entry.scan.scan_start <= end
+            })
+            .collect();
 
         scans.sort_by_key(|s| s.scan.scan_start.0);
         Ok(scans)
@@ -332,17 +322,8 @@ impl IndexedDbRecordStore {
         let result = wait_for_request(&request).await?;
         let array = Array::from(&result);
 
-        let mut total: u64 = 0;
-        for i in 0..array.length() {
-            let value = array.get(i);
-            if let Ok(json_str) = js_sys::JSON::stringify(&value) {
-                if let Some(s) = json_str.as_string() {
-                    if let Ok(entry) = serde_json::from_str::<ScanIndexEntry>(&s) {
-                        total += entry.total_size_bytes;
-                    }
-                }
-            }
-        }
+        let entries: Vec<ScanIndexEntry> = deserialize_js_array(&array);
+        let total: u64 = entries.iter().map(|e| e.total_size_bytes).sum();
 
         Ok(total)
     }
@@ -367,17 +348,7 @@ impl IndexedDbRecordStore {
         let result = wait_for_request(&request).await?;
         let array = Array::from(&result);
 
-        let mut scans: Vec<ScanIndexEntry> = Vec::new();
-        for i in 0..array.length() {
-            let value = array.get(i);
-            if let Ok(json_str) = js_sys::JSON::stringify(&value) {
-                if let Some(s) = json_str.as_string() {
-                    if let Ok(entry) = serde_json::from_str::<ScanIndexEntry>(&s) {
-                        scans.push(entry);
-                    }
-                }
-            }
-        }
+        let mut scans: Vec<ScanIndexEntry> = deserialize_js_array(&array);
 
         scans.sort_by_key(|s| s.last_accessed_at.0);
         scans.truncate(limit as usize);
@@ -865,6 +836,17 @@ fn deserialize_js_value<T: DeserializeOwned>(value: &JsValue) -> Option<T> {
     let json_str = js_sys::JSON::stringify(value).ok()?;
     let s = json_str.as_string()?;
     serde_json::from_str(&s).ok()
+}
+
+fn deserialize_js_array<T: DeserializeOwned>(array: &Array) -> Vec<T> {
+    let mut items = Vec::new();
+    for i in 0..array.length() {
+        let value = array.get(i);
+        if let Some(item) = deserialize_js_value(&value) {
+            items.push(item);
+        }
+    }
+    items
 }
 
 /// Queries `navigator.storage.estimate()` from either Window or Worker context.

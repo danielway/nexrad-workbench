@@ -465,8 +465,8 @@ impl ExtractedVcp {
                     }
                 }
                 // Method B fallback: use category-based weights
-                let is_clear_air = crate::state::vcp::is_clear_air_vcp(self.number);
-                1.0 / crate::state::vcp::fallback_azimuth_rate(
+                let is_clear_air = crate::data::vcp::is_clear_air_vcp(self.number);
+                1.0 / crate::data::vcp::fallback_azimuth_rate(
                     is_clear_air,
                     &e.waveform,
                     e.prf_number,
@@ -504,20 +504,16 @@ impl ExtractedVcp {
                     if r > 0.0 {
                         r as f64
                     } else {
-                        let is_clear_air = crate::state::vcp::is_clear_air_vcp(self.number);
-                        crate::state::vcp::fallback_azimuth_rate(
+                        let is_clear_air = crate::data::vcp::is_clear_air_vcp(self.number);
+                        crate::data::vcp::fallback_azimuth_rate(
                             is_clear_air,
                             &e.waveform,
                             e.prf_number,
                         )
                     }
                 } else {
-                    let is_clear_air = crate::state::vcp::is_clear_air_vcp(self.number);
-                    crate::state::vcp::fallback_azimuth_rate(
-                        is_clear_air,
-                        &e.waveform,
-                        e.prf_number,
-                    )
+                    let is_clear_air = crate::data::vcp::is_clear_air_vcp(self.number);
+                    crate::data::vcp::fallback_azimuth_rate(is_clear_air, &e.waveform, e.prf_number)
                 };
                 360.0 / rate
             })

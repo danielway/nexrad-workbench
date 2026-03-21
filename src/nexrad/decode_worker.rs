@@ -805,27 +805,87 @@ impl DecodeWorker {
     }
 }
 
-/// Handle an "ingested" message from the worker.
+fn extract_pending_context<C>(
+    data: &JsValue,
+    msg_type: &str,
+    pending: &Rc<RefCell<HashMap<RequestId, C>>>,
+) -> Option<C> {
+    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
+        Ok(e) => e,
+        Err(e) => {
+            log::warn!("Failed to parse {} envelope: {}", msg_type, e);
+            return None;
+        }
+    };
+    let id = envelope.id;
+
+    match pending.borrow_mut().remove(&id) {
+        Some(ctx) => Some(ctx),
+        None => {
+            log::warn!("Received {} message for unknown request {}", msg_type, id);
+            None
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn extract_decode_arrays(data: &JsValue) -> (Vec<f32>, Vec<f32>, Vec<f64>) {
+    let az_buffer = js_sys::Reflect::get(data, &"azimuths".into()).unwrap_or(JsValue::NULL);
+    let azimuths = js_sys::Float32Array::new(&az_buffer).to_vec();
+
+    let val_buffer = js_sys::Reflect::get(data, &"gateValues".into()).unwrap_or(JsValue::NULL);
+    let gate_values = js_sys::Float32Array::new(&val_buffer).to_vec();
+
+    let rt_js = js_sys::Reflect::get(data, &"radialTimes".into()).unwrap_or(JsValue::NULL);
+    let radial_times = if rt_js.is_object() && !rt_js.is_null() {
+        js_sys::Float64Array::new(&rt_js).to_vec()
+    } else {
+        Vec::new()
+    };
+
+    (azimuths, gate_values, radial_times)
+}
+
+#[allow(dead_code)]
+fn build_decode_result(
+    context: RenderContext,
+    r: DecodedResultMsg,
+    azimuths: Vec<f32>,
+    gate_values: Vec<f32>,
+    radial_times: Vec<f64>,
+) -> DecodeResult {
+    DecodeResult {
+        context,
+        azimuths,
+        gate_values,
+        azimuth_count: r.azimuth_count,
+        gate_count: r.gate_count,
+        first_gate_range_km: r.first_gate_range_km,
+        gate_interval_km: r.gate_interval_km,
+        max_range_km: r.max_range_km,
+        product: r.product,
+        radial_count: r.radial_count,
+        fetch_ms: r.fetch_ms,
+        deser_ms: r.deser_ms,
+        marshal_ms: r.marshal_ms,
+        total_ms: r.total_ms,
+        scale: r.scale,
+        offset: r.offset,
+        mean_elevation: r.mean_elevation,
+        sweep_start_secs: r.sweep_start_secs,
+        sweep_end_secs: r.sweep_end_secs,
+        radial_times,
+    }
+}
+
 fn handle_ingested_message(
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
-        Ok(e) => e,
-        Err(e) => {
-            log::warn!("Failed to parse ingested envelope: {}", e);
-            return;
-        }
-    };
-    let id = envelope.id;
-
-    let context = match pending.borrow_mut().remove(&id) {
+    let context = match extract_pending_context(data, "ingested", pending) {
         Some(ctx) => ctx,
-        None => {
-            log::warn!("Received ingested message for unknown request {}", id);
-            return;
-        }
+        None => return,
     };
 
     let result_obj = js_sys::Reflect::get(data, &"result".into()).unwrap_or(JsValue::NULL);
@@ -869,27 +929,14 @@ fn handle_ingested_message(
         }));
 }
 
-/// Handle a "chunk_ingested" message from the worker.
 fn handle_chunk_ingested_message(
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
-        Ok(e) => e,
-        Err(e) => {
-            log::warn!("Failed to parse chunk_ingested envelope: {}", e);
-            return;
-        }
-    };
-    let id = envelope.id;
-
-    let context = match pending.borrow_mut().remove(&id) {
+    let context = match extract_pending_context(data, "chunk_ingested", pending) {
         Some(ctx) => ctx,
-        None => {
-            log::warn!("Received chunk_ingested message for unknown request {}", id);
-            return;
-        }
+        None => return,
     };
 
     let result_obj = js_sys::Reflect::get(data, &"result".into()).unwrap_or(JsValue::NULL);
@@ -922,44 +969,18 @@ fn handle_chunk_ingested_message(
         }));
 }
 
-/// Handle a "decoded" message from the worker.
 fn handle_decoded_message(
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
-        Ok(e) => e,
-        Err(e) => {
-            log::warn!("Failed to parse decoded envelope: {}", e);
-            return;
-        }
-    };
-    let id = envelope.id;
-
-    let context = match pending.borrow_mut().remove(&id) {
+    let context = match extract_pending_context(data, "decoded", pending) {
         Some(ctx) => ctx,
-        None => {
-            log::warn!("Received decoded message for unknown request {}", id);
-            return;
-        }
+        None => return,
     };
 
-    // Extract ArrayBuffer fields (not serializable via serde)
-    let az_buffer = js_sys::Reflect::get(data, &"azimuths".into()).unwrap_or(JsValue::NULL);
-    let azimuths = js_sys::Float32Array::new(&az_buffer).to_vec();
+    let (azimuths, gate_values, radial_times) = extract_decode_arrays(data);
 
-    let val_buffer = js_sys::Reflect::get(data, &"gateValues".into()).unwrap_or(JsValue::NULL);
-    let gate_values = js_sys::Float32Array::new(&val_buffer).to_vec();
-
-    let rt_js = js_sys::Reflect::get(data, &"radialTimes".into()).unwrap_or(JsValue::NULL);
-    let radial_times = if rt_js.is_object() && !rt_js.is_null() {
-        js_sys::Float64Array::new(&rt_js).to_vec()
-    } else {
-        Vec::new()
-    };
-
-    // Deserialize all scalar fields via serde
     let r: DecodedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
         Ok(r) => r,
         Err(e) => {
@@ -981,28 +1002,13 @@ fn handle_decoded_message(
 
     results
         .borrow_mut()
-        .push(WorkerOutcome::Decoded(DecodeResult {
+        .push(WorkerOutcome::Decoded(build_decode_result(
             context,
+            r,
             azimuths,
             gate_values,
-            azimuth_count: r.azimuth_count,
-            gate_count: r.gate_count,
-            first_gate_range_km: r.first_gate_range_km,
-            gate_interval_km: r.gate_interval_km,
-            max_range_km: r.max_range_km,
-            product: r.product,
-            radial_count: r.radial_count,
-            fetch_ms: r.fetch_ms,
-            deser_ms: r.deser_ms,
-            marshal_ms: r.marshal_ms,
-            total_ms: r.total_ms,
-            scale: r.scale,
-            offset: r.offset,
-            mean_elevation: r.mean_elevation,
-            sweep_start_secs: r.sweep_start_secs,
-            sweep_end_secs: r.sweep_end_secs,
             radial_times,
-        }));
+        )));
 }
 
 /// Handle an "error" message from the worker.
