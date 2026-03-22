@@ -107,7 +107,7 @@ impl CacheLoadChannel {
                 }
                 Err(e) => {
                     log::error!("Failed to load cache metadata: {}", e);
-                    CacheLoadResult::Error(e)
+                    CacheLoadResult::Error(e.to_string())
                 }
             };
 
@@ -148,7 +148,7 @@ impl CacheLoadChannel {
                 }
                 Err(e) => {
                     log::error!("Failed to clear cache: {}", e);
-                    CacheLoadResult::Error(e)
+                    CacheLoadResult::Error(e.to_string())
                 }
             };
 

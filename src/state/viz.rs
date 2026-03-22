@@ -228,6 +228,22 @@ pub enum ViewMode {
     Globe3D,
 }
 
+/// Lightweight storm cell info for rendering on the canvas.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct StormCellInfo {
+    /// Centroid latitude.
+    pub lat: f64,
+    /// Centroid longitude.
+    pub lon: f64,
+    /// Maximum reflectivity (dBZ).
+    pub max_dbz: f32,
+    /// Cell area in km^2.
+    pub area_km2: f32,
+    /// Bounding box (min_lat, min_lon, max_lat, max_lon).
+    pub bounds: (f64, f64, f64, f64),
+}
+
 /// Visualization state including view controls.
 pub struct VizState {
     /// Active view mode (flat 2D or 3D globe).
@@ -301,6 +317,33 @@ pub struct VizState {
 
     /// Density cutoff for volume rendering (physical value, e.g. 5.0 dBZ).
     pub volume_density_cutoff: f32,
+
+    /// Whether the inspector tool is active (hover shows lat/lon and data value).
+    pub inspector_enabled: bool,
+
+    /// Whether the distance measurement tool is active.
+    pub distance_tool_active: bool,
+
+    /// Distance measurement start point (lat, lon).
+    pub distance_start: Option<(f64, f64)>,
+
+    /// Distance measurement end point (lat, lon).
+    pub distance_end: Option<(f64, f64)>,
+
+    /// Whether storm cell detection overlay is visible.
+    pub storm_cells_visible: bool,
+
+    /// Minimum dBZ threshold for storm cell detection.
+    pub storm_cell_threshold_dbz: f32,
+
+    /// Cached storm cell detection results (centroid lat, lon, max dBZ, area km2).
+    pub detected_storm_cells: Vec<StormCellInfo>,
+
+    /// Timestamp of the currently displayed scan (seconds since epoch).
+    pub displayed_scan_timestamp: Option<i64>,
+
+    /// Elevation number of the currently displayed sweep.
+    pub displayed_sweep_elevation_number: Option<u8>,
 }
 
 impl Default for VizState {
@@ -329,6 +372,73 @@ impl Default for VizState {
             last_sweep_line_cache: None,
             volume_3d_enabled: false,
             volume_density_cutoff: 5.0,
+            inspector_enabled: false,
+            distance_tool_active: false,
+            distance_start: None,
+            distance_end: None,
+            storm_cells_visible: false,
+            storm_cell_threshold_dbz: 35.0,
+            detected_storm_cells: Vec::new(),
+            displayed_scan_timestamp: None,
+            displayed_sweep_elevation_number: None,
         }
+    }
+}
+
+impl VizState {
+    /// Update the canvas overlay text with sweep timing and elevation info.
+    pub fn update_overlay(
+        &mut self,
+        start: f64,
+        end: f64,
+        elevation_deg: f32,
+        use_local_time: bool,
+    ) {
+        self.elevation = format!("{:.1}\u{00B0}", elevation_deg);
+
+        // Format midpoint timestamp with full date and time
+        let mid_ms = ((start + end) / 2.0) * 1000.0;
+        let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(mid_ms));
+        if use_local_time {
+            self.timestamp = format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+                date.get_full_year(),
+                date.get_month() + 1,
+                date.get_date(),
+                date.get_hours(),
+                date.get_minutes(),
+                date.get_seconds(),
+                date.get_milliseconds()
+            );
+        } else {
+            self.timestamp = format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} UTC",
+                date.get_utc_full_year(),
+                date.get_utc_month() + 1,
+                date.get_utc_date(),
+                date.get_utc_hours(),
+                date.get_utc_minutes(),
+                date.get_utc_seconds(),
+                date.get_utc_milliseconds()
+            );
+        }
+
+        // Store sweep start/end times so staleness can be recomputed each frame
+        self.rendered_sweep_start_secs = Some(start);
+        self.rendered_sweep_end_secs = Some(end);
+        // Staleness is recomputed per-frame in update(); seed it here for immediate display
+        let now = js_sys::Date::now() / 1000.0;
+        let staleness_end = now - end;
+        let staleness_start = now - start;
+        self.data_staleness_secs = if staleness_end >= 0.0 {
+            Some(staleness_end)
+        } else {
+            None
+        };
+        self.data_staleness_start_secs = if staleness_start >= 0.0 {
+            Some(staleness_start)
+        } else {
+            None
+        };
     }
 }

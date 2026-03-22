@@ -27,6 +27,7 @@ pub(crate) mod facade;
 pub(crate) mod indexeddb;
 pub(crate) mod keys;
 pub(crate) mod sites;
+pub(crate) mod vcp;
 
 // Re-export static site data
 pub use sites::{all_sites_sorted, get_site, nearest_site, NEXRAD_SITES};

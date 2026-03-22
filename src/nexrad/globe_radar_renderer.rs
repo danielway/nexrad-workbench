@@ -36,155 +36,60 @@ void main() {
 }
 "#;
 
-/// Fragment shader for globe mode.
+/// Build the globe-mode fragment shader from shared GLSL snippets.
+///
 /// Nearly identical to the flat-mode fragment shader, but receives
 /// (azimuth_deg, range_km) as interpolated vertex attributes
 /// instead of computing them from screen-space pixel position.
-const GLOBE_FRAGMENT_SHADER: &str = r#"#version 300 es
+fn build_globe_fragment_shader() -> String {
+    use super::gpu_renderer::shaders::*;
+    format!(
+        r#"#version 300 es
 precision highp float;
 
 in vec2 v_polar; // (azimuth_deg, range_km)
 out vec4 fragColor;
 
-uniform float u_gate_count;
-uniform float u_azimuth_count;
-uniform float u_first_gate_km;
-uniform float u_gate_interval_km;
-uniform float u_max_range_km;
-uniform float u_value_min;
-uniform float u_value_range;
-
-uniform sampler2D u_data_tex;
-uniform sampler2D u_lut_tex;
-uniform sampler2D u_azimuth_tex;
-
-uniform int u_interpolation;
-uniform int u_despeckle_enabled;
-uniform int u_despeckle_threshold;
-uniform float u_opacity;
-
-uniform float u_offset;
-uniform float u_scale;
-
-const float PI = 3.14159265359;
-
-float sample_data(float g, float a) {
-    if (g < 0.0 || g >= u_gate_count || a < 0.0 || a >= u_azimuth_count) {
-        return 0.0;
-    }
-    float gu = (g + 0.5) / u_gate_count;
-    float av = (a + 0.5) / u_azimuth_count;
-    return texture(u_data_tex, vec2(gu, av)).r;
-}
-
-bool is_valid(float v) {
-    return v > 1.5;
-}
-
-float find_nearest_az(float azimuth_deg, out float out_az) {
-    float az_spacing = 360.0 / u_azimuth_count;
-    float est_idx = azimuth_deg / az_spacing;
-    float inv_count = 1.0 / u_azimuth_count;
-
-    float best_idx = 0.0;
-    float best_dist = 360.0;
-    float best_az = 0.0;
-
-    for (float offset = -2.0; offset <= 2.0; offset += 1.0) {
-        float i = floor(mod(est_idx + offset, u_azimuth_count));
-        float tex_az = texture(u_azimuth_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
-        float d = abs(azimuth_deg - tex_az);
-        d = min(d, 360.0 - d);
-        if (d < best_dist) {
-            best_dist = d;
-            best_idx = i;
-            best_az = tex_az;
-        }
-    }
-
-    if (best_dist > az_spacing * 1.5) {
-        out_az = 0.0;
-        return -1.0;
-    }
-    out_az = best_az;
-    return best_idx;
-}
-
-bool find_bracket_az(float azimuth_deg, out float idx_lo, out float idx_hi, out float frac) {
-    float az_spacing = 360.0 / u_azimuth_count;
-    float est_idx = azimuth_deg / az_spacing;
-    float inv_count = 1.0 / u_azimuth_count;
-
-    float cand_idx[5];
-    float cand_az[5];
-    for (int k = 0; k < 5; k++) {
-        float i = floor(mod(est_idx + float(k - 2), u_azimuth_count));
-        cand_idx[k] = i;
-        cand_az[k] = texture(u_azimuth_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
-    }
-
-    float lo_idx = -1.0, hi_idx = -1.0;
-    float lo_az = -999.0, hi_az = 999.0;
-    float lo_dist = 360.0, hi_dist = 360.0;
-
-    for (int k = 0; k < 5; k++) {
-        float az = cand_az[k];
-        float diff = azimuth_deg - az;
-        diff = mod(diff + 540.0, 360.0) - 180.0;
-
-        if (diff >= 0.0 && diff < lo_dist) {
-            lo_dist = diff;
-            lo_idx = cand_idx[k];
-            lo_az = az;
-        }
-        if (diff <= 0.0 && (-diff) < hi_dist) {
-            hi_dist = -diff;
-            hi_idx = cand_idx[k];
-            hi_az = az;
-        }
-    }
-
-    if (lo_idx < 0.0 || hi_idx < 0.0) return false;
-
-    float span = lo_dist + hi_dist;
-    if (span > az_spacing * 1.5) return false;
-
-    idx_lo = lo_idx;
-    idx_hi = hi_idx;
-    frac = (span > 0.001) ? lo_dist / span : 0.0;
-    return true;
-}
-
-void main() {
+{FRAGMENT_PREAMBLE}
+{SAMPLE_DATA_P}
+{IS_VALID}
+{FIND_NEAREST_AZ_P}
+{FIND_BRACKET_AZ_P}
+void main() {{
     float azimuth_deg = v_polar.x;
     float dist_km = v_polar.y;
 
-    if (dist_km < u_first_gate_km || dist_km >= u_max_range_km) {
+    if (dist_km < u_first_gate_km || dist_km >= u_max_range_km) {{
         discard;
-    }
+    }}
 
     float gate_idx = (dist_km - u_first_gate_km) / u_gate_interval_km;
 
-    if (gate_idx < 0.0 || gate_idx >= u_gate_count) {
+    if (gate_idx < 0.0 || gate_idx >= u_gate_count) {{
         discard;
-    }
+    }}
+
+    float s_gate_count = u_gate_count;
+    float s_azimuth_count = u_azimuth_count;
+    float s_offset = u_offset;
+    float s_scale = u_scale;
 
     float value;
 
-    if (u_interpolation == 1) {
+    if (u_interpolation == 1) {{
         float az_lo, az_hi, az_frac;
-        if (!find_bracket_az(azimuth_deg, az_lo, az_hi, az_frac)) {
+        if (!find_bracket_az_p(azimuth_deg, u_azimuth_count, u_azimuth_tex, az_lo, az_hi, az_frac)) {{
             discard;
-        }
+        }}
 
         float g_lo = floor(gate_idx);
         float g_hi = min(g_lo + 1.0, u_gate_count - 1.0);
         float g_frac = gate_idx - g_lo;
 
-        float v00 = sample_data(g_lo, az_lo);
-        float v10 = sample_data(g_hi, az_lo);
-        float v01 = sample_data(g_lo, az_hi);
-        float v11 = sample_data(g_hi, az_hi);
+        float v00 = sample_data_p(u_data_tex, u_gate_count, u_azimuth_count, g_lo, az_lo);
+        float v10 = sample_data_p(u_data_tex, u_gate_count, u_azimuth_count, g_hi, az_lo);
+        float v01 = sample_data_p(u_data_tex, u_gate_count, u_azimuth_count, g_lo, az_hi);
+        float v11 = sample_data_p(u_data_tex, u_gate_count, u_azimuth_count, g_hi, az_hi);
 
         float sum = 0.0;
         float wsum = 0.0;
@@ -193,68 +98,58 @@ void main() {
         float w01 = (1.0 - g_frac) * az_frac;
         float w11 = g_frac * az_frac;
 
-        if (is_valid(v00)) { sum += v00 * w00; wsum += w00; }
-        if (is_valid(v10)) { sum += v10 * w10; wsum += w10; }
-        if (is_valid(v01)) { sum += v01 * w01; wsum += w01; }
-        if (is_valid(v11)) { sum += v11 * w11; wsum += w11; }
+        if (is_valid(v00)) {{ sum += v00 * w00; wsum += w00; }}
+        if (is_valid(v10)) {{ sum += v10 * w10; wsum += w10; }}
+        if (is_valid(v01)) {{ sum += v01 * w01; wsum += w01; }}
+        if (is_valid(v11)) {{ sum += v11 * w11; wsum += w11; }}
 
-        if (wsum < 0.001) {
+        if (wsum < 0.001) {{
             discard;
-        }
+        }}
         value = sum / wsum;
-    } else {
+    }} else {{
         float dummy_az;
-        float best_idx = find_nearest_az(azimuth_deg, dummy_az);
-        if (best_idx < 0.0) {
+        float best_idx = find_nearest_az_p(azimuth_deg, u_azimuth_count, u_azimuth_tex, dummy_az);
+        if (best_idx < 0.0) {{
             discard;
-        }
-        value = sample_data(floor(gate_idx), best_idx);
-    }
+        }}
+        value = sample_data_p(u_data_tex, u_gate_count, u_azimuth_count, floor(gate_idx), best_idx);
+    }}
 
-    if (!is_valid(value)) {
+    if (!is_valid(value)) {{
         discard;
-    }
+    }}
 
     // Despeckle
-    if (u_despeckle_enabled == 1) {
+    if (u_despeckle_enabled == 1) {{
         float dummy_az2;
-        float center_az = find_nearest_az(azimuth_deg, dummy_az2);
+        float center_az = find_nearest_az_p(azimuth_deg, u_azimuth_count, u_azimuth_tex, dummy_az2);
         float center_g = floor(gate_idx);
-        if (center_az >= 0.0) {
+        if (center_az >= 0.0) {{
             int valid_count = 0;
-            for (int dg = -1; dg <= 1; dg++) {
-                for (int da = -1; da <= 1; da++) {
+            for (int dg = -1; dg <= 1; dg++) {{
+                for (int da = -1; da <= 1; da++) {{
                     if (dg == 0 && da == 0) continue;
                     float ng = center_g + float(dg);
                     float na = mod(center_az + float(da), u_azimuth_count);
-                    if (is_valid(sample_data(ng, na))) {
+                    if (is_valid(sample_data_p(u_data_tex, u_gate_count, u_azimuth_count, ng, na))) {{
                         valid_count++;
-                    }
-                }
-            }
-            if (valid_count < u_despeckle_threshold) {
+                    }}
+                }}
+            }}
+            if (valid_count < u_despeckle_threshold) {{
                 discard;
-            }
-        }
-    }
+            }}
+        }}
+    }}
 
-    // Raw → physical conversion
-    float physical;
-    if (u_scale == 0.0) {
-        physical = value;
-    } else {
-        physical = (value - u_offset) / u_scale;
-    }
-
-    // Color lookup
-    float normalized = clamp((physical - u_value_min) / u_value_range, 0.0, 1.0);
-    vec4 color = texture(u_lut_tex, vec2(normalized, 0.5));
-
-    // Premultiplied alpha output
-    float a = color.a * u_opacity;
-    fragColor = vec4(color.rgb * a, a);
+{RAW_TO_PHYSICAL}
+{COLOR_LOOKUP}
+{PREMULTIPLIED_ALPHA_OUTPUT}
+}}
+"#
+    )
 }
-"#;
 
 /// Globe-mode radar renderer — renders radar data on a spherical cap mesh.
 pub struct GlobeRadarRenderer {
@@ -293,11 +188,9 @@ impl GlobeRadarRenderer {
     }
 
     unsafe fn new_inner(gl: &Arc<glow::Context>) -> Self {
-        let program = crate::geo::globe_renderer::compile_program(
-            gl,
-            GLOBE_VERTEX_SHADER,
-            GLOBE_FRAGMENT_SHADER,
-        );
+        let globe_frag = build_globe_fragment_shader();
+        let program =
+            crate::geo::globe_renderer::compile_program(gl, GLOBE_VERTEX_SHADER, &globe_frag);
 
         // Get uniform locations
         let u_view_projection = gl
