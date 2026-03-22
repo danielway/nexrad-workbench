@@ -143,7 +143,7 @@ pub(crate) fn render_radar_sweep(
         );
 
         // "NOW" label at the tip of the sweep line during live streaming
-        if state.live_mode_state.is_active() {
+        if state.live_radar_model.active {
             let label_offset = radius + 8.0;
             let label_pos = Pos2::new(
                 center.x + label_offset * angle_rad.cos(),
@@ -160,18 +160,21 @@ pub(crate) fn render_radar_sweep(
         }
 
         // Draw chunk boundary lines across the radar render during live streaming
-        if state.live_mode_state.is_active() {
-            let chunks = &state.live_mode_state.current_elev_chunks;
+        if let Some(sweep) = state.live_radar_model.active_sweep.as_ref() {
             let boundary_line_color = Color32::from_rgba_unmultiplied(200, 200, 220, 100);
-            for &(_, last_az, _) in chunks.iter().take(chunks.len().saturating_sub(1)) {
-                let a = (last_az - 90.0) * PI / 180.0;
+            for c in sweep
+                .chunks
+                .iter()
+                .take(sweep.chunks.len().saturating_sub(1))
+            {
+                let a = (c.last_az - 90.0) * PI / 180.0;
                 let p_end = Pos2::new(center.x + radius * a.cos(), center.y + radius * a.sin());
                 painter.line_segment([center, p_end], Stroke::new(1.0, boundary_line_color));
             }
         }
 
         // Donut chart showing current vs previous sweep regions
-        if state.live_mode_state.is_active() {
+        if state.live_radar_model.active {
             draw_live_sweep_donut(painter, center, radius, az, start_az, state);
         } else if state.effective_sweep_animation() {
             if stale {
@@ -467,8 +470,9 @@ fn draw_live_sweep_donut(
     let donut_mid = (donut_inner + donut_outer) / 2.0;
     let donut_width = donut_outer - donut_inner;
 
-    let live = &state.live_mode_state;
-    let chunks = &live.current_elev_chunks;
+    let model = &state.live_radar_model;
+    let sweep_model = model.active_sweep.as_ref();
+    let chunks = sweep_model.map(|s| s.chunks.as_slice()).unwrap_or(&[]);
 
     // Compute the angular extent of actual received chunk data (from sweep_start).
     // This is independent of the extrapolated sweep line — chunks stay visible until
@@ -478,7 +482,7 @@ fn draw_live_sweep_donut(
     } else {
         chunks
             .iter()
-            .map(|&(_, last_az, _)| (last_az - sweep_start).rem_euclid(360.0))
+            .map(|c| (c.last_az - sweep_start).rem_euclid(360.0))
             .fold(0.0f32, f32::max)
     };
 
@@ -506,9 +510,9 @@ fn draw_live_sweep_donut(
         // This way chunks persist visually until the elevation completes,
         // even when the sweep line extrapolation wraps past 360°.
         let color = {
-            let chunk_match = chunks.iter().position(|&(first, last, _)| {
-                let arc = (last - first).rem_euclid(360.0);
-                let from_first = (abs_deg - first).rem_euclid(360.0);
+            let chunk_match = chunks.iter().position(|c| {
+                let arc = (c.last_az - c.first_az).rem_euclid(360.0);
+                let from_first = (abs_deg - c.first_az).rem_euclid(360.0);
                 from_first <= arc
             });
             if let Some(idx) = chunk_match {
@@ -537,12 +541,12 @@ fn draw_live_sweep_donut(
     let boundary_label_font = egui::FontId::monospace(9.0);
     let boundary_time_color = Color32::from_rgb(180, 180, 200);
 
-    for (chunk_idx, &(_, last_az, _)) in chunks
+    for (chunk_idx, c) in chunks
         .iter()
         .take(chunks.len().saturating_sub(1))
         .enumerate()
     {
-        let a = (last_az - 90.0) * PI / 180.0;
+        let a = (c.last_az - 90.0) * PI / 180.0;
         let p_inner = Pos2::new(
             center.x + donut_inner * a.cos(),
             center.y + donut_inner * a.sin(),
@@ -553,21 +557,17 @@ fn draw_live_sweep_donut(
         );
         painter.line_segment([p_inner, p_outer], Stroke::new(1.5, boundary_color));
 
-        // Time label at boundary: find the end time for this chunk from chunk_elev_spans
-        let current_elev = live.current_in_progress_elevation.unwrap_or(0);
-        let boundary_time = live
-            .chunk_elev_spans
-            .iter()
-            .filter(|&&(e, _, _, _)| e == current_elev)
-            .nth(chunk_idx)
-            .map(|&(_, _, end, _)| end);
+        // Time label at boundary: find the end time for this chunk from pre-filtered spans
+        let boundary_time = sweep_model
+            .and_then(|s| s.chunk_time_spans.get(chunk_idx))
+            .map(|&(_, end, _)| end);
         if let Some(end_secs) = boundary_time {
             let time_str = format_time_short(end_secs, use_local);
             draw_boundary_label(
                 painter,
                 center,
                 boundary_label_radius,
-                last_az,
+                c.last_az,
                 &time_str,
                 None,
                 boundary_time_color,
@@ -584,9 +584,10 @@ fn draw_live_sweep_donut(
     let prev_label_color = Color32::from_rgb(160, 160, 220);
 
     // Helper: look up elevation angle from VCP data by elevation number
+    let volume = model.volume.as_ref();
     let elev_angle_str = |elev_num: u8| -> String {
-        live.current_vcp_pattern
-            .as_ref()
+        volume
+            .and_then(|v| v.vcp_pattern.as_ref())
             .and_then(|vcp| {
                 vcp.elevations
                     .get(elev_num.saturating_sub(1) as usize)
@@ -596,28 +597,27 @@ fn draw_live_sweep_donut(
     };
 
     // Per-chunk labels (only when chunks have enough angular separation)
-    let expected_chunks = live.expected_chunks_for_current_sweep();
+    let expected_chunks = sweep_model.and_then(|s| s.chunks_expected);
     if chunks.len() > 1 {
-        let elev_num = live
-            .current_in_progress_elevation
-            .map(|e| format!("{}", e))
+        let elev_num = sweep_model
+            .map(|s| format!("{}", s.elevation_number))
             .unwrap_or_else(|| "?".to_string());
         let expected_str = expected_chunks
             .map(|n| format!("/{}", n))
             .unwrap_or_default();
-        for (i, &(first_az, last_az, _radial_count)) in chunks.iter().enumerate() {
-            let arc = (last_az - first_az).rem_euclid(360.0);
+        for (i, c) in chunks.iter().enumerate() {
+            let arc = (c.last_az - c.first_az).rem_euclid(360.0);
             if arc < 15.0 {
                 continue; // too narrow for a label
             }
-            let mid_az = first_az + arc / 2.0;
+            let mid_az = c.first_az + arc / 2.0;
             let label = format!(
                 "S{} {}{} \u{00B7} {:.0}\u{00B0}\u{2013}{:.0}\u{00B0}",
                 elev_num,
                 i + 1,
                 expected_str,
-                first_az,
-                last_az
+                c.first_az,
+                c.last_az
             );
             draw_boundary_label(
                 painter,
@@ -635,18 +635,16 @@ fn draw_live_sweep_donut(
 
     // Overall sweep info label at the midpoint of all current data
     {
-        let elev_num = live
-            .current_in_progress_elevation
-            .map(|e| format!("{}", e))
+        let elev_num = sweep_model
+            .map(|s| format!("{}", s.elevation_number))
             .unwrap_or_else(|| "?".to_string());
-        let elev_angle = live
-            .current_in_progress_elevation
-            .map(&elev_angle_str)
+        let elev_angle = sweep_model
+            .map(|s| elev_angle_str(s.elevation_number))
             .unwrap_or_default();
-        let radials = live.current_in_progress_radials.unwrap_or(0);
-        let completed = live.elevations_received.len();
-        let expected = live
-            .expected_elevation_count
+        let radials = sweep_model.map(|s| s.radials_received).unwrap_or(0);
+        let completed = volume.map(|v| v.elevations_complete.len()).unwrap_or(0);
+        let expected = volume
+            .and_then(|v| v.elevations_expected)
             .map(|n| format!("/{}", n))
             .unwrap_or_default();
 
@@ -671,7 +669,7 @@ fn draw_live_sweep_donut(
     // Previous sweep label at the midpoint of the purple (non-chunk) arc
     let prev_arc_deg = 360.0 - data_arc_deg;
     if prev_arc_deg > 30.0 {
-        let prev_elev = live.elevations_received.last().copied();
+        let prev_elev = volume.and_then(|v| v.elevations_complete.last().copied());
         if let Some(pe) = prev_elev {
             let label = format!("Prev sweep {} {}", pe, elev_angle_str(pe));
             let angle = sweep_start + data_arc_deg + prev_arc_deg / 2.0;

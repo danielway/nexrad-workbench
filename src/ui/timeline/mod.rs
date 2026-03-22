@@ -365,22 +365,16 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     // -- Render scan track --
     // Extract the scan key timestamp (seconds) for the active real-time volume
     // so we can skip it in normal timeline rendering.
-    let active_scan_key_ts: Option<f64> = if state.live_mode_state.is_active() {
-        state
-            .live_mode_state
-            .current_scan_key
-            .as_ref()
-            .and_then(|key| {
-                // Scan key format: "SITE|TIMESTAMP_MS"
-                key.split('|')
-                    .nth(1)?
-                    .parse::<i64>()
-                    .ok()
-                    .map(|ms| ms as f64 / 1000.0)
-            })
-    } else {
-        None
-    };
+    let active_scan_key_ts: Option<f64> = state.live_radar_model.volume.as_ref().and_then(|v| {
+        v.scan_key.as_ref().and_then(|key| {
+            // Scan key format: "SITE|TIMESTAMP_MS"
+            key.split('|')
+                .nth(1)?
+                .parse::<i64>()
+                .ok()
+                .map(|ms| ms as f64 / 1000.0)
+        })
+    });
     render_scan_track(
         &painter,
         &scan_rect,
@@ -448,7 +442,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     // -- Render real-time partial scan progress --
     // Compute `now` once per frame so render + tooltip use a consistent boundary.
     let frame_now_secs = js_sys::Date::now() / 1000.0;
-    if state.live_mode_state.is_active() {
+    if state.live_radar_model.active {
         let anim_time = ui.ctx().input(|i| i.time);
         render_realtime_progress(
             &painter,

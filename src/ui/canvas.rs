@@ -90,12 +90,7 @@ pub fn render_canvas_with_geo(
                 let sweep_info = compute_sweep_line_azimuth(state);
                 let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(state, sweep_info);
 
-                let chunk_boundary: Option<f32> = if state.live_mode_state.is_active() {
-                    let now = js_sys::Date::now() / 1000.0;
-                    state.live_mode_state.estimated_azimuth(now)
-                } else {
-                    None
-                };
+                let chunk_boundary = state.live_radar_model.estimated_azimuth;
 
                 if let Some(renderer) = gpu_renderer {
                     draw_radar_gpu(
@@ -114,7 +109,7 @@ pub fn render_canvas_with_geo(
                         ui.ctx().request_repaint();
                     }
                     // Continuous repaint during live streaming (partial sweep + sweep line animation)
-                    if state.live_mode_state.is_active() {
+                    if state.live_radar_model.active {
                         ui.ctx().request_repaint();
                     }
                 }
@@ -131,19 +126,20 @@ pub fn render_canvas_with_geo(
                 }
 
                 // Show sweep line when actively revealing, between sweeps, or during live streaming
-                let (sweep_line_info, sweep_stale) = if state.live_mode_state.is_active() {
+                let (sweep_line_info, sweep_stale) = if state.live_radar_model.active {
                     // Live mode: show estimated sweep line based on extrapolated radar position
-                    let now = js_sys::Date::now() / 1000.0;
-                    let live_sweep = state.live_mode_state.estimated_azimuth(now).map(|az| {
+                    let live_sweep = state.live_radar_model.estimated_azimuth.map(|az| {
                         let start = state
-                            .live_mode_state
-                            .sweep_start_azimuth
+                            .live_radar_model
+                            .active_sweep
+                            .as_ref()
+                            .and_then(|s| s.sweep_start_azimuth)
                             .or_else(|| {
                                 state
-                                    .live_mode_state
-                                    .current_elev_chunks
-                                    .first()
-                                    .map(|c| c.0)
+                                    .live_radar_model
+                                    .active_sweep
+                                    .as_ref()
+                                    .and_then(|s| s.chunks.first().map(|c| c.first_az))
                             })
                             .unwrap_or(0.0);
                         (az, start)
@@ -346,9 +342,10 @@ fn compute_gpu_sweep_state(
 ) -> (Option<(f32, f32)>, bool) {
     // Live mode with partial data takes priority over timeline sweep animation.
     let gpu_sweep = if let Some((first_az, last_az)) = state
-        .live_mode_state
-        .live_data_azimuth_range
-        .filter(|_| state.live_mode_state.is_active())
+        .live_radar_model
+        .active_sweep
+        .as_ref()
+        .and_then(|s| s.data_azimuth_range)
     {
         Some((last_az, first_az))
     } else if state.effective_sweep_animation() {
@@ -379,7 +376,7 @@ fn compute_gpu_sweep_state(
     };
 
     // Debug: log gpu_sweep once per change
-    if state.live_mode_state.is_active() {
+    if state.live_radar_model.active {
         if let Some((az, start)) = gpu_sweep {
             let prev_cache = state.viz_state.last_sweep_line_cache;
             if prev_cache.is_none_or(|(pa, ps)| (pa - az).abs() > 1.0 || (ps - start).abs() > 1.0) {
@@ -471,9 +468,8 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<(f32, f32)> {
     }
 
     // In live mode, extrapolate from the last known radial azimuth/time
-    if state.live_mode_state.is_active() {
-        let now = js_sys::Date::now() / 1000.0;
-        if let Some(az) = state.live_mode_state.estimated_azimuth(now) {
+    if state.live_radar_model.active {
+        if let Some(az) = state.live_radar_model.estimated_azimuth {
             // Live mode doesn't track start azimuth; assume 0°
             return Some((az, 0.0));
         }

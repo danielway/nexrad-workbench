@@ -2567,6 +2567,10 @@ impl eframe::App for WorkbenchApp {
         self.update_network_stats();
         self.persist_url_state();
 
+        // Compute the live radar model snapshot for this frame so all UI
+        // consumers see consistent state from the same `now` timestamp.
+        self.state.refresh_live_model();
+
         // Render UI panels in the correct order for egui layout
         // Side and top/bottom panels must be rendered before CentralPanel
         ui::render_top_bar(ctx, &mut self.state);
