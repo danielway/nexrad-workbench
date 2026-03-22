@@ -536,6 +536,21 @@ impl LiveModeState {
         Some(elev_idx as f64 * vol_dur / count as f64)
     }
 
+    /// Estimate the expected number of chunks for the current sweep, computed as
+    /// `ceil(sweep_duration / chunk_interval)`. Returns `None` if sweep duration
+    /// or chunk interval data is unavailable.
+    pub fn expected_chunks_for_current_sweep(&self) -> Option<u32> {
+        let elev_idx = self
+            .current_in_progress_elevation
+            .map(|e| e.saturating_sub(1) as usize)
+            .unwrap_or(0);
+        let sweep_dur = self.sweep_duration_for(elev_idx)?;
+        if self.chunk_interval_secs <= 0.0 {
+            return None;
+        }
+        Some((sweep_dur / self.chunk_interval_secs).ceil() as u32)
+    }
+
     /// Record last radial azimuth and timestamp from a chunk.
     pub fn record_last_radial(&mut self, azimuth: Option<f32>, time_secs: Option<f64>) {
         if let Some(az) = azimuth {

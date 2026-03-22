@@ -402,6 +402,7 @@ async fn streaming_loop(
     }
 
     // --- Main streaming loop: emit ChunkData per chunk ---
+    let mut none_retries: u32 = 0;
     loop {
         // Check stop signal
         if state.borrow().stop_requested {
@@ -422,6 +423,7 @@ async fn streaming_loop(
         let chunk_fetch_start = web_time::Instant::now();
         match iter.try_next().await {
             Ok(Some(chunk)) => {
+                none_retries = 0;
                 let chunk_fetch_ms = chunk_fetch_start.elapsed().as_secs_f64() * 1000.0;
                 stats_tracker.update(&stats, &iter);
 
@@ -463,6 +465,47 @@ async fn streaming_loop(
             }
             Ok(None) => {
                 // Chunk not ready yet, brief retry
+                none_retries += 1;
+                if none_retries >= 60 {
+                    // ~30s of retries (60 × 500ms) with no data
+                    log::warn!(
+                        "Streaming: {} consecutive empty polls (~30s), attempting final fetch after 5s delay",
+                        none_retries
+                    );
+                    sleep_ms(5000).await;
+                    if state.borrow().stop_requested {
+                        break;
+                    }
+                    match iter.try_next().await {
+                        Ok(Some(_chunk)) => {
+                            // Recovered — let the next loop iteration handle it normally
+                            none_retries = 0;
+                            continue;
+                        }
+                        Ok(None) => {
+                            log::error!(
+                                "Streaming: final retry still empty after {}s, giving up",
+                                none_retries / 2 + 5
+                            );
+                            let mut s = state.borrow_mut();
+                            s.results.push(RealtimeResult::Error(
+                                "Chunk polling timed out — no data received for ~35 seconds"
+                                    .to_string(),
+                            ));
+                            s.active = false;
+                            ctx.request_repaint();
+                            break;
+                        }
+                        Err(e) => {
+                            log::error!("Streaming error on final retry: {}", e);
+                            let mut s = state.borrow_mut();
+                            s.results.push(RealtimeResult::Error(format!("{}", e)));
+                            s.active = false;
+                            ctx.request_repaint();
+                            break;
+                        }
+                    }
+                }
                 sleep_ms(500).await;
             }
             Err(e) => {

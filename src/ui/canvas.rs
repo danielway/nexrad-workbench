@@ -127,7 +127,17 @@ pub fn render_canvas_with_geo(
                     // Live mode: show estimated sweep line based on extrapolated radar position
                     let now = js_sys::Date::now() / 1000.0;
                     let live_sweep = state.live_mode_state.estimated_azimuth(now).map(|az| {
-                        let start = state.live_mode_state.sweep_start_azimuth.unwrap_or(0.0);
+                        let start = state
+                            .live_mode_state
+                            .sweep_start_azimuth
+                            .or_else(|| {
+                                state
+                                    .live_mode_state
+                                    .current_elev_chunks
+                                    .first()
+                                    .map(|c| c.0)
+                            })
+                            .unwrap_or(0.0);
                         (az, start)
                     });
                     (live_sweep, false)

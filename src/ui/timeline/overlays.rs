@@ -627,6 +627,28 @@ pub(super) fn render_realtime_progress(
                 }
             }
 
+            // Expected-chunk subdivision ticks: faint lines at regular
+            // intervals showing where chunks are expected to fall.
+            let expected_chunks = live_state.expected_chunks_for_current_sweep();
+            if let Some(exp_n) = expected_chunks {
+                if exp_n >= 2 {
+                    let tick_color = Color32::from_rgba_unmultiplied(100, 160, 220, 60);
+                    for tick_i in 1..exp_n {
+                        let tick_frac = tick_i as f32 / exp_n as f32;
+                        let tick_x = block.min.x + block.width() * tick_frac;
+                        if tick_x > block.min.x + 2.0 && tick_x < block.max.x - 2.0 {
+                            painter.line_segment(
+                                [
+                                    Pos2::new(tick_x, block.min.y + 1.0),
+                                    Pos2::new(tick_x, block.max.y - 1.0),
+                                ],
+                                Stroke::new(0.5, tick_color),
+                            );
+                        }
+                    }
+                }
+            }
+
             // Draw downloaded chunks that belong to this elevation, with
             // clear separators between each chunk boundary.  Chunks are
             // rendered shorter than the sweep block so they visually nest
@@ -754,11 +776,27 @@ pub(super) fn render_realtime_progress(
                 }
             }
 
+            // Chunk count for labeling (e.g., "2/6")
+            let received_chunk_count: u32 = live_state
+                .chunk_elev_spans
+                .iter()
+                .filter(|&&(e, _, _, _)| e == elev_num)
+                .count() as u32
+                + if in_progress_radials > 0 { 1 } else { 0 };
+            let chunk_label = expected_chunks
+                .map(|exp| format!("{}/{}", received_chunk_count, exp))
+                .unwrap_or_else(|| format!("{}c", received_chunk_count));
+
             // Radial progress label in the filled (collected) portion
             if countdown.is_none() && width > 30.0 {
-                // Show radial progress as fraction while actively receiving
-                let label = if width > 55.0 {
-                    format!("{}/{}", total_radials, expected_radials)
+                // Show chunk count + radial progress while actively receiving
+                let label = if width > 70.0 {
+                    format!(
+                        "{} \u{00B7} {}/{}",
+                        chunk_label, total_radials, expected_radials
+                    )
+                } else if width > 45.0 {
+                    chunk_label.clone()
                 } else {
                     format!("{}", total_radials)
                 };
@@ -770,11 +808,15 @@ pub(super) fn render_realtime_progress(
                     Color32::from_rgba_unmultiplied(140, 200, 255, 180),
                 );
             } else if countdown.is_some() && frac > 0.15 {
-                // When waiting, show radial count in the collected portion
+                // When waiting, show chunk count in the collected portion
                 let collected_center_x = (block.min.x + edge_x) / 2.0;
                 let collected_width = edge_x - block.min.x;
                 if collected_width > 25.0 {
-                    let label = format!("{}", total_radials);
+                    let label = if collected_width > 50.0 {
+                        chunk_label
+                    } else {
+                        format!("{}", total_radials)
+                    };
                     painter.text(
                         Pos2::new(collected_center_x, block.center().y),
                         egui::Align2::CENTER_CENTER,

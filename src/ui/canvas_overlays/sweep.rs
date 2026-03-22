@@ -142,6 +142,23 @@ pub(crate) fn render_radar_sweep(
             Stroke::new(sweep_line_width, sweep_line_color),
         );
 
+        // "NOW" label at the tip of the sweep line during live streaming
+        if state.live_mode_state.is_active() {
+            let label_offset = radius + 8.0;
+            let label_pos = Pos2::new(
+                center.x + label_offset * angle_rad.cos(),
+                center.y + label_offset * angle_rad.sin(),
+            );
+            let align = sweep_label_align(az);
+            painter.text(
+                label_pos,
+                align,
+                "NOW",
+                egui::FontId::monospace(11.0),
+                Color32::from_rgb(255, 80, 80),
+            );
+        }
+
         // Draw chunk boundary lines across the radar render during live streaming
         if state.live_mode_state.is_active() {
             let chunks = &state.live_mode_state.current_elev_chunks;
@@ -514,8 +531,17 @@ fn draw_live_sweep_donut(
         painter.line_segment([p1, p2], Stroke::new(donut_width, color));
     }
 
-    // Draw thin boundary lines between chunks
-    for &(_, last_az, _) in chunks.iter().take(chunks.len().saturating_sub(1)) {
+    // Draw thin boundary lines between chunks + time labels at boundaries
+    let use_local = state.use_local_time;
+    let boundary_label_radius = donut_outer + 14.0;
+    let boundary_label_font = egui::FontId::monospace(9.0);
+    let boundary_time_color = Color32::from_rgb(180, 180, 200);
+
+    for (chunk_idx, &(_, last_az, _)) in chunks
+        .iter()
+        .take(chunks.len().saturating_sub(1))
+        .enumerate()
+    {
         let a = (last_az - 90.0) * PI / 180.0;
         let p_inner = Pos2::new(
             center.x + donut_inner * a.cos(),
@@ -526,6 +552,29 @@ fn draw_live_sweep_donut(
             center.y + donut_outer * a.sin(),
         );
         painter.line_segment([p_inner, p_outer], Stroke::new(1.5, boundary_color));
+
+        // Time label at boundary: find the end time for this chunk from chunk_elev_spans
+        let current_elev = live.current_in_progress_elevation.unwrap_or(0);
+        let boundary_time = live
+            .chunk_elev_spans
+            .iter()
+            .filter(|&&(e, _, _, _)| e == current_elev)
+            .nth(chunk_idx)
+            .map(|&(_, _, end, _)| end);
+        if let Some(end_secs) = boundary_time {
+            let time_str = format_time_short(end_secs, use_local);
+            draw_boundary_label(
+                painter,
+                center,
+                boundary_label_radius,
+                last_az,
+                &time_str,
+                None,
+                boundary_time_color,
+                boundary_time_color,
+                &boundary_label_font,
+            );
+        }
     }
 
     // Labels
@@ -547,14 +596,29 @@ fn draw_live_sweep_donut(
     };
 
     // Per-chunk labels (only when chunks have enough angular separation)
+    let expected_chunks = live.expected_chunks_for_current_sweep();
     if chunks.len() > 1 {
-        for (i, &(first_az, last_az, radial_count)) in chunks.iter().enumerate() {
+        let elev_num = live
+            .current_in_progress_elevation
+            .map(|e| format!("{}", e))
+            .unwrap_or_else(|| "?".to_string());
+        let expected_str = expected_chunks
+            .map(|n| format!("/{}", n))
+            .unwrap_or_default();
+        for (i, &(first_az, last_az, _radial_count)) in chunks.iter().enumerate() {
             let arc = (last_az - first_az).rem_euclid(360.0);
             if arc < 15.0 {
                 continue; // too narrow for a label
             }
             let mid_az = first_az + arc / 2.0;
-            let label = format!("C{} \u{00B7} {}r", i + 1, radial_count);
+            let label = format!(
+                "S{} {}{} \u{00B7} {:.0}\u{00B0}\u{2013}{:.0}\u{00B0}",
+                elev_num,
+                i + 1,
+                expected_str,
+                first_az,
+                last_az
+            );
             draw_boundary_label(
                 painter,
                 center,

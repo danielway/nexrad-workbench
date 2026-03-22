@@ -498,6 +498,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                                 };
                                 render_elevation_row(
                                     ui,
+                                    (idx + 1) as u8,
                                     elev.angle,
                                     Some(meta),
                                     is_current,
@@ -516,6 +517,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                                 });
                                 render_elevation_row(
                                     ui,
+                                    (idx + 1) as u8,
                                     sweep.elevation,
                                     meta,
                                     is_current,
@@ -546,6 +548,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                             };
                             render_elevation_row(
                                 ui,
+                                (idx + 1) as u8,
                                 elev.angle,
                                 Some(meta),
                                 is_current,
@@ -564,6 +567,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                             let is_current = radar_state.sweep_index == Some(idx);
                             render_elevation_row(
                                 ui,
+                                (idx + 1) as u8,
                                 elev.angle,
                                 Some(static_vcp_meta(elev)),
                                 is_current,
@@ -613,6 +617,7 @@ struct ElevRowMeta<'a> {
 
 fn render_elevation_row(
     ui: &mut egui::Ui,
+    elevation_number: u8,
     elevation: f32,
     meta: Option<ElevRowMeta>,
     is_current: bool,
@@ -643,9 +648,9 @@ fn render_elevation_row(
             ui.label(RichText::new(" ").monospace().small());
         }
 
-        // Elevation angle
+        // Elevation number + angle
         ui.label(
-            RichText::new(format!("{:4.1}\u{00B0}", elevation))
+            RichText::new(format!("{:<2} {:4.1}\u{00B0}", elevation_number, elevation))
                 .color(text_color)
                 .monospace()
                 .small(),
