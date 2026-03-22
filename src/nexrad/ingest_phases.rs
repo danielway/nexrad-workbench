@@ -1,3 +1,9 @@
+//! Archive and chunk ingestion phases.
+//!
+//! Provides the core decode pipeline that runs inside the Web Worker:
+//! decompression, VCP extraction, radial grouping by elevation, and
+//! pre-computed sweep blob generation for IndexedDB storage.
+
 use crate::data::keys::*;
 use std::collections::HashMap;
 

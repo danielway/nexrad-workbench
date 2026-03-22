@@ -72,4 +72,6 @@ The project automatically deploys to GitHub Pages on push to `main`. The CI pipe
 
 ## Architecture
 
+The application uses a **Fat Worker** pattern: all expensive data operations (bzip2 decompression, NEXRAD decode, sweep extraction, IndexedDB I/O) run in a dedicated Web Worker, keeping the main thread as a thin UI shell. Radar data is pre-computed into sweep blobs during ingestion and stored in IndexedDB, giving near-zero render latency for scrubbing and elevation changes. A service worker provides cross-origin isolation headers (COOP/COEP) and network metric collection.
+
 See [ARCHITECTURE.md](ARCHITECTURE.md) for technical details. See the [docs/](docs/) directory for product specifications.

@@ -1,9 +1,13 @@
 //! NEXRAD data integration module.
 //!
-//! This module provides functionality for:
-//! - Downloading archival NEXRAD data from AWS
-//! - Pre-computed sweep storage in IndexedDB for near-zero render latency
-//! - GPU-based radar rendering via WebGL2 shaders
+//! This module provides the full data pipeline from network to pixels:
+//! - **Acquisition**: Archive downloads from AWS S3 and real-time chunk streaming
+//! - **Ingestion**: Record splitting, bzip2 decompression, VCP extraction, and
+//!   pre-computed sweep storage in IndexedDB (runs in Web Worker)
+//! - **Rendering**: GPU-based radar rendering via WebGL2 shaders with polar-to-Cartesian
+//!   conversion, OKLab color interpolation, and 3D globe/volume ray-marching
+//! - **Coordination**: Request deduplication, download queuing, streaming lifecycle,
+//!   URL persistence, and service worker network monitoring
 
 pub(crate) mod acquisition_coordinator;
 mod archive_index;

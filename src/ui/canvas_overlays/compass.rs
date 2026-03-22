@@ -1,3 +1,9 @@
+//! Compass rose overlay for the 3D globe view.
+//!
+//! Draws a small compass in the bottom-left corner that rotates to match
+//! the globe camera's heading, so cardinal directions stay accurate as
+//! the user orbits.
+
 use crate::geo::GlobeCamera;
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 

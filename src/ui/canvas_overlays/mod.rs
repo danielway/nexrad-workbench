@@ -1,3 +1,9 @@
+//! Canvas overlay components drawn on top of the radar image.
+//!
+//! Each overlay is a self-contained drawing function that paints into the
+//! canvas `Rect` using the egui `Painter`. Overlays are drawn in painter
+//! order after the radar texture and geographic layers.
+
 mod color_scale;
 mod compass;
 mod globe;

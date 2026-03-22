@@ -1,3 +1,9 @@
+//! Site/sweep info overlay in the top-left corner of the canvas.
+//!
+//! Displays the current site, timestamp, elevation, and data age. During
+//! sweep animation also shows the previous sweep's info for comparison.
+//! An "ARCHIVE DATA" banner appears when data staleness exceeds the threshold.
+
 use crate::state::AppState;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
 

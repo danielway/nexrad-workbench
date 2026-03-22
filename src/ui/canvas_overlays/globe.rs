@@ -1,3 +1,9 @@
+//! 3D globe rendering orchestration.
+//!
+//! Coordinates the WebGL2 paint callbacks for the globe sphere, geographic
+//! line overlays, 2D radar projection onto the sphere surface, and optional
+//! 3D volumetric ray-marching — all within a single `egui::PaintCallback`.
+
 use crate::geo::{GeoLineRenderer, GlobeRenderer};
 use crate::nexrad::RadarGpuRenderer;
 use crate::state::AppState;

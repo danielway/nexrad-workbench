@@ -1,10 +1,14 @@
 #![warn(clippy::all)]
 
-//! NEXRAD Workbench - A web-based radar data visualization tool.
+//! NEXRAD Workbench — a browser-based NEXRAD weather radar visualization tool.
 //!
-//! This application provides an interface for loading, viewing, and analyzing
-//! NEXRAD weather radar data. It supports AWS archive browsing and realtime
-//! streaming (when implemented).
+//! This is the application entry point. It initializes the eframe/egui app, sets up
+//! the coordination managers (acquisition, render, streaming, persistence), and runs
+//! the main update loop that polls channels, processes commands, and renders the UI.
+//!
+//! Heavy data operations run in a dedicated Web Worker (see `nexrad::decode_worker`
+//! and `nexrad::worker_api`). The main thread is a thin UI shell that uploads
+//! worker results to the GPU and paints the interface.
 
 mod data;
 mod geo;

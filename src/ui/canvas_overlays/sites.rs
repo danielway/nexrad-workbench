@@ -1,3 +1,9 @@
+//! NEXRAD site marker overlay on the 2D canvas.
+//!
+//! Renders colored dots and optional labels for all 156+ NEXRAD sites
+//! within the visible map bounds. The active site is drawn larger and
+//! highlighted; off-screen sites are culled for performance.
+
 use crate::data::{get_site, NEXRAD_SITES};
 use crate::geo::MapProjection;
 use crate::state::GeoLayerVisibility;

@@ -1,3 +1,8 @@
+//! Canvas mouse/keyboard interaction handlers.
+//!
+//! Separates input handling from rendering: pan (drag), zoom (scroll),
+//! distance tool clicks, globe orbit/translate, and double-click reset.
+
 use crate::geo::MapProjection;
 use crate::state::AppState;
 use eframe::egui::{self, Rect, Vec2};

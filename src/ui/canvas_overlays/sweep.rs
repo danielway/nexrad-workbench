@@ -1,3 +1,10 @@
+//! Radar sweep overlay: range rings, radial lines, sweep animation, and donut chart.
+//!
+//! Draws the radar coverage grid (range rings, 30-degree radials, cardinal labels)
+//! centered on the active site. During sweep animation, renders a rotating sweep
+//! line and a donut chart showing current vs. previous sweep angular coverage.
+//! In live mode, the donut chart shows per-chunk coverage with distinct colors.
+
 use super::super::canvas::{format_age_compact, format_time_short};
 use super::super::colors::{canvas as canvas_colors, radar};
 use crate::geo::MapProjection;

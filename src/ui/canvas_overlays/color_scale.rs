@@ -1,3 +1,8 @@
+//! Vertical color scale legend displayed on the right edge of the canvas.
+//!
+//! Builds a 1024-entry LUT matching the GPU shader's color mapping, then
+//! renders it as a gradient bar with tick marks and unit labels.
+
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 pub(crate) fn draw_color_scale(

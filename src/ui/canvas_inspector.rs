@@ -1,3 +1,9 @@
+//! Canvas inspector tool and measurement overlays.
+//!
+//! Renders the hover tooltip (lat/lon, azimuth, range, product value),
+//! the crosshair cursor, distance measurement lines, and detected storm
+//! cell bounding boxes on top of the radar canvas.
+
 use crate::geo::MapProjection;
 use crate::nexrad::RadarGpuRenderer;
 use crate::state::StormCellInfo;
