@@ -90,6 +90,13 @@ pub fn render_canvas_with_geo(
                 let sweep_info = compute_sweep_line_azimuth(state);
                 let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(state, sweep_info);
 
+                let chunk_boundary: Option<f32> = if state.live_mode_state.is_active() {
+                    let now = js_sys::Date::now() / 1000.0;
+                    state.live_mode_state.estimated_azimuth(now)
+                } else {
+                    None
+                };
+
                 if let Some(renderer) = gpu_renderer {
                     draw_radar_gpu(
                         ui,
@@ -100,6 +107,7 @@ pub fn render_canvas_with_geo(
                         state.viz_state.center_lon,
                         &state.render_processing,
                         gpu_sweep,
+                        chunk_boundary,
                     );
                     // Continuous repaint while sweep animation is compositing
                     if gpu_sweep.is_some() || between_sweeps {
@@ -198,6 +206,7 @@ fn draw_radar_gpu(
     radar_lon: f64,
     processing: &RenderProcessing,
     sweep_info: Option<(f32, f32)>,
+    sweep_chunk_boundary: Option<f32>,
 ) {
     // Check if renderer has data and get the actual data range
     let max_range_km = {
@@ -254,6 +263,7 @@ fn draw_radar_gpu(
                     [viewport.width_px as f32, viewport.height_px as f32],
                     &processing,
                     sweep_info,
+                    sweep_chunk_boundary,
                 );
             }
         })),

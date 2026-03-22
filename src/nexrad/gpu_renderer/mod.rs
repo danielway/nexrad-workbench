@@ -70,6 +70,7 @@ struct UniformLocations {
     prev_first_gate_km: glow::UniformLocation,
     prev_gate_interval_km: glow::UniformLocation,
     prev_max_range_km: glow::UniformLocation,
+    sweep_chunk_boundary: glow::UniformLocation,
 }
 
 /// Spatial metadata for a single sweep (current or previous).
@@ -221,6 +222,7 @@ impl RadarGpuRenderer {
                 prev_first_gate_km: uniform("u_prev_first_gate_km")?,
                 prev_gate_interval_km: uniform("u_prev_gate_interval_km")?,
                 prev_max_range_km: uniform("u_prev_max_range_km")?,
+                sweep_chunk_boundary: uniform("u_sweep_chunk_boundary")?,
             };
 
             // Create placeholders for previous sweep textures
@@ -298,6 +300,7 @@ impl RadarGpuRenderer {
     ///
     /// egui_glow restores its own GL state after each paint callback,
     /// so we don't need to save/restore state ourselves.
+    #[allow(clippy::too_many_arguments)]
     pub fn paint(
         &self,
         gl: &glow::Context,
@@ -306,6 +309,7 @@ impl RadarGpuRenderer {
         viewport_size: [f32; 2],
         processing: &RenderProcessing,
         sweep_info: Option<(f32, f32)>,
+        sweep_chunk_boundary: Option<f32>,
     ) {
         if !self.has_data {
             return;
@@ -425,6 +429,11 @@ impl RadarGpuRenderer {
             gl.uniform_1_f32(
                 Some(&self.uniforms.prev_max_range_km),
                 self.prev.max_range_km as f32,
+            );
+
+            gl.uniform_1_f32(
+                Some(&self.uniforms.sweep_chunk_boundary),
+                sweep_chunk_boundary.unwrap_or(-1.0),
             );
 
             // Draw fullscreen quad

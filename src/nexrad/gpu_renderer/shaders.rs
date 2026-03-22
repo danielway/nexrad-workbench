@@ -208,6 +208,7 @@ uniform float u_sweep_azimuth;     // current sweep line angle in degrees
 uniform float u_sweep_start;       // azimuth where the sweep began collecting
 uniform float u_prev_offset;       // previous scan moment offset
 uniform float u_prev_scale;        // previous scan moment scale
+uniform float u_sweep_chunk_boundary; // extrapolated sweep position, -1 = disabled
 // Previous sweep spatial params (may differ from current sweep)
 uniform float u_prev_gate_count;
 uniform float u_prev_azimuth_count;
@@ -378,6 +379,17 @@ void main() {{
 
 {RAW_TO_PHYSICAL}
 {COLOR_LOOKUP}
+    // Extended desaturation: gap between received data edge and extrapolated
+    // radar position. Shows previous data grayed out to indicate staleness.
+    if (u_sweep_enabled == 1 && u_sweep_chunk_boundary >= 0.0) {{
+        float gap_start = mod(u_sweep_azimuth - u_sweep_start, 360.0);
+        float gap_end = mod(u_sweep_chunk_boundary - u_sweep_start, 360.0);
+        float pfs = mod(azimuth_deg - u_sweep_start, 360.0);
+        if (gap_end > gap_start && pfs >= gap_start && pfs < gap_end) {{
+            desat_factor = max(desat_factor, 0.6);
+        }}
+    }}
+
     // Age-based desaturation for sweep animation
     if (desat_factor > 0.0) {{
         float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
