@@ -230,6 +230,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let is_start = p.is_start;
         let is_end = p.is_end;
         let file_name = p.file_name;
+        let skip_overlap_delete = p.skip_overlap_delete;
 
         let data_len = data.len();
 
@@ -243,33 +244,59 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             chunk_has_vcp = result.chunk_has_vcp;
             volume_header_time_secs = result.volume_header_time_secs;
 
-            // --- Delete any overlapping scans so we don't double-store ---
             let scan_key = ScanKey::new(site_id.as_str(), UnixMillis::from_secs(timestamp_secs));
-            let overlap_start_secs = volume_header_time_secs
-                .map(|t| t as i64)
-                .unwrap_or(timestamp_secs);
-            let overlap_start_ms = overlap_start_secs * 1000;
-            let overlap_end_ms = (overlap_start_secs + 600) * 1000;
-            let store = idb_store().await?;
-            let deleted = store
-                .delete_overlapping_scans(
-                    &SiteId(site_id.clone()),
-                    UnixMillis(overlap_start_ms),
-                    overlap_end_ms,
-                    &scan_key,
-                )
-                .await
-                .map_err(|e| {
-                    wasm_bindgen::JsValue::from_str(&format!(
-                        "Failed to delete overlapping scans: {}",
-                        e
-                    ))
-                })?;
-            if deleted > 0 {
+
+            // Pre-populate completed_elevations from IDB when resuming a
+            // volume that already has cached sweep data, so the accumulator
+            // won't overwrite existing complete sweeps with partial data.
+            let mut pre_completed = std::collections::HashSet::new();
+
+            if skip_overlap_delete {
                 log::info!(
-                    "ingest_chunk: replaced {} overlapping scan(s) before real-time ingest",
-                    deleted
+                    "ingest_chunk: skipping overlap delete (resuming volume with cached data)"
                 );
+                let store = idb_store().await?;
+                if let Ok(Some(entry)) = store.scan_availability(&scan_key).await {
+                    if let Some(ref sweeps) = entry.sweeps {
+                        for s in sweeps {
+                            pre_completed.insert(s.elevation_number);
+                        }
+                    }
+                }
+                if !pre_completed.is_empty() {
+                    log::info!(
+                        "ingest_chunk: pre-populated {} completed elevations from IDB",
+                        pre_completed.len()
+                    );
+                }
+            } else {
+                // --- Delete any overlapping scans so we don't double-store ---
+                let overlap_start_secs = volume_header_time_secs
+                    .map(|t| t as i64)
+                    .unwrap_or(timestamp_secs);
+                let overlap_start_ms = overlap_start_secs * 1000;
+                let overlap_end_ms = (overlap_start_secs + 600) * 1000;
+                let store = idb_store().await?;
+                let deleted = store
+                    .delete_overlapping_scans(
+                        &SiteId(site_id.clone()),
+                        UnixMillis(overlap_start_ms),
+                        overlap_end_ms,
+                        &scan_key,
+                    )
+                    .await
+                    .map_err(|e| {
+                        wasm_bindgen::JsValue::from_str(&format!(
+                            "Failed to delete overlapping scans: {}",
+                            e
+                        ))
+                    })?;
+                if deleted > 0 {
+                    log::info!(
+                        "ingest_chunk: replaced {} overlapping scan(s) before real-time ingest",
+                        deleted
+                    );
+                }
             }
 
             // --- Reset accumulator ---
@@ -279,7 +306,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     site_id: site_id.clone(),
                     all_radials: Vec::new(),
                     radial_metas: Vec::new(),
-                    completed_elevations: std::collections::HashSet::new(),
+                    completed_elevations: pre_completed,
                     last_elevation_number: None,
                     vcp: None,
                     has_vcp: false,

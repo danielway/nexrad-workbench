@@ -962,6 +962,7 @@ impl WorkbenchApp {
                 is_start,
                 is_end,
                 timestamp,
+                skip_overlap_delete,
             } => {
                 log::info!(
                     "Realtime chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
@@ -1014,6 +1015,7 @@ impl WorkbenchApp {
                     is_start,
                     is_end,
                     file_name,
+                    skip_overlap_delete,
                 );
             }
             nexrad::RealtimeResult::Error(msg) => {
@@ -1048,6 +1050,7 @@ impl WorkbenchApp {
                 is_start,
                 is_end,
                 timestamp,
+                skip_overlap_delete,
             } => {
                 log::info!(
                     "Backfill chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
@@ -1075,6 +1078,7 @@ impl WorkbenchApp {
                     is_start,
                     is_end,
                     file_name,
+                    skip_overlap_delete,
                 );
             }
             nexrad::RealtimeResult::Error(msg) => {

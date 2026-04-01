@@ -31,6 +31,10 @@ pub enum RealtimeResult {
         is_start: bool,
         is_end: bool,
         timestamp: i64,
+        /// When true, the worker should skip deleting overlapping scans on
+        /// is_start. Set when resuming a volume that already has cached data
+        /// in IDB, to avoid destroying previously-stored sweep blobs.
+        skip_overlap_delete: bool,
     },
     /// Error occurred during streaming
     Error(String),
@@ -247,6 +251,7 @@ async fn streaming_loop(
                 is_start: true,
                 is_end: false,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: skip_before_secs.is_some(),
             });
         }
         ctx.request_repaint();
@@ -274,7 +279,12 @@ async fn streaming_loop(
                         latest_seq - 1
                     );
 
-                    for chunk_id in &intermediates {
+                    // Download newest-first so partial backfill prioritizes recent data.
+                    // Buffer results and emit in forward sequence order for the
+                    // ChunkAccumulator's sequential elevation-transition detection.
+                    let mut downloaded: Vec<(u32, Vec<u8>)> = Vec::new();
+
+                    for chunk_id in intermediates.iter().rev() {
                         if state.borrow().stop_requested {
                             break;
                         }
@@ -297,26 +307,14 @@ async fn streaming_loop(
 
                         match download_chunk(&site_id, chunk_id).await {
                             Ok((_id, chunk)) => {
-                                chunks_in_volume += 1;
                                 let chunk_data = chunk.data().to_vec();
-                                let chunk_type = chunk_id.chunk_type();
                                 log::debug!(
-                                    "Backfill: chunk seq {} ({} bytes, {:?})",
+                                    "Backfill: downloaded chunk seq {} ({} bytes, {:?})",
                                     chunk_id.sequence(),
                                     chunk_data.len(),
-                                    chunk_type
+                                    chunk_id.chunk_type()
                                 );
-                                {
-                                    let mut s = state.borrow_mut();
-                                    s.results.push(RealtimeResult::ChunkData {
-                                        data: chunk_data,
-                                        chunk_index: chunks_in_volume - 1,
-                                        is_start: false,
-                                        is_end: false,
-                                        timestamp: current_scan_start_secs,
-                                    });
-                                }
-                                ctx.request_repaint();
+                                downloaded.push((chunk_id.sequence() as u32, chunk_data));
                             }
                             Err(e) => {
                                 log::warn!(
@@ -326,6 +324,24 @@ async fn streaming_loop(
                                 );
                             }
                         }
+                    }
+
+                    // Emit in forward sequence order for correct accumulator processing
+                    downloaded.sort_by_key(|(seq, _)| *seq);
+                    for (_seq, chunk_data) in downloaded {
+                        chunks_in_volume += 1;
+                        {
+                            let mut s = state.borrow_mut();
+                            s.results.push(RealtimeResult::ChunkData {
+                                data: chunk_data,
+                                chunk_index: chunks_in_volume - 1,
+                                is_start: false,
+                                is_end: false,
+                                timestamp: current_scan_start_secs,
+                                skip_overlap_delete: false,
+                            });
+                        }
+                        ctx.request_repaint();
                     }
 
                     log::info!(
@@ -360,6 +376,7 @@ async fn streaming_loop(
                 is_start: false,
                 is_end: latest_is_end,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: false,
             });
             s.results.push(RealtimeResult::ChunkReceived {
                 chunks_in_volume,
@@ -390,6 +407,7 @@ async fn streaming_loop(
                 is_start: latest_is_start,
                 is_end: latest_is_end,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: false,
             });
             s.results.push(RealtimeResult::ChunkReceived {
                 chunks_in_volume,
@@ -451,6 +469,7 @@ async fn streaming_loop(
                         is_start,
                         is_end,
                         timestamp: current_scan_start_secs,
+                        skip_overlap_delete: false,
                     });
                     // Emit UI status update
                     s.results.push(RealtimeResult::ChunkReceived {
@@ -767,6 +786,7 @@ async fn backfill_loop(
                 is_start: true,
                 is_end: false,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: skip_before_secs.is_some(),
             });
         }
         ctx.request_repaint();
@@ -791,7 +811,12 @@ async fn backfill_loop(
                         latest_seq - 1
                     );
 
-                    for chunk_id in &intermediates {
+                    // Download newest-first so partial backfill prioritizes recent data.
+                    // Buffer results and emit in forward sequence order for the
+                    // ChunkAccumulator's sequential elevation-transition detection.
+                    let mut downloaded: Vec<(u32, Vec<u8>)> = Vec::new();
+
+                    for chunk_id in intermediates.iter().rev() {
                         // Skip chunks whose estimated time falls before existing data
                         if let (Some(skip_ts), Some(vol_start)) =
                             (skip_before_secs, volume_header_time_secs)
@@ -810,25 +835,14 @@ async fn backfill_loop(
 
                         match download_chunk(&site_id, chunk_id).await {
                             Ok((_id, chunk)) => {
-                                chunks_in_volume += 1;
                                 let chunk_data = chunk.data().to_vec();
                                 log::debug!(
-                                    "Backfill: chunk seq {} ({} bytes, {:?})",
+                                    "Backfill: downloaded chunk seq {} ({} bytes, {:?})",
                                     chunk_id.sequence(),
                                     chunk_data.len(),
                                     chunk_id.chunk_type()
                                 );
-                                {
-                                    let mut s = state.borrow_mut();
-                                    s.results.push(RealtimeResult::ChunkData {
-                                        data: chunk_data,
-                                        chunk_index: chunks_in_volume - 1,
-                                        is_start: false,
-                                        is_end: false,
-                                        timestamp: current_scan_start_secs,
-                                    });
-                                }
-                                ctx.request_repaint();
+                                downloaded.push((chunk_id.sequence() as u32, chunk_data));
                             }
                             Err(e) => {
                                 log::warn!(
@@ -838,6 +852,24 @@ async fn backfill_loop(
                                 );
                             }
                         }
+                    }
+
+                    // Emit in forward sequence order for correct accumulator processing
+                    downloaded.sort_by_key(|(seq, _)| *seq);
+                    for (_seq, chunk_data) in downloaded {
+                        chunks_in_volume += 1;
+                        {
+                            let mut s = state.borrow_mut();
+                            s.results.push(RealtimeResult::ChunkData {
+                                data: chunk_data,
+                                chunk_index: chunks_in_volume - 1,
+                                is_start: false,
+                                is_end: false,
+                                timestamp: current_scan_start_secs,
+                                skip_overlap_delete: false,
+                            });
+                        }
+                        ctx.request_repaint();
                     }
 
                     log::info!(
@@ -873,6 +905,7 @@ async fn backfill_loop(
                 // Force is_end=true so worker flushes all accumulated elevations
                 is_end: true,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: false,
             });
         }
         ctx.request_repaint();
@@ -896,6 +929,7 @@ async fn backfill_loop(
                 // Force is_end=true so worker flushes all accumulated elevations
                 is_end: true,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: false,
             });
         }
         ctx.request_repaint();

@@ -60,6 +60,8 @@ pub(super) struct IngestChunkParams {
     pub is_end: bool,
     #[serde(default)]
     pub file_name: String,
+    #[serde(default)]
+    pub skip_overlap_delete: bool,
 }
 
 pub(super) fn default_product() -> String {
