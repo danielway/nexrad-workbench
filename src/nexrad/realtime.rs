@@ -279,12 +279,9 @@ async fn streaming_loop(
                         latest_seq - 1
                     );
 
-                    // Download newest-first so partial backfill prioritizes recent data.
-                    // Buffer results and emit in forward sequence order for the
-                    // ChunkAccumulator's sequential elevation-transition detection.
                     let mut downloaded: Vec<(u32, Vec<u8>)> = Vec::new();
 
-                    for chunk_id in intermediates.iter().rev() {
+                    for chunk_id in intermediates.iter() {
                         if state.borrow().stop_requested {
                             break;
                         }
@@ -326,8 +323,6 @@ async fn streaming_loop(
                         }
                     }
 
-                    // Emit in forward sequence order for correct accumulator processing
-                    downloaded.sort_by_key(|(seq, _)| *seq);
                     for (_seq, chunk_data) in downloaded {
                         chunks_in_volume += 1;
                         {
@@ -811,12 +806,9 @@ async fn backfill_loop(
                         latest_seq - 1
                     );
 
-                    // Download newest-first so partial backfill prioritizes recent data.
-                    // Buffer results and emit in forward sequence order for the
-                    // ChunkAccumulator's sequential elevation-transition detection.
                     let mut downloaded: Vec<(u32, Vec<u8>)> = Vec::new();
 
-                    for chunk_id in intermediates.iter().rev() {
+                    for chunk_id in intermediates.iter() {
                         // Skip chunks whose estimated time falls before existing data
                         if let (Some(skip_ts), Some(vol_start)) =
                             (skip_before_secs, volume_header_time_secs)
@@ -854,8 +846,6 @@ async fn backfill_loop(
                         }
                     }
 
-                    // Emit in forward sequence order for correct accumulator processing
-                    downloaded.sort_by_key(|(seq, _)| *seq);
                     for (_seq, chunk_data) in downloaded {
                         chunks_in_volume += 1;
                         {

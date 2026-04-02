@@ -231,6 +231,27 @@ fn handle_chunk_ingested_message(
         }
     };
 
+    // Log chunk receipt with per-elevation azimuth ranges
+    {
+        let elev_summary: Vec<String> = r
+            .chunk_elev_az_ranges
+            .iter()
+            .map(|(elev, az_start, az_end)| format!("e{}:[{:.1}..{:.1}]", elev, az_start, az_end))
+            .collect();
+        let completed = if r.elevations_completed.is_empty() {
+            String::new()
+        } else {
+            format!(" completed={:?}", r.elevations_completed)
+        };
+        log::info!(
+            "Chunk received #{}: elevations=[{}]{} {:.0}ms",
+            context.chunk_index,
+            elev_summary.join(", "),
+            completed,
+            r.total_ms,
+        );
+    }
+
     results
         .borrow_mut()
         .push(WorkerOutcome::ChunkIngested(ChunkIngestResult {
