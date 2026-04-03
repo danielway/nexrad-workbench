@@ -370,7 +370,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     .map(|a| a.current_radials.len())
                     .unwrap_or(0)
             });
-            log::info!(
+            log::debug!(
                 "Chunk#{} elev={:?} radials={} az_range=[{:.1}..{:.1}] accum_current={} is_start={} is_end={} size={}B",
                 chunk_index,
                 chunk_elevation,

@@ -964,7 +964,7 @@ impl WorkbenchApp {
                 timestamp,
                 skip_overlap_delete,
             } => {
-                log::info!(
+                log::debug!(
                     "Realtime chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
                     chunk_index,
                     is_start,
@@ -1001,7 +1001,7 @@ impl WorkbenchApp {
                 if is_start {
                     self.state.session_stats.pipeline.processing = true;
                 }
-                log::info!(
+                log::debug!(
                     "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={})",
                     chunk_index,
                     site_id,
@@ -1455,7 +1455,7 @@ impl WorkbenchApp {
     fn handle_chunk_ingested_outcome(&mut self, result: nexrad::ChunkIngestResult) {
         let is_live = self.state.live_mode_state.is_active();
         let source = if is_live { "Realtime" } else { "Backfill" };
-        log::info!(
+        log::debug!(
             "{}: chunk ingested scan={} elevations_completed={:?} sweeps_stored={} is_end={} vcp={:?} available_elevs={:?} {:.1}ms",
             source,
             result.scan_key,
@@ -1848,7 +1848,7 @@ impl WorkbenchApp {
         if !result.azimuths.is_empty() {
             let first_az = result.azimuths[0];
             let last_az = *result.azimuths.last().unwrap();
-            log::info!(
+            log::debug!(
                 "Live azimuth range: first={:.1} last={:.1} count={}/{} sweep=({:.1},{:.1})",
                 first_az,
                 last_az,
@@ -1897,7 +1897,7 @@ impl WorkbenchApp {
     }
 
     fn handle_worker_error_outcome(&mut self, id: u64, message: String) {
-        log::error!("Worker error (request {}): {}", id, message);
+        log::warn!("Worker error (request {}): {}", id, message);
         self.state.status_message = format!("Worker error: {}", message);
 
         // Clean up ghost and progress for the failed scan.

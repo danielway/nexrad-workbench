@@ -104,7 +104,7 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
         let product_radials = sweep.azimuth_count;
         let expected_values = sweep.azimuth_count as usize * sweep.gate_count as usize;
         let actual_values = gate_values_f32.len();
-        log::info!(
+        log::debug!(
             "render_live: elev={} {} {}x{} accum_total={} elev_radials={} product_radials={} vals={}/{} az=[{:.1}..{:.1}] offset={} scale={} in {:.1}ms (marshal: {:.1}ms)",
             target_elev,
             p.product,

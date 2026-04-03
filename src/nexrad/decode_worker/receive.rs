@@ -243,7 +243,7 @@ fn handle_chunk_ingested_message(
         } else {
             format!(" completed={:?}", r.elevations_completed)
         };
-        log::info!(
+        log::debug!(
             "Chunk received #{}: elevations=[{}]{} {:.0}ms",
             context.chunk_index,
             elev_summary.join(", "),
@@ -335,7 +335,7 @@ fn handle_live_decoded_message(
         }
     };
 
-    log::info!(
+    log::debug!(
         "Worker live_decoded: {}x{}, {} radials, {}, {:.0}ms",
         r.azimuth_count,
         r.gate_count,
@@ -427,7 +427,7 @@ fn handle_error_message(data: &JsValue, results: &Rc<RefCell<Vec<WorkerOutcome>>
         }
     };
 
-    log::error!("Worker error (request {}): {}", e.id, e.message);
+    log::warn!("Worker error (request {}): {}", e.id, e.message);
 
     results.borrow_mut().push(WorkerOutcome::WorkerError {
         id: e.id,

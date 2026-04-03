@@ -380,7 +380,7 @@ fn compute_gpu_sweep_state(
         if let Some((az, start)) = gpu_sweep {
             let prev_cache = state.viz_state.last_sweep_line_cache;
             if prev_cache.is_none_or(|(pa, ps)| (pa - az).abs() > 1.0 || (ps - start).abs() > 1.0) {
-                log::info!(
+                log::debug!(
                     "gpu_sweep live: az={:.1} start={:.1} swept_arc={:.1}",
                     az,
                     start,
