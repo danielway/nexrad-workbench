@@ -479,6 +479,7 @@ impl SweepPosition {
     }
 
     /// Radial progress fraction (0.0..1.0). Only meaningful for InProgress.
+    #[allow(dead_code)]
     pub fn radial_fraction(&self) -> f32 {
         match &self.status {
             SweepStatus::InProgress {

@@ -238,16 +238,6 @@ pub mod timeline {
         Color32::from_rgba_unmultiplied(80, 120, 180, 100)
     }
 
-    /// Separator tick between chunk sub-blocks in a downloading sweep.
-    pub fn rt_chunk_separator() -> Color32 {
-        Color32::from_rgba_unmultiplied(100, 180, 255, 120)
-    }
-
-    /// Leading edge of the progress fill in a downloading sweep.
-    pub fn rt_progress_edge() -> Color32 {
-        Color32::from_rgba_unmultiplied(100, 200, 255, 160)
-    }
-
     /// Dotted border for the "next chunk" placeholder block.
     pub fn rt_next_chunk_border() -> Color32 {
         Color32::from_rgba_unmultiplied(140, 200, 255, 140)
