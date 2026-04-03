@@ -20,6 +20,8 @@ struct RadarStateAtTimestamp<'a> {
     scan: Option<&'a Scan>,
     /// Extracted VCP pattern from live streaming (used when scan is None)
     live_vcp_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
+    /// Unified position model with sweep timing (live or archived)
+    position: Option<crate::state::VcpPositionModel>,
 }
 
 pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
@@ -122,42 +124,25 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                 scan_progress,
                 scan: Some(scan),
                 live_vcp_pattern: None,
+                position: Some(crate::state::VcpPositionModel::from_scan(scan)),
             }
         }
         None => {
-            // In live mode, use estimated position from live state even when
-            // no persisted scan exists at the current timestamp yet.
-            let live = &state.live_mode_state;
-            if live.is_active() && live.current_vcp_number.is_some() {
+            // In live mode, use the unified VcpPositionModel for azimuth,
+            // elevation, and progress instead of reaching into LiveModeState.
+            if let Some(ref position) = state.live_radar_model.position {
                 let now = js_sys::Date::now() / 1000.0;
-                let vcp = live.current_vcp_number;
-                let azimuth = live.estimated_azimuth(now);
-                let sweep_index = live.estimated_elevation_index(now).or_else(|| {
-                    // Fall back to the actual in-progress elevation number (1-based → 0-based)
-                    live.current_in_progress_elevation
+                let vcp = Some(position.vcp_number).filter(|&v| v > 0);
+                let azimuth = position.estimated_azimuth_at(now);
+                let sweep_index = position.elevation_index_at(now).or_else(|| {
+                    state
+                        .live_mode_state
+                        .current_in_progress_elevation
                         .map(|e| e.saturating_sub(1) as usize)
                 });
-                let scan_progress = live.current_volume_start.and_then(|start| {
-                    live.last_volume_duration_secs.map(|dur| {
-                        if dur > 0.0 {
-                            ((now - start) / dur).clamp(0.0, 1.0) as f32
-                        } else {
-                            0.0
-                        }
-                    })
-                });
-                // Derive elevation angle: prefer extracted VCP pattern, then static definition
-                let elevation = sweep_index.and_then(|idx| {
-                    live.current_vcp_pattern
-                        .as_ref()
-                        .and_then(|p| p.elevations.get(idx))
-                        .map(|e| e.angle)
-                        .or_else(|| {
-                            vcp.and_then(get_vcp_definition)
-                                .and_then(|def| def.elevations.get(idx))
-                                .map(|e| e.angle)
-                        })
-                });
+                let scan_progress = Some(position.progress_at(now));
+                let elevation =
+                    sweep_index.and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_angle));
 
                 RadarStateAtTimestamp {
                     azimuth,
@@ -166,7 +151,8 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                     sweep_index,
                     scan_progress,
                     scan: None,
-                    live_vcp_pattern: live.current_vcp_pattern.as_ref(),
+                    live_vcp_pattern: state.live_mode_state.current_vcp_pattern.as_ref(),
+                    position: Some(position.clone()),
                 }
             } else {
                 RadarStateAtTimestamp {
@@ -177,6 +163,7 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                     scan_progress: None,
                     scan: None,
                     live_vcp_pattern: None,
+                    position: None,
                 }
             }
         }
@@ -445,137 +432,31 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
 
             ui.add_space(8.0);
 
-            // Elevation list - use full available width
-            let available_width = ui.available_width();
-
-            // Elevation list header
-            ui.horizontal(|ui| {
-                ui.set_min_width(available_width);
-                ui.label(RichText::new(" ").monospace().small()); // Spacer for indicator
-                ui.label(RichText::new("Elev").small().color(Color32::GRAY))
-                    .on_hover_text("Elevation angle in degrees");
-                ui.add_space(6.0);
-                ui.label(RichText::new("Wf").small().color(Color32::GRAY))
-                    .on_hover_text("Waveform type");
-                ui.label(RichText::new("PRF").small().color(Color32::GRAY))
-                    .on_hover_text("Pulse Repetition Frequency");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new("Info").small().color(Color32::GRAY))
-                        .on_hover_text("Available products for this elevation");
-                });
-            });
-
-            ui.add_space(2.0);
-
-            // Prefer extracted VCP pattern (from Message Type 5), then live pattern, then static definitions
+            // Build row data from whichever source is available
             let extracted_pattern = radar_state
                 .scan
                 .and_then(|s| s.vcp_pattern.as_ref())
                 .or(radar_state.live_vcp_pattern);
             let vcp_def = get_vcp_definition(vcp);
 
-            if let Some(scan) = radar_state.scan {
-                egui::ScrollArea::vertical()
-                    .max_height(f32::INFINITY)
-                    .show(ui, |ui| {
-                        ui.set_min_width(available_width);
-                        if let Some(pattern) = extracted_pattern {
-                            // Use extracted VCP elevations (full fidelity from scan data)
-                            for (idx, elev) in pattern.elevations.iter().enumerate() {
-                                // Match by index: VCP pattern entries correspond 1:1 with sweeps
-                                let is_current = radar_state.sweep_index == Some(idx);
-                                let wf_short = match elev.waveform.as_str() {
-                                    "CS" => "CS",
-                                    "CDW" | "CDWO" => "CD",
-                                    "B" => "B",
-                                    "SPP" => "SP",
-                                    _ => "--",
-                                };
-                                let meta = ElevRowMeta {
-                                    waveform: wf_short,
-                                    prf_short: prf_number_to_short(elev.prf_number),
-                                    waveform_raw: &elev.waveform,
-                                };
-                                render_elevation_row(
-                                    ui,
-                                    (idx + 1) as u8,
-                                    elev.angle,
-                                    Some(meta),
-                                    is_current,
-                                    available_width,
-                                );
-                            }
-                        } else {
-                            // Fall back: use sweep metadata with static VCP definitions
-                            for (idx, sweep) in scan.sweeps.iter().enumerate() {
-                                let is_current = radar_state.sweep_index == Some(idx);
-                                let meta = vcp_def.and_then(|def| {
-                                    def.elevations
-                                        .iter()
-                                        .find(|e| (e.angle - sweep.elevation).abs() < 0.1)
-                                        .map(static_vcp_meta)
-                                });
-                                render_elevation_row(
-                                    ui,
-                                    (idx + 1) as u8,
-                                    sweep.elevation,
-                                    meta,
-                                    is_current,
-                                    available_width,
-                                );
-                            }
-                        }
-                    });
-            } else if let Some(pattern) = extracted_pattern {
-                // No scan reference but have VCP pattern (live mode fallback)
-                egui::ScrollArea::vertical()
-                    .max_height(f32::INFINITY)
-                    .show(ui, |ui| {
-                        ui.set_min_width(available_width);
-                        for (idx, elev) in pattern.elevations.iter().enumerate() {
-                            let is_current = radar_state.sweep_index == Some(idx);
-                            let wf_short = match elev.waveform.as_str() {
-                                "CS" => "CS",
-                                "CDW" | "CDWO" => "CD",
-                                "B" => "B",
-                                "SPP" => "SP",
-                                _ => "--",
-                            };
-                            let meta = ElevRowMeta {
-                                waveform: wf_short,
-                                prf_short: prf_number_to_short(elev.prf_number),
-                                waveform_raw: &elev.waveform,
-                            };
-                            render_elevation_row(
-                                ui,
-                                (idx + 1) as u8,
-                                elev.angle,
-                                Some(meta),
-                                is_current,
-                                available_width,
-                            );
-                        }
-                    });
-            } else if let Some(def) = vcp_def {
-                // Fall back to static VCP definitions — use sweep_index from
-                // live mode estimation to highlight the current elevation.
-                egui::ScrollArea::vertical()
-                    .max_height(f32::INFINITY)
-                    .show(ui, |ui| {
-                        ui.set_min_width(available_width);
-                        for (idx, elev) in def.elevations.iter().enumerate() {
-                            let is_current = radar_state.sweep_index == Some(idx);
-                            render_elevation_row(
-                                ui,
-                                (idx + 1) as u8,
-                                elev.angle,
-                                Some(static_vcp_meta(elev)),
-                                is_current,
-                                available_width,
-                            );
-                        }
-                    });
+            let rows: Vec<ElevRow> = build_elevation_rows(
+                radar_state.scan,
+                extracted_pattern,
+                vcp_def,
+                radar_state.position.as_ref(),
+                radar_state.sweep_index,
+            );
+
+            if rows.is_empty() {
+                return;
             }
+
+            // Render as aligned grid
+            egui::ScrollArea::vertical()
+                .max_height(f32::INFINITY)
+                .show(ui, |ui| {
+                    render_elevation_grid(ui, &rows);
+                });
         }
         None => {
             ui.label(
@@ -585,6 +466,274 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
             );
         }
     }
+}
+
+/// Pre-built row data for the elevation grid.
+struct ElevRow<'a> {
+    elevation_number: u8,
+    elevation_angle: f32,
+    is_current: bool,
+    waveform: &'a str,
+    waveform_raw: &'a str,
+    prf_short: &'a str,
+    /// Sweep start offset from volume start (seconds). Shown as M:SS.
+    start_offset_secs: Option<f64>,
+    /// Whether the timing is estimated (vs observed from actual data).
+    timing_estimated: bool,
+}
+
+fn build_elevation_rows<'a>(
+    scan: Option<&'a Scan>,
+    extracted_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
+    vcp_def: Option<&'a crate::state::vcp::VcpDefinition>,
+    position: Option<&crate::state::VcpPositionModel>,
+    sweep_index: Option<usize>,
+) -> Vec<ElevRow<'a>> {
+    // Helper to get sweep start offset (from volume start) for a given index.
+    let timing_for = |idx: usize| -> (Option<f64>, bool) {
+        position
+            .and_then(|p| {
+                let sp = p.sweeps.get(idx)?;
+                let offset = sp.start - p.volume_start;
+                let estimated = sp.timing != crate::state::SweepTiming::Observed;
+                Some((Some(offset), estimated))
+            })
+            .unwrap_or((None, true))
+    };
+
+    if let Some(pattern) = extracted_pattern {
+        pattern
+            .elevations
+            .iter()
+            .enumerate()
+            .map(|(idx, elev)| {
+                let (start_offset_secs, timing_estimated) = timing_for(idx);
+                ElevRow {
+                    elevation_number: (idx + 1) as u8,
+                    elevation_angle: elev.angle,
+                    is_current: sweep_index == Some(idx),
+                    waveform: match elev.waveform.as_str() {
+                        "CS" => "CS",
+                        "CDW" | "CDWO" => "CD",
+                        "B" => "B",
+                        "SPP" => "SP",
+                        _ => "--",
+                    },
+                    waveform_raw: &elev.waveform,
+                    prf_short: prf_number_to_short(elev.prf_number),
+                    start_offset_secs,
+                    timing_estimated,
+                }
+            })
+            .collect()
+    } else if let Some(scan) = scan {
+        scan.sweeps
+            .iter()
+            .enumerate()
+            .map(|(idx, sweep)| {
+                let (start_offset_secs, timing_estimated) = timing_for(idx);
+                let meta = vcp_def.and_then(|def| {
+                    def.elevations
+                        .iter()
+                        .find(|e| (e.angle - sweep.elevation).abs() < 0.1)
+                });
+                ElevRow {
+                    elevation_number: (idx + 1) as u8,
+                    elevation_angle: sweep.elevation,
+                    is_current: sweep_index == Some(idx),
+                    waveform: meta.map(|m| m.waveform).unwrap_or("--"),
+                    waveform_raw: meta
+                        .map(|m| match m.waveform {
+                            "CS" => "CS",
+                            "CD" => "CDW",
+                            "B" => "B",
+                            "SP" => "SPP",
+                            other => other,
+                        })
+                        .unwrap_or("--"),
+                    prf_short: meta
+                        .map(|m| match m.prf {
+                            "Low" => "L",
+                            "Med" => "M",
+                            "High" => "H",
+                            _ => "-",
+                        })
+                        .unwrap_or("-"),
+                    start_offset_secs,
+                    timing_estimated,
+                }
+            })
+            .collect()
+    } else if let Some(def) = vcp_def {
+        def.elevations
+            .iter()
+            .enumerate()
+            .map(|(idx, elev)| {
+                let (start_offset_secs, timing_estimated) = timing_for(idx);
+                ElevRow {
+                    elevation_number: (idx + 1) as u8,
+                    elevation_angle: elev.angle,
+                    is_current: sweep_index == Some(idx),
+                    waveform: elev.waveform,
+                    waveform_raw: match elev.waveform {
+                        "CS" => "CS",
+                        "CD" => "CDW",
+                        "B" => "B",
+                        "SP" => "SPP",
+                        other => other,
+                    },
+                    prf_short: match elev.prf {
+                        "Low" => "L",
+                        "Med" => "M",
+                        "High" => "H",
+                        _ => "-",
+                    },
+                    start_offset_secs,
+                    timing_estimated,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn render_elevation_grid(ui: &mut egui::Ui, rows: &[ElevRow]) {
+    let hdr_color = Color32::from_rgb(130, 130, 140);
+    let font = egui::FontId::monospace(10.0);
+    let hdr_font = egui::FontId::monospace(9.0);
+
+    egui::Grid::new("vcp_elev_grid")
+        .spacing([4.0, 1.0])
+        .show(ui, |ui| {
+            // Header
+            ui.label(RichText::new(" ").font(hdr_font.clone()));
+            ui.label(
+                RichText::new("Elev")
+                    .font(hdr_font.clone())
+                    .color(hdr_color),
+            );
+            ui.label(RichText::new("Wf").font(hdr_font.clone()).color(hdr_color));
+            ui.label(RichText::new("PRF").font(hdr_font.clone()).color(hdr_color));
+            ui.label(
+                RichText::new("Time")
+                    .font(hdr_font.clone())
+                    .color(hdr_color),
+            );
+            ui.label(RichText::new("Products").font(hdr_font).color(hdr_color));
+            ui.end_row();
+
+            for row in rows {
+                let text_color = if row.is_current {
+                    Color32::from_rgb(100, 255, 100)
+                } else {
+                    Color32::from_rgb(180, 180, 180)
+                };
+                let dim_color = if row.is_current {
+                    Color32::from_rgb(80, 200, 80)
+                } else {
+                    Color32::from_rgb(120, 120, 130)
+                };
+
+                // Current indicator
+                if row.is_current {
+                    ui.label(
+                        RichText::new(egui_phosphor::regular::CARET_RIGHT)
+                            .color(text_color)
+                            .font(font.clone()),
+                    );
+                } else {
+                    ui.label(RichText::new(" ").font(font.clone()));
+                }
+
+                // Elevation number + angle
+                ui.label(
+                    RichText::new(format!(
+                        "{:<2}{:>5.1}\u{00B0}",
+                        row.elevation_number, row.elevation_angle
+                    ))
+                    .color(text_color)
+                    .font(font.clone()),
+                );
+
+                // Waveform
+                let wf_resp = ui.label(
+                    RichText::new(row.waveform)
+                        .color(dim_color)
+                        .font(font.clone()),
+                );
+                match row.waveform {
+                    "CS" => wf_resp.on_hover_text("Contiguous Surveillance"),
+                    "CD" => wf_resp.on_hover_text("Contiguous Doppler"),
+                    "B" => wf_resp.on_hover_text("Batch"),
+                    "SP" => wf_resp.on_hover_text("Staggered Pulse Pair"),
+                    _ => wf_resp,
+                };
+
+                // PRF
+                let prf_resp = ui.label(
+                    RichText::new(row.prf_short)
+                        .color(dim_color)
+                        .font(font.clone()),
+                );
+                match row.prf_short {
+                    "L" => prf_resp.on_hover_text("Low PRF"),
+                    "M" => prf_resp.on_hover_text("Medium PRF"),
+                    "H" => prf_resp.on_hover_text("High PRF"),
+                    _ => prf_resp,
+                };
+
+                // Time (offset from volume start as M:SS)
+                let time_text = match row.start_offset_secs {
+                    Some(offset) if offset >= 0.0 => {
+                        let secs = offset.round() as u32;
+                        let m = secs / 60;
+                        let s = secs % 60;
+                        if row.timing_estimated {
+                            format!("~{}:{:02}", m, s)
+                        } else {
+                            format!("{}:{:02}", m, s)
+                        }
+                    }
+                    _ => "--:--".to_string(),
+                };
+                let time_resp =
+                    ui.label(RichText::new(time_text).color(dim_color).font(font.clone()));
+                if row.timing_estimated {
+                    time_resp.on_hover_text("Estimated from VCP azimuth rates");
+                } else {
+                    time_resp.on_hover_text("Observed from radial timestamps");
+                };
+
+                // Products
+                let products = waveform_to_products(row.waveform_raw);
+                if products.is_empty() {
+                    ui.label(RichText::new("--").color(dim_color).font(font.clone()));
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for &(letter, (r, g, b)) in products {
+                            let resp = ui.label(
+                                RichText::new(letter)
+                                    .color(Color32::from_rgb(r, g, b))
+                                    .font(font.clone()),
+                            );
+                            match letter {
+                                "R" => resp.on_hover_text("Reflectivity"),
+                                "V" => resp.on_hover_text("Velocity"),
+                                "S" => resp.on_hover_text("Spectrum Width"),
+                                "Z" => resp.on_hover_text("Differential Reflectivity"),
+                                "P" => resp.on_hover_text("Differential Phase"),
+                                "C" => resp.on_hover_text("Correlation Coefficient"),
+                                _ => resp,
+                            };
+                        }
+                    });
+                }
+
+                ui.end_row();
+            }
+        });
 }
 
 /// Map a raw waveform code to available product letters and their colors.
@@ -603,140 +752,6 @@ fn waveform_to_products(waveform: &str) -> &'static [(&'static str, (u8, u8, u8)
         "B" => &[REF, VEL, SW],
         "SPP" => &[REF, VEL],
         _ => &[],
-    }
-}
-
-/// Display-ready elevation metadata for a row.
-struct ElevRowMeta<'a> {
-    waveform: &'a str,
-    prf_short: &'a str,
-    /// Original waveform code from VCP (for product mapping). Differs from
-    /// `waveform` which may be a shortened display code.
-    waveform_raw: &'a str,
-}
-
-fn render_elevation_row(
-    ui: &mut egui::Ui,
-    elevation_number: u8,
-    elevation: f32,
-    meta: Option<ElevRowMeta>,
-    is_current: bool,
-    row_width: f32,
-) {
-    let text_color = if is_current {
-        Color32::from_rgb(100, 255, 100)
-    } else {
-        Color32::from_rgb(180, 180, 180)
-    };
-    let dim_color = if is_current {
-        Color32::from_rgb(80, 200, 80)
-    } else {
-        Color32::from_rgb(120, 120, 130)
-    };
-
-    ui.horizontal(|ui| {
-        ui.set_min_width(row_width);
-
-        // Current indicator
-        if is_current {
-            ui.label(
-                RichText::new(egui_phosphor::regular::CARET_RIGHT)
-                    .color(text_color)
-                    .small(),
-            );
-        } else {
-            ui.label(RichText::new(" ").monospace().small());
-        }
-
-        // Elevation number + angle
-        ui.label(
-            RichText::new(format!("{:<2} {:4.1}\u{00B0}", elevation_number, elevation))
-                .color(text_color)
-                .monospace()
-                .small(),
-        );
-
-        // Waveform type
-        let waveform = meta.as_ref().map(|m| m.waveform).unwrap_or("--");
-        let wf_response = ui.label(
-            RichText::new(format!(" {:2}", waveform))
-                .color(dim_color)
-                .monospace()
-                .small(),
-        );
-        match waveform {
-            "CS" => wf_response.on_hover_text("Contiguous Surveillance"),
-            "CD" => wf_response.on_hover_text("Contiguous Doppler"),
-            "B" => wf_response.on_hover_text("Batch"),
-            "SP" => wf_response.on_hover_text("Staggered Pulse Pair"),
-            _ => wf_response,
-        };
-
-        // PRF
-        let prf_short = meta.as_ref().map(|m| m.prf_short).unwrap_or("-");
-        let prf_response = ui.label(
-            RichText::new(format!(" {}", prf_short))
-                .color(dim_color)
-                .monospace()
-                .small(),
-        );
-        match prf_short {
-            "L" => prf_response.on_hover_text("Low PRF"),
-            "M" => prf_response.on_hover_text("Medium PRF"),
-            "H" => prf_response.on_hover_text("High PRF"),
-            _ => prf_response,
-        };
-
-        // Product indicators - right aligned
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let products = meta
-                .as_ref()
-                .map(|m| waveform_to_products(m.waveform_raw))
-                .unwrap_or(&[]);
-            if products.is_empty() {
-                ui.label(RichText::new("--").color(dim_color).small());
-            } else {
-                // Right-to-left layout reverses order, so iterate backwards
-                for &(letter, (r, g, b)) in products.iter().rev() {
-                    let resp = ui.label(
-                        RichText::new(letter)
-                            .color(Color32::from_rgb(r, g, b))
-                            .monospace()
-                            .small(),
-                    );
-                    match letter {
-                        "R" => resp.on_hover_text("Reflectivity"),
-                        "V" => resp.on_hover_text("Velocity"),
-                        "S" => resp.on_hover_text("Spectrum Width"),
-                        "Z" => resp.on_hover_text("Differential Reflectivity"),
-                        "P" => resp.on_hover_text("Differential Phase"),
-                        "C" => resp.on_hover_text("Correlation Coefficient"),
-                        _ => resp,
-                    };
-                }
-            }
-        });
-    });
-}
-
-/// Convert a static VcpElevation to display metadata.
-fn static_vcp_meta(e: &crate::state::vcp::VcpElevation) -> ElevRowMeta<'_> {
-    ElevRowMeta {
-        waveform: e.waveform,
-        prf_short: match e.prf {
-            "Low" => "L",
-            "Med" => "M",
-            "High" => "H",
-            _ => "-",
-        },
-        // Map static waveform codes to raw codes for product lookup
-        waveform_raw: match e.waveform {
-            "CS" => "CS",
-            "CD" => "CDW",
-            "B" => "B",
-            "SP" => "SPP",
-            other => other,
-        },
     }
 }
 

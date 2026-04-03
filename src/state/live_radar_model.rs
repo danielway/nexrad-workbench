@@ -6,6 +6,7 @@
 //! what the radar is doing right now.
 
 use super::LiveModeState;
+use super::VcpPositionModel;
 
 /// Computed snapshot of live radar state for consistent UI consumption.
 ///
@@ -19,6 +20,10 @@ pub struct LiveRadarModel {
 
     /// Extrapolated radar azimuth at snapshot time (degrees, 0-360).
     pub estimated_azimuth: Option<f32>,
+
+    /// Unified VCP position model — the single source of truth for
+    /// sweep timing, chunk positions, and volume progress.
+    pub position: Option<VcpPositionModel>,
 
     /// Volume-level progress (present when streaming has started a volume).
     pub volume: Option<LiveVolumeModel>,
@@ -89,7 +94,10 @@ impl LiveModeState {
             return LiveRadarModel::default();
         }
 
-        let estimated_azimuth = self.estimated_azimuth(now_secs);
+        let position = VcpPositionModel::from_live(self, now_secs);
+        let estimated_azimuth = position
+            .as_ref()
+            .and_then(|p| p.estimated_azimuth_at(now_secs));
 
         let volume = Some(LiveVolumeModel {
             scan_key: self.current_scan_key.clone(),
@@ -107,6 +115,19 @@ impl LiveModeState {
                 .map(|&(_, start, end, radials)| (start, end, radials))
                 .collect();
 
+            // Derive chunks_expected from the position model if available.
+            let chunks_expected = position.as_ref().and_then(|p| {
+                p.sweeps
+                    .iter()
+                    .find(|s| s.elevation_number == elev)
+                    .and_then(|s| match &s.status {
+                        crate::state::SweepStatus::InProgress {
+                            chunks_expected, ..
+                        } => *chunks_expected,
+                        _ => None,
+                    })
+            });
+
             LiveSweepModel {
                 elevation_number: elev,
                 radials_received: self.current_in_progress_radials.unwrap_or(0),
@@ -121,7 +142,7 @@ impl LiveModeState {
                         radial_count: count,
                     })
                     .collect(),
-                chunks_expected: self.expected_chunks_for_current_sweep(),
+                chunks_expected,
                 chunk_time_spans,
             }
         });
@@ -129,6 +150,7 @@ impl LiveModeState {
         LiveRadarModel {
             active,
             estimated_azimuth,
+            position,
             volume,
             active_sweep,
         }

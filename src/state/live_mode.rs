@@ -137,8 +137,8 @@ pub struct LiveModeState {
 
     /// Per-elevation chunk time spans in the current volume. Each entry is
     /// (elevation_number, start_secs, end_secs, radial_count) derived from
-    /// actual radial collection timestamps. A single chunk that spans two
-    /// elevations produces two entries.
+    /// actual radial collection timestamps. Each chunk contains data for
+    /// exactly one elevation, so each chunk produces exactly one entry.
     pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
 
     /// Actual sweep metadata (with real timestamps) for completed elevations
@@ -485,72 +485,6 @@ impl LiveModeState {
         }
     }
 
-    /// Get the estimated sweep duration for a specific elevation index (0-based).
-    /// Falls back to even distribution if per-elevation data is not available.
-    pub fn sweep_duration_for(&self, elev_idx: usize) -> Option<f64> {
-        let vol_dur = self.last_volume_duration_secs?;
-        let count = self.expected_elevation_count? as usize;
-        if count == 0 {
-            return None;
-        }
-
-        if !self.estimated_sweep_durations.is_empty() {
-            // Recompute with current volume duration to stay in sync
-            let total_weight: f64 = self.estimated_sweep_durations.iter().sum();
-            if total_weight > 0.0 {
-                let fraction = self
-                    .estimated_sweep_durations
-                    .get(elev_idx)
-                    .copied()
-                    .unwrap_or(0.0)
-                    / total_weight;
-                return Some(fraction * vol_dur);
-            }
-        }
-
-        // Even distribution fallback
-        Some(vol_dur / count as f64)
-    }
-
-    /// Get the cumulative start offset (seconds from volume start) for a given
-    /// elevation index (0-based). Uses weighted durations when available.
-    pub fn sweep_start_offset(&self, elev_idx: usize) -> Option<f64> {
-        let vol_dur = self.last_volume_duration_secs?;
-        let count = self.expected_elevation_count? as usize;
-        if count == 0 || elev_idx >= count {
-            return None;
-        }
-
-        if !self.estimated_sweep_durations.is_empty() {
-            let total_weight: f64 = self.estimated_sweep_durations.iter().sum();
-            if total_weight > 0.0 {
-                let offset: f64 = self.estimated_sweep_durations[..elev_idx]
-                    .iter()
-                    .map(|d| (d / total_weight) * vol_dur)
-                    .sum();
-                return Some(offset);
-            }
-        }
-
-        // Even distribution fallback
-        Some(elev_idx as f64 * vol_dur / count as f64)
-    }
-
-    /// Estimate the expected number of chunks for the current sweep, computed as
-    /// `ceil(sweep_duration / chunk_interval)`. Returns `None` if sweep duration
-    /// or chunk interval data is unavailable.
-    pub fn expected_chunks_for_current_sweep(&self) -> Option<u32> {
-        let elev_idx = self
-            .current_in_progress_elevation
-            .map(|e| e.saturating_sub(1) as usize)
-            .unwrap_or(0);
-        let sweep_dur = self.sweep_duration_for(elev_idx)?;
-        if self.chunk_interval_secs <= 0.0 {
-            return None;
-        }
-        Some((sweep_dur / self.chunk_interval_secs).ceil() as u32)
-    }
-
     /// Record last radial azimuth and timestamp from a chunk.
     pub fn record_last_radial(&mut self, azimuth: Option<f32>, time_secs: Option<f64>) {
         if let Some(az) = azimuth {
@@ -559,77 +493,5 @@ impl LiveModeState {
         if let Some(t) = time_secs {
             self.last_radial_time_secs = Some(t);
         }
-    }
-
-    /// Estimate the current sweep line azimuth by extrapolating from the last
-    /// known radial position. Uses per-elevation sweep duration from VCP azimuth
-    /// rates when available, falling back to even distribution.
-    ///
-    /// Returns `None` if insufficient data is available.
-    pub fn estimated_azimuth(&self, now_secs: f64) -> Option<f32> {
-        let last_az = self.last_radial_azimuth?;
-        let last_t = self.last_radial_time_secs?;
-        let _vol_dur = self.last_volume_duration_secs?;
-        let elev_count = self.expected_elevation_count? as usize;
-        if elev_count == 0 {
-            return None;
-        }
-
-        // Use the current elevation's sweep duration for rotation rate
-        let current_elev_idx = self
-            .current_in_progress_elevation
-            .map(|e| e.saturating_sub(1) as usize)
-            .unwrap_or(0);
-        let sweep_dur = self.sweep_duration_for(current_elev_idx)?;
-        if sweep_dur <= 0.0 {
-            return None;
-        }
-        let degrees_per_sec = 360.0 / sweep_dur;
-
-        let dt = now_secs - last_t;
-        if dt < 0.0 {
-            return None;
-        }
-        // The sweep line represents "now" — the radar is always scanning.
-        // Let the line keep rotating; new chunks arrive every ~12s and reset
-        // the position. The modular arithmetic handles wrapping naturally.
-        // Only stop extrapolating after 120s with no data (something is wrong).
-        if dt > 120.0 {
-            return None;
-        }
-
-        let estimated = last_az as f64 + dt * degrees_per_sec;
-        Some(((estimated % 360.0 + 360.0) % 360.0) as f32)
-    }
-
-    /// Estimate which elevation index (0-based) the radar is currently scanning,
-    /// based on volume progress. Uses cumulative weighted sweep durations when
-    /// available, falling back to even distribution.
-    pub fn estimated_elevation_index(&self, now_secs: f64) -> Option<usize> {
-        let vol_start = self.current_volume_start?;
-        let vol_dur = self.last_volume_duration_secs?;
-        let elev_count = self.expected_elevation_count? as usize;
-        if vol_dur <= 0.0 || elev_count == 0 {
-            return None;
-        }
-
-        let elapsed = now_secs - vol_start;
-        if elapsed < 0.0 {
-            return Some(0);
-        }
-
-        // Use cumulative weighted offsets to find which elevation we're in
-        for idx in (0..elev_count).rev() {
-            if let Some(offset) = self.sweep_start_offset(idx) {
-                if elapsed >= offset {
-                    return Some(idx.min(elev_count - 1));
-                }
-            }
-        }
-
-        // Fallback to even distribution
-        let progress = elapsed / vol_dur;
-        let idx = (progress * elev_count as f64).floor() as usize;
-        Some(idx.min(elev_count - 1))
     }
 }

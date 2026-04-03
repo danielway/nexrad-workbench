@@ -53,6 +53,7 @@ pub fn extract_volume_start_time(radials: &[Radial]) -> Option<f64> {
 ///
 /// Use this when radials have already been decoded (e.g. after decompressing a
 /// record during ingest) to avoid redundant decompression.
+#[allow(dead_code)]
 pub fn extract_elevation_numbers(radials: &[Radial]) -> Vec<u8> {
     let mut elevations: Vec<u8> = radials.iter().map(|r| r.elevation_number()).collect();
     elevations.sort_unstable();

@@ -45,7 +45,6 @@ pub use network_monitor::{
 };
 pub use persistence_manager::PersistenceManager;
 pub use realtime::{BackfillChannel, RealtimeChannel, RealtimeResult};
-pub use record_decode::extract_elevation_numbers;
 pub use render_coordinator::RenderCoordinator;
 pub use render_request::RenderRequest;
 pub use streaming_manager::{StreamingEvent, StreamingManager};

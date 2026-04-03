@@ -19,6 +19,7 @@ mod stats;
 pub(crate) mod theme;
 pub(crate) mod url_state;
 pub(crate) mod vcp;
+mod vcp_position;
 mod viz;
 
 pub use crate::geo::camera::CameraMode;
@@ -41,6 +42,7 @@ pub use stats::{
 // AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
+pub use vcp_position::{SweepPosition, SweepStatus, SweepTiming, VcpPositionModel};
 pub use viz::{
     ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct, RenderProcessing,
     StormCellInfo, ViewMode, VizState,

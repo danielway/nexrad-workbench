@@ -10,7 +10,7 @@ use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 pub(super) fn render_timeline_tooltip(
     ui: &mut egui::Ui,
     timeline: &RadarTimeline,
-    live_state: &crate::state::LiveModeState,
+    state: &crate::state::AppState,
     hover_ts: f64,
     hover_pos: Pos2,
     scan_rect: &Rect,
@@ -19,6 +19,7 @@ pub(super) fn render_timeline_tooltip(
     use_local: bool,
     now_secs: f64,
 ) {
+    let live_state = &state.live_mode_state;
     let in_sweep_track = detail_level == DetailLevel::Sweeps && hover_pos.y > sweep_rect.top();
 
     // Find the scan at the hovered timestamp
@@ -27,12 +28,13 @@ pub(super) fn render_timeline_tooltip(
         .find(|s| s.start_time <= hover_ts && s.end_time >= hover_ts);
 
     // Check if hovering within the active real-time volume (including projected future)
-    let in_active_volume =
-        scan.is_none() && live_state.is_active() && live_state.current_volume_start.is_some() && {
-            let vol_start = live_state.current_volume_start.unwrap();
-            let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
-            hover_ts >= vol_start && hover_ts <= vol_start + expected_dur
-        };
+    let live_model = &state.live_radar_model;
+    let in_active_volume = scan.is_none()
+        && live_model.active
+        && live_model
+            .position
+            .as_ref()
+            .is_some_and(|p| hover_ts >= p.volume_start && hover_ts <= p.volume_end);
 
     // If in sweep track, search for sweep across ALL visible scans (not just the
     // scan containing hover_ts). This handles edge cases where a sweep's time range
@@ -71,14 +73,17 @@ pub(super) fn render_timeline_tooltip(
         if let Some(sweep) = sweep {
             render_sweep_tooltip_content(ui, sweep, sweep_parent_scan, use_local);
         } else if in_active_volume {
-            render_realtime_volume_tooltip(
-                ui,
-                live_state,
-                hover_ts,
-                now_secs,
-                in_sweep_track,
-                use_local,
-            );
+            if let Some(ref position) = live_model.position {
+                render_realtime_volume_tooltip(
+                    ui,
+                    position,
+                    live_state,
+                    hover_ts,
+                    now_secs,
+                    in_sweep_track,
+                    use_local,
+                );
+            }
         } else if let Some(scan) = scan {
             render_scan_tooltip_content(ui, scan, live_state, use_local);
         }
@@ -194,153 +199,59 @@ fn render_sweep_tooltip_content(
 #[allow(clippy::too_many_arguments)]
 fn render_realtime_volume_tooltip(
     ui: &mut egui::Ui,
+    model: &crate::state::VcpPositionModel,
     live_state: &crate::state::LiveModeState,
     hover_ts: f64,
     now_secs: f64,
     in_sweep_track: bool,
     use_local: bool,
 ) {
-    let vol_start = live_state.current_volume_start.unwrap();
-    let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
-    let expected_end = vol_start + expected_dur;
+    let vol_start = model.volume_start;
+    let expected_dur = model.volume_end - vol_start;
+    let expected_end = model.volume_end;
     let now = now_secs;
     let past_now = hover_ts > now;
-    let vcp_num = live_state.current_vcp_number.unwrap_or(0);
-    let expected_count = live_state.expected_elevation_count.unwrap_or(0) as usize;
+    let vcp_num = model.vcp_number;
+    let expected_count = model.sweeps.len();
 
     // -- Per-sweep tooltip when hovering the sweep track --
     if in_sweep_track && expected_count > 0 {
         let vcp_def = crate::state::get_vcp_definition(vcp_num);
 
-        // Per-elevation sweep durations (same logic as render_realtime_progress)
-        let sweep_dur_for = |idx: usize| -> f64 {
-            live_state
-                .sweep_duration_for(idx)
-                .unwrap_or(expected_dur / expected_count.max(1) as f64)
-        };
-        let sweep_start_offset_for = |idx: usize| -> f64 {
-            live_state
-                .sweep_start_offset(idx)
-                .unwrap_or(idx as f64 * expected_dur / expected_count.max(1) as f64)
-        };
-
-        // Replicate the sweep-to-timestamp mapping from render_realtime_progress
-        // to find which elevation block contains hover_ts.
-        let mut hovered_elev: Option<(u8, f64, f64)> = None;
-        let mut nearest_elev: Option<(u8, f64, f64)> = None;
+        // Find which sweep block contains hover_ts (or snap to nearest).
+        let mut hovered_sweep: Option<&crate::state::SweepPosition> = None;
+        let mut nearest_sweep: Option<&crate::state::SweepPosition> = None;
         let mut nearest_dist: f64 = f64::MAX;
-        for elev_idx in 0..expected_count {
-            let elev_num = (elev_idx + 1) as u8;
-            let is_complete = live_state.elevations_received.contains(&elev_num);
-            let this_sweep_dur = sweep_dur_for(elev_idx);
 
-            let (sw_start, sw_end) = if is_complete {
-                if let Some(meta) = live_state
-                    .completed_sweep_metas
-                    .iter()
-                    .find(|m| m.elevation_number == elev_num)
-                {
-                    (meta.start, meta.end)
-                } else {
-                    let offset = sweep_start_offset_for(elev_idx);
-                    (vol_start + offset, vol_start + offset + this_sweep_dur)
-                }
-            } else {
-                let anchor_end = live_state
-                    .completed_sweep_metas
-                    .iter()
-                    .filter(|m| m.elevation_number < elev_num)
-                    .max_by_key(|m| m.elevation_number)
-                    .map(|m| m.end);
-
-                let chunk_min = live_state
-                    .chunk_elev_spans
-                    .iter()
-                    .filter(|&&(e, _, _, _)| e == elev_num)
-                    .map(|&(_, s, _, _)| s)
-                    .reduce(f64::min);
-                let chunk_max = live_state
-                    .chunk_elev_spans
-                    .iter()
-                    .filter(|&&(e, _, _, _)| e == elev_num)
-                    .map(|&(_, _, e, _)| e)
-                    .reduce(f64::max);
-
-                let sw_start_actual = match (chunk_min, anchor_end) {
-                    (Some(cm), _) => cm,
-                    (None, Some(ae)) => {
-                        let anchor_elev_num = live_state
-                            .completed_sweep_metas
-                            .iter()
-                            .filter(|m| m.elevation_number < elev_num)
-                            .max_by_key(|m| m.elevation_number)
-                            .map(|m| m.elevation_number)
-                            .unwrap_or(0);
-                        let anchor_idx = anchor_elev_num as usize;
-                        let remaining_dur = (vol_start + expected_dur) - ae;
-                        let remaining_weight_sum: f64 =
-                            (anchor_idx..expected_count).map(&sweep_dur_for).sum();
-                        if remaining_weight_sum > 0.0 {
-                            let offset_from_anchor: f64 = (anchor_idx..elev_idx)
-                                .map(|i| (sweep_dur_for(i) / remaining_weight_sum) * remaining_dur)
-                                .sum();
-                            ae + offset_from_anchor
-                        } else {
-                            ae
-                        }
-                    }
-                    (None, None) => vol_start + sweep_start_offset_for(elev_idx),
-                };
-
-                let est_sweep_end = sw_start_actual + this_sweep_dur;
-                let sw_end_actual = match chunk_max {
-                    Some(cm) => cm.max(est_sweep_end),
-                    None => est_sweep_end,
-                };
-
-                (sw_start_actual, sw_end_actual)
-            };
-
-            if hover_ts >= sw_start && hover_ts <= sw_end {
-                hovered_elev = Some((elev_num, sw_start, sw_end));
+        for sp in &model.sweeps {
+            if hover_ts >= sp.start && hover_ts <= sp.end {
+                hovered_sweep = Some(sp);
                 break;
             }
-
-            // Track nearest sweep so we can snap to it if hover_ts falls in a
-            // gap (e.g. due to timeline auto-scroll shifting hover_ts between
-            // frames). Without this, the tooltip flickers between per-sweep
-            // and volume-level content as the cursor drifts across boundaries.
-            let dist = if hover_ts < sw_start {
-                sw_start - hover_ts
+            let dist = if hover_ts < sp.start {
+                sp.start - hover_ts
             } else {
-                hover_ts - sw_end
+                hover_ts - sp.end
             };
-            if nearest_elev.is_none() || dist < nearest_dist {
-                nearest_elev = Some((elev_num, sw_start, sw_end));
+            if nearest_sweep.is_none() || dist < nearest_dist {
+                nearest_sweep = Some(sp);
                 nearest_dist = dist;
             }
         }
 
-        // Snap to nearest sweep if hover_ts missed due to frame-to-frame drift
-        if hovered_elev.is_none()
+        // Snap to nearest sweep if hover_ts missed due to frame-to-frame drift.
+        if hovered_sweep.is_none()
             && nearest_dist < (expected_dur / expected_count.max(1) as f64) * 0.5
         {
-            hovered_elev = nearest_elev;
+            hovered_sweep = nearest_sweep;
         }
 
-        if let Some((elev_num, sw_start, sw_end)) = hovered_elev {
-            let is_complete = live_state.elevations_received.contains(&elev_num);
-            let is_downloading =
-                !is_complete && live_state.current_in_progress_elevation == Some(elev_num);
-            let elev_angle = vcp_def
-                .and_then(|d| d.elevations.get(elev_num.saturating_sub(1) as usize))
-                .map(|e| e.angle)
-                .unwrap_or(0.5 * elev_num as f32);
+        if let Some(sp) = hovered_sweep {
+            let elev_num = sp.elevation_number;
 
-            // Header
-            let state_label = if is_complete {
+            let state_label = if sp.is_complete() {
                 "Complete"
-            } else if is_downloading {
+            } else if sp.is_in_progress() {
                 "Collecting"
             } else {
                 "Pending"
@@ -356,22 +267,17 @@ fn render_realtime_volume_tooltip(
             ui.label(
                 RichText::new(format!(
                     "{:.1}\u{00B0} (cut #{} of {})",
-                    elev_angle, elev_num, expected_count
+                    sp.elevation_angle, elev_num, expected_count
                 ))
                 .size(10.0)
                 .weak(),
             );
             ui.separator();
 
-            if is_complete {
-                // Show actual timing for completed sweeps
-                if let Some(meta) = live_state
-                    .completed_sweep_metas
-                    .iter()
-                    .find(|m| m.elevation_number == elev_num)
-                {
-                    let duration = meta.end - meta.start;
-                    let start_str = format_timestamp_full(meta.start, use_local);
+            if sp.is_complete() {
+                if sp.is_observed() {
+                    let duration = sp.duration();
+                    let start_str = format_timestamp_full(sp.start, use_local);
                     ui.label(format!("Time: {} ({:.0}s)", start_str, duration));
                 }
                 ui.label(
@@ -379,26 +285,21 @@ fn render_realtime_volume_tooltip(
                         .size(10.0)
                         .color(Color32::from_rgb(100, 200, 100)),
                 );
-            } else if is_downloading {
-                // Show chunk-level progress
-                let chunks_for_elev: Vec<_> = live_state
-                    .chunk_elev_spans
-                    .iter()
-                    .filter(|&&(e, _, _, _)| e == elev_num)
-                    .collect();
-                let completed_chunks = chunks_for_elev.len();
+            } else if sp.is_in_progress() {
+                let (total_radials, completed_chunks) = match &sp.status {
+                    crate::state::SweepStatus::InProgress {
+                        radials_received,
+                        chunks_received,
+                        ..
+                    } => (*radials_received, *chunks_received as usize),
+                    _ => (0, 0),
+                };
                 let in_progress_radials = live_state.current_in_progress_radials.unwrap_or(0);
-
-                let total_radials: u32 =
-                    chunks_for_elev.iter().map(|&&(_, _, _, r)| r).sum::<u32>()
-                        + in_progress_radials;
 
                 ui.label(format!("Radials: {}/360 collected", total_radials));
 
-                // Total chunks received for the whole volume gives context
                 let total_volume_chunks = live_state.chunks_received;
 
-                // Show per-chunk breakdown
                 if completed_chunks > 0 || in_progress_radials > 0 {
                     ui.separator();
                     let has_active = in_progress_radials > 0
@@ -416,11 +317,11 @@ fn render_realtime_volume_tooltip(
                         .size(10.0)
                         .weak(),
                     );
-                    for (i, &&(_, _, _, cr)) in chunks_for_elev.iter().enumerate() {
+                    for (i, chunk) in sp.chunks.iter().enumerate() {
                         let chunk_num = i + 1;
                         let label = format!(
                             "  Chunk {}/{}: {} radials, collected",
-                            chunk_num, display_total, cr
+                            chunk_num, display_total, chunk.radial_count
                         );
                         ui.label(RichText::new(label).size(10.0));
                     }
@@ -438,14 +339,12 @@ fn render_realtime_volume_tooltip(
                     }
                 }
 
-                // Countdown if waiting
                 let countdown = live_state.countdown_remaining_secs(now);
                 if let Some(remaining) = countdown {
                     ui.label(format!("Next chunk in ~{}s", remaining.ceil() as i32));
                 }
             } else {
-                // Future/pending sweep
-                let duration = sw_end - sw_start;
+                let duration = sp.duration();
                 ui.label(format!("Est. duration: ~{:.0}s", duration));
                 ui.label(
                     RichText::new("Not yet started \u{2014} bounds are estimated.")
@@ -455,7 +354,6 @@ fn render_realtime_volume_tooltip(
                 );
             }
 
-            // VCP waveform info if available
             if let Some(vcp_def) = vcp_def {
                 if let Some(vcp_elev) = vcp_def.elevations.get(elev_num.saturating_sub(1) as usize)
                 {
@@ -507,7 +405,6 @@ fn render_realtime_volume_tooltip(
 
     let start_str = format_timestamp_full(vol_start, use_local);
     ui.label(format!("Started: {}", start_str));
-    // Round to whole seconds so text doesn't change every frame (avoids tooltip resize flicker)
     let elapsed = (now - vol_start).floor();
     let remaining = (expected_end - now).ceil();
     if remaining > 0.0 {
@@ -522,8 +419,8 @@ fn render_realtime_volume_tooltip(
         ));
     }
 
-    let received = live_state.elevations_received.len();
-    let expected = live_state.expected_elevation_count.unwrap_or(0);
+    let received = model.completed_count();
+    let expected = model.sweeps.len();
     if expected > 0 {
         ui.label(format!("Elevations: {}/{} received", received, expected));
     } else if received > 0 {
