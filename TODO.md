@@ -66,12 +66,21 @@ Improvements to realtime rendering
 
 4/4
 
-When switching sites, we should backfill the same amount of data as when starting streaming, which is
-    to say only the VCP chunk 0 and the latest sweep.
-
 We need retry limits for both acquisition (in case the binary search logic fails) and for waiting for an expected chunk.
     It should stop real-time streaming and provide an error message.
     There is a timeout for around 35 seconds, but that is way too long. We should do 15 seconds.
     The playback stays "locked" at "now" even when streaming stops.
 
 At idle, the app eats a lot of CPU. How can we optimize it to reduce how expensive/heavy it is?
+
+Desaturation could be made more obvious.
+Boundaries between the sweeps could be more obvious.
+We could make streaming more intelligent by skipping downloading chunks that don't match the user's filters.
+We could cache the latest volume's number locally to persist across reloads and resume streaming quickly.
+The VCP panel's icon is broken and the column spacing is way off (the icon column is way too big,
+    and could probably be removed and let coloring handle indication instead)
+
+Incorporation of warnings/watches/discussions
+Additional of noises to announce changes to warnings/etc
+
+Cell detection and prediction improvements
