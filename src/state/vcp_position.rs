@@ -513,13 +513,13 @@ impl VcpPositionModel {
 
     /// Estimated elevation index (0-based) at the given timestamp.
     pub fn elevation_index_at(&self, ts: f64) -> Option<usize> {
-        // Find the last sweep whose start <= ts.
+        // Find the last sweep whose start <= ts. Don't break early —
+        // sweep start times may come from a mix of observed and projected
+        // sources and aren't guaranteed to be strictly monotonic.
         let mut result = None;
         for (i, s) in self.sweeps.iter().enumerate() {
             if ts >= s.start {
                 result = Some(i);
-            } else {
-                break;
             }
         }
         result
