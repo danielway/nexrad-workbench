@@ -490,23 +490,24 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     &newly_completed,
                     &accum.scan_key,
                 );
-                // Store sweep metas for the response, then discard radials for
-                // the just-completed elevation(s). Radials for the next elevation
-                // (appended by a transition chunk) are retained.
+                // Store sweep metas for the response, then clean up radials.
                 accum.completed_sweep_metas.extend(result.1.iter().cloned());
-                accum
-                    .current_radials
-                    .retain(|r| !newly_completed.contains(&r.elevation_number()));
-                accum
-                    .current_radial_metas
-                    .retain(|&(_, elev, _, _)| !newly_completed.contains(&elev));
-                // If we flushed the current elevation (is_last_in_sweep), reset
-                // so the next chunk starts a fresh accumulator state.
-                if accum
-                    .current_elevation
-                    .is_some_and(|e| newly_completed.contains(&e))
-                {
-                    accum.current_elevation = None;
+
+                if is_last_in_sweep {
+                    // Flushed the current elevation on its last chunk.
+                    // Keep radials in the accumulator so render_live can still
+                    // read the complete sweep data for the final GPU upload.
+                    // They'll be cleared when the next elevation's first chunk
+                    // arrives (via the transition logic).
+                } else {
+                    // Transition flush: discard the completed elevation's radials,
+                    // retain the new elevation's radials from the transition chunk.
+                    accum
+                        .current_radials
+                        .retain(|r| !newly_completed.contains(&r.elevation_number()));
+                    accum
+                        .current_radial_metas
+                        .retain(|&(_, elev, _, _)| !newly_completed.contains(&elev));
                 }
                 result
             });

@@ -66,14 +66,13 @@ Improvements to realtime rendering
 
 4/4
 
-Sweep should complete when the last chunk is received. It seems like we should have an expected radial count we can assert to double-check we got it all.
-    This should cause the sweep to be stored in cache and the timeline to show a completed sweep.
-    This also means that the next sweep should become "active" in the timeline with its first chunk showing the est. time.
+When streaming a full sweep, and then beginning to stream the next sweep, the first chunk or two of the second sweep
+    correctly renders "over" the first one (replacing its data for that subset of azimuths) but eventually a chunk
+    causes the previous sweep to  stop rendering altogether, clearing those chunks out. I would like to see the
+    previous sweep remain visible for any azimuths not yet received for the current sweep.
+
+The desaturation is wrong when streaming in real-time: we should desaturate 1/4 before the "now line" AND
+    backwards to the end of the current sweep's latest chunk
 
 When we start real-time streaming, we should change the routine to only downloading the first chunk (with VCP metadata)
     and the latest sweep's chunks. We should not do the backfill anymore by default.
-
-When streaming a full sweep, and then beginning to stream the next sweep, the first chunk of the second sweep correctly renders
-    "over" the first one (replacing its data for that subset of azimuths) but the second chunk causes the previous sweep to 
-    stop rendering altogether, clearing those chunks out. I would like to see the previous sweep remain visible for any
-    azimuths not yet received for the current sweep.
