@@ -66,10 +66,12 @@ Improvements to realtime rendering
 
 4/4
 
-When we start real-time streaming, we should change the routine to only downloading the first chunk (with VCP metadata)
-    and the latest sweep's chunks. We should not do the backfill anymore by default.
+When switching sites, we should backfill the same amount of data as when starting streaming, which is
+    to say only the VCP chunk 0 and the latest sweep.
 
 We need retry limits for both acquisition (in case the binary search logic fails) and for waiting for an expected chunk.
     It should stop real-time streaming and provide an error message.
+    There is a timeout for around 35 seconds, but that is way too long. We should do 15 seconds.
+    The playback stays "locked" at "now" even when streaming stops.
 
 At idle, the app eats a lot of CPU. How can we optimize it to reduce how expensive/heavy it is?

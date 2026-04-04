@@ -67,6 +67,7 @@ pub struct LiveSweepModel {
     pub chunks: Vec<LiveChunkBoundary>,
 
     /// Expected total chunks for this sweep (from VCP timing).
+    #[allow(dead_code)]
     pub chunks_expected: Option<u32>,
 
     /// Per-chunk time spans for the current elevation (start_secs, end_secs, radial_count).

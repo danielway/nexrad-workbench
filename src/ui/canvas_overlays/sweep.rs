@@ -174,9 +174,7 @@ pub(crate) fn render_radar_sweep(
         }
 
         // Donut chart showing current vs previous sweep regions
-        if state.live_radar_model.active {
-            draw_live_sweep_donut(painter, center, radius, az, start_az, state);
-        } else if state.effective_sweep_animation() {
+        if state.live_radar_model.active || state.effective_sweep_animation() {
             if stale {
                 draw_sweep_donut_stale(painter, center, radius);
             } else {
@@ -339,35 +337,92 @@ fn draw_sweep_donut(
     let label_radius = donut_outer + 14.0;
     let label_font = egui::FontId::monospace(10.0);
     let use_local = state.use_local_time;
+    let is_live = state.live_radar_model.active;
 
-    // Boundary 1: sweep line (sweep_az) — playback time | prev sweep time at this azimuth
-    let playback_ts = state.playback_state.playback_position();
-    let mut playback_time_str = format_time_short(playback_ts, use_local);
-    if let Some(age) = format_age_compact(playback_ts) {
-        playback_time_str.push(' ');
-        playback_time_str.push_str(&age);
-    }
+    // Boundary 1: sweep line (sweep_az) — current time/info | prev sweep time
+    let sweep_line_label = if is_live {
+        // Live: show sweep info (elevation, radials, volume progress)
+        let model = &state.live_radar_model;
+        let sweep_model = model.active_sweep.as_ref();
+        let elev_num = sweep_model
+            .map(|s| format!("{}", s.elevation_number))
+            .unwrap_or_else(|| "?".to_string());
+        let elev_angle = model
+            .volume
+            .as_ref()
+            .and_then(|v| v.vcp_pattern.as_ref())
+            .and_then(|vcp| {
+                sweep_model.and_then(|s| {
+                    vcp.elevations
+                        .get(s.elevation_number.saturating_sub(1) as usize)
+                        .map(|el| format!("{:.1}\u{00B0}", el.angle))
+                })
+            })
+            .unwrap_or_default();
+        let radials = sweep_model.map(|s| s.radials_received).unwrap_or(0);
+        let completed = model
+            .volume
+            .as_ref()
+            .map(|v| v.elevations_complete.len())
+            .unwrap_or(0);
+        let expected = model
+            .volume
+            .as_ref()
+            .and_then(|v| v.elevations_expected)
+            .map(|n| format!("/{}", n))
+            .unwrap_or_default();
+        format!(
+            "Sweep {} {} \u{00B7} {}r \u{00B7} {}{} elev",
+            elev_num, elev_angle, radials, completed, expected
+        )
+    } else {
+        // Cached playback: show playback time
+        let playback_ts = state.playback_state.playback_position();
+        let mut s = format_time_short(playback_ts, use_local);
+        if let Some(age) = format_age_compact(playback_ts) {
+            s.push(' ');
+            s.push_str(&age);
+        }
+        s
+    };
 
-    let prev_at_az_str = state
-        .viz_state
-        .prev_sweep_overlay
-        .map(|(_, prev_start, prev_end)| {
-            let frac = (swept_arc_deg / 360.0).clamp(0.0, 1.0) as f64;
-            let prev_time_at_az = prev_start + frac * (prev_end - prev_start);
-            let mut s = format_time_short(prev_time_at_az, use_local);
-            if let Some(age) = format_age_compact(prev_time_at_az) {
-                s.push(' ');
-                s.push_str(&age);
-            }
-            s
-        });
+    let prev_at_az_str = if !is_live {
+        state
+            .viz_state
+            .prev_sweep_overlay
+            .map(|(_, prev_start, prev_end)| {
+                let frac = (swept_arc_deg / 360.0).clamp(0.0, 1.0) as f64;
+                let prev_time_at_az = prev_start + frac * (prev_end - prev_start);
+                let mut s = format_time_short(prev_time_at_az, use_local);
+                if let Some(age) = format_age_compact(prev_time_at_az) {
+                    s.push(' ');
+                    s.push_str(&age);
+                }
+                s
+            })
+    } else {
+        // Live: show prev sweep elevation label
+        state.live_radar_model.volume.as_ref().and_then(|v| {
+            let prev_elev = v.elevations_complete.last().copied()?;
+            let angle = v.vcp_pattern.as_ref().and_then(|vcp| {
+                vcp.elevations
+                    .get(prev_elev.saturating_sub(1) as usize)
+                    .map(|el| format!("{:.1}\u{00B0}", el.angle))
+            });
+            Some(format!(
+                "Prev {}{}",
+                prev_elev,
+                angle.map(|a| format!(" {}", a)).unwrap_or_default()
+            ))
+        })
+    };
 
     draw_boundary_label(
         painter,
         center,
         label_radius,
         sweep_az,
-        &playback_time_str,
+        &sweep_line_label,
         prev_at_az_str.as_deref(),
         current_text_color,
         prev_text_color,
@@ -375,315 +430,110 @@ fn draw_sweep_donut(
     );
 
     // Boundary 2: sweep start (sweep_start) — current sweep start | prev sweep end
-    // Look up the current sweep's actual start time from the timeline
-    let displayed_elev = state.viz_state.displayed_sweep_elevation_number;
-    let current_sweep_start_secs = state
-        .radar_timeline
-        .find_recent_scan(playback_ts, 15.0 * 60.0)
-        .and_then(|scan| {
-            scan.sweeps
-                .iter()
-                .filter(|s| Some(s.elevation_number) == displayed_elev)
-                .rfind(|s| s.start_time <= playback_ts)
-                .or_else(|| {
+    if swept_arc_deg >= 30.0 {
+        if is_live {
+            // Live: show sweep start time from live model
+            let start_secs = state
+                .live_radar_model
+                .active_sweep
+                .as_ref()
+                .and_then(|s| s.chunk_time_spans.first().map(|&(start, _, _)| start));
+            if let Some(s) = start_secs {
+                let mut label = format_time_short(s, use_local);
+                if let Some(age) = format_age_compact(s) {
+                    label.push(' ');
+                    label.push_str(&age);
+                }
+                draw_boundary_label(
+                    painter,
+                    center,
+                    label_radius,
+                    sweep_start,
+                    &label,
+                    None,
+                    current_text_color,
+                    current_text_color,
+                    &label_font,
+                );
+            }
+        } else {
+            // Cached playback: look up from timeline
+            let playback_ts = state.playback_state.playback_position();
+            let displayed_elev = state.viz_state.displayed_sweep_elevation_number;
+            let current_sweep_start_secs = state
+                .radar_timeline
+                .find_recent_scan(playback_ts, 15.0 * 60.0)
+                .and_then(|scan| {
                     scan.sweeps
                         .iter()
-                        .find(|s| Some(s.elevation_number) == displayed_elev)
-                })
-                .map(|s| s.start_time)
-        });
+                        .filter(|s| Some(s.elevation_number) == displayed_elev)
+                        .rfind(|s| s.start_time <= playback_ts)
+                        .or_else(|| {
+                            scan.sweeps
+                                .iter()
+                                .find(|s| Some(s.elevation_number) == displayed_elev)
+                        })
+                        .map(|s| s.start_time)
+                });
 
-    if swept_arc_deg >= 30.0 {
-        if let Some((_, _, prev_end)) = state.viz_state.prev_sweep_overlay {
-            // Both sweeps: current start (green) | prev end (purple)
-            let start_time_str = current_sweep_start_secs.map(|s| {
-                let mut t = format_time_short(s, use_local);
-                if let Some(age) = format_age_compact(s) {
-                    t.push(' ');
-                    t.push_str(&age);
+            if let Some((_, _, prev_end)) = state.viz_state.prev_sweep_overlay {
+                let start_time_str = current_sweep_start_secs.map(|s| {
+                    let mut t = format_time_short(s, use_local);
+                    if let Some(age) = format_age_compact(s) {
+                        t.push(' ');
+                        t.push_str(&age);
+                    }
+                    t
+                });
+                let mut prev_end_str = format_time_short(prev_end, use_local);
+                if let Some(age) = format_age_compact(prev_end) {
+                    prev_end_str.push(' ');
+                    prev_end_str.push_str(&age);
                 }
-                t
-            });
-            let mut prev_end_str = format_time_short(prev_end, use_local);
-            if let Some(age) = format_age_compact(prev_end) {
-                prev_end_str.push(' ');
-                prev_end_str.push_str(&age);
-            }
 
-            let (left, right, left_c, right_c) = match start_time_str {
-                Some(ref start) => (
-                    start.as_str(),
-                    Some(prev_end_str.as_str()),
-                    current_text_color,
-                    prev_text_color,
-                ),
-                None => (
-                    prev_end_str.as_str(),
+                let (left, right, left_c, right_c) = match start_time_str {
+                    Some(ref start) => (
+                        start.as_str(),
+                        Some(prev_end_str.as_str()),
+                        current_text_color,
+                        prev_text_color,
+                    ),
+                    None => (
+                        prev_end_str.as_str(),
+                        None,
+                        prev_text_color,
+                        prev_text_color,
+                    ),
+                };
+                draw_boundary_label(
+                    painter,
+                    center,
+                    label_radius,
+                    sweep_start,
+                    left,
+                    right,
+                    left_c,
+                    right_c,
+                    &label_font,
+                );
+            } else if let Some(start_secs) = current_sweep_start_secs {
+                let mut start_str = format_time_short(start_secs, use_local);
+                if let Some(age) = format_age_compact(start_secs) {
+                    start_str.push(' ');
+                    start_str.push_str(&age);
+                }
+                draw_boundary_label(
+                    painter,
+                    center,
+                    label_radius,
+                    sweep_start,
+                    &start_str,
                     None,
-                    prev_text_color,
-                    prev_text_color,
-                ),
-            };
-            draw_boundary_label(
-                painter,
-                center,
-                label_radius,
-                sweep_start,
-                left,
-                right,
-                left_c,
-                right_c,
-                &label_font,
-            );
-        } else if let Some(start_secs) = current_sweep_start_secs {
-            // Single sweep only: show start time in green (no separator)
-            let mut start_str = format_time_short(start_secs, use_local);
-            if let Some(age) = format_age_compact(start_secs) {
-                start_str.push(' ');
-                start_str.push_str(&age);
+                    current_text_color,
+                    current_text_color,
+                    &label_font,
+                );
             }
-            draw_boundary_label(
-                painter,
-                center,
-                label_radius,
-                sweep_start,
-                &start_str,
-                None,
-                current_text_color,
-                current_text_color,
-                &label_font,
-            );
-        }
-    }
-}
-
-fn draw_live_sweep_donut(
-    painter: &Painter,
-    center: Pos2,
-    radius: f32,
-    sweep_az: f32,
-    sweep_start: f32,
-    state: &AppState,
-) {
-    let donut_inner = radius + 4.0;
-    let donut_outer = radius + 10.0;
-    let donut_mid = (donut_inner + donut_outer) / 2.0;
-    let donut_width = donut_outer - donut_inner;
-
-    let model = &state.live_radar_model;
-    let sweep_model = model.active_sweep.as_ref();
-    let chunks = sweep_model.map(|s| s.chunks.as_slice()).unwrap_or(&[]);
-
-    // Compute the angular extent of actual received chunk data (from sweep_start).
-    // This is independent of the extrapolated sweep line — chunks stay visible until
-    // the elevation actually completes, even after the sweep line wraps past 360°.
-    let data_arc_deg = if chunks.is_empty() {
-        0.0
-    } else {
-        chunks
-            .iter()
-            .map(|c| (c.last_az - sweep_start).rem_euclid(360.0))
-            .fold(0.0f32, f32::max)
-    };
-
-    // Distinct hues for chunk wedges (up to 8 before cycling)
-    let chunk_colors = [
-        Color32::from_rgba_unmultiplied(70, 200, 110, 160), // green
-        Color32::from_rgba_unmultiplied(80, 180, 220, 160), // cyan
-        Color32::from_rgba_unmultiplied(220, 180, 70, 160), // amber
-        Color32::from_rgba_unmultiplied(180, 100, 220, 160), // purple
-        Color32::from_rgba_unmultiplied(220, 110, 80, 160), // coral
-        Color32::from_rgba_unmultiplied(100, 220, 180, 160), // teal
-        Color32::from_rgba_unmultiplied(220, 140, 180, 160), // pink
-        Color32::from_rgba_unmultiplied(160, 220, 80, 160), // lime
-    ];
-    let prev_color = Color32::from_rgba_unmultiplied(120, 120, 180, 120);
-    let boundary_color = Color32::from_rgba_unmultiplied(200, 200, 220, 180);
-
-    // Draw arcs segment by segment
-    let seg_count = 360;
-    for i in 0..seg_count {
-        let deg = (i as f32 + 0.5) * 360.0 / seg_count as f32;
-        let abs_deg = (sweep_start + deg).rem_euclid(360.0);
-
-        // Color by actual chunk coverage, not sweep line position.
-        // This way chunks persist visually until the elevation completes,
-        // even when the sweep line extrapolation wraps past 360°.
-        let color = {
-            let chunk_match = chunks.iter().position(|c| {
-                let arc = (c.last_az - c.first_az).rem_euclid(360.0);
-                let from_first = (abs_deg - c.first_az).rem_euclid(360.0);
-                from_first <= arc
-            });
-            if let Some(idx) = chunk_match {
-                chunk_colors[idx % chunk_colors.len()]
-            } else {
-                prev_color
-            }
-        };
-
-        let a1 = ((sweep_start + deg - 0.5) - 90.0) * PI / 180.0;
-        let a2 = ((sweep_start + deg + 0.5) - 90.0) * PI / 180.0;
-        let p1 = Pos2::new(
-            center.x + donut_mid * a1.cos(),
-            center.y + donut_mid * a1.sin(),
-        );
-        let p2 = Pos2::new(
-            center.x + donut_mid * a2.cos(),
-            center.y + donut_mid * a2.sin(),
-        );
-        painter.line_segment([p1, p2], Stroke::new(donut_width, color));
-    }
-
-    // Draw thin boundary lines between chunks + time labels at boundaries
-    let use_local = state.use_local_time;
-    let boundary_label_radius = donut_outer + 14.0;
-    let boundary_label_font = egui::FontId::monospace(9.0);
-    let boundary_time_color = Color32::from_rgb(180, 180, 200);
-
-    for (chunk_idx, c) in chunks
-        .iter()
-        .take(chunks.len().saturating_sub(1))
-        .enumerate()
-    {
-        let a = (c.last_az - 90.0) * PI / 180.0;
-        let p_inner = Pos2::new(
-            center.x + donut_inner * a.cos(),
-            center.y + donut_inner * a.sin(),
-        );
-        let p_outer = Pos2::new(
-            center.x + donut_outer * a.cos(),
-            center.y + donut_outer * a.sin(),
-        );
-        painter.line_segment([p_inner, p_outer], Stroke::new(1.5, boundary_color));
-
-        // Time label at boundary: find the end time for this chunk from pre-filtered spans
-        let boundary_time = sweep_model
-            .and_then(|s| s.chunk_time_spans.get(chunk_idx))
-            .map(|&(_, end, _)| end);
-        if let Some(end_secs) = boundary_time {
-            let time_str = format_time_short(end_secs, use_local);
-            draw_boundary_label(
-                painter,
-                center,
-                boundary_label_radius,
-                c.last_az,
-                &time_str,
-                None,
-                boundary_time_color,
-                boundary_time_color,
-                &boundary_label_font,
-            );
-        }
-    }
-
-    // Labels
-    let label_radius = donut_outer + 14.0;
-    let label_font = egui::FontId::monospace(10.0);
-    let current_label_color = Color32::from_rgb(100, 220, 140);
-    let prev_label_color = Color32::from_rgb(160, 160, 220);
-
-    // Helper: look up elevation angle from VCP data by elevation number
-    let volume = model.volume.as_ref();
-    let elev_angle_str = |elev_num: u8| -> String {
-        volume
-            .and_then(|v| v.vcp_pattern.as_ref())
-            .and_then(|vcp| {
-                vcp.elevations
-                    .get(elev_num.saturating_sub(1) as usize)
-                    .map(|el| format!("{:.1}\u{00B0}", el.angle))
-            })
-            .unwrap_or_default()
-    };
-
-    // Per-chunk labels (only when chunks have enough angular separation)
-    let expected_chunks = sweep_model.and_then(|s| s.chunks_expected);
-    if chunks.len() > 1 {
-        let elev_num = sweep_model
-            .map(|s| format!("{}", s.elevation_number))
-            .unwrap_or_else(|| "?".to_string());
-        let expected_str = expected_chunks
-            .map(|n| format!("/{}", n))
-            .unwrap_or_default();
-        for (i, c) in chunks.iter().enumerate() {
-            let arc = (c.last_az - c.first_az).rem_euclid(360.0);
-            if arc < 15.0 {
-                continue; // too narrow for a label
-            }
-            let mid_az = c.first_az + arc / 2.0;
-            let label = format!(
-                "S{} {}{} \u{00B7} {:.0}\u{00B0}\u{2013}{:.0}\u{00B0}",
-                elev_num,
-                i + 1,
-                expected_str,
-                c.first_az,
-                c.last_az
-            );
-            draw_boundary_label(
-                painter,
-                center,
-                label_radius,
-                mid_az,
-                &label,
-                None,
-                current_label_color,
-                current_label_color,
-                &label_font,
-            );
-        }
-    }
-
-    // Overall sweep info label at the midpoint of all current data
-    {
-        let elev_num = sweep_model
-            .map(|s| format!("{}", s.elevation_number))
-            .unwrap_or_else(|| "?".to_string());
-        let elev_angle = sweep_model
-            .map(|s| elev_angle_str(s.elevation_number))
-            .unwrap_or_default();
-        let radials = sweep_model.map(|s| s.radials_received).unwrap_or(0);
-        let completed = volume.map(|v| v.elevations_complete.len()).unwrap_or(0);
-        let expected = volume
-            .and_then(|v| v.elevations_expected)
-            .map(|n| format!("/{}", n))
-            .unwrap_or_default();
-
-        // Place at sweep line position (the leading edge)
-        let label = format!(
-            "Sweep {} {} \u{00B7} {}r \u{00B7} {}{} elev",
-            elev_num, elev_angle, radials, completed, expected
-        );
-        draw_boundary_label(
-            painter,
-            center,
-            label_radius,
-            sweep_az,
-            &label,
-            None,
-            current_label_color,
-            current_label_color,
-            &label_font,
-        );
-    }
-
-    // Previous sweep label at the midpoint of the purple (non-chunk) arc
-    let prev_arc_deg = 360.0 - data_arc_deg;
-    if prev_arc_deg > 30.0 {
-        let prev_elev = volume.and_then(|v| v.elevations_complete.last().copied());
-        if let Some(pe) = prev_elev {
-            let label = format!("Prev sweep {} {}", pe, elev_angle_str(pe));
-            let angle = sweep_start + data_arc_deg + prev_arc_deg / 2.0;
-            draw_boundary_label(
-                painter,
-                center,
-                label_radius,
-                angle,
-                &label,
-                None,
-                prev_label_color,
-                prev_label_color,
-                &label_font,
-            );
         }
     }
 }
