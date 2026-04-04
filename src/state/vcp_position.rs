@@ -512,17 +512,31 @@ impl VcpPositionModel {
     }
 
     /// Estimated elevation index (0-based) at the given timestamp.
+    ///
+    /// First tries to find a sweep that contains `ts` (between start and end).
+    /// If none contains it (e.g., ts is in the gap between two sweeps, or
+    /// projected start times lag behind actual collection due to S3 upload
+    /// delay), returns the first sweep whose end is still in the future,
+    /// or falls back to the last sweep whose end is in the past.
     pub fn elevation_index_at(&self, ts: f64) -> Option<usize> {
-        // Find the last sweep whose start <= ts. Don't break early —
-        // sweep start times may come from a mix of observed and projected
-        // sources and aren't guaranteed to be strictly monotonic.
-        let mut result = None;
+        // Exact containment
         for (i, s) in self.sweeps.iter().enumerate() {
-            if ts >= s.start {
-                result = Some(i);
+            if ts >= s.start && ts <= s.end {
+                return Some(i);
             }
         }
-        result
+        // First sweep that hasn't ended yet (antenna is collecting it)
+        for (i, s) in self.sweeps.iter().enumerate() {
+            if ts < s.end {
+                return Some(i);
+            }
+        }
+        // All sweeps have ended — return the last one
+        if !self.sweeps.is_empty() {
+            Some(self.sweeps.len() - 1)
+        } else {
+            None
+        }
     }
 
     /// Get the sweep time bounds for a given elevation number.
