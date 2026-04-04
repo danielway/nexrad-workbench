@@ -61,6 +61,7 @@ pub struct LiveSweepModel {
     pub data_azimuth_range: Option<(f32, f32)>,
 
     /// Starting azimuth of the sweep (first radial).
+    #[allow(dead_code)]
     pub sweep_start_azimuth: Option<f32>,
 
     /// Per-chunk azimuth boundaries within this sweep.

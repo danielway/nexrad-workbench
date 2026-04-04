@@ -113,9 +113,13 @@ pub(crate) fn render_radar_sweep(
         Stroke::new(1.0, canvas_colors::center_marker_stroke(dark)),
     );
 
-    // Draw the sweep line and donut chart if sweep animation is active
+    // Draw the sweep line and donut chart if sweep animation is active.
+    // In live mode, sweep_info = data boundaries (matching GPU compositing),
+    // and the "now" line is drawn separately at the estimated antenna position.
     if let Some((az, start_az)) = sweep_info {
-        let (start_line_color, sweep_line_color, sweep_line_width) = if stale {
+        let is_live = state.live_radar_model.active;
+
+        let (start_line_color, data_edge_color, data_edge_width) = if stale {
             (
                 radar::sweep_start_line_stale(),
                 radar::sweep_line_stale(),
@@ -125,7 +129,7 @@ pub(crate) fn render_radar_sweep(
             (radar::sweep_start_line(), radar::SWEEP_LINE, 3.0)
         };
 
-        // Thin line at sweep start boundary
+        // Line at data start boundary
         let start_angle_rad = (start_az - 90.0) * PI / 180.0;
         let start_end = Pos2::new(
             center.x + radius * start_angle_rad.cos(),
@@ -133,30 +137,77 @@ pub(crate) fn render_radar_sweep(
         );
         painter.line_segment([center, start_end], Stroke::new(1.5, start_line_color));
 
-        // Main sweep line
-        let angle_rad = (az - 90.0) * PI / 180.0;
-        let end_x = center.x + radius * angle_rad.cos();
-        let end_y = center.y + radius * angle_rad.sin();
+        // Line at data trailing edge
+        let data_angle_rad = (az - 90.0) * PI / 180.0;
         painter.line_segment(
-            [center, Pos2::new(end_x, end_y)],
-            Stroke::new(sweep_line_width, sweep_line_color),
+            [
+                center,
+                Pos2::new(
+                    center.x + radius * data_angle_rad.cos(),
+                    center.y + radius * data_angle_rad.sin(),
+                ),
+            ],
+            Stroke::new(if is_live { 2.0 } else { data_edge_width }, data_edge_color),
         );
 
-        // "NOW" label at the tip of the sweep line during live streaming
-        if state.live_radar_model.active {
-            let label_offset = radius + 8.0;
-            let label_pos = Pos2::new(
-                center.x + label_offset * angle_rad.cos(),
-                center.y + label_offset * angle_rad.sin(),
-            );
-            let align = sweep_label_align(az);
-            painter.text(
-                label_pos,
-                align,
-                "NOW",
-                egui::FontId::monospace(11.0),
-                Color32::from_rgb(255, 80, 80),
-            );
+        // In live mode, draw a separate "NOW" line at the estimated antenna position
+        if is_live {
+            if let Some(now_az) = state.live_radar_model.estimated_azimuth {
+                let now_rad = (now_az - 90.0) * PI / 180.0;
+                let now_color = Color32::from_rgb(255, 80, 80);
+                painter.line_segment(
+                    [
+                        center,
+                        Pos2::new(
+                            center.x + radius * now_rad.cos(),
+                            center.y + radius * now_rad.sin(),
+                        ),
+                    ],
+                    Stroke::new(2.0, now_color),
+                );
+
+                // "NOW" label with currently-collecting sweep info
+                let label_offset = radius + 8.0;
+                let label_pos = Pos2::new(
+                    center.x + label_offset * now_rad.cos(),
+                    center.y + label_offset * now_rad.sin(),
+                );
+
+                // Figure out what elevation the antenna is currently on
+                let collecting_label = state
+                    .live_radar_model
+                    .position
+                    .as_ref()
+                    .and_then(|p| {
+                        let now_secs = js_sys::Date::now() / 1000.0;
+                        p.elevation_index_at(now_secs).and_then(|idx| {
+                            p.sweeps.get(idx).map(|s| {
+                                let angle = state
+                                    .live_radar_model
+                                    .volume
+                                    .as_ref()
+                                    .and_then(|v| v.vcp_pattern.as_ref())
+                                    .and_then(|vcp| {
+                                        vcp.elevations
+                                            .get(s.elevation_number.saturating_sub(1) as usize)
+                                            .map(|el| format!(" {:.1}\u{00B0}", el.angle))
+                                    })
+                                    .unwrap_or_default();
+                                format!("NOW \u{00B7} S{}{}", s.elevation_number, angle)
+                            })
+                        })
+                    })
+                    .unwrap_or_else(|| "NOW".to_string());
+
+                let align = sweep_label_align(now_az);
+                painter.text(
+                    label_pos,
+                    align,
+                    collecting_label,
+                    egui::FontId::monospace(10.0),
+                    now_color,
+                );
+            }
         }
 
         // Draw chunk boundary lines across the radar render during live streaming
@@ -174,7 +225,7 @@ pub(crate) fn render_radar_sweep(
         }
 
         // Donut chart showing current vs previous sweep regions
-        if state.live_radar_model.active || state.effective_sweep_animation() {
+        if is_live || state.effective_sweep_animation() {
             if stale {
                 draw_sweep_donut_stale(painter, center, radius);
             } else {
