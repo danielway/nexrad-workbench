@@ -1983,24 +1983,59 @@ impl WorkbenchApp {
             );
         }
 
-        // Store actual azimuth range and sweep start for sweep line
+        // Store the chronological azimuth range for sweep compositing.
+        // Must use chronological first/last (from radial timestamps), NOT
+        // sorted min/max. Once a sweep wraps past 0°, the sorted range
+        // spans ~360° and the shader thinks the entire circle has current
+        // data, hiding the previous sweep.
         if !result.azimuths.is_empty() {
-            let first_az = result.azimuths[0];
-            let last_az = *result.azimuths.last().unwrap();
+            // Chronological first = sweep start azimuth (set once per sweep).
+            // Chronological last = most recent radial's azimuth from the live state.
+            if self.state.live_mode_state.sweep_start_azimuth.is_none() {
+                // First live decode for this sweep: use the earliest radial
+                // by collection time as the sweep start.
+                let first_az = if !result.radial_times.is_empty() {
+                    let min_time_idx = result
+                        .radial_times
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    result.azimuths[min_time_idx]
+                } else {
+                    result.azimuths[0]
+                };
+                self.state.live_mode_state.sweep_start_azimuth = Some(first_az);
+            }
+
+            // The trailing edge of received data: latest radial by collection time.
+            let last_az = if !result.radial_times.is_empty() {
+                let max_time_idx = result
+                    .radial_times
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap_or(result.azimuths.len() - 1);
+                result.azimuths[max_time_idx]
+            } else {
+                *result.azimuths.last().unwrap()
+            };
+
+            let first_az = self
+                .state
+                .live_mode_state
+                .sweep_start_azimuth
+                .unwrap_or(0.0);
             log::debug!(
-                "Live azimuth range: first={:.1} last={:.1} count={}/{} sweep=({:.1},{:.1})",
+                "Live azimuth range: chrono_first={:.1} chrono_last={:.1} count={}/{}",
                 first_az,
                 last_az,
                 result.azimuths.len(),
                 full_az_count,
-                last_az,
-                first_az,
             );
             self.state.live_mode_state.live_data_azimuth_range = Some((first_az, last_az));
-            // Record sweep start azimuth for sweep line animation
-            if self.state.live_mode_state.sweep_start_azimuth.is_none() {
-                self.state.live_mode_state.sweep_start_azimuth = Some(first_az);
-            }
         }
     }
 
