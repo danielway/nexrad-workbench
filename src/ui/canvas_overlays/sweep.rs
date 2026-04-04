@@ -166,30 +166,26 @@ pub(crate) fn render_radar_sweep(
                     Stroke::new(2.0, now_color),
                 );
 
-                // "NOW" label — same metadata style as slice labels
+                // "NOW" label — same metadata style as slice labels.
+                // Use the worker's current in-progress elevation (updates on
+                // each chunk) rather than time-based lookup from the position
+                // model, which doesn't track volume boundaries correctly.
                 let now_label_radius = radius + 4.0 + 6.0 + 14.0; // donut_outer + offset
-                let collecting_label = state
-                    .live_radar_model
-                    .position
-                    .as_ref()
-                    .and_then(|p| {
-                        let now_secs = js_sys::Date::now() / 1000.0;
-                        p.elevation_index_at(now_secs).and_then(|idx| {
-                            p.sweeps.get(idx).map(|s| {
-                                let angle = state
-                                    .live_radar_model
-                                    .volume
-                                    .as_ref()
-                                    .and_then(|v| v.vcp_pattern.as_ref())
-                                    .and_then(|vcp| {
-                                        vcp.elevations
-                                            .get(s.elevation_number.saturating_sub(1) as usize)
-                                            .map(|el| format!("{:.1}\u{00B0}", el.angle))
-                                    })
-                                    .unwrap_or_default();
-                                format!("NOW \u{00B7} S{} {}", s.elevation_number, angle)
+                let collecting_elev = state.live_mode_state.current_in_progress_elevation;
+                let collecting_label = collecting_elev
+                    .map(|elev_num| {
+                        let angle = state
+                            .live_radar_model
+                            .volume
+                            .as_ref()
+                            .and_then(|v| v.vcp_pattern.as_ref())
+                            .and_then(|vcp| {
+                                vcp.elevations
+                                    .get(elev_num.saturating_sub(1) as usize)
+                                    .map(|el| format!("{:.1}\u{00B0}", el.angle))
                             })
-                        })
+                            .unwrap_or_default();
+                        format!("NOW \u{00B7} Elev {} {}", elev_num, angle)
                     })
                     .unwrap_or_else(|| "NOW".to_string());
 
@@ -426,21 +422,7 @@ fn draw_sweep_donut(
         // Current sweep metadata
         cur_meta = sweep.map(|s| {
             let angle = elev_angle_str(s.elevation_number, vcp);
-            let completed = model
-                .volume
-                .as_ref()
-                .map(|v| v.elevations_complete.len())
-                .unwrap_or(0);
-            let expected = model
-                .volume
-                .as_ref()
-                .and_then(|v| v.elevations_expected)
-                .map(|n| format!("/{}", n))
-                .unwrap_or_default();
-            format!(
-                "S{} {} \u{00B7} {}r \u{00B7} {}{} elev",
-                s.elevation_number, angle, s.radials_received, completed, expected
-            )
+            format!("Elev {} {}", s.elevation_number, angle)
         });
 
         // Previous sweep: last completed elevation
@@ -451,7 +433,7 @@ fn draw_sweep_donut(
         prev_edge_time = None; // no precise time available for live prev sweep edge
         prev_meta = prev_elev.map(|pe| {
             let angle = elev_angle_str(pe, vcp);
-            format!("S{} {}", pe, angle)
+            format!("Elev {} {}", pe, angle)
         });
     } else {
         // Cached playback
@@ -478,7 +460,7 @@ fn draw_sweep_donut(
         cur_edge_time = Some(fmt_time(playback_ts));
         cur_start_time = current_sweep_info.map(|(_, _, start, _)| fmt_time(start));
         cur_meta =
-            current_sweep_info.map(|(en, angle, _, _)| format!("S{} {:.1}\u{00B0}", en, angle));
+            current_sweep_info.map(|(en, angle, _, _)| format!("Elev {} {:.1}\u{00B0}", en, angle));
 
         // Previous sweep times
         let prev_overlay = state.viz_state.prev_sweep_overlay;
@@ -487,7 +469,7 @@ fn draw_sweep_donut(
             let angle = prev_overlay
                 .map(|(elev_deg, _, _)| format!("{:.1}\u{00B0}", elev_deg))
                 .unwrap_or_default();
-            format!("S{} {}", pe, angle)
+            format!("Elev {} {}", pe, angle)
         });
 
         // Also compute prev time at data edge for the data-edge boundary label
@@ -504,26 +486,10 @@ fn draw_sweep_donut(
         None
     };
 
-    // ── Boundary label at data edge (sweep_az) ───────────────────────
-    {
-        let left = cur_edge_time.as_deref().unwrap_or("");
-        let right = prev_at_edge_time.as_deref();
-        if !left.is_empty() || right.is_some() {
-            draw_boundary_label(
-                painter,
-                center,
-                label_radius,
-                sweep_az,
-                left,
-                right,
-                current_text_color,
-                prev_text_color,
-                &label_font,
-            );
-        }
-    }
+    // Labels are drawn bottom-to-top: older/less-important first so that
+    // more-recent labels paint over them when they overlap.
 
-    // ── Boundary label at sweep start (sweep_start) ──────────────────
+    // ── Boundary label at sweep start (older boundary) ───────────────
     if swept_arc_deg >= 30.0 {
         let left = cur_start_time.as_deref();
         let right = prev_edge_time.as_deref();
@@ -571,6 +537,24 @@ fn draw_sweep_donut(
         }
     }
 
+    // ── Metadata label centered over the previous (purple) slice ─────
+    if prev_arc_deg >= 30.0 {
+        if let Some(ref meta) = prev_meta {
+            let mid_az = sweep_az + prev_arc_deg / 2.0;
+            draw_boundary_label(
+                painter,
+                center,
+                label_radius,
+                mid_az,
+                meta,
+                None,
+                prev_text_color,
+                prev_text_color,
+                &label_font,
+            );
+        }
+    }
+
     // ── Metadata label centered over the current (green) slice ───────
     if swept_arc_deg >= 30.0 {
         if let Some(ref meta) = cur_meta {
@@ -589,18 +573,19 @@ fn draw_sweep_donut(
         }
     }
 
-    // ── Metadata label centered over the previous (purple) slice ─────
-    if prev_arc_deg >= 30.0 {
-        if let Some(ref meta) = prev_meta {
-            let mid_az = sweep_az + prev_arc_deg / 2.0;
+    // ── Boundary label at data edge (most recent, drawn last) ────────
+    {
+        let left = cur_edge_time.as_deref().unwrap_or("");
+        let right = prev_at_edge_time.as_deref();
+        if !left.is_empty() || right.is_some() {
             draw_boundary_label(
                 painter,
                 center,
                 label_radius,
-                mid_az,
-                meta,
-                None,
-                prev_text_color,
+                sweep_az,
+                left,
+                right,
+                current_text_color,
                 prev_text_color,
                 &label_font,
             );

@@ -66,12 +66,10 @@ Improvements to realtime rendering
 
 4/4
 
-We need retry limits for both acquisition (in case the binary search logic fails) and for waiting for an expected chunk.
-    It should stop real-time streaming and provide an error message.
-    There is a timeout for around 35 seconds, but that is way too long. We should do 15 seconds.
-    The playback stays "locked" at "now" even when streaming stops.
-
-At idle, the app eats a lot of CPU. How can we optimize it to reduce how expensive/heavy it is?
+What is our model for tracking what data is currently being rendered? We should audit it.
+    Ensure the top-left text is guaranteed to be accurately representing what is rendering,
+    including time ranges, ages, parameters like elevation (and incorporate other params too?)
+    as well as indicating if it's a full sweep vs. streamed chunk data.
 
 Desaturation could be made more obvious.
 Boundaries between the sweeps could be more obvious.
@@ -79,6 +77,13 @@ We could make streaming more intelligent by skipping downloading chunks that don
 We could cache the latest volume's number locally to persist across reloads and resume streaming quickly.
 The VCP panel's icon is broken and the column spacing is way off (the icon column is way too big,
     and could probably be removed and let coloring handle indication instead)
+
+We need retry limits for both acquisition (in case the binary search logic fails) and for waiting for an expected chunk.
+    It should stop real-time streaming and provide an error message.
+    There is a timeout for around 35 seconds, but that is way too long. We should do 15 seconds.
+    The playback stays "locked" at "now" even when streaming stops.
+
+At idle, the app eats a lot of CPU. How can we optimize it to reduce how expensive/heavy it is?
 
 Incorporation of warnings/watches/discussions
 Additional of noises to announce changes to warnings/etc

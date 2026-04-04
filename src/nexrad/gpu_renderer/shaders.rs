@@ -257,7 +257,7 @@ void main() {{
         // 0 = at now line, increases going forward into oldest data.
         float ahead_of_now = mod(azimuth_deg - u_sweep_chunk_boundary + 360.0, 360.0);
 
-        if (behind_now < data_to_now && data_to_now < 180.0) {{
+        if (behind_now < data_to_now) {{
             // In the gap between received data edge and now line
             desat_factor = 0.7;
         }} else if (ahead_of_now > 0.0 && ahead_of_now < 90.0) {{

@@ -45,6 +45,7 @@ pub struct LiveVolumeModel {
     pub elevations_complete: Vec<u8>,
 
     /// Expected total elevation count from the VCP.
+    #[allow(dead_code)]
     pub elevations_expected: Option<u8>,
 }
 
@@ -55,6 +56,7 @@ pub struct LiveSweepModel {
     pub elevation_number: u8,
 
     /// Radials received so far for this elevation.
+    #[allow(dead_code)]
     pub radials_received: u32,
 
     /// Azimuth range of actual received data (first_az, last_az).
