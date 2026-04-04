@@ -236,6 +236,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let is_end = p.is_end;
         let file_name = p.file_name;
         let skip_overlap_delete = p.skip_overlap_delete;
+        let is_last_in_sweep = p.is_last_in_sweep;
 
         let data_len = data.len();
 
@@ -433,6 +434,24 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             }
             accum.current_radials.extend(chunk_radials);
 
+            // Flush-on-last-chunk: when the projection says this is the last
+            // chunk in the sweep, complete the elevation immediately rather
+            // than waiting for the next elevation's first chunk.
+            if is_last_in_sweep {
+                if let Some(elev) = accum.current_elevation {
+                    if !accum.completed_elevations.contains(&elev) {
+                        log::info!(
+                            "Chunk#{}: last in sweep for elev {} — flushing ({} radials)",
+                            chunk_index,
+                            elev,
+                            accum.current_radials.len(),
+                        );
+                        newly_completed.push(elev);
+                        accum.completed_elevations.insert(elev);
+                    }
+                }
+            }
+
             Ok::<(), wasm_bindgen::JsValue>(())
         })?;
 
@@ -471,17 +490,24 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     &newly_completed,
                     &accum.scan_key,
                 );
-                // Store sweep metas for the response, then retain only radials
-                // belonging to the new (current) elevation. The transition chunk
-                // appended its radials before the flush, so we must keep them.
+                // Store sweep metas for the response, then discard radials for
+                // the just-completed elevation(s). Radials for the next elevation
+                // (appended by a transition chunk) are retained.
                 accum.completed_sweep_metas.extend(result.1.iter().cloned());
-                let keep_elev = accum.current_elevation;
                 accum
                     .current_radials
-                    .retain(|r| keep_elev.is_some_and(|e| r.elevation_number() == e));
+                    .retain(|r| !newly_completed.contains(&r.elevation_number()));
                 accum
                     .current_radial_metas
-                    .retain(|&(_, elev, _, _)| keep_elev.is_some_and(|e| elev == e));
+                    .retain(|&(_, elev, _, _)| !newly_completed.contains(&elev));
+                // If we flushed the current elevation (is_last_in_sweep), reset
+                // so the next chunk starts a fresh accumulator state.
+                if accum
+                    .current_elevation
+                    .is_some_and(|e| newly_completed.contains(&e))
+                {
+                    accum.current_elevation = None;
+                }
                 result
             });
 

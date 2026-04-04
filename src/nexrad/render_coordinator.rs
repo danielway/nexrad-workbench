@@ -207,6 +207,7 @@ impl RenderCoordinator {
         is_end: bool,
         file_name: String,
         skip_overlap_delete: bool,
+        is_last_in_sweep: bool,
     ) {
         if let Some(ref mut worker) = self.worker {
             worker.ingest_chunk(
@@ -218,6 +219,7 @@ impl RenderCoordinator {
                 is_end,
                 file_name,
                 skip_overlap_delete,
+                is_last_in_sweep,
             );
         }
     }

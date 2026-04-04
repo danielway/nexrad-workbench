@@ -207,6 +207,7 @@ pub(super) struct IngestChunkRequestMsg<'a> {
     pub is_end: bool,
     pub file_name: &'a str,
     pub skip_overlap_delete: bool,
+    pub is_last_in_sweep: bool,
 }
 
 /// Request message sent to the worker for render operations.

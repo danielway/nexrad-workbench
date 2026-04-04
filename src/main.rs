@@ -1006,11 +1006,25 @@ impl WorkbenchApp {
                 if is_start {
                     self.state.session_stats.pipeline.processing = true;
                 }
+
+                // Look up whether this is the last chunk in its sweep from
+                // the projection metadata. sequence = chunk_index + 1 (1-based).
+                let sequence = (chunk_index + 1) as usize;
+                let is_last_in_sweep = self
+                    .state
+                    .live_mode_state
+                    .chunk_projections
+                    .as_ref()
+                    .and_then(|projs| projs.iter().find(|c| c.sequence == sequence))
+                    .map(|c| c.chunk_index_in_sweep + 1 == c.chunks_in_sweep)
+                    .unwrap_or(false);
+
                 log::debug!(
-                    "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={})",
+                    "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={}, last_in_sweep={})",
                     chunk_index,
                     site_id,
-                    timestamp
+                    timestamp,
+                    is_last_in_sweep,
                 );
                 self.render.ingest_chunk(
                     data,
@@ -1021,6 +1035,7 @@ impl WorkbenchApp {
                     is_end,
                     file_name,
                     skip_overlap_delete,
+                    is_last_in_sweep,
                 );
             }
             nexrad::RealtimeResult::Error(msg) => {
@@ -1084,6 +1099,7 @@ impl WorkbenchApp {
                     is_end,
                     file_name,
                     skip_overlap_delete,
+                    false, // backfill doesn't have projection data
                 );
             }
             nexrad::RealtimeResult::Error(msg) => {

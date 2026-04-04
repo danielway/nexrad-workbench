@@ -56,6 +56,7 @@ enum QueuedRequest {
         bool,
         String,
         bool,
+        bool,
     ),
     Render(RequestId, String, u8, String),
     RenderLive(RequestId, u8, String),
@@ -188,6 +189,7 @@ impl DecodeWorker {
                         is_end,
                         file_name,
                         skip_overlap_delete,
+                        is_last_in_sweep,
                     ) => {
                         send::send_ingest_chunk_request(
                             &self.worker,
@@ -200,6 +202,7 @@ impl DecodeWorker {
                             is_end,
                             &file_name,
                             skip_overlap_delete,
+                            is_last_in_sweep,
                         );
                     }
                     QueuedRequest::Render(id, scan_key, elev, product) => {
