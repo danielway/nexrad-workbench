@@ -238,9 +238,30 @@ void main() {{
         use_prev = (pixel_from_start >= swept_arc);
     }}
 
-    // Age-based desaturation: oldest quadrant (270°-360° behind sweep) fades out
+    // Live desaturation: fade the 90° arc before the "now line" (estimated
+    // antenna position) and fully desaturate the gap between received data
+    // and the now line. This shows where fresh data has been received
+    // (saturated), where the antenna is ahead of uploads (desaturated gap),
+    // and where older data is aging out (gradient fade).
     float desat_factor = 0.0;
-    if (u_sweep_enabled == 1 && u_data_age_indicator == 1) {{
+    if (u_sweep_enabled == 1 && u_data_age_indicator == 1 && u_sweep_chunk_boundary >= 0.0) {{
+        // Distance from the now line going backwards (0 = at now line, 360 = full circle behind)
+        float behind_now = mod(u_sweep_chunk_boundary - azimuth_deg + 360.0, 360.0);
+        // Distance from received data edge going backwards
+        float behind_data = mod(u_sweep_azimuth - azimuth_deg + 360.0, 360.0);
+        // Gap between received data and now line
+        float data_to_now = mod(u_sweep_chunk_boundary - u_sweep_azimuth + 360.0, 360.0);
+
+        if (behind_now < data_to_now) {{
+            // In the gap between received data edge and now line: full desaturation
+            desat_factor = 0.7;
+        }} else if (behind_now < 90.0) {{
+            // Within 90° before the now line: gradient fade (stronger closer to now)
+            desat_factor = (1.0 - behind_now / 90.0) * 0.7;
+        }}
+    }}
+    // Fallback: original age-based desaturation when no chunk boundary available
+    if (u_sweep_enabled == 1 && u_data_age_indicator == 1 && u_sweep_chunk_boundary < 0.0) {{
         float age = mod(u_sweep_azimuth - azimuth_deg + 360.0, 360.0) / 360.0;
         desat_factor = clamp((age - 0.75) / 0.25, 0.0, 1.0) * 0.9;
     }}
@@ -379,18 +400,7 @@ void main() {{
 
 {RAW_TO_PHYSICAL}
 {COLOR_LOOKUP}
-    // Extended desaturation: gap between received data edge and extrapolated
-    // radar position. Shows previous data grayed out to indicate staleness.
-    if (u_sweep_enabled == 1 && u_sweep_chunk_boundary >= 0.0) {{
-        float gap_start = mod(u_sweep_azimuth - u_sweep_start, 360.0);
-        float gap_end = mod(u_sweep_chunk_boundary - u_sweep_start, 360.0);
-        float pfs = mod(azimuth_deg - u_sweep_start, 360.0);
-        if (gap_end > gap_start && pfs >= gap_start && pfs < gap_end) {{
-            desat_factor = max(desat_factor, 0.6);
-        }}
-    }}
-
-    // Age-based desaturation for sweep animation
+    // Apply desaturation
     if (desat_factor > 0.0) {{
         float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
         color.rgb = mix(color.rgb, vec3(lum), desat_factor);

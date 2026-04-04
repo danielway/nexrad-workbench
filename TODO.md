@@ -66,13 +66,10 @@ Improvements to realtime rendering
 
 4/4
 
-When streaming a full sweep, and then beginning to stream the next sweep, the first chunk or two of the second sweep
-    correctly renders "over" the first one (replacing its data for that subset of azimuths) but eventually a chunk
-    causes the previous sweep to  stop rendering altogether, clearing those chunks out. I would like to see the
-    previous sweep remain visible for any azimuths not yet received for the current sweep.
-
 The desaturation is wrong when streaming in real-time: we should desaturate 1/4 before the "now line" AND
     backwards to the end of the current sweep's latest chunk
 
 When we start real-time streaming, we should change the routine to only downloading the first chunk (with VCP metadata)
     and the latest sweep's chunks. We should not do the backfill anymore by default.
+
+At idle, the app eats a lot of CPU. How can we optimize it to reduce how expensive/heavy it is?
