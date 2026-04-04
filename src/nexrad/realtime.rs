@@ -197,9 +197,8 @@ async fn streaming_loop(
     site_id: String,
     state: Rc<RefCell<RealtimeState>>,
     stats: NetworkStats,
-    facade: DataFacade,
+    _facade: DataFacade,
 ) {
-    use crate::data::keys::{SiteId, UnixMillis};
     use nexrad_data::aws::realtime::{
         download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType,
     };
@@ -274,45 +273,9 @@ async fn streaming_loop(
     // If start_chunk is Some, we joined mid-volume: emit start chunk + latest chunk.
     // If start_chunk is None, latest_chunk IS the start chunk.
     if let Some(start_chunk) = init_result.start_chunk {
-        // Joined mid-volume: emit the start chunk, backfill intermediates, then latest
+        // Joined mid-volume: emit the start chunk + current sweep's chunks only.
         let start_data = start_chunk.chunk.data().to_vec();
         current_scan_start_secs = current_timestamp();
-
-        // Parse volume header time from the start chunk for skip detection
-        let volume_header_time_secs: Option<f64> = {
-            let file = nexrad_data::volume::File::new(start_data.clone());
-            file.header()
-                .and_then(|h| h.date_time())
-                .map(|dt| dt.timestamp() as f64)
-        };
-
-        // Query IDB for existing sweep data to compute a skip point
-        let skip_before_secs: Option<f64> = if let Some(vol_start) = volume_header_time_secs {
-            let vol_start_ms = UnixMillis((vol_start * 1000.0) as i64);
-            let window_end_ms = UnixMillis(vol_start_ms.0 + 600_000); // +10 min
-            match facade
-                .list_scans(&SiteId::new(&site_id), vol_start_ms, window_end_ms)
-                .await
-            {
-                Ok(scans) => {
-                    let result = scans
-                        .iter()
-                        .filter_map(|s| s.end_timestamp_secs)
-                        .max()
-                        .map(|t| t as f64);
-                    if let Some(skip_ts) = result {
-                        log::info!(
-                            "Streaming backfill: found existing scan data, skip point = {:.0}s",
-                            skip_ts
-                        );
-                    }
-                    result
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
 
         log::info!(
             "Init: emitting start_chunk ({} bytes) for mid-volume join",
@@ -326,100 +289,77 @@ async fn streaming_loop(
                 is_start: true,
                 is_end: false,
                 timestamp: current_scan_start_secs,
-                skip_overlap_delete: skip_before_secs.is_some(),
+                // Skip overlap deletion — we're only backfilling the current
+                // sweep, not replacing the full volume.
+                skip_overlap_delete: true,
             });
         }
         ctx.request_repaint();
 
-        // Backfill: download all intermediate chunks between start and latest
+        // Download only the current sweep's preceding chunks (not the full volume).
+        // Use chunk metadata to find which sequences share the latest chunk's
+        // elevation, then download only those that precede it.
         let latest_seq = init_result.latest_chunk.identifier.sequence();
         let volume = *init_result.latest_chunk.identifier.volume();
         chunks_in_volume = 1; // start chunk already emitted
 
-        if latest_seq > 2 {
-            // List all chunks in the volume to get their identifiers
+        let latest_elev = iter
+            .chunk_metadata(latest_seq)
+            .and_then(|m| m.elevation_number());
+
+        // Collect sequences for the same sweep that precede the latest chunk.
+        let sweep_seqs: Vec<usize> = if let Some(elev) = latest_elev {
+            iter.all_chunk_metadata()
+                .map(|metas| {
+                    metas
+                        .iter()
+                        .filter(|m| {
+                            m.elevation_number() == Some(elev)
+                                && m.sequence() > 1
+                                && m.sequence() < latest_seq
+                        })
+                        .map(|m| m.sequence())
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        if !sweep_seqs.is_empty() {
             match list_chunks_in_volume(&site_id, volume, 100).await {
                 Ok(chunk_ids) => {
-                    // Filter to intermediate chunks (after start, before latest)
-                    let intermediates: Vec<_> = chunk_ids
+                    let to_download: Vec<_> = chunk_ids
                         .into_iter()
-                        .filter(|id| id.sequence() > 1 && id.sequence() < latest_seq)
+                        .filter(|id| sweep_seqs.contains(&id.sequence()))
                         .collect();
 
-                    let total_backfill = intermediates.len();
-                    let mut skipped = 0u32;
                     log::info!(
-                        "Backfill: downloading {} intermediate chunks (seq 2..{})",
-                        total_backfill,
-                        latest_seq - 1
+                        "Sweep backfill: downloading {} chunks for current sweep (elev {:?}, seq {:?})",
+                        to_download.len(),
+                        latest_elev,
+                        sweep_seqs,
                     );
 
                     let mut downloaded: Vec<(u32, Vec<u8>)> = Vec::new();
 
-                    // Use projection-based timing for skip estimation when available,
-                    // falling back to crude linear interpolation.
-                    let projection = iter.project_remaining_scan();
-                    let projected_times: std::collections::HashMap<usize, f64> = projection
-                        .as_ref()
-                        .map(|p| {
-                            p.chunks()
-                                .iter()
-                                .map(|c| (c.sequence(), c.projected_time().timestamp() as f64))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    for chunk_id in intermediates.iter() {
+                    for chunk_id in to_download.iter() {
                         if state.borrow().stop_requested {
                             break;
                         }
-
-                        // Skip chunks whose estimated time falls before existing data
-                        if let (Some(skip_ts), Some(vol_start)) =
-                            (skip_before_secs, volume_header_time_secs)
-                        {
-                            let chunk_end_est = projected_times
-                                .get(&chunk_id.sequence())
-                                .copied()
-                                .unwrap_or_else(|| {
-                                    // Fallback: linear interpolation
-                                    let total_chunks = (latest_seq - 1) as f64;
-                                    vol_start
-                                        + (chunk_id.sequence() as f64 / total_chunks.max(1.0))
-                                            * 300.0
-                                });
-                            // Use a small margin (~chunk duration) for the skip check
-                            let chunk_dur = iter
-                                .chunk_metadata(chunk_id.sequence())
-                                .map(|m| {
-                                    let rate = m.azimuth_rate_dps();
-                                    if rate > 0.0 {
-                                        (360.0 / rate - 0.67) / m.chunks_in_sweep() as f64
-                                    } else {
-                                        10.0
-                                    }
-                                })
-                                .unwrap_or(10.0);
-                            if chunk_end_est + chunk_dur < skip_ts {
-                                skipped += 1;
-                                continue;
-                            }
-                        }
-
                         match download_chunk(&site_id, chunk_id).await {
                             Ok((_id, chunk)) => {
                                 let chunk_data = chunk.data().to_vec();
                                 log::debug!(
-                                    "Backfill: downloaded chunk seq {} ({} bytes, {:?})",
+                                    "Sweep backfill: downloaded chunk seq {} ({} bytes)",
                                     chunk_id.sequence(),
                                     chunk_data.len(),
-                                    chunk_id.chunk_type()
                                 );
                                 downloaded.push((chunk_id.sequence() as u32, chunk_data));
                             }
                             Err(e) => {
                                 log::warn!(
-                                    "Backfill: failed to download chunk seq {}: {}",
+                                    "Sweep backfill: failed to download chunk seq {}: {}",
                                     chunk_id.sequence(),
                                     e
                                 );
@@ -444,15 +384,21 @@ async fn streaming_loop(
                     }
 
                     log::info!(
-                        "Backfill: completed, {} chunks downloaded, {} skipped (already in IDB)",
+                        "Sweep backfill: completed, {} chunks downloaded for elev {:?}",
                         chunks_in_volume - 1,
-                        skipped
+                        latest_elev,
                     );
                 }
                 Err(e) => {
-                    log::warn!("Backfill: failed to list chunks: {}, skipping backfill", e);
+                    log::warn!("Sweep backfill: failed to list chunks: {}, skipping", e);
                 }
             }
+        } else {
+            log::info!(
+                "Sweep backfill: no preceding chunks for latest seq {} (elev {:?})",
+                latest_seq,
+                latest_elev,
+            );
         }
 
         // Emit the latest chunk (where the iterator is positioned)

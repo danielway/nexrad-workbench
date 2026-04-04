@@ -66,9 +66,6 @@ Improvements to realtime rendering
 
 4/4
 
-The desaturation is wrong when streaming in real-time: we should desaturate 1/4 before the "now line" AND
-    backwards to the end of the current sweep's latest chunk
-
 When we start real-time streaming, we should change the routine to only downloading the first chunk (with VCP metadata)
     and the latest sweep's chunks. We should not do the backfill anymore by default.
 
