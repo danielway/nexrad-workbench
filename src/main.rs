@@ -930,22 +930,27 @@ impl WorkbenchApp {
                 time_until_next,
                 is_volume_end,
                 fetch_latency_ms,
+                projected_volume_end_secs,
+                chunk_projections,
             } => {
                 self.state
                     .session_stats
                     .record_fetch_latency(fetch_latency_ms);
                 log::info!(
-                    "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?}",
+                    "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?} proj_end={:?}",
                     chunks_in_volume,
                     is_volume_end,
                     fetch_latency_ms,
                     time_until_next,
+                    projected_volume_end_secs,
                 );
                 self.state.live_mode_state.handle_realtime_chunk(
                     chunks_in_volume,
                     time_until_next,
                     is_volume_end,
                     now,
+                    projected_volume_end_secs,
+                    chunk_projections,
                 );
 
                 // Record chunk latency for the acquisition drawer
@@ -1455,15 +1460,64 @@ impl WorkbenchApp {
     fn handle_chunk_ingested_outcome(&mut self, result: nexrad::ChunkIngestResult) {
         let is_live = self.state.live_mode_state.is_active();
         let source = if is_live { "Realtime" } else { "Backfill" };
-        log::debug!(
-            "{}: chunk ingested scan={} elevations_completed={:?} sweeps_stored={} is_end={} vcp={:?} available_elevs={:?} {:.1}ms",
+
+        // Build enriched log with projection-derived chunk positioning.
+        let chunk_vol_index = result.context.chunk_index + 1; // 1-based for display
+        let elev_nums: Vec<u8> = result
+            .chunk_elev_spans
+            .iter()
+            .map(|&(e, _, _, _)| e)
+            .collect();
+        let total_azimuths: u32 = result
+            .chunk_elev_spans
+            .iter()
+            .map(|&(_, _, _, count)| count)
+            .sum();
+
+        // Azimuth angle range from the chunk's azimuth data
+        let az_range_str =
+            if let Some(&(_, first_az, last_az)) = result.chunk_elev_az_ranges.first() {
+                format!("{:.1}°–{:.1}°", first_az, last_az)
+            } else {
+                "n/a".to_string()
+            };
+
+        // Look up chunk-in-sweep and remaining from projection metadata.
+        // chunk_index is 0-based where 0 = Start chunk (sequence 1), so
+        // chunk_vol_index (= chunk_index + 1) already equals the 1-based sequence.
+        let sequence = chunk_vol_index as usize;
+        let (chunk_in_sweep_str, remaining_str) = self
+            .state
+            .live_mode_state
+            .chunk_projections
+            .as_ref()
+            .and_then(|projs| {
+                projs.iter().find(|c| c.sequence == sequence).map(|c| {
+                    let in_sweep = format!("{}/{}", c.chunk_index_in_sweep + 1, c.chunks_in_sweep);
+                    // Count remaining chunks in this sweep after this one
+                    let remaining_in_sweep =
+                        c.chunks_in_sweep.saturating_sub(c.chunk_index_in_sweep + 1);
+                    (in_sweep, format!("{}", remaining_in_sweep))
+                })
+            })
+            .unwrap_or_else(|| ("?/?".to_string(), "?".to_string()));
+
+        log::info!(
+            "{}: chunk ingested scan={} vol_chunk={} sweep_chunk={} remaining_in_sweep={} \
+             elevs={:?} azimuths={} az_range={} \
+             elevs_completed={:?} sweeps_stored={} is_end={} vcp={:?} {:.1}ms",
             source,
             result.scan_key,
+            chunk_vol_index,
+            chunk_in_sweep_str,
+            remaining_str,
+            elev_nums,
+            total_azimuths,
+            az_range_str,
             result.elevations_completed,
             result.sweeps_stored,
             result.is_end,
             result.vcp.as_ref().map(|v| v.number),
-            self.render.available_elevations(),
             result.total_ms,
         );
 
@@ -1539,13 +1593,82 @@ impl WorkbenchApp {
                 .live_mode_state
                 .record_last_radial(result.last_radial_azimuth, result.last_radial_time_secs);
 
-            // Request live partial-sweep render if mid-sweep.
+            // ── Log: sweep storage ────────────────────────────────────
+            if !result.elevations_completed.is_empty() {
+                for &completed_elev in &result.elevations_completed {
+                    if let Some(meta) = result
+                        .sweeps
+                        .iter()
+                        .find(|s| s.elevation_number == completed_elev)
+                    {
+                        log::info!(
+                            "{}: sweep stored elev={} angle={:.1}° start_az={:.1}° \
+                             time={:.1}–{:.1}s dur={:.2}s products={} vol_chunk={}",
+                            source,
+                            completed_elev,
+                            meta.elevation,
+                            meta.start_azimuth,
+                            meta.start,
+                            meta.end,
+                            meta.end - meta.start,
+                            result.sweeps_stored,
+                            chunk_vol_index,
+                        );
+                    } else {
+                        log::info!(
+                            "{}: sweep stored elev={} (no SweepMeta) products={} vol_chunk={}",
+                            source,
+                            completed_elev,
+                            result.sweeps_stored,
+                            chunk_vol_index,
+                        );
+                    }
+                }
+            }
+
+            // ── Log + dispatch: live partial-sweep render ─────────────
             // Always render whatever elevation is currently being
             // accumulated — the user expects to see live progress
             // regardless of which elevation was previously displayed.
             if !result.is_end {
                 if let Some(target_elev) = result.current_elevation {
                     let product = self.state.viz_state.product.to_worker_string().to_string();
+
+                    // Summarize what the accumulator holds for this elevation
+                    let accum_radials = result.current_elevation_radials.unwrap_or(0);
+                    let accum_chunks: usize = self
+                        .state
+                        .live_mode_state
+                        .chunk_elev_spans
+                        .iter()
+                        .filter(|&&(e, _, _, _)| e == target_elev)
+                        .count();
+                    let accum_az_range = self
+                        .state
+                        .live_mode_state
+                        .current_elev_chunks
+                        .iter()
+                        .fold((f32::MAX, f32::MIN), |(lo, hi), &(first_az, last_az, _)| {
+                            (lo.min(first_az), hi.max(last_az))
+                        });
+                    let az_str = if accum_az_range.0 < f32::MAX {
+                        format!("{:.1}°–{:.1}°", accum_az_range.0, accum_az_range.1)
+                    } else {
+                        "n/a".to_string()
+                    };
+
+                    log::info!(
+                        "{}: render_live dispatched elev={} product={} accum_radials={} \
+                         accum_chunks={} accum_az={} vol_chunk={}",
+                        source,
+                        target_elev,
+                        product,
+                        accum_radials,
+                        accum_chunks,
+                        az_str,
+                        chunk_vol_index,
+                    );
+
                     self.render.render_live(target_elev, product);
                 }
             }

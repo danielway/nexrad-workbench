@@ -471,10 +471,17 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     &newly_completed,
                     &accum.scan_key,
                 );
-                // Store sweep metas for the response, then clear radials.
+                // Store sweep metas for the response, then retain only radials
+                // belonging to the new (current) elevation. The transition chunk
+                // appended its radials before the flush, so we must keep them.
                 accum.completed_sweep_metas.extend(result.1.iter().cloned());
-                accum.current_radials.clear();
-                accum.current_radial_metas.clear();
+                let keep_elev = accum.current_elevation;
+                accum
+                    .current_radials
+                    .retain(|r| keep_elev.is_some_and(|e| r.elevation_number() == e));
+                accum
+                    .current_radial_metas
+                    .retain(|&(_, elev, _, _)| keep_elev.is_some_and(|e| elev == e));
                 result
             });
 

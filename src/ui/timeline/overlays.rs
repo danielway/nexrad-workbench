@@ -494,9 +494,9 @@ pub(super) fn render_realtime_progress(
             let chunk_top = block.min.y + chunk_inset;
             let chunk_bot = block.max.y - chunk_inset;
 
-            // Count received chunks (completed + in-progress partial)
-            let has_partial = in_progress_radials > 0;
-            let filled_count = chunks_received + if has_partial { 1 } else { 0 };
+            // The last received chunk may still be accumulating radials (partial).
+            // chunk_elev_spans already includes the current chunk, so don't add +1.
+            let is_last_chunk_partial = in_progress_radials > 0 && chunks_received > 0;
 
             for slot in 0..exp_n {
                 let slot_x0 = block.min.x + slot as f32 * chunk_width;
@@ -506,23 +506,8 @@ pub(super) fn render_realtime_progress(
                     Pos2::new(slot_x1, chunk_bot),
                 );
 
-                if slot < chunks_received {
-                    // ── Received (complete) chunk slot ──
-                    painter.rect_filled(
-                        slot_rect,
-                        1.0,
-                        Color32::from_rgba_unmultiplied(80, 170, 230, 70),
-                    );
-                    painter.rect_stroke(
-                        slot_rect,
-                        1.0,
-                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(100, 180, 255, 90)),
-                        StrokeKind::Inside,
-                    );
-                } else if slot == chunks_received && has_partial {
-                    // ── Currently receiving chunk slot (partial fill) ──
-                    // Fill proportionally based on radials in this chunk vs
-                    // expected radials per chunk.
+                if is_last_chunk_partial && slot == chunks_received - 1 {
+                    // ── Last received chunk, still accumulating (partial fill) ──
                     let radials_per_chunk = expected_radials / exp_n;
                     let partial_frac =
                         (in_progress_radials as f32 / radials_per_chunk as f32).clamp(0.0, 1.0);
@@ -561,7 +546,20 @@ pub(super) fn render_realtime_progress(
                         );
                         x += 6.0;
                     }
-                } else if slot == filled_count && countdown.is_some() {
+                } else if slot < chunks_received {
+                    // ── Received (complete) chunk slot ──
+                    painter.rect_filled(
+                        slot_rect,
+                        1.0,
+                        Color32::from_rgba_unmultiplied(80, 170, 230, 70),
+                    );
+                    painter.rect_stroke(
+                        slot_rect,
+                        1.0,
+                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(100, 180, 255, 90)),
+                        StrokeKind::Inside,
+                    );
+                } else if slot == chunks_received && countdown.is_some() {
                     // ── Next-chunk placeholder with countdown ──
                     painter.rect_filled(slot_rect, 1.0, tl_colors::rt_next_chunk_fill());
                     let dot_color = tl_colors::rt_next_chunk_border();
@@ -653,7 +651,7 @@ pub(super) fn render_realtime_progress(
             }
 
             // Chunk count label (e.g., "2/6")
-            let chunk_label = format!("{}/{}", filled_count, exp_n);
+            let chunk_label = format!("{}/{}", chunks_received, exp_n);
             if width > 30.0 {
                 let label = if width > 70.0 {
                     format!(

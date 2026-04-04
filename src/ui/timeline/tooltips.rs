@@ -302,13 +302,9 @@ fn render_realtime_volume_tooltip(
 
                 if completed_chunks > 0 || in_progress_radials > 0 {
                     ui.separator();
-                    let has_active = in_progress_radials > 0
-                        || live_state.phase == crate::state::LivePhase::Streaming;
-                    let display_total = if has_active {
-                        completed_chunks + 1
-                    } else {
-                        completed_chunks
-                    };
+                    // The last chunk in chunk_elev_spans may still be accumulating
+                    // radials — show it as "collecting" instead of "collected".
+                    let is_last_partial = in_progress_radials > 0 && completed_chunks > 0;
                     ui.label(
                         RichText::new(format!(
                             "Chunks for this elevation ({} total in volume):",
@@ -319,23 +315,24 @@ fn render_realtime_volume_tooltip(
                     );
                     for (i, chunk) in sp.chunks.iter().enumerate() {
                         let chunk_num = i + 1;
-                        let label = format!(
-                            "  Chunk {}/{}: {} radials, collected",
-                            chunk_num, display_total, chunk.radial_count
-                        );
-                        ui.label(RichText::new(label).size(10.0));
-                    }
-                    if has_active {
-                        let chunk_num = completed_chunks + 1;
-                        let label = format!(
-                            "  Chunk {}/{}: {} radials, collecting\u{2026}",
-                            chunk_num, display_total, in_progress_radials
-                        );
-                        ui.label(
-                            RichText::new(label)
-                                .size(10.0)
-                                .color(Color32::from_rgb(100, 180, 255)),
-                        );
+                        let is_active_chunk = is_last_partial && i == sp.chunks.len() - 1;
+                        if is_active_chunk {
+                            let label = format!(
+                                "  Chunk {}/{}: {} radials, collecting\u{2026}",
+                                chunk_num, completed_chunks, in_progress_radials
+                            );
+                            ui.label(
+                                RichText::new(label)
+                                    .size(10.0)
+                                    .color(Color32::from_rgb(100, 180, 255)),
+                            );
+                        } else {
+                            let label = format!(
+                                "  Chunk {}/{}: {} radials, collected",
+                                chunk_num, completed_chunks, chunk.radial_count
+                            );
+                            ui.label(RichText::new(label).size(10.0));
+                        }
                     }
                 }
 

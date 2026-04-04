@@ -12,6 +12,33 @@ use eframe::egui;
 
 use crate::data::facade::DataFacade;
 
+/// Projected timing and structural info for a single chunk in the volume.
+///
+/// Combines structural metadata from `ChunkMetadata` (available for all chunks)
+/// with projected timing from `ChunkProjection` (available for future chunks).
+/// This decouples the UI layer from the nexrad-data library types.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct ChunkProjectionInfo {
+    /// 1-based sequence number in the volume.
+    pub sequence: usize,
+    /// Elevation number (1-based), None for the Start chunk.
+    pub elevation_number: Option<usize>,
+    /// Elevation angle in degrees.
+    pub elevation_angle_deg: f64,
+    /// Azimuth rotation rate in degrees/second from the VCP.
+    pub azimuth_rate_dps: f64,
+    /// Projected time this chunk becomes available (Unix seconds).
+    /// `Some` for future chunks (from ScanTimingProjection), `None` for past chunks.
+    pub projected_time_secs: Option<f64>,
+    /// Whether this chunk starts a new sweep.
+    pub starts_new_sweep: bool,
+    /// 0-based index of this chunk within its sweep.
+    pub chunk_index_in_sweep: usize,
+    /// Total chunks in this sweep (3 for standard, 6 for super-res).
+    pub chunks_in_sweep: usize,
+}
+
 /// Result type for realtime streaming events.
 #[derive(Clone, Debug)]
 pub enum RealtimeResult {
@@ -23,6 +50,11 @@ pub enum RealtimeResult {
         time_until_next: Option<Duration>,
         is_volume_end: bool,
         fetch_latency_ms: f64,
+        /// Projected volume end time (Unix seconds), from the library's physics model.
+        projected_volume_end_secs: Option<f64>,
+        /// Per-chunk projection info for the entire volume.
+        /// Structural metadata is present for all chunks; projected times only for future chunks.
+        chunk_projections: Option<Vec<ChunkProjectionInfo>>,
     },
     /// Raw chunk data for incremental ingest
     ChunkData {
@@ -115,6 +147,49 @@ impl RealtimeChannel {
             Some(state.results.remove(0))
         }
     }
+}
+
+/// Build projection info from the iterator's current state.
+///
+/// Combines structural metadata (all chunks) with projected timing (future chunks only).
+fn build_chunk_projections(
+    iter: &nexrad_data::aws::realtime::ChunkIterator,
+) -> Option<Vec<ChunkProjectionInfo>> {
+    let all_meta = iter.all_chunk_metadata()?;
+    let projection = iter.project_remaining_scan();
+
+    // Build a lookup from sequence → projected_time for future chunks
+    let projected_times: std::collections::HashMap<usize, f64> = projection
+        .as_ref()
+        .map(|p| {
+            p.chunks()
+                .iter()
+                .map(|c| (c.sequence(), c.projected_time().timestamp() as f64))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(
+        all_meta
+            .iter()
+            .map(|meta| ChunkProjectionInfo {
+                sequence: meta.sequence(),
+                elevation_number: meta.elevation_number(),
+                elevation_angle_deg: meta.elevation_angle_deg(),
+                azimuth_rate_dps: meta.azimuth_rate_dps(),
+                projected_time_secs: projected_times.get(&meta.sequence()).copied(),
+                starts_new_sweep: meta.is_first_in_sweep(),
+                chunk_index_in_sweep: meta.chunk_index_in_sweep(),
+                chunks_in_sweep: meta.chunks_in_sweep(),
+            })
+            .collect(),
+    )
+}
+
+/// Get the projected volume end time from the iterator.
+fn get_projected_volume_end_secs(iter: &nexrad_data::aws::realtime::ChunkIterator) -> Option<f64> {
+    iter.projected_volume_end_time()
+        .map(|dt| dt.timestamp() as f64)
 }
 
 async fn streaming_loop(
@@ -281,6 +356,19 @@ async fn streaming_loop(
 
                     let mut downloaded: Vec<(u32, Vec<u8>)> = Vec::new();
 
+                    // Use projection-based timing for skip estimation when available,
+                    // falling back to crude linear interpolation.
+                    let projection = iter.project_remaining_scan();
+                    let projected_times: std::collections::HashMap<usize, f64> = projection
+                        .as_ref()
+                        .map(|p| {
+                            p.chunks()
+                                .iter()
+                                .map(|c| (c.sequence(), c.projected_time().timestamp() as f64))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
                     for chunk_id in intermediates.iter() {
                         if state.borrow().stop_requested {
                             break;
@@ -290,12 +378,28 @@ async fn streaming_loop(
                         if let (Some(skip_ts), Some(vol_start)) =
                             (skip_before_secs, volume_header_time_secs)
                         {
-                            let vol_duration_est = 300.0; // conservative 5-min estimate
-                            let total_chunks = (latest_seq - 1) as f64;
-                            let chunk_end_est = vol_start
-                                + (chunk_id.sequence() as f64 / total_chunks.max(1.0))
-                                    * vol_duration_est;
-                            let chunk_dur = vol_duration_est / total_chunks.max(1.0);
+                            let chunk_end_est = projected_times
+                                .get(&chunk_id.sequence())
+                                .copied()
+                                .unwrap_or_else(|| {
+                                    // Fallback: linear interpolation
+                                    let total_chunks = (latest_seq - 1) as f64;
+                                    vol_start
+                                        + (chunk_id.sequence() as f64 / total_chunks.max(1.0))
+                                            * 300.0
+                                });
+                            // Use a small margin (~chunk duration) for the skip check
+                            let chunk_dur = iter
+                                .chunk_metadata(chunk_id.sequence())
+                                .map(|m| {
+                                    let rate = m.azimuth_rate_dps();
+                                    if rate > 0.0 {
+                                        (360.0 / rate - 0.67) / m.chunks_in_sweep() as f64
+                                    } else {
+                                        10.0
+                                    }
+                                })
+                                .unwrap_or(10.0);
                             if chunk_end_est + chunk_dur < skip_ts {
                                 skipped += 1;
                                 continue;
@@ -378,6 +482,8 @@ async fn streaming_loop(
                 time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
+                projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                chunk_projections: build_chunk_projections(&iter),
             });
         }
         ctx.request_repaint();
@@ -409,6 +515,8 @@ async fn streaming_loop(
                 time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
+                projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                chunk_projections: build_chunk_projections(&iter),
             });
         }
         ctx.request_repaint();
@@ -472,6 +580,8 @@ async fn streaming_loop(
                         time_until_next,
                         is_volume_end: is_end,
                         fetch_latency_ms: chunk_fetch_ms,
+                        projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                        chunk_projections: build_chunk_projections(&iter),
                     });
                 }
 
@@ -808,17 +918,43 @@ async fn backfill_loop(
 
                     let mut downloaded: Vec<(u32, Vec<u8>)> = Vec::new();
 
+                    // Use projection-based timing for skip estimation when available
+                    let projection = iter.project_remaining_scan();
+                    let projected_times: std::collections::HashMap<usize, f64> = projection
+                        .as_ref()
+                        .map(|p| {
+                            p.chunks()
+                                .iter()
+                                .map(|c| (c.sequence(), c.projected_time().timestamp() as f64))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
                     for chunk_id in intermediates.iter() {
                         // Skip chunks whose estimated time falls before existing data
                         if let (Some(skip_ts), Some(vol_start)) =
                             (skip_before_secs, volume_header_time_secs)
                         {
-                            let vol_duration_est = 300.0; // conservative 5-min estimate
-                            let total_chunks = (latest_seq - 1) as f64;
-                            let chunk_end_est = vol_start
-                                + (chunk_id.sequence() as f64 / total_chunks.max(1.0))
-                                    * vol_duration_est;
-                            let chunk_dur = vol_duration_est / total_chunks.max(1.0);
+                            let chunk_end_est = projected_times
+                                .get(&chunk_id.sequence())
+                                .copied()
+                                .unwrap_or_else(|| {
+                                    let total_chunks = (latest_seq - 1) as f64;
+                                    vol_start
+                                        + (chunk_id.sequence() as f64 / total_chunks.max(1.0))
+                                            * 300.0
+                                });
+                            let chunk_dur = iter
+                                .chunk_metadata(chunk_id.sequence())
+                                .map(|m| {
+                                    let rate = m.azimuth_rate_dps();
+                                    if rate > 0.0 {
+                                        (360.0 / rate - 0.67) / m.chunks_in_sweep() as f64
+                                    } else {
+                                        10.0
+                                    }
+                                })
+                                .unwrap_or(10.0);
                             if chunk_end_est + chunk_dur < skip_ts {
                                 skipped += 1;
                                 continue;

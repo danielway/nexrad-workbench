@@ -171,6 +171,15 @@ pub struct LiveModeState {
     /// Timestamp (Unix seconds) of the last known radial. Together with
     /// `last_radial_azimuth`, allows linear extrapolation of sweep line.
     pub last_radial_time_secs: Option<f64>,
+
+    /// Library-projected volume end time (Unix seconds).
+    /// From nexrad-data's physics-based model (sweep_duration = 360/rate - 0.67s).
+    pub projected_volume_end_secs: Option<f64>,
+
+    /// Per-chunk projection info from the library's physics model.
+    /// Structural metadata covers all chunks; projected times only for future chunks.
+    /// Updated each time a new chunk arrives.
+    pub chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
 }
 
 impl Default for LiveModeState {
@@ -202,6 +211,8 @@ impl Default for LiveModeState {
             live_data_azimuth_range: None,
             last_radial_azimuth: None,
             last_radial_time_secs: None,
+            projected_volume_end_secs: None,
+            chunk_projections: None,
         }
     }
 }
@@ -269,6 +280,8 @@ impl LiveModeState {
         self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
+        self.projected_volume_end_secs = None;
+        self.chunk_projections = None;
     }
 
     /// Set error state with message.
@@ -371,8 +384,12 @@ impl LiveModeState {
         time_until_next: Option<Duration>,
         is_volume_end: bool,
         now: f64,
+        projected_volume_end_secs: Option<f64>,
+        chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
     ) {
         self.chunks_received = chunks_in_volume;
+        self.projected_volume_end_secs = projected_volume_end_secs;
+        self.chunk_projections = chunk_projections;
 
         if is_volume_end {
             // Volume complete - transition to Streaming briefly
@@ -422,6 +439,8 @@ impl LiveModeState {
         self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
+        self.projected_volume_end_secs = None;
+        self.chunk_projections = None;
     }
 
     /// Record that new elevation cuts were received in the current volume.
@@ -471,17 +490,20 @@ impl LiveModeState {
         if !vcp.elevations.is_empty() {
             self.current_vcp_pattern = Some(vcp.clone());
 
-            // Seed volume duration from VCP azimuth rates if we haven't measured one yet.
-            // This replaces the 300s fallback with sum(360°/rate_i) which is much closer
-            // to reality (~600s for clear-air VCP 35 vs ~270s for precip VCP 212).
-            if self.last_volume_duration_secs.is_none() {
-                if let Some(estimated) = vcp.estimated_volume_duration() {
-                    self.last_volume_duration_secs = Some(estimated);
+            // Only compute hand-rolled estimates when the library projection isn't available.
+            // The library's physics model is more accurate (includes inter-sweep gaps and
+            // the -0.67s correction), so prefer it when we have it.
+            if self.chunk_projections.is_none() {
+                // Seed volume duration from VCP azimuth rates if we haven't measured one yet.
+                if self.last_volume_duration_secs.is_none() {
+                    if let Some(estimated) = vcp.estimated_volume_duration() {
+                        self.last_volume_duration_secs = Some(estimated);
+                    }
                 }
-            }
 
-            let vol_dur = self.last_volume_duration_secs.unwrap_or(300.0);
-            self.estimated_sweep_durations = vcp.sweep_durations(vol_dur);
+                let vol_dur = self.last_volume_duration_secs.unwrap_or(300.0);
+                self.estimated_sweep_durations = vcp.sweep_durations(vol_dur);
+            }
         }
     }
 
