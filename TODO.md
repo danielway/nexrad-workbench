@@ -66,12 +66,12 @@ Improvements to realtime rendering
 
 4/4
 
-Let's add an "Age" indication to the top-left text in the canvas for the "previous" sweep too, similar to the "current" text.
-
 What is our model for tracking what data is currently being rendered? We should audit it.
     Ensure the top-left text is guaranteed to be accurately representing what is rendering,
     including time ranges, ages, parameters like elevation (and incorporate other params too?)
     as well as indicating if it's a full sweep vs. streamed chunk data.
+    Let's add an "Age" indication to the top-left text in the canvas for the
+    "previous" sweep too, similar to the "current" text.
 
 Desaturation could be made more obvious.
 Boundaries between the sweeps could be more obvious.
