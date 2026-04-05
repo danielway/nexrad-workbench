@@ -607,7 +607,6 @@ fn render_elevation_grid(ui: &mut egui::Ui, rows: &[ElevRow]) {
         .spacing([4.0, 1.0])
         .show(ui, |ui| {
             // Header
-            ui.label(RichText::new(" ").font(hdr_font.clone()));
             ui.label(
                 RichText::new("Elev")
                     .font(hdr_font.clone())
@@ -634,17 +633,6 @@ fn render_elevation_grid(ui: &mut egui::Ui, rows: &[ElevRow]) {
                 } else {
                     Color32::from_rgb(120, 120, 130)
                 };
-
-                // Current indicator
-                if row.is_current {
-                    ui.label(
-                        RichText::new(egui_phosphor::regular::CARET_RIGHT)
-                            .color(text_color)
-                            .font(font.clone()),
-                    );
-                } else {
-                    ui.label(RichText::new(" ").font(font.clone()));
-                }
 
                 // Elevation number + angle
                 ui.label(
