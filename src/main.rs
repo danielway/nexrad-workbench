@@ -1909,38 +1909,11 @@ impl WorkbenchApp {
             result.total_ms,
         );
 
-        // Pad partial sweep to a full 360° azimuth grid before GPU upload.
-        // The shader's find_nearest_az estimates index as az/(360/N),
-        // which breaks when N radials cluster in a small arc (e.g., 120
-        // radials covering 60° gives 3° estimated spacing instead of 0.5°).
-        // Padding to 720 slots at 0.5° makes the estimate correct; empty
-        // slots have sentinel gate values (0 = transparent).
-        let gate_count = result.gate_count as usize;
-        let full_az_count: u32 = 720;
-        let step = 360.0f32 / full_az_count as f32;
-
-        let mut padded_az = Vec::with_capacity(full_az_count as usize);
-        let mut padded_gates = vec![0.0f32; full_az_count as usize * gate_count];
-        let mut padded_times = vec![0.0f64; full_az_count as usize];
-
-        for i in 0..full_az_count as usize {
-            padded_az.push(i as f32 * step);
-        }
-
-        for (src_row, &az) in result.azimuths.iter().enumerate() {
-            let dst_row = ((az / step).round() as usize) % full_az_count as usize;
-            padded_az[dst_row] = az;
-            let src_start = src_row * gate_count;
-            let dst_start = dst_row * gate_count;
-            if src_start + gate_count <= result.gate_values.len() {
-                padded_gates[dst_start..dst_start + gate_count]
-                    .copy_from_slice(&result.gate_values[src_start..src_start + gate_count]);
-            }
-            if src_row < result.radial_times.len() {
-                padded_times[dst_row] = result.radial_times[src_row];
-            }
-        }
-
+        // Upload the actual radials directly — no padding needed.
+        // The shader's find_bracket_az handles partial coverage correctly,
+        // returning transparent for azimuths outside the data arc. Padding
+        // to 720 slots created black rays where synthetic empty-slot azimuths
+        // were treated as valid data with zero gate values.
         if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
                 // Build a live sweep ID so we can detect elevation transitions
@@ -1952,21 +1925,42 @@ impl WorkbenchApp {
                 // so it becomes the background for compositing partial data.
                 let should_promote = r.current_sweep_id().is_some_and(|id| id != live_sweep_id);
                 if should_promote {
+                    // Capture the current sweep's metadata before promoting it to
+                    // "previous" — this drives the overlay info panel and donut labels.
+                    let prev_elev_deg =
+                        self.state.viz_state.rendered_sweep_end_secs.and_then(|_| {
+                            self.state
+                                .viz_state
+                                .elevation
+                                .trim_end_matches('\u{00B0}')
+                                .parse::<f32>()
+                                .ok()
+                        });
+                    let prev_elev_num = self.state.viz_state.displayed_sweep_elevation_number;
+                    if let (Some(start), Some(end), Some(elev)) = (
+                        self.state.viz_state.rendered_sweep_start_secs,
+                        self.state.viz_state.rendered_sweep_end_secs,
+                        prev_elev_deg,
+                    ) {
+                        self.state.viz_state.prev_sweep_overlay = Some((elev, start, end));
+                        self.state.viz_state.prev_sweep_elevation_number = prev_elev_num;
+                    }
+
                     r.promote_current_to_previous(gl);
                 }
 
                 r.update_data(
                     gl,
-                    &padded_az,
-                    &padded_gates,
-                    full_az_count,
+                    &result.azimuths,
+                    &result.gate_values,
+                    result.azimuth_count,
                     result.gate_count,
                     result.first_gate_range_km,
                     result.gate_interval_km,
                     result.max_range_km,
                     result.offset,
                     result.scale,
-                    &padded_times,
+                    &result.radial_times,
                 );
                 r.set_current_sweep_id(Some(live_sweep_id));
                 r.update_color_table(gl, &result.product);
@@ -2029,11 +2023,10 @@ impl WorkbenchApp {
                 .sweep_start_azimuth
                 .unwrap_or(0.0);
             log::debug!(
-                "Live azimuth range: chrono_first={:.1} chrono_last={:.1} count={}/{}",
+                "Live azimuth range: chrono_first={:.1} chrono_last={:.1} count={}",
                 first_az,
                 last_az,
                 result.azimuths.len(),
-                full_az_count,
             );
             self.state.live_mode_state.live_data_azimuth_range = Some((first_az, last_az));
         }
