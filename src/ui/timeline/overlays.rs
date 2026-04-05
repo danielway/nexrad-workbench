@@ -479,15 +479,14 @@ pub(super) fn render_realtime_progress(
             // Received chunks fill slots left-to-right; the next expected chunk
             // shows a countdown placeholder.
 
-            let (total_radials, chunks_received, chunks_expected_opt) = match &sweep_pos.status {
+            let (chunks_received, chunks_expected_opt) = match &sweep_pos.status {
                 crate::state::SweepStatus::InProgress {
-                    radials_received,
                     chunks_received,
                     chunks_expected,
-                } => (*radials_received, *chunks_received, *chunks_expected),
-                _ => (0, 0, None),
+                    ..
+                } => (*chunks_received, *chunks_expected),
+                _ => (0, None),
             };
-            let expected_radials = 360u32;
             let exp_n = chunks_expected_opt.unwrap_or(3).max(1);
             let chunk_width = block.width() / exp_n as f32;
             let chunk_inset = 3.0_f32;
@@ -508,9 +507,9 @@ pub(super) fn render_realtime_progress(
 
                 if is_last_chunk_partial && slot == chunks_received - 1 {
                     // ── Last received chunk, still accumulating (partial fill) ──
-                    let radials_per_chunk = expected_radials / exp_n;
+                    let radials_per_chunk = (360.0 / exp_n as f32).max(1.0);
                     let partial_frac =
-                        (in_progress_radials as f32 / radials_per_chunk as f32).clamp(0.0, 1.0);
+                        (in_progress_radials as f32 / radials_per_chunk).clamp(0.0, 1.0);
                     if partial_frac > 0.0 {
                         let partial_rect = Rect::from_min_max(
                             slot_rect.min,
@@ -651,18 +650,8 @@ pub(super) fn render_realtime_progress(
             }
 
             // Chunk count label (e.g., "2/6")
-            let chunk_label = format!("{}/{}", chunks_received, exp_n);
             if width > 30.0 {
-                let label = if width > 70.0 {
-                    format!(
-                        "{} \u{00B7} {}/{}",
-                        chunk_label, total_radials, expected_radials
-                    )
-                } else if width > 45.0 {
-                    chunk_label
-                } else {
-                    format!("{}", total_radials)
-                };
+                let label = format!("{}/{}", chunks_received, exp_n);
                 painter.text(
                     block.center(),
                     egui::Align2::CENTER_CENTER,
