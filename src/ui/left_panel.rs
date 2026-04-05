@@ -603,87 +603,125 @@ fn render_elevation_grid(ui: &mut egui::Ui, rows: &[ElevRow]) {
     let font = egui::FontId::monospace(10.0);
     let hdr_font = egui::FontId::monospace(9.0);
 
-    // Compact fixed-width table. egui::Grid auto-sizes columns from the
-    // widest cell which over-allocates Wf/PRF and clips Products. Use
-    // pre-formatted monospace lines instead for precise alignment.
-    ui.label(
-        RichText::new("Elev      Wf PRF Time  Products")
-            .font(hdr_font)
-            .color(hdr_color),
-    );
+    egui::Grid::new("vcp_elev_grid")
+        .spacing([4.0, 1.0])
+        .show(ui, |ui| {
+            // Header
+            ui.label(
+                RichText::new("Elev")
+                    .font(hdr_font.clone())
+                    .color(hdr_color),
+            );
+            ui.label(RichText::new("Wf").font(hdr_font.clone()).color(hdr_color));
+            ui.label(RichText::new("PRF").font(hdr_font.clone()).color(hdr_color));
+            ui.label(
+                RichText::new("Time")
+                    .font(hdr_font.clone())
+                    .color(hdr_color),
+            );
+            ui.label(RichText::new("Products").font(hdr_font).color(hdr_color));
+            ui.end_row();
 
-    for row in rows {
-        let color = if row.is_current {
-            Color32::from_rgb(100, 255, 100)
-        } else {
-            Color32::from_rgb(160, 160, 170)
-        };
-
-        let time_text = match row.start_offset_secs {
-            Some(offset) if offset >= 0.0 => {
-                let secs = offset.round() as u32;
-                let m = secs / 60;
-                let s = secs % 60;
-                if row.timing_estimated {
-                    format!("~{}:{:02}", m, s)
+            for row in rows {
+                let text_color = if row.is_current {
+                    Color32::from_rgb(100, 255, 100)
                 } else {
-                    format!(" {}:{:02}", m, s)
+                    Color32::from_rgb(180, 180, 180)
+                };
+                let dim_color = if row.is_current {
+                    Color32::from_rgb(80, 200, 80)
+                } else {
+                    Color32::from_rgb(120, 120, 130)
+                };
+
+                // Elevation number + angle
+                ui.label(
+                    RichText::new(format!(
+                        "{:<2}{:>5.1}\u{00B0}",
+                        row.elevation_number, row.elevation_angle
+                    ))
+                    .color(text_color)
+                    .font(font.clone()),
+                );
+
+                // Waveform
+                let wf_resp = ui.label(
+                    RichText::new(row.waveform)
+                        .color(dim_color)
+                        .font(font.clone()),
+                );
+                match row.waveform {
+                    "CS" => wf_resp.on_hover_text("Contiguous Surveillance"),
+                    "CD" => wf_resp.on_hover_text("Contiguous Doppler"),
+                    "B" => wf_resp.on_hover_text("Batch"),
+                    "SP" => wf_resp.on_hover_text("Staggered Pulse Pair"),
+                    _ => wf_resp,
+                };
+
+                // PRF
+                let prf_resp = ui.label(
+                    RichText::new(row.prf_short)
+                        .color(dim_color)
+                        .font(font.clone()),
+                );
+                match row.prf_short {
+                    "L" => prf_resp.on_hover_text("Low PRF"),
+                    "M" => prf_resp.on_hover_text("Medium PRF"),
+                    "H" => prf_resp.on_hover_text("High PRF"),
+                    _ => prf_resp,
+                };
+
+                // Time (offset from volume start as M:SS)
+                let time_text = match row.start_offset_secs {
+                    Some(offset) if offset >= 0.0 => {
+                        let secs = offset.round() as u32;
+                        let m = secs / 60;
+                        let s = secs % 60;
+                        if row.timing_estimated {
+                            format!("~{}:{:02}", m, s)
+                        } else {
+                            format!("{}:{:02}", m, s)
+                        }
+                    }
+                    _ => "--:--".to_string(),
+                };
+                let time_resp =
+                    ui.label(RichText::new(time_text).color(dim_color).font(font.clone()));
+                if row.timing_estimated {
+                    time_resp.on_hover_text("Estimated from VCP azimuth rates");
+                } else {
+                    time_resp.on_hover_text("Observed from radial timestamps");
+                };
+
+                // Products
+                let products = waveform_to_products(row.waveform_raw);
+                if products.is_empty() {
+                    ui.label(RichText::new("--").color(dim_color).font(font.clone()));
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for &(letter, (r, g, b)) in products {
+                            let resp = ui.label(
+                                RichText::new(letter)
+                                    .color(Color32::from_rgb(r, g, b))
+                                    .font(font.clone()),
+                            );
+                            match letter {
+                                "R" => resp.on_hover_text("Reflectivity"),
+                                "V" => resp.on_hover_text("Velocity"),
+                                "S" => resp.on_hover_text("Spectrum Width"),
+                                "Z" => resp.on_hover_text("Differential Reflectivity"),
+                                "P" => resp.on_hover_text("Differential Phase"),
+                                "C" => resp.on_hover_text("Correlation Coefficient"),
+                                _ => resp,
+                            };
+                        }
+                    });
                 }
-            }
-            _ => "--:--".to_string(),
-        };
 
-        let products = waveform_to_products(row.waveform_raw);
-        let product_str: String = if products.is_empty() {
-            "--".to_string()
-        } else {
-            products
-                .iter()
-                .map(|&(l, _)| l)
-                .collect::<Vec<_>>()
-                .join("")
-        };
-
-        let line = format!(
-            "{:<2}{:>5.1}\u{00B0}  {:<2} {:<1}  {:>5}  {}",
-            row.elevation_number,
-            row.elevation_angle,
-            row.waveform,
-            row.prf_short,
-            time_text,
-            product_str,
-        );
-
-        let resp = ui.label(RichText::new(&line).font(font.clone()).color(color));
-
-        // Tooltip with full details
-        resp.on_hover_ui(|ui| {
-            ui.label(format!(
-                "Elevation {} ({:.1}°)",
-                row.elevation_number, row.elevation_angle
-            ));
-            let wf_full = match row.waveform {
-                "CS" => "Contiguous Surveillance",
-                "CD" => "Contiguous Doppler",
-                "B" => "Batch",
-                "SP" => "Staggered Pulse Pair",
-                _ => row.waveform,
-            };
-            ui.label(format!("Waveform: {}", wf_full));
-            let prf_full = match row.prf_short {
-                "L" => "Low",
-                "M" => "Medium",
-                "H" => "High",
-                _ => row.prf_short,
-            };
-            ui.label(format!("PRF: {}", prf_full));
-            if row.timing_estimated {
-                ui.label("Timing: estimated from VCP azimuth rates");
-            } else {
-                ui.label("Timing: observed from radial timestamps");
+                ui.end_row();
             }
         });
-    }
 }
 
 /// Map a raw waveform code to available product letters and their colors.
