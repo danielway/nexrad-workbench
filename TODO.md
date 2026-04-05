@@ -70,8 +70,6 @@ Desaturation could be made more obvious.
 Boundaries between the sweeps could be more obvious.
 We could make streaming more intelligent by skipping downloading chunks that don't match the user's filters.
 We could cache the latest volume's number locally to persist across reloads and resume streaming quickly.
-The VCP panel's icon is broken and the column spacing is way off (the icon column is way too big,
-    and could probably be removed and let coloring handle indication instead)
 
 We need retry limits for both acquisition (in case the binary search logic fails) and for waiting for an expected chunk.
     It should stop real-time streaming and provide an error message.
@@ -84,3 +82,5 @@ Incorporation of warnings/watches/discussions
 Additional of noises to announce changes to warnings/etc
 
 Cell detection and prediction improvements
+
+Is there a totally different approach to finding the latest volume in the bucket?
