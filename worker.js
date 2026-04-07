@@ -1,16 +1,37 @@
 // Data Worker — ES module worker that offloads heavy data operations from the main thread.
 //
-// Protocol:
-//   Main → Worker:  { type: 'init',   jsUrl, wasmUrl }
-//   Worker → Main:  { type: 'ready' }
+// All expensive NEXRAD operations (bzip2 decompression, record decode, sweep extraction,
+// IDB I/O) run here to keep the UI thread responsive. Communication uses postMessage
+// with Transferable ArrayBuffers for zero-copy data transfer of float arrays.
 //
-//   Main → Worker:  { type: 'ingest',  id, data: ArrayBuffer, siteId, timestampSecs, fileName }
-//   Worker → Main:  { type: 'ingested', id, result: { recordsStored, scanKey, elevationMap, totalMs } }
+// Protocol (all request/response pairs carry a numeric `id` for correlation):
 //
-//   Main → Worker:  { type: 'render',  id, scanKey, elevationNumber, product }
-//   Worker → Main:  { type: 'decoded', id, azimuths, gateValues, azimuthCount, gateCount, ... }
+//   Lifecycle:
+//     Main → Worker:  { type: 'init', jsUrl, wasmUrl }
+//     Worker → Main:  { type: 'ready' }
 //
-//   Worker → Main:  { type: 'error',   id, message }
+//   Archive ingest (full file → split, decode, store in IDB):
+//     Main → Worker:  { type: 'ingest', id, data: ArrayBuffer, siteId, timestampSecs, fileName }
+//     Worker → Main:  { type: 'ingested', id, result: { scanKey, recordsStored, elevationNumbers, sweeps, vcp, timing... } }
+//
+//   Chunk ingest (real-time streaming, one chunk at a time):
+//     Main → Worker:  { type: 'ingest_chunk', id, data: ArrayBuffer, siteId, timestampSecs, chunkIndex, isStart, isEnd, fileName }
+//     Worker → Main:  { type: 'chunk_ingested', id, result: { scanKey, sweepsStored, elevationsCompleted, sweeps, vcp, ... } }
+//
+//   Single-elevation render (read pre-computed sweep from IDB):
+//     Main → Worker:  { type: 'render', id, scanKey, elevationNumber, product }
+//     Worker → Main:  { type: 'decoded', id, azimuths: ArrayBuffer, gateValues: ArrayBuffer, azimuthCount, gateCount, scale, offset, ... }
+//
+//   Volume render (all elevations packed for 3D ray marching):
+//     Main → Worker:  { type: 'render_volume', id, scanKey, product, elevationNumbers }
+//     Worker → Main:  { type: 'volume_decoded', id, buffer: ArrayBuffer, sweepMeta, wordSize, ... }
+//
+//   Live render (partial sweep from in-memory accumulator, synchronous):
+//     Main → Worker:  { type: 'render_live', id, elevationNumber, product }
+//     Worker → Main:  { type: 'live_decoded', id, azimuths: ArrayBuffer, gateValues: ArrayBuffer, ... }
+//
+//   Errors:
+//     Worker → Main:  { type: 'error', id, message }
 
 let wasm = null;
 
@@ -65,6 +86,8 @@ self.onmessage = async function (e) {
                 isStart: msg.isStart,
                 isEnd: msg.isEnd,
                 fileName: msg.fileName,
+                skipOverlapDelete: msg.skipOverlapDelete || false,
+                isLastInSweep: msg.isLastInSweep || false,
             });
             self.postMessage({ type: 'chunk_ingested', id: msg.id, result: result });
         } catch (err) {
