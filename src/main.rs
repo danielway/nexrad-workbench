@@ -542,11 +542,22 @@ impl WorkbenchApp {
             return;
         }
 
-        // No queue — check if a new download command was issued
+        // No queue — check if a new download command was issued or a pending
+        // download is being resumed after a listing arrived.
         let is_position_download = match download_type {
-            Some(true) => true,
-            Some(false) => false,
-            None => return, // Just pumping queue, nothing to build
+            Some(is_pos) => {
+                // Fresh user action (not a pending resume) — reset pending state
+                if self
+                    .acquisition
+                    .pending_download
+                    .as_ref()
+                    .is_none_or(|p| p.is_position != is_pos)
+                {
+                    self.acquisition.pending_download = None;
+                }
+                is_pos
+            }
+            None => return, // Just pumping queue, nothing to do
         };
 
         // Get the download range: either from selection or from current position.
@@ -609,33 +620,57 @@ impl WorkbenchApp {
                         }
                     } else {
                         // No scan covers this time in the cached listing.
-                        // The listing may be stale (e.g. archives created after
-                        // it was cached), so invalidate and re-fetch.
+                        // Check if we already re-fetched this date's listing.
+                        let already_refetched = self
+                            .acquisition
+                            .pending_download
+                            .as_ref()
+                            .is_some_and(|p| p.refetched_dates.contains(&current_date));
+
+                        if !already_refetched {
+                            // The listing may be stale (e.g. archives created
+                            // after it was cached), so invalidate and re-fetch
+                            // once. Store intent so we resume when it arrives.
+                            log::info!(
+                                "No scan at {} in cached listing for {}/{}; re-fetching",
+                                sel_start_i64,
+                                site_id,
+                                current_date
+                            );
+                            let pending =
+                                self.acquisition.pending_download.get_or_insert_with(|| {
+                                    nexrad::acquisition_coordinator::PendingDownload {
+                                        is_position: true,
+                                        refetched_dates: std::collections::HashSet::new(),
+                                    }
+                                });
+                            pending.refetched_dates.insert(current_date);
+                            self.acquisition
+                                .archive_index
+                                .remove(&site_id, &current_date);
+                            if !self
+                                .acquisition
+                                .download_channel
+                                .is_listing_pending(&site_id, &current_date)
+                            {
+                                self.acquisition.download_channel.fetch_listing(
+                                    ctx.clone(),
+                                    site_id.clone(),
+                                    current_date,
+                                );
+                            }
+                            self.state.status_message =
+                                format!("Re-fetching archive listing for {}...", current_date);
+                            return;
+                        }
+
+                        // Already re-fetched — no scan here, skip.
                         log::info!(
-                            "No scan at {} in cached listing for {}/{}; re-fetching",
+                            "No scan at {} in listing for {}/{} after re-fetch; skipping",
                             sel_start_i64,
                             site_id,
                             current_date
                         );
-                        self.acquisition
-                            .archive_index
-                            .remove(&site_id, &current_date);
-                        if !self
-                            .acquisition
-                            .download_channel
-                            .is_listing_pending(&site_id, &current_date)
-                        {
-                            self.acquisition.download_channel.fetch_listing(
-                                ctx.clone(),
-                                site_id.clone(),
-                                current_date,
-                            );
-                        }
-                        self.state
-                            .push_command(state::AppCommand::DownloadAtPosition);
-                        self.state.status_message =
-                            format!("Re-fetching archive listing for {}...", current_date);
-                        return;
                     }
                 } else {
                     // Range selection: find all scans that intersect [sel_start, sel_end]
@@ -655,7 +690,8 @@ impl WorkbenchApp {
                     }
                 }
             } else {
-                // Need to fetch the listing first
+                // Need to fetch the listing first. Store intent so we resume
+                // when the listing arrives (via handle_listing_outcome).
                 if !self
                     .acquisition
                     .download_channel
@@ -668,14 +704,12 @@ impl WorkbenchApp {
                         current_date,
                     );
                 }
-                // Re-trigger once listing arrives — preserve the download type
-                if is_position_download {
-                    self.state
-                        .push_command(state::AppCommand::DownloadAtPosition);
-                } else {
-                    self.state
-                        .push_command(state::AppCommand::DownloadSelection);
-                }
+                self.acquisition.pending_download.get_or_insert_with(|| {
+                    nexrad::acquisition_coordinator::PendingDownload {
+                        is_position: is_position_download,
+                        refetched_dates: std::collections::HashSet::new(),
+                    }
+                });
                 self.state.status_message =
                     format!("Fetching archive listing for {}...", current_date);
                 return;
@@ -683,6 +717,9 @@ impl WorkbenchApp {
 
             current_date += chrono::Duration::days(1);
         }
+
+        // Queue building complete — clear pending state
+        self.acquisition.pending_download = None;
 
         if files_to_download.is_empty() {
             self.state.status_message = "No new scans to download in selection".to_string();
@@ -2269,9 +2306,26 @@ impl WorkbenchApp {
                         .archive_index
                         .all_boundaries_for_site(&site_id);
                 }
+
+                // Resume pending download now that the listing is available
+                if let Some(pending) = &self.acquisition.pending_download {
+                    if pending.is_position {
+                        self.state
+                            .push_command(state::AppCommand::DownloadAtPosition);
+                    } else {
+                        self.state
+                            .push_command(state::AppCommand::DownloadSelection);
+                    }
+                }
             }
             nexrad::ListingResult::Error(msg) => {
                 log::error!("Listing request failed: {}", msg);
+                // Abandon pending download on listing failure
+                if self.acquisition.pending_download.is_some() {
+                    self.acquisition.pending_download = None;
+                    self.state.status_message =
+                        format!("Download cancelled: listing fetch failed ({})", msg);
+                }
             }
         }
     }
