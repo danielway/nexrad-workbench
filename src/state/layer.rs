@@ -24,6 +24,8 @@ pub struct GeoLayerVisibility {
     pub highways: bool,
     /// Show lakes and water bodies
     pub lakes: bool,
+    /// Show NWS weather alerts overlay
+    pub nws_alerts: bool,
 }
 
 impl Default for GeoLayerVisibility {
@@ -36,6 +38,7 @@ impl Default for GeoLayerVisibility {
             cities: true,
             highways: false,
             lakes: false,
+            nws_alerts: false,
         }
     }
 }

@@ -202,6 +202,28 @@ pub struct AppState {
     /// Persistent worker initialization error message.
     /// When set, a non-dismissable error banner is shown in the top bar.
     pub worker_init_error: Option<String>,
+
+    /// NWS weather alert state (active alerts from api.weather.gov).
+    pub nws_alert_state: NwsAlertState,
+
+    /// Whether the NWS alert list modal is open.
+    pub alert_list_open: bool,
+
+    /// Whether the NWS alert detail modal is open.
+    pub alert_detail_open: bool,
+}
+
+/// State for NWS weather alerts.
+#[derive(Default)]
+pub struct NwsAlertState {
+    /// Currently active alerts.
+    pub alerts: Vec<crate::nws::NwsAlert>,
+    /// Wall-clock time (seconds) of last successful fetch.
+    pub last_fetched: f64,
+    /// Last fetch error, if any.
+    pub error: Option<String>,
+    /// Index of the alert selected for the detail modal.
+    pub selected_alert_index: Option<usize>,
 }
 
 /// State for the datetime jump picker popup.

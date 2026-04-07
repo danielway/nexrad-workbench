@@ -191,6 +191,19 @@ fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
             ui.checkbox(&mut state.layer_state.geo.cities, "Cities");
             ui.checkbox(&mut state.layer_state.geo.labels, "Labels");
+            ui.checkbox(&mut state.layer_state.geo.nws_alerts, "NWS Alerts");
+            if state.layer_state.geo.nws_alerts {
+                let wall = crate::state::TimeModel::wall_clock_time();
+                let playback = state.playback_state.playback_position();
+                let near_now = (wall - playback).abs() < 15.0 * 60.0;
+                if !near_now {
+                    ui.label(
+                        RichText::new("  Paused \u{2014} not near live time")
+                            .size(10.0)
+                            .color(egui::Color32::from_rgb(120, 120, 120)),
+                    );
+                }
+            }
         });
 }
 

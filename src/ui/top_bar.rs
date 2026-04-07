@@ -1,8 +1,9 @@
 //! Top bar UI: app title, status, and site context.
 
 use super::colors::live;
-use crate::state::{AppState, CameraMode, LivePhase, ViewMode};
-use eframe::egui::{self, Color32, RichText};
+use crate::nws;
+use crate::state::{AppState, CameraMode, LivePhase, TimeModel, ViewMode};
+use eframe::egui::{self, Color32, RichText, Vec2};
 
 pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
     // Detect status message changes: if the message content differs from when we
@@ -49,6 +50,17 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                 }
 
                 ui.separator();
+
+                // NWS alert badges (only when near live time and alerts exist)
+                {
+                    let wall = TimeModel::wall_clock_time();
+                    let playback = state.playback_state.playback_position();
+                    let near_now = (wall - playback).abs() < 15.0 * 60.0;
+                    if near_now && !state.nws_alert_state.alerts.is_empty() {
+                        render_alert_badges(ui, state);
+                        ui.separator();
+                    }
+                }
 
                 // Persistent worker initialization error banner
                 if let Some(ref error_msg) = state.worker_init_error {
@@ -314,5 +326,70 @@ fn render_live_status(ui: &mut egui::Ui, state: &AppState) {
             );
         }
         _ => {}
+    }
+}
+
+/// Render compact colored alert badges grouped by event type.
+fn render_alert_badges(ui: &mut egui::Ui, state: &mut AppState) {
+    // Group alerts by event type
+    let mut event_counts: Vec<(String, usize, Color32)> = Vec::new();
+    for alert in &state.nws_alert_state.alerts {
+        let color = nws::event_color(&alert.event, alert.severity);
+        if let Some(entry) = event_counts.iter_mut().find(|(e, _, _)| *e == alert.event) {
+            entry.1 += 1;
+        } else {
+            event_counts.push((alert.event.clone(), 1, color));
+        }
+    }
+
+    // Sort by count descending (most active first)
+    event_counts.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Limit to 4 badges, with overflow indicator
+    let max_badges = 4;
+    let overflow = event_counts.len().saturating_sub(max_badges);
+    let displayed = &event_counts[..event_counts.len().min(max_badges)];
+
+    for (event, count, color) in displayed {
+        let abbrev = nws::event_abbreviation(event);
+        let label = if *count > 1 {
+            format!("{} {}", count, abbrev)
+        } else {
+            abbrev.to_string()
+        };
+
+        let response = ui.add(
+            egui::Button::new(
+                RichText::new(&label)
+                    .size(11.0)
+                    .strong()
+                    .color(Color32::WHITE),
+            )
+            .fill(*color)
+            .corner_radius(8.0)
+            .min_size(Vec2::new(0.0, 20.0)),
+        );
+
+        if response
+            .on_hover_text(format!("{} (click to view)", event))
+            .clicked()
+        {
+            state.alert_list_open = true;
+        }
+    }
+
+    if overflow > 0 {
+        let response = ui.add(
+            egui::Button::new(
+                RichText::new(format!("+{}", overflow))
+                    .size(11.0)
+                    .color(Color32::from_rgb(180, 180, 180)),
+            )
+            .corner_radius(8.0)
+            .min_size(Vec2::new(0.0, 20.0)),
+        );
+        if response.on_hover_text("More alerts").clicked() {
+            state.alert_list_open = true;
+        }
     }
 }

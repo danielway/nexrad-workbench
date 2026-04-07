@@ -4,7 +4,7 @@ use super::canvas_inspector::{render_distance_measurement, render_inspector, ren
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
     draw_color_scale, draw_compass, draw_globe, draw_overlay_info, render_nexrad_sites,
-    render_radar_sweep,
+    render_nws_alerts, render_radar_sweep,
 };
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
@@ -120,6 +120,11 @@ pub fn render_canvas_with_geo(
                         &state.viz_state.detected_storm_cells,
                         dark,
                     );
+                }
+
+                // NWS alert polygon overlay (only when layer enabled and alerts exist)
+                if state.layer_state.geo.nws_alerts && !state.nws_alert_state.alerts.is_empty() {
+                    render_nws_alerts(&painter, &projection, &state.nws_alert_state.alerts);
                 }
 
                 // Show sweep line when actively revealing, between sweeps, or during live streaming

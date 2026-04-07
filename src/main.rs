@@ -13,6 +13,7 @@
 mod data;
 mod geo;
 mod nexrad;
+mod nws;
 mod state;
 mod ui;
 
@@ -155,6 +156,9 @@ pub struct WorkbenchApp {
 
     /// Sweep cache and previous-sweep resolution for sweep animation.
     playback_manager: PlaybackManager,
+
+    /// NWS weather alerts poller.
+    nws_poller: nws::NwsAlertPoller,
 }
 
 // Embed shapefile data at compile time
@@ -448,6 +452,7 @@ impl WorkbenchApp {
             event_modal_state: ui::EventModalState::default(),
             network_monitor: nexrad::NetworkMonitor::new(),
             playback_manager: PlaybackManager::new(),
+            nws_poller: nws::NwsAlertPoller::new(),
         };
 
         // Check cross-origin isolation status on startup
@@ -2552,6 +2557,39 @@ impl WorkbenchApp {
     fn persist_url_state(&mut self) {
         self.persistence.persist_if_due(&self.state);
     }
+
+    /// Poll NWS alerts if the layer is enabled and playback is near live.
+    fn poll_nws_alerts(&mut self, ctx: &egui::Context) {
+        if !self.state.layer_state.geo.nws_alerts {
+            return;
+        }
+
+        let wall = state::TimeModel::wall_clock_time();
+        let playback = self.state.playback_state.playback_position();
+        if (wall - playback).abs() > 15.0 * 60.0 {
+            return;
+        }
+
+        self.nws_poller.poll_if_needed(
+            ctx,
+            self.state.viz_state.center_lat,
+            self.state.viz_state.center_lon,
+        );
+
+        if let Some(result) = self.nws_poller.try_recv() {
+            match result {
+                nws::NwsAlertResult::Success(alerts) => {
+                    self.state.nws_alert_state.alerts = alerts;
+                    self.state.nws_alert_state.last_fetched = wall;
+                    self.state.nws_alert_state.error = None;
+                }
+                nws::NwsAlertResult::Error(e) => {
+                    log::warn!("NWS alert fetch failed: {}", e);
+                    self.state.nws_alert_state.error = Some(e);
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for WorkbenchApp {
@@ -2566,6 +2604,7 @@ impl eframe::App for WorkbenchApp {
         self.request_render_if_needed();
         self.update_network_stats();
         self.persist_url_state();
+        self.poll_nws_alerts(ctx);
 
         // Render UI panels in the correct order for egui layout
         // Side and top/bottom panels must be rendered before CentralPanel
@@ -2587,5 +2626,7 @@ impl eframe::App for WorkbenchApp {
         ui::render_stats_modal(ctx, &mut self.state);
         ui::render_network_log(ctx, &mut self.state);
         ui::render_event_modal(ctx, &mut self.state, &mut self.event_modal_state);
+        ui::render_alert_list(ctx, &mut self.state);
+        ui::render_alert_detail(ctx, &mut self.state);
     }
 }
