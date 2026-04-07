@@ -78,7 +78,7 @@ impl RadarGpuRenderer {
                 actual_len as i64 - expected_len as i64,
             );
         }
-        log::info!(
+        log::debug!(
             "GPU update_data: {}x{} (az x gates), azimuths=[{:.1}..{:.1}], vals={}, range {:.1}-{:.1} km, offset={} scale={}, {:.1}ms (copy: {:.1}ms, upload: {:.1}ms)",
             azimuth_count,
             gate_count,
@@ -238,7 +238,7 @@ impl RadarGpuRenderer {
         let upload_ms = t_upload.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        log::info!(
+        log::debug!(
             "GPU update_color_table: {:?} ({:.1}..{:.1}), {:.1}ms (build: {:.1}ms, upload: {:.1}ms)",
             product,
             min_val,

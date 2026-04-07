@@ -207,6 +207,16 @@ pub(super) fn render_download_ghosts(
     }
 }
 
+/// Non-model fields needed for realtime overlay rendering that don't belong in
+/// the position model (UI animation state, countdown, chunk interval).
+pub(super) struct LiveOverlayContext {
+    pub countdown_secs: Option<f64>,
+    pub chunk_interval_secs: f64,
+    pub in_progress_radials: u32,
+    pub elevations_received: Vec<u8>,
+    pub in_progress_elevation: Option<u8>,
+}
+
 /// Render real-time streaming progress on the timeline.
 ///
 /// Draws a unified view of the in-progress volume:
@@ -216,14 +226,16 @@ pub(super) fn render_download_ghosts(
 ///   - Complete (downloaded & persisted): filled with cool elevation colors
 ///   - Downloading (in-progress): outline with chunk subdivision inside
 ///   - Future (not yet collected): dashed outline
-///     Each non-complete sweep shows chunk subdivision where downloaded chunks
-///     are clipped to the sweep's time range.
+///
+///   Each non-complete sweep shows chunk subdivision where downloaded chunks
+///   are clipped to the sweep's time range.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_realtime_progress(
     painter: &Painter,
     scan_rect: &Rect,
     sweep_rect: Option<&Rect>,
-    live_state: &crate::state::LiveModeState,
+    model: &crate::state::VcpPositionModel,
+    ctx: &LiveOverlayContext,
     view_start: f64,
     view_end: f64,
     zoom: f64,
@@ -236,14 +248,11 @@ pub(super) fn render_realtime_progress(
     let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
     let now = now_secs;
 
-    let vol_start = match live_state.current_volume_start {
-        Some(v) => v,
-        None => return, // No volume in progress yet
-    };
-    let vcp = live_state.current_vcp_number.unwrap_or(0);
-    let expected_dur = live_state.last_volume_duration_secs.unwrap_or(300.0);
-    let expected_end = vol_start + expected_dur;
-    let expected_count = live_state.expected_elevation_count.unwrap_or(0) as usize;
+    let vol_start = model.volume_start;
+    let vcp = model.vcp_number;
+    let expected_end = model.volume_end;
+    let expected_dur = expected_end - vol_start;
+    let expected_count = model.sweeps.len();
 
     let x_vol_start = ts_to_x(vol_start).max(scan_rect.left());
     let x_vol_end = ts_to_x(expected_end).min(scan_rect.right());
@@ -341,7 +350,7 @@ pub(super) fn render_realtime_progress(
     // Unified label centered across the full scan block
     let full_width = x_vol_end - x_vol_start;
     if full_width > 40.0 {
-        let received = live_state.elevations_received.len();
+        let received = model.completed_count();
 
         let label = if vcp > 0 && expected_count > 0 {
             if full_width > 120.0 {
@@ -409,120 +418,18 @@ pub(super) fn render_realtime_progress(
         return;
     }
 
-    // Look up elevation angles from VCP definition (for coloring)
-    let vcp_def = crate::state::get_vcp_definition(vcp);
-    let elev_angle_for = |elev_num: u8| -> f32 {
-        vcp_def
-            .and_then(|d| d.elevations.get(elev_num.saturating_sub(1) as usize))
-            .map(|e| e.angle)
-            .unwrap_or(0.5 * elev_num as f32) // rough fallback
-    };
+    let received = &ctx.elevations_received;
+    let in_progress_elev = ctx.in_progress_elevation;
+    let in_progress_radials = ctx.in_progress_radials;
+    let countdown = ctx.countdown_secs;
 
-    // Per-elevation sweep durations from VCP azimuth rates (Method A with B fallback).
-    // Falls back to even distribution when weighted durations aren't available.
-    let sweep_dur_for = |idx: usize| -> f64 {
-        live_state
-            .sweep_duration_for(idx)
-            .unwrap_or(expected_dur / expected_count.max(1) as f64)
-    };
-    let sweep_start_offset_for = |idx: usize| -> f64 {
-        live_state
-            .sweep_start_offset(idx)
-            .unwrap_or(idx as f64 * expected_dur / expected_count.max(1) as f64)
-    };
-
-    let received = &live_state.elevations_received;
-    let in_progress_elev = live_state.current_in_progress_elevation;
-    let in_progress_radials = live_state.current_in_progress_radials.unwrap_or(0);
-    let countdown = live_state.countdown_remaining_secs(now);
-
-    for elev_idx in 0..expected_count {
-        let elev_num = (elev_idx + 1) as u8;
-        let is_complete = received.contains(&elev_num);
-        let this_sweep_dur = sweep_dur_for(elev_idx);
-
-        // Use actual timestamps where available:
-        // 1. Completed sweep -> use SweepMeta start/end
-        // 2. In-progress sweep with chunk data -> derive bounds from chunk spans
-        // 3. Future sweep -> estimate from last known anchor point
-        let (sw_start, sw_end) = if is_complete {
-            if let Some(meta) = live_state
-                .completed_sweep_metas
-                .iter()
-                .find(|m| m.elevation_number == elev_num)
-            {
-                (meta.start, meta.end)
-            } else {
-                let offset = sweep_start_offset_for(elev_idx);
-                (vol_start + offset, vol_start + offset + this_sweep_dur)
-            }
-        } else {
-            // For non-completed sweeps, find the best anchor: the end time of
-            // the highest completed sweep below this one.
-            let anchor_end = live_state
-                .completed_sweep_metas
-                .iter()
-                .filter(|m| m.elevation_number < elev_num)
-                .max_by_key(|m| m.elevation_number)
-                .map(|m| m.end);
-
-            // Also check if we have actual chunk data for this elevation
-            let chunk_min = live_state
-                .chunk_elev_spans
-                .iter()
-                .filter(|&&(e, _, _, _)| e == elev_num)
-                .map(|&(_, s, _, _)| s)
-                .reduce(f64::min);
-            let chunk_max = live_state
-                .chunk_elev_spans
-                .iter()
-                .filter(|&&(e, _, _, _)| e == elev_num)
-                .map(|&(_, _, e, _)| e)
-                .reduce(f64::max);
-
-            let sw_start_actual = match (chunk_min, anchor_end) {
-                // Have chunk data: use actual chunk start as sweep start
-                (Some(cm), _) => cm,
-                // No chunk data but have anchor: estimate remaining sweeps
-                // using weighted durations relative to their share of remaining time
-                (None, Some(ae)) => {
-                    let anchor_elev_num = live_state
-                        .completed_sweep_metas
-                        .iter()
-                        .filter(|m| m.elevation_number < elev_num)
-                        .max_by_key(|m| m.elevation_number)
-                        .map(|m| m.elevation_number)
-                        .unwrap_or(0);
-                    let anchor_idx = anchor_elev_num as usize; // elev_num is 1-based, so this is the next idx
-                    let remaining_dur = (vol_start + expected_dur) - ae;
-
-                    // Sum the weights of remaining elevations for proportional distribution
-                    let remaining_weight_sum: f64 =
-                        (anchor_idx..expected_count).map(&sweep_dur_for).sum();
-
-                    if remaining_weight_sum > 0.0 {
-                        let offset_from_anchor: f64 = (anchor_idx..elev_idx)
-                            .map(|i| (sweep_dur_for(i) / remaining_weight_sum) * remaining_dur)
-                            .sum();
-                        ae + offset_from_anchor
-                    } else {
-                        ae
-                    }
-                }
-                // No data at all: use weighted offsets from volume start
-                (None, None) => vol_start + sweep_start_offset_for(elev_idx),
-            };
-
-            let est_sweep_end = sw_start_actual + this_sweep_dur;
-            let sw_end_actual = match chunk_max {
-                // If we have chunk data, extend sweep end to at least cover it,
-                // but also estimate further since we may not have all radials yet
-                Some(cm) => cm.max(est_sweep_end),
-                None => est_sweep_end,
-            };
-
-            (sw_start_actual, sw_end_actual)
-        };
+    for sweep_pos in &model.sweeps {
+        let elev_num = sweep_pos.elevation_number;
+        let sw_start = sweep_pos.start;
+        let sw_end = sweep_pos.end;
+        let is_complete = sweep_pos.is_complete();
+        let is_downloading = sweep_pos.is_in_progress();
+        let is_future = sweep_pos.is_future();
 
         let x_start = ts_to_x(sw_start).max(sweep_rect.left());
         let x_end = ts_to_x(sw_end).min(sweep_rect.right());
@@ -530,10 +437,8 @@ pub(super) fn render_realtime_progress(
             continue;
         }
 
-        let elev_angle = elev_angle_for(elev_num);
+        let elev_angle = sweep_pos.elevation_angle;
         let matches_target = selected_elevation_number.is_none_or(|num| elev_num == num);
-        let is_downloading = !is_complete && in_progress_elev == Some(elev_num);
-        let is_future = !is_complete && !is_downloading;
 
         let block = Rect::from_min_max(
             Pos2::new(x_start, sweep_rect.top() + 2.0),
@@ -569,35 +474,152 @@ pub(super) fn render_realtime_progress(
                 painter.rect_stroke(block, 1.0, Stroke::new(stroke_width, border), stroke_kind);
             }
         } else if is_downloading {
-            // -- Downloading: outline with chunk subdivision + progress bar --
-            let border_color = Color32::from_rgba_unmultiplied(60, 140, 200, 100);
+            // -- Downloading: evenly-divided chunk slots --
+            // The sweep is divided into N equal slots where N = chunks_expected.
+            // Received chunks fill slots left-to-right; the next expected chunk
+            // shows a countdown placeholder.
 
-            // Total radials accumulated for this elevation across all chunks
-            let total_radials: u32 = live_state
-                .chunk_elev_spans
-                .iter()
-                .filter(|&&(e, _, _, _)| e == elev_num)
-                .map(|&(_, _, _, r)| r)
-                .sum::<u32>()
-                + in_progress_radials;
-            let expected_radials = 360u32; // NEXRAD standard full rotation
+            let (chunks_received, chunks_expected_opt) = match &sweep_pos.status {
+                crate::state::SweepStatus::InProgress {
+                    chunks_received,
+                    chunks_expected,
+                    ..
+                } => (*chunks_received, *chunks_expected),
+                _ => (0, None),
+            };
+            let exp_n = chunks_expected_opt.unwrap_or(3).max(1);
+            let chunk_width = block.width() / exp_n as f32;
+            let chunk_inset = 3.0_f32;
+            let chunk_top = block.min.y + chunk_inset;
+            let chunk_bot = block.max.y - chunk_inset;
 
-            // Progress fill: fraction of block width based on radials collected
-            let frac = (total_radials as f32 / expected_radials as f32).clamp(0.0, 1.0);
-            if frac > 0.0 {
-                let progress_rect = Rect::from_min_max(
-                    Pos2::new(block.min.x, block.min.y),
-                    Pos2::new(block.min.x + (block.width() * frac), block.max.y),
+            // The last received chunk may still be accumulating radials (partial).
+            // chunk_elev_spans already includes the current chunk, so don't add +1.
+            let is_last_chunk_partial = in_progress_radials > 0 && chunks_received > 0;
+
+            for slot in 0..exp_n {
+                let slot_x0 = block.min.x + slot as f32 * chunk_width;
+                let slot_x1 = block.min.x + (slot + 1) as f32 * chunk_width;
+                let slot_rect = Rect::from_min_max(
+                    Pos2::new(slot_x0, chunk_top),
+                    Pos2::new(slot_x1, chunk_bot),
                 );
-                painter.rect_filled(
-                    progress_rect,
-                    1.0,
-                    Color32::from_rgba_unmultiplied(60, 140, 200, 45),
-                );
+
+                if is_last_chunk_partial && slot == chunks_received - 1 {
+                    // ── Last received chunk, still accumulating (partial fill) ──
+                    let radials_per_chunk = (360.0 / exp_n as f32).max(1.0);
+                    let partial_frac =
+                        (in_progress_radials as f32 / radials_per_chunk).clamp(0.0, 1.0);
+                    if partial_frac > 0.0 {
+                        let partial_rect = Rect::from_min_max(
+                            slot_rect.min,
+                            Pos2::new(
+                                slot_rect.min.x + slot_rect.width() * partial_frac,
+                                slot_rect.max.y,
+                            ),
+                        );
+                        painter.rect_filled(
+                            partial_rect,
+                            1.0,
+                            Color32::from_rgba_unmultiplied(80, 170, 230, 70),
+                        );
+                    }
+                    // Dashed border for the partial slot
+                    let border_color = Color32::from_rgba_unmultiplied(100, 180, 255, 70);
+                    let mut x = slot_rect.min.x;
+                    while x < slot_rect.max.x {
+                        let x_end = (x + 3.0).min(slot_rect.max.x);
+                        painter.line_segment(
+                            [
+                                Pos2::new(x, slot_rect.min.y),
+                                Pos2::new(x_end, slot_rect.min.y),
+                            ],
+                            Stroke::new(0.5, border_color),
+                        );
+                        painter.line_segment(
+                            [
+                                Pos2::new(x, slot_rect.max.y),
+                                Pos2::new(x_end, slot_rect.max.y),
+                            ],
+                            Stroke::new(0.5, border_color),
+                        );
+                        x += 6.0;
+                    }
+                } else if slot < chunks_received {
+                    // ── Received (complete) chunk slot ──
+                    painter.rect_filled(
+                        slot_rect,
+                        1.0,
+                        Color32::from_rgba_unmultiplied(80, 170, 230, 70),
+                    );
+                    painter.rect_stroke(
+                        slot_rect,
+                        1.0,
+                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(100, 180, 255, 90)),
+                        StrokeKind::Inside,
+                    );
+                } else if slot == chunks_received && countdown.is_some() {
+                    // ── Next-chunk placeholder with countdown ──
+                    painter.rect_filled(slot_rect, 1.0, tl_colors::rt_next_chunk_fill());
+                    let dot_color = tl_colors::rt_next_chunk_border();
+                    // Dotted border
+                    let mut x = slot_rect.min.x;
+                    while x < slot_rect.max.x {
+                        let x_end = (x + 2.0).min(slot_rect.max.x);
+                        painter.line_segment(
+                            [
+                                Pos2::new(x, slot_rect.min.y),
+                                Pos2::new(x_end, slot_rect.min.y),
+                            ],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        painter.line_segment(
+                            [
+                                Pos2::new(x, slot_rect.max.y),
+                                Pos2::new(x_end, slot_rect.max.y),
+                            ],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        x += 4.0;
+                    }
+                    let mut y = slot_rect.min.y;
+                    while y < slot_rect.max.y {
+                        let y_end = (y + 2.0).min(slot_rect.max.y);
+                        painter.line_segment(
+                            [
+                                Pos2::new(slot_rect.min.x, y),
+                                Pos2::new(slot_rect.min.x, y_end),
+                            ],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        painter.line_segment(
+                            [
+                                Pos2::new(slot_rect.max.x, y),
+                                Pos2::new(slot_rect.max.x, y_end),
+                            ],
+                            Stroke::new(1.0, dot_color),
+                        );
+                        y += 4.0;
+                    }
+                    // Countdown label
+                    if let Some(remaining) = countdown {
+                        if slot_rect.width() > 16.0 {
+                            painter.text(
+                                slot_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                format!("{}s", remaining.ceil() as i32),
+                                egui::FontId::monospace(8.0),
+                                tl_colors::rt_next_chunk_label(),
+                            );
+                        }
+                    }
+                }
+                // Future slots beyond the next-chunk placeholder are left empty
+                // (the sweep's dashed border already indicates estimated bounds).
             }
 
-            // Dashed border: the extent of the downloading sweep is estimated,
-            // so use dashes to communicate that these bounds are approximate.
+            // Dashed border around the entire sweep block
+            let border_color = Color32::from_rgba_unmultiplied(60, 140, 200, 100);
             {
                 let mut x = block.min.x;
                 while x < block.max.x {
@@ -627,141 +649,9 @@ pub(super) fn render_realtime_progress(
                 }
             }
 
-            // Draw downloaded chunks that belong to this elevation, with
-            // clear separators between each chunk boundary.  Chunks are
-            // rendered shorter than the sweep block so they visually nest
-            // inside it, making the two layers easy to distinguish.
-            let chunk_inset = 3.5_f32;
-            let chunk_top = block.min.y + chunk_inset;
-            let chunk_bot = block.max.y - chunk_inset;
-            let mut prev_chunk_end_x: Option<f32> = None;
-            for &(span_elev, span_start, span_end, _) in &live_state.chunk_elev_spans {
-                if span_elev != elev_num {
-                    continue;
-                }
-                let cx0 = ts_to_x(span_start).max(sweep_rect.left());
-                let cx1 = ts_to_x(span_end).min(sweep_rect.right());
-                if cx1 > cx0 {
-                    let chunk_rect =
-                        Rect::from_min_max(Pos2::new(cx0, chunk_top), Pos2::new(cx1, chunk_bot));
-                    painter.rect_filled(
-                        chunk_rect,
-                        1.0,
-                        Color32::from_rgba_unmultiplied(80, 170, 230, 70),
-                    );
-                    painter.rect_stroke(
-                        chunk_rect,
-                        1.0,
-                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(100, 180, 255, 90)),
-                        StrokeKind::Inside,
-                    );
-
-                    // Separator tick at each chunk boundary
-                    if let Some(prev_x) = prev_chunk_end_x {
-                        // Draw separator at the boundary between previous and current chunk
-                        let sep_x = (prev_x + cx0) / 2.0;
-                        painter.line_segment(
-                            [Pos2::new(sep_x, chunk_top), Pos2::new(sep_x, chunk_bot)],
-                            Stroke::new(1.0, tl_colors::rt_chunk_separator()),
-                        );
-                    }
-                    prev_chunk_end_x = Some(cx1);
-                }
-            }
-
-            // Leading edge: bright vertical line at the progress front
-            let edge_x = block.min.x + (block.width() * frac);
-            if frac > 0.01 && frac < 0.99 {
-                painter.line_segment(
-                    [
-                        Pos2::new(edge_x, block.min.y),
-                        Pos2::new(edge_x, block.max.y),
-                    ],
-                    Stroke::new(1.5, tl_colors::rt_progress_edge()),
-                );
-            }
-
-            // -- Next-chunk placeholder block --
-            // When waiting for the next chunk, render a distinct placeholder
-            // right after the last received chunk with a dotted border and
-            // countdown label. Sized to match chunk_interval in timeline scale.
-            if let Some(remaining) = countdown {
-                let nc_start_x = prev_chunk_end_x.unwrap_or(edge_x);
-                let chunk_px = (live_state.chunk_interval_secs * zoom) as f32;
-                let nc_width_raw = chunk_px.max(8.0);
-                let nc_end_x = (nc_start_x + nc_width_raw).min(block.max.x);
-
-                let nc_rect = Rect::from_min_max(
-                    Pos2::new(nc_start_x, block.min.y),
-                    Pos2::new(nc_end_x, block.max.y),
-                );
-                let nc_width = nc_rect.width();
-
-                // Faint fill
-                painter.rect_filled(nc_rect, 1.0, tl_colors::rt_next_chunk_fill());
-
-                // Dotted border (shorter dashes than the regular dashed borders)
-                let dot_color = tl_colors::rt_next_chunk_border();
-                // Top and bottom dotted edges
-                {
-                    let mut x = nc_rect.min.x;
-                    while x < nc_rect.max.x {
-                        let x_seg_end = (x + 2.0).min(nc_rect.max.x);
-                        painter.line_segment(
-                            [
-                                Pos2::new(x, nc_rect.min.y),
-                                Pos2::new(x_seg_end, nc_rect.min.y),
-                            ],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        painter.line_segment(
-                            [
-                                Pos2::new(x, nc_rect.max.y),
-                                Pos2::new(x_seg_end, nc_rect.max.y),
-                            ],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        x += 4.0; // 2px on, 2px off = dotted pattern
-                    }
-                }
-                // Left and right dotted edges
-                {
-                    let mut y = nc_rect.min.y;
-                    while y < nc_rect.max.y {
-                        let y_end = (y + 2.0).min(nc_rect.max.y);
-                        painter.line_segment(
-                            [Pos2::new(nc_rect.min.x, y), Pos2::new(nc_rect.min.x, y_end)],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        painter.line_segment(
-                            [Pos2::new(nc_rect.max.x, y), Pos2::new(nc_rect.max.x, y_end)],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        y += 4.0;
-                    }
-                }
-
-                // Countdown label centered in the next-chunk placeholder
-                if nc_width > 16.0 {
-                    let label = format!("{}s", remaining.ceil() as i32);
-                    painter.text(
-                        nc_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        label,
-                        egui::FontId::monospace(8.0),
-                        tl_colors::rt_next_chunk_label(),
-                    );
-                }
-            }
-
-            // Radial progress label in the filled (collected) portion
-            if countdown.is_none() && width > 30.0 {
-                // Show radial progress as fraction while actively receiving
-                let label = if width > 55.0 {
-                    format!("{}/{}", total_radials, expected_radials)
-                } else {
-                    format!("{}", total_radials)
-                };
+            // Chunk count label (e.g., "2/6")
+            if width > 30.0 {
+                let label = format!("{}/{}", chunks_received, exp_n);
                 painter.text(
                     block.center(),
                     egui::Align2::CENTER_CENTER,
@@ -769,20 +659,6 @@ pub(super) fn render_realtime_progress(
                     egui::FontId::monospace(8.0),
                     Color32::from_rgba_unmultiplied(140, 200, 255, 180),
                 );
-            } else if countdown.is_some() && frac > 0.15 {
-                // When waiting, show radial count in the collected portion
-                let collected_center_x = (block.min.x + edge_x) / 2.0;
-                let collected_width = edge_x - block.min.x;
-                if collected_width > 25.0 {
-                    let label = format!("{}", total_radials);
-                    painter.text(
-                        Pos2::new(collected_center_x, block.center().y),
-                        egui::Align2::CENTER_CENTER,
-                        label,
-                        egui::FontId::monospace(8.0),
-                        Color32::from_rgba_unmultiplied(140, 200, 255, 140),
-                    );
-                }
             }
         } else if is_future {
             // Check if this is the first future sweep (next to receive data)
@@ -797,10 +673,22 @@ pub(super) fn render_realtime_progress(
 
             if is_first_future {
                 // -- Next-chunk placeholder on the first future sweep --
-                // Sized to one chunk interval at the start of the sweep block,
-                // not the entire sweep.
-                let chunk_px = (live_state.chunk_interval_secs * zoom) as f32;
-                let nc_end_x = (block.min.x + chunk_px.max(8.0)).min(block.max.x);
+                // Sized to one estimated chunk slot (sweep width / chunks_expected).
+                let future_exp_n = match &sweep_pos.status {
+                    crate::state::SweepStatus::Future => {
+                        // Use same formula as InProgress: estimate from sweep duration
+                        let dur = sweep_pos.duration();
+                        if dur > 0.0 && ctx.chunk_interval_secs > 0.0 {
+                            (dur / ctx.chunk_interval_secs).ceil() as u32
+                        } else {
+                            3
+                        }
+                    }
+                    _ => 3,
+                }
+                .max(1);
+                let slot_width = block.width() / future_exp_n as f32;
+                let nc_end_x = (block.min.x + slot_width.max(8.0)).min(block.max.x);
                 let nc_rect = Rect::from_min_max(
                     Pos2::new(block.min.x, block.min.y),
                     Pos2::new(nc_end_x, block.max.y),

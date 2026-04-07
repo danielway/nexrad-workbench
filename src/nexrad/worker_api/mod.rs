@@ -60,6 +60,13 @@ pub(super) struct IngestChunkParams {
     pub is_end: bool,
     #[serde(default)]
     pub file_name: String,
+    #[serde(default)]
+    pub skip_overlap_delete: bool,
+    /// True when the projection metadata indicates this is the last chunk in
+    /// its sweep. Allows the worker to flush the sweep immediately rather than
+    /// waiting for the next elevation's first chunk.
+    #[serde(default)]
+    pub is_last_in_sweep: bool,
 }
 
 pub(super) fn default_product() -> String {

@@ -46,7 +46,18 @@ pub struct DecodeWorker {
 /// A request queued before the worker was ready.
 enum QueuedRequest {
     Ingest(RequestId, Vec<u8>, String, i64, String),
-    IngestChunk(RequestId, Vec<u8>, String, i64, u32, bool, bool, String),
+    IngestChunk(
+        RequestId,
+        Vec<u8>,
+        String,
+        i64,
+        u32,
+        bool,
+        bool,
+        String,
+        bool,
+        bool,
+    ),
     Render(RequestId, String, u8, String),
     RenderLive(RequestId, u8, String),
     RenderVolume(RequestId, String, String, Vec<u8>),
@@ -177,6 +188,8 @@ impl DecodeWorker {
                         is_start,
                         is_end,
                         file_name,
+                        skip_overlap_delete,
+                        is_last_in_sweep,
                     ) => {
                         send::send_ingest_chunk_request(
                             &self.worker,
@@ -188,6 +201,8 @@ impl DecodeWorker {
                             is_start,
                             is_end,
                             &file_name,
+                            skip_overlap_delete,
+                            is_last_in_sweep,
                         );
                     }
                     QueuedRequest::Render(id, scan_key, elev, product) => {

@@ -44,8 +44,7 @@ pub use network_monitor::{
     is_cross_origin_isolated, NetworkAggregate, NetworkMonitor, NetworkRequest,
 };
 pub use persistence_manager::PersistenceManager;
-pub use realtime::{BackfillChannel, RealtimeChannel, RealtimeResult};
-pub use record_decode::extract_elevation_numbers;
+pub use realtime::{BackfillChannel, ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
 pub use render_coordinator::RenderCoordinator;
 pub use render_request::RenderRequest;
 pub use streaming_manager::{StreamingEvent, StreamingManager};

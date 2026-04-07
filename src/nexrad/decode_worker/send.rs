@@ -126,6 +126,8 @@ impl DecodeWorker {
         is_start: bool,
         is_end: bool,
         file_name: String,
+        skip_overlap_delete: bool,
+        is_last_in_sweep: bool,
     ) {
         let id = self.next_request_id();
         self.pending_chunk_ingest.borrow_mut().insert(
@@ -149,6 +151,8 @@ impl DecodeWorker {
                 is_start,
                 is_end,
                 &file_name,
+                skip_overlap_delete,
+                is_last_in_sweep,
             );
         } else {
             self.queue.push(super::QueuedRequest::IngestChunk(
@@ -160,6 +164,8 @@ impl DecodeWorker {
                 is_start,
                 is_end,
                 file_name,
+                skip_overlap_delete,
+                is_last_in_sweep,
             ));
         }
     }
@@ -218,6 +224,8 @@ pub(super) fn send_ingest_chunk_request(
     is_start: bool,
     is_end: bool,
     file_name: &str,
+    skip_overlap_delete: bool,
+    is_last_in_sweep: bool,
 ) {
     let request = IngestChunkRequestMsg {
         msg_type: "ingest_chunk",
@@ -228,6 +236,8 @@ pub(super) fn send_ingest_chunk_request(
         is_start,
         is_end,
         file_name,
+        skip_overlap_delete,
+        is_last_in_sweep,
     };
     let msg = match serde_wasm_bindgen::to_value(&request) {
         Ok(v) => v,
