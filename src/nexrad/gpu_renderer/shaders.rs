@@ -208,6 +208,7 @@ uniform float u_sweep_azimuth;     // current sweep line angle in degrees
 uniform float u_sweep_start;       // azimuth where the sweep began collecting
 uniform float u_prev_offset;       // previous scan moment offset
 uniform float u_prev_scale;        // previous scan moment scale
+uniform float u_sweep_chunk_boundary; // extrapolated sweep position, -1 = disabled
 // Previous sweep spatial params (may differ from current sweep)
 uniform float u_prev_gate_count;
 uniform float u_prev_azimuth_count;
@@ -237,9 +238,35 @@ void main() {{
         use_prev = (pixel_from_start >= swept_arc);
     }}
 
-    // Age-based desaturation: oldest quadrant (270°-360° behind sweep) fades out
+    // Live desaturation zones (relative to the estimated antenna position):
+    //
+    //   [fresh data] ← received data edge ← [gap] ← now line ← [fade 90°] ← [no desat]
+    //     saturated         fully desat        gradient→0%        previous sweep
+    //
+    // The gap is where the antenna has swept but S3 uploads haven't arrived.
+    // The fade zone is 90° ahead of the now line in rotation direction —
+    // the oldest data from the previous rotation, about to be overwritten.
     float desat_factor = 0.0;
-    if (u_sweep_enabled == 1 && u_data_age_indicator == 1) {{
+    if (u_sweep_enabled == 1 && u_data_age_indicator == 1 && u_sweep_chunk_boundary >= 0.0) {{
+        // Distance behind the now line (opposite rotation direction).
+        // 0 = at now line, increases going back through received data.
+        float behind_now = mod(u_sweep_chunk_boundary - azimuth_deg + 360.0, 360.0);
+        // Gap: angular distance from received data edge to now line.
+        float data_to_now = mod(u_sweep_chunk_boundary - u_sweep_azimuth + 360.0, 360.0);
+        // Distance ahead of the now line (in rotation direction).
+        // 0 = at now line, increases going forward into oldest data.
+        float ahead_of_now = mod(azimuth_deg - u_sweep_chunk_boundary + 360.0, 360.0);
+
+        if (behind_now < data_to_now) {{
+            // In the gap between received data edge and now line
+            desat_factor = 0.7;
+        }} else if (ahead_of_now > 0.0 && ahead_of_now < 90.0) {{
+            // 90° ahead of now line: gradient from strong (near now) to none
+            desat_factor = (1.0 - ahead_of_now / 90.0) * 0.7;
+        }}
+    }}
+    // Fallback when no estimated antenna position is available
+    if (u_sweep_enabled == 1 && u_data_age_indicator == 1 && u_sweep_chunk_boundary < 0.0) {{
         float age = mod(u_sweep_azimuth - azimuth_deg + 360.0, 360.0) / 360.0;
         desat_factor = clamp((age - 0.75) / 0.25, 0.0, 1.0) * 0.9;
     }}
@@ -378,7 +405,7 @@ void main() {{
 
 {RAW_TO_PHYSICAL}
 {COLOR_LOOKUP}
-    // Age-based desaturation for sweep animation
+    // Apply desaturation
     if (desat_factor > 0.0) {{
         float lum = dot(color.rgb, vec3(0.299, 0.587, 0.114));
         color.rgb = mix(color.rgb, vec3(lum), desat_factor);

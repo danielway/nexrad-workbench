@@ -12,6 +12,33 @@ use eframe::egui;
 
 use crate::data::facade::DataFacade;
 
+/// Projected timing and structural info for a single chunk in the volume.
+///
+/// Combines structural metadata from `ChunkMetadata` (available for all chunks)
+/// with projected timing from `ChunkProjection` (available for future chunks).
+/// This decouples the UI layer from the nexrad-data library types.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+pub struct ChunkProjectionInfo {
+    /// 1-based sequence number in the volume.
+    pub sequence: usize,
+    /// Elevation number (1-based), None for the Start chunk.
+    pub elevation_number: Option<usize>,
+    /// Elevation angle in degrees.
+    pub elevation_angle_deg: f64,
+    /// Azimuth rotation rate in degrees/second from the VCP.
+    pub azimuth_rate_dps: f64,
+    /// Projected time this chunk becomes available (Unix seconds).
+    /// `Some` for future chunks (from ScanTimingProjection), `None` for past chunks.
+    pub projected_time_secs: Option<f64>,
+    /// Whether this chunk starts a new sweep.
+    pub starts_new_sweep: bool,
+    /// 0-based index of this chunk within its sweep.
+    pub chunk_index_in_sweep: usize,
+    /// Total chunks in this sweep (3 for standard, 6 for super-res).
+    pub chunks_in_sweep: usize,
+}
+
 /// Result type for realtime streaming events.
 #[derive(Clone, Debug)]
 pub enum RealtimeResult {
@@ -23,6 +50,11 @@ pub enum RealtimeResult {
         time_until_next: Option<Duration>,
         is_volume_end: bool,
         fetch_latency_ms: f64,
+        /// Projected volume end time (Unix seconds), from the library's physics model.
+        projected_volume_end_secs: Option<f64>,
+        /// Per-chunk projection info for the entire volume.
+        /// Structural metadata is present for all chunks; projected times only for future chunks.
+        chunk_projections: Option<Vec<ChunkProjectionInfo>>,
     },
     /// Raw chunk data for incremental ingest
     ChunkData {
@@ -31,6 +63,10 @@ pub enum RealtimeResult {
         is_start: bool,
         is_end: bool,
         timestamp: i64,
+        /// When true, the worker should skip deleting overlapping scans on
+        /// is_start. Set when resuming a volume that already has cached data
+        /// in IDB, to avoid destroying previously-stored sweep blobs.
+        skip_overlap_delete: bool,
     },
     /// Error occurred during streaming
     Error(String),
@@ -113,14 +149,56 @@ impl RealtimeChannel {
     }
 }
 
+/// Build projection info from the iterator's current state.
+///
+/// Combines structural metadata (all chunks) with projected timing (future chunks only).
+fn build_chunk_projections(
+    iter: &nexrad_data::aws::realtime::ChunkIterator,
+) -> Option<Vec<ChunkProjectionInfo>> {
+    let all_meta = iter.all_chunk_metadata()?;
+    let projection = iter.project_remaining_scan();
+
+    // Build a lookup from sequence → projected_time for future chunks
+    let projected_times: std::collections::HashMap<usize, f64> = projection
+        .as_ref()
+        .map(|p| {
+            p.chunks()
+                .iter()
+                .map(|c| (c.sequence(), c.projected_time().timestamp() as f64))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(
+        all_meta
+            .iter()
+            .map(|meta| ChunkProjectionInfo {
+                sequence: meta.sequence(),
+                elevation_number: meta.elevation_number(),
+                elevation_angle_deg: meta.elevation_angle_deg(),
+                azimuth_rate_dps: meta.azimuth_rate_dps(),
+                projected_time_secs: projected_times.get(&meta.sequence()).copied(),
+                starts_new_sweep: meta.is_first_in_sweep(),
+                chunk_index_in_sweep: meta.chunk_index_in_sweep(),
+                chunks_in_sweep: meta.chunks_in_sweep(),
+            })
+            .collect(),
+    )
+}
+
+/// Get the projected volume end time from the iterator.
+fn get_projected_volume_end_secs(iter: &nexrad_data::aws::realtime::ChunkIterator) -> Option<f64> {
+    iter.projected_volume_end_time()
+        .map(|dt| dt.timestamp() as f64)
+}
+
 async fn streaming_loop(
     ctx: egui::Context,
     site_id: String,
     state: Rc<RefCell<RealtimeState>>,
     stats: NetworkStats,
-    facade: DataFacade,
+    _facade: DataFacade,
 ) {
-    use crate::data::keys::{SiteId, UnixMillis};
     use nexrad_data::aws::realtime::{
         download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType,
     };
@@ -134,6 +212,9 @@ async fn streaming_loop(
     // point — when the timeout wins the select, the init future is dropped,
     // which drops any in-flight HTTP request future and cancels it.
     const ACQUIRE_TIMEOUT_SECS: u32 = 10;
+    const CHUNK_POLL_INTERVAL_MS: u32 = 500;
+    const CHUNK_POLL_MAX_RETRIES: u32 = 25; // 25 × 500ms = 12.5s
+    const CHUNK_POLL_GRACE_MS: u32 = 2500; // 2.5s final grace → 15s total
     let init_future = ChunkIterator::start(&site_id);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
 
@@ -195,45 +276,9 @@ async fn streaming_loop(
     // If start_chunk is Some, we joined mid-volume: emit start chunk + latest chunk.
     // If start_chunk is None, latest_chunk IS the start chunk.
     if let Some(start_chunk) = init_result.start_chunk {
-        // Joined mid-volume: emit the start chunk, backfill intermediates, then latest
+        // Joined mid-volume: emit the start chunk + current sweep's chunks only.
         let start_data = start_chunk.chunk.data().to_vec();
         current_scan_start_secs = current_timestamp();
-
-        // Parse volume header time from the start chunk for skip detection
-        let volume_header_time_secs: Option<f64> = {
-            let file = nexrad_data::volume::File::new(start_data.clone());
-            file.header()
-                .and_then(|h| h.date_time())
-                .map(|dt| dt.timestamp() as f64)
-        };
-
-        // Query IDB for existing sweep data to compute a skip point
-        let skip_before_secs: Option<f64> = if let Some(vol_start) = volume_header_time_secs {
-            let vol_start_ms = UnixMillis((vol_start * 1000.0) as i64);
-            let window_end_ms = UnixMillis(vol_start_ms.0 + 600_000); // +10 min
-            match facade
-                .list_scans(&SiteId::new(&site_id), vol_start_ms, window_end_ms)
-                .await
-            {
-                Ok(scans) => {
-                    let result = scans
-                        .iter()
-                        .filter_map(|s| s.end_timestamp_secs)
-                        .max()
-                        .map(|t| t as f64);
-                    if let Some(skip_ts) = result {
-                        log::info!(
-                            "Streaming backfill: found existing scan data, skip point = {:.0}s",
-                            skip_ts
-                        );
-                    }
-                    result
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
 
         log::info!(
             "Init: emitting start_chunk ({} bytes) for mid-volume join",
@@ -247,80 +292,78 @@ async fn streaming_loop(
                 is_start: true,
                 is_end: false,
                 timestamp: current_scan_start_secs,
+                // Skip overlap deletion — we're only backfilling the current
+                // sweep, not replacing the full volume.
+                skip_overlap_delete: true,
             });
         }
         ctx.request_repaint();
 
-        // Backfill: download all intermediate chunks between start and latest
+        // Download only the current sweep's preceding chunks (not the full volume).
+        // Use chunk metadata to find which sequences share the latest chunk's
+        // elevation, then download only those that precede it.
         let latest_seq = init_result.latest_chunk.identifier.sequence();
         let volume = *init_result.latest_chunk.identifier.volume();
+        cache_volume_number(&site_id, volume);
         chunks_in_volume = 1; // start chunk already emitted
 
-        if latest_seq > 2 {
-            // List all chunks in the volume to get their identifiers
+        let latest_elev = iter
+            .chunk_metadata(latest_seq)
+            .and_then(|m| m.elevation_number());
+
+        // Collect sequences for the same sweep that precede the latest chunk.
+        let sweep_seqs: Vec<usize> = if let Some(elev) = latest_elev {
+            iter.all_chunk_metadata()
+                .map(|metas| {
+                    metas
+                        .iter()
+                        .filter(|m| {
+                            m.elevation_number() == Some(elev)
+                                && m.sequence() > 1
+                                && m.sequence() < latest_seq
+                        })
+                        .map(|m| m.sequence())
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        if !sweep_seqs.is_empty() {
             match list_chunks_in_volume(&site_id, volume, 100).await {
                 Ok(chunk_ids) => {
-                    // Filter to intermediate chunks (after start, before latest)
-                    let intermediates: Vec<_> = chunk_ids
+                    let to_download: Vec<_> = chunk_ids
                         .into_iter()
-                        .filter(|id| id.sequence() > 1 && id.sequence() < latest_seq)
+                        .filter(|id| sweep_seqs.contains(&id.sequence()))
                         .collect();
 
-                    let total_backfill = intermediates.len();
-                    let mut skipped = 0u32;
                     log::info!(
-                        "Backfill: downloading {} intermediate chunks (seq 2..{})",
-                        total_backfill,
-                        latest_seq - 1
+                        "Sweep backfill: downloading {} chunks for current sweep (elev {:?}, seq {:?})",
+                        to_download.len(),
+                        latest_elev,
+                        sweep_seqs,
                     );
 
-                    for chunk_id in &intermediates {
+                    let mut downloaded: Vec<(u32, Vec<u8>)> = Vec::new();
+
+                    for chunk_id in to_download.iter() {
                         if state.borrow().stop_requested {
                             break;
                         }
-
-                        // Skip chunks whose estimated time falls before existing data
-                        if let (Some(skip_ts), Some(vol_start)) =
-                            (skip_before_secs, volume_header_time_secs)
-                        {
-                            let vol_duration_est = 300.0; // conservative 5-min estimate
-                            let total_chunks = (latest_seq - 1) as f64;
-                            let chunk_end_est = vol_start
-                                + (chunk_id.sequence() as f64 / total_chunks.max(1.0))
-                                    * vol_duration_est;
-                            let chunk_dur = vol_duration_est / total_chunks.max(1.0);
-                            if chunk_end_est + chunk_dur < skip_ts {
-                                skipped += 1;
-                                continue;
-                            }
-                        }
-
                         match download_chunk(&site_id, chunk_id).await {
                             Ok((_id, chunk)) => {
-                                chunks_in_volume += 1;
                                 let chunk_data = chunk.data().to_vec();
-                                let chunk_type = chunk_id.chunk_type();
                                 log::debug!(
-                                    "Backfill: chunk seq {} ({} bytes, {:?})",
+                                    "Sweep backfill: downloaded chunk seq {} ({} bytes)",
                                     chunk_id.sequence(),
                                     chunk_data.len(),
-                                    chunk_type
                                 );
-                                {
-                                    let mut s = state.borrow_mut();
-                                    s.results.push(RealtimeResult::ChunkData {
-                                        data: chunk_data,
-                                        chunk_index: chunks_in_volume - 1,
-                                        is_start: false,
-                                        is_end: false,
-                                        timestamp: current_scan_start_secs,
-                                    });
-                                }
-                                ctx.request_repaint();
+                                downloaded.push((chunk_id.sequence() as u32, chunk_data));
                             }
                             Err(e) => {
                                 log::warn!(
-                                    "Backfill: failed to download chunk seq {}: {}",
+                                    "Sweep backfill: failed to download chunk seq {}: {}",
                                     chunk_id.sequence(),
                                     e
                                 );
@@ -328,16 +371,38 @@ async fn streaming_loop(
                         }
                     }
 
+                    for (_seq, chunk_data) in downloaded {
+                        chunks_in_volume += 1;
+                        {
+                            let mut s = state.borrow_mut();
+                            s.results.push(RealtimeResult::ChunkData {
+                                data: chunk_data,
+                                chunk_index: chunks_in_volume - 1,
+                                is_start: false,
+                                is_end: false,
+                                timestamp: current_scan_start_secs,
+                                skip_overlap_delete: false,
+                            });
+                        }
+                        ctx.request_repaint();
+                    }
+
                     log::info!(
-                        "Backfill: completed, {} chunks downloaded, {} skipped (already in IDB)",
+                        "Sweep backfill: completed, {} chunks downloaded for elev {:?}",
                         chunks_in_volume - 1,
-                        skipped
+                        latest_elev,
                     );
                 }
                 Err(e) => {
-                    log::warn!("Backfill: failed to list chunks: {}, skipping backfill", e);
+                    log::warn!("Sweep backfill: failed to list chunks: {}, skipping", e);
                 }
             }
+        } else {
+            log::info!(
+                "Sweep backfill: no preceding chunks for latest seq {} (elev {:?})",
+                latest_seq,
+                latest_elev,
+            );
         }
 
         // Emit the latest chunk (where the iterator is positioned)
@@ -360,12 +425,15 @@ async fn streaming_loop(
                 is_start: false,
                 is_end: latest_is_end,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: false,
             });
             s.results.push(RealtimeResult::ChunkReceived {
                 chunks_in_volume,
                 time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
+                projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                chunk_projections: build_chunk_projections(&iter),
             });
         }
         ctx.request_repaint();
@@ -377,6 +445,7 @@ async fn streaming_loop(
         let latest_is_end = latest_type == ChunkType::End;
         current_scan_start_secs = current_timestamp();
         chunks_in_volume = 1;
+        cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
 
         log::info!(
             "Init: emitting latest_chunk as start ({} bytes)",
@@ -390,18 +459,22 @@ async fn streaming_loop(
                 is_start: latest_is_start,
                 is_end: latest_is_end,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: false,
             });
             s.results.push(RealtimeResult::ChunkReceived {
                 chunks_in_volume,
                 time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
+                projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                chunk_projections: build_chunk_projections(&iter),
             });
         }
         ctx.request_repaint();
     }
 
     // --- Main streaming loop: emit ChunkData per chunk ---
+    let mut none_retries: u32 = 0;
     loop {
         // Check stop signal
         if state.borrow().stop_requested {
@@ -422,6 +495,7 @@ async fn streaming_loop(
         let chunk_fetch_start = web_time::Instant::now();
         match iter.try_next().await {
             Ok(Some(chunk)) => {
+                none_retries = 0;
                 let chunk_fetch_ms = chunk_fetch_start.elapsed().as_secs_f64() * 1000.0;
                 stats_tracker.update(&stats, &iter);
 
@@ -434,6 +508,7 @@ async fn streaming_loop(
                 if is_start {
                     chunks_in_volume = 0;
                     current_scan_start_secs = current_timestamp();
+                    cache_volume_number(&site_id, *chunk.identifier.volume());
                 }
 
                 chunks_in_volume += 1;
@@ -449,6 +524,7 @@ async fn streaming_loop(
                         is_start,
                         is_end,
                         timestamp: current_scan_start_secs,
+                        skip_overlap_delete: false,
                     });
                     // Emit UI status update
                     s.results.push(RealtimeResult::ChunkReceived {
@@ -456,6 +532,8 @@ async fn streaming_loop(
                         time_until_next,
                         is_volume_end: is_end,
                         fetch_latency_ms: chunk_fetch_ms,
+                        projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                        chunk_projections: build_chunk_projections(&iter),
                     });
                 }
 
@@ -463,7 +541,50 @@ async fn streaming_loop(
             }
             Ok(None) => {
                 // Chunk not ready yet, brief retry
-                sleep_ms(500).await;
+                none_retries += 1;
+                if none_retries >= CHUNK_POLL_MAX_RETRIES {
+                    let elapsed_secs =
+                        (none_retries * CHUNK_POLL_INTERVAL_MS + CHUNK_POLL_GRACE_MS) / 1000;
+                    log::warn!(
+                        "Streaming: {} consecutive empty polls, attempting final fetch after {}ms delay",
+                        none_retries,
+                        CHUNK_POLL_GRACE_MS,
+                    );
+                    sleep_ms(CHUNK_POLL_GRACE_MS).await;
+                    if state.borrow().stop_requested {
+                        break;
+                    }
+                    match iter.try_next().await {
+                        Ok(Some(_chunk)) => {
+                            // Recovered — let the next loop iteration handle it normally
+                            none_retries = 0;
+                            continue;
+                        }
+                        Ok(None) => {
+                            log::error!(
+                                "Streaming: final retry still empty after ~{}s, giving up",
+                                elapsed_secs
+                            );
+                            let mut s = state.borrow_mut();
+                            s.results.push(RealtimeResult::Error(format!(
+                                "Chunk polling timed out — no data received for ~{} seconds",
+                                elapsed_secs
+                            )));
+                            s.active = false;
+                            ctx.request_repaint();
+                            break;
+                        }
+                        Err(e) => {
+                            log::error!("Streaming error on final retry: {}", e);
+                            let mut s = state.borrow_mut();
+                            s.results.push(RealtimeResult::Error(format!("{}", e)));
+                            s.active = false;
+                            ctx.request_repaint();
+                            break;
+                        }
+                    }
+                }
+                sleep_ms(CHUNK_POLL_INTERVAL_MS).await;
             }
             Err(e) => {
                 log::error!("Streaming error: {}", e);
@@ -611,9 +732,8 @@ async fn backfill_loop(
     site_id: String,
     state: Rc<RefCell<BackfillState>>,
     stats: NetworkStats,
-    facade: DataFacade,
+    _facade: DataFacade,
 ) {
-    use crate::data::keys::{SiteId, UnixMillis};
     use nexrad_data::aws::realtime::{
         download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType,
     };
@@ -672,45 +792,9 @@ async fn backfill_loop(
     let mut chunks_in_volume: u32;
 
     if let Some(start_chunk) = init_result.start_chunk {
-        // Joined mid-volume: emit the start chunk, backfill intermediates, then latest
+        // Joined mid-volume: emit the start chunk (VCP metadata) + current sweep only.
         let start_data = start_chunk.chunk.data().to_vec();
         chunks_in_volume = 1;
-
-        // Parse volume header time from the start chunk for skip detection
-        let volume_header_time_secs: Option<f64> = {
-            let file = nexrad_data::volume::File::new(start_data.clone());
-            file.header()
-                .and_then(|h| h.date_time())
-                .map(|dt| dt.timestamp() as f64)
-        };
-
-        // Query IDB for existing sweep data to compute a skip point
-        let skip_before_secs: Option<f64> = if let Some(vol_start) = volume_header_time_secs {
-            let vol_start_ms = UnixMillis((vol_start * 1000.0) as i64);
-            let window_end_ms = UnixMillis(vol_start_ms.0 + 600_000); // +10 min
-            match facade
-                .list_scans(&SiteId::new(&site_id), vol_start_ms, window_end_ms)
-                .await
-            {
-                Ok(scans) => {
-                    let result = scans
-                        .iter()
-                        .filter_map(|s| s.end_timestamp_secs)
-                        .max()
-                        .map(|t| t as f64);
-                    if let Some(skip_ts) = result {
-                        log::info!(
-                            "Backfill: found existing scan data, skip point = {:.0}s",
-                            skip_ts
-                        );
-                    }
-                    result
-                }
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
 
         log::info!(
             "Backfill: emitting start_chunk ({} bytes) for mid-volume join",
@@ -724,72 +808,68 @@ async fn backfill_loop(
                 is_start: true,
                 is_end: false,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: true,
             });
         }
         ctx.request_repaint();
 
-        // Backfill: download all intermediate chunks between start and latest
+        // Download only the current sweep's preceding chunks.
         let latest_seq = init_result.latest_chunk.identifier.sequence();
         let volume = *init_result.latest_chunk.identifier.volume();
+        cache_volume_number(&site_id, volume);
 
-        if latest_seq > 2 {
+        let latest_elev = iter
+            .chunk_metadata(latest_seq)
+            .and_then(|m| m.elevation_number());
+
+        let sweep_seqs: Vec<usize> = if let Some(elev) = latest_elev {
+            iter.all_chunk_metadata()
+                .map(|metas| {
+                    metas
+                        .iter()
+                        .filter(|m| {
+                            m.elevation_number() == Some(elev)
+                                && m.sequence() > 1
+                                && m.sequence() < latest_seq
+                        })
+                        .map(|m| m.sequence())
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
+        if !sweep_seqs.is_empty() {
             match list_chunks_in_volume(&site_id, volume, 100).await {
                 Ok(chunk_ids) => {
-                    let intermediates: Vec<_> = chunk_ids
+                    let to_download: Vec<_> = chunk_ids
                         .into_iter()
-                        .filter(|id| id.sequence() > 1 && id.sequence() < latest_seq)
+                        .filter(|id| sweep_seqs.contains(&id.sequence()))
                         .collect();
 
-                    let total_backfill = intermediates.len();
-                    let mut skipped = 0u32;
                     log::info!(
-                        "Backfill: downloading {} intermediate chunks (seq 2..{})",
-                        total_backfill,
-                        latest_seq - 1
+                        "Backfill sweep: downloading {} chunks for current sweep (elev {:?})",
+                        to_download.len(),
+                        latest_elev,
                     );
 
-                    for chunk_id in &intermediates {
-                        // Skip chunks whose estimated time falls before existing data
-                        if let (Some(skip_ts), Some(vol_start)) =
-                            (skip_before_secs, volume_header_time_secs)
-                        {
-                            let vol_duration_est = 300.0; // conservative 5-min estimate
-                            let total_chunks = (latest_seq - 1) as f64;
-                            let chunk_end_est = vol_start
-                                + (chunk_id.sequence() as f64 / total_chunks.max(1.0))
-                                    * vol_duration_est;
-                            let chunk_dur = vol_duration_est / total_chunks.max(1.0);
-                            if chunk_end_est + chunk_dur < skip_ts {
-                                skipped += 1;
-                                continue;
-                            }
-                        }
+                    let mut downloaded: Vec<(u32, Vec<u8>)> = Vec::new();
 
+                    for chunk_id in to_download.iter() {
                         match download_chunk(&site_id, chunk_id).await {
                             Ok((_id, chunk)) => {
-                                chunks_in_volume += 1;
                                 let chunk_data = chunk.data().to_vec();
                                 log::debug!(
-                                    "Backfill: chunk seq {} ({} bytes, {:?})",
+                                    "Backfill sweep: downloaded chunk seq {} ({} bytes)",
                                     chunk_id.sequence(),
                                     chunk_data.len(),
-                                    chunk_id.chunk_type()
                                 );
-                                {
-                                    let mut s = state.borrow_mut();
-                                    s.results.push(RealtimeResult::ChunkData {
-                                        data: chunk_data,
-                                        chunk_index: chunks_in_volume - 1,
-                                        is_start: false,
-                                        is_end: false,
-                                        timestamp: current_scan_start_secs,
-                                    });
-                                }
-                                ctx.request_repaint();
+                                downloaded.push((chunk_id.sequence() as u32, chunk_data));
                             }
                             Err(e) => {
                                 log::warn!(
-                                    "Backfill: failed to download chunk seq {}: {}",
+                                    "Backfill sweep: failed to download chunk seq {}: {}",
                                     chunk_id.sequence(),
                                     e
                                 );
@@ -797,16 +877,38 @@ async fn backfill_loop(
                         }
                     }
 
+                    for (_seq, chunk_data) in downloaded {
+                        chunks_in_volume += 1;
+                        {
+                            let mut s = state.borrow_mut();
+                            s.results.push(RealtimeResult::ChunkData {
+                                data: chunk_data,
+                                chunk_index: chunks_in_volume - 1,
+                                is_start: false,
+                                is_end: false,
+                                timestamp: current_scan_start_secs,
+                                skip_overlap_delete: false,
+                            });
+                        }
+                        ctx.request_repaint();
+                    }
+
                     log::info!(
-                        "Backfill: completed, {} chunks downloaded, {} skipped (already in IDB)",
+                        "Backfill sweep: completed, {} chunks downloaded for elev {:?}",
                         chunks_in_volume - 1,
-                        skipped
+                        latest_elev,
                     );
                 }
                 Err(e) => {
-                    log::warn!("Backfill: failed to list chunks: {}, skipping", e);
+                    log::warn!("Backfill sweep: failed to list chunks: {}, skipping", e);
                 }
             }
+        } else {
+            log::info!(
+                "Backfill: no preceding chunks for latest seq {} (elev {:?})",
+                latest_seq,
+                latest_elev,
+            );
         }
 
         // Emit the latest chunk — mark as end to flush all accumulated data
@@ -830,6 +932,7 @@ async fn backfill_loop(
                 // Force is_end=true so worker flushes all accumulated elevations
                 is_end: true,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: false,
             });
         }
         ctx.request_repaint();
@@ -839,6 +942,7 @@ async fn backfill_loop(
         let latest_type = init_result.latest_chunk.identifier.chunk_type();
         let latest_is_start = latest_type == ChunkType::Start;
         chunks_in_volume = 1;
+        cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
 
         log::info!(
             "Backfill: emitting latest_chunk as start+end ({} bytes)",
@@ -853,6 +957,7 @@ async fn backfill_loop(
                 // Force is_end=true so worker flushes all accumulated elevations
                 is_end: true,
                 timestamp: current_scan_start_secs,
+                skip_overlap_delete: false,
             });
         }
         ctx.request_repaint();
@@ -886,4 +991,25 @@ async fn sleep_ms(ms: u32) {
     });
     set_timeout(&closure, ms);
     let _ = rx.await;
+}
+
+// ── Volume number cache ────────────────────────────────────────────────
+
+/// Cache the latest volume number in localStorage for fast resume.
+fn cache_volume_number(site_id: &str, volume: impl std::fmt::Debug) {
+    let key = format!("nexrad_volume_{}", site_id);
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.set_item(&key, &format!("{:?}", volume));
+        }
+    }
+}
+
+/// Read the cached volume number for a site from localStorage.
+#[allow(dead_code)]
+pub fn get_cached_volume(site_id: &str) -> Option<String> {
+    let key = format!("nexrad_volume_{}", site_id);
+    let window = web_sys::window()?;
+    let storage = window.local_storage().ok()??;
+    storage.get_item(&key).ok()?
 }

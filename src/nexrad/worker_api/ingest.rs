@@ -187,10 +187,17 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 pub(super) struct ChunkAccumulator {
     pub scan_key: ScanKey,
     pub site_id: String,
-    pub all_radials: Vec<::nexrad::model::data::Radial>,
-    pub radial_metas: Vec<(i64, u8, f32, f32)>,
+    /// Radials for the current (in-progress) elevation only.
+    /// Previous elevations are flushed to IDB on transition.
+    pub current_radials: Vec<::nexrad::model::data::Radial>,
+    /// Parallel metadata for current elevation radials.
+    pub current_radial_metas: Vec<(i64, u8, f32, f32)>,
+    /// Current elevation number being accumulated.
+    pub current_elevation: Option<u8>,
+    /// Elevation numbers that have been flushed to IDB.
     pub completed_elevations: std::collections::HashSet<u8>,
-    pub last_elevation_number: Option<u8>,
+    /// Sweep metadata accumulated from flushed elevations (for response).
+    pub completed_sweep_metas: Vec<SweepMeta>,
     pub vcp: Option<ExtractedVcp>,
     pub has_vcp: bool,
     pub total_chunks: u32,
@@ -216,8 +223,6 @@ thread_local! {
 pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
     init_logger();
     wasm_bindgen_futures::future_to_promise(async move {
-        use crate::nexrad::extract_elevation_numbers;
-
         let t_total = web_time::Instant::now();
 
         // --- Extract parameters from JS ---
@@ -230,6 +235,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let is_start = p.is_start;
         let is_end = p.is_end;
         let file_name = p.file_name;
+        let skip_overlap_delete = p.skip_overlap_delete;
+        let is_last_in_sweep = p.is_last_in_sweep;
 
         let data_len = data.len();
 
@@ -243,33 +250,59 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             chunk_has_vcp = result.chunk_has_vcp;
             volume_header_time_secs = result.volume_header_time_secs;
 
-            // --- Delete any overlapping scans so we don't double-store ---
             let scan_key = ScanKey::new(site_id.as_str(), UnixMillis::from_secs(timestamp_secs));
-            let overlap_start_secs = volume_header_time_secs
-                .map(|t| t as i64)
-                .unwrap_or(timestamp_secs);
-            let overlap_start_ms = overlap_start_secs * 1000;
-            let overlap_end_ms = (overlap_start_secs + 600) * 1000;
-            let store = idb_store().await?;
-            let deleted = store
-                .delete_overlapping_scans(
-                    &SiteId(site_id.clone()),
-                    UnixMillis(overlap_start_ms),
-                    overlap_end_ms,
-                    &scan_key,
-                )
-                .await
-                .map_err(|e| {
-                    wasm_bindgen::JsValue::from_str(&format!(
-                        "Failed to delete overlapping scans: {}",
-                        e
-                    ))
-                })?;
-            if deleted > 0 {
+
+            // Pre-populate completed_elevations from IDB when resuming a
+            // volume that already has cached sweep data, so the accumulator
+            // won't overwrite existing complete sweeps with partial data.
+            let mut pre_completed = std::collections::HashSet::new();
+
+            if skip_overlap_delete {
                 log::info!(
-                    "ingest_chunk: replaced {} overlapping scan(s) before real-time ingest",
-                    deleted
+                    "ingest_chunk: skipping overlap delete (resuming volume with cached data)"
                 );
+                let store = idb_store().await?;
+                if let Ok(Some(entry)) = store.scan_availability(&scan_key).await {
+                    if let Some(ref sweeps) = entry.sweeps {
+                        for s in sweeps {
+                            pre_completed.insert(s.elevation_number);
+                        }
+                    }
+                }
+                if !pre_completed.is_empty() {
+                    log::info!(
+                        "ingest_chunk: pre-populated {} completed elevations from IDB",
+                        pre_completed.len()
+                    );
+                }
+            } else {
+                // --- Delete any overlapping scans so we don't double-store ---
+                let overlap_start_secs = volume_header_time_secs
+                    .map(|t| t as i64)
+                    .unwrap_or(timestamp_secs);
+                let overlap_start_ms = overlap_start_secs * 1000;
+                let overlap_end_ms = (overlap_start_secs + 600) * 1000;
+                let store = idb_store().await?;
+                let deleted = store
+                    .delete_overlapping_scans(
+                        &SiteId(site_id.clone()),
+                        UnixMillis(overlap_start_ms),
+                        overlap_end_ms,
+                        &scan_key,
+                    )
+                    .await
+                    .map_err(|e| {
+                        wasm_bindgen::JsValue::from_str(&format!(
+                            "Failed to delete overlapping scans: {}",
+                            e
+                        ))
+                    })?;
+                if deleted > 0 {
+                    log::info!(
+                        "ingest_chunk: replaced {} overlapping scan(s) before real-time ingest",
+                        deleted
+                    );
+                }
             }
 
             // --- Reset accumulator ---
@@ -277,10 +310,11 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 *cell.borrow_mut() = Some(ChunkAccumulator {
                     scan_key,
                     site_id: site_id.clone(),
-                    all_radials: Vec::new(),
-                    radial_metas: Vec::new(),
-                    completed_elevations: std::collections::HashSet::new(),
-                    last_elevation_number: None,
+                    current_radials: Vec::new(),
+                    current_radial_metas: Vec::new(),
+                    current_elevation: None,
+                    completed_elevations: pre_completed,
+                    completed_sweep_metas: Vec::new(),
                     vcp: None,
                     has_vcp: false,
                     total_chunks: 0,
@@ -315,7 +349,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         }
 
         // --- Update accumulator with this chunk's radials ---
-        let chunk_elev_numbers = extract_elevation_numbers(&chunk_radials);
+        // Chunks contain data for exactly one elevation.
+        let chunk_elevation = chunk_radials.first().map(|r| r.elevation_number());
         let mut newly_completed: Vec<u8> = Vec::new();
 
         let time_spans = crate::nexrad::ingest_phases::compute_chunk_time_spans(&chunk_radials);
@@ -327,27 +362,23 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let last_radial_azimuth = time_spans.last_radial_azimuth;
         let last_radial_time_secs = time_spans.last_radial_time_secs;
 
-        // Detailed chunk diagnostics for real-time streaming debugging
+        // Detailed chunk diagnostics
         {
             let radial_count = chunk_radials.len();
-            let elev_summary: Vec<String> = chunk_elev_spans
-                .iter()
-                .map(|(elev, _start, _end, count)| format!("e{}:{}r", elev, count))
-                .collect();
-            let total_accum_radials = CHUNK_ACCUM.with(|cell| {
+            let accum_radials = CHUNK_ACCUM.with(|cell| {
                 cell.borrow()
                     .as_ref()
-                    .map(|a| a.all_radials.len())
+                    .map(|a| a.current_radials.len())
                     .unwrap_or(0)
             });
-            log::info!(
-                "Chunk#{} elev=[{}] radials={} az_range=[{:.1}..{:.1}] accum_total={} is_start={} is_end={} size={}B",
+            log::debug!(
+                "Chunk#{} elev={:?} radials={} az_range=[{:.1}..{:.1}] accum_current={} is_start={} is_end={} size={}B",
                 chunk_index,
-                elev_summary.join(", "),
+                chunk_elevation,
                 radial_count,
                 first_radial_azimuth.unwrap_or(0.0),
                 last_radial_azimuth.unwrap_or(0.0),
-                total_accum_radials,
+                accum_radials,
                 is_start,
                 is_end,
                 data_len,
@@ -363,8 +394,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             accum.total_chunks += 1;
             accum.total_size_bytes += data_len as u64;
 
-            // Update VCP if newly extracted or if the chunk has a fuller VCP
-            // (i.e. one with elevation details upgrading a number-only VCP).
+            // Update VCP if newly extracted or if the chunk has a fuller VCP.
             if chunk_has_vcp {
                 accum.has_vcp = true;
             }
@@ -380,47 +410,57 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 }
             }
 
-            // Check for elevation transition → previous elevation is complete
-            if let Some(first_elev) = chunk_elev_numbers.first() {
-                if let Some(last) = accum.last_elevation_number {
-                    if *first_elev != last && !accum.completed_elevations.contains(&last) {
-                        newly_completed.push(last);
-                        accum.completed_elevations.insert(last);
+            // Flush-on-transition: when the chunk's elevation differs from
+            // the current accumulator elevation, the previous elevation is
+            // complete. Flush it immediately and discard its radials.
+            if let Some(elev) = chunk_elevation {
+                if let Some(prev) = accum.current_elevation {
+                    if elev != prev && !accum.completed_elevations.contains(&prev) {
+                        newly_completed.push(prev);
+                        accum.completed_elevations.insert(prev);
                     }
                 }
+                accum.current_elevation = Some(elev);
             }
 
-            // Append radials and metadata
+            // Append radials and metadata for the current elevation.
             for r in &chunk_radials {
-                accum.radial_metas.push((
+                accum.current_radial_metas.push((
                     r.collection_timestamp(),
                     r.elevation_number(),
                     r.elevation_angle_degrees(),
                     r.azimuth_angle_degrees(),
                 ));
             }
-            accum.all_radials.extend(chunk_radials);
+            accum.current_radials.extend(chunk_radials);
 
-            // Update last elevation number
-            if let Some(&last) = chunk_elev_numbers.last() {
-                accum.last_elevation_number = Some(last);
+            // Flush-on-last-chunk: when the projection says this is the last
+            // chunk in the sweep, complete the elevation immediately rather
+            // than waiting for the next elevation's first chunk.
+            if is_last_in_sweep {
+                if let Some(elev) = accum.current_elevation {
+                    if !accum.completed_elevations.contains(&elev) {
+                        log::info!(
+                            "Chunk#{}: last in sweep for elev {} — flushing ({} radials)",
+                            chunk_index,
+                            elev,
+                            accum.current_radials.len(),
+                        );
+                        newly_completed.push(elev);
+                        accum.completed_elevations.insert(elev);
+                    }
+                }
             }
 
             Ok::<(), wasm_bindgen::JsValue>(())
         })?;
 
-        // On end, finalize all remaining elevations
+        // On end, finalize the current (last) elevation.
         if is_end {
             CHUNK_ACCUM.with(|cell| {
                 let mut borrow = cell.borrow_mut();
                 if let Some(accum) = borrow.as_mut() {
-                    // All unique elevation numbers that haven't been completed yet
-                    let all_elevs: std::collections::HashSet<u8> = accum
-                        .all_radials
-                        .iter()
-                        .map(|r| r.elevation_number())
-                        .collect();
-                    for elev in all_elevs {
+                    if let Some(elev) = accum.current_elevation {
                         if !accum.completed_elevations.contains(&elev) {
                             newly_completed.push(elev);
                             accum.completed_elevations.insert(elev);
@@ -438,16 +478,38 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         if !newly_completed.is_empty() {
             let store = idb_store().await?;
 
-            // Build sweep blobs for completed elevations
+            // Build sweep blobs from the current elevation's radials.
+            // With flush-on-transition, only the just-completed elevation's
+            // radials are in memory — no filtering needed.
             let (sweep_blobs, sweep_metas) = CHUNK_ACCUM.with(|cell| {
-                let borrow = cell.borrow();
-                let accum = borrow.as_ref().unwrap();
-                crate::nexrad::ingest_phases::build_flush_sweep_blobs(
-                    &accum.all_radials,
-                    &accum.radial_metas,
+                let mut borrow = cell.borrow_mut();
+                let accum = borrow.as_mut().unwrap();
+                let result = crate::nexrad::ingest_phases::build_flush_sweep_blobs(
+                    &accum.current_radials,
+                    &accum.current_radial_metas,
                     &newly_completed,
                     &accum.scan_key,
-                )
+                );
+                // Store sweep metas for the response, then clean up radials.
+                accum.completed_sweep_metas.extend(result.1.iter().cloned());
+
+                if is_last_in_sweep {
+                    // Flushed the current elevation on its last chunk.
+                    // Keep radials in the accumulator so render_live can still
+                    // read the complete sweep data for the final GPU upload.
+                    // They'll be cleared when the next elevation's first chunk
+                    // arrives (via the transition logic).
+                } else {
+                    // Transition flush: discard the completed elevation's radials,
+                    // retain the new elevation's radials from the transition chunk.
+                    accum
+                        .current_radials
+                        .retain(|r| !newly_completed.contains(&r.elevation_number()));
+                    accum
+                        .current_radial_metas
+                        .retain(|&(_, elev, _, _)| !newly_completed.contains(&elev));
+                }
+                result
             });
 
             new_size_bytes = sweep_blobs.iter().map(|(_, b)| b.len() as u64).sum();
@@ -504,16 +566,11 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 .unwrap_or_default()
         });
 
-        // Build sweep metadata for all completed elevations so far
+        // All completed sweep metadata, accumulated incrementally during flushes.
         let all_sweeps = CHUNK_ACCUM.with(|cell| {
             let borrow = cell.borrow();
             let accum = borrow.as_ref().unwrap();
-            let all_metas = crate::nexrad::ingest_phases::build_sweep_meta(&accum.radial_metas);
-            // Only include completed elevations
-            all_metas
-                .into_iter()
-                .filter(|m| accum.completed_elevations.contains(&m.elevation_number))
-                .collect::<Vec<SweepMeta>>()
+            accum.completed_sweep_metas.clone()
         });
 
         let vcp = CHUNK_ACCUM.with(|cell| cell.borrow().as_ref().and_then(|a| a.vcp.clone()));
@@ -525,98 +582,57 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 .as_ref()
                 .map(|a| {
                     (
-                        a.all_radials.len(),
+                        a.current_radials.len(),
                         a.has_vcp,
                         a.vcp.as_ref().map(|v| v.number),
                     )
                 })
                 .unwrap_or((0, false, None))
         });
-        // Build per-elevation summary of the full accumulator state
-        let chunk_detail = {
-            use std::collections::BTreeMap;
-            CHUNK_ACCUM.with(|cell| {
-                let borrow = cell.borrow();
-                let Some(accum) = borrow.as_ref() else {
-                    return String::from("no accum");
-                };
+        // Summary: current elevation in memory + completed elevations count.
+        let chunk_detail = CHUNK_ACCUM.with(|cell| {
+            let borrow = cell.borrow();
+            let Some(accum) = borrow.as_ref() else {
+                return String::from("no accum");
+            };
 
-                // Per-elevation stats from this chunk's contribution
-                // We know chunk added radials at indices [prev_count..current_count]
-                // But we don't have prev_count here. Instead, summarize the
-                // per-elevation state of the full accumulator.
-                let mut by_elev: BTreeMap<u8, Vec<f32>> = BTreeMap::new();
-                for r in &accum.all_radials {
-                    by_elev
-                        .entry(r.elevation_number())
-                        .or_default()
-                        .push(r.azimuth_angle_degrees());
-                }
+            let current_count = accum.current_radials.len();
+            let current_elev = accum
+                .current_elevation
+                .map(|e| format!("e{}", e))
+                .unwrap_or_else(|| "none".to_string());
+            let completed: Vec<String> = accum
+                .completed_elevations
+                .iter()
+                .map(|e| format!("e{}", e))
+                .collect();
 
-                let mut parts: Vec<String> = Vec::new();
-                for (elev, mut azimuths) in by_elev {
-                    azimuths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-                    let count = azimuths.len();
-                    let min_az = azimuths.first().copied().unwrap_or(0.0);
-                    let max_az = azimuths.last().copied().unwrap_or(0.0);
-                    // Compute total angular span (handles wrap-around)
-                    let span = if count <= 1 {
-                        0.0
-                    } else {
-                        // Use sorted gaps to detect wrap
-                        let mut max_gap = 0.0f32;
-                        for i in 1..azimuths.len() {
-                            let gap = azimuths[i] - azimuths[i - 1];
-                            if gap > max_gap {
-                                max_gap = gap;
-                            }
-                        }
-                        let wrap_gap = (360.0 - max_az + min_az).max(0.0);
-                        if wrap_gap > max_gap {
-                            // No wrap: span is simply max - min
-                            max_az - min_az
-                        } else {
-                            // Wraps through 0: span is 360 - largest_gap
-                            360.0 - max_gap
-                        }
-                    };
-                    let completed = if accum.completed_elevations.contains(&elev) {
-                        " done"
-                    } else {
-                        ""
-                    };
-                    parts.push(format!(
-                        "e{}:{}az {:.0}-{:.0}({:.0}°){}",
-                        elev, count, min_az, max_az, span, completed
-                    ));
-                }
-
-                // Product summary: check which products are present in the accumulator
-                let mut products_present: Vec<&str> = Vec::new();
-                let sample = accum.all_radials.first();
-                if let Some(r) = sample {
-                    use nexrad_render::Product;
-                    for (p, name) in [
-                        (Product::Reflectivity, "REF"),
-                        (Product::Velocity, "VEL"),
-                        (Product::SpectrumWidth, "SW"),
-                        (Product::DifferentialReflectivity, "ZDR"),
-                        (Product::CorrelationCoefficient, "CC"),
-                        (Product::DifferentialPhase, "PHI"),
-                    ] {
-                        if p.moment_data(r).is_some() || p.cfp_moment_data(r).is_some() {
-                            products_present.push(name);
-                        }
+            // Product summary from current radials
+            let mut products_present: Vec<&str> = Vec::new();
+            if let Some(r) = accum.current_radials.first() {
+                use nexrad_render::Product;
+                for (p, name) in [
+                    (Product::Reflectivity, "REF"),
+                    (Product::Velocity, "VEL"),
+                    (Product::SpectrumWidth, "SW"),
+                    (Product::DifferentialReflectivity, "ZDR"),
+                    (Product::CorrelationCoefficient, "CC"),
+                    (Product::DifferentialPhase, "PHI"),
+                ] {
+                    if p.moment_data(r).is_some() || p.cfp_moment_data(r).is_some() {
+                        products_present.push(name);
                     }
                 }
+            }
 
-                format!(
-                    "[{}] products=[{}]",
-                    parts.join(" | "),
-                    products_present.join(",")
-                )
-            })
-        };
+            format!(
+                "current={}:{}r completed=[{}] products=[{}]",
+                current_elev,
+                current_count,
+                completed.join(","),
+                products_present.join(","),
+            )
+        });
 
         log::info!(
             "ingest_chunk: chunk={} is_start={} is_end={} radials={} vcp={:?} has_vcp={} completed_elevs={:?} sweeps_stored={} {:.1}ms {}",
@@ -628,12 +644,11 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // Current in-progress elevation info
         let current_elevation =
-            CHUNK_ACCUM.with(|c| c.borrow().as_ref().and_then(|a| a.last_elevation_number));
+            CHUNK_ACCUM.with(|c| c.borrow().as_ref().and_then(|a| a.current_elevation));
         let current_elevation_radials = CHUNK_ACCUM.with(|c| {
-            c.borrow().as_ref().and_then(|a| {
-                a.last_elevation_number
-                    .map(|elev| a.radial_metas.iter().filter(|m| m.1 == elev).count() as u32)
-            })
+            c.borrow()
+                .as_ref()
+                .and_then(|a| a.current_elevation.map(|_| a.current_radials.len() as u32))
         });
 
         // --- Clear accumulator on end ---
@@ -646,7 +661,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // --- Build JS response ---
         let response = ChunkIngestResponse {
             chunk_index,
-            radials_decoded: chunk_elev_numbers.len() as u32,
+            radials_decoded: chunk_elevation.is_some() as u32,
             sweeps_stored,
             scan_key: scan_key_str,
             is_end,

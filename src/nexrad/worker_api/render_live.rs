@@ -47,12 +47,13 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
 
         let target_elev = p
             .elevation_number
-            .or(accum.last_elevation_number)
+            .or(accum.current_elevation)
             .ok_or_else(|| JsValue::from_str("No elevation available in accumulator"))?;
 
-        // Filter and sort radials for the target elevation
+        // With flush-on-transition, only the current elevation's radials
+        // are in memory. Sort by azimuth for sweep extraction.
         let mut sorted: Vec<&::nexrad::model::data::Radial> = accum
-            .all_radials
+            .current_radials
             .iter()
             .filter(|r| r.elevation_number() == target_elev)
             .collect();
@@ -98,12 +99,12 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
         let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        let accum_total = accum.all_radials.len();
+        let accum_total = accum.current_radials.len();
         let elev_radials = sorted.len();
         let product_radials = sweep.azimuth_count;
         let expected_values = sweep.azimuth_count as usize * sweep.gate_count as usize;
         let actual_values = gate_values_f32.len();
-        log::info!(
+        log::debug!(
             "render_live: elev={} {} {}x{} accum_total={} elev_radials={} product_radials={} vals={}/{} az=[{:.1}..{:.1}] offset={} scale={} in {:.1}ms (marshal: {:.1}ms)",
             target_elev,
             p.product,

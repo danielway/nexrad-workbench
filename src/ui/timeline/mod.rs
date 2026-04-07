@@ -365,22 +365,16 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     // -- Render scan track --
     // Extract the scan key timestamp (seconds) for the active real-time volume
     // so we can skip it in normal timeline rendering.
-    let active_scan_key_ts: Option<f64> = if state.live_mode_state.is_active() {
-        state
-            .live_mode_state
-            .current_scan_key
-            .as_ref()
-            .and_then(|key| {
-                // Scan key format: "SITE|TIMESTAMP_MS"
-                key.split('|')
-                    .nth(1)?
-                    .parse::<i64>()
-                    .ok()
-                    .map(|ms| ms as f64 / 1000.0)
-            })
-    } else {
-        None
-    };
+    let active_scan_key_ts: Option<f64> = state.live_radar_model.volume.as_ref().and_then(|v| {
+        v.scan_key.as_ref().and_then(|key| {
+            // Scan key format: "SITE|TIMESTAMP_MS"
+            key.split('|')
+                .nth(1)?
+                .parse::<i64>()
+                .ok()
+                .map(|ms| ms as f64 / 1000.0)
+        })
+    });
     render_scan_track(
         &painter,
         &scan_rect,
@@ -448,8 +442,20 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     // -- Render real-time partial scan progress --
     // Compute `now` once per frame so render + tooltip use a consistent boundary.
     let frame_now_secs = js_sys::Date::now() / 1000.0;
-    if state.live_mode_state.is_active() {
+    if let Some(ref position) = state.live_radar_model.position {
         let anim_time = ui.ctx().input(|i| i.time);
+        let overlay_ctx = overlays::LiveOverlayContext {
+            countdown_secs: state
+                .live_mode_state
+                .countdown_remaining_secs(frame_now_secs),
+            chunk_interval_secs: state.live_mode_state.chunk_interval_secs,
+            in_progress_radials: state
+                .live_mode_state
+                .current_in_progress_radials
+                .unwrap_or(0),
+            elevations_received: state.live_mode_state.elevations_received.clone(),
+            in_progress_elevation: state.live_mode_state.current_in_progress_elevation,
+        };
         render_realtime_progress(
             &painter,
             &scan_rect,
@@ -458,7 +464,8 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             } else {
                 None
             },
-            &state.live_mode_state,
+            position,
+            &overlay_ctx,
             view_start,
             view_end,
             zoom,
@@ -644,7 +651,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             render_timeline_tooltip(
                 ui,
                 &state.radar_timeline,
-                &state.live_mode_state,
+                state,
                 hover_ts,
                 hover_pos,
                 &scan_rect,

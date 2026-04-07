@@ -547,11 +547,22 @@ impl WorkbenchApp {
             return;
         }
 
-        // No queue — check if a new download command was issued
+        // No queue — check if a new download command was issued or a pending
+        // download is being resumed after a listing arrived.
         let is_position_download = match download_type {
-            Some(true) => true,
-            Some(false) => false,
-            None => return, // Just pumping queue, nothing to build
+            Some(is_pos) => {
+                // Fresh user action (not a pending resume) — reset pending state
+                if self
+                    .acquisition
+                    .pending_download
+                    .as_ref()
+                    .is_none_or(|p| p.is_position != is_pos)
+                {
+                    self.acquisition.pending_download = None;
+                }
+                is_pos
+            }
+            None => return, // Just pumping queue, nothing to do
         };
 
         // Get the download range: either from selection or from current position.
@@ -614,33 +625,57 @@ impl WorkbenchApp {
                         }
                     } else {
                         // No scan covers this time in the cached listing.
-                        // The listing may be stale (e.g. archives created after
-                        // it was cached), so invalidate and re-fetch.
+                        // Check if we already re-fetched this date's listing.
+                        let already_refetched = self
+                            .acquisition
+                            .pending_download
+                            .as_ref()
+                            .is_some_and(|p| p.refetched_dates.contains(&current_date));
+
+                        if !already_refetched {
+                            // The listing may be stale (e.g. archives created
+                            // after it was cached), so invalidate and re-fetch
+                            // once. Store intent so we resume when it arrives.
+                            log::info!(
+                                "No scan at {} in cached listing for {}/{}; re-fetching",
+                                sel_start_i64,
+                                site_id,
+                                current_date
+                            );
+                            let pending =
+                                self.acquisition.pending_download.get_or_insert_with(|| {
+                                    nexrad::acquisition_coordinator::PendingDownload {
+                                        is_position: true,
+                                        refetched_dates: std::collections::HashSet::new(),
+                                    }
+                                });
+                            pending.refetched_dates.insert(current_date);
+                            self.acquisition
+                                .archive_index
+                                .remove(&site_id, &current_date);
+                            if !self
+                                .acquisition
+                                .download_channel
+                                .is_listing_pending(&site_id, &current_date)
+                            {
+                                self.acquisition.download_channel.fetch_listing(
+                                    ctx.clone(),
+                                    site_id.clone(),
+                                    current_date,
+                                );
+                            }
+                            self.state.status_message =
+                                format!("Re-fetching archive listing for {}...", current_date);
+                            return;
+                        }
+
+                        // Already re-fetched — no scan here, skip.
                         log::info!(
-                            "No scan at {} in cached listing for {}/{}; re-fetching",
+                            "No scan at {} in listing for {}/{} after re-fetch; skipping",
                             sel_start_i64,
                             site_id,
                             current_date
                         );
-                        self.acquisition
-                            .archive_index
-                            .remove(&site_id, &current_date);
-                        if !self
-                            .acquisition
-                            .download_channel
-                            .is_listing_pending(&site_id, &current_date)
-                        {
-                            self.acquisition.download_channel.fetch_listing(
-                                ctx.clone(),
-                                site_id.clone(),
-                                current_date,
-                            );
-                        }
-                        self.state
-                            .push_command(state::AppCommand::DownloadAtPosition);
-                        self.state.status_message =
-                            format!("Re-fetching archive listing for {}...", current_date);
-                        return;
                     }
                 } else {
                     // Range selection: find all scans that intersect [sel_start, sel_end]
@@ -660,7 +695,8 @@ impl WorkbenchApp {
                     }
                 }
             } else {
-                // Need to fetch the listing first
+                // Need to fetch the listing first. Store intent so we resume
+                // when the listing arrives (via handle_listing_outcome).
                 if !self
                     .acquisition
                     .download_channel
@@ -673,14 +709,12 @@ impl WorkbenchApp {
                         current_date,
                     );
                 }
-                // Re-trigger once listing arrives — preserve the download type
-                if is_position_download {
-                    self.state
-                        .push_command(state::AppCommand::DownloadAtPosition);
-                } else {
-                    self.state
-                        .push_command(state::AppCommand::DownloadSelection);
-                }
+                self.acquisition.pending_download.get_or_insert_with(|| {
+                    nexrad::acquisition_coordinator::PendingDownload {
+                        is_position: is_position_download,
+                        refetched_dates: std::collections::HashSet::new(),
+                    }
+                });
                 self.state.status_message =
                     format!("Fetching archive listing for {}...", current_date);
                 return;
@@ -688,6 +722,9 @@ impl WorkbenchApp {
 
             current_date += chrono::Duration::days(1);
         }
+
+        // Queue building complete — clear pending state
+        self.acquisition.pending_download = None;
 
         if files_to_download.is_empty() {
             self.state.status_message = "No new scans to download in selection".to_string();
@@ -935,22 +972,27 @@ impl WorkbenchApp {
                 time_until_next,
                 is_volume_end,
                 fetch_latency_ms,
+                projected_volume_end_secs,
+                chunk_projections,
             } => {
                 self.state
                     .session_stats
                     .record_fetch_latency(fetch_latency_ms);
                 log::info!(
-                    "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?}",
+                    "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?} proj_end={:?}",
                     chunks_in_volume,
                     is_volume_end,
                     fetch_latency_ms,
                     time_until_next,
+                    projected_volume_end_secs,
                 );
                 self.state.live_mode_state.handle_realtime_chunk(
                     chunks_in_volume,
                     time_until_next,
                     is_volume_end,
                     now,
+                    projected_volume_end_secs,
+                    chunk_projections,
                 );
 
                 // Record chunk latency for the acquisition drawer
@@ -967,8 +1009,9 @@ impl WorkbenchApp {
                 is_start,
                 is_end,
                 timestamp,
+                skip_overlap_delete,
             } => {
-                log::info!(
+                log::debug!(
                     "Realtime chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
                     chunk_index,
                     is_start,
@@ -1005,11 +1048,25 @@ impl WorkbenchApp {
                 if is_start {
                     self.state.session_stats.pipeline.processing = true;
                 }
-                log::info!(
-                    "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={})",
+
+                // Look up whether this is the last chunk in its sweep from
+                // the projection metadata. sequence = chunk_index + 1 (1-based).
+                let sequence = (chunk_index + 1) as usize;
+                let is_last_in_sweep = self
+                    .state
+                    .live_mode_state
+                    .chunk_projections
+                    .as_ref()
+                    .and_then(|projs| projs.iter().find(|c| c.sequence == sequence))
+                    .map(|c| c.chunk_index_in_sweep + 1 == c.chunks_in_sweep)
+                    .unwrap_or(false);
+
+                log::debug!(
+                    "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={}, last_in_sweep={})",
                     chunk_index,
                     site_id,
-                    timestamp
+                    timestamp,
+                    is_last_in_sweep,
                 );
                 self.render.ingest_chunk(
                     data,
@@ -1019,11 +1076,15 @@ impl WorkbenchApp {
                     is_start,
                     is_end,
                     file_name,
+                    skip_overlap_delete,
+                    is_last_in_sweep,
                 );
             }
             nexrad::RealtimeResult::Error(msg) => {
                 log::error!("Realtime streaming error: {}", msg);
-                self.state.live_mode_state.set_error(msg.clone());
+                self.stop_live_mode(state::LiveExitReason::ConnectionError);
+                // Preserve error message (stop_live_mode clears it)
+                self.state.live_mode_state.error_message = Some(msg.clone());
                 self.state.status_message = format!("Live error: {}", msg);
 
                 // Track error as a failed acquisition operation
@@ -1053,6 +1114,7 @@ impl WorkbenchApp {
                 is_start,
                 is_end,
                 timestamp,
+                skip_overlap_delete,
             } => {
                 log::info!(
                     "Backfill chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
@@ -1080,6 +1142,8 @@ impl WorkbenchApp {
                     is_start,
                     is_end,
                     file_name,
+                    skip_overlap_delete,
+                    false, // backfill doesn't have projection data
                 );
             }
             nexrad::RealtimeResult::Error(msg) => {
@@ -1456,15 +1520,64 @@ impl WorkbenchApp {
     fn handle_chunk_ingested_outcome(&mut self, result: nexrad::ChunkIngestResult) {
         let is_live = self.state.live_mode_state.is_active();
         let source = if is_live { "Realtime" } else { "Backfill" };
+
+        // Build enriched log with projection-derived chunk positioning.
+        let chunk_vol_index = result.context.chunk_index + 1; // 1-based for display
+        let elev_nums: Vec<u8> = result
+            .chunk_elev_spans
+            .iter()
+            .map(|&(e, _, _, _)| e)
+            .collect();
+        let total_azimuths: u32 = result
+            .chunk_elev_spans
+            .iter()
+            .map(|&(_, _, _, count)| count)
+            .sum();
+
+        // Azimuth angle range from the chunk's azimuth data
+        let az_range_str =
+            if let Some(&(_, first_az, last_az)) = result.chunk_elev_az_ranges.first() {
+                format!("{:.1}°–{:.1}°", first_az, last_az)
+            } else {
+                "n/a".to_string()
+            };
+
+        // Look up chunk-in-sweep and remaining from projection metadata.
+        // chunk_index is 0-based where 0 = Start chunk (sequence 1), so
+        // chunk_vol_index (= chunk_index + 1) already equals the 1-based sequence.
+        let sequence = chunk_vol_index as usize;
+        let (chunk_in_sweep_str, remaining_str) = self
+            .state
+            .live_mode_state
+            .chunk_projections
+            .as_ref()
+            .and_then(|projs| {
+                projs.iter().find(|c| c.sequence == sequence).map(|c| {
+                    let in_sweep = format!("{}/{}", c.chunk_index_in_sweep + 1, c.chunks_in_sweep);
+                    // Count remaining chunks in this sweep after this one
+                    let remaining_in_sweep =
+                        c.chunks_in_sweep.saturating_sub(c.chunk_index_in_sweep + 1);
+                    (in_sweep, format!("{}", remaining_in_sweep))
+                })
+            })
+            .unwrap_or_else(|| ("?/?".to_string(), "?".to_string()));
+
         log::info!(
-            "{}: chunk ingested scan={} elevations_completed={:?} sweeps_stored={} is_end={} vcp={:?} available_elevs={:?} {:.1}ms",
+            "{}: chunk ingested scan={} vol_chunk={} sweep_chunk={} remaining_in_sweep={} \
+             elevs={:?} azimuths={} az_range={} \
+             elevs_completed={:?} sweeps_stored={} is_end={} vcp={:?} {:.1}ms",
             source,
             result.scan_key,
+            chunk_vol_index,
+            chunk_in_sweep_str,
+            remaining_str,
+            elev_nums,
+            total_azimuths,
+            az_range_str,
             result.elevations_completed,
             result.sweeps_stored,
             result.is_end,
             result.vcp.as_ref().map(|v| v.number),
-            self.render.available_elevations(),
             result.total_ms,
         );
 
@@ -1540,13 +1653,82 @@ impl WorkbenchApp {
                 .live_mode_state
                 .record_last_radial(result.last_radial_azimuth, result.last_radial_time_secs);
 
-            // Request live partial-sweep render if mid-sweep.
+            // ── Log: sweep storage ────────────────────────────────────
+            if !result.elevations_completed.is_empty() {
+                for &completed_elev in &result.elevations_completed {
+                    if let Some(meta) = result
+                        .sweeps
+                        .iter()
+                        .find(|s| s.elevation_number == completed_elev)
+                    {
+                        log::info!(
+                            "{}: sweep stored elev={} angle={:.1}° start_az={:.1}° \
+                             time={:.1}–{:.1}s dur={:.2}s products={} vol_chunk={}",
+                            source,
+                            completed_elev,
+                            meta.elevation,
+                            meta.start_azimuth,
+                            meta.start,
+                            meta.end,
+                            meta.end - meta.start,
+                            result.sweeps_stored,
+                            chunk_vol_index,
+                        );
+                    } else {
+                        log::info!(
+                            "{}: sweep stored elev={} (no SweepMeta) products={} vol_chunk={}",
+                            source,
+                            completed_elev,
+                            result.sweeps_stored,
+                            chunk_vol_index,
+                        );
+                    }
+                }
+            }
+
+            // ── Log + dispatch: live partial-sweep render ─────────────
             // Always render whatever elevation is currently being
             // accumulated — the user expects to see live progress
             // regardless of which elevation was previously displayed.
             if !result.is_end {
                 if let Some(target_elev) = result.current_elevation {
                     let product = self.state.viz_state.product.to_worker_string().to_string();
+
+                    // Summarize what the accumulator holds for this elevation
+                    let accum_radials = result.current_elevation_radials.unwrap_or(0);
+                    let accum_chunks: usize = self
+                        .state
+                        .live_mode_state
+                        .chunk_elev_spans
+                        .iter()
+                        .filter(|&&(e, _, _, _)| e == target_elev)
+                        .count();
+                    let accum_az_range = self
+                        .state
+                        .live_mode_state
+                        .current_elev_chunks
+                        .iter()
+                        .fold((f32::MAX, f32::MIN), |(lo, hi), &(first_az, last_az, _)| {
+                            (lo.min(first_az), hi.max(last_az))
+                        });
+                    let az_str = if accum_az_range.0 < f32::MAX {
+                        format!("{:.1}°–{:.1}°", accum_az_range.0, accum_az_range.1)
+                    } else {
+                        "n/a".to_string()
+                    };
+
+                    log::info!(
+                        "{}: render_live dispatched elev={} product={} accum_radials={} \
+                         accum_chunks={} accum_az={} vol_chunk={}",
+                        source,
+                        target_elev,
+                        product,
+                        accum_radials,
+                        accum_chunks,
+                        az_str,
+                        chunk_vol_index,
+                    );
+
                     self.render.render_live(target_elev, product);
                 }
             }
@@ -1772,11 +1954,11 @@ impl WorkbenchApp {
         );
 
         // Pad partial sweep to a full 360° azimuth grid before GPU upload.
-        // The shader's find_nearest_az estimates index as az/(360/N),
-        // which breaks when N radials cluster in a small arc (e.g., 120
-        // radials covering 60° gives 3° estimated spacing instead of 0.5°).
-        // Padding to 720 slots at 0.5° makes the estimate correct; empty
-        // slots have sentinel gate values (0 = transparent).
+        // The shader's find_bracket_az estimates the initial search index as
+        // azimuth_deg / (360/az_count). With N radials clustered in a small arc,
+        // the estimated spacing is wrong and the search misses. Padding to 720
+        // evenly-spaced slots makes the estimate correct; empty slots use
+        // sentinel gate values (0 = below threshold = transparent).
         let gate_count = result.gate_count as usize;
         let full_az_count: u32 = 720;
         let step = 360.0f32 / full_az_count as f32;
@@ -1814,6 +1996,27 @@ impl WorkbenchApp {
                 // so it becomes the background for compositing partial data.
                 let should_promote = r.current_sweep_id().is_some_and(|id| id != live_sweep_id);
                 if should_promote {
+                    // Capture the current sweep's metadata before promoting it to
+                    // "previous" — this drives the overlay info panel and donut labels.
+                    let prev_elev_deg =
+                        self.state.viz_state.rendered_sweep_end_secs.and_then(|_| {
+                            self.state
+                                .viz_state
+                                .elevation
+                                .trim_end_matches('\u{00B0}')
+                                .parse::<f32>()
+                                .ok()
+                        });
+                    let prev_elev_num = self.state.viz_state.displayed_sweep_elevation_number;
+                    if let (Some(start), Some(end), Some(elev)) = (
+                        self.state.viz_state.rendered_sweep_start_secs,
+                        self.state.viz_state.rendered_sweep_end_secs,
+                        prev_elev_deg,
+                    ) {
+                        self.state.viz_state.prev_sweep_overlay = Some((elev, start, end));
+                        self.state.viz_state.prev_sweep_elevation_number = prev_elev_num;
+                    }
+
                     r.promote_current_to_previous(gl);
                 }
 
@@ -1845,24 +2048,59 @@ impl WorkbenchApp {
             );
         }
 
-        // Store actual azimuth range and sweep start for sweep line
+        // Store the chronological azimuth range for sweep compositing.
+        // Must use chronological first/last (from radial timestamps), NOT
+        // sorted min/max. Once a sweep wraps past 0°, the sorted range
+        // spans ~360° and the shader thinks the entire circle has current
+        // data, hiding the previous sweep.
         if !result.azimuths.is_empty() {
-            let first_az = result.azimuths[0];
-            let last_az = *result.azimuths.last().unwrap();
-            log::info!(
-                "Live azimuth range: first={:.1} last={:.1} count={}/{} sweep=({:.1},{:.1})",
+            // Chronological first = sweep start azimuth (set once per sweep).
+            // Chronological last = most recent radial's azimuth from the live state.
+            if self.state.live_mode_state.sweep_start_azimuth.is_none() {
+                // First live decode for this sweep: use the earliest radial
+                // by collection time as the sweep start.
+                let first_az = if !result.radial_times.is_empty() {
+                    let min_time_idx = result
+                        .radial_times
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    result.azimuths[min_time_idx]
+                } else {
+                    result.azimuths[0]
+                };
+                self.state.live_mode_state.sweep_start_azimuth = Some(first_az);
+            }
+
+            // The trailing edge of received data: latest radial by collection time.
+            let last_az = if !result.radial_times.is_empty() {
+                let max_time_idx = result
+                    .radial_times
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                    .map(|(i, _)| i)
+                    .unwrap_or(result.azimuths.len() - 1);
+                result.azimuths[max_time_idx]
+            } else {
+                *result.azimuths.last().unwrap()
+            };
+
+            let first_az = self
+                .state
+                .live_mode_state
+                .sweep_start_azimuth
+                .unwrap_or(0.0);
+            log::debug!(
+                "Live azimuth range: chrono_first={:.1} chrono_last={:.1} count={}/{}",
                 first_az,
                 last_az,
                 result.azimuths.len(),
                 full_az_count,
-                last_az,
-                first_az,
             );
             self.state.live_mode_state.live_data_azimuth_range = Some((first_az, last_az));
-            // Record sweep start azimuth for sweep line animation
-            if self.state.live_mode_state.sweep_start_azimuth.is_none() {
-                self.state.live_mode_state.sweep_start_azimuth = Some(first_az);
-            }
         }
     }
 
@@ -1898,7 +2136,7 @@ impl WorkbenchApp {
     }
 
     fn handle_worker_error_outcome(&mut self, id: u64, message: String) {
-        log::error!("Worker error (request {}): {}", id, message);
+        log::warn!("Worker error (request {}): {}", id, message);
         self.state.status_message = format!("Worker error: {}", message);
 
         // Clean up ghost and progress for the failed scan.
@@ -2073,9 +2311,26 @@ impl WorkbenchApp {
                         .archive_index
                         .all_boundaries_for_site(&site_id);
                 }
+
+                // Resume pending download now that the listing is available
+                if let Some(pending) = &self.acquisition.pending_download {
+                    if pending.is_position {
+                        self.state
+                            .push_command(state::AppCommand::DownloadAtPosition);
+                    } else {
+                        self.state
+                            .push_command(state::AppCommand::DownloadSelection);
+                    }
+                }
             }
             nexrad::ListingResult::Error(msg) => {
                 log::error!("Listing request failed: {}", msg);
+                // Abandon pending download on listing failure
+                if self.acquisition.pending_download.is_some() {
+                    self.acquisition.pending_download = None;
+                    self.state.status_message =
+                        format!("Download cancelled: listing fetch failed ({})", msg);
+                }
             }
         }
     }
@@ -2605,6 +2860,10 @@ impl eframe::App for WorkbenchApp {
         self.update_network_stats();
         self.persist_url_state();
         self.poll_nws_alerts(ctx);
+
+        // Compute the live radar model snapshot for this frame so all UI
+        // consumers see consistent state from the same `now` timestamp.
+        self.state.refresh_live_model();
 
         // Render UI panels in the correct order for egui layout
         // Side and top/bottom panels must be rendered before CentralPanel

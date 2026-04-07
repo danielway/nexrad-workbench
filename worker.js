@@ -86,6 +86,8 @@ self.onmessage = async function (e) {
                 isStart: msg.isStart,
                 isEnd: msg.isEnd,
                 fileName: msg.fileName,
+                skipOverlapDelete: msg.skipOverlapDelete || false,
+                isLastInSweep: msg.isLastInSweep || false,
             });
             self.postMessage({ type: 'chunk_ingested', id: msg.id, result: result });
         } catch (err) {

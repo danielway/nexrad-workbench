@@ -8,6 +8,7 @@
 pub(crate) mod acquisition;
 mod layer;
 mod live_mode;
+mod live_radar_model;
 mod playback;
 pub(crate) mod playback_manager;
 mod preferences;
@@ -18,6 +19,7 @@ mod stats;
 pub(crate) mod theme;
 pub(crate) mod url_state;
 pub(crate) mod vcp;
+mod vcp_position;
 mod viz;
 
 pub use crate::geo::camera::CameraMode;
@@ -27,6 +29,7 @@ pub use acquisition::{
 };
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
+pub use live_radar_model::LiveRadarModel;
 pub use playback::{LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
@@ -39,6 +42,7 @@ pub use stats::{
 // AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
+pub use vcp_position::{SweepPosition, SweepStatus, SweepTiming, VcpPositionModel};
 pub use viz::{
     ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct, RenderProcessing,
     StormCellInfo, ViewMode, VizState,
@@ -111,6 +115,10 @@ pub struct AppState {
 
     /// Live streaming mode state
     pub live_mode_state: LiveModeState,
+
+    /// Computed live radar model — derived once per frame from `live_mode_state`.
+    /// Provides a consistent snapshot for all UI consumers within a single frame.
+    pub live_radar_model: LiveRadarModel,
 
     /// Download progress tracking for timeline ghost markers and pipeline display.
     pub download_progress: DownloadProgress,
@@ -363,6 +371,15 @@ impl AppState {
     /// Drain all pending commands from the queue.
     pub fn drain_commands(&mut self) -> Vec<AppCommand> {
         self.commands.drain(..).collect()
+    }
+
+    /// Recompute the `live_radar_model` snapshot for this frame.
+    ///
+    /// Call once at the start of each UI frame so all consumers see consistent
+    /// state derived from the same `now` timestamp.
+    pub fn refresh_live_model(&mut self) {
+        let now = js_sys::Date::now() / 1000.0;
+        self.live_radar_model = self.live_mode_state.compute_model(now);
     }
 
     /// Whether sweep animation is effectively enabled: requires both the user

@@ -90,6 +90,8 @@ pub fn render_canvas_with_geo(
                 let sweep_info = compute_sweep_line_azimuth(state);
                 let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(state, sweep_info);
 
+                let chunk_boundary = state.live_radar_model.estimated_azimuth;
+
                 if let Some(renderer) = gpu_renderer {
                     draw_radar_gpu(
                         ui,
@@ -100,13 +102,14 @@ pub fn render_canvas_with_geo(
                         state.viz_state.center_lon,
                         &state.render_processing,
                         gpu_sweep,
+                        chunk_boundary,
                     );
                     // Continuous repaint while sweep animation is compositing
                     if gpu_sweep.is_some() || between_sweeps {
                         ui.ctx().request_repaint();
                     }
                     // Continuous repaint during live streaming (partial sweep + sweep line animation)
-                    if state.live_mode_state.is_active() {
+                    if state.live_radar_model.active {
                         ui.ctx().request_repaint();
                     }
                 }
@@ -127,15 +130,13 @@ pub fn render_canvas_with_geo(
                     render_nws_alerts(&painter, &projection, &state.nws_alert_state.alerts);
                 }
 
-                // Show sweep line when actively revealing, between sweeps, or during live streaming
-                let (sweep_line_info, sweep_stale) = if state.live_mode_state.is_active() {
-                    // Live mode: show estimated sweep line based on extrapolated radar position
-                    let now = js_sys::Date::now() / 1000.0;
-                    let live_sweep = state.live_mode_state.estimated_azimuth(now).map(|az| {
-                        let start = state.live_mode_state.sweep_start_azimuth.unwrap_or(0.0);
-                        (az, start)
-                    });
-                    (live_sweep, false)
+                // Show sweep line when actively revealing, between sweeps, or during live streaming.
+                // In live mode, the data boundaries and the "now" line are separate:
+                //   data_sweep = (data_edge, data_start) — from actual received chunks
+                //   now_line = estimated antenna position — what's currently being collected
+                let (sweep_line_info, sweep_stale) = if state.live_radar_model.active {
+                    // Use data boundaries for the donut arc (same as GPU compositing)
+                    (gpu_sweep, false)
                 } else {
                     match gpu_sweep {
                         Some((az, start)) if az != 0.0 || start != 0.0 => {
@@ -193,6 +194,7 @@ fn draw_radar_gpu(
     radar_lon: f64,
     processing: &RenderProcessing,
     sweep_info: Option<(f32, f32)>,
+    sweep_chunk_boundary: Option<f32>,
 ) {
     // Check if renderer has data and get the actual data range
     let max_range_km = {
@@ -249,6 +251,7 @@ fn draw_radar_gpu(
                     [viewport.width_px as f32, viewport.height_px as f32],
                     &processing,
                     sweep_info,
+                    sweep_chunk_boundary,
                 );
             }
         })),
@@ -331,9 +334,10 @@ fn compute_gpu_sweep_state(
 ) -> (Option<(f32, f32)>, bool) {
     // Live mode with partial data takes priority over timeline sweep animation.
     let gpu_sweep = if let Some((first_az, last_az)) = state
-        .live_mode_state
-        .live_data_azimuth_range
-        .filter(|_| state.live_mode_state.is_active())
+        .live_radar_model
+        .active_sweep
+        .as_ref()
+        .and_then(|s| s.data_azimuth_range)
     {
         Some((last_az, first_az))
     } else if state.effective_sweep_animation() {
@@ -364,11 +368,11 @@ fn compute_gpu_sweep_state(
     };
 
     // Debug: log gpu_sweep once per change
-    if state.live_mode_state.is_active() {
+    if state.live_radar_model.active {
         if let Some((az, start)) = gpu_sweep {
             let prev_cache = state.viz_state.last_sweep_line_cache;
             if prev_cache.is_none_or(|(pa, ps)| (pa - az).abs() > 1.0 || (ps - start).abs() > 1.0) {
-                log::info!(
+                log::debug!(
                     "gpu_sweep live: az={:.1} start={:.1} swept_arc={:.1}",
                     az,
                     start,
@@ -452,15 +456,6 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<(f32, f32)> {
                 let az = ((start_az + progress as f32 * 360.0) % 360.0 + 360.0) % 360.0;
                 return Some((az, start_az));
             }
-        }
-    }
-
-    // In live mode, extrapolate from the last known radial azimuth/time
-    if state.live_mode_state.is_active() {
-        let now = js_sys::Date::now() / 1000.0;
-        if let Some(az) = state.live_mode_state.estimated_azimuth(now) {
-            // Live mode doesn't track start azimuth; assume 0°
-            return Some((az, 0.0));
         }
     }
 
