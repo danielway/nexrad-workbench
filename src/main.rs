@@ -1040,7 +1040,9 @@ impl WorkbenchApp {
             }
             nexrad::RealtimeResult::Error(msg) => {
                 log::error!("Realtime streaming error: {}", msg);
-                self.state.live_mode_state.set_error(msg.clone());
+                self.stop_live_mode(state::LiveExitReason::ConnectionError);
+                // Preserve error message (stop_live_mode clears it)
+                self.state.live_mode_state.error_message = Some(msg.clone());
                 self.state.status_message = format!("Live error: {}", msg);
 
                 // Track error as a failed acquisition operation

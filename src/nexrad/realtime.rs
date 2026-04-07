@@ -212,6 +212,9 @@ async fn streaming_loop(
     // point — when the timeout wins the select, the init future is dropped,
     // which drops any in-flight HTTP request future and cancels it.
     const ACQUIRE_TIMEOUT_SECS: u32 = 10;
+    const CHUNK_POLL_INTERVAL_MS: u32 = 500;
+    const CHUNK_POLL_MAX_RETRIES: u32 = 25; // 25 × 500ms = 12.5s
+    const CHUNK_POLL_GRACE_MS: u32 = 2500; // 2.5s final grace → 15s total
     let init_future = ChunkIterator::start(&site_id);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
 
@@ -301,6 +304,7 @@ async fn streaming_loop(
         // elevation, then download only those that precede it.
         let latest_seq = init_result.latest_chunk.identifier.sequence();
         let volume = *init_result.latest_chunk.identifier.volume();
+        cache_volume_number(&site_id, volume);
         chunks_in_volume = 1; // start chunk already emitted
 
         let latest_elev = iter
@@ -441,6 +445,7 @@ async fn streaming_loop(
         let latest_is_end = latest_type == ChunkType::End;
         current_scan_start_secs = current_timestamp();
         chunks_in_volume = 1;
+        cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
 
         log::info!(
             "Init: emitting latest_chunk as start ({} bytes)",
@@ -503,6 +508,7 @@ async fn streaming_loop(
                 if is_start {
                     chunks_in_volume = 0;
                     current_scan_start_secs = current_timestamp();
+                    cache_volume_number(&site_id, *chunk.identifier.volume());
                 }
 
                 chunks_in_volume += 1;
@@ -536,13 +542,15 @@ async fn streaming_loop(
             Ok(None) => {
                 // Chunk not ready yet, brief retry
                 none_retries += 1;
-                if none_retries >= 60 {
-                    // ~30s of retries (60 × 500ms) with no data
+                if none_retries >= CHUNK_POLL_MAX_RETRIES {
+                    let elapsed_secs =
+                        (none_retries * CHUNK_POLL_INTERVAL_MS + CHUNK_POLL_GRACE_MS) / 1000;
                     log::warn!(
-                        "Streaming: {} consecutive empty polls (~30s), attempting final fetch after 5s delay",
-                        none_retries
+                        "Streaming: {} consecutive empty polls, attempting final fetch after {}ms delay",
+                        none_retries,
+                        CHUNK_POLL_GRACE_MS,
                     );
-                    sleep_ms(5000).await;
+                    sleep_ms(CHUNK_POLL_GRACE_MS).await;
                     if state.borrow().stop_requested {
                         break;
                     }
@@ -554,14 +562,14 @@ async fn streaming_loop(
                         }
                         Ok(None) => {
                             log::error!(
-                                "Streaming: final retry still empty after {}s, giving up",
-                                none_retries / 2 + 5
+                                "Streaming: final retry still empty after ~{}s, giving up",
+                                elapsed_secs
                             );
                             let mut s = state.borrow_mut();
-                            s.results.push(RealtimeResult::Error(
-                                "Chunk polling timed out — no data received for ~35 seconds"
-                                    .to_string(),
-                            ));
+                            s.results.push(RealtimeResult::Error(format!(
+                                "Chunk polling timed out — no data received for ~{} seconds",
+                                elapsed_secs
+                            )));
                             s.active = false;
                             ctx.request_repaint();
                             break;
@@ -576,7 +584,7 @@ async fn streaming_loop(
                         }
                     }
                 }
-                sleep_ms(500).await;
+                sleep_ms(CHUNK_POLL_INTERVAL_MS).await;
             }
             Err(e) => {
                 log::error!("Streaming error: {}", e);
@@ -808,6 +816,7 @@ async fn backfill_loop(
         // Download only the current sweep's preceding chunks.
         let latest_seq = init_result.latest_chunk.identifier.sequence();
         let volume = *init_result.latest_chunk.identifier.volume();
+        cache_volume_number(&site_id, volume);
 
         let latest_elev = iter
             .chunk_metadata(latest_seq)
@@ -933,6 +942,7 @@ async fn backfill_loop(
         let latest_type = init_result.latest_chunk.identifier.chunk_type();
         let latest_is_start = latest_type == ChunkType::Start;
         chunks_in_volume = 1;
+        cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
 
         log::info!(
             "Backfill: emitting latest_chunk as start+end ({} bytes)",
@@ -981,4 +991,25 @@ async fn sleep_ms(ms: u32) {
     });
     set_timeout(&closure, ms);
     let _ = rx.await;
+}
+
+// ── Volume number cache ────────────────────────────────────────────────
+
+/// Cache the latest volume number in localStorage for fast resume.
+fn cache_volume_number(site_id: &str, volume: impl std::fmt::Debug) {
+    let key = format!("nexrad_volume_{}", site_id);
+    if let Some(window) = web_sys::window() {
+        if let Ok(Some(storage)) = window.local_storage() {
+            let _ = storage.set_item(&key, &format!("{:?}", volume));
+        }
+    }
+}
+
+/// Read the cached volume number for a site from localStorage.
+#[allow(dead_code)]
+pub fn get_cached_volume(site_id: &str) -> Option<String> {
+    let key = format!("nexrad_volume_{}", site_id);
+    let window = web_sys::window()?;
+    let storage = window.local_storage().ok()??;
+    storage.get_item(&key).ok()?
 }

@@ -18,6 +18,7 @@ pub enum LivePhase {
     /// Countdown to next chunk (10-15 second intervals).
     WaitingForChunk,
     /// Connection failed or lost.
+    #[allow(dead_code)]
     Error,
 }
 
@@ -285,6 +286,7 @@ impl LiveModeState {
     }
 
     /// Set error state with message.
+    #[allow(dead_code)]
     pub fn set_error(&mut self, message: String) {
         self.phase = LivePhase::Error;
         self.error_message = Some(message);
