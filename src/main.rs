@@ -549,6 +549,9 @@ impl WorkbenchApp {
             None => return, // Just pumping queue, nothing to build
         };
 
+        // Clear re-fetch tracking for the new download attempt
+        self.acquisition.listing_refetch_attempts.clear();
+
         // Get the download range: either from selection or from current position.
         // For position download, we use a temporary wide window to determine which
         // date listings to fetch, then narrow to the exact scan below.
@@ -607,16 +610,23 @@ impl WorkbenchApp {
                                 boundary.end,
                             ));
                         }
-                    } else {
+                    } else if !self
+                        .acquisition
+                        .listing_refetch_attempts
+                        .contains(&current_date)
+                    {
                         // No scan covers this time in the cached listing.
                         // The listing may be stale (e.g. archives created after
-                        // it was cached), so invalidate and re-fetch.
+                        // it was cached), so invalidate and re-fetch once.
                         log::info!(
                             "No scan at {} in cached listing for {}/{}; re-fetching",
                             sel_start_i64,
                             site_id,
                             current_date
                         );
+                        self.acquisition
+                            .listing_refetch_attempts
+                            .insert(current_date);
                         self.acquisition
                             .archive_index
                             .remove(&site_id, &current_date);
@@ -636,6 +646,15 @@ impl WorkbenchApp {
                         self.state.status_message =
                             format!("Re-fetching archive listing for {}...", current_date);
                         return;
+                    } else {
+                        // Already re-fetched this listing and still no scan
+                        // at this position — skip rather than looping forever.
+                        log::info!(
+                            "No scan at {} in listing for {}/{} after re-fetch; skipping",
+                            sel_start_i64,
+                            site_id,
+                            current_date
+                        );
                     }
                 } else {
                     // Range selection: find all scans that intersect [sel_start, sel_end]

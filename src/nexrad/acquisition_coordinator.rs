@@ -26,6 +26,10 @@ pub struct AcquisitionCoordinator {
     pub(crate) current_scan: Option<CachedScan>,
     /// Record-based data facade.
     pub(crate) data_facade: DataFacade,
+    /// Dates whose listings have already been re-fetched during the current
+    /// download attempt. Prevents infinite re-fetch loops when a listing
+    /// genuinely doesn't contain the requested timestamp.
+    pub(crate) listing_refetch_attempts: std::collections::HashSet<chrono::NaiveDate>,
 }
 
 #[allow(dead_code)]
@@ -41,6 +45,7 @@ impl AcquisitionCoordinator {
             archive_index: ArchiveIndex::new(),
             current_scan: None,
             data_facade,
+            listing_refetch_attempts: std::collections::HashSet::new(),
         }
     }
 
