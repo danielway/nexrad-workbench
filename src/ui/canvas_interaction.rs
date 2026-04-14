@@ -99,6 +99,32 @@ pub(crate) fn handle_canvas_interaction(
                 state.viz_state.distance_end = Some((geo.y, geo.x));
             }
         }
+    } else if state.layer_state.geo.alerts
+        && response.clicked()
+        && !state.viz_state.distance_tool_active
+    {
+        // Alert hit-testing: when the alerts overlay is on, a simple click
+        // that lands inside an alert polygon opens that alert's detail
+        // modal. Highest-severity alert wins on overlap.
+        if let Some(click_pos) = response.interact_pointer_pos() {
+            let geo = projection.screen_to_geo(click_pos);
+            let bounds = projection.visible_bounds();
+            let mut best: Option<(u8, String)> = None;
+            for alert in &state.alerts.alerts {
+                if !crate::alerts::bbox_intersects(alert, bounds) {
+                    continue;
+                }
+                if crate::alerts::contains_point(alert, geo.x, geo.y) {
+                    let rank = alert.severity.rank();
+                    if best.as_ref().is_none_or(|(r, _)| rank > *r) {
+                        best = Some((rank, alert.id.clone()));
+                    }
+                }
+            }
+            if let Some((_, id)) = best {
+                state.push_command(crate::state::AppCommand::OpenAlert(id));
+            }
+        }
     }
 
     if response.dragged() {

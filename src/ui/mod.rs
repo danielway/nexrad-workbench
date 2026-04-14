@@ -8,6 +8,7 @@
 //! - Right panel: Product selection, layers, and rendering controls
 
 pub(crate) mod acquisition_drawer;
+mod alerts_modal;
 mod bottom_panel;
 mod canvas;
 mod canvas_inspector;
@@ -27,6 +28,7 @@ mod timeline;
 mod top_bar;
 mod wipe_modal;
 
+pub use alerts_modal::render_alerts_modals;
 pub use bottom_panel::render_bottom_panel;
 pub use canvas::render_canvas_with_geo;
 pub use event_modal::{render_event_modal, EventModalState};

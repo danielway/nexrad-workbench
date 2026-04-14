@@ -344,6 +344,13 @@ pub struct VizState {
 
     /// Elevation number of the currently displayed sweep.
     pub displayed_sweep_elevation_number: Option<u8>,
+
+    /// Last observed visible map bounds in 2D mode, as
+    /// `(min_lon, min_lat, max_lon, max_lat)`. Updated each frame by the
+    /// canvas renderer and consumed by top-bar / modal logic that needs
+    /// to know what area the user is looking at without access to the
+    /// canvas rect. `None` while in 3D globe mode.
+    pub last_visible_bounds: Option<(f64, f64, f64, f64)>,
 }
 
 impl Default for VizState {
@@ -381,6 +388,7 @@ impl Default for VizState {
             detected_storm_cells: Vec::new(),
             displayed_scan_timestamp: None,
             displayed_sweep_elevation_number: None,
+            last_visible_bounds: None,
         }
     }
 }

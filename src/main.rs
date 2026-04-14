@@ -10,6 +10,7 @@
 //! and `nexrad::worker_api`). The main thread is a thin UI shell that uploads
 //! worker results to the GPU and paints the interface.
 
+mod alerts;
 mod data;
 mod geo;
 mod nexrad;
@@ -155,6 +156,9 @@ pub struct WorkbenchApp {
 
     /// Sweep cache and previous-sweep resolution for sweep animation.
     playback_manager: PlaybackManager,
+
+    /// NWS alerts polling lifecycle.
+    alerts_manager: alerts::AlertsManager,
 }
 
 // Embed shapefile data at compile time
@@ -448,6 +452,7 @@ impl WorkbenchApp {
             event_modal_state: ui::EventModalState::default(),
             network_monitor: nexrad::NetworkMonitor::new(),
             playback_manager: PlaybackManager::new(),
+            alerts_manager: alerts::AlertsManager::new(),
         };
 
         // Check cross-origin isolation status on startup
@@ -1353,6 +1358,16 @@ impl WorkbenchApp {
                         self.state.worker_init_error = Some(msg);
                     }
                 },
+                state::AppCommand::RefreshAlerts => {
+                    self.state.alerts.refresh_requested = true;
+                }
+                state::AppCommand::OpenAlert(id) => {
+                    self.state.alerts.selected_alert_id = Some(id);
+                }
+                state::AppCommand::CloseAlert => {
+                    self.state.alerts.selected_alert_id = None;
+                    self.state.alerts.list_modal_open = false;
+                }
             }
         }
 
@@ -2822,6 +2837,9 @@ impl eframe::App for WorkbenchApp {
         self.update_network_stats();
         self.persist_url_state();
 
+        // Poll the NWS alerts feed if due; drain any completed fetches.
+        self.alerts_manager.tick(ctx, &mut self.state);
+
         // Compute the live radar model snapshot for this frame so all UI
         // consumers see consistent state from the same `now` timestamp.
         self.state.refresh_live_model();
@@ -2846,5 +2864,6 @@ impl eframe::App for WorkbenchApp {
         ui::render_stats_modal(ctx, &mut self.state);
         ui::render_network_log(ctx, &mut self.state);
         ui::render_event_modal(ctx, &mut self.state, &mut self.event_modal_state);
+        ui::render_alerts_modals(ctx, &mut self.state);
     }
 }
