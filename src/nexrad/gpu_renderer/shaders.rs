@@ -60,6 +60,8 @@ pub(crate) const FIND_NEAREST_AZ_P: &str = "\
 // Find the nearest azimuth index for a given angle in degrees.
 // Parameterized by azimuth count and sampler.
 // Returns -1.0 if no radial is close enough (gap).
+// Azimuths < 0 mark empty padded slots (see handle_live_decoded_outcome) and
+// are skipped so partial sweeps don't bracket/render template wedges.
 float find_nearest_az_p(float azimuth_deg, float az_count, sampler2D az_tex, out float out_az) {
     float az_spacing = 360.0 / az_count;
     float est_idx = azimuth_deg / az_spacing;
@@ -72,6 +74,7 @@ float find_nearest_az_p(float azimuth_deg, float az_count, sampler2D az_tex, out
     for (float offset = -2.0; offset <= 2.0; offset += 1.0) {
         float i = floor(mod(est_idx + offset, az_count));
         float tex_az = texture(az_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
+        if (tex_az < 0.0) continue;
         float d = abs(azimuth_deg - tex_az);
         d = min(d, 360.0 - d);
         if (d < best_dist) {
@@ -94,6 +97,8 @@ pub(crate) const FIND_BRACKET_AZ_P: &str = "\
 // Find the two nearest azimuth indices that bracket the given angle.
 // Parameterized by azimuth count and sampler.
 // Returns false if in a gap region.
+// Azimuths < 0 mark empty padded slots (see handle_live_decoded_outcome) and
+// are skipped so partial sweeps don't bracket/render template wedges.
 bool find_bracket_az_p(float azimuth_deg, float az_count, sampler2D az_tex,
                        out float idx_lo, out float idx_hi, out float frac) {
     float az_spacing = 360.0 / az_count;
@@ -113,6 +118,7 @@ bool find_bracket_az_p(float azimuth_deg, float az_count, sampler2D az_tex,
 
     for (int k = 0; k < 5; k++) {
         float az = cand_az[k];
+        if (az < 0.0) continue;
         float diff = azimuth_deg - az;
         diff = mod(diff + 540.0, 360.0) - 180.0;
 

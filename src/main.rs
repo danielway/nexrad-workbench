@@ -1952,22 +1952,55 @@ impl WorkbenchApp {
         // The shader's find_bracket_az estimates the initial search index as
         // azimuth_deg / (360/az_count). With N radials clustered in a small arc,
         // the estimated spacing is wrong and the search misses. Padding to 720
-        // evenly-spaced slots makes the estimate correct; empty slots use
-        // sentinel gate values (0 = below threshold = transparent).
+        // evenly-spaced slots makes the estimate correct.
+        //
+        // Empty slots use a negative azimuth sentinel (EMPTY_AZ_SENTINEL in
+        // shaders.rs) so the shader's bracket/nearest searches skip them.
+        // Evenly-spaced template azimuths would win distance-0 ties against
+        // real neighbors and expose their sentinel-0 gates, producing
+        // transparent wedges between actual radials.
         let gate_count = result.gate_count as usize;
         let full_az_count: u32 = 720;
         let step = 360.0f32 / full_az_count as f32;
 
-        let mut padded_az = Vec::with_capacity(full_az_count as usize);
+        let mut padded_az = vec![-1.0f32; full_az_count as usize];
         let mut padded_gates = vec![0.0f32; full_az_count as usize * gate_count];
         let mut padded_times = vec![0.0f64; full_az_count as usize];
 
-        for i in 0..full_az_count as usize {
-            padded_az.push(i as f32 * step);
-        }
-
+        // Place each radial into its rounded target bucket, or — if that bucket
+        // is already occupied — probe outward (±1, ±2, ±3) for the nearest
+        // empty slot. Collisions happen routinely because real NEXRAD azimuths
+        // don't land exactly on the 0.5° grid: two adjacent radials can round
+        // to the same bucket, leaving a neighbor bucket empty. Without this
+        // probing, every collision loses a radial and leaves a template slot
+        // that renders as a transparent wedge.
+        let mut collisions = 0usize;
+        let mut dropped = 0usize;
         for (src_row, &az) in result.azimuths.iter().enumerate() {
-            let dst_row = ((az / step).round() as usize) % full_az_count as usize;
+            let target = ((az / step).round() as usize) % full_az_count as usize;
+            let mut dst_row = target;
+            if padded_az[target] >= 0.0 {
+                collisions += 1;
+                let mut found = false;
+                for probe in 1..=4i32 {
+                    for &sign in &[1i32, -1i32] {
+                        let idx = (target as i32 + probe * sign).rem_euclid(full_az_count as i32)
+                            as usize;
+                        if padded_az[idx] < 0.0 {
+                            dst_row = idx;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if found {
+                        break;
+                    }
+                }
+                if !found {
+                    dropped += 1;
+                    continue;
+                }
+            }
             padded_az[dst_row] = az;
             let src_start = src_row * gate_count;
             let dst_start = dst_row * gate_count;
@@ -1979,6 +2012,15 @@ impl WorkbenchApp {
                 padded_times[dst_row] = result.radial_times[src_row];
             }
         }
+        let filled = padded_az.iter().filter(|a| **a >= 0.0).count();
+        log::debug!(
+            "Live pad: {} input radials → {} filled slots ({} collisions resolved, {} dropped), {} empty",
+            result.azimuths.len(),
+            filled,
+            collisions,
+            dropped,
+            full_az_count as usize - filled,
+        );
 
         if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
