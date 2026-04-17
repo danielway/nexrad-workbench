@@ -1,9 +1,14 @@
 //! Real-time NEXRAD streaming channel.
 //!
 //! Provides a channel-based interface for real-time NEXRAD data streaming
-//! from AWS using the ChunkIterator from nexrad-data.
+//! from AWS. Uses our own [`super::volume_discovery::find_latest_volume`] +
+//! [`super::streaming_state::StreamingState`] instead of `ChunkIterator::start()`
+//! so we can resolve the current volume with 1-2 round trips of parallel
+//! probes instead of ~10 sequential binary-search LISTs.
 
 use super::download::NetworkStats;
+use super::streaming_state::StreamingState;
+use super::volume_discovery::find_latest_volume;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -149,14 +154,12 @@ impl RealtimeChannel {
     }
 }
 
-/// Build projection info from the iterator's current state.
+/// Build projection info from the streaming state's current position.
 ///
 /// Combines structural metadata (all chunks) with projected timing (future chunks only).
-fn build_chunk_projections(
-    iter: &nexrad_data::aws::realtime::ChunkIterator,
-) -> Option<Vec<ChunkProjectionInfo>> {
-    let all_meta = iter.all_chunk_metadata()?;
-    let projection = iter.project_remaining_scan();
+fn build_chunk_projections(state: &StreamingState) -> Option<Vec<ChunkProjectionInfo>> {
+    let all_meta = state.all_chunk_metadata()?;
+    let projection = state.project_remaining_scan();
 
     // Build a lookup from sequence → projected_time for future chunks
     let projected_times: std::collections::HashMap<usize, f64> = projection
@@ -186,9 +189,10 @@ fn build_chunk_projections(
     )
 }
 
-/// Get the projected volume end time from the iterator.
-fn get_projected_volume_end_secs(iter: &nexrad_data::aws::realtime::ChunkIterator) -> Option<f64> {
-    iter.projected_volume_end_time()
+/// Get the projected volume end time from the streaming state.
+fn get_projected_volume_end_secs(state: &StreamingState) -> Option<f64> {
+    state
+        .projected_volume_end_time()
         .map(|dt| dt.timestamp() as f64)
 }
 
@@ -199,23 +203,21 @@ async fn streaming_loop(
     stats: NetworkStats,
     _facade: DataFacade,
 ) {
-    use nexrad_data::aws::realtime::{
-        download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType,
-    };
+    use nexrad_data::aws::realtime::{download_chunk, list_chunks_in_volume, ChunkType};
 
     log::info!("Starting realtime streaming for site: {}", site_id);
 
-    // Initialize iterator with a timeout to avoid indefinite waiting when
-    // the site has no data or is unreachable. ChunkIterator::start() performs
-    // a binary search over 999 round-robin volume directories (~10 S3 LIST
-    // requests) plus chunk fetches (~2-3 more). Each .await is a cancellation
-    // point — when the timeout wins the select, the init future is dropped,
-    // which drops any in-flight HTTP request future and cancels it.
+    // Initialize with a timeout to avoid indefinite waiting when the site has
+    // no data or is unreachable. Each .await is a cancellation point — when
+    // the timeout wins the select, the init future is dropped, which drops any
+    // in-flight HTTP request futures and cancels them.
     const ACQUIRE_TIMEOUT_SECS: u32 = 10;
     const CHUNK_POLL_INTERVAL_MS: u32 = 500;
     const CHUNK_POLL_MAX_RETRIES: u32 = 25; // 25 × 500ms = 12.5s
     const CHUNK_POLL_GRACE_MS: u32 = 2500; // 2.5s final grace → 15s total
-    let init_future = ChunkIterator::start(&site_id);
+
+    let hint = get_cached_volume(&site_id);
+    let init_future = acquire_streaming_state(&site_id, hint);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
 
     futures_util::pin_mut!(init_future);
@@ -250,7 +252,7 @@ async fn streaming_loop(
         }
     };
 
-    let mut iter = init_result.iterator;
+    let mut iter = init_result.state;
     let mut stats_tracker = StatsTracker::new(&iter);
     stats_tracker.update(&stats, &iter);
 
@@ -636,16 +638,16 @@ struct StatsTracker {
 }
 
 impl StatsTracker {
-    fn new(iter: &nexrad_data::aws::realtime::ChunkIterator) -> Self {
+    fn new(state: &StreamingState) -> Self {
         Self {
-            last_requests: iter.requests_made(),
-            last_bytes: iter.bytes_downloaded(),
+            last_requests: state.requests_made(),
+            last_bytes: state.bytes_downloaded(),
         }
     }
 
-    fn update(&mut self, stats: &NetworkStats, iter: &nexrad_data::aws::realtime::ChunkIterator) {
-        let new_requests = iter.requests_made().saturating_sub(self.last_requests);
-        let new_bytes = iter.bytes_downloaded().saturating_sub(self.last_bytes);
+    fn update(&mut self, stats: &NetworkStats, state: &StreamingState) {
+        let new_requests = state.requests_made().saturating_sub(self.last_requests);
+        let new_bytes = state.bytes_downloaded().saturating_sub(self.last_bytes);
 
         for _ in 0..new_requests {
             stats.request_started();
@@ -655,8 +657,8 @@ impl StatsTracker {
             *stats.total_bytes.borrow_mut() += new_bytes;
         }
 
-        self.last_requests = iter.requests_made();
-        self.last_bytes = iter.bytes_downloaded();
+        self.last_requests = state.requests_made();
+        self.last_bytes = state.bytes_downloaded();
     }
 }
 
@@ -669,9 +671,9 @@ struct BackfillState {
     active: bool,
 }
 
-/// Channel that performs a one-shot backfill of the latest in-progress
-/// volume using `ChunkIterator::start()`, then stops. This gives the user
-/// immediate data on site selection without starting continuous streaming.
+/// Channel that performs a one-shot backfill of the latest in-progress volume,
+/// then stops. This gives the user immediate data on site selection without
+/// starting continuous streaming.
 pub struct BackfillChannel {
     state: Rc<RefCell<BackfillState>>,
     stats: NetworkStats,
@@ -734,14 +736,13 @@ async fn backfill_loop(
     stats: NetworkStats,
     _facade: DataFacade,
 ) {
-    use nexrad_data::aws::realtime::{
-        download_chunk, list_chunks_in_volume, ChunkIterator, ChunkType,
-    };
+    use nexrad_data::aws::realtime::{download_chunk, list_chunks_in_volume, ChunkType};
 
     log::info!("Starting backfill for site: {}", site_id);
 
     const ACQUIRE_TIMEOUT_SECS: u32 = 10;
-    let init_future = ChunkIterator::start(&site_id);
+    let hint = get_cached_volume(&site_id);
+    let init_future = acquire_streaming_state(&site_id, hint);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
 
     futures_util::pin_mut!(init_future);
@@ -776,7 +777,7 @@ async fn backfill_loop(
         }
     };
 
-    let iter = init_result.iterator;
+    let iter = init_result.state;
 
     // Track stats from the init phase
     let mut stats_tracker = StatsTracker::new(&iter);
@@ -996,20 +997,42 @@ async fn sleep_ms(ms: u32) {
 // ── Volume number cache ────────────────────────────────────────────────
 
 /// Cache the latest volume number in localStorage for fast resume.
-fn cache_volume_number(site_id: &str, volume: impl std::fmt::Debug) {
+fn cache_volume_number(site_id: &str, volume: nexrad_data::aws::realtime::VolumeIndex) {
     let key = format!("nexrad_volume_{}", site_id);
     if let Some(window) = web_sys::window() {
         if let Ok(Some(storage)) = window.local_storage() {
-            let _ = storage.set_item(&key, &format!("{:?}", volume));
+            let _ = storage.set_item(&key, &volume.as_number().to_string());
         }
     }
 }
 
 /// Read the cached volume number for a site from localStorage.
-#[allow(dead_code)]
-pub fn get_cached_volume(site_id: &str) -> Option<String> {
+fn get_cached_volume(site_id: &str) -> Option<nexrad_data::aws::realtime::VolumeIndex> {
     let key = format!("nexrad_volume_{}", site_id);
     let window = web_sys::window()?;
     let storage = window.local_storage().ok()??;
-    storage.get_item(&key).ok()?
+    let raw = storage.get_item(&key).ok()??;
+    // Tolerate the legacy "VolumeIndex(N)" debug format that older builds wrote.
+    let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+    let n = digits.parse::<usize>().ok()?;
+    if (1..=999).contains(&n) {
+        Some(nexrad_data::aws::realtime::VolumeIndex::new(n))
+    } else {
+        None
+    }
+}
+
+/// Run [`find_latest_volume`] then initialize a [`StreamingState`] at that volume.
+///
+/// The returned [`super::streaming_state::StreamingInit`] has the same shape as
+/// `ChunkIteratorInit` so the rest of the streaming/backfill loops are unchanged.
+async fn acquire_streaming_state(
+    site_id: &str,
+    hint: Option<nexrad_data::aws::realtime::VolumeIndex>,
+) -> nexrad_data::result::Result<super::streaming_state::StreamingInit> {
+    let search = find_latest_volume(site_id, hint).await?;
+    let volume = search.volume.ok_or(nexrad_data::result::Error::AWS(
+        nexrad_data::result::aws::AWSError::LatestVolumeNotFound,
+    ))?;
+    StreamingState::init_at_volume(site_id, volume, search.requests_made).await
 }
