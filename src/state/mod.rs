@@ -48,6 +48,9 @@ pub use viz::{
     StormCellInfo, ViewMode, VizState,
 };
 
+/// Cap on the recent-network-requests ring used by the UI log.
+pub const MAX_RECENT_NETWORK_REQUESTS: usize = 100;
+
 /// Commands dispatched by UI code and consumed by the main update loop.
 ///
 /// Replaces scattered boolean `*_requested` flags with an explicit command queue,
@@ -196,6 +199,7 @@ pub struct AppState {
     pub network_aggregate: crate::nexrad::NetworkAggregate,
 
     /// Recent network requests from the service worker (ring buffer for UI log).
+    /// Bounded by [`MAX_RECENT_NETWORK_REQUESTS`].
     pub recent_network_requests: std::collections::VecDeque<crate::nexrad::NetworkRequest>,
 
     /// Whether the browsing context is cross-origin isolated (SharedArrayBuffer available).

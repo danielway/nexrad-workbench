@@ -120,6 +120,7 @@ pub struct GpuResources {
 use nexrad::download_queue::{QueueAction, QueueItem};
 use nexrad::RenderRequest;
 use state::playback_manager::{sweep_cache_key, CachedSweepData, PlaybackManager, PrevSweepAction};
+use state::MAX_RECENT_NETWORK_REQUESTS;
 
 /// Main application state and logic.
 pub struct WorkbenchApp {
@@ -2833,14 +2834,23 @@ impl WorkbenchApp {
         // Drain service worker network metrics into app state
         if let Some(ref monitor) = self.network_monitor {
             self.state.network_aggregate = monitor.aggregate();
-            // Update the recent requests buffer (full snapshot each frame)
-            let mut recent = monitor.drain_recent();
-            if !recent.is_empty() {
-                // Correlate network requests with acquisition operations
-                for req in recent.iter_mut() {
+            let mut pending = monitor.take_pending();
+            if !pending.is_empty() {
+                // Correlate each new request exactly once, then append to
+                // the app-level ring. The previous implementation
+                // re-cloned and re-correlated the entire ring every frame
+                // regardless of whether anything had changed.
+                for req in pending.iter_mut() {
                     req.operation_id = self.state.acquisition.correlate_network_request(&req.url);
                 }
-                self.state.recent_network_requests = recent.into();
+                let ring = &mut self.state.recent_network_requests;
+                ring.reserve(pending.len());
+                for req in pending {
+                    if ring.len() >= MAX_RECENT_NETWORK_REQUESTS {
+                        ring.pop_front();
+                    }
+                    ring.push_back(req);
+                }
             }
         }
     }
