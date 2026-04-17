@@ -9,7 +9,7 @@ use super::canvas_overlays::{
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::RadarGpuRenderer;
-use crate::state::{AppState, GeoLayerVisibility, RenderProcessing, ViewMode};
+use crate::state::{AppState, RenderProcessing, ViewMode};
 use eframe::egui::{self, Color32, Rect, Sense};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};
@@ -70,10 +70,10 @@ pub fn render_canvas_with_geo(
                 projection.update(state.viz_state.zoom, state.viz_state.pan_offset, rect);
 
                 if let Some(layers) = geo_layers {
-                    let filtered = filter_geo_layers(layers, &state.layer_state.geo);
                     crate::geo::render_geo_layers(
                         &painter,
-                        &filtered,
+                        layers,
+                        &state.layer_state.geo,
                         &projection,
                         state.viz_state.zoom,
                         state.layer_state.geo.labels,
@@ -104,13 +104,29 @@ pub fn render_canvas_with_geo(
                         gpu_sweep,
                         chunk_boundary,
                     );
-                    // Continuous repaint while sweep animation is compositing
-                    if gpu_sweep.is_some() || between_sweeps {
-                        ui.ctx().request_repaint();
-                    }
-                    // Continuous repaint during live streaming (partial sweep + sweep line animation)
-                    if state.live_radar_model.active {
-                        ui.ctx().request_repaint();
+                    // Request only as fast as the visible animation requires. A
+                    // bare `request_repaint()` pins the UI at full display rate
+                    // (often 60 fps) and compounds every per-frame loop below.
+                    // When actual data is revealing (`gpu_sweep` / `between_sweeps`)
+                    // or a live sweep is actively receiving radials, we want a
+                    // smooth ~30 fps. When live is idle between sweeps we only
+                    // need enough updates to advance the estimated-azimuth line
+                    // (~10 fps is visually indistinguishable). Fully idle falls
+                    // through to the 1 Hz global tick in `apply_frame_setup`.
+                    let live_has_active_sweep = state
+                        .live_radar_model
+                        .active_sweep
+                        .as_ref()
+                        .is_some_and(|s| s.data_azimuth_range.is_some());
+                    let live_has_moving_line = state.live_radar_model.active
+                        && state.live_radar_model.estimated_azimuth.is_some();
+
+                    if gpu_sweep.is_some() || between_sweeps || live_has_active_sweep {
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(33));
+                    } else if live_has_moving_line {
+                        ui.ctx()
+                            .request_repaint_after(std::time::Duration::from_millis(100));
                     }
                 }
 
@@ -295,28 +311,6 @@ pub(super) fn age_color(secs: f64) -> Color32 {
     } else {
         Color32::from_rgb(80, 220, 100)
     }
-}
-
-fn filter_geo_layers(layers: &GeoLayerSet, visibility: &GeoLayerVisibility) -> GeoLayerSet {
-    let mut filtered = layers.clone();
-
-    if let Some(ref mut layer) = filtered.states {
-        layer.visible = visibility.states;
-    }
-    if let Some(ref mut layer) = filtered.counties {
-        layer.visible = visibility.counties;
-    }
-    if let Some(ref mut layer) = filtered.cities {
-        layer.visible = visibility.cities;
-    }
-    if let Some(ref mut layer) = filtered.highways {
-        layer.visible = visibility.highways;
-    }
-    if let Some(ref mut layer) = filtered.lakes {
-        layer.visible = visibility.lakes;
-    }
-
-    filtered
 }
 
 pub(super) const ARCHIVE_AGE_THRESHOLD_SECS: f64 = 3600.0;
