@@ -4,6 +4,7 @@ mod interaction;
 mod overlays;
 mod ruler;
 mod scan_track;
+mod strokes;
 mod sweep_track;
 mod tooltips;
 
