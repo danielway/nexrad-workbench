@@ -156,6 +156,20 @@ pub struct WorkbenchApp {
 
     /// Sweep cache and previous-sweep resolution for sweep animation.
     playback_manager: PlaybackManager,
+
+    /// Cache of the inputs that drive `advance_playback`'s scrub-detection
+    /// pass so we can skip the O(scans) timeline search on idle frames
+    /// where the playback position, elevation selection, and scan count
+    /// have not changed.
+    scrub_cache: ScrubCache,
+}
+
+#[derive(Default)]
+struct ScrubCache {
+    last_playback_ts: Option<f64>,
+    last_elevation_selection: Option<state::ElevationSelection>,
+    last_scan_count: usize,
+    last_displayed_scan_ts: Option<i64>,
 }
 
 // Embed shapefile data at compile time
@@ -449,6 +463,7 @@ impl WorkbenchApp {
             event_modal_state: ui::EventModalState::default(),
             network_monitor: nexrad::NetworkMonitor::new(),
             playback_manager: PlaybackManager::new(),
+            scrub_cache: ScrubCache::default(),
         };
 
         // Check cross-origin isolation status on startup
@@ -2495,109 +2510,141 @@ impl WorkbenchApp {
         {
             let playback_ts = self.state.playback_state.playback_position();
 
-            // Extract scrub decision data from the immutable borrow of radar_timeline
-            let scrub_action = self
-                .state
-                .radar_timeline
-                .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
-                .map(|scan| {
-                    let scan_ts = scan.key_timestamp as i64;
-                    let target_elev_num = match &self.state.viz_state.elevation_selection {
-                        crate::state::ElevationSelection::Fixed { .. } => {
-                            self.best_elevation_at_playback(scan, playback_ts)
+            // Skip the timeline walk when nothing that feeds the scrub
+            // decision has moved since last frame. The O(scans) search
+            // below used to run every frame even while paused; this lets
+            // the idle case cost only a few comparisons.
+            let scan_count = self.state.radar_timeline.scans.len();
+            let elev_sel = &self.state.viz_state.elevation_selection;
+            let displayed_ts = self.state.viz_state.displayed_scan_timestamp;
+            let scrub_cache_hit = self.scrub_cache.last_playback_ts == Some(playback_ts)
+                && self.scrub_cache.last_scan_count == scan_count
+                && self.scrub_cache.last_displayed_scan_ts == displayed_ts
+                && self
+                    .scrub_cache
+                    .last_elevation_selection
+                    .as_ref()
+                    .is_some_and(|cached| cached == elev_sel);
+
+            if !scrub_cache_hit {
+                self.scrub_cache.last_playback_ts = Some(playback_ts);
+                self.scrub_cache.last_scan_count = scan_count;
+                self.scrub_cache.last_displayed_scan_ts = displayed_ts;
+                self.scrub_cache.last_elevation_selection = Some(elev_sel.clone());
+            }
+
+            if !scrub_cache_hit {
+                // Extract scrub decision data from the immutable borrow of radar_timeline
+                let scrub_action = self
+                    .state
+                    .radar_timeline
+                    .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
+                    .map(|scan| {
+                        let scan_ts = scan.key_timestamp as i64;
+                        let target_elev_num = match &self.state.viz_state.elevation_selection {
+                            crate::state::ElevationSelection::Fixed { .. } => {
+                                self.best_elevation_at_playback(scan, playback_ts)
+                            }
+                            crate::state::ElevationSelection::Latest => {
+                                self.most_recent_sweep_elevation(scan, playback_ts)
+                            }
+                        };
+
+                        let needs_new_scan = match self.state.viz_state.displayed_scan_timestamp {
+                            Some(displayed) => displayed != scan_ts,
+                            None => true,
+                        };
+                        let needs_new_sweep = !needs_new_scan
+                            && self.state.viz_state.displayed_sweep_elevation_number
+                                != Some(target_elev_num);
+
+                        // Capture overlay data from the matching sweep
+                        let sweep_overlay = scan
+                            .sweeps
+                            .iter()
+                            .find(|s| s.elevation_number == target_elev_num)
+                            .map(|s| (s.start_time, s.end_time, s.elevation));
+
+                        // Extract all elevation numbers for volume rendering
+                        let mut elev_nums: Vec<u8> =
+                            scan.sweeps.iter().map(|s| s.elevation_number).collect();
+                        elev_nums.sort_unstable();
+                        elev_nums.dedup();
+
+                        // Build elevation list for new scans
+                        let new_elev_list = if needs_new_scan {
+                            Some(Self::build_elevation_list(scan))
+                        } else {
+                            None
+                        };
+
+                        (
+                            scan_ts,
+                            target_elev_num,
+                            needs_new_scan,
+                            needs_new_sweep,
+                            sweep_overlay,
+                            elev_nums,
+                            new_elev_list,
+                        )
+                    });
+
+                if let Some((
+                    scan_ts,
+                    target_elev_num,
+                    needs_new_scan,
+                    needs_new_sweep,
+                    sweep_overlay,
+                    elev_nums,
+                    new_elev_list,
+                )) = scrub_action
+                {
+                    if (needs_new_scan || needs_new_sweep) && self.render.has_worker() {
+                        if let Some((start, end, elev)) = sweep_overlay {
+                            self.update_overlay_from_sweep(start, end, elev);
                         }
-                        crate::state::ElevationSelection::Latest => {
-                            self.most_recent_sweep_elevation(scan, playback_ts)
+
+                        let scan_key =
+                            data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts);
+                        self.render.set_scan_key(scan_key.to_storage_key());
+                        self.state.viz_state.displayed_scan_timestamp = Some(scan_ts);
+                        self.state.viz_state.displayed_sweep_elevation_number =
+                            Some(target_elev_num);
+                        if !elev_nums.is_empty() {
+                            self.render.set_elevations(elev_nums);
                         }
-                    };
-
-                    let needs_new_scan = match self.state.viz_state.displayed_scan_timestamp {
-                        Some(displayed) => displayed != scan_ts,
-                        None => true,
-                    };
-                    let needs_new_sweep = !needs_new_scan
-                        && self.state.viz_state.displayed_sweep_elevation_number
-                            != Some(target_elev_num);
-
-                    // Capture overlay data from the matching sweep
-                    let sweep_overlay = scan
-                        .sweeps
-                        .iter()
-                        .find(|s| s.elevation_number == target_elev_num)
-                        .map(|s| (s.start_time, s.end_time, s.elevation));
-
-                    // Extract all elevation numbers for volume rendering
-                    let mut elev_nums: Vec<u8> =
-                        scan.sweeps.iter().map(|s| s.elevation_number).collect();
-                    elev_nums.sort_unstable();
-                    elev_nums.dedup();
-
-                    // Build elevation list for new scans
-                    let new_elev_list = if needs_new_scan {
-                        Some(Self::build_elevation_list(scan))
-                    } else {
-                        None
-                    };
-
-                    (
-                        scan_ts,
-                        target_elev_num,
-                        needs_new_scan,
-                        needs_new_sweep,
-                        sweep_overlay,
-                        elev_nums,
-                        new_elev_list,
-                    )
-                });
-
-            if let Some((
-                scan_ts,
-                target_elev_num,
-                needs_new_scan,
-                needs_new_sweep,
-                sweep_overlay,
-                elev_nums,
-                new_elev_list,
-            )) = scrub_action
-            {
-                if (needs_new_scan || needs_new_sweep) && self.render.has_worker() {
-                    if let Some((start, end, elev)) = sweep_overlay {
-                        self.update_overlay_from_sweep(start, end, elev);
+                        if let Some(entries) = new_elev_list {
+                            self.state.viz_state.cached_vcp_elevations = entries.clone();
+                            self.state
+                                .viz_state
+                                .elevation_selection
+                                .resolve_for_vcp(&entries);
+                        }
+                        self.render.force_fresh_render();
+                        self.request_worker_render();
+                        if self.state.viz_state.volume_3d_enabled {
+                            self.request_worker_render_volume();
+                        }
+                        // The side-effects above change displayed_scan_timestamp,
+                        // so refresh the cache snapshot now to keep it in sync.
+                        self.scrub_cache.last_displayed_scan_ts =
+                            self.state.viz_state.displayed_scan_timestamp;
                     }
-
-                    let scan_key = data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts);
-                    self.render.set_scan_key(scan_key.to_storage_key());
-                    self.state.viz_state.displayed_scan_timestamp = Some(scan_ts);
-                    self.state.viz_state.displayed_sweep_elevation_number = Some(target_elev_num);
-                    if !elev_nums.is_empty() {
-                        self.render.set_elevations(elev_nums);
+                } else if self.state.viz_state.displayed_scan_timestamp.is_some() {
+                    if let Some(ref renderer) = self.gpu.gpu {
+                        if let Ok(mut r) = renderer.lock() {
+                            r.clear_data();
+                        }
                     }
-                    if let Some(entries) = new_elev_list {
-                        self.state.viz_state.cached_vcp_elevations = entries.clone();
-                        self.state
-                            .viz_state
-                            .elevation_selection
-                            .resolve_for_vcp(&entries);
-                    }
-                    self.render.force_fresh_render();
-                    self.request_worker_render();
-                    if self.state.viz_state.volume_3d_enabled {
-                        self.request_worker_render_volume();
-                    }
+                    self.state.viz_state.displayed_scan_timestamp = None;
+                    self.state.viz_state.displayed_sweep_elevation_number = None;
+                    self.render.clear_scan_key();
+                    self.state.viz_state.data_staleness_secs = None;
+                    self.state.viz_state.rendered_sweep_end_secs = None;
+                    self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
+                    self.state.viz_state.elevation = "-- deg".to_string();
+                    self.scrub_cache.last_displayed_scan_ts = None;
                 }
-            } else if self.state.viz_state.displayed_scan_timestamp.is_some() {
-                if let Some(ref renderer) = self.gpu.gpu {
-                    if let Ok(mut r) = renderer.lock() {
-                        r.clear_data();
-                    }
-                }
-                self.state.viz_state.displayed_scan_timestamp = None;
-                self.state.viz_state.displayed_sweep_elevation_number = None;
-                self.render.clear_scan_key();
-                self.state.viz_state.data_staleness_secs = None;
-                self.state.viz_state.rendered_sweep_end_secs = None;
-                self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
-                self.state.viz_state.elevation = "-- deg".to_string();
             }
         }
 
