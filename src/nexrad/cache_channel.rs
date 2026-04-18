@@ -63,7 +63,7 @@ impl CacheLoadChannel {
 
         wasm_bindgen_futures::spawn_local(async move {
             let t_total = web_time::Instant::now();
-            log::info!("Loading cache metadata for site: {}", site_id);
+            log::debug!("Loading cache metadata for site: {}", site_id);
 
             let site = SiteId::new(&site_id);
             let start = UnixMillis(0);
@@ -91,7 +91,7 @@ impl CacheLoadChannel {
                     let total_cache_size = facade.total_cache_size().await.unwrap_or(0);
 
                     let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
-                    log::info!(
+                    log::debug!(
                         "Timeline loaded: {} scan(s) for {} in {:.0}ms (list_scans: {:.0}ms)",
                         metadata.len(),
                         site_id,
@@ -135,11 +135,11 @@ impl CacheLoadChannel {
         let loading = self.loading.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            log::info!("Clearing cache...");
+            log::debug!("Clearing cache...");
 
             let result = match facade.clear_all().await {
                 Ok(()) => {
-                    log::info!("Cache cleared successfully");
+                    log::debug!("Cache cleared successfully");
                     CacheLoadResult::Success {
                         site_id: String::new(),
                         metadata: Vec::new(),

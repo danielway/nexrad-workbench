@@ -212,7 +212,7 @@ impl WorkbenchApp {
         // Load built-in cities layer
         geo_layers.set_layer(geo::cities::build_cities_layer());
 
-        log::info!(
+        log::debug!(
             "Loaded geo layers: {} states, {} counties, {} cities",
             geo_layers
                 .states
@@ -365,8 +365,6 @@ impl WorkbenchApp {
             wasm_bindgen_futures::spawn_local(async move {
                 if let Err(e) = facade.open().await {
                     log::error!("Failed to open record cache: {}", e);
-                } else {
-                    log::info!("Opened record cache database");
                 }
             });
         }
@@ -376,10 +374,7 @@ impl WorkbenchApp {
 
         // Create decode worker (offloads nexrad::load() to a Web Worker)
         let decode_worker = match nexrad::DecodeWorker::new(cc.egui_ctx.clone()) {
-            Ok(w) => {
-                log::info!("Decode worker created successfully");
-                Some(w)
-            }
+            Ok(w) => Some(w),
             Err(e) => {
                 log::warn!("Failed to create decode worker: {}", e);
                 state.worker_init_error =
@@ -394,10 +389,7 @@ impl WorkbenchApp {
             .gl
             .as_ref()
             .and_then(|gl| match nexrad::RadarGpuRenderer::new(gl) {
-                Ok(renderer) => {
-                    log::info!("GPU radar renderer created");
-                    Some(std::sync::Arc::new(std::sync::Mutex::new(renderer)))
-                }
+                Ok(renderer) => Some(std::sync::Arc::new(std::sync::Mutex::new(renderer))),
                 Err(e) => {
                     log::error!("Failed to create GPU radar renderer: {}", e);
                     None
@@ -407,7 +399,6 @@ impl WorkbenchApp {
         // Create globe and geo-line renderers for 3D mode
         let globe_renderer = cc.gl.as_ref().map(|gl| {
             let r = geo::GlobeRenderer::new(gl);
-            log::info!("Globe renderer created");
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
         let geo_line_renderer = cc.gl.as_ref().map(|gl| {
@@ -424,17 +415,14 @@ impl WorkbenchApp {
             .collect();
             let owned: Vec<geo::GeoLayer> = layers_vec.into_iter().cloned().collect();
             r.upload_layers(gl, &owned);
-            log::info!("Geo line renderer created");
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
         let globe_radar_renderer = cc.gl.as_ref().map(|gl| {
             let r = nexrad::GlobeRadarRenderer::new(gl);
-            log::info!("Globe radar renderer created");
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
         let volume_ray_renderer = cc.gl.as_ref().map(|gl| {
             let r = nexrad::VolumeRayRenderer::new(gl);
-            log::info!("Volume ray renderer created");
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
 
@@ -468,10 +456,8 @@ impl WorkbenchApp {
 
         // Check cross-origin isolation status on startup
         app.state.cross_origin_isolated = nexrad::is_cross_origin_isolated();
-        if app.state.cross_origin_isolated {
-            log::info!("Cross-origin isolated: SharedArrayBuffer available");
-        } else {
-            log::info!("Not cross-origin isolated: SharedArrayBuffer unavailable");
+        if !app.state.cross_origin_isolated {
+            log::warn!("Not cross-origin isolated: SharedArrayBuffer unavailable");
         }
 
         app
@@ -549,7 +535,7 @@ impl WorkbenchApp {
                         self.state.download_progress.clear();
                     }
                     self.state.status_message = "Selection download complete".to_string();
-                    log::info!("Selection download complete");
+                    log::debug!("Selection download complete");
                 }
                 QueueAction::Paused | QueueAction::StillDownloading => {
                     return;
@@ -605,7 +591,7 @@ impl WorkbenchApp {
             None => return,
         };
 
-        log::info!(
+        log::debug!(
             "Building download queue for selection: {} to {} ({} to {})",
             sel_start_i64,
             sel_end_i64,
@@ -647,7 +633,7 @@ impl WorkbenchApp {
                             // The listing may be stale (e.g. archives created
                             // after it was cached), so invalidate and re-fetch
                             // once. Store intent so we resume when it arrives.
-                            log::info!(
+                            log::debug!(
                                 "No scan at {} in cached listing for {}/{}; re-fetching",
                                 sel_start_i64,
                                 site_id,
@@ -681,7 +667,7 @@ impl WorkbenchApp {
                         }
 
                         // Already re-fetched — no scan here, skip.
-                        log::info!(
+                        log::debug!(
                             "No scan at {} in listing for {}/{} after re-fetch; skipping",
                             sel_start_i64,
                             site_id,
@@ -713,7 +699,7 @@ impl WorkbenchApp {
                     .download_channel
                     .is_listing_pending(&site_id, &current_date)
                 {
-                    log::info!("Fetching listing for {}/{}", site_id, current_date);
+                    log::debug!("Fetching listing for {}/{}", site_id, current_date);
                     self.acquisition.download_channel.fetch_listing(
                         ctx.clone(),
                         site_id.clone(),
@@ -739,14 +725,14 @@ impl WorkbenchApp {
 
         if files_to_download.is_empty() {
             self.state.status_message = "No new scans to download in selection".to_string();
-            log::info!("No new scans to download in selection");
+            log::debug!("No new scans to download in selection");
             return;
         }
 
         // Sort by start timestamp
         files_to_download.sort_by_key(|item| item.scan_start);
 
-        log::info!(
+        log::debug!(
             "Queued {} files for download in selection",
             files_to_download.len()
         );
@@ -840,7 +826,7 @@ impl WorkbenchApp {
     /// Fetch the latest available data for the current site.
     fn fetch_latest_scan(&mut self, ctx: &egui::Context) {
         let site_id = self.state.viz_state.site_id.clone();
-        log::info!("Fetching latest scan via backfill for site: {}", site_id);
+        log::debug!("Fetching latest scan via backfill for site: {}", site_id);
 
         self.state.status_message = "Fetching latest data...".to_string();
         self.streaming
@@ -974,7 +960,7 @@ impl WorkbenchApp {
 
         match result {
             nexrad::RealtimeResult::Started { site_id } => {
-                log::info!("Realtime streaming started for site: {}", site_id);
+                log::debug!("Realtime streaming started for site: {}", site_id);
                 self.state.live_mode_state.handle_streaming_started(now);
                 self.state.status_message = format!("Live: connected to {}", site_id);
             }
@@ -989,7 +975,7 @@ impl WorkbenchApp {
                 self.state
                     .session_stats
                     .record_fetch_latency(fetch_latency_ms);
-                log::info!(
+                log::debug!(
                     "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?} proj_end={:?}",
                     chunks_in_volume,
                     is_volume_end,
@@ -1050,7 +1036,7 @@ impl WorkbenchApp {
 
                 if is_start {
                     self.state.status_message = "Live: receiving new volume...".to_string();
-                    log::info!("Realtime: new volume started, forwarding start chunk to worker");
+                    log::debug!("Realtime: new volume started, forwarding start chunk to worker");
                 }
 
                 // Forward chunk to worker for incremental ingest
@@ -1127,7 +1113,7 @@ impl WorkbenchApp {
                 timestamp,
                 skip_overlap_delete,
             } => {
-                log::info!(
+                log::debug!(
                     "Backfill chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
                     chunk_index,
                     is_start,
@@ -1314,7 +1300,7 @@ impl WorkbenchApp {
                         match facade.check_and_evict(quota, target).await {
                             Ok((evicted, count, quota_warning)) => {
                                 if evicted {
-                                    log::info!("Eviction complete: removed {} scans", count);
+                                    log::debug!("Eviction complete: removed {} scans", count);
                                 }
                                 if let Some(warning) = quota_warning {
                                     log::warn!("Quota warning: {}", warning);
@@ -1424,7 +1410,7 @@ impl WorkbenchApp {
                 metadata,
                 total_cache_size,
             } => {
-                log::info!(
+                log::debug!(
                     "Timeline loaded from cache: {} scan(s) for site {}",
                     metadata.len(),
                     site_id
@@ -1462,7 +1448,7 @@ impl WorkbenchApp {
                         }
                     }
 
-                    log::info!("Timeline has {} contiguous range(s)", ranges.len());
+                    log::debug!("Timeline has {} contiguous range(s)", ranges.len());
                 }
             }
             nexrad::CacheLoadResult::Error(msg) => {
@@ -1478,7 +1464,7 @@ impl WorkbenchApp {
         // and a real scan block replaces it (the ghost renderer's
         // overlap check handles the visual transition).
         self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
-        log::info!(
+        log::debug!(
             "Ingest complete: {} ({} records, {} elevations, {} sweeps, {:.0}ms, fetch: {:.0}ms)",
             result.scan_key,
             result.records_stored,
@@ -1573,7 +1559,7 @@ impl WorkbenchApp {
             })
             .unwrap_or_else(|| ("?/?".to_string(), "?".to_string()));
 
-        log::info!(
+        log::debug!(
             "{}: chunk ingested scan={} vol_chunk={} sweep_chunk={} remaining_in_sweep={} \
              elevs={:?} azimuths={} az_range={} \
              elevs_completed={:?} sweeps_stored={} is_end={} vcp={:?} {:.1}ms",
@@ -1672,7 +1658,7 @@ impl WorkbenchApp {
                         .iter()
                         .find(|s| s.elevation_number == completed_elev)
                     {
-                        log::info!(
+                        log::debug!(
                             "{}: sweep stored elev={} angle={:.1}° start_az={:.1}° \
                              time={:.1}–{:.1}s dur={:.2}s products={} vol_chunk={}",
                             source,
@@ -1686,7 +1672,7 @@ impl WorkbenchApp {
                             chunk_vol_index,
                         );
                     } else {
-                        log::info!(
+                        log::debug!(
                             "{}: sweep stored elev={} (no SweepMeta) products={} vol_chunk={}",
                             source,
                             completed_elev,
@@ -1728,7 +1714,7 @@ impl WorkbenchApp {
                         "n/a".to_string()
                     };
 
-                    log::info!(
+                    log::debug!(
                         "{}: render_live dispatched elev={} product={} accum_radials={} \
                          accum_chunks={} accum_az={} vol_chunk={}",
                         source,
@@ -1747,7 +1733,7 @@ impl WorkbenchApp {
 
         // Refresh timeline when new elevations are written to cache
         if !result.elevations_completed.is_empty() {
-            log::info!(
+            log::debug!(
                 "{}: {} new elevation(s) cached, refreshing timeline (total available: {:?})",
                 source,
                 result.elevations_completed.len(),
@@ -1784,7 +1770,7 @@ impl WorkbenchApp {
                 self.state.playback_state.center_view_on(now);
             }
 
-            log::info!(
+            log::debug!(
                 "{}: volume complete — {} elevations, triggering render",
                 source,
                 self.render.available_elevations().len()
@@ -1804,7 +1790,7 @@ impl WorkbenchApp {
                 }
             }
         } else if !had_elevations && !self.render.available_elevations().is_empty() {
-            log::info!(
+            log::debug!(
                 "{}: first elevation available, triggering initial render",
                 source
             );
@@ -1823,7 +1809,7 @@ impl WorkbenchApp {
         self.state.session_stats.pipeline.mark_processing_done();
         self.state.session_stats.pipeline.rendering = true;
 
-        log::info!(
+        log::debug!(
             "Decode complete: {}x{} (az x gates), {} radials, product={}, {:.0}ms",
             result.azimuth_count,
             result.gate_count,
@@ -1955,7 +1941,7 @@ impl WorkbenchApp {
     }
 
     fn handle_live_decoded_outcome(&mut self, result: nexrad::DecodeResult) {
-        log::info!(
+        log::debug!(
             "Live decode: {}x{}, {} radials, {}, {:.0}ms",
             result.azimuth_count,
             result.gate_count,
@@ -2158,7 +2144,7 @@ impl WorkbenchApp {
     }
 
     fn handle_volume_decoded_outcome(&mut self, volume_data: nexrad::VolumeData) {
-        log::info!(
+        log::debug!(
             "Volume decode complete: {} sweeps, {:.1}KB, product={}, {:.0}ms",
             volume_data.sweeps.len(),
             volume_data.buffer.len() as f64 / 1024.0,
@@ -2347,7 +2333,7 @@ impl WorkbenchApp {
                 date,
                 listing,
             } => {
-                log::info!(
+                log::debug!(
                     "Archive listing received: {} files for {}/{}",
                     listing.files.len(),
                     site_id,
@@ -2427,7 +2413,7 @@ impl WorkbenchApp {
 
         // Stop realtime channel if live mode was stopped by UI
         if !self.state.live_mode_state.is_active() && self.streaming.is_realtime_active() {
-            log::info!("Stopping realtime channel (live mode ended)");
+            log::debug!("Stopping realtime channel (live mode ended)");
             self.streaming.stop_realtime();
         }
 

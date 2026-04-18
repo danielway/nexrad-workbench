@@ -46,7 +46,7 @@ pub(super) fn setup_onmessage(
         match msg_type.as_deref() {
             Some("ready") => {
                 *ready_c.borrow_mut() = true;
-                log::info!("Decode worker ready");
+                log::debug!("Decode worker ready");
             }
             Some("ingested") => {
                 handle_ingested_message(&data, &pending_ingest_c, &results_c);
@@ -180,7 +180,7 @@ fn handle_ingested_message(
         }
     };
 
-    log::info!(
+    log::debug!(
         "Worker ingest complete: {} ({} records, {} elevations, {} sweeps, vcp={}, {:.0}ms)",
         r.scan_key,
         r.records_stored,
@@ -293,7 +293,7 @@ fn handle_decoded_message(
         }
     };
 
-    log::info!(
+    log::debug!(
         "Worker decode: {}x{}, {} radials, {}, {:.0}ms (fetch: {:.1}, marshal: {:.1})",
         r.azimuth_count,
         r.gate_count,
@@ -398,7 +398,7 @@ fn handle_volume_decoded_message(
         })
         .collect();
 
-    log::info!(
+    log::debug!(
         "Worker volume decode: {} sweeps, {:.1}KB buffer, product={}, {:.0}ms",
         sweeps.len(),
         buffer.len() as f64 / 1024.0,

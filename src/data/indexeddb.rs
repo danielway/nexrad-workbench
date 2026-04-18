@@ -384,7 +384,7 @@ impl IndexedDbRecordStore {
         })
         .await?;
 
-        log::info!(
+        log::debug!(
             "Deleted scan {} ({} sweep blobs, {} bytes freed)",
             scan,
             sweep_keys.len(),
@@ -412,7 +412,7 @@ impl IndexedDbRecordStore {
             current_size = current_size.saturating_sub(bytes_freed);
             evicted_count += 1;
 
-            log::info!(
+            log::debug!(
                 "Evicted scan {} (freed {} bytes, {} remaining)",
                 oldest.scan,
                 bytes_freed,
@@ -564,7 +564,7 @@ impl IndexedDbRecordStore {
 
         let count = to_delete.len() as u32;
         for scan in &to_delete {
-            log::info!("Deleting overlapping scan {} (replaced by archive)", scan);
+            log::debug!("Deleting overlapping scan {} (replaced by archive)", scan);
             self.delete_scan(scan).await?;
         }
 

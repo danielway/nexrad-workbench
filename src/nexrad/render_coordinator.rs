@@ -123,7 +123,7 @@ impl RenderCoordinator {
             return false;
         }
 
-        log::info!(
+        log::debug!(
             "Requesting worker decode: {} elev={} product={}",
             scan_key,
             elevation_number,
@@ -160,7 +160,7 @@ impl RenderCoordinator {
             return false;
         }
 
-        log::info!(
+        log::debug!(
             "Requesting volume render: {} product={} elevations={:?}",
             scan_key,
             product,
@@ -244,7 +244,6 @@ impl RenderCoordinator {
     pub fn create_worker(&mut self, ctx: eframe::egui::Context) -> Result<(), String> {
         match DecodeWorker::new(ctx) {
             Ok(w) => {
-                log::info!("Decode worker created successfully");
                 self.worker = Some(w);
                 Ok(())
             }

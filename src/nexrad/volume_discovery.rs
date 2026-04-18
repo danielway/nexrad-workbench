@@ -95,7 +95,7 @@ pub async fn find_latest_volume(
             // far edge of our probed window (which would suggest the real
             // current is further ahead than we probed).
             if age_hours < HINT_STALE_HOURS && !at_edge {
-                log::info!(
+                log::debug!(
                     "volume_discovery: hint {} → resolved to {} in {} requests",
                     hint.as_number(),
                     best_vol.as_number(),
@@ -106,14 +106,14 @@ pub async fn find_latest_volume(
                     requests_made: total_requests,
                 });
             }
-            log::info!(
+            log::debug!(
                 "volume_discovery: hint {} stale or at edge (age={}h, at_edge={}), falling back to binary search",
                 hint.as_number(),
                 age_hours,
                 at_edge
             );
         } else {
-            log::info!(
+            log::debug!(
                 "volume_discovery: hint {} and neighbors all empty, falling back to binary search",
                 hint.as_number()
             );
@@ -137,7 +137,7 @@ pub async fn find_latest_volume(
     total_requests += calls.load(Relaxed);
 
     let volume = found_index.map(|i| VolumeIndex::new(i + 1));
-    log::info!(
+    log::debug!(
         "volume_discovery: binary search resolved to {:?} in {} requests",
         volume.as_ref().map(|v| v.as_number()),
         total_requests

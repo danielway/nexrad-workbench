@@ -655,7 +655,7 @@ impl VolumeRayRenderer {
 
         self.has_data = true;
 
-        log::info!(
+        log::debug!(
             "Volume texture: {}x{} ({} values, {} sweeps, {:.1}KB, {})",
             tex_width,
             tex_height,
@@ -710,7 +710,7 @@ impl VolumeRayRenderer {
                     glow::PixelUnpackData::Slice(None),
                 );
                 gl.bind_texture(glow::TEXTURE_2D, None);
-                log::info!(
+                log::debug!(
                     "Volume FBO resized to {}x{} (viewport {}x{})",
                     fbo_w,
                     fbo_h,

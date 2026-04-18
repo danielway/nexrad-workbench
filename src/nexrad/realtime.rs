@@ -205,7 +205,7 @@ async fn streaming_loop(
 ) {
     use nexrad_data::aws::realtime::{download_chunk, list_chunks_in_volume, ChunkType};
 
-    log::info!("Starting realtime streaming for site: {}", site_id);
+    log::debug!("Starting realtime streaming for site: {}", site_id);
 
     // Initialize with a timeout to avoid indefinite waiting when the site has
     // no data or is unreachable. Each .await is a cancellation point — when
@@ -256,7 +256,7 @@ async fn streaming_loop(
     let mut stats_tracker = StatsTracker::new(&iter);
     stats_tracker.update(&stats, &iter);
 
-    log::info!(
+    log::debug!(
         "Iterator initialized: {} requests, {} bytes",
         iter.requests_made(),
         iter.bytes_downloaded()
@@ -282,7 +282,7 @@ async fn streaming_loop(
         let start_data = start_chunk.chunk.data().to_vec();
         current_scan_start_secs = current_timestamp();
 
-        log::info!(
+        log::debug!(
             "Init: emitting start_chunk ({} bytes) for mid-volume join",
             start_data.len()
         );
@@ -340,7 +340,7 @@ async fn streaming_loop(
                         .filter(|id| sweep_seqs.contains(&id.sequence()))
                         .collect();
 
-                    log::info!(
+                    log::debug!(
                         "Sweep backfill: downloading {} chunks for current sweep (elev {:?}, seq {:?})",
                         to_download.len(),
                         latest_elev,
@@ -389,7 +389,7 @@ async fn streaming_loop(
                         ctx.request_repaint();
                     }
 
-                    log::info!(
+                    log::debug!(
                         "Sweep backfill: completed, {} chunks downloaded for elev {:?}",
                         chunks_in_volume - 1,
                         latest_elev,
@@ -400,7 +400,7 @@ async fn streaming_loop(
                 }
             }
         } else {
-            log::info!(
+            log::debug!(
                 "Sweep backfill: no preceding chunks for latest seq {} (elev {:?})",
                 latest_seq,
                 latest_elev,
@@ -413,7 +413,7 @@ async fn streaming_loop(
         let latest_is_end = latest_type == ChunkType::End;
         chunks_in_volume += 1;
 
-        log::info!(
+        log::debug!(
             "Init: emitting latest_chunk seq {} ({} bytes, is_end={})",
             latest_seq,
             latest_data.len(),
@@ -449,7 +449,7 @@ async fn streaming_loop(
         chunks_in_volume = 1;
         cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
 
-        log::info!(
+        log::debug!(
             "Init: emitting latest_chunk as start ({} bytes)",
             latest_data.len()
         );
@@ -480,7 +480,7 @@ async fn streaming_loop(
     loop {
         // Check stop signal
         if state.borrow().stop_requested {
-            log::info!("Realtime streaming stopped");
+            log::debug!("Realtime streaming stopped");
             break;
         }
 
@@ -488,7 +488,7 @@ async fn streaming_loop(
         if let Some(wait_duration) = iter.time_until_next().and_then(|d| d.to_std().ok()) {
             let wait_ms = wait_duration.as_millis() as u32;
             if wait_ms > 0 && !interruptible_sleep(&state, &ctx, wait_ms).await {
-                log::info!("Realtime streaming stopped");
+                log::debug!("Realtime streaming stopped");
                 break;
             }
         }
@@ -738,7 +738,7 @@ async fn backfill_loop(
 ) {
     use nexrad_data::aws::realtime::{download_chunk, list_chunks_in_volume, ChunkType};
 
-    log::info!("Starting backfill for site: {}", site_id);
+    log::debug!("Starting backfill for site: {}", site_id);
 
     const ACQUIRE_TIMEOUT_SECS: u32 = 10;
     let hint = get_cached_volume(&site_id);
@@ -783,7 +783,7 @@ async fn backfill_loop(
     let mut stats_tracker = StatsTracker::new(&iter);
     stats_tracker.update(&stats, &iter);
 
-    log::info!(
+    log::debug!(
         "Backfill iterator initialized: {} requests, {} bytes",
         iter.requests_made(),
         iter.bytes_downloaded()
@@ -797,7 +797,7 @@ async fn backfill_loop(
         let start_data = start_chunk.chunk.data().to_vec();
         chunks_in_volume = 1;
 
-        log::info!(
+        log::debug!(
             "Backfill: emitting start_chunk ({} bytes) for mid-volume join",
             start_data.len()
         );
@@ -849,7 +849,7 @@ async fn backfill_loop(
                         .filter(|id| sweep_seqs.contains(&id.sequence()))
                         .collect();
 
-                    log::info!(
+                    log::debug!(
                         "Backfill sweep: downloading {} chunks for current sweep (elev {:?})",
                         to_download.len(),
                         latest_elev,
@@ -894,7 +894,7 @@ async fn backfill_loop(
                         ctx.request_repaint();
                     }
 
-                    log::info!(
+                    log::debug!(
                         "Backfill sweep: completed, {} chunks downloaded for elev {:?}",
                         chunks_in_volume - 1,
                         latest_elev,
@@ -905,7 +905,7 @@ async fn backfill_loop(
                 }
             }
         } else {
-            log::info!(
+            log::debug!(
                 "Backfill: no preceding chunks for latest seq {} (elev {:?})",
                 latest_seq,
                 latest_elev,
@@ -918,7 +918,7 @@ async fn backfill_loop(
         let is_actually_end = latest_type == ChunkType::End;
         chunks_in_volume += 1;
 
-        log::info!(
+        log::debug!(
             "Backfill: emitting latest_chunk seq {} ({} bytes, actual_end={}, forcing is_end=true)",
             latest_seq,
             latest_data.len(),
@@ -945,7 +945,7 @@ async fn backfill_loop(
         chunks_in_volume = 1;
         cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
 
-        log::info!(
+        log::debug!(
             "Backfill: emitting latest_chunk as start+end ({} bytes)",
             latest_data.len()
         );
@@ -964,7 +964,7 @@ async fn backfill_loop(
         ctx.request_repaint();
     }
 
-    log::info!(
+    log::debug!(
         "Backfill complete: {} chunks downloaded for site {}",
         chunks_in_volume,
         site_id

@@ -110,7 +110,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        log::info!(
+        log::debug!(
             "render: elev={} {} {}x{} ({:.1}KB) in {:.1}ms | fetch {:.1} | deser {:.1} | marshal {:.1}",
             elevation_number, product_str,
             header.azimuth_count, header.gate_count,
@@ -280,7 +280,7 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        log::info!(
+        log::debug!(
             "render_volume: {} sweeps, {} values packed ({:.1}KB, u{}) in {:.1}ms",
             sweep_meta_vec.len(),
             data_offset,

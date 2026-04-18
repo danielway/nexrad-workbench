@@ -119,7 +119,7 @@ fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
                                     }
 
                                     state.datetime_picker.close();
-                                    log::info!("Jumped to timestamp: {}", ts);
+                                    log::debug!("Jumped to timestamp: {}", ts);
                                 }
                             }
                         });

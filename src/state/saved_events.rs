@@ -50,7 +50,7 @@ impl SavedEvents {
 
         match serde_json::from_str(&json) {
             Ok(events) => {
-                log::info!("Loaded saved events from localStorage");
+                log::debug!("Loaded saved events from localStorage");
                 events
             }
             Err(e) => {

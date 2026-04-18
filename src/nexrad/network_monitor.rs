@@ -143,7 +143,7 @@ impl NetworkMonitor {
             .add_event_listener_with_callback("message", listener.as_ref().unchecked_ref())
             .ok()?;
 
-        log::info!("NetworkMonitor: listening for service worker metrics");
+        log::debug!("NetworkMonitor: listening for service worker metrics");
 
         Some(Self {
             pending,

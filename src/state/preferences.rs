@@ -158,7 +158,7 @@ impl UserPreferences {
 
         match serde_json::from_str(&json) {
             Ok(prefs) => {
-                log::info!("Loaded user preferences from localStorage");
+                log::debug!("Loaded user preferences from localStorage");
                 prefs
             }
             Err(e) => {
