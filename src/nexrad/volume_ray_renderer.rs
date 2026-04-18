@@ -329,7 +329,6 @@ pub struct VolumeRayRenderer {
     u_gate_count: Option<glow::UniformLocation>,
     u_first_gate_km: Option<glow::UniformLocation>,
     u_gate_interval_km: Option<glow::UniformLocation>,
-    u_max_range: Option<glow::UniformLocation>,
     u_data_offset: Option<glow::UniformLocation>,
     u_scale: Option<glow::UniformLocation>,
     u_offset: Option<glow::UniformLocation>,
@@ -382,7 +381,6 @@ impl VolumeRayRenderer {
         let u_gate_count = get("u_gate_count[0]");
         let u_first_gate_km = get("u_first_gate_km[0]");
         let u_gate_interval_km = get("u_gate_interval_km[0]");
-        let u_max_range = get("u_max_range[0]");
         let u_data_offset = get("u_data_offset[0]");
         let u_scale = get("u_scale[0]");
         let u_offset = get("u_offset[0]");
@@ -513,7 +511,6 @@ impl VolumeRayRenderer {
             u_gate_count,
             u_first_gate_km,
             u_gate_interval_km,
-            u_max_range,
             u_data_offset,
             u_scale,
             u_offset,
@@ -623,7 +620,6 @@ impl VolumeRayRenderer {
             let mut g_count = [0.0f32; MAX_SWEEPS];
             let mut fg_km = [0.0f32; MAX_SWEEPS];
             let mut gi_km = [0.0f32; MAX_SWEEPS];
-            let mut max_r = [0.0f32; MAX_SWEEPS];
             let mut d_off = [0i32; MAX_SWEEPS];
             let mut scale = [1.0f32; MAX_SWEEPS];
             let mut offset = [0.0f32; MAX_SWEEPS];
@@ -634,7 +630,6 @@ impl VolumeRayRenderer {
                 g_count[i] = s.gate_count as f32;
                 fg_km[i] = s.first_gate_km;
                 gi_km[i] = s.gate_interval_km;
-                max_r[i] = s.max_range_km;
                 d_off[i] = s.data_offset as i32;
                 scale[i] = s.scale;
                 offset[i] = s.offset;
@@ -645,7 +640,6 @@ impl VolumeRayRenderer {
             gl.uniform_1_f32_slice(self.u_gate_count.as_ref(), &g_count[..n]);
             gl.uniform_1_f32_slice(self.u_first_gate_km.as_ref(), &fg_km[..n]);
             gl.uniform_1_f32_slice(self.u_gate_interval_km.as_ref(), &gi_km[..n]);
-            gl.uniform_1_f32_slice(self.u_max_range.as_ref(), &max_r[..n]);
             gl.uniform_1_i32_slice(self.u_data_offset.as_ref(), &d_off[..n]);
             gl.uniform_1_f32_slice(self.u_scale.as_ref(), &scale[..n]);
             gl.uniform_1_f32_slice(self.u_offset.as_ref(), &offset[..n]);
