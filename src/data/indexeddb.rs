@@ -82,10 +82,21 @@ const DATABASE_NAME: &str = "nexrad-workbench";
 const STORE_SWEEPS: &str = "sweeps";
 const STORE_SCAN_INDEX: &str = "scan_index";
 
+/// Open-state machine that coalesces concurrent `open()` calls into a single
+/// underlying `indexedDB.open(...)`. Without this, multiple `spawn_local`
+/// tasks racing on a fresh store would each run their own open (each logging
+/// "Opened IndexedDB …") because the database handle is only stored after
+/// the initial `.await` resumes.
+enum OpenState {
+    Closed,
+    Opening(Vec<futures_channel::oneshot::Sender<Result<(), String>>>),
+    Open(IdbDatabase),
+}
+
 /// IndexedDB sweep store.
 #[derive(Clone)]
 pub struct IndexedDbRecordStore {
-    db: Rc<RefCell<Option<IdbDatabase>>>,
+    state: Rc<RefCell<OpenState>>,
 }
 
 impl Default for IndexedDbRecordStore {
@@ -97,32 +108,87 @@ impl Default for IndexedDbRecordStore {
 impl IndexedDbRecordStore {
     pub fn new() -> Self {
         Self {
-            db: Rc::new(RefCell::new(None)),
+            state: Rc::new(RefCell::new(OpenState::Closed)),
         }
     }
 
     /// Opens the database, creating/upgrading schema as needed.
+    ///
+    /// Safe to call concurrently: the first caller drives `open_database()`,
+    /// and any callers that arrive while it is in flight await the same
+    /// completion via a oneshot channel rather than starting their own open.
     pub async fn open(&self) -> Result<(), DataError> {
-        if self.db.borrow().is_some() {
-            return Ok(());
+        enum Action {
+            AlreadyOpen,
+            Wait(futures_channel::oneshot::Receiver<Result<(), String>>),
+            Drive,
         }
 
-        let db = open_database().await?;
-        *self.db.borrow_mut() = Some(db);
-        Ok(())
+        let action = {
+            let mut state = self.state.borrow_mut();
+            match &mut *state {
+                OpenState::Open(_) => Action::AlreadyOpen,
+                OpenState::Opening(waiters) => {
+                    let (tx, rx) = futures_channel::oneshot::channel();
+                    waiters.push(tx);
+                    Action::Wait(rx)
+                }
+                OpenState::Closed => {
+                    *state = OpenState::Opening(Vec::new());
+                    Action::Drive
+                }
+            }
+        };
+
+        match action {
+            Action::AlreadyOpen => Ok(()),
+            Action::Wait(rx) => rx
+                .await
+                .map_err(|_| DataError::TransactionFailed("open canceled".to_string()))
+                .and_then(|r| r.map_err(DataError::TransactionFailed)),
+            Action::Drive => {
+                let result = open_database().await;
+                // Concurrent callers may have pushed into the Opening vec while
+                // we were awaiting; take them here and notify.
+                let waiters = {
+                    let mut state = self.state.borrow_mut();
+                    let next = match &result {
+                        Ok(db) => OpenState::Open(db.clone()),
+                        // Stay Closed so a later call can retry.
+                        Err(_) => OpenState::Closed,
+                    };
+                    match std::mem::replace(&mut *state, next) {
+                        OpenState::Opening(waiters) => waiters,
+                        // The Drive caller set state to Opening and nothing
+                        // else transitions out of it.
+                        _ => unreachable!(),
+                    }
+                };
+
+                let notification: Result<(), String> =
+                    result.as_ref().map(|_| ()).map_err(|e| e.to_string());
+                for tx in waiters {
+                    let _ = tx.send(notification.clone());
+                }
+                result.map(|_| ())
+            }
+        }
     }
 
     /// Ensures the database is open.
     async fn ensure_open(&self) -> Result<(), DataError> {
-        if self.db.borrow().is_none() {
-            self.open().await?;
+        if matches!(&*self.state.borrow(), OpenState::Open(_)) {
+            return Ok(());
         }
-        Ok(())
+        self.open().await
     }
 
     /// Gets the database reference.
     fn get_db(&self) -> Result<IdbDatabase, DataError> {
-        self.db.borrow().clone().ok_or(DataError::NotOpen)
+        match &*self.state.borrow() {
+            OpenState::Open(db) => Ok(db.clone()),
+            _ => Err(DataError::NotOpen),
+        }
     }
 
     /// Executes a readwrite transaction on a single object store.
