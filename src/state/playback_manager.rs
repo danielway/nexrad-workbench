@@ -276,16 +276,17 @@ pub(crate) fn best_elevation_at_playback(
     scan: &Scan,
     playback_ts: f64,
     available_elevations: &[u8],
-) -> u8 {
+) -> Option<u8> {
     match elevation_selection {
         crate::state::ElevationSelection::Fixed {
             elevation_number, ..
         } => {
             // Filter sweeps by exact elevation_number match
             // then filter to those that have started (start_time <= playback_ts)
-            // pick the one with the latest start_time (most recent instance)
-            let matching = scan
-                .sweeps
+            // pick the one with the latest start_time (most recent instance).
+            // Returns None when the selected elevation has no sweep in this scan,
+            // so callers can clear display rather than send a doomed render.
+            scan.sweeps
                 .iter()
                 .filter(|s| s.elevation_number == *elevation_number)
                 .filter(|s| s.start_time <= playback_ts)
@@ -293,20 +294,14 @@ pub(crate) fn best_elevation_at_playback(
                     a.start_time
                         .partial_cmp(&b.start_time)
                         .unwrap_or(std::cmp::Ordering::Equal)
-                });
-
-            if let Some(sweep) = matching {
-                return sweep.elevation_number;
-            }
-
-            // No matching sweep started yet — return selected number
-            *elevation_number
+                })
+                .map(|s| s.elevation_number)
         }
-        crate::state::ElevationSelection::Latest => most_recent_sweep_elevation(
+        crate::state::ElevationSelection::Latest => Some(most_recent_sweep_elevation(
             scan,
             playback_ts,
             available_elevations.first().copied().unwrap_or(1),
-        ),
+        )),
     }
 }
 

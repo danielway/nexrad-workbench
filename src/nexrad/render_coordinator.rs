@@ -93,6 +93,13 @@ impl RenderCoordinator {
         self.last_render = None;
     }
 
+    /// Clear only the last-render dedup entry. Keeps `current_scan_key` so the
+    /// scan itself remains valid — useful when a sweep/product request fails
+    /// but the scan is still available for other (elev, product) pairs.
+    pub fn clear_last_render(&mut self) {
+        self.last_render = None;
+    }
+
     /// Pick the closest available elevation to the requested one.
     pub fn best_available_elevation(&self, requested: u8) -> u8 {
         self.available_elevations
