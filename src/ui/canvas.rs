@@ -145,18 +145,9 @@ pub fn render_canvas_with_geo(
                 // In live mode, the data boundaries and the "now" line are separate:
                 //   data_sweep = (data_edge, data_start) — from actual received chunks
                 //   now_line = estimated antenna position — what's currently being collected
-                //
-                // The donut arc uses the live data azimuth range directly (not gpu_sweep),
-                // because gpu_sweep is intentionally None during live mode to bypass the
-                // shader's dual-texture compositing (see compute_gpu_sweep_state).
                 let (sweep_line_info, sweep_stale) = if state.live_radar_model.active {
-                    let live_range = state
-                        .live_radar_model
-                        .active_sweep
-                        .as_ref()
-                        .and_then(|s| s.data_azimuth_range)
-                        .map(|(first_az, last_az)| (last_az, first_az));
-                    (live_range, false)
+                    // Use data boundaries for the donut arc (same as GPU compositing)
+                    (gpu_sweep, false)
                 } else {
                     match gpu_sweep {
                         Some((az, start)) if az != 0.0 || start != 0.0 => {
@@ -329,21 +320,14 @@ fn compute_gpu_sweep_state(
     state: &mut AppState,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool) {
-    // In live mode we render the partial current sweep directly without
-    // compositing against a previous sweep. The padded-720 azimuth texture
-    // used by live_decoded interacts badly with the shader's dual-texture
-    // compositing path, leaving the canvas blank for most pixels. Showing
-    // just the growing arc (with transparent gaps outside it) is also the
-    // clearer UX — previous-sweep residue in the gap was often stale or
-    // from a different tilt.
-    let gpu_sweep = if state
+    // Live mode with partial data takes priority over timeline sweep animation.
+    let gpu_sweep = if let Some((first_az, last_az)) = state
         .live_radar_model
         .active_sweep
         .as_ref()
         .and_then(|s| s.data_azimuth_range)
-        .is_some()
     {
-        None
+        Some((last_az, first_az))
     } else if state.effective_sweep_animation() {
         let playback_ts = state.playback_state.playback_position();
         let sweep_bounds = state

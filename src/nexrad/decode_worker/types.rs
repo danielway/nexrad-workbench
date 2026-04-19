@@ -110,6 +110,12 @@ pub(super) struct DecodedResultMsg {
     pub sweep_start_secs: f64,
     #[serde(default)]
     pub sweep_end_secs: f64,
+    #[serde(default = "default_azimuth_spacing_deg")]
+    pub azimuth_spacing_deg: f32,
+}
+
+fn default_azimuth_spacing_deg() -> f32 {
+    1.0
 }
 
 fn default_product() -> String {
@@ -379,6 +385,9 @@ pub struct DecodeResult {
     pub sweep_end_secs: f64,
     /// Per-radial collection timestamps in Unix seconds (parallel to azimuths).
     pub radial_times: Vec<f64>,
+    /// Median angular spacing between adjacent sorted radials, in degrees.
+    /// Used by the shader's search threshold instead of deriving from azimuth_count.
+    pub azimuth_spacing_deg: f32,
 }
 
 /// Per-sweep metadata for the volume ray marcher.

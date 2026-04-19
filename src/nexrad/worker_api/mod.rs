@@ -124,6 +124,9 @@ pub(super) struct RenderResponse {
     pub deser_ms: f64,
     pub total_ms: f64,
     pub marshal_ms: f64,
+    /// Median angular spacing between adjacent sorted radials, in degrees.
+    /// Used by the shader's search threshold instead of deriving from azimuth_count.
+    pub azimuth_spacing_deg: f32,
 }
 
 /// Response from `worker_ingest_chunk`.

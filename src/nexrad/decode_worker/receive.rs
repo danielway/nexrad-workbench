@@ -154,6 +154,7 @@ fn build_decode_result(
         sweep_start_secs: r.sweep_start_secs,
         sweep_end_secs: r.sweep_end_secs,
         radial_times,
+        azimuth_spacing_deg: r.azimuth_spacing_deg,
     }
 }
 

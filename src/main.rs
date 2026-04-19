@@ -1785,6 +1785,7 @@ impl WorkbenchApp {
                 max_range_km: result.max_range_km,
                 offset: result.offset,
                 scale: result.scale,
+                azimuth_spacing_deg: result.azimuth_spacing_deg,
                 radial_times: result.radial_times.clone(),
                 sweep_start_secs: result.sweep_start_secs,
                 sweep_end_secs: result.sweep_end_secs,
@@ -1836,6 +1837,7 @@ impl WorkbenchApp {
                         result.max_range_km,
                         result.offset,
                         result.scale,
+                        result.azimuth_spacing_deg,
                         &result.radial_times,
                     );
                     r.set_current_sweep_id(Some(result_sweep_id));
@@ -1900,80 +1902,6 @@ impl WorkbenchApp {
             result.total_ms,
         );
 
-        // Pad partial sweep to a full 360° azimuth grid before GPU upload.
-        // The shader's find_bracket_az estimates the initial search index as
-        // azimuth_deg / (360/az_count). With N radials clustered in a small arc,
-        // the estimated spacing is wrong and the search misses. Padding to 720
-        // evenly-spaced slots makes the estimate correct.
-        //
-        // Empty slots use a negative azimuth sentinel (EMPTY_AZ_SENTINEL in
-        // shaders.rs) so the shader's bracket/nearest searches skip them.
-        // Evenly-spaced template azimuths would win distance-0 ties against
-        // real neighbors and expose their sentinel-0 gates, producing
-        // transparent wedges between actual radials.
-        let gate_count = result.gate_count as usize;
-        let full_az_count: u32 = 720;
-        let step = 360.0f32 / full_az_count as f32;
-
-        let mut padded_az = vec![-1.0f32; full_az_count as usize];
-        let mut padded_gates = vec![0.0f32; full_az_count as usize * gate_count];
-        let mut padded_times = vec![0.0f64; full_az_count as usize];
-
-        // Place each radial into its rounded target bucket, or — if that bucket
-        // is already occupied — probe outward (±1, ±2, ±3) for the nearest
-        // empty slot. Collisions happen routinely because real NEXRAD azimuths
-        // don't land exactly on the 0.5° grid: two adjacent radials can round
-        // to the same bucket, leaving a neighbor bucket empty. Without this
-        // probing, every collision loses a radial and leaves a template slot
-        // that renders as a transparent wedge.
-        let mut collisions = 0usize;
-        let mut dropped = 0usize;
-        for (src_row, &az) in result.azimuths.iter().enumerate() {
-            let target = ((az / step).round() as usize) % full_az_count as usize;
-            let mut dst_row = target;
-            if padded_az[target] >= 0.0 {
-                collisions += 1;
-                let mut found = false;
-                for probe in 1..=4i32 {
-                    for &sign in &[1i32, -1i32] {
-                        let idx = (target as i32 + probe * sign).rem_euclid(full_az_count as i32)
-                            as usize;
-                        if padded_az[idx] < 0.0 {
-                            dst_row = idx;
-                            found = true;
-                            break;
-                        }
-                    }
-                    if found {
-                        break;
-                    }
-                }
-                if !found {
-                    dropped += 1;
-                    continue;
-                }
-            }
-            padded_az[dst_row] = az;
-            let src_start = src_row * gate_count;
-            let dst_start = dst_row * gate_count;
-            if src_start + gate_count <= result.gate_values.len() {
-                padded_gates[dst_start..dst_start + gate_count]
-                    .copy_from_slice(&result.gate_values[src_start..src_start + gate_count]);
-            }
-            if src_row < result.radial_times.len() {
-                padded_times[dst_row] = result.radial_times[src_row];
-            }
-        }
-        let filled = padded_az.iter().filter(|a| **a >= 0.0).count();
-        log::debug!(
-            "Live pad: {} input radials → {} filled slots ({} collisions resolved, {} dropped), {} empty",
-            result.azimuths.len(),
-            filled,
-            collisions,
-            dropped,
-            full_az_count as usize - filled,
-        );
-
         if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
                 // Build a live sweep ID so we can detect elevation transitions
@@ -2011,16 +1939,17 @@ impl WorkbenchApp {
 
                 r.update_data(
                     gl,
-                    &padded_az,
-                    &padded_gates,
-                    full_az_count,
+                    &result.azimuths,
+                    &result.gate_values,
+                    result.azimuth_count,
                     result.gate_count,
                     result.first_gate_range_km,
                     result.gate_interval_km,
                     result.max_range_km,
                     result.offset,
                     result.scale,
-                    &padded_times,
+                    result.azimuth_spacing_deg,
+                    &result.radial_times,
                 );
                 r.set_current_sweep_id(Some(live_sweep_id));
                 r.update_color_table(gl, &result.product);
@@ -2083,11 +2012,10 @@ impl WorkbenchApp {
                 .sweep_start_azimuth
                 .unwrap_or(0.0);
             log::debug!(
-                "Live azimuth range: chrono_first={:.1} chrono_last={:.1} count={}/{}",
+                "Live azimuth range: chrono_first={:.1} chrono_last={:.1} count={}",
                 first_az,
                 last_az,
                 result.azimuths.len(),
-                full_az_count,
             );
             self.state.live_mode_state.live_data_azimuth_range = Some((first_az, last_az));
         }
@@ -2752,6 +2680,7 @@ impl WorkbenchApp {
                                 cached.max_range_km,
                                 cached.offset,
                                 cached.scale,
+                                cached.azimuth_spacing_deg,
                                 Some(cache_key),
                                 &cached.radial_times,
                             );

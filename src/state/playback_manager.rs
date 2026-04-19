@@ -26,6 +26,7 @@ pub(crate) struct CachedSweepData {
     pub max_range_km: f64,
     pub offset: f32,
     pub scale: f32,
+    pub azimuth_spacing_deg: f32,
     pub radial_times: Vec<f64>,
     pub sweep_start_secs: f64,
     pub sweep_end_secs: f64,

@@ -123,6 +123,21 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
             marshal_ms,
         );
 
+        // Median angular spacing between adjacent sorted radials. Using the
+        // median (rather than arc / count) naturally handles wrap-around
+        // partial sweeps: the big gap where the sorted array crosses the
+        // uncovered arc sorts to the top and gets excluded by the median.
+        let azimuth_spacing_deg = if sweep.azimuth_count > 1 {
+            let az = sweep.azimuths.as_slice();
+            let mut gaps: Vec<f32> = az.windows(2).map(|w| (w[1] - w[0]).abs()).collect();
+            gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            // Guard against a zero-gap median (collocated radials) or missing data.
+            let median = gaps[gaps.len() / 2];
+            if median > 0.0 { median } else { 1.0 }
+        } else {
+            1.0
+        };
+
         let response = RenderResponse {
             azimuth_count: sweep.azimuth_count,
             gate_count: sweep.gate_count,
@@ -140,6 +155,7 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
             deser_ms: 0.0,
             total_ms,
             marshal_ms,
+            azimuth_spacing_deg,
         };
         let result = serde_wasm_bindgen::to_value(&response)
             .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))?;
