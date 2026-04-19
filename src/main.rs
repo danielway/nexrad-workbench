@@ -939,6 +939,17 @@ impl WorkbenchApp {
         self.state.playback_state.time_model.disable_realtime_lock();
         self.streaming.stop_realtime();
 
+        // Halt playback unless the user is actively scrubbing/jogging — those
+        // paths set the new position themselves. Without this, we leave
+        // playing=true at Realtime speed and position=wall-clock, so the
+        // cursor keeps pace with "now" and mimics still being locked.
+        if !matches!(
+            reason,
+            state::LiveExitReason::UserSeeked | state::LiveExitReason::UserJogged
+        ) {
+            self.state.playback_state.playing = false;
+        }
+
         self.state.status_message = self
             .state
             .live_mode_state
