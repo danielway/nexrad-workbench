@@ -34,8 +34,8 @@ pub(crate) struct CachedSweepData {
 }
 
 /// Build a sweep cache key from scan key and elevation number.
-pub(crate) fn sweep_cache_key(scan_key: &str, elevation_number: u8) -> String {
-    format!("{}|{}", scan_key, elevation_number)
+pub(crate) fn sweep_cache_key(scan_key: &str, elevation_number: u8, product: &str) -> String {
+    format!("{}|{}|{}", scan_key, elevation_number, product)
 }
 
 // ---------------------------------------------------------------------------
@@ -115,9 +115,11 @@ pub(crate) enum PrevSweepAction {
 pub(crate) struct PlaybackManager {
     sweep_cache: SweepDataCache,
     pending_prev_sweep_key: Option<String>,
-    /// Cached identity of the last resolved previous sweep (scan_key, elev_num).
-    /// If unchanged between frames, `resolve_prev_sweep` can skip work.
-    cached_prev_identity: Option<(String, u8)>,
+    /// Cached identity of the last resolved previous sweep
+    /// (scan_key, elev_num, product). If unchanged between frames,
+    /// `resolve_prev_sweep` can skip work. Includes product so a product
+    /// change invalidates the cache and re-resolves the prev texture.
+    cached_prev_identity: Option<(String, u8, String)>,
 }
 
 impl PlaybackManager {
@@ -226,16 +228,20 @@ impl PlaybackManager {
         product: &str,
     ) -> PrevSweepAction {
         // Fast path: if the identity hasn't changed, nothing to do
-        let new_identity = (prev_scan_key.to_string(), prev_elev_num);
+        let new_identity = (
+            prev_scan_key.to_string(),
+            prev_elev_num,
+            product.to_string(),
+        );
         if self.cached_prev_identity.as_ref() == Some(&new_identity) {
-            let desired_prev_id = sweep_cache_key(prev_scan_key, prev_elev_num);
+            let desired_prev_id = sweep_cache_key(prev_scan_key, prev_elev_num, product);
             if current_gpu_prev_id == Some(desired_prev_id.as_str()) {
                 return PrevSweepAction::AlreadyLoaded;
             }
         }
         self.cached_prev_identity = Some(new_identity);
 
-        let desired_prev_id = sweep_cache_key(prev_scan_key, prev_elev_num);
+        let desired_prev_id = sweep_cache_key(prev_scan_key, prev_elev_num, product);
 
         // Check if the GPU already has the right data
         if current_gpu_prev_id == Some(desired_prev_id.as_str()) {

@@ -1799,8 +1799,11 @@ impl WorkbenchApp {
         self.state.session_stats.record_render_time(result.total_ms);
 
         // Cache decoded data for stateless sweep animation
-        let result_sweep_id =
-            sweep_cache_key(&result.context.scan_key, result.context.elevation_number);
+        let result_sweep_id = sweep_cache_key(
+            &result.context.scan_key,
+            result.context.elevation_number,
+            &result.product,
+        );
         self.playback_manager.cache_sweep(
             result_sweep_id.clone(),
             CachedSweepData {
