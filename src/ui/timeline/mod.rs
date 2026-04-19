@@ -9,7 +9,7 @@ mod sweep_track;
 mod tooltips;
 
 use super::colors::timeline as tl_colors;
-use crate::state::AppState;
+use crate::state::{AppState, LivePhase};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
@@ -437,7 +437,8 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             detail_level,
             anim_time,
         );
-        ui.ctx().request_repaint();
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(67));
     }
 
     // -- Render real-time partial scan progress --
@@ -476,7 +477,10 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             active_sweep,
             prev_active_sweep,
         );
-        ui.ctx().request_repaint();
+        if state.live_mode_state.phase == LivePhase::WaitingForChunk {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
+        }
     }
 
     // VCP track removed — the scan lane already represents VCP via color.

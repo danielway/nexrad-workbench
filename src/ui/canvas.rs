@@ -172,7 +172,6 @@ pub fn render_canvas_with_geo(
                 if state.viz_state.inspector_enabled {
                     if let Some(hover_pos) = response.hover_pos() {
                         render_inspector(
-                            ui,
                             &painter,
                             &projection,
                             hover_pos,

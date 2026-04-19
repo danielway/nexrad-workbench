@@ -15,7 +15,6 @@ use super::canvas::format_unix_timestamp;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_inspector(
-    ui: &mut egui::Ui,
     painter: &Painter,
     projection: &MapProjection,
     hover_pos: Pos2,
@@ -102,9 +101,6 @@ pub(crate) fn render_inspector(
         ],
         Stroke::new(1.0, cross_color),
     );
-
-    // Request repaint for continuous hover updates
-    ui.ctx().request_repaint();
 }
 
 pub(crate) fn render_distance_measurement(
