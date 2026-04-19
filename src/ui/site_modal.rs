@@ -67,7 +67,7 @@ impl Default for SiteModalState {
 }
 
 /// Apply a site selection to app state: update viz, center camera, refresh timeline.
-fn apply_site_selection(state: &mut AppState, site_id: &str, lat: f64, lon: f64) {
+pub(super) fn apply_site_selection(state: &mut AppState, site_id: &str, lat: f64, lon: f64) {
     state.viz_state.site_id = site_id.to_string();
     state.viz_state.center_lat = lat;
     state.viz_state.center_lon = lon;
