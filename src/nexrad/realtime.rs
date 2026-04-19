@@ -9,6 +9,7 @@
 use super::download::NetworkStats;
 use super::streaming_state::StreamingState;
 use super::volume_discovery::find_latest_volume;
+use futures_util::future::join_all;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
@@ -347,31 +348,48 @@ async fn streaming_loop(
                         sweep_seqs,
                     );
 
-                    let mut downloaded: Vec<(u32, Vec<u8>)> = Vec::new();
-
-                    for chunk_id in to_download.iter() {
+                    // Download all missing sweep chunks in parallel. The list
+                    // is small (typically 2–6), so issuing them concurrently
+                    // cuts wall-clock latency substantially compared to
+                    // staircasing sequential requests. We collect into a Vec
+                    // first to preserve deterministic order when emitting.
+                    let mut downloaded: Vec<(u32, Vec<u8>)> = if state.borrow().stop_requested {
+                        Vec::new()
+                    } else {
+                        let results =
+                            join_all(to_download.iter().map(|id| download_chunk(&site_id, id)))
+                                .await;
+                        let mut out = Vec::with_capacity(results.len());
+                        for (chunk_id, res) in to_download.iter().zip(results.into_iter()) {
+                            match res {
+                                Ok((_id, chunk)) => {
+                                    let chunk_data = chunk.data().to_vec();
+                                    log::debug!(
+                                        "Sweep backfill: downloaded chunk seq {} ({} bytes)",
+                                        chunk_id.sequence(),
+                                        chunk_data.len(),
+                                    );
+                                    out.push((chunk_id.sequence() as u32, chunk_data));
+                                }
+                                Err(e) => {
+                                    log::warn!(
+                                        "Sweep backfill: failed to download chunk seq {}: {}",
+                                        chunk_id.sequence(),
+                                        e
+                                    );
+                                }
+                            }
+                        }
+                        // If stop was requested while we were fetching, discard
+                        // the results so we don't emit chunks after shutdown.
                         if state.borrow().stop_requested {
-                            break;
+                            Vec::new()
+                        } else {
+                            out
                         }
-                        match download_chunk(&site_id, chunk_id).await {
-                            Ok((_id, chunk)) => {
-                                let chunk_data = chunk.data().to_vec();
-                                log::debug!(
-                                    "Sweep backfill: downloaded chunk seq {} ({} bytes)",
-                                    chunk_id.sequence(),
-                                    chunk_data.len(),
-                                );
-                                downloaded.push((chunk_id.sequence() as u32, chunk_data));
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "Sweep backfill: failed to download chunk seq {}: {}",
-                                    chunk_id.sequence(),
-                                    e
-                                );
-                            }
-                        }
-                    }
+                    };
+                    // Emit in sequence order so chunk_index stays monotonic.
+                    downloaded.sort_by_key(|(seq, _)| *seq);
 
                     for (_seq, chunk_data) in downloaded {
                         chunks_in_volume += 1;
@@ -1035,4 +1053,32 @@ async fn acquire_streaming_state(
         nexrad_data::result::aws::AWSError::LatestVolumeNotFound,
     ))?;
     StreamingState::init_at_volume(site_id, volume, search.requests_made).await
+}
+
+/// Pre-warm the cached volume hint for `site_id` in the background.
+///
+/// Runs volume discovery without initializing a stream, just to freshen the
+/// localStorage hint so a subsequent `StartLive` resolves in a single parallel
+/// round-trip instead of potentially cold-starting. Logs and discards errors —
+/// this is a best-effort optimization.
+pub fn prewarm_volume_hint(site_id: String) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let hint = get_cached_volume(&site_id);
+        match find_latest_volume(&site_id, hint).await {
+            Ok(result) => {
+                if let Some(volume) = result.volume {
+                    cache_volume_number(&site_id, volume);
+                    log::debug!(
+                        "prewarm_volume_hint({}): cached volume {} ({} requests)",
+                        site_id,
+                        volume.as_number(),
+                        result.requests_made
+                    );
+                }
+            }
+            Err(e) => {
+                log::debug!("prewarm_volume_hint({}) failed: {}", site_id, e);
+            }
+        }
+    });
 }

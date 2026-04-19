@@ -66,6 +66,9 @@ pub struct ViewState {
     /// Volume density cutoff.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vdc: Option<f32>,
+    /// Real-time streaming active — when true, reloading re-enters live mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rt: Option<bool>,
 }
 
 /// Parsed URL parameters.

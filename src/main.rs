@@ -323,6 +323,11 @@ impl WorkbenchApp {
                 state.viz_state.volume_density_cutoff = vdc;
             }
         }
+        // If the URL indicates real-time mode was active, re-enter live on boot.
+        // Queued behind the initial RefreshTimeline so the timeline populates first.
+        if url_params.view.rt == Some(true) {
+            state.push_command(state::AppCommand::StartLive);
+        }
         if let Some(ref product_code) = url_params.product {
             if let Some(product) = state::RadarProduct::from_short_code(product_code) {
                 state.viz_state.product = product;
@@ -459,6 +464,11 @@ impl WorkbenchApp {
         if !app.state.cross_origin_isolated {
             log::warn!("Not cross-origin isolated: SharedArrayBuffer unavailable");
         }
+
+        // Kick off a background volume-hint refresh for the current site so a
+        // subsequent StartLive (user-triggered or URL-restored via rt=1) can
+        // resolve in a single parallel round trip instead of cold-starting.
+        nexrad::prewarm_volume_hint(app.state.viz_state.site_id.clone());
 
         app
     }

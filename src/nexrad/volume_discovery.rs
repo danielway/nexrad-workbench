@@ -6,12 +6,13 @@
 //! streaming, and `nexrad-data`'s `get_latest_volume()` does it in ~10
 //! sequential LIST requests via a binary search.
 //!
-//! This module preserves that binary search (ported verbatim from nexrad-data
-//! 1.0.0-rc.7, see [`search`] below) for the cold-start case, and adds a
-//! cached-hint fast path on top: on reconnection we probe `hint..hint+K`
-//! concurrently (one round trip) and only fall through to the binary search
-//! when the hint is stale, absent, or too close to the edge of our probed
-//! window to trust.
+//! This module strictly prefers parallel probes. Given a cached hint we probe
+//! `hint..hint+K` concurrently; without one we do a coarse parallel sweep
+//! across the whole 999-entry ring to synthesize a hint, then run the same
+//! fast path against it. Both cases resolve in 1–2 round trips. The original
+//! rotated-array binary search (ported verbatim from nexrad-data 1.0.0-rc.7,
+//! see [`search`] below) is kept only as a defensive fallback for the rare
+//! case where even the coarse sweep finds no valid volumes.
 
 use chrono::{DateTime, Utc};
 use futures_util::future::join_all;
@@ -24,10 +25,10 @@ use std::sync::Arc;
 
 /// Number of concurrent probes forward from the cached hint.
 ///
-/// 8 probes covers roughly 40 minutes of volume progression (each volume ~5 min).
+/// 16 probes covers roughly 80 minutes of volume progression (each volume ~5 min).
 /// If the user reconnects within that window we resolve in one round trip;
-/// past it we fall through to the binary search.
-const HINT_PROBE_COUNT: usize = 8;
+/// past it we fall through to the coarse sweep.
+const HINT_PROBE_COUNT: usize = 16;
 
 /// Age beyond which the newest hint probe is considered too stale to trust.
 const HINT_STALE_HOURS: i64 = 2;
@@ -36,6 +37,13 @@ const HINT_STALE_HOURS: i64 = 2;
 ///
 /// Volumes are numbered 1..=999 (see `VolumeIndex::next()` wrapping 999→1).
 const VOLUME_COUNT: usize = 999;
+
+/// Number of equally-spaced parallel probes used when no cached hint is
+/// available (cold start). 32 probes across 999 volumes means each probe
+/// "owns" ~31 volumes (~155 minutes of data), so at least one probe always
+/// hits a recent non-empty volume. The newest probe's volume is then used as
+/// a synthetic hint for the fine-grained fast-path.
+const COARSE_PROBE_COUNT: usize = 32;
 
 /// Result of a volume search including the request count (for network stats).
 #[derive(Debug, Clone)]
@@ -68,36 +76,89 @@ async fn probe_batch(
     join_all(futures).await
 }
 
+/// Outcome of the hint fast-path probe.
+enum HintProbeOutcome {
+    /// The newest probe is trustworthy — this is the current volume.
+    Resolved(VolumeIndex),
+    /// Found a non-None volume but it's stale or at the edge of the window;
+    /// caller should widen the search.
+    Untrusted,
+    /// All probes returned None.
+    Empty,
+}
+
+/// Probe `HINT_PROBE_COUNT` volumes forward from `hint` concurrently and classify
+/// the result. Adds the request count to `total_requests`.
+async fn hint_fast_path(
+    site: &str,
+    hint: VolumeIndex,
+    total_requests: &mut usize,
+) -> HintProbeOutcome {
+    let volumes: Vec<_> = (0..HINT_PROBE_COUNT).map(|i| advance(hint, i)).collect();
+    let probes = probe_batch(site, &volumes).await;
+    *total_requests += volumes.len();
+
+    let newest = probes
+        .iter()
+        .filter_map(|(v, t)| t.map(|t| (*v, t)))
+        .max_by_key(|(_, t)| *t);
+
+    match newest {
+        Some((best_vol, best_time)) => {
+            let age_hours = (Utc::now() - best_time).num_hours();
+            let at_edge = best_vol == *volumes.last().unwrap();
+            if age_hours < HINT_STALE_HOURS && !at_edge {
+                HintProbeOutcome::Resolved(best_vol)
+            } else {
+                log::debug!(
+                    "volume_discovery: hint {} untrusted (age={}h, at_edge={})",
+                    hint.as_number(),
+                    age_hours,
+                    at_edge
+                );
+                HintProbeOutcome::Untrusted
+            }
+        }
+        None => HintProbeOutcome::Empty,
+    }
+}
+
+/// Coarse parallel sweep across the whole ring. Returns the volume with the
+/// newest timestamp — a synthetic hint for the subsequent fine-grained probe.
+async fn coarse_sweep(site: &str, total_requests: &mut usize) -> Option<VolumeIndex> {
+    let step = VOLUME_COUNT / COARSE_PROBE_COUNT;
+    let volumes: Vec<_> = (0..COARSE_PROBE_COUNT)
+        .map(|i| VolumeIndex::new(i * step + 1))
+        .collect();
+    let probes = probe_batch(site, &volumes).await;
+    *total_requests += volumes.len();
+
+    probes
+        .iter()
+        .filter_map(|(v, t)| t.map(|t| (*v, t)))
+        .max_by_key(|(_, t)| *t)
+        .map(|(v, _)| v)
+}
+
 /// Finds the latest volume directory for the given site.
 ///
-/// If `hint` is provided (from localStorage), tries a fast forward scan first.
-/// Falls through to the rotated-array binary search on cache miss or stale hint.
+/// Strategy: (1) if a cached hint is provided, probe a forward window of
+/// [`HINT_PROBE_COUNT`] volumes in parallel. (2) On miss or stale hint, do a
+/// coarse parallel sweep across the whole ring to synthesize a fresh hint and
+/// re-run the fast path. (3) Only if even the coarse sweep finds nothing, fall
+/// back to the sequential rotated-array binary search for correctness.
 pub async fn find_latest_volume(
     site: &str,
     hint: Option<VolumeIndex>,
 ) -> Result<VolumeSearchResult> {
     let mut total_requests = 0usize;
 
-    if let Some(hint) = hint {
-        let volumes: Vec<_> = (0..HINT_PROBE_COUNT).map(|i| advance(hint, i)).collect();
-        let probes = probe_batch(site, &volumes).await;
-        total_requests += volumes.len();
-
-        let newest = probes
-            .iter()
-            .filter_map(|(v, t)| t.map(|t| (*v, t)))
-            .max_by_key(|(_, t)| *t);
-
-        if let Some((best_vol, best_time)) = newest {
-            let age_hours = (Utc::now() - best_time).num_hours();
-            let at_edge = best_vol == *volumes.last().unwrap();
-            // Only trust the hint if the newest probe is recent and not at the
-            // far edge of our probed window (which would suggest the real
-            // current is further ahead than we probed).
-            if age_hours < HINT_STALE_HOURS && !at_edge {
+    if let Some(h) = hint {
+        match hint_fast_path(site, h, &mut total_requests).await {
+            HintProbeOutcome::Resolved(best_vol) => {
                 log::debug!(
                     "volume_discovery: hint {} → resolved to {} in {} requests",
-                    hint.as_number(),
+                    h.as_number(),
                     best_vol.as_number(),
                     total_requests
                 );
@@ -106,21 +167,39 @@ pub async fn find_latest_volume(
                     requests_made: total_requests,
                 });
             }
-            log::debug!(
-                "volume_discovery: hint {} stale or at edge (age={}h, at_edge={}), falling back to binary search",
-                hint.as_number(),
-                age_hours,
-                at_edge
-            );
-        } else {
-            log::debug!(
-                "volume_discovery: hint {} and neighbors all empty, falling back to binary search",
-                hint.as_number()
-            );
+            HintProbeOutcome::Untrusted | HintProbeOutcome::Empty => {
+                // fall through to coarse sweep
+            }
         }
     }
 
-    // Cold start / stale hint — rotated-array binary search.
+    // Cold start / stale hint: coarse parallel sweep to find a fresh hint.
+    if let Some(synth_hint) = coarse_sweep(site, &mut total_requests).await {
+        if let HintProbeOutcome::Resolved(best_vol) =
+            hint_fast_path(site, synth_hint, &mut total_requests).await
+        {
+            log::debug!(
+                "volume_discovery: coarse sweep → hint {} → resolved to {} in {} requests",
+                synth_hint.as_number(),
+                best_vol.as_number(),
+                total_requests
+            );
+            return Ok(VolumeSearchResult {
+                volume: Some(best_vol),
+                requests_made: total_requests,
+            });
+        }
+        log::debug!(
+            "volume_discovery: coarse sweep synth hint {} untrusted, falling back to binary search",
+            synth_hint.as_number()
+        );
+    } else {
+        log::debug!(
+            "volume_discovery: coarse sweep found no non-empty volumes, falling back to binary search"
+        );
+    }
+
+    // Defensive fallback: original rotated-array binary search.
     let calls = Arc::new(AtomicUsize::new(0));
     let found_index = {
         let calls = Arc::clone(&calls);
