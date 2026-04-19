@@ -69,10 +69,6 @@ pub enum AppCommand {
     DownloadAtPosition,
     /// Start live/real-time streaming.
     StartLive,
-    /// Fetch the latest available archive scan for the current site.
-    /// Triggered after site selection to give the user immediate data
-    /// without starting real-time streaming.
-    FetchLatest,
     /// Check and run eviction after a storage operation.
     CheckEviction,
     /// Wipe all data (IndexedDB + localStorage) and reload.

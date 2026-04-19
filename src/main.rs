@@ -362,7 +362,6 @@ impl WorkbenchApp {
         let data_facade = DataFacade::new();
         let acquisition = nexrad::AcquisitionCoordinator::new(data_facade.clone());
         let realtime_channel = nexrad::RealtimeChannel::with_stats(acquisition.download_stats());
-        let backfill_channel = nexrad::BackfillChannel::with_stats(acquisition.download_stats());
 
         // Open the record cache database
         {
@@ -444,7 +443,7 @@ impl WorkbenchApp {
             },
             render: nexrad::RenderCoordinator::new(decode_worker),
             acquisition,
-            streaming: nexrad::StreamingManager::new(realtime_channel, backfill_channel),
+            streaming: nexrad::StreamingManager::new(realtime_channel),
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             site_modal_state: {
                 let mut sms = ui::SiteModalState::default();
@@ -464,11 +463,6 @@ impl WorkbenchApp {
         if !app.state.cross_origin_isolated {
             log::warn!("Not cross-origin isolated: SharedArrayBuffer unavailable");
         }
-
-        // Kick off a background volume-hint refresh for the current site so a
-        // subsequent StartLive (user-triggered or URL-restored via rt=1) can
-        // resolve in a single parallel round trip instead of cold-starting.
-        nexrad::prewarm_volume_hint(app.state.viz_state.site_id.clone());
 
         app
     }
@@ -833,16 +827,6 @@ impl WorkbenchApp {
             .start_live(ctx.clone(), site_id, self.acquisition.facade().clone());
     }
 
-    /// Fetch the latest available data for the current site.
-    fn fetch_latest_scan(&mut self, ctx: &egui::Context) {
-        let site_id = self.state.viz_state.site_id.clone();
-        log::debug!("Fetching latest scan via backfill for site: {}", site_id);
-
-        self.state.status_message = "Fetching latest data...".to_string();
-        self.streaming
-            .start_backfill(ctx.clone(), site_id, self.acquisition.facade().clone());
-    }
-
     /// Find the best elevation number for the current elevation selection.
     fn best_elevation_number(&self) -> u8 {
         match &self.state.viz_state.elevation_selection {
@@ -1111,57 +1095,6 @@ impl WorkbenchApp {
         }
     }
 
-    /// Handle a backfill result. Only processes ChunkData (forwarding to
-    /// the worker for ingest). Does not update live_mode_state.
-    fn handle_backfill_result(&mut self, result: nexrad::RealtimeResult, _ctx: &egui::Context) {
-        match result {
-            nexrad::RealtimeResult::ChunkData {
-                data,
-                chunk_index,
-                is_start,
-                is_end,
-                timestamp,
-                skip_overlap_delete,
-            } => {
-                log::debug!(
-                    "Backfill chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
-                    chunk_index,
-                    is_start,
-                    is_end,
-                    data.len(),
-                    timestamp,
-                );
-
-                if is_start {
-                    self.state.status_message = "Loading latest data...".to_string();
-                }
-
-                let site_id = self.state.viz_state.site_id.clone();
-                let file_name = format!("backfill_{}_{}.nexrad", site_id, timestamp);
-                if is_start {
-                    self.state.session_stats.pipeline.processing = true;
-                }
-                self.render.ingest_chunk(
-                    data,
-                    site_id,
-                    timestamp,
-                    chunk_index,
-                    is_start,
-                    is_end,
-                    file_name,
-                    skip_overlap_delete,
-                    false, // backfill doesn't have projection data
-                );
-            }
-            nexrad::RealtimeResult::Error(msg) => {
-                log::error!("Backfill error: {}", msg);
-                self.state.status_message = format!("Failed to load latest data: {}", msg);
-            }
-            // Backfill doesn't use Started or ChunkReceived
-            _ => {}
-        }
-    }
-
     /// Per-frame bookkeeping: record stats, apply theme, recompute staleness,
     /// update storm cells, and detect site changes.
     fn apply_frame_setup(&mut self, ctx: &egui::Context) {
@@ -1248,7 +1181,6 @@ impl WorkbenchApp {
             self.state.viz_state.displayed_scan_timestamp = None;
             self.state.viz_state.displayed_sweep_elevation_number = None;
             self.state.shadow_scan_boundaries.clear();
-            self.streaming.cancel_backfill();
         }
     }
 
@@ -1325,9 +1257,6 @@ impl WorkbenchApp {
                 }
                 state::AppCommand::StartLive => {
                     self.start_live_mode(ctx);
-                }
-                state::AppCommand::FetchLatest => {
-                    self.fetch_latest_scan(ctx);
                 }
                 state::AppCommand::DownloadSelection => {
                     do_download_selection = true;
@@ -1526,7 +1455,7 @@ impl WorkbenchApp {
 
     fn handle_chunk_ingested_outcome(&mut self, result: nexrad::ChunkIngestResult) {
         let is_live = self.state.live_mode_state.is_active();
-        let source = if is_live { "Realtime" } else { "Backfill" };
+        let source = "Realtime";
 
         // Build enriched log with projection-derived chunk positioning.
         let chunk_vol_index = result.context.chunk_index + 1; // 1-based for display
@@ -2407,17 +2336,13 @@ impl WorkbenchApp {
         }
     }
 
-    /// Drain backfill and realtime channels, manage live-mode lifecycle.
+    /// Drain the realtime channel and manage live-mode lifecycle.
     fn handle_streaming_results(&mut self, ctx: &egui::Context) {
         for event in self.streaming.poll() {
             match event {
-                nexrad::StreamingEvent::Backfill(result) => {
-                    self.handle_backfill_result(result, ctx);
-                }
                 nexrad::StreamingEvent::Realtime(result) => {
                     self.handle_realtime_result(result, ctx);
                 }
-                nexrad::StreamingEvent::BackfillComplete => {}
             }
         }
 

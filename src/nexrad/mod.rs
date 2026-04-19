@@ -46,9 +46,7 @@ pub use network_monitor::{
     is_cross_origin_isolated, NetworkAggregate, NetworkMonitor, NetworkRequest,
 };
 pub use persistence_manager::PersistenceManager;
-pub use realtime::{
-    prewarm_volume_hint, BackfillChannel, ChunkProjectionInfo, RealtimeChannel, RealtimeResult,
-};
+pub use realtime::{ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
 pub use render_coordinator::RenderCoordinator;
 pub use render_request::RenderRequest;
 pub use streaming_manager::{StreamingEvent, StreamingManager};
