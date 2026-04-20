@@ -1,5 +1,6 @@
 //! Overlay rendering: download ghosts, realtime progress, and saved events.
 
+use super::strokes::{fill_diagonal_hatch, stroke_dashed_rect, DashedBorder, DashedEdges};
 use super::DetailLevel;
 use crate::state::radar_data::RadarTimeline;
 use crate::state::SavedEvents;
@@ -156,38 +157,13 @@ pub(super) fn render_download_ghosts(
                 Stroke::new(1.0, tl_colors::ghost_pending_border()),
                 StrokeKind::Inside,
             );
-            // Diagonal stripes
-            let width = x_end - x_start;
-            let h = ghost_rect.height();
-            let spacing = 8.0;
-            let mut offset = 0.0;
-            while offset < width + h {
-                let x0 = ghost_rect.left() + offset;
-                let x1 = x0 - h;
-                let (cx0, cy0) = if x0 > ghost_rect.right() {
-                    (
-                        ghost_rect.right(),
-                        ghost_rect.top() + (x0 - ghost_rect.right()),
-                    )
-                } else {
-                    (x0, ghost_rect.top())
-                };
-                let (cx1, cy1) = if x1 < ghost_rect.left() {
-                    (
-                        ghost_rect.left(),
-                        ghost_rect.bottom() - (ghost_rect.left() - x1),
-                    )
-                } else {
-                    (x1, ghost_rect.bottom())
-                };
-                if cy0 < cy1 {
-                    painter.line_segment(
-                        [Pos2::new(cx0, cy0), Pos2::new(cx1, cy1)],
-                        Stroke::new(0.5, tl_colors::ghost_pending_fill()),
-                    );
-                }
-                offset += spacing;
-            }
+            fill_diagonal_hatch(
+                painter,
+                ghost_rect,
+                8.0,
+                0.0,
+                Stroke::new(0.5, tl_colors::ghost_pending_fill()),
+            );
         }
     };
 
@@ -315,36 +291,30 @@ pub(super) fn render_realtime_progress(
     // Dashed border for projected remainder
     if x_vol_end > x_now && x_now >= scan_rect.left() {
         let dash_color = Color32::from_rgba_unmultiplied(vr, vg, vb, 90);
-        // Dashed right edge
-        let mut y = scan_block.min.y;
-        while y < scan_block.max.y {
-            let y_end = (y + 4.0).min(scan_block.max.y);
-            painter.line_segment(
-                [Pos2::new(x_vol_end, y), Pos2::new(x_vol_end, y_end)],
-                Stroke::new(1.0, dash_color),
-            );
-            y += 7.0;
-        }
-        // Dashed top and bottom
-        let mut x = x_now;
-        while x < x_vol_end {
-            let x_seg_end = (x + 4.0).min(x_vol_end);
-            painter.line_segment(
-                [
-                    Pos2::new(x, scan_block.min.y),
-                    Pos2::new(x_seg_end, scan_block.min.y),
-                ],
-                Stroke::new(0.5, dash_color),
-            );
-            painter.line_segment(
-                [
-                    Pos2::new(x, scan_block.max.y),
-                    Pos2::new(x_seg_end, scan_block.max.y),
-                ],
-                Stroke::new(0.5, dash_color),
-            );
-            x += 8.0;
-        }
+        let remainder = Rect::from_min_max(
+            Pos2::new(x_now, scan_block.min.y),
+            Pos2::new(x_vol_end, scan_block.max.y),
+        );
+        // Right edge at 1px stroke, period 7.
+        stroke_dashed_rect(
+            painter,
+            remainder,
+            DashedBorder::rect(Stroke::new(1.0, dash_color), 0.0, 0.0, 4.0, 7.0).with_edges(
+                DashedEdges {
+                    top: false,
+                    bottom: false,
+                    left: false,
+                    right: true,
+                },
+            ),
+        );
+        // Top and bottom at thinner 0.5 stroke, period 8.
+        stroke_dashed_rect(
+            painter,
+            remainder,
+            DashedBorder::uniform(Stroke::new(0.5, dash_color), 4.0, 8.0)
+                .with_edges(DashedEdges::HORIZONTAL),
+        );
     }
 
     // Unified label centered across the full scan block
@@ -386,15 +356,21 @@ pub(super) fn render_realtime_progress(
             let projected_ts = vol_start + expected_dur * i as f64;
             let x = ts_to_x(projected_ts);
             if x >= scan_rect.left() && x <= scan_rect.right() {
-                let mut y = scan_rect.top();
-                while y < scan_rect.bottom() {
-                    let y_end = (y + 4.0).min(scan_rect.bottom());
-                    painter.line_segment(
-                        [Pos2::new(x, y), Pos2::new(x, y_end)],
-                        Stroke::new(1.0, boundary_color),
-                    );
-                    y += 7.0;
-                }
+                // Zero-width "rect" collapses to a single dashed vertical line.
+                stroke_dashed_rect(
+                    painter,
+                    Rect::from_min_max(
+                        Pos2::new(x, scan_rect.top()),
+                        Pos2::new(x, scan_rect.bottom()),
+                    ),
+                    DashedBorder::rect(Stroke::new(1.0, boundary_color), 0.0, 0.0, 4.0, 7.0)
+                        .with_edges(DashedEdges {
+                            top: false,
+                            bottom: false,
+                            left: true,
+                            right: false,
+                        }),
+                );
                 painter.text(
                     Pos2::new(x + 3.0, scan_rect.top() + 2.0),
                     egui::Align2::LEFT_TOP,
@@ -524,27 +500,14 @@ pub(super) fn render_realtime_progress(
                             Color32::from_rgba_unmultiplied(80, 170, 230, 70),
                         );
                     }
-                    // Dashed border for the partial slot
+                    // Dashed border for the partial slot (top + bottom only)
                     let border_color = Color32::from_rgba_unmultiplied(100, 180, 255, 70);
-                    let mut x = slot_rect.min.x;
-                    while x < slot_rect.max.x {
-                        let x_end = (x + 3.0).min(slot_rect.max.x);
-                        painter.line_segment(
-                            [
-                                Pos2::new(x, slot_rect.min.y),
-                                Pos2::new(x_end, slot_rect.min.y),
-                            ],
-                            Stroke::new(0.5, border_color),
-                        );
-                        painter.line_segment(
-                            [
-                                Pos2::new(x, slot_rect.max.y),
-                                Pos2::new(x_end, slot_rect.max.y),
-                            ],
-                            Stroke::new(0.5, border_color),
-                        );
-                        x += 6.0;
-                    }
+                    stroke_dashed_rect(
+                        painter,
+                        slot_rect,
+                        DashedBorder::uniform(Stroke::new(0.5, border_color), 3.0, 6.0)
+                            .with_edges(DashedEdges::HORIZONTAL),
+                    );
                 } else if slot < chunks_received {
                     // ── Received (complete) chunk slot ──
                     painter.rect_filled(
@@ -562,45 +525,11 @@ pub(super) fn render_realtime_progress(
                     // ── Next-chunk placeholder with countdown ──
                     painter.rect_filled(slot_rect, 1.0, tl_colors::rt_next_chunk_fill());
                     let dot_color = tl_colors::rt_next_chunk_border();
-                    // Dotted border
-                    let mut x = slot_rect.min.x;
-                    while x < slot_rect.max.x {
-                        let x_end = (x + 2.0).min(slot_rect.max.x);
-                        painter.line_segment(
-                            [
-                                Pos2::new(x, slot_rect.min.y),
-                                Pos2::new(x_end, slot_rect.min.y),
-                            ],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        painter.line_segment(
-                            [
-                                Pos2::new(x, slot_rect.max.y),
-                                Pos2::new(x_end, slot_rect.max.y),
-                            ],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        x += 4.0;
-                    }
-                    let mut y = slot_rect.min.y;
-                    while y < slot_rect.max.y {
-                        let y_end = (y + 2.0).min(slot_rect.max.y);
-                        painter.line_segment(
-                            [
-                                Pos2::new(slot_rect.min.x, y),
-                                Pos2::new(slot_rect.min.x, y_end),
-                            ],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        painter.line_segment(
-                            [
-                                Pos2::new(slot_rect.max.x, y),
-                                Pos2::new(slot_rect.max.x, y_end),
-                            ],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        y += 4.0;
-                    }
+                    stroke_dashed_rect(
+                        painter,
+                        slot_rect,
+                        DashedBorder::uniform(Stroke::new(1.0, dot_color), 2.0, 4.0),
+                    );
                     // Countdown label
                     if let Some(remaining) = countdown {
                         if slot_rect.width() > 16.0 {
@@ -620,34 +549,11 @@ pub(super) fn render_realtime_progress(
 
             // Dashed border around the entire sweep block
             let border_color = Color32::from_rgba_unmultiplied(60, 140, 200, 100);
-            {
-                let mut x = block.min.x;
-                while x < block.max.x {
-                    let x_seg_end = (x + 4.0).min(block.max.x);
-                    painter.line_segment(
-                        [Pos2::new(x, block.min.y), Pos2::new(x_seg_end, block.min.y)],
-                        Stroke::new(1.0, border_color),
-                    );
-                    painter.line_segment(
-                        [Pos2::new(x, block.max.y), Pos2::new(x_seg_end, block.max.y)],
-                        Stroke::new(1.0, border_color),
-                    );
-                    x += 8.0;
-                }
-                let mut y = block.min.y;
-                while y < block.max.y {
-                    let y_end = (y + 3.0).min(block.max.y);
-                    painter.line_segment(
-                        [Pos2::new(block.min.x, y), Pos2::new(block.min.x, y_end)],
-                        Stroke::new(1.0, border_color),
-                    );
-                    painter.line_segment(
-                        [Pos2::new(block.max.x, y), Pos2::new(block.max.x, y_end)],
-                        Stroke::new(1.0, border_color),
-                    );
-                    y += 6.0;
-                }
-            }
+            stroke_dashed_rect(
+                painter,
+                block,
+                DashedBorder::rect(Stroke::new(1.0, border_color), 4.0, 8.0, 3.0, 6.0),
+            );
 
             // Chunk count label (e.g., "2/6")
             if width > 30.0 {
@@ -701,40 +607,11 @@ pub(super) fn render_realtime_progress(
                 painter.rect_filled(nc_rect, 1.0, nc_fill);
 
                 // Dotted border (2px on, 2px off)
-                {
-                    let mut x = nc_rect.min.x;
-                    while x < nc_rect.max.x {
-                        let x_seg_end = (x + 2.0).min(nc_rect.max.x);
-                        painter.line_segment(
-                            [
-                                Pos2::new(x, nc_rect.min.y),
-                                Pos2::new(x_seg_end, nc_rect.min.y),
-                            ],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        painter.line_segment(
-                            [
-                                Pos2::new(x, nc_rect.max.y),
-                                Pos2::new(x_seg_end, nc_rect.max.y),
-                            ],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        x += 4.0;
-                    }
-                    let mut y = nc_rect.min.y;
-                    while y < nc_rect.max.y {
-                        let y_end = (y + 2.0).min(nc_rect.max.y);
-                        painter.line_segment(
-                            [Pos2::new(nc_rect.min.x, y), Pos2::new(nc_rect.min.x, y_end)],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        painter.line_segment(
-                            [Pos2::new(nc_rect.max.x, y), Pos2::new(nc_rect.max.x, y_end)],
-                            Stroke::new(1.0, dot_color),
-                        );
-                        y += 4.0;
-                    }
-                }
+                stroke_dashed_rect(
+                    painter,
+                    nc_rect,
+                    DashedBorder::uniform(Stroke::new(1.0, dot_color), 2.0, 4.0),
+                );
 
                 // Countdown label
                 if let Some(remaining) = countdown {
@@ -756,69 +633,26 @@ pub(super) fn render_realtime_progress(
                         Pos2::new(block.max.x, block.max.y),
                     );
                     let dash_color = tl_colors::rt_pending_sweep_border();
-                    let mut x = rest_block.min.x;
-                    while x < rest_block.max.x {
-                        let x_seg_end = (x + 4.0).min(rest_block.max.x);
-                        painter.line_segment(
-                            [
-                                Pos2::new(x, rest_block.min.y),
-                                Pos2::new(x_seg_end, rest_block.min.y),
-                            ],
-                            Stroke::new(0.5, dash_color),
-                        );
-                        painter.line_segment(
-                            [
-                                Pos2::new(x, rest_block.max.y),
-                                Pos2::new(x_seg_end, rest_block.max.y),
-                            ],
-                            Stroke::new(0.5, dash_color),
-                        );
-                        x += 8.0;
-                    }
-                    let mut y = rest_block.min.y;
-                    while y < rest_block.max.y {
-                        let y_end = (y + 3.0).min(rest_block.max.y);
-                        painter.line_segment(
-                            [
-                                Pos2::new(rest_block.max.x, y),
-                                Pos2::new(rest_block.max.x, y_end),
-                            ],
-                            Stroke::new(0.5, dash_color),
-                        );
-                        y += 6.0;
-                    }
+                    stroke_dashed_rect(
+                        painter,
+                        rest_block,
+                        DashedBorder::rect(Stroke::new(0.5, dash_color), 4.0, 8.0, 3.0, 6.0)
+                            .with_edges(DashedEdges {
+                                top: true,
+                                bottom: true,
+                                left: false,
+                                right: true,
+                            }),
+                    );
                 }
             } else {
                 // -- Regular future: dashed outline to indicate estimated bounds --
                 let dash_color = tl_colors::rt_pending_sweep_border();
-                // Dashed top and bottom edges
-                let mut x = block.min.x;
-                while x < block.max.x {
-                    let x_seg_end = (x + 4.0).min(block.max.x);
-                    painter.line_segment(
-                        [Pos2::new(x, block.min.y), Pos2::new(x_seg_end, block.min.y)],
-                        Stroke::new(0.5, dash_color),
-                    );
-                    painter.line_segment(
-                        [Pos2::new(x, block.max.y), Pos2::new(x_seg_end, block.max.y)],
-                        Stroke::new(0.5, dash_color),
-                    );
-                    x += 8.0;
-                }
-                // Dashed left and right edges
-                let mut y = block.min.y;
-                while y < block.max.y {
-                    let y_end = (y + 3.0).min(block.max.y);
-                    painter.line_segment(
-                        [Pos2::new(block.min.x, y), Pos2::new(block.min.x, y_end)],
-                        Stroke::new(0.5, dash_color),
-                    );
-                    painter.line_segment(
-                        [Pos2::new(block.max.x, y), Pos2::new(block.max.x, y_end)],
-                        Stroke::new(0.5, dash_color),
-                    );
-                    y += 6.0;
-                }
+                stroke_dashed_rect(
+                    painter,
+                    block,
+                    DashedBorder::rect(Stroke::new(0.5, dash_color), 4.0, 8.0, 3.0, 6.0),
+                );
             }
         }
 

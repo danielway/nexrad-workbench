@@ -26,6 +26,7 @@ impl RadarGpuRenderer {
         max_range_km: f64,
         offset: f32,
         scale: f32,
+        azimuth_spacing_deg: f32,
         radial_times: &[f64],
     ) {
         let t_total = web_time::Instant::now();
@@ -37,6 +38,11 @@ impl RadarGpuRenderer {
         self.current.max_range_km = max_range_km;
         self.current.data_offset = offset;
         self.current.data_scale = scale;
+        self.current.azimuth_spacing_deg = if azimuth_spacing_deg > 0.0 {
+            azimuth_spacing_deg
+        } else {
+            1.0
+        };
         self.has_data = azimuth_count > 0 && gate_count > 0;
 
         // Keep CPU copies for inspector value lookup
@@ -112,6 +118,7 @@ impl RadarGpuRenderer {
         max_range_km: f64,
         offset: f32,
         scale: f32,
+        azimuth_spacing_deg: f32,
         sweep_id: Option<String>,
         radial_times: &[f64],
     ) {
@@ -122,6 +129,11 @@ impl RadarGpuRenderer {
         self.prev.first_gate_km = first_gate_km;
         self.prev.gate_interval_km = gate_interval_km;
         self.prev.max_range_km = max_range_km;
+        self.prev.azimuth_spacing_deg = if azimuth_spacing_deg > 0.0 {
+            azimuth_spacing_deg
+        } else {
+            1.0
+        };
         self.prev.sweep_id = sweep_id;
         self.prev_cpu.gate_values = gate_values.to_vec();
         self.prev_cpu.radial_times = radial_times.to_vec();
@@ -159,6 +171,7 @@ impl RadarGpuRenderer {
             self.current.max_range_km,
             self.current.data_offset,
             self.current.data_scale,
+            self.current.azimuth_spacing_deg,
             self.current.sweep_id.clone(),
             &self.cpu.radial_times.clone(),
         );
@@ -168,16 +181,24 @@ impl RadarGpuRenderer {
     pub fn clear_data(&mut self) {
         self.has_data = false;
         self.current.sweep_id = None;
-        self.prev.sweep_id = None;
         self.cpu.azimuths.clear();
         self.cpu.gate_values.clear();
         self.cpu.radial_times.clear();
+        self.clear_previous_data();
     }
 
-    /// Clear only the previous-sweep identity so the shader composites against
-    /// black until a new previous sweep is loaded.
+    /// Clear the previous-sweep texture so the shader composites against
+    /// transparent until a new previous sweep is loaded. Zeroes the spatial
+    /// metadata so the shader's range/gate check bails out on the prev branch
+    /// — sweep_id alone isn't enough because the shader samples prev_data_tex
+    /// based on the uploaded uniforms, not the identity string.
     pub fn clear_previous_data(&mut self) {
         self.prev.sweep_id = None;
+        self.prev.azimuth_count = 0;
+        self.prev.gate_count = 0;
+        self.prev.max_range_km = 0.0;
+        self.prev_cpu.gate_values.clear();
+        self.prev_cpu.radial_times.clear();
     }
 
     /// Returns true if radar data has been uploaded.

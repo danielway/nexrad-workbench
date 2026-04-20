@@ -1,5 +1,5 @@
 //! Unified acquisition state: tracks all data acquisition operations (archive downloads,
-//! realtime streaming, backfill) and correlates them with service worker network requests.
+//! realtime streaming) and correlates them with service worker network requests.
 
 use std::collections::VecDeque;
 
@@ -35,8 +35,6 @@ pub enum OperationKind {
         /// Volume start timestamp (Unix seconds) shared by all chunks in the same scan.
         scan_timestamp: i64,
     },
-    /// Backfill chunk download during initial volume load.
-    BackfillChunk { site_id: String, chunk_index: u32 },
 }
 
 /// Key for grouping network requests in the drawer's Network tab.
@@ -46,7 +44,7 @@ pub enum OperationKind {
 /// are keyed by their individual `OperationId`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum NetworkGroupKey {
-    /// A single acquisition operation (archive download, listing, backfill).
+    /// A single acquisition operation (archive download, listing, realtime).
     Operation(OperationId),
     /// All realtime chunks sharing the same volume/scan timestamp.
     RealtimeScan {
@@ -398,9 +396,6 @@ impl AcquisitionState {
                 // Realtime chunk URLs are on the chunks bucket and contain the site ID
                 url.contains("nexrad-level2-chunks") && url.contains(site_id.as_str())
             }
-            OperationKind::BackfillChunk { site_id, .. } => {
-                url.contains("nexrad-level2-chunks") && url.contains(site_id.as_str())
-            }
         }
     }
 
@@ -501,12 +496,6 @@ impl AcquisitionState {
                 } else {
                     format!("{} chunk #{}", site_id, chunk_index)
                 }
-            }
-            OperationKind::BackfillChunk {
-                site_id,
-                chunk_index,
-            } => {
-                format!("{} backfill #{}", site_id, chunk_index)
             }
         }
     }

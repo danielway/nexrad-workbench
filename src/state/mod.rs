@@ -6,6 +6,7 @@
 
 #[allow(dead_code)]
 pub(crate) mod acquisition;
+mod app_mode;
 mod layer;
 mod live_mode;
 mod live_radar_model;
@@ -27,6 +28,7 @@ pub use acquisition::{
     AcquisitionState, DrawerTab, NetworkGroupKey, OperationId, OperationKind, OperationStatus,
     QueueState,
 };
+pub use app_mode::AppMode;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
@@ -48,6 +50,9 @@ pub use viz::{
     StormCellInfo, ViewMode, VizState,
 };
 
+/// Cap on the recent-network-requests ring used by the UI log.
+pub const MAX_RECENT_NETWORK_REQUESTS: usize = 100;
+
 /// Commands dispatched by UI code and consumed by the main update loop.
 ///
 /// Replaces scattered boolean `*_requested` flags with an explicit command queue,
@@ -64,10 +69,6 @@ pub enum AppCommand {
     DownloadAtPosition,
     /// Start live/real-time streaming.
     StartLive,
-    /// Fetch the latest available archive scan for the current site.
-    /// Triggered after site selection to give the user immediate data
-    /// without starting real-time streaming.
-    FetchLatest,
     /// Check and run eviction after a storage operation.
     CheckEviction,
     /// Wipe all data (IndexedDB + localStorage) and reload.
@@ -115,6 +116,10 @@ pub struct AppState {
 
     /// Live streaming mode state
     pub live_mode_state: LiveModeState,
+
+    /// Derived top-level application mode (Idle / Archive / Live).
+    /// Recomputed by [`AppState::refresh_live_model`] once per frame.
+    pub app_mode: AppMode,
 
     /// Computed live radar model — derived once per frame from `live_mode_state`.
     /// Provides a consistent snapshot for all UI consumers within a single frame.
@@ -196,6 +201,7 @@ pub struct AppState {
     pub network_aggregate: crate::nexrad::NetworkAggregate,
 
     /// Recent network requests from the service worker (ring buffer for UI log).
+    /// Bounded by [`MAX_RECENT_NETWORK_REQUESTS`].
     pub recent_network_requests: std::collections::VecDeque<crate::nexrad::NetworkRequest>,
 
     /// Whether the browsing context is cross-origin isolated (SharedArrayBuffer available).
@@ -358,6 +364,17 @@ impl AppState {
     pub fn refresh_live_model(&mut self) {
         let now = js_sys::Date::now() / 1000.0;
         self.live_radar_model = self.live_mode_state.compute_model(now);
+        self.app_mode = if self.live_mode_state.is_active() {
+            AppMode::Live
+        } else if self
+            .radar_timeline
+            .find_scan_at_timestamp(self.playback_state.playback_position())
+            .is_some()
+        {
+            AppMode::Archive
+        } else {
+            AppMode::Idle
+        };
     }
 
     /// Whether sweep animation is effectively enabled: requires both the user

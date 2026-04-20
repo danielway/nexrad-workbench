@@ -1,8 +1,10 @@
 //! Geographic layer data structures.
 
-use eframe::egui::Color32;
+use super::{MapProjection, ProjectionFingerprint};
+use eframe::egui::{Color32, Pos2};
 use geo_types::Coord;
 use shapefile::dbase::FieldValue;
+use std::cell::RefCell;
 use std::io::Cursor;
 
 /// Type of geographic layer.
@@ -99,6 +101,62 @@ pub struct GeoLayer {
     pub line_width: Option<f32>,
     /// Whether this layer is visible
     pub visible: bool,
+    /// Per-frame cache of projected screen points, parallel to `features`.
+    ///
+    /// Rebuilt whenever the [`MapProjection`] fingerprint changes.
+    /// Invisible (idle) views hit the cache every frame and skip all
+    /// trig on feature coords.
+    cache: RefCell<LayerProjectionCache>,
+}
+
+/// Cached screen-space projection of a single feature's line/ring
+/// coordinates. Points are stored in the same order as the source
+/// coordinate sequence so downstream rendering can stream segments
+/// directly.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum FeatureProjection {
+    /// No line/ring coords (e.g. `Point` features).
+    #[default]
+    Empty,
+    /// A single coord sequence: `LineString`, `Polygon.exterior`.
+    Single(Vec<Pos2>),
+    /// Multiple coord sequences: `MultiLineString`, `MultiPolygon`.
+    Multi(Vec<Vec<Pos2>>),
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LayerProjectionCache {
+    fingerprint: Option<ProjectionFingerprint>,
+    /// Parallel to [`GeoLayer::features`].
+    entries: Vec<FeatureProjection>,
+}
+
+fn project_line(coords: &[Coord<f64>], projection: &MapProjection) -> Vec<Pos2> {
+    coords
+        .iter()
+        .map(|c| projection.geo_to_screen(*c))
+        .collect()
+}
+
+fn project_feature(feature: &GeoFeature, projection: &MapProjection) -> FeatureProjection {
+    match feature {
+        GeoFeature::Point(_, _) => FeatureProjection::Empty,
+        GeoFeature::LineString(coords) => {
+            FeatureProjection::Single(project_line(coords, projection))
+        }
+        GeoFeature::MultiLineString(lines) => {
+            FeatureProjection::Multi(lines.iter().map(|l| project_line(l, projection)).collect())
+        }
+        GeoFeature::Polygon { exterior, .. } => {
+            FeatureProjection::Single(project_line(exterior, projection))
+        }
+        GeoFeature::MultiPolygon { polygons, .. } => FeatureProjection::Multi(
+            polygons
+                .iter()
+                .map(|(ext, _)| project_line(ext, projection))
+                .collect(),
+        ),
+    }
 }
 
 impl GeoLayer {
@@ -110,7 +168,34 @@ impl GeoLayer {
             color: None,
             line_width: None,
             visible: true,
+            cache: RefCell::new(LayerProjectionCache::default()),
         }
+    }
+
+    /// Ensures the cache of projected screen points matches the current
+    /// projection, reprojecting only on fingerprint change. Returns a
+    /// clone-free handle for reading cached entries.
+    ///
+    /// The cache is keyed on the projection fingerprint rather than any
+    /// individual parameter, so any combination of zoom/pan/resize
+    /// flushes it and any idle frame skips reprojection entirely.
+    pub(crate) fn refresh_projection_cache(&self, projection: &MapProjection) {
+        let mut cache = self.cache.borrow_mut();
+        let fp = projection.fingerprint();
+        if cache.fingerprint == Some(fp) && cache.entries.len() == self.features.len() {
+            return;
+        }
+
+        cache.entries.clear();
+        cache.entries.reserve(self.features.len());
+        for feature in &self.features {
+            cache.entries.push(project_feature(feature, projection));
+        }
+        cache.fingerprint = Some(fp);
+    }
+
+    pub(crate) fn cached_entries(&self) -> std::cell::Ref<'_, [FeatureProjection]> {
+        std::cell::Ref::map(self.cache.borrow(), |c| c.entries.as_slice())
     }
 
     /// Returns the effective color for this layer.
@@ -253,19 +338,6 @@ impl GeoLayerSet {
     /// Creates a new empty layer set.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Returns an iterator over all loaded layers.
-    pub fn iter(&self) -> impl Iterator<Item = &GeoLayer> {
-        [
-            self.states.as_ref(),
-            self.counties.as_ref(),
-            self.lakes.as_ref(),
-            self.highways.as_ref(),
-            self.cities.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
     }
 
     /// Loads a layer from shapefile bytes.

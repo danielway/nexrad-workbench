@@ -44,6 +44,18 @@ pub mod live {
     pub const WAITING: Color32 = Color32::from_rgb(100, 180, 255);
 }
 
+/// Top-level application mode indicator colors (theme-independent).
+pub mod mode {
+    use super::Color32;
+
+    /// Idle - no data under cursor, not streaming.
+    pub const IDLE: Color32 = Color32::from_rgb(100, 100, 100);
+    /// Archive - data loaded and under cursor.
+    pub const ARCHIVE: Color32 = Color32::from_rgb(100, 180, 255);
+    /// Live - real-time streaming locked to now.
+    pub const LIVE: Color32 = Color32::from_rgb(255, 80, 80);
+}
+
 /// Colors for radar sweep visualization (theme-independent).
 pub mod radar {
     use super::Color32;

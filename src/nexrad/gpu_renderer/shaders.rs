@@ -32,6 +32,11 @@ uniform float u_opacity;
 uniform float u_offset;
 uniform float u_scale;
 
+// Median angular spacing between adjacent sorted radials, in degrees.
+// Used by the search threshold (not derived from azimuth_count so partial
+// and non-uniform sweeps get a correct reject distance).
+uniform float u_azimuth_spacing_deg;
+
 const float PI = 3.14159265359;
 ";
 
@@ -57,28 +62,51 @@ bool is_valid(float v) {
 ";
 
 pub(crate) const FIND_NEAREST_AZ_P: &str = "\
-// Find the nearest azimuth index for a given angle in degrees.
-// Parameterized by azimuth count and sampler.
-// Returns -1.0 if no radial is close enough (gap).
-float find_nearest_az_p(float azimuth_deg, float az_count, sampler2D az_tex, out float out_az) {
-    float az_spacing = 360.0 / az_count;
-    float est_idx = azimuth_deg / az_spacing;
+// Find the nearest azimuth index for a given angle (degrees) via binary
+// search over the sorted azimuth texture.
+// `az_spacing` is the expected median spacing between adjacent radials;
+// it is the *threshold*, not a layout assumption — the array may be
+// un-padded, partial, or wrap around 0° and the search still works
+// because it relies on sorted order, not position-from-index.
+// Returns -1.0 if no radial is within `az_spacing * 1.5` (gap).
+float find_nearest_az_p(float azimuth_deg, float az_count, float az_spacing,
+                        sampler2D az_tex, out float out_az) {
+    if (az_count <= 0.0) { out_az = 0.0; return -1.0; }
     float inv_count = 1.0 / az_count;
 
-    float best_idx = 0.0;
-    float best_dist = 360.0;
-    float best_az = 0.0;
-
-    for (float offset = -2.0; offset <= 2.0; offset += 1.0) {
-        float i = floor(mod(est_idx + offset, az_count));
-        float tex_az = texture(az_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
-        float d = abs(azimuth_deg - tex_az);
-        d = min(d, 360.0 - d);
-        if (d < best_dist) {
-            best_dist = d;
-            best_idx = i;
-            best_az = tex_az;
+    // Binary search for smallest i in [0, az_count) with arr[i] >= azimuth_deg.
+    // Fixed-depth loop covers up to 1024 slots (log2(1024) = 10).
+    float lo = 0.0;
+    float hi = az_count;
+    for (int bs_iter = 0; bs_iter < 10; bs_iter++) {
+        if (lo >= hi) break;
+        float mid = floor((lo + hi) * 0.5);
+        float mid_az = texture(az_tex, vec2((mid + 0.5) * inv_count, 0.5)).r;
+        if (mid_az < azimuth_deg) {
+            lo = mid + 1.0;
+        } else {
+            hi = mid;
         }
+    }
+    float hi_idx = lo;
+    if (hi_idx >= az_count) hi_idx = 0.0; // wrap
+    float lo_idx = mod(hi_idx - 1.0 + az_count, az_count);
+
+    float az_at_lo = texture(az_tex, vec2((lo_idx + 0.5) * inv_count, 0.5)).r;
+    float az_at_hi = texture(az_tex, vec2((hi_idx + 0.5) * inv_count, 0.5)).r;
+
+    float d_lo = abs(azimuth_deg - az_at_lo);
+    d_lo = min(d_lo, 360.0 - d_lo);
+    float d_hi = abs(azimuth_deg - az_at_hi);
+    d_hi = min(d_hi, 360.0 - d_hi);
+
+    float best_idx;
+    float best_az;
+    float best_dist;
+    if (d_lo <= d_hi) {
+        best_idx = lo_idx; best_az = az_at_lo; best_dist = d_lo;
+    } else {
+        best_idx = hi_idx; best_az = az_at_hi; best_dist = d_hi;
     }
 
     if (best_dist > az_spacing * 1.5) {
@@ -92,47 +120,45 @@ float find_nearest_az_p(float azimuth_deg, float az_count, sampler2D az_tex, out
 
 pub(crate) const FIND_BRACKET_AZ_P: &str = "\
 // Find the two nearest azimuth indices that bracket the given angle.
-// Parameterized by azimuth count and sampler.
-// Returns false if in a gap region.
-bool find_bracket_az_p(float azimuth_deg, float az_count, sampler2D az_tex,
+// Binary-search-based, so works on any sorted azimuth texture (full,
+// partial, clustered, or wrap-around). Rejects as 'gap' when the bracket
+// span exceeds `az_spacing * 1.5`.
+bool find_bracket_az_p(float azimuth_deg, float az_count, float az_spacing,
+                       sampler2D az_tex,
                        out float idx_lo, out float idx_hi, out float frac) {
-    float az_spacing = 360.0 / az_count;
-    float est_idx = azimuth_deg / az_spacing;
+    if (az_count <= 0.0) return false;
     float inv_count = 1.0 / az_count;
 
-    float cand_idx[5];
-    float cand_az[5];
-    for (int k = 0; k < 5; k++) {
-        float i = floor(mod(est_idx + float(k - 2), az_count));
-        cand_idx[k] = i;
-        cand_az[k] = texture(az_tex, vec2((i + 0.5) * inv_count, 0.5)).r;
-    }
-
-    float lo_idx = -1.0, hi_idx = -1.0;
-    float lo_dist = 360.0, hi_dist = 360.0;
-
-    for (int k = 0; k < 5; k++) {
-        float az = cand_az[k];
-        float diff = azimuth_deg - az;
-        diff = mod(diff + 540.0, 360.0) - 180.0;
-
-        if (diff >= 0.0 && diff < lo_dist) {
-            lo_dist = diff;
-            lo_idx = cand_idx[k];
-        }
-        if (diff <= 0.0 && (-diff) < hi_dist) {
-            hi_dist = -diff;
-            hi_idx = cand_idx[k];
+    // Binary search for the smallest i in [0, az_count) with arr[i] >= azimuth_deg.
+    float lo = 0.0;
+    float hi = az_count;
+    for (int bs_iter = 0; bs_iter < 10; bs_iter++) {
+        if (lo >= hi) break;
+        float mid = floor((lo + hi) * 0.5);
+        float mid_az = texture(az_tex, vec2((mid + 0.5) * inv_count, 0.5)).r;
+        if (mid_az < azimuth_deg) {
+            lo = mid + 1.0;
+        } else {
+            hi = mid;
         }
     }
+    float hi_i = lo;
+    if (hi_i >= az_count) hi_i = 0.0;                   // wrap past end
+    float lo_i = mod(hi_i - 1.0 + az_count, az_count);  // wrap before start
 
-    if (lo_idx < 0.0 || hi_idx < 0.0) return false;
+    float az_at_lo = texture(az_tex, vec2((lo_i + 0.5) * inv_count, 0.5)).r;
+    float az_at_hi = texture(az_tex, vec2((hi_i + 0.5) * inv_count, 0.5)).r;
 
+    // Forward distances (wrap-safe): lo_dist = arc from lo to target (CW),
+    // hi_dist = arc from target to hi (CW). Their sum is the bracket span.
+    float lo_dist = mod(azimuth_deg - az_at_lo + 360.0, 360.0);
+    float hi_dist = mod(az_at_hi - azimuth_deg + 360.0, 360.0);
     float span = lo_dist + hi_dist;
+
     if (span > az_spacing * 1.5) return false;
 
-    idx_lo = lo_idx;
-    idx_hi = hi_idx;
+    idx_lo = lo_i;
+    idx_hi = hi_i;
     frac = (span > 0.001) ? lo_dist / span : 0.0;
     return true;
 }
@@ -215,6 +241,7 @@ uniform float u_prev_azimuth_count;
 uniform float u_prev_first_gate_km;
 uniform float u_prev_gate_interval_km;
 uniform float u_prev_max_range_km;
+uniform float u_prev_azimuth_spacing_deg;
 
 {SAMPLE_DATA_P}
 {IS_VALID}
@@ -274,6 +301,7 @@ void main() {{
     // --- Unified sweep pipeline: select spatial params and samplers based on use_prev ---
     float s_gate_count    = use_prev ? u_prev_gate_count    : u_gate_count;
     float s_azimuth_count = use_prev ? u_prev_azimuth_count : u_azimuth_count;
+    float s_azimuth_spacing = use_prev ? u_prev_azimuth_spacing_deg : u_azimuth_spacing_deg;
     float s_first_gate_km = use_prev ? u_prev_first_gate_km : u_first_gate_km;
     float s_gate_interval = use_prev ? u_prev_gate_interval_km : u_gate_interval_km;
     float s_max_range_km  = use_prev ? u_prev_max_range_km  : u_max_range_km;
@@ -303,9 +331,9 @@ void main() {{
         float az_lo, az_hi, az_frac;
         bool bracket_ok;
         if (use_prev) {{
-            bracket_ok = find_bracket_az_p(azimuth_deg, s_azimuth_count, u_prev_azimuth_tex, az_lo, az_hi, az_frac);
+            bracket_ok = find_bracket_az_p(azimuth_deg, s_azimuth_count, s_azimuth_spacing, u_prev_azimuth_tex, az_lo, az_hi, az_frac);
         }} else {{
-            bracket_ok = find_bracket_az_p(azimuth_deg, s_azimuth_count, u_azimuth_tex, az_lo, az_hi, az_frac);
+            bracket_ok = find_bracket_az_p(azimuth_deg, s_azimuth_count, s_azimuth_spacing, u_azimuth_tex, az_lo, az_hi, az_frac);
         }}
         if (!bracket_ok) {{
             fragColor = vec4(0.0);
@@ -352,9 +380,9 @@ void main() {{
         float dummy_az;
         float best_idx;
         if (use_prev) {{
-            best_idx = find_nearest_az_p(azimuth_deg, s_azimuth_count, u_prev_azimuth_tex, dummy_az);
+            best_idx = find_nearest_az_p(azimuth_deg, s_azimuth_count, s_azimuth_spacing, u_prev_azimuth_tex, dummy_az);
         }} else {{
-            best_idx = find_nearest_az_p(azimuth_deg, s_azimuth_count, u_azimuth_tex, dummy_az);
+            best_idx = find_nearest_az_p(azimuth_deg, s_azimuth_count, s_azimuth_spacing, u_azimuth_tex, dummy_az);
         }}
         if (best_idx < 0.0) {{
             fragColor = vec4(0.0);
@@ -377,9 +405,9 @@ void main() {{
         float dummy_az2;
         float center_az;
         if (use_prev) {{
-            center_az = find_nearest_az_p(azimuth_deg, s_azimuth_count, u_prev_azimuth_tex, dummy_az2);
+            center_az = find_nearest_az_p(azimuth_deg, s_azimuth_count, s_azimuth_spacing, u_prev_azimuth_tex, dummy_az2);
         }} else {{
-            center_az = find_nearest_az_p(azimuth_deg, s_azimuth_count, u_azimuth_tex, dummy_az2);
+            center_az = find_nearest_az_p(azimuth_deg, s_azimuth_count, s_azimuth_spacing, u_azimuth_tex, dummy_az2);
         }}
         float center_g = floor(gate_idx);
         if (center_az >= 0.0) {{

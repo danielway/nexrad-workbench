@@ -256,7 +256,7 @@ impl RadarGpuRenderer {
         let convert_ms = t_convert.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        log::info!(
+        log::debug!(
             "detect_storm_cells: {}x{} grid, {} valid gates, {} raw cells, {} after filter (>={:.0} km2), {:.1}ms (field: {:.1}ms, detect: {:.1}ms, convert: {:.1}ms)",
             az_count,
             gate_count,

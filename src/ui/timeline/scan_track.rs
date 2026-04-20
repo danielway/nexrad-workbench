@@ -92,39 +92,17 @@ pub(super) fn render_scan_track(
                     if scan.completeness == Some(ScanCompleteness::PartialWithVcp) {
                         let hatch_color = tl_colors::scan_hatch(scan.vcp);
                         let spacing = 6.0;
-                        let h = scan_rect.height();
                         // Use global x-coordinate phase so hatch lines are parallel across all blocks
                         let phase = scan_rect.left() % spacing;
-                        let mut offset = -phase;
-                        while offset < width + h {
-                            // Unclipped 45° diagonal: top to bottom, shifting left by h
-                            let x0 = scan_rect.left() + offset;
-                            let x1 = x0 - h;
-                            // Clip to rect: adjust y when x is clamped to preserve angle
-                            let (cx0, cy0) = if x0 > scan_rect.right() {
-                                (
-                                    scan_rect.right(),
-                                    scan_rect.top() + (x0 - scan_rect.right()),
-                                )
-                            } else {
-                                (x0, scan_rect.top())
-                            };
-                            let (cx1, cy1) = if x1 < scan_rect.left() {
-                                (
-                                    scan_rect.left(),
-                                    scan_rect.bottom() - (scan_rect.left() - x1),
-                                )
-                            } else {
-                                (x1, scan_rect.bottom())
-                            };
-                            if cy0 < cy1 {
-                                painter.line_segment(
-                                    [Pos2::new(cx0, cy0), Pos2::new(cx1, cy1)],
-                                    Stroke::new(0.5, hatch_color),
-                                );
-                            }
-                            offset += spacing;
-                        }
+                        // `scan_rect` already clips to the intended block; delegate
+                        // the per-segment math to `fill_diagonal_hatch`.
+                        super::strokes::fill_diagonal_hatch(
+                            painter,
+                            scan_rect,
+                            spacing,
+                            phase,
+                            Stroke::new(0.5, hatch_color),
+                        );
                     }
 
                     // PartialNoVcp: draw dashed border on top of filled rect

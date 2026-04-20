@@ -409,6 +409,12 @@ pub struct SweepMeta {
     /// Azimuth angle (degrees) of the chronologically first radial in this sweep.
     #[serde(default)]
     pub start_azimuth: f32,
+    /// Product names (matching `SweepDataKey` product strings) for which a
+    /// sweep blob was successfully extracted and stored. Empty when loaded
+    /// from legacy index entries that predate product tracking — callers
+    /// should treat empty as "unknown" and skip product-availability checks.
+    #[serde(default)]
+    pub available_products: Vec<String>,
 }
 
 /// A single elevation cut extracted from a VCP message (Message Type 5).
@@ -470,7 +476,7 @@ impl ExtractedVcp {
                     is_clear_air,
                     &e.waveform,
                     e.prf_number,
-                ) as f64
+                )
             })
             .collect();
 

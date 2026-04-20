@@ -2,24 +2,47 @@
 //!
 //! Renders geographic features to the egui canvas.
 
+use super::layer::FeatureProjection;
 use super::{GeoFeature, GeoLayer, GeoLayerSet, MapProjection};
+use crate::state::GeoLayerVisibility;
 use eframe::egui::{Color32, FontId, Painter, Pos2, Stroke};
 use geo_types::Coord;
 
 /// Renders all visible geographic layers to the canvas.
+///
+/// Visibility is passed in separately (rather than via a cloned
+/// [`GeoLayerSet`]) so the large coord data never gets cloned per
+/// frame. Each layer holds a projection-keyed cache of screen points
+/// that is refreshed lazily here.
 pub fn render_geo_layers(
     painter: &Painter,
     layers: &GeoLayerSet,
+    visibility: &GeoLayerVisibility,
     projection: &MapProjection,
     zoom: f32,
     show_labels: bool,
 ) {
     // Render layers in order (back to front)
-    for layer in layers.iter() {
-        if layer.visible && zoom >= layer.layer_type.min_zoom() {
+    for (layer, visible) in layers_with_visibility(layers, visibility) {
+        if visible && layer.visible && zoom >= layer.layer_type.min_zoom() {
             render_layer(painter, layer, projection, show_labels, zoom);
         }
     }
+}
+
+fn layers_with_visibility<'a>(
+    layers: &'a GeoLayerSet,
+    visibility: &'a GeoLayerVisibility,
+) -> impl Iterator<Item = (&'a GeoLayer, bool)> {
+    [
+        (layers.states.as_ref(), visibility.states),
+        (layers.counties.as_ref(), visibility.counties),
+        (layers.lakes.as_ref(), visibility.lakes),
+        (layers.highways.as_ref(), visibility.highways),
+        (layers.cities.as_ref(), visibility.cities),
+    ]
+    .into_iter()
+    .filter_map(|(layer, vis)| layer.map(|l| (l, vis)))
 }
 
 /// Renders a single geographic layer.
@@ -34,10 +57,14 @@ fn render_layer(
     let line_width = layer.effective_line_width();
     let stroke = Stroke::new(line_width, color);
 
-    for feature in &layer.features {
+    layer.refresh_projection_cache(projection);
+    let entries = layer.cached_entries();
+
+    for (feature, entry) in layer.features.iter().zip(entries.iter()) {
         render_feature(
             painter,
             feature,
+            entry,
             projection,
             stroke,
             color,
@@ -53,6 +80,7 @@ fn render_layer(
 fn render_feature(
     painter: &Painter,
     feature: &GeoFeature,
+    entry: &FeatureProjection,
     projection: &MapProjection,
     stroke: Stroke,
     color: Color32,
@@ -60,8 +88,8 @@ fn render_feature(
     zoom: f32,
     layer_type: super::GeoLayerType,
 ) {
-    match feature {
-        GeoFeature::Point(coord, label) => {
+    match (feature, entry) {
+        (GeoFeature::Point(coord, label), _) => {
             render_point(
                 painter,
                 coord,
@@ -72,35 +100,35 @@ fn render_feature(
                 zoom,
             );
         }
-        GeoFeature::LineString(coords) => {
-            render_line_string(painter, coords, projection, stroke);
+        (GeoFeature::LineString(coords), FeatureProjection::Single(points)) => {
+            render_projected_line(painter, coords, points, projection, stroke);
         }
-        GeoFeature::MultiLineString(lines) => {
-            for coords in lines {
-                render_line_string(painter, coords, projection, stroke);
+        (GeoFeature::MultiLineString(lines), FeatureProjection::Multi(parts)) => {
+            for (coords, points) in lines.iter().zip(parts.iter()) {
+                render_projected_line(painter, coords, points, projection, stroke);
             }
         }
-        GeoFeature::Polygon {
-            exterior,
-            holes: _,
-            label,
-        } => {
-            render_line_string(painter, exterior, projection, stroke);
-            // Draw label at centroid if enabled
+        (
+            GeoFeature::Polygon {
+                exterior,
+                holes: _,
+                label,
+            },
+            FeatureProjection::Single(points),
+        ) => {
+            render_projected_line(painter, exterior, points, projection, stroke);
             if show_labels {
                 if let Some(text) = label {
                     render_polygon_label(painter, exterior, projection, text, zoom, layer_type);
                 }
             }
         }
-        GeoFeature::MultiPolygon { polygons, label } => {
-            for (exterior, _holes) in polygons {
-                render_line_string(painter, exterior, projection, stroke);
+        (GeoFeature::MultiPolygon { polygons, label }, FeatureProjection::Multi(parts)) => {
+            for ((exterior, _holes), points) in polygons.iter().zip(parts.iter()) {
+                render_projected_line(painter, exterior, points, projection, stroke);
             }
-            // Draw label at centroid of largest polygon if enabled
             if show_labels {
                 if let Some(text) = label {
-                    // Find the largest polygon by bounding box area
                     if let Some((largest_exterior, _)) = polygons.iter().max_by(|(a, _), (b, _)| {
                         let area_a = polygon_bbox_area(a);
                         let area_b = polygon_bbox_area(b);
@@ -120,6 +148,9 @@ fn render_feature(
                 }
             }
         }
+        // Cache/feature type mismatch — shouldn't happen in practice, but
+        // skip rather than reproject.
+        _ => {}
     }
 }
 
@@ -278,18 +309,22 @@ fn render_point(
     }
 }
 
-/// Renders a line string (boundary, river, etc.).
-fn render_line_string(
+/// Renders a line string (boundary, river, etc.) using already-projected
+/// screen points from the feature cache.
+fn render_projected_line(
     painter: &Painter,
     coords: &[Coord<f64>],
+    points: &[Pos2],
     projection: &MapProjection,
     stroke: Stroke,
 ) {
-    if coords.len() < 2 {
+    if points.len() < 2 {
         return;
     }
 
-    // Quick bounding box check for visibility
+    // Bounding-box visibility check is still computed in lon/lat because
+    // `projection.bbox_visible` works in geo space. The coord iteration
+    // is cheap (min/max only) compared to projecting every point.
     let (min_lon, max_lon, min_lat, max_lat) = coords.iter().fold(
         (f64::MAX, f64::MIN, f64::MAX, f64::MIN),
         |(min_x, max_x, min_y, max_y), c| {
@@ -306,17 +341,8 @@ fn render_line_string(
         return;
     }
 
-    // Convert all coordinates to screen positions
-    let screen_points: Vec<Pos2> = coords
-        .iter()
-        .map(|c| projection.geo_to_screen(*c))
-        .collect();
-
-    // Draw line segments
-    // Using individual segments instead of a path for simplicity
-    for window in screen_points.windows(2) {
+    for window in points.windows(2) {
         if let [p1, p2] = window {
-            // Skip very short segments (sub-pixel)
             let dist_sq = (p2.x - p1.x).powi(2) + (p2.y - p1.y).powi(2);
             if dist_sq > 0.5 {
                 painter.line_segment([*p1, *p2], stroke);

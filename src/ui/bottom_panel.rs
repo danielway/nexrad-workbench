@@ -83,8 +83,9 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
             state.playback_state.timeline_view_start = pos - target_offset;
         }
 
-        // Request continuous repaint while playing
-        ctx.request_repaint();
+        // Repaint at 30 FPS while playing — smooth for continuous micro-mode
+        // advances and well above the 1–15 FPS frame cadence macro mode emits.
+        ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
 
     let drawer_expanded = state.acquisition.drawer_expanded;

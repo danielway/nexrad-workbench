@@ -57,6 +57,11 @@ pub struct Sweep {
     pub start_azimuth: f32,
     /// Individual radials in this sweep
     pub radials: Vec<Radial>,
+    /// Product names (matching `SweepDataKey` product strings) that have a
+    /// pre-computed sweep blob stored. Empty means "unknown" — typical for
+    /// legacy index entries or placeholder sweeps — and callers should skip
+    /// product-availability checks in that case.
+    pub available_products: Vec<String>,
 }
 
 impl Sweep {
@@ -268,6 +273,7 @@ impl RadarTimeline {
                     elevation_number: (elev_idx + 1) as u8,
                     start_azimuth: radials.first().map(|r| r.azimuth).unwrap_or(0.0),
                     radials,
+                    available_products: Vec::new(),
                 });
 
                 sweep_time = sweep_end + 0.5; // Small gap between sweeps
@@ -456,6 +462,7 @@ impl RadarTimeline {
                         elevation_number: sm.elevation_number,
                         start_azimuth: sm.start_azimuth,
                         radials: Vec::new(),
+                        available_products: sm.available_products,
                     })
                     .collect();
 
@@ -536,6 +543,7 @@ mod tests {
             elevation_number: elev_num,
             start_azimuth: 0.0,
             radials: Vec::new(),
+            available_products: Vec::new(),
         }
     }
 

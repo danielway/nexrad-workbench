@@ -50,6 +50,10 @@ impl Default for MacroPlaybackState {
 pub enum PlaybackSpeed {
     /// Real-time: 1 second of timeline = 1 second of real time
     Realtime,
+    /// 2x real-time: 2 seconds of timeline per 1 second of real time
+    RealtimeDouble,
+    /// 15 seconds of timeline per 1 second of real time
+    FifteenToOne,
     /// 30 seconds of timeline per 1 second of real time
     ThirtyToOne,
     Quarter,
@@ -64,6 +68,8 @@ impl PlaybackSpeed {
     pub fn label(&self) -> &'static str {
         match self {
             PlaybackSpeed::Realtime => "1x (real)",
+            PlaybackSpeed::RealtimeDouble => "2x (real)",
+            PlaybackSpeed::FifteenToOne => "15s/s",
             PlaybackSpeed::ThirtyToOne => "30s/s",
             PlaybackSpeed::Quarter => "1 min/s",
             PlaybackSpeed::Half => "2 min/s",
@@ -76,6 +82,8 @@ impl PlaybackSpeed {
     pub fn all() -> &'static [PlaybackSpeed] {
         &[
             PlaybackSpeed::Realtime,
+            PlaybackSpeed::RealtimeDouble,
+            PlaybackSpeed::FifteenToOne,
             PlaybackSpeed::ThirtyToOne,
             PlaybackSpeed::Quarter,
             PlaybackSpeed::Half,
@@ -86,10 +94,13 @@ impl PlaybackSpeed {
     }
 
     /// Returns the frames-per-second for macro mode, or None if this speed
-    /// is not available in macro mode (Realtime and ThirtyToOne).
+    /// is not available in macro mode (the real-time / sub-minute speeds).
     pub fn macro_frames_per_second(&self) -> Option<f64> {
         match self {
-            PlaybackSpeed::Realtime | PlaybackSpeed::ThirtyToOne => None,
+            PlaybackSpeed::Realtime
+            | PlaybackSpeed::RealtimeDouble
+            | PlaybackSpeed::FifteenToOne
+            | PlaybackSpeed::ThirtyToOne => None,
             PlaybackSpeed::Quarter => Some(1.0),
             PlaybackSpeed::Half => Some(2.0),
             PlaybackSpeed::Normal => Some(5.0),
@@ -102,6 +113,8 @@ impl PlaybackSpeed {
     pub fn macro_label(&self) -> &'static str {
         match self {
             PlaybackSpeed::Realtime => "1x (real)",
+            PlaybackSpeed::RealtimeDouble => "2x (real)",
+            PlaybackSpeed::FifteenToOne => "15s/s",
             PlaybackSpeed::ThirtyToOne => "30s/s",
             PlaybackSpeed::Quarter => "1 fps",
             PlaybackSpeed::Half => "2 fps",
@@ -126,6 +139,8 @@ impl PlaybackSpeed {
     pub fn timeline_seconds_per_real_second(&self) -> f64 {
         match self {
             PlaybackSpeed::Realtime => 1.0,
+            PlaybackSpeed::RealtimeDouble => 2.0,
+            PlaybackSpeed::FifteenToOne => 15.0,
             PlaybackSpeed::ThirtyToOne => 30.0,
             PlaybackSpeed::Quarter => 60.0,
             PlaybackSpeed::Half => 120.0,

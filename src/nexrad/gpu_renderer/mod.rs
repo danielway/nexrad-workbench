@@ -15,6 +15,9 @@ use std::sync::Arc;
 ///
 /// Returns `None` if the nearest azimuth is farther than 1.5x the expected spacing
 /// (gap detection). Used by CPU-side inspector lookups.
+///
+/// Azimuths < 0 mark empty padded slots from the live partial-sweep path and
+/// are skipped.
 fn find_nearest_azimuth_index(
     azimuths: &[f32],
     azimuth_count: usize,
@@ -22,7 +25,11 @@ fn find_nearest_azimuth_index(
 ) -> Option<usize> {
     let mut best_idx = 0usize;
     let mut best_dist = 360.0f32;
+    let mut found = false;
     for (i, &az) in azimuths.iter().enumerate() {
+        if az < 0.0 {
+            continue;
+        }
         let mut d = (target_deg - az).abs();
         if d > 180.0 {
             d = 360.0 - d;
@@ -30,7 +37,12 @@ fn find_nearest_azimuth_index(
         if d < best_dist {
             best_dist = d;
             best_idx = i;
+            found = true;
         }
+    }
+
+    if !found {
+        return None;
     }
 
     let az_spacing = 360.0 / azimuth_count as f32;
@@ -71,6 +83,8 @@ struct UniformLocations {
     prev_gate_interval_km: glow::UniformLocation,
     prev_max_range_km: glow::UniformLocation,
     sweep_chunk_boundary: glow::UniformLocation,
+    azimuth_spacing_deg: glow::UniformLocation,
+    prev_azimuth_spacing_deg: glow::UniformLocation,
 }
 
 /// Spatial metadata for a single sweep (current or previous).
@@ -82,6 +96,10 @@ struct SweepState {
     max_range_km: f64,
     data_offset: f32,
     data_scale: f32,
+    /// Median angular spacing between adjacent sorted radials, in degrees.
+    /// The shader uses this for search thresholds rather than deriving from
+    /// azimuth_count (which would be wrong for partial/clustered sweeps).
+    azimuth_spacing_deg: f32,
     sweep_id: Option<String>,
 }
 
@@ -95,6 +113,7 @@ impl Default for SweepState {
             max_range_km: 0.0,
             data_offset: 0.0,
             data_scale: 1.0,
+            azimuth_spacing_deg: 1.0,
             sweep_id: None,
         }
     }
@@ -223,6 +242,8 @@ impl RadarGpuRenderer {
                 prev_gate_interval_km: uniform("u_prev_gate_interval_km")?,
                 prev_max_range_km: uniform("u_prev_max_range_km")?,
                 sweep_chunk_boundary: uniform("u_sweep_chunk_boundary")?,
+                azimuth_spacing_deg: uniform("u_azimuth_spacing_deg")?,
+                prev_azimuth_spacing_deg: uniform("u_prev_azimuth_spacing_deg")?,
             };
 
             // Create placeholders for previous sweep textures
@@ -282,6 +303,9 @@ impl RadarGpuRenderer {
     }
     pub fn data_scale(&self) -> f32 {
         self.current.data_scale
+    }
+    pub fn azimuth_spacing_deg(&self) -> f32 {
+        self.current.azimuth_spacing_deg
     }
     pub fn data_texture(&self) -> glow::Texture {
         self.data_texture
@@ -434,6 +458,15 @@ impl RadarGpuRenderer {
             gl.uniform_1_f32(
                 Some(&self.uniforms.sweep_chunk_boundary),
                 sweep_chunk_boundary.unwrap_or(-1.0),
+            );
+
+            gl.uniform_1_f32(
+                Some(&self.uniforms.azimuth_spacing_deg),
+                self.current.azimuth_spacing_deg,
+            );
+            gl.uniform_1_f32(
+                Some(&self.uniforms.prev_azimuth_spacing_deg),
+                self.prev.azimuth_spacing_deg,
             );
 
             // Draw fullscreen quad

@@ -3,9 +3,16 @@
 //! Separates input handling from rendering: pan (drag), zoom (scroll),
 //! distance tool clicks, globe orbit/translate, and double-click reset.
 
+use crate::data::NEXRAD_SITES;
 use crate::geo::MapProjection;
 use crate::state::AppState;
 use eframe::egui::{self, Rect, Vec2};
+use geo_types::Coord;
+
+use super::site_modal::apply_site_selection;
+
+/// Pixel radius around a site marker that counts as a click hit.
+const SITE_HIT_RADIUS_PX: f32 = 10.0;
 
 pub(crate) fn handle_globe_interaction(
     response: &egui::Response,
@@ -99,6 +106,12 @@ pub(crate) fn handle_canvas_interaction(
                 state.viz_state.distance_end = Some((geo.y, geo.x));
             }
         }
+    } else if response.clicked() {
+        if let Some(click_pos) = response.interact_pointer_pos() {
+            if let Some((site_id, lat, lon)) = pick_site_at(click_pos, projection, state) {
+                apply_site_selection(state, site_id, lat, lon);
+            }
+        }
     }
 
     if response.dragged() {
@@ -127,4 +140,42 @@ pub(crate) fn handle_canvas_interaction(
         state.viz_state.zoom = 1.0;
         state.viz_state.pan_offset = Vec2::ZERO;
     }
+}
+
+/// Return `(site_id, lat, lon)` for the NEXRAD site closest to `click_pos`
+/// within [`SITE_HIT_RADIUS_PX`], or `None` if no site was hit. The currently
+/// active site is excluded so re-selecting it is a no-op rather than a spurious
+/// camera recenter.
+fn pick_site_at(
+    click_pos: egui::Pos2,
+    projection: &MapProjection,
+    state: &AppState,
+) -> Option<(&'static str, f64, f64)> {
+    let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
+    let padding = 2.0;
+    let current_upper = state.viz_state.site_id.to_uppercase();
+    let hit_radius_sq = SITE_HIT_RADIUS_PX * SITE_HIT_RADIUS_PX;
+
+    let mut best: Option<(&'static str, f64, f64, f32)> = None;
+    for site in NEXRAD_SITES.iter() {
+        if site.id == current_upper {
+            continue;
+        }
+        if site.lat < min_lat - padding
+            || site.lat > max_lat + padding
+            || site.lon < min_lon - padding
+            || site.lon > max_lon + padding
+        {
+            continue;
+        }
+        let screen_pos = projection.geo_to_screen(Coord {
+            x: site.lon,
+            y: site.lat,
+        });
+        let dist_sq = (screen_pos - click_pos).length_sq();
+        if dist_sq <= hit_radius_sq && best.is_none_or(|(_, _, _, d)| dist_sq < d) {
+            best = Some((site.id, site.lat, site.lon, dist_sq));
+        }
+    }
+    best.map(|(id, lat, lon, _)| (id, lat, lon))
 }
