@@ -1,6 +1,6 @@
 //! Timeline interaction: click, shift+click, drag-to-pan, scroll-to-zoom.
 
-use crate::state::{AppState, LiveExitReason};
+use crate::state::{AppState, LiveExitReason, MICRO_ZOOM_THRESHOLD};
 use eframe::egui::{self, Rect};
 
 /// Handle mouse interaction on the timeline: click, shift+click, drag-to-pan, scroll-to-zoom.
@@ -86,7 +86,14 @@ pub(super) fn handle_timeline_interaction(
         if scroll_delta.y != 0.0 {
             let zoom_factor = 1.0 + scroll_delta.y as f64 * 0.002;
             let old_zoom = state.playback_state.timeline_zoom;
-            let new_zoom = (old_zoom * zoom_factor).clamp(0.000001, 1000.0);
+            // In live mode, never let the user zoom out past micro-mode — they
+            // must be able to see individual sweeps and chunks.
+            let min_zoom = if state.live_mode_state.is_active() {
+                MICRO_ZOOM_THRESHOLD
+            } else {
+                0.000001
+            };
+            let new_zoom = (old_zoom * zoom_factor).clamp(min_zoom, 1000.0);
 
             if let Some(cursor_pos) = response.hover_pos() {
                 let cursor_ts = view_start + (cursor_pos.x - full_rect.left()) as f64 / old_zoom;

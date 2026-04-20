@@ -34,7 +34,9 @@ pub use app_mode::AppMode;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
-pub use playback::{LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel};
+pub use playback::{
+    LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel, MICRO_ZOOM_THRESHOLD,
+};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
 pub use saved_events::{SavedEvent, SavedEvents};

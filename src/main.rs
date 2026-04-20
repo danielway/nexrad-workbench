@@ -826,6 +826,15 @@ impl WorkbenchApp {
         self.state.playback_state.set_playback_position(now);
         self.state.playback_state.time_model.enable_realtime_lock();
         self.state.playback_state.playing = true;
+
+        // Ensure the timeline is zoomed in far enough to show individual sweeps
+        // and chunks. Live mode enforces micro-mode as the widest allowed zoom.
+        const LIVE_DEFAULT_ZOOM: f64 = 2.0;
+        if self.state.playback_state.timeline_zoom < LIVE_DEFAULT_ZOOM {
+            self.state.playback_state.timeline_zoom = LIVE_DEFAULT_ZOOM;
+            self.state.playback_state.center_view_on(now);
+        }
+
         self.state.status_message = "Connecting to live stream...".to_string();
 
         self.streaming
