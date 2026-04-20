@@ -36,16 +36,12 @@ pub struct UserPreferences {
     // Rendering options
     #[serde(default)]
     pub interpolation: InterpolationMode,
-    #[serde(default)]
-    pub despeckle_enabled: bool,
-    #[serde(default = "default_despeckle_threshold")]
-    pub despeckle_threshold: u32,
     #[serde(default = "default_opacity")]
     pub opacity: f32,
     #[serde(default)]
     pub sweep_animation: bool,
     #[serde(default = "default_true")]
-    pub data_age_indicator: bool,
+    pub data_age_desaturation: bool,
 }
 
 fn default_true() -> bool {
@@ -54,10 +50,6 @@ fn default_true() -> bool {
 
 fn default_elevation_angle() -> f32 {
     0.5
-}
-
-fn default_despeckle_threshold() -> u32 {
-    3
 }
 
 fn default_opacity() -> f32 {
@@ -78,11 +70,9 @@ impl Default for UserPreferences {
             use_local_time: false,
             preferred_site: None,
             interpolation: InterpolationMode::default(),
-            despeckle_enabled: false,
-            despeckle_threshold: 3,
             opacity: 1.0,
             sweep_animation: false,
-            data_age_indicator: true,
+            data_age_desaturation: true,
         }
     }
 }
@@ -104,11 +94,9 @@ impl UserPreferences {
             use_local_time: state.use_local_time,
             preferred_site: state.preferred_site.clone(),
             interpolation: state.render_processing.interpolation,
-            despeckle_enabled: state.render_processing.despeckle_enabled,
-            despeckle_threshold: state.render_processing.despeckle_threshold,
             opacity: state.render_processing.opacity,
             sweep_animation: state.render_processing.sweep_animation,
-            data_age_indicator: state.render_processing.data_age_indicator,
+            data_age_desaturation: state.render_processing.data_age_desaturation,
         }
     }
 
@@ -132,11 +120,9 @@ impl UserPreferences {
         state.use_local_time = self.use_local_time;
         state.preferred_site = self.preferred_site.clone();
         state.render_processing.interpolation = self.interpolation;
-        state.render_processing.despeckle_enabled = self.despeckle_enabled;
-        state.render_processing.despeckle_threshold = self.despeckle_threshold;
         state.render_processing.opacity = self.opacity;
         state.render_processing.sweep_animation = self.sweep_animation;
-        state.render_processing.data_age_indicator = self.data_age_indicator;
+        state.render_processing.data_age_desaturation = self.data_age_desaturation;
     }
 
     /// Load preferences from localStorage.
