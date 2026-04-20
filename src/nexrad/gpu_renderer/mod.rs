@@ -66,10 +66,8 @@ struct UniformLocations {
     value_range: glow::UniformLocation,
     viewport_size: glow::UniformLocation,
     interpolation: glow::UniformLocation,
-    despeckle_enabled: glow::UniformLocation,
-    despeckle_threshold: glow::UniformLocation,
     opacity: glow::UniformLocation,
-    data_age_indicator: glow::UniformLocation,
+    data_age_desaturation: glow::UniformLocation,
     offset: glow::UniformLocation,
     scale: glow::UniformLocation,
     sweep_enabled: glow::UniformLocation,
@@ -225,10 +223,8 @@ impl RadarGpuRenderer {
                 value_range: uniform("u_value_range")?,
                 viewport_size: uniform("u_viewport_size")?,
                 interpolation: uniform("u_interpolation")?,
-                despeckle_enabled: uniform("u_despeckle_enabled")?,
-                despeckle_threshold: uniform("u_despeckle_threshold")?,
                 opacity: uniform("u_opacity")?,
-                data_age_indicator: uniform("u_data_age_indicator")?,
+                data_age_desaturation: uniform("u_data_age_desaturation")?,
                 offset: uniform("u_offset")?,
                 scale: uniform("u_scale")?,
                 sweep_enabled: uniform("u_sweep_enabled")?,
@@ -406,18 +402,10 @@ impl RadarGpuRenderer {
                 crate::state::InterpolationMode::Bilinear => 1,
             };
             gl.uniform_1_i32(Some(&self.uniforms.interpolation), interp_mode);
-            gl.uniform_1_i32(
-                Some(&self.uniforms.despeckle_enabled),
-                processing.despeckle_enabled as i32,
-            );
-            gl.uniform_1_i32(
-                Some(&self.uniforms.despeckle_threshold),
-                processing.despeckle_threshold as i32,
-            );
             gl.uniform_1_f32(Some(&self.uniforms.opacity), processing.opacity);
             gl.uniform_1_i32(
-                Some(&self.uniforms.data_age_indicator),
-                processing.data_age_indicator as i32,
+                Some(&self.uniforms.data_age_desaturation),
+                processing.data_age_desaturation as i32,
             );
 
             // Raw-to-physical conversion

@@ -6,6 +6,7 @@
 
 #[allow(dead_code)]
 pub(crate) mod acquisition;
+mod alerts;
 mod app_mode;
 mod layer;
 mod live_mode;
@@ -28,11 +29,14 @@ pub use acquisition::{
     AcquisitionState, DrawerTab, NetworkGroupKey, OperationId, OperationKind, OperationStatus,
     QueueState,
 };
+pub use alerts::AlertsState;
 pub use app_mode::AppMode;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
-pub use playback::{LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel};
+pub use playback::{
+    LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel, MICRO_ZOOM_THRESHOLD,
+};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
 pub use saved_events::{SavedEvent, SavedEvents};
@@ -87,6 +91,13 @@ pub enum AppCommand {
     ReorderOperation(OperationId, isize),
     /// Retry initializing the decode worker after a failure.
     RetryWorker,
+    /// Request an immediate refresh of the NWS alerts feed.
+    RefreshAlerts,
+    /// Open the alert detail modal for a specific alert id.
+    OpenAlert(String),
+    /// Close any open alert modal (detail or list).
+    #[allow(dead_code)] // Provided for symmetry; modals close via their own buttons.
+    CloseAlert,
 }
 
 /// Root application state containing all sub-states.
@@ -220,6 +231,9 @@ pub struct AppState {
     /// National radar mosaic overlay — fetches the CONUS composite while
     /// the corresponding layer toggle is enabled.
     pub national_mosaic: crate::nexrad::NationalMosaic,
+
+    /// NWS active alerts + related modal state.
+    pub alerts: AlertsState,
 }
 
 /// State for the datetime jump picker popup.

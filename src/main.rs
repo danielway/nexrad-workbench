@@ -10,6 +10,7 @@
 //! and `nexrad::worker_api`). The main thread is a thin UI shell that uploads
 //! worker results to the GPU and paints the interface.
 
+mod alerts;
 mod data;
 mod geo;
 mod nexrad;
@@ -157,11 +158,18 @@ pub struct WorkbenchApp {
     /// Sweep cache and previous-sweep resolution for sweep animation.
     playback_manager: PlaybackManager,
 
+    /// NWS alerts polling lifecycle.
+    alerts_manager: alerts::AlertsManager,
+
     /// Cache of the inputs that drive `advance_playback`'s scrub-detection
     /// pass so we can skip the O(scans) timeline search on idle frames
     /// where the playback position, elevation selection, and scan count
     /// have not changed.
     scrub_cache: ScrubCache,
+
+    /// Last `AppMode` pushed to the favicon. `None` until the first frame so
+    /// the initial mode is always sent. See `sync_favicon_to_mode`.
+    last_favicon_mode: Option<state::AppMode>,
 }
 
 #[derive(Default)]
@@ -455,7 +463,9 @@ impl WorkbenchApp {
             event_modal_state: ui::EventModalState::default(),
             network_monitor: nexrad::NetworkMonitor::new(),
             playback_manager: PlaybackManager::new(),
+            alerts_manager: alerts::AlertsManager::new(),
             scrub_cache: ScrubCache::default(),
+            last_favicon_mode: None,
         };
 
         // Check cross-origin isolation status on startup
@@ -821,6 +831,15 @@ impl WorkbenchApp {
         self.state.playback_state.set_playback_position(now);
         self.state.playback_state.time_model.enable_realtime_lock();
         self.state.playback_state.playing = true;
+
+        // Ensure the timeline is zoomed in far enough to show individual sweeps
+        // and chunks. Live mode enforces micro-mode as the widest allowed zoom.
+        const LIVE_DEFAULT_ZOOM: f64 = 2.0;
+        if self.state.playback_state.timeline_zoom < LIVE_DEFAULT_ZOOM {
+            self.state.playback_state.timeline_zoom = LIVE_DEFAULT_ZOOM;
+            self.state.playback_state.center_view_on(now);
+        }
+
         self.state.status_message = "Connecting to live stream...".to_string();
 
         self.streaming
@@ -1191,7 +1210,7 @@ impl WorkbenchApp {
         }
 
         // Ensure continuous repainting for time-dependent UI elements (the "now"
-        // marker on the timeline and the data-age indicators) even when the user
+        // marker on the timeline and the data age desaturation) even when the user
         // is idle and playback is stopped.  Repaint once per second which is
         // sufficient for these indicators while being easy on the CPU.
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
@@ -1347,6 +1366,16 @@ impl WorkbenchApp {
                         self.state.worker_init_error = Some(msg);
                     }
                 },
+                state::AppCommand::RefreshAlerts => {
+                    self.state.alerts.refresh_requested = true;
+                }
+                state::AppCommand::OpenAlert(id) => {
+                    self.state.alerts.selected_alert_id = Some(id);
+                }
+                state::AppCommand::CloseAlert => {
+                    self.state.alerts.selected_alert_id = None;
+                    self.state.alerts.list_modal_open = false;
+                }
             }
         }
 
@@ -2880,6 +2909,27 @@ impl WorkbenchApp {
     fn persist_url_state(&mut self) {
         self.persistence.persist_if_due(&self.state);
     }
+
+    /// Push the current `AppMode`'s color to the browser favicon via the
+    /// `setFaviconColor` JS hook in `index.html`. No-op when the mode hasn't
+    /// changed since the last push.
+    fn sync_favicon_to_mode(&mut self) {
+        use wasm_bindgen::prelude::*;
+        #[wasm_bindgen]
+        extern "C" {
+            #[wasm_bindgen(js_namespace = window, js_name = setFaviconColor, catch)]
+            fn js_set_favicon_color(hex: &str) -> Result<(), JsValue>;
+        }
+
+        let mode = self.state.app_mode;
+        if self.last_favicon_mode == Some(mode) {
+            return;
+        }
+        let c = mode.color();
+        let hex = format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
+        let _ = js_set_favicon_color(&hex);
+        self.last_favicon_mode = Some(mode);
+    }
 }
 
 impl eframe::App for WorkbenchApp {
@@ -2898,9 +2948,15 @@ impl eframe::App for WorkbenchApp {
         self.update_network_stats();
         self.persist_url_state();
 
+        // Poll the NWS alerts feed if due; drain any completed fetches.
+        self.alerts_manager.tick(ctx, &mut self.state);
+
         // Compute the live radar model snapshot for this frame so all UI
         // consumers see consistent state from the same `now` timestamp.
         self.state.refresh_live_model();
+
+        // Recolor the favicon if the AppMode changed this frame.
+        self.sync_favicon_to_mode();
 
         // Render UI panels in the correct order for egui layout
         // Side and top/bottom panels must be rendered before CentralPanel
@@ -2922,5 +2978,6 @@ impl eframe::App for WorkbenchApp {
         ui::render_stats_modal(ctx, &mut self.state);
         ui::render_network_log(ctx, &mut self.state);
         ui::render_event_modal(ctx, &mut self.state, &mut self.event_modal_state);
+        ui::render_alerts_modals(ctx, &mut self.state);
     }
 }

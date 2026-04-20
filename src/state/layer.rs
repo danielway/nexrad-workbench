@@ -26,6 +26,8 @@ pub struct GeoLayerVisibility {
     pub lakes: bool,
     /// Show the national radar mosaic overlay (CONUS composite)
     pub national_mosaic: bool,
+    /// Show NWS active alert polygons
+    pub alerts: bool,
 }
 
 impl Default for GeoLayerVisibility {
@@ -39,6 +41,7 @@ impl Default for GeoLayerVisibility {
             highways: false,
             lakes: false,
             national_mosaic: false,
+            alerts: false,
         }
     }
 }

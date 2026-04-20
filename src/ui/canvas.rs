@@ -4,7 +4,7 @@ use super::canvas_inspector::{render_distance_measurement, render_inspector, ren
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
     draw_color_scale, draw_compass, draw_globe, draw_national_mosaic, draw_overlay_info,
-    render_nexrad_sites, render_radar_sweep,
+    render_alerts, render_nexrad_sites, render_radar_sweep,
 };
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
@@ -40,6 +40,10 @@ pub fn render_canvas_with_geo(
 
         match state.viz_state.view_mode {
             ViewMode::Globe3D => {
+                // Globe view doesn't have meaningful 2D lat/lon bounds;
+                // downstream consumers should treat `None` as "unknown".
+                state.viz_state.last_visible_bounds = None;
+
                 // Update camera aspect ratio
                 state.viz_state.camera.set_aspect(rect);
 
@@ -69,6 +73,11 @@ pub fn render_canvas_with_geo(
                     MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
                 projection.update(state.viz_state.zoom, state.viz_state.pan_offset, rect);
 
+                // Cache current visible bounds so non-canvas UI (top bar chip,
+                // modals) can filter geographic data without reconstructing
+                // the projection.
+                state.viz_state.last_visible_bounds = Some(projection.visible_bounds());
+
                 if state.layer_state.geo.national_mosaic {
                     draw_national_mosaic(
                         &painter,
@@ -95,6 +104,10 @@ pub fn render_canvas_with_geo(
                     &state.viz_state.site_id,
                     &state.layer_state.geo,
                 );
+
+                if state.layer_state.geo.alerts && !state.alerts.alerts.is_empty() {
+                    render_alerts(&painter, &projection, &state.alerts.alerts);
+                }
 
                 let sweep_info = compute_sweep_line_azimuth(state);
                 let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(state, sweep_info);

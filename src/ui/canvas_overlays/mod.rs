@@ -4,6 +4,7 @@
 //! canvas `Rect` using the egui `Painter`. Overlays are drawn in painter
 //! order after the radar texture and geographic layers.
 
+mod alerts;
 mod color_scale;
 mod compass;
 mod globe;
@@ -12,6 +13,7 @@ mod national_mosaic;
 mod sites;
 mod sweep;
 
+pub(crate) use alerts::render_alerts;
 pub(crate) use color_scale::draw_color_scale;
 pub(crate) use compass::draw_compass;
 pub(crate) use globe::draw_globe;

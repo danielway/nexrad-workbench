@@ -1,6 +1,7 @@
 //! Top bar UI: app title, status, and site context.
 
-use crate::state::{AppMode, AppState, CameraMode, ViewMode};
+use crate::alerts::AlertSeverity;
+use crate::state::{AppCommand, AppMode, AppState, CameraMode, ViewMode};
 use eframe::egui::{self, Color32, Frame, RichText};
 
 pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
@@ -57,6 +58,10 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                 }
 
                 ui.separator();
+
+                // NWS alerts chip — shown only in 2D when one or more alerts
+                // intersect the visible map bounds.
+                render_alerts_chip(ui, state);
 
                 // Persistent worker initialization error banner
                 if let Some(ref error_msg) = state.worker_init_error {
@@ -252,6 +257,116 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                 });
             });
         });
+}
+
+/// Render a compact alerts indicator for the top bar. Shows nothing when
+/// no active NWS alerts intersect the current viewing area (or when the
+/// viewing area is undefined, e.g. in 3D globe mode).
+fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
+    // Show a subtle loading/error hint on the first fetch so the user knows
+    // the feed is being contacted. After the first success, stay quiet unless
+    // there are alerts to surface.
+    let has_ever_loaded = state.alerts.last_success_ms > 0.0;
+    let has_error = state.alerts.last_error.is_some();
+    if !has_ever_loaded && !has_error {
+        let icon = RichText::new(egui_phosphor::regular::BELL_SIMPLE)
+            .size(14.0)
+            .color(Color32::from_rgb(130, 130, 130));
+        ui.add(egui::Label::new(icon))
+            .on_hover_text("Loading NWS alerts\u{2026}");
+        ui.separator();
+        return;
+    }
+
+    let Some(bounds) = state.viz_state.last_visible_bounds else {
+        // 3D globe view or canvas hasn't rendered yet.
+        return;
+    };
+
+    let visible: Vec<(String, String, AlertSeverity)> = state
+        .alerts
+        .visible_in(bounds)
+        .into_iter()
+        .map(|a| (a.id.clone(), a.event.clone(), a.severity))
+        .collect();
+
+    if visible.is_empty() {
+        // Render a quiet dimmed icon so users know the feed is live when hovered.
+        let tooltip = if has_error {
+            format!(
+                "NWS alerts: {}",
+                state.alerts.last_error.as_deref().unwrap_or("error")
+            )
+        } else {
+            format!(
+                "No active alerts in view ({} active nationwide)",
+                state.alerts.alerts.len()
+            )
+        };
+        let color = if has_error {
+            Color32::from_rgb(200, 120, 60)
+        } else {
+            Color32::from_rgb(110, 110, 110)
+        };
+        let icon = RichText::new(egui_phosphor::regular::BELL_SIMPLE)
+            .size(14.0)
+            .color(color);
+        let response = ui.add(egui::Label::new(icon).sense(egui::Sense::click()));
+        response.clone().on_hover_text(tooltip);
+        if response.clicked() {
+            state.push_command(AppCommand::RefreshAlerts);
+        }
+        ui.separator();
+        return;
+    }
+
+    // Use the highest-severity alert for the chip color (list is already
+    // sorted by severity descending by `visible_in`).
+    let top_severity = visible[0].2;
+    let (r, g, b) = top_severity.color();
+    let chip_color = Color32::from_rgb(r, g, b);
+
+    let label = if visible.len() == 1 {
+        let event = &visible[0].1;
+        format!("{} {}", egui_phosphor::regular::WARNING, event)
+    } else {
+        format!(
+            "{} {} alerts",
+            egui_phosphor::regular::WARNING,
+            visible.len()
+        )
+    };
+
+    let response = ui.add(egui::Button::new(
+        RichText::new(label).size(13.0).strong().color(chip_color),
+    ));
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let hover = if visible.len() == 1 {
+        format!("{} — click for details", visible[0].1,)
+    } else {
+        let mut lines = String::from("Click to view alerts in this area:\n");
+        for (_, event, sev) in visible.iter().take(6) {
+            lines.push_str(&format!("\n  \u{2022} [{}] {}", sev.label(), event));
+        }
+        if visible.len() > 6 {
+            lines.push_str(&format!("\n  \u{2026} and {} more", visible.len() - 6));
+        }
+        lines
+    };
+
+    if response.on_hover_text(hover).clicked() {
+        if visible.len() == 1 {
+            state.push_command(AppCommand::OpenAlert(visible[0].0.clone()));
+        } else {
+            state.alerts.list_modal_open = true;
+        }
+    }
+
+    ui.separator();
 }
 
 /// Render the unified mode badge (Idle / Archive / Live) in the top bar.
