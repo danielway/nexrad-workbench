@@ -45,7 +45,20 @@ pub(crate) fn decode_with_vcp_extraction<'a>(
                     .elevations()
                     .iter()
                     .map(|e| ExtractedVcpElevation {
-                        angle: e.elevation_angle() as f32,
+                        // nexrad-decode's decode_angle() sums bit 15 as a
+                        // positive 180° contribution instead of treating it as
+                        // the sign bit, so negative elevations (e.g. KMAX's
+                        // -0.2°) come back wrapped near 360°. Real VCP
+                        // elevations never exceed ~20°, so any value above 180°
+                        // is a wrapped negative.
+                        angle: {
+                            let a = e.elevation_angle() as f32;
+                            if a > 180.0 {
+                                a - 360.0
+                            } else {
+                                a
+                            }
+                        },
                         waveform: format!("{:?}", e.waveform_type()),
                         prf_number: e.surveillance_prf_number(),
                         is_sails: e.is_sails_cut(),
