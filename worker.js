@@ -43,7 +43,7 @@ self.onmessage = async function (e) {
             // Dynamically import the Trunk-generated wasm-bindgen JS module.
             // The main thread passes the hashed URLs it discovers from the DOM.
             const mod = await import(msg.jsUrl);
-            await mod.default(msg.wasmUrl);
+            await mod.default({ module_or_path: msg.wasmUrl });
             wasm = mod;
             self.postMessage({ type: 'ready' });
         } catch (err) {
