@@ -22,7 +22,7 @@ pub(super) fn handle_timeline_interaction(
             state.playback_state.selection_end = Some(clicked_ts);
             state.playback_state.apply_selection_as_bounds();
             let duration_mins = (clicked_ts - current_pos).abs() / 60.0;
-            log::info!("Shift+click range: {:.0} minutes", duration_mins);
+            log::debug!("Shift+click range: {:.0} minutes", duration_mins);
         }
     }
 
@@ -46,7 +46,7 @@ pub(super) fn handle_timeline_interaction(
         state.playback_state.selection_in_progress = false;
         if let Some((start, end)) = state.playback_state.selection_range() {
             let duration_mins = (end - start) / 60.0;
-            log::info!("Selected time range: {:.0} minutes", duration_mins);
+            log::debug!("Selected time range: {:.0} minutes", duration_mins);
             state.playback_state.apply_selection_as_bounds();
         }
     }

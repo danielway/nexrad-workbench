@@ -77,6 +77,15 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
         let az_buf = az_view.slice(0, header.azimuth_count).buffer();
 
+        // Compute angular spacing between adjacent sorted radials.
+        // Sweep blobs always store sorted azimuths covering (near) a full rotation,
+        // so 360 / count is accurate for the shader's search threshold.
+        let azimuth_spacing_deg = if header.azimuth_count > 0 {
+            360.0f32 / header.azimuth_count as f32
+        } else {
+            1.0
+        };
+
         // Extract radial_times if present (format version >= 1)
         let rt_buf = if header.radial_times_offset > 0 {
             let rt_view = js_sys::Float64Array::new_with_byte_offset_and_length(
@@ -110,7 +119,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let marshal_ms = t_marshal.elapsed().as_secs_f64() * 1000.0;
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        log::info!(
+        log::debug!(
             "render: elev={} {} {}x{} ({:.1}KB) in {:.1}ms | fetch {:.1} | deser {:.1} | marshal {:.1}",
             elevation_number, product_str,
             header.azimuth_count, header.gate_count,
@@ -136,6 +145,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             deser_ms,
             total_ms,
             marshal_ms,
+            azimuth_spacing_deg,
         };
         let result = serde_wasm_bindgen::to_value(&response)
             .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))?;
@@ -280,7 +290,7 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        log::info!(
+        log::debug!(
             "render_volume: {} sweeps, {} values packed ({:.1}KB, u{}) in {:.1}ms",
             sweep_meta_vec.len(),
             data_offset,

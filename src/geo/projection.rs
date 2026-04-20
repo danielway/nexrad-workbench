@@ -143,4 +143,44 @@ impl MapProjection {
             || max_lat < vis_min_lat - margin
             || min_lat > vis_max_lat + margin)
     }
+
+    /// Fingerprint of the projection's visible output.
+    ///
+    /// Stable across frames as long as `geo_to_screen` would produce
+    /// identical results. Used by feature-level caches to avoid
+    /// re-projecting thousands of coordinates every frame when the view
+    /// is idle.
+    pub fn fingerprint(&self) -> ProjectionFingerprint {
+        ProjectionFingerprint {
+            center_lat: self.center_lat.to_bits(),
+            center_lon: self.center_lon.to_bits(),
+            range_deg: self.range_deg.to_bits(),
+            zoom: self.zoom.to_bits(),
+            pan_x: self.pan_offset.x.to_bits(),
+            pan_y: self.pan_offset.y.to_bits(),
+            rect_min_x: self.screen_rect.min.x.to_bits(),
+            rect_min_y: self.screen_rect.min.y.to_bits(),
+            rect_max_x: self.screen_rect.max.x.to_bits(),
+            rect_max_y: self.screen_rect.max.y.to_bits(),
+        }
+    }
+}
+
+/// Opaque signature of a [`MapProjection`]'s current output.
+///
+/// Two projections that produce the same fingerprint will map every
+/// input coord to the same screen position. Constructed via
+/// [`MapProjection::fingerprint`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectionFingerprint {
+    center_lat: u64,
+    center_lon: u64,
+    range_deg: u64,
+    zoom: u32,
+    pan_x: u32,
+    pan_y: u32,
+    rect_min_x: u32,
+    rect_min_y: u32,
+    rect_max_x: u32,
+    rect_max_y: u32,
 }

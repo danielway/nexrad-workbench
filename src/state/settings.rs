@@ -51,7 +51,7 @@ impl StorageSettings {
 
         match serde_json::from_str(&json) {
             Ok(settings) => {
-                log::info!("Loaded storage settings from localStorage");
+                log::debug!("Loaded storage settings from localStorage");
                 settings
             }
             Err(e) => {
@@ -84,7 +84,7 @@ impl StorageSettings {
         if let Err(e) = storage.set_item(Self::STORAGE_KEY, &json) {
             log::warn!("Failed to save storage settings: {:?}", e);
         } else {
-            log::info!("Saved storage settings to localStorage");
+            log::debug!("Saved storage settings to localStorage");
         }
     }
 

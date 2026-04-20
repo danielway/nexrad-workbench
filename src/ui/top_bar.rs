@@ -1,9 +1,8 @@
 //! Top bar UI: app title, status, and site context.
 
-use super::colors::live;
 use crate::alerts::AlertSeverity;
-use crate::state::{AppCommand, AppState, CameraMode, LivePhase, ViewMode};
-use eframe::egui::{self, Color32, RichText};
+use crate::state::{AppCommand, AppMode, AppState, CameraMode, ViewMode};
+use eframe::egui::{self, Color32, Frame, RichText};
 
 pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
     // Detect status message changes: if the message content differs from when we
@@ -15,6 +14,15 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
         state.status_message_set_ms = js_sys::Date::now();
         ctx.data_mut(|d| d.insert_temp(status_id, state.status_message.clone()));
     }
+
+    // Thin mode-colored accent bar along the very top edge of the window.
+    egui::TopBottomPanel::top("mode_accent")
+        .resizable(false)
+        .exact_height(3.0)
+        .frame(Frame::NONE.fill(state.app_mode.color()))
+        .show(ctx, |ui| {
+            ui.allocate_space(ui.available_size());
+        });
 
     egui::TopBottomPanel::top("top_bar")
         .exact_height(36.0)
@@ -77,10 +85,11 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                     }
                 }
 
-                // Show live status or regular status message
-                if state.live_mode_state.is_active() {
-                    render_live_status(ui, state);
-                } else if !state.status_message.is_empty() {
+                render_mode_badge(ui, state);
+
+                // Status message (Idle/Archive only — Live has its own trailing
+                // text with chunk counts/countdown).
+                if state.app_mode != AppMode::Live && !state.status_message.is_empty() {
                     // Auto-dismiss: fade out after 8 seconds, clear after 10
                     let now = js_sys::Date::now();
                     let age_ms = now - state.status_message_set_ms;
@@ -360,74 +369,68 @@ fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
     ui.separator();
 }
 
-/// Render live mode status in the top bar.
-fn render_live_status(ui: &mut egui::Ui, state: &AppState) {
-    let phase = state.live_mode_state.phase;
-    let pulse_alpha = state.live_mode_state.pulse_alpha();
+/// Render the unified mode badge (Idle / Archive / Live) in the top bar.
+/// The Live branch preserves the previous pulse animation and streaming
+/// detail text (chunk counter, acquire-lock elapsed, next-chunk countdown).
+fn render_mode_badge(ui: &mut egui::Ui, state: &AppState) {
+    let mode = state.app_mode;
+    let color = mode.color();
 
-    let now = state.playback_state.playback_position();
+    let icon_str = match mode {
+        AppMode::Idle => egui_phosphor::regular::PAUSE_CIRCLE,
+        AppMode::Archive => egui_phosphor::regular::ARCHIVE_BOX,
+        AppMode::Live => egui_phosphor::regular::BROADCAST,
+    };
 
-    match phase {
-        LivePhase::AcquiringLock => {
-            let pulsed_color = Color32::from_rgba_unmultiplied(
-                live::ACQUIRING.r(),
-                live::ACQUIRING.g(),
-                live::ACQUIRING.b(),
-                (128.0 + 127.0 * pulse_alpha) as u8,
-            );
-            ui.label(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(16.0)
-                    .color(pulsed_color),
-            );
+    // For Live, pulse the icon's alpha channel; other modes render solid.
+    let icon_color = if mode == AppMode::Live {
+        let pulse = state.live_mode_state.pulse_alpha();
+        Color32::from_rgba_unmultiplied(
+            color.r(),
+            color.g(),
+            color.b(),
+            (128.0 + 127.0 * pulse) as u8,
+        )
+    } else {
+        color
+    };
 
-            let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
-            ui.label(
-                RichText::new(format!("Acquiring lock... {}s", elapsed))
-                    .size(13.0)
-                    .color(live::ACQUIRING),
-            );
-        }
-        LivePhase::Streaming | LivePhase::WaitingForChunk => {
-            let pulsed_color = Color32::from_rgba_unmultiplied(
-                live::STREAMING.r(),
-                live::STREAMING.g(),
-                live::STREAMING.b(),
-                (128.0 + 127.0 * pulse_alpha) as u8,
-            );
-            ui.label(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(16.0)
-                    .color(pulsed_color),
-            );
-            ui.label(
-                RichText::new("LIVE")
-                    .size(13.0)
-                    .strong()
-                    .color(live::STREAMING),
-            );
+    ui.label(RichText::new(icon_str).size(16.0).color(icon_color));
+    ui.label(RichText::new(mode.label()).size(13.0).strong().color(color));
 
-            let status = if phase == LivePhase::Streaming {
-                format!(
-                    "({} chunks) receiving...",
-                    state.live_mode_state.chunks_received
-                )
-            } else if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now) {
-                format!(
-                    "({} chunks) next in {}s",
-                    state.live_mode_state.chunks_received,
-                    remaining.ceil() as i32
-                )
-            } else {
-                format!("({} chunks)", state.live_mode_state.chunks_received)
-            };
-
+    // Live-only trailing detail: chunk count, countdown, or elapsed acquire time.
+    if mode == AppMode::Live {
+        use crate::state::LivePhase;
+        let now = state.playback_state.playback_position();
+        let phase = state.live_mode_state.phase;
+        let detail = match phase {
+            LivePhase::AcquiringLock => {
+                let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
+                format!("acquiring lock... {}s", elapsed)
+            }
+            LivePhase::Streaming => format!(
+                "({} chunks) receiving...",
+                state.live_mode_state.chunks_received
+            ),
+            LivePhase::WaitingForChunk => {
+                if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now) {
+                    format!(
+                        "({} chunks) next in {}s",
+                        state.live_mode_state.chunks_received,
+                        remaining.ceil() as i32
+                    )
+                } else {
+                    format!("({} chunks)", state.live_mode_state.chunks_received)
+                }
+            }
+            _ => String::new(),
+        };
+        if !detail.is_empty() {
             ui.label(
-                RichText::new(status)
+                RichText::new(detail)
                     .size(12.0)
                     .color(Color32::from_rgb(180, 180, 180)),
             );
         }
-        _ => {}
     }
 }

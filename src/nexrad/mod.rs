@@ -26,7 +26,9 @@ pub(crate) mod record_decode;
 pub(crate) mod render_coordinator;
 pub(crate) mod render_request;
 pub(crate) mod streaming_manager;
+mod streaming_state;
 mod types;
+mod volume_discovery;
 pub(crate) mod volume_ray_renderer;
 mod worker_api;
 
@@ -44,7 +46,7 @@ pub use network_monitor::{
     is_cross_origin_isolated, NetworkAggregate, NetworkMonitor, NetworkRequest,
 };
 pub use persistence_manager::PersistenceManager;
-pub use realtime::{BackfillChannel, ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
+pub use realtime::{ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
 pub use render_coordinator::RenderCoordinator;
 pub use render_request::RenderRequest;
 pub use streaming_manager::{StreamingEvent, StreamingManager};

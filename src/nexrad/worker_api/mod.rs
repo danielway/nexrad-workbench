@@ -124,6 +124,9 @@ pub(super) struct RenderResponse {
     pub deser_ms: f64,
     pub total_ms: f64,
     pub marshal_ms: f64,
+    /// Median angular spacing between adjacent sorted radials, in degrees.
+    /// Used by the shader's search threshold instead of deriving from azimuth_count.
+    pub azimuth_spacing_deg: f32,
 }
 
 /// Response from `worker_ingest_chunk`.
@@ -196,8 +199,7 @@ pub(super) struct VolumeRenderResponse {
 // instead of paying the ~60ms open+list overhead every time.
 
 thread_local! {
-    pub(super) static WORKER_IDB: std::cell::RefCell<Option<IndexedDbRecordStore>> =
-        const { std::cell::RefCell::new(None) };
+    pub(super) static WORKER_IDB: IndexedDbRecordStore = IndexedDbRecordStore::new();
     static WORKER_LOGGER_INIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -212,18 +214,15 @@ pub(super) fn init_logger() {
 }
 
 /// Get (or lazily open) the shared worker IDB store.
+///
+/// The store itself is eagerly constructed; `open()` is a no-op after the
+/// first successful call, and concurrent callers racing the first open
+/// coalesce inside `IndexedDbRecordStore::open`.
 pub(super) async fn idb_store() -> Result<IndexedDbRecordStore, wasm_bindgen::JsValue> {
-    let existing = WORKER_IDB.with(|cell| cell.borrow().clone());
-    if let Some(store) = existing {
-        return Ok(store);
-    }
-    let store = IndexedDbRecordStore::new();
+    let store = WORKER_IDB.with(|s| s.clone());
     store
         .open()
         .await
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e)))?;
-    WORKER_IDB.with(|cell| {
-        *cell.borrow_mut() = Some(store.clone());
-    });
     Ok(store)
 }

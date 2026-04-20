@@ -26,6 +26,7 @@ pub(crate) struct CachedSweepData {
     pub max_range_km: f64,
     pub offset: f32,
     pub scale: f32,
+    pub azimuth_spacing_deg: f32,
     pub radial_times: Vec<f64>,
     pub sweep_start_secs: f64,
     pub sweep_end_secs: f64,
@@ -33,8 +34,8 @@ pub(crate) struct CachedSweepData {
 }
 
 /// Build a sweep cache key from scan key and elevation number.
-pub(crate) fn sweep_cache_key(scan_key: &str, elevation_number: u8) -> String {
-    format!("{}|{}", scan_key, elevation_number)
+pub(crate) fn sweep_cache_key(scan_key: &str, elevation_number: u8, product: &str) -> String {
+    format!("{}|{}|{}", scan_key, elevation_number, product)
 }
 
 // ---------------------------------------------------------------------------
@@ -114,9 +115,11 @@ pub(crate) enum PrevSweepAction {
 pub(crate) struct PlaybackManager {
     sweep_cache: SweepDataCache,
     pending_prev_sweep_key: Option<String>,
-    /// Cached identity of the last resolved previous sweep (scan_key, elev_num).
-    /// If unchanged between frames, `resolve_prev_sweep` can skip work.
-    cached_prev_identity: Option<(String, u8)>,
+    /// Cached identity of the last resolved previous sweep
+    /// (scan_key, elev_num, product). If unchanged between frames,
+    /// `resolve_prev_sweep` can skip work. Includes product so a product
+    /// change invalidates the cache and re-resolves the prev texture.
+    cached_prev_identity: Option<(String, u8, String)>,
 }
 
 impl PlaybackManager {
@@ -225,16 +228,20 @@ impl PlaybackManager {
         product: &str,
     ) -> PrevSweepAction {
         // Fast path: if the identity hasn't changed, nothing to do
-        let new_identity = (prev_scan_key.to_string(), prev_elev_num);
+        let new_identity = (
+            prev_scan_key.to_string(),
+            prev_elev_num,
+            product.to_string(),
+        );
         if self.cached_prev_identity.as_ref() == Some(&new_identity) {
-            let desired_prev_id = sweep_cache_key(prev_scan_key, prev_elev_num);
+            let desired_prev_id = sweep_cache_key(prev_scan_key, prev_elev_num, product);
             if current_gpu_prev_id == Some(desired_prev_id.as_str()) {
                 return PrevSweepAction::AlreadyLoaded;
             }
         }
         self.cached_prev_identity = Some(new_identity);
 
-        let desired_prev_id = sweep_cache_key(prev_scan_key, prev_elev_num);
+        let desired_prev_id = sweep_cache_key(prev_scan_key, prev_elev_num, product);
 
         // Check if the GPU already has the right data
         if current_gpu_prev_id == Some(desired_prev_id.as_str()) {
@@ -275,16 +282,17 @@ pub(crate) fn best_elevation_at_playback(
     scan: &Scan,
     playback_ts: f64,
     available_elevations: &[u8],
-) -> u8 {
+) -> Option<u8> {
     match elevation_selection {
         crate::state::ElevationSelection::Fixed {
             elevation_number, ..
         } => {
             // Filter sweeps by exact elevation_number match
             // then filter to those that have started (start_time <= playback_ts)
-            // pick the one with the latest start_time (most recent instance)
-            let matching = scan
-                .sweeps
+            // pick the one with the latest start_time (most recent instance).
+            // Returns None when the selected elevation has no sweep in this scan,
+            // so callers can clear display rather than send a doomed render.
+            scan.sweeps
                 .iter()
                 .filter(|s| s.elevation_number == *elevation_number)
                 .filter(|s| s.start_time <= playback_ts)
@@ -292,20 +300,14 @@ pub(crate) fn best_elevation_at_playback(
                     a.start_time
                         .partial_cmp(&b.start_time)
                         .unwrap_or(std::cmp::Ordering::Equal)
-                });
-
-            if let Some(sweep) = matching {
-                return sweep.elevation_number;
-            }
-
-            // No matching sweep started yet — return selected number
-            *elevation_number
+                })
+                .map(|s| s.elevation_number)
         }
-        crate::state::ElevationSelection::Latest => most_recent_sweep_elevation(
+        crate::state::ElevationSelection::Latest => Some(most_recent_sweep_elevation(
             scan,
             playback_ts,
             available_elevations.first().copied().unwrap_or(1),
-        ),
+        )),
     }
 }
 
@@ -328,6 +330,14 @@ pub(crate) fn most_recent_sweep_elevation(scan: &Scan, playback_ts: f64, fallbac
 
 /// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
 pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationListEntry> {
+    let products_for = |elev_num: u8| -> Vec<String> {
+        scan.sweeps
+            .iter()
+            .find(|s| s.elevation_number == elev_num)
+            .map(|s| s.available_products.clone())
+            .unwrap_or_default()
+    };
+
     // 1. Prefer extracted VCP pattern (has waveform, SAILS, MRLE info)
     if let Some(ref pattern) = scan.vcp_pattern {
         if !pattern.elevations.is_empty() {
@@ -335,12 +345,16 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
                 .elevations
                 .iter()
                 .enumerate()
-                .map(|(i, e)| crate::state::ElevationListEntry {
-                    elevation_number: (i + 1) as u8,
-                    angle: e.angle,
-                    waveform: e.waveform.clone(),
-                    is_sails: e.is_sails,
-                    is_mrle: e.is_mrle,
+                .map(|(i, e)| {
+                    let elevation_number = (i + 1) as u8;
+                    crate::state::ElevationListEntry {
+                        elevation_number,
+                        angle: e.angle,
+                        waveform: e.waveform.clone(),
+                        is_sails: e.is_sails,
+                        is_mrle: e.is_mrle,
+                        available_products: products_for(elevation_number),
+                    }
                 })
                 .collect();
         }
@@ -352,12 +366,16 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
             .elevations
             .iter()
             .enumerate()
-            .map(|(i, e)| crate::state::ElevationListEntry {
-                elevation_number: (i + 1) as u8,
-                angle: e.angle,
-                waveform: e.waveform.to_string(),
-                is_sails: false,
-                is_mrle: false,
+            .map(|(i, e)| {
+                let elevation_number = (i + 1) as u8;
+                crate::state::ElevationListEntry {
+                    elevation_number,
+                    angle: e.angle,
+                    waveform: e.waveform.to_string(),
+                    is_sails: false,
+                    is_mrle: false,
+                    available_products: products_for(elevation_number),
+                }
             })
             .collect();
     }
@@ -371,6 +389,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
             waveform: String::new(),
             is_sails: false,
             is_mrle: false,
+            available_products: s.available_products.clone(),
         })
         .collect()
 }

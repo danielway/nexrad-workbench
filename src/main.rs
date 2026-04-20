@@ -121,6 +121,7 @@ pub struct GpuResources {
 use nexrad::download_queue::{QueueAction, QueueItem};
 use nexrad::RenderRequest;
 use state::playback_manager::{sweep_cache_key, CachedSweepData, PlaybackManager, PrevSweepAction};
+use state::MAX_RECENT_NETWORK_REQUESTS;
 
 /// Main application state and logic.
 pub struct WorkbenchApp {
@@ -159,6 +160,20 @@ pub struct WorkbenchApp {
 
     /// NWS alerts polling lifecycle.
     alerts_manager: alerts::AlertsManager,
+
+    /// Cache of the inputs that drive `advance_playback`'s scrub-detection
+    /// pass so we can skip the O(scans) timeline search on idle frames
+    /// where the playback position, elevation selection, and scan count
+    /// have not changed.
+    scrub_cache: ScrubCache,
+}
+
+#[derive(Default)]
+struct ScrubCache {
+    last_playback_ts: Option<f64>,
+    last_elevation_selection: Option<state::ElevationSelection>,
+    last_scan_count: usize,
+    last_displayed_scan_ts: Option<i64>,
 }
 
 // Embed shapefile data at compile time
@@ -201,7 +216,7 @@ impl WorkbenchApp {
         // Load built-in cities layer
         geo_layers.set_layer(geo::cities::build_cities_layer());
 
-        log::info!(
+        log::debug!(
             "Loaded geo layers: {} states, {} counties, {} cities",
             geo_layers
                 .states
@@ -312,6 +327,11 @@ impl WorkbenchApp {
                 state.viz_state.volume_density_cutoff = vdc;
             }
         }
+        // If the URL indicates real-time mode was active, re-enter live on boot.
+        // Queued behind the initial RefreshTimeline so the timeline populates first.
+        if url_params.view.rt == Some(true) {
+            state.push_command(state::AppCommand::StartLive);
+        }
         if let Some(ref product_code) = url_params.product {
             if let Some(product) = state::RadarProduct::from_short_code(product_code) {
                 state.viz_state.product = product;
@@ -346,7 +366,6 @@ impl WorkbenchApp {
         let data_facade = DataFacade::new();
         let acquisition = nexrad::AcquisitionCoordinator::new(data_facade.clone());
         let realtime_channel = nexrad::RealtimeChannel::with_stats(acquisition.download_stats());
-        let backfill_channel = nexrad::BackfillChannel::with_stats(acquisition.download_stats());
 
         // Open the record cache database
         {
@@ -354,8 +373,6 @@ impl WorkbenchApp {
             wasm_bindgen_futures::spawn_local(async move {
                 if let Err(e) = facade.open().await {
                     log::error!("Failed to open record cache: {}", e);
-                } else {
-                    log::info!("Opened record cache database");
                 }
             });
         }
@@ -365,10 +382,7 @@ impl WorkbenchApp {
 
         // Create decode worker (offloads nexrad::load() to a Web Worker)
         let decode_worker = match nexrad::DecodeWorker::new(cc.egui_ctx.clone()) {
-            Ok(w) => {
-                log::info!("Decode worker created successfully");
-                Some(w)
-            }
+            Ok(w) => Some(w),
             Err(e) => {
                 log::warn!("Failed to create decode worker: {}", e);
                 state.worker_init_error =
@@ -383,10 +397,7 @@ impl WorkbenchApp {
             .gl
             .as_ref()
             .and_then(|gl| match nexrad::RadarGpuRenderer::new(gl) {
-                Ok(renderer) => {
-                    log::info!("GPU radar renderer created");
-                    Some(std::sync::Arc::new(std::sync::Mutex::new(renderer)))
-                }
+                Ok(renderer) => Some(std::sync::Arc::new(std::sync::Mutex::new(renderer))),
                 Err(e) => {
                     log::error!("Failed to create GPU radar renderer: {}", e);
                     None
@@ -396,7 +407,6 @@ impl WorkbenchApp {
         // Create globe and geo-line renderers for 3D mode
         let globe_renderer = cc.gl.as_ref().map(|gl| {
             let r = geo::GlobeRenderer::new(gl);
-            log::info!("Globe renderer created");
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
         let geo_line_renderer = cc.gl.as_ref().map(|gl| {
@@ -413,17 +423,14 @@ impl WorkbenchApp {
             .collect();
             let owned: Vec<geo::GeoLayer> = layers_vec.into_iter().cloned().collect();
             r.upload_layers(gl, &owned);
-            log::info!("Geo line renderer created");
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
         let globe_radar_renderer = cc.gl.as_ref().map(|gl| {
             let r = nexrad::GlobeRadarRenderer::new(gl);
-            log::info!("Globe radar renderer created");
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
         let volume_ray_renderer = cc.gl.as_ref().map(|gl| {
             let r = nexrad::VolumeRayRenderer::new(gl);
-            log::info!("Volume ray renderer created");
             std::sync::Arc::new(std::sync::Mutex::new(r))
         });
 
@@ -440,7 +447,7 @@ impl WorkbenchApp {
             },
             render: nexrad::RenderCoordinator::new(decode_worker),
             acquisition,
-            streaming: nexrad::StreamingManager::new(realtime_channel, backfill_channel),
+            streaming: nexrad::StreamingManager::new(realtime_channel),
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             site_modal_state: {
                 let mut sms = ui::SiteModalState::default();
@@ -453,14 +460,13 @@ impl WorkbenchApp {
             network_monitor: nexrad::NetworkMonitor::new(),
             playback_manager: PlaybackManager::new(),
             alerts_manager: alerts::AlertsManager::new(),
+            scrub_cache: ScrubCache::default(),
         };
 
         // Check cross-origin isolation status on startup
         app.state.cross_origin_isolated = nexrad::is_cross_origin_isolated();
-        if app.state.cross_origin_isolated {
-            log::info!("Cross-origin isolated: SharedArrayBuffer available");
-        } else {
-            log::info!("Not cross-origin isolated: SharedArrayBuffer unavailable");
+        if !app.state.cross_origin_isolated {
+            log::warn!("Not cross-origin isolated: SharedArrayBuffer unavailable");
         }
 
         app
@@ -538,7 +544,7 @@ impl WorkbenchApp {
                         self.state.download_progress.clear();
                     }
                     self.state.status_message = "Selection download complete".to_string();
-                    log::info!("Selection download complete");
+                    log::debug!("Selection download complete");
                 }
                 QueueAction::Paused | QueueAction::StillDownloading => {
                     return;
@@ -594,7 +600,7 @@ impl WorkbenchApp {
             None => return,
         };
 
-        log::info!(
+        log::debug!(
             "Building download queue for selection: {} to {} ({} to {})",
             sel_start_i64,
             sel_end_i64,
@@ -636,7 +642,7 @@ impl WorkbenchApp {
                             // The listing may be stale (e.g. archives created
                             // after it was cached), so invalidate and re-fetch
                             // once. Store intent so we resume when it arrives.
-                            log::info!(
+                            log::debug!(
                                 "No scan at {} in cached listing for {}/{}; re-fetching",
                                 sel_start_i64,
                                 site_id,
@@ -670,7 +676,7 @@ impl WorkbenchApp {
                         }
 
                         // Already re-fetched — no scan here, skip.
-                        log::info!(
+                        log::debug!(
                             "No scan at {} in listing for {}/{} after re-fetch; skipping",
                             sel_start_i64,
                             site_id,
@@ -702,7 +708,7 @@ impl WorkbenchApp {
                     .download_channel
                     .is_listing_pending(&site_id, &current_date)
                 {
-                    log::info!("Fetching listing for {}/{}", site_id, current_date);
+                    log::debug!("Fetching listing for {}/{}", site_id, current_date);
                     self.acquisition.download_channel.fetch_listing(
                         ctx.clone(),
                         site_id.clone(),
@@ -728,14 +734,14 @@ impl WorkbenchApp {
 
         if files_to_download.is_empty() {
             self.state.status_message = "No new scans to download in selection".to_string();
-            log::info!("No new scans to download in selection");
+            log::debug!("No new scans to download in selection");
             return;
         }
 
         // Sort by start timestamp
         files_to_download.sort_by_key(|item| item.scan_start);
 
-        log::info!(
+        log::debug!(
             "Queued {} files for download in selection",
             files_to_download.len()
         );
@@ -826,16 +832,6 @@ impl WorkbenchApp {
             .start_live(ctx.clone(), site_id, self.acquisition.facade().clone());
     }
 
-    /// Fetch the latest available data for the current site.
-    fn fetch_latest_scan(&mut self, ctx: &egui::Context) {
-        let site_id = self.state.viz_state.site_id.clone();
-        log::info!("Fetching latest scan via backfill for site: {}", site_id);
-
-        self.state.status_message = "Fetching latest data...".to_string();
-        self.streaming
-            .start_backfill(ctx.clone(), site_id, self.acquisition.facade().clone());
-    }
-
     /// Find the best elevation number for the current elevation selection.
     fn best_elevation_number(&self) -> u8 {
         match &self.state.viz_state.elevation_selection {
@@ -861,11 +857,13 @@ impl WorkbenchApp {
     }
 
     /// Find the best elevation number for a scan given the playback position.
+    /// Returns None when no sweep in the scan matches the user's fixed selection
+    /// (so callers can clear display instead of issuing a doomed render).
     fn best_elevation_at_playback(
         &self,
         scan: &crate::state::radar_data::Scan,
         playback_ts: f64,
-    ) -> u8 {
+    ) -> Option<u8> {
         state::playback_manager::best_elevation_at_playback(
             &self.state.viz_state.elevation_selection,
             scan,
@@ -921,7 +919,47 @@ impl WorkbenchApp {
         {
             elevation_number = self.render.best_available_elevation(elevation_number);
         }
+
         let product = self.state.viz_state.product.to_worker_string().to_string();
+
+        // Preemptive availability gate (archive/scrub path only — live-mode
+        // scans may have more elevations than radar_timeline yet knows about).
+        // If the displayed scan exists in radar_timeline but has no sweep at
+        // this elevation — or has a sweep that doesn't carry the selected
+        // product (e.g. reflectivity-only split cuts when viewing velocity) —
+        // clear the canvas rather than issuing a request the worker will
+        // reject with "No pre-computed sweep".
+        if !self.state.live_mode_state.is_active() {
+            if let Some(displayed_ts) = self.state.viz_state.displayed_scan_timestamp {
+                if let Some(scan) = self
+                    .state
+                    .radar_timeline
+                    .find_scan_at_timestamp(displayed_ts as f64)
+                {
+                    if !scan.sweeps.is_empty() {
+                        let matching = scan
+                            .sweeps
+                            .iter()
+                            .find(|s| s.elevation_number == elevation_number);
+                        let missing = match matching {
+                            None => true,
+                            // Empty available_products means "unknown" (legacy
+                            // index entries predating product tracking) — fall
+                            // through to the worker rather than blanking.
+                            Some(s) => {
+                                !s.available_products.is_empty()
+                                    && !s.available_products.iter().any(|p| p == &product)
+                            }
+                        };
+                        if missing {
+                            self.clear_display_no_sweep();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
         let is_auto = self.state.viz_state.elevation_selection.is_auto();
 
         if self
@@ -948,6 +986,17 @@ impl WorkbenchApp {
         self.state.playback_state.time_model.disable_realtime_lock();
         self.streaming.stop_realtime();
 
+        // Halt playback unless the user is actively scrubbing/jogging — those
+        // paths set the new position themselves. Without this, we leave
+        // playing=true at Realtime speed and position=wall-clock, so the
+        // cursor keeps pace with "now" and mimics still being locked.
+        if !matches!(
+            reason,
+            state::LiveExitReason::UserSeeked | state::LiveExitReason::UserJogged
+        ) {
+            self.state.playback_state.playing = false;
+        }
+
         self.state.status_message = self
             .state
             .live_mode_state
@@ -963,7 +1012,7 @@ impl WorkbenchApp {
 
         match result {
             nexrad::RealtimeResult::Started { site_id } => {
-                log::info!("Realtime streaming started for site: {}", site_id);
+                log::debug!("Realtime streaming started for site: {}", site_id);
                 self.state.live_mode_state.handle_streaming_started(now);
                 self.state.status_message = format!("Live: connected to {}", site_id);
             }
@@ -978,7 +1027,7 @@ impl WorkbenchApp {
                 self.state
                     .session_stats
                     .record_fetch_latency(fetch_latency_ms);
-                log::info!(
+                log::debug!(
                     "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?} proj_end={:?}",
                     chunks_in_volume,
                     is_volume_end,
@@ -1039,7 +1088,7 @@ impl WorkbenchApp {
 
                 if is_start {
                     self.state.status_message = "Live: receiving new volume...".to_string();
-                    log::info!("Realtime: new volume started, forwarding start chunk to worker");
+                    log::debug!("Realtime: new volume started, forwarding start chunk to worker");
                 }
 
                 // Forward chunk to worker for incremental ingest
@@ -1101,57 +1150,6 @@ impl WorkbenchApp {
                         });
                 self.state.acquisition.mark_failed(op_id, msg);
             }
-        }
-    }
-
-    /// Handle a backfill result. Only processes ChunkData (forwarding to
-    /// the worker for ingest). Does not update live_mode_state.
-    fn handle_backfill_result(&mut self, result: nexrad::RealtimeResult, _ctx: &egui::Context) {
-        match result {
-            nexrad::RealtimeResult::ChunkData {
-                data,
-                chunk_index,
-                is_start,
-                is_end,
-                timestamp,
-                skip_overlap_delete,
-            } => {
-                log::info!(
-                    "Backfill chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
-                    chunk_index,
-                    is_start,
-                    is_end,
-                    data.len(),
-                    timestamp,
-                );
-
-                if is_start {
-                    self.state.status_message = "Loading latest data...".to_string();
-                }
-
-                let site_id = self.state.viz_state.site_id.clone();
-                let file_name = format!("backfill_{}_{}.nexrad", site_id, timestamp);
-                if is_start {
-                    self.state.session_stats.pipeline.processing = true;
-                }
-                self.render.ingest_chunk(
-                    data,
-                    site_id,
-                    timestamp,
-                    chunk_index,
-                    is_start,
-                    is_end,
-                    file_name,
-                    skip_overlap_delete,
-                    false, // backfill doesn't have projection data
-                );
-            }
-            nexrad::RealtimeResult::Error(msg) => {
-                log::error!("Backfill error: {}", msg);
-                self.state.status_message = format!("Failed to load latest data: {}", msg);
-            }
-            // Backfill doesn't use Started or ChunkReceived
-            _ => {}
         }
     }
 
@@ -1241,7 +1239,6 @@ impl WorkbenchApp {
             self.state.viz_state.displayed_scan_timestamp = None;
             self.state.viz_state.displayed_sweep_elevation_number = None;
             self.state.shadow_scan_boundaries.clear();
-            self.streaming.cancel_backfill();
         }
     }
 
@@ -1303,7 +1300,7 @@ impl WorkbenchApp {
                         match facade.check_and_evict(quota, target).await {
                             Ok((evicted, count, quota_warning)) => {
                                 if evicted {
-                                    log::info!("Eviction complete: removed {} scans", count);
+                                    log::debug!("Eviction complete: removed {} scans", count);
                                 }
                                 if let Some(warning) = quota_warning {
                                     log::warn!("Quota warning: {}", warning);
@@ -1318,9 +1315,6 @@ impl WorkbenchApp {
                 }
                 state::AppCommand::StartLive => {
                     self.start_live_mode(ctx);
-                }
-                state::AppCommand::FetchLatest => {
-                    self.fetch_latest_scan(ctx);
                 }
                 state::AppCommand::DownloadSelection => {
                     do_download_selection = true;
@@ -1401,8 +1395,12 @@ impl WorkbenchApp {
                 nexrad::WorkerOutcome::VolumeDecoded(volume_data) => {
                     self.handle_volume_decoded_outcome(volume_data);
                 }
-                nexrad::WorkerOutcome::WorkerError { id, message } => {
-                    self.handle_worker_error_outcome(id, message);
+                nexrad::WorkerOutcome::WorkerError {
+                    id,
+                    message,
+                    failed_scan_timestamp_secs,
+                } => {
+                    self.handle_worker_error_outcome(id, message, failed_scan_timestamp_secs);
                 }
             }
         }
@@ -1423,7 +1421,7 @@ impl WorkbenchApp {
                 metadata,
                 total_cache_size,
             } => {
-                log::info!(
+                log::debug!(
                     "Timeline loaded from cache: {} scan(s) for site {}",
                     metadata.len(),
                     site_id
@@ -1461,7 +1459,7 @@ impl WorkbenchApp {
                         }
                     }
 
-                    log::info!("Timeline has {} contiguous range(s)", ranges.len());
+                    log::debug!("Timeline has {} contiguous range(s)", ranges.len());
                 }
             }
             nexrad::CacheLoadResult::Error(msg) => {
@@ -1477,7 +1475,7 @@ impl WorkbenchApp {
         // and a real scan block replaces it (the ghost renderer's
         // overlap check handles the visual transition).
         self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
-        log::info!(
+        log::debug!(
             "Ingest complete: {} ({} records, {} elevations, {} sweeps, {:.0}ms, fetch: {:.0}ms)",
             result.scan_key,
             result.records_stored,
@@ -1529,7 +1527,7 @@ impl WorkbenchApp {
 
     fn handle_chunk_ingested_outcome(&mut self, result: nexrad::ChunkIngestResult) {
         let is_live = self.state.live_mode_state.is_active();
-        let source = if is_live { "Realtime" } else { "Backfill" };
+        let source = "Realtime";
 
         // Build enriched log with projection-derived chunk positioning.
         let chunk_vol_index = result.context.chunk_index + 1; // 1-based for display
@@ -1572,7 +1570,7 @@ impl WorkbenchApp {
             })
             .unwrap_or_else(|| ("?/?".to_string(), "?".to_string()));
 
-        log::info!(
+        log::debug!(
             "{}: chunk ingested scan={} vol_chunk={} sweep_chunk={} remaining_in_sweep={} \
              elevs={:?} azimuths={} az_range={} \
              elevs_completed={:?} sweeps_stored={} is_end={} vcp={:?} {:.1}ms",
@@ -1671,7 +1669,7 @@ impl WorkbenchApp {
                         .iter()
                         .find(|s| s.elevation_number == completed_elev)
                     {
-                        log::info!(
+                        log::debug!(
                             "{}: sweep stored elev={} angle={:.1}° start_az={:.1}° \
                              time={:.1}–{:.1}s dur={:.2}s products={} vol_chunk={}",
                             source,
@@ -1685,7 +1683,7 @@ impl WorkbenchApp {
                             chunk_vol_index,
                         );
                     } else {
-                        log::info!(
+                        log::debug!(
                             "{}: sweep stored elev={} (no SweepMeta) products={} vol_chunk={}",
                             source,
                             completed_elev,
@@ -1727,7 +1725,7 @@ impl WorkbenchApp {
                         "n/a".to_string()
                     };
 
-                    log::info!(
+                    log::debug!(
                         "{}: render_live dispatched elev={} product={} accum_radials={} \
                          accum_chunks={} accum_az={} vol_chunk={}",
                         source,
@@ -1746,7 +1744,7 @@ impl WorkbenchApp {
 
         // Refresh timeline when new elevations are written to cache
         if !result.elevations_completed.is_empty() {
-            log::info!(
+            log::debug!(
                 "{}: {} new elevation(s) cached, refreshing timeline (total available: {:?})",
                 source,
                 result.elevations_completed.len(),
@@ -1783,7 +1781,7 @@ impl WorkbenchApp {
                 self.state.playback_state.center_view_on(now);
             }
 
-            log::info!(
+            log::debug!(
                 "{}: volume complete — {} elevations, triggering render",
                 source,
                 self.render.available_elevations().len()
@@ -1803,7 +1801,7 @@ impl WorkbenchApp {
                 }
             }
         } else if !had_elevations && !self.render.available_elevations().is_empty() {
-            log::info!(
+            log::debug!(
                 "{}: first elevation available, triggering initial render",
                 source
             );
@@ -1822,7 +1820,7 @@ impl WorkbenchApp {
         self.state.session_stats.pipeline.mark_processing_done();
         self.state.session_stats.pipeline.rendering = true;
 
-        log::info!(
+        log::debug!(
             "Decode complete: {}x{} (az x gates), {} radials, product={}, {:.0}ms",
             result.azimuth_count,
             result.gate_count,
@@ -1834,8 +1832,11 @@ impl WorkbenchApp {
         self.state.session_stats.record_render_time(result.total_ms);
 
         // Cache decoded data for stateless sweep animation
-        let result_sweep_id =
-            sweep_cache_key(&result.context.scan_key, result.context.elevation_number);
+        let result_sweep_id = sweep_cache_key(
+            &result.context.scan_key,
+            result.context.elevation_number,
+            &result.product,
+        );
         self.playback_manager.cache_sweep(
             result_sweep_id.clone(),
             CachedSweepData {
@@ -1848,6 +1849,7 @@ impl WorkbenchApp {
                 max_range_km: result.max_range_km,
                 offset: result.offset,
                 scale: result.scale,
+                azimuth_spacing_deg: result.azimuth_spacing_deg,
                 radial_times: result.radial_times.clone(),
                 sweep_start_secs: result.sweep_start_secs,
                 sweep_end_secs: result.sweep_end_secs,
@@ -1899,6 +1901,7 @@ impl WorkbenchApp {
                         result.max_range_km,
                         result.offset,
                         result.scale,
+                        result.azimuth_spacing_deg,
                         &result.radial_times,
                     );
                     r.set_current_sweep_id(Some(result_sweep_id));
@@ -1954,7 +1957,7 @@ impl WorkbenchApp {
     }
 
     fn handle_live_decoded_outcome(&mut self, result: nexrad::DecodeResult) {
-        log::info!(
+        log::debug!(
             "Live decode: {}x{}, {} radials, {}, {:.0}ms",
             result.azimuth_count,
             result.gate_count,
@@ -1962,38 +1965,6 @@ impl WorkbenchApp {
             result.product,
             result.total_ms,
         );
-
-        // Pad partial sweep to a full 360° azimuth grid before GPU upload.
-        // The shader's find_bracket_az estimates the initial search index as
-        // azimuth_deg / (360/az_count). With N radials clustered in a small arc,
-        // the estimated spacing is wrong and the search misses. Padding to 720
-        // evenly-spaced slots makes the estimate correct; empty slots use
-        // sentinel gate values (0 = below threshold = transparent).
-        let gate_count = result.gate_count as usize;
-        let full_az_count: u32 = 720;
-        let step = 360.0f32 / full_az_count as f32;
-
-        let mut padded_az = Vec::with_capacity(full_az_count as usize);
-        let mut padded_gates = vec![0.0f32; full_az_count as usize * gate_count];
-        let mut padded_times = vec![0.0f64; full_az_count as usize];
-
-        for i in 0..full_az_count as usize {
-            padded_az.push(i as f32 * step);
-        }
-
-        for (src_row, &az) in result.azimuths.iter().enumerate() {
-            let dst_row = ((az / step).round() as usize) % full_az_count as usize;
-            padded_az[dst_row] = az;
-            let src_start = src_row * gate_count;
-            let dst_start = dst_row * gate_count;
-            if src_start + gate_count <= result.gate_values.len() {
-                padded_gates[dst_start..dst_start + gate_count]
-                    .copy_from_slice(&result.gate_values[src_start..src_start + gate_count]);
-            }
-            if src_row < result.radial_times.len() {
-                padded_times[dst_row] = result.radial_times[src_row];
-            }
-        }
 
         if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
@@ -2032,16 +2003,17 @@ impl WorkbenchApp {
 
                 r.update_data(
                     gl,
-                    &padded_az,
-                    &padded_gates,
-                    full_az_count,
+                    &result.azimuths,
+                    &result.gate_values,
+                    result.azimuth_count,
                     result.gate_count,
                     result.first_gate_range_km,
                     result.gate_interval_km,
                     result.max_range_km,
                     result.offset,
                     result.scale,
-                    &padded_times,
+                    result.azimuth_spacing_deg,
+                    &result.radial_times,
                 );
                 r.set_current_sweep_id(Some(live_sweep_id));
                 r.update_color_table(gl, &result.product);
@@ -2104,18 +2076,17 @@ impl WorkbenchApp {
                 .sweep_start_azimuth
                 .unwrap_or(0.0);
             log::debug!(
-                "Live azimuth range: chrono_first={:.1} chrono_last={:.1} count={}/{}",
+                "Live azimuth range: chrono_first={:.1} chrono_last={:.1} count={}",
                 first_az,
                 last_az,
                 result.azimuths.len(),
-                full_az_count,
             );
             self.state.live_mode_state.live_data_azimuth_range = Some((first_az, last_az));
         }
     }
 
     fn handle_volume_decoded_outcome(&mut self, volume_data: nexrad::VolumeData) {
-        log::info!(
+        log::debug!(
             "Volume decode complete: {} sweeps, {:.1}KB, product={}, {:.0}ms",
             volume_data.sweeps.len(),
             volume_data.buffer.len() as f64 / 1024.0,
@@ -2145,16 +2116,35 @@ impl WorkbenchApp {
         }
     }
 
-    fn handle_worker_error_outcome(&mut self, id: u64, message: String) {
+    fn handle_worker_error_outcome(
+        &mut self,
+        id: u64,
+        message: String,
+        failed_scan_timestamp_secs: Option<i64>,
+    ) {
         log::warn!("Worker error (request {}): {}", id, message);
         self.state.status_message = format!("Worker error: {}", message);
 
-        // Clean up ghost and progress for the failed scan.
-        if let Some(displayed_ts) = self.state.viz_state.displayed_scan_timestamp {
+        // When the worker reports that the requested (elevation, product) has
+        // no pre-computed sweep, clear the stale canvas so the user sees what
+        // the timeline already knows — nothing matches their current filter.
+        // Narrowed to this specific message so transient errors (worker
+        // disconnect, IDB failure) keep the last-good view instead of blanking.
+        if message.starts_with("No pre-computed sweep") {
+            self.clear_display_no_sweep();
+        }
+
+        // Clean up the "processing" timeline ghost for the failed scan.
+        // Prefer the scan attributed to the failing worker request so the
+        // right ghost is removed even after the user scrolled away and
+        // displayed_scan_timestamp now points elsewhere.
+        let cleanup_ts =
+            failed_scan_timestamp_secs.or(self.state.viz_state.displayed_scan_timestamp);
+        if let Some(ts) = cleanup_ts {
             self.state
                 .download_progress
                 .in_flight_scans
-                .retain(|&(start, _)| start != displayed_ts);
+                .retain(|&(start, _)| start != ts);
         }
         self.state.session_stats.pipeline.processing = false;
         self.state.session_stats.pipeline.rendering = false;
@@ -2304,7 +2294,7 @@ impl WorkbenchApp {
                 date,
                 listing,
             } => {
-                log::info!(
+                log::debug!(
                     "Archive listing received: {} files for {}/{}",
                     listing.files.len(),
                     site_id,
@@ -2368,23 +2358,19 @@ impl WorkbenchApp {
         }
     }
 
-    /// Drain backfill and realtime channels, manage live-mode lifecycle.
+    /// Drain the realtime channel and manage live-mode lifecycle.
     fn handle_streaming_results(&mut self, ctx: &egui::Context) {
         for event in self.streaming.poll() {
             match event {
-                nexrad::StreamingEvent::Backfill(result) => {
-                    self.handle_backfill_result(result, ctx);
-                }
                 nexrad::StreamingEvent::Realtime(result) => {
                     self.handle_realtime_result(result, ctx);
                 }
-                nexrad::StreamingEvent::BackfillComplete => {}
             }
         }
 
         // Stop realtime channel if live mode was stopped by UI
         if !self.state.live_mode_state.is_active() && self.streaming.is_realtime_active() {
-            log::info!("Stopping realtime channel (live mode ended)");
+            log::debug!("Stopping realtime channel (live mode ended)");
             self.streaming.stop_realtime();
         }
 
@@ -2467,109 +2453,139 @@ impl WorkbenchApp {
         {
             let playback_ts = self.state.playback_state.playback_position();
 
-            // Extract scrub decision data from the immutable borrow of radar_timeline
-            let scrub_action = self
-                .state
-                .radar_timeline
-                .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
-                .map(|scan| {
-                    let scan_ts = scan.key_timestamp as i64;
-                    let target_elev_num = match &self.state.viz_state.elevation_selection {
-                        crate::state::ElevationSelection::Fixed { .. } => {
-                            self.best_elevation_at_playback(scan, playback_ts)
+            // Skip the timeline walk when nothing that feeds the scrub
+            // decision has moved since last frame. The O(scans) search
+            // below used to run every frame even while paused; this lets
+            // the idle case cost only a few comparisons.
+            let scan_count = self.state.radar_timeline.scans.len();
+            let elev_sel = &self.state.viz_state.elevation_selection;
+            let displayed_ts = self.state.viz_state.displayed_scan_timestamp;
+            let scrub_cache_hit = self.scrub_cache.last_playback_ts == Some(playback_ts)
+                && self.scrub_cache.last_scan_count == scan_count
+                && self.scrub_cache.last_displayed_scan_ts == displayed_ts
+                && self
+                    .scrub_cache
+                    .last_elevation_selection
+                    .as_ref()
+                    .is_some_and(|cached| cached == elev_sel);
+
+            if !scrub_cache_hit {
+                self.scrub_cache.last_playback_ts = Some(playback_ts);
+                self.scrub_cache.last_scan_count = scan_count;
+                self.scrub_cache.last_displayed_scan_ts = displayed_ts;
+                self.scrub_cache.last_elevation_selection = Some(elev_sel.clone());
+            }
+
+            if !scrub_cache_hit {
+                // Extract scrub decision data from the immutable borrow of radar_timeline
+                let scrub_action = self
+                    .state
+                    .radar_timeline
+                    .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
+                    .map(|scan| {
+                        let scan_ts = scan.key_timestamp as i64;
+                        let target_elev_num: Option<u8> =
+                            match &self.state.viz_state.elevation_selection {
+                                crate::state::ElevationSelection::Fixed { .. } => {
+                                    self.best_elevation_at_playback(scan, playback_ts)
+                                }
+                                crate::state::ElevationSelection::Latest => {
+                                    Some(self.most_recent_sweep_elevation(scan, playback_ts))
+                                }
+                            };
+
+                        let needs_new_scan = match self.state.viz_state.displayed_scan_timestamp {
+                            Some(displayed) => displayed != scan_ts,
+                            None => true,
+                        };
+                        let needs_new_sweep = !needs_new_scan
+                            && self.state.viz_state.displayed_sweep_elevation_number
+                                != target_elev_num;
+
+                        // Capture overlay data from the matching sweep (if any)
+                        let sweep_overlay = target_elev_num.and_then(|num| {
+                            scan.sweeps
+                                .iter()
+                                .find(|s| s.elevation_number == num)
+                                .map(|s| (s.start_time, s.end_time, s.elevation))
+                        });
+
+                        // Extract all elevation numbers for volume rendering
+                        let mut elev_nums: Vec<u8> =
+                            scan.sweeps.iter().map(|s| s.elevation_number).collect();
+                        elev_nums.sort_unstable();
+                        elev_nums.dedup();
+
+                        // Build elevation list for new scans
+                        let new_elev_list = if needs_new_scan {
+                            Some(Self::build_elevation_list(scan))
+                        } else {
+                            None
+                        };
+
+                        (
+                            scan_ts,
+                            target_elev_num,
+                            needs_new_scan,
+                            needs_new_sweep,
+                            sweep_overlay,
+                            elev_nums,
+                            new_elev_list,
+                        )
+                    });
+
+                if let Some((
+                    scan_ts,
+                    target_elev_num,
+                    needs_new_scan,
+                    needs_new_sweep,
+                    sweep_overlay,
+                    elev_nums,
+                    new_elev_list,
+                )) = scrub_action
+                {
+                    if (needs_new_scan || needs_new_sweep) && self.render.has_worker() {
+                        let scan_key =
+                            data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts);
+                        self.render.set_scan_key(scan_key.to_storage_key());
+                        self.state.viz_state.displayed_scan_timestamp = Some(scan_ts);
+                        if !elev_nums.is_empty() {
+                            self.render.set_elevations(elev_nums);
                         }
-                        crate::state::ElevationSelection::Latest => {
-                            self.most_recent_sweep_elevation(scan, playback_ts)
+                        if let Some(entries) = new_elev_list {
+                            self.state.viz_state.cached_vcp_elevations = entries.clone();
+                            self.state
+                                .viz_state
+                                .elevation_selection
+                                .resolve_for_vcp(&entries);
                         }
-                    };
 
-                    let needs_new_scan = match self.state.viz_state.displayed_scan_timestamp {
-                        Some(displayed) => displayed != scan_ts,
-                        None => true,
-                    };
-                    let needs_new_sweep = !needs_new_scan
-                        && self.state.viz_state.displayed_sweep_elevation_number
-                            != Some(target_elev_num);
-
-                    // Capture overlay data from the matching sweep
-                    let sweep_overlay = scan
-                        .sweeps
-                        .iter()
-                        .find(|s| s.elevation_number == target_elev_num)
-                        .map(|s| (s.start_time, s.end_time, s.elevation));
-
-                    // Extract all elevation numbers for volume rendering
-                    let mut elev_nums: Vec<u8> =
-                        scan.sweeps.iter().map(|s| s.elevation_number).collect();
-                    elev_nums.sort_unstable();
-                    elev_nums.dedup();
-
-                    // Build elevation list for new scans
-                    let new_elev_list = if needs_new_scan {
-                        Some(Self::build_elevation_list(scan))
-                    } else {
-                        None
-                    };
-
-                    (
-                        scan_ts,
-                        target_elev_num,
-                        needs_new_scan,
-                        needs_new_sweep,
-                        sweep_overlay,
-                        elev_nums,
-                        new_elev_list,
-                    )
-                });
-
-            if let Some((
-                scan_ts,
-                target_elev_num,
-                needs_new_scan,
-                needs_new_sweep,
-                sweep_overlay,
-                elev_nums,
-                new_elev_list,
-            )) = scrub_action
-            {
-                if (needs_new_scan || needs_new_sweep) && self.render.has_worker() {
-                    if let Some((start, end, elev)) = sweep_overlay {
-                        self.update_overlay_from_sweep(start, end, elev);
+                        match target_elev_num {
+                            Some(num) => {
+                                if let Some((start, end, elev)) = sweep_overlay {
+                                    self.update_overlay_from_sweep(start, end, elev);
+                                }
+                                self.state.viz_state.displayed_sweep_elevation_number = Some(num);
+                                self.render.force_fresh_render();
+                                self.request_worker_render();
+                                if self.state.viz_state.volume_3d_enabled {
+                                    self.request_worker_render_volume();
+                                }
+                            }
+                            None => {
+                                // Scan exists but the selected fixed elevation has no sweep.
+                                // Clear the stale sweep so the canvas matches the timeline.
+                                self.clear_display_no_sweep();
+                            }
+                        }
+                        // The side-effects above change displayed_scan_timestamp,
+                        // so refresh the cache snapshot now to keep it in sync.
+                        self.scrub_cache.last_displayed_scan_ts =
+                            self.state.viz_state.displayed_scan_timestamp;
                     }
-
-                    let scan_key = data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts);
-                    self.render.set_scan_key(scan_key.to_storage_key());
-                    self.state.viz_state.displayed_scan_timestamp = Some(scan_ts);
-                    self.state.viz_state.displayed_sweep_elevation_number = Some(target_elev_num);
-                    if !elev_nums.is_empty() {
-                        self.render.set_elevations(elev_nums);
-                    }
-                    if let Some(entries) = new_elev_list {
-                        self.state.viz_state.cached_vcp_elevations = entries.clone();
-                        self.state
-                            .viz_state
-                            .elevation_selection
-                            .resolve_for_vcp(&entries);
-                    }
-                    self.render.force_fresh_render();
-                    self.request_worker_render();
-                    if self.state.viz_state.volume_3d_enabled {
-                        self.request_worker_render_volume();
-                    }
+                } else if self.state.viz_state.displayed_scan_timestamp.is_some() {
+                    self.clear_display_no_scan();
                 }
-            } else if self.state.viz_state.displayed_scan_timestamp.is_some() {
-                if let Some(ref renderer) = self.gpu.gpu {
-                    if let Ok(mut r) = renderer.lock() {
-                        r.clear_data();
-                    }
-                }
-                self.state.viz_state.displayed_scan_timestamp = None;
-                self.state.viz_state.displayed_sweep_elevation_number = None;
-                self.render.clear_scan_key();
-                self.state.viz_state.data_staleness_secs = None;
-                self.state.viz_state.rendered_sweep_end_secs = None;
-                self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
-                self.state.viz_state.elevation = "-- deg".to_string();
             }
         }
 
@@ -2745,6 +2761,7 @@ impl WorkbenchApp {
                                 cached.max_range_km,
                                 cached.offset,
                                 cached.scale,
+                                cached.azimuth_spacing_deg,
                                 Some(cache_key),
                                 &cached.radial_times,
                             );
@@ -2774,6 +2791,53 @@ impl WorkbenchApp {
                 }
             }
         }
+    }
+
+    /// Clear the on-canvas sweep and the overlay fields when the entire scan
+    /// is gone (e.g. scrubbed off the timeline). Resets the scan key too.
+    fn clear_display_no_scan(&mut self) {
+        if let Some(ref renderer) = self.gpu.gpu {
+            if let Ok(mut r) = renderer.lock() {
+                r.clear_data();
+            }
+        }
+        self.state.viz_state.displayed_scan_timestamp = None;
+        self.state.viz_state.displayed_sweep_elevation_number = None;
+        self.render.clear_scan_key();
+        self.state.viz_state.data_staleness_secs = None;
+        self.state.viz_state.rendered_sweep_end_secs = None;
+        self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
+        self.state.viz_state.elevation = "-- deg".to_string();
+        // clear_data() drops both GPU textures; match the prev-sweep metadata
+        // so the timeline highlight and canvas overlay don't point at state
+        // that no longer has backing pixels.
+        self.state.viz_state.prev_sweep_scan_timestamp = None;
+        self.state.viz_state.prev_sweep_elevation_number = None;
+        self.state.viz_state.prev_sweep_overlay = None;
+        self.scrub_cache.last_displayed_scan_ts = None;
+    }
+
+    /// Clear the on-canvas sweep when the selected (elevation, product) isn't
+    /// available for the current scan, but the scan itself is still valid.
+    /// Leaves the scan key intact so other elevations/products can still render.
+    fn clear_display_no_sweep(&mut self) {
+        if let Some(ref renderer) = self.gpu.gpu {
+            if let Ok(mut r) = renderer.lock() {
+                r.clear_data();
+            }
+        }
+        self.state.viz_state.displayed_sweep_elevation_number = None;
+        self.state.viz_state.data_staleness_secs = None;
+        self.state.viz_state.rendered_sweep_end_secs = None;
+        self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
+        self.state.viz_state.elevation = "-- deg".to_string();
+        // clear_data() drops both GPU textures. sync_prev_sweep_texture
+        // early-returns while displayed_sweep_elevation_number is None, so
+        // clear prev metadata here to prevent a stale timeline/overlay hint.
+        self.state.viz_state.prev_sweep_scan_timestamp = None;
+        self.state.viz_state.prev_sweep_elevation_number = None;
+        self.state.viz_state.prev_sweep_overlay = None;
+        self.render.clear_last_render();
     }
 
     /// Re-render when the user changes elevation, product, or view mode.
@@ -2806,14 +2870,23 @@ impl WorkbenchApp {
         // Drain service worker network metrics into app state
         if let Some(ref monitor) = self.network_monitor {
             self.state.network_aggregate = monitor.aggregate();
-            // Update the recent requests buffer (full snapshot each frame)
-            let mut recent = monitor.drain_recent();
-            if !recent.is_empty() {
-                // Correlate network requests with acquisition operations
-                for req in recent.iter_mut() {
+            let mut pending = monitor.take_pending();
+            if !pending.is_empty() {
+                // Correlate each new request exactly once, then append to
+                // the app-level ring. The previous implementation
+                // re-cloned and re-correlated the entire ring every frame
+                // regardless of whether anything had changed.
+                for req in pending.iter_mut() {
                     req.operation_id = self.state.acquisition.correlate_network_request(&req.url);
                 }
-                self.state.recent_network_requests = recent.into();
+                let ring = &mut self.state.recent_network_requests;
+                ring.reserve(pending.len());
+                for req in pending {
+                    if ring.len() >= MAX_RECENT_NETWORK_REQUESTS {
+                        ring.pop_front();
+                    }
+                    ring.push_back(req);
+                }
             }
         }
     }

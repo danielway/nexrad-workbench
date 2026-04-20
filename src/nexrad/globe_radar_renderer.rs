@@ -78,7 +78,7 @@ void main() {{
 
     if (u_interpolation == 1) {{
         float az_lo, az_hi, az_frac;
-        if (!find_bracket_az_p(azimuth_deg, u_azimuth_count, u_azimuth_tex, az_lo, az_hi, az_frac)) {{
+        if (!find_bracket_az_p(azimuth_deg, u_azimuth_count, u_azimuth_spacing_deg, u_azimuth_tex, az_lo, az_hi, az_frac)) {{
             discard;
         }}
 
@@ -109,7 +109,7 @@ void main() {{
         value = sum / wsum;
     }} else {{
         float dummy_az;
-        float best_idx = find_nearest_az_p(azimuth_deg, u_azimuth_count, u_azimuth_tex, dummy_az);
+        float best_idx = find_nearest_az_p(azimuth_deg, u_azimuth_count, u_azimuth_spacing_deg, u_azimuth_tex, dummy_az);
         if (best_idx < 0.0) {{
             discard;
         }}
@@ -123,7 +123,7 @@ void main() {{
     // Despeckle
     if (u_despeckle_enabled == 1) {{
         float dummy_az2;
-        float center_az = find_nearest_az_p(azimuth_deg, u_azimuth_count, u_azimuth_tex, dummy_az2);
+        float center_az = find_nearest_az_p(azimuth_deg, u_azimuth_count, u_azimuth_spacing_deg, u_azimuth_tex, dummy_az2);
         float center_g = floor(gate_idx);
         if (center_az >= 0.0) {{
             int valid_count = 0;
@@ -174,6 +174,7 @@ pub struct GlobeRadarRenderer {
     u_opacity: glow::UniformLocation,
     u_offset: glow::UniformLocation,
     u_scale: glow::UniformLocation,
+    u_azimuth_spacing_deg: glow::UniformLocation,
 
     /// Radar site location (for rebuilding mesh when site changes).
     site_lat: f64,
@@ -215,6 +216,9 @@ impl GlobeRadarRenderer {
         let u_opacity = gl.get_uniform_location(program, "u_opacity").unwrap();
         let u_offset = gl.get_uniform_location(program, "u_offset").unwrap();
         let u_scale = gl.get_uniform_location(program, "u_scale").unwrap();
+        let u_azimuth_spacing_deg = gl
+            .get_uniform_location(program, "u_azimuth_spacing_deg")
+            .unwrap();
 
         // Bind texture samplers
         gl.use_program(Some(program));
@@ -270,6 +274,7 @@ impl GlobeRadarRenderer {
             u_opacity,
             u_offset,
             u_scale,
+            u_azimuth_spacing_deg,
             site_lat: 0.0,
             site_lon: 0.0,
             mesh_range_km: 0.0,
@@ -399,6 +404,10 @@ impl GlobeRadarRenderer {
             // Raw-to-physical conversion
             gl.uniform_1_f32(Some(&self.u_offset), flat_renderer.data_offset());
             gl.uniform_1_f32(Some(&self.u_scale), flat_renderer.data_scale());
+            gl.uniform_1_f32(
+                Some(&self.u_azimuth_spacing_deg),
+                flat_renderer.azimuth_spacing_deg(),
+            );
 
             gl.draw_elements(glow::TRIANGLES, self.index_count, glow::UNSIGNED_INT, 0);
 

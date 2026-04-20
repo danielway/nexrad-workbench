@@ -1,17 +1,18 @@
 //! Service worker network monitoring.
 //!
 //! Listens for `network-metric` messages from the service worker and
-//! accumulates per-request telemetry into a ring buffer (for the UI request
-//! log) and aggregate session statistics.
+//! accumulates per-request telemetry into a pending queue (for the UI
+//! request log) and aggregate session statistics.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-/// Maximum number of recent requests to keep in the ring buffer.
-const MAX_RECENT_REQUESTS: usize = 100;
+/// Cap on the pending buffer. The main loop drains each frame so this
+/// should never be reached in practice; it only bounds memory if the
+/// UI stalls for long enough that thousands of metrics accumulate.
+const MAX_PENDING_REQUESTS: usize = 500;
 
 /// A single completed network request reported by the service worker.
 #[derive(Clone, Debug)]
@@ -50,7 +51,7 @@ pub struct NetworkAggregate {
 ///
 /// Holds a JS closure that prevents garbage collection of the event listener.
 pub struct NetworkMonitor {
-    recent_requests: Rc<RefCell<VecDeque<NetworkRequest>>>,
+    pending: Rc<RefCell<Vec<NetworkRequest>>>,
     aggregate: Rc<RefCell<NetworkAggregate>>,
     _listener: Closure<dyn FnMut(web_sys::MessageEvent)>,
 }
@@ -63,12 +64,11 @@ impl NetworkMonitor {
         let navigator = window.navigator();
         let sw_container = navigator.service_worker();
 
-        let recent_requests: Rc<RefCell<VecDeque<NetworkRequest>>> =
-            Rc::new(RefCell::new(VecDeque::with_capacity(MAX_RECENT_REQUESTS)));
+        let pending: Rc<RefCell<Vec<NetworkRequest>>> = Rc::new(RefCell::new(Vec::new()));
         let aggregate: Rc<RefCell<NetworkAggregate>> =
             Rc::new(RefCell::new(NetworkAggregate::default()));
 
-        let recent_clone = recent_requests.clone();
+        let pending_clone = pending.clone();
         let agg_clone = aggregate.clone();
 
         let listener = Closure::<dyn FnMut(web_sys::MessageEvent)>::new(
@@ -128,13 +128,13 @@ impl NetworkMonitor {
                     agg.total_bytes += bytes;
                 }
 
-                // Push into ring buffer
+                // Queue for the main loop to drain.
                 {
-                    let mut recent = recent_clone.borrow_mut();
-                    if recent.len() >= MAX_RECENT_REQUESTS {
-                        recent.pop_front();
+                    let mut pending = pending_clone.borrow_mut();
+                    if pending.len() >= MAX_PENDING_REQUESTS {
+                        pending.remove(0);
                     }
-                    recent.push_back(req);
+                    pending.push(req);
                 }
             },
         );
@@ -143,10 +143,10 @@ impl NetworkMonitor {
             .add_event_listener_with_callback("message", listener.as_ref().unchecked_ref())
             .ok()?;
 
-        log::info!("NetworkMonitor: listening for service worker metrics");
+        log::debug!("NetworkMonitor: listening for service worker metrics");
 
         Some(Self {
-            recent_requests,
+            pending,
             aggregate,
             _listener: listener,
         })
@@ -157,11 +157,18 @@ impl NetworkMonitor {
         self.aggregate.borrow().clone()
     }
 
-    /// Drain all recent requests accumulated since the last drain.
-    /// Returns them in chronological order.
-    pub fn drain_recent(&self) -> Vec<NetworkRequest> {
-        let recent = self.recent_requests.borrow();
-        recent.iter().cloned().collect()
+    /// Take all requests accumulated since the last call.
+    ///
+    /// Returns an empty `Vec` (no allocation beyond the swap-in) when no
+    /// new metrics have arrived, so the common idle case pays only a
+    /// borrow-and-check.
+    pub fn take_pending(&self) -> Vec<NetworkRequest> {
+        let mut pending = self.pending.borrow_mut();
+        if pending.is_empty() {
+            Vec::new()
+        } else {
+            std::mem::take(&mut *pending)
+        }
     }
 }
 

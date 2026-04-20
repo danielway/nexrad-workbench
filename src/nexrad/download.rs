@@ -227,7 +227,7 @@ impl DownloadChannel {
 async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult {
     use nexrad::data::aws::archive;
 
-    log::info!("Fetching archive listing for {}/{}", site_id, date);
+    log::debug!("Fetching archive listing for {}/{}", site_id, date);
 
     let files = match with_timeout(
         archive::list_files(site_id, &date),
@@ -260,7 +260,7 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
 
     file_metas.sort_by_key(|f| f.timestamp);
 
-    log::info!(
+    log::debug!(
         "Archive listing for {}/{}: {} files",
         site_id,
         date,
@@ -334,13 +334,13 @@ async fn download_specific_file(
     let scan_key = ScanKey::from_secs(site_id, timestamp);
     if let Ok(Some(entry)) = facade.scan_availability(&scan_key).await {
         if entry.completeness() == ScanCompleteness::Complete {
-            log::info!("Cache hit for {}", scan_key);
+            log::debug!("Cache hit for {}", scan_key);
             let cached = CachedScan::new(site_id, timestamp, file_name.to_string(), vec![]);
             return DownloadResult::CacheHit(cached);
         }
     }
 
-    log::info!("Cache miss, downloading: {}", file_name);
+    log::debug!("Cache miss, downloading: {}", file_name);
 
     // Request 1: List files to find the one we want
     stats.request_started();
@@ -397,7 +397,7 @@ async fn download_specific_file(
 
     let data = file.data().to_vec();
     let bytes_downloaded = data.len() as u64;
-    log::info!("Downloaded {} bytes in {:.0}ms", bytes_downloaded, fetch_ms);
+    log::debug!("Downloaded {} bytes in {:.0}ms", bytes_downloaded, fetch_ms);
 
     let cached = CachedScan::new(site_id, timestamp, file_name.to_string(), data);
 

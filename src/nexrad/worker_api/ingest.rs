@@ -23,7 +23,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let timestamp_secs = p.timestamp_secs as i64;
         let file_name = p.file_name;
 
-        log::info!(
+        log::debug!(
             "ingest: received {} ({:.1}MB)",
             file_name,
             data.len() as f64 / (1024.0 * 1024.0),
@@ -41,7 +41,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             return Err(wasm_bindgen::JsValue::from_str("No records found"));
         }
 
-        log::info!(
+        log::debug!(
             "ingest: split into {} records in {:.1}ms",
             records.len(),
             split_ms,
@@ -62,7 +62,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let has_vcp = decoded.has_vcp;
         let phase1_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
-        let sweeps = crate::nexrad::ingest_phases::build_sweep_meta(&radial_metas);
+        let mut sweeps = crate::nexrad::ingest_phases::build_sweep_meta(&radial_metas);
         let elevation_numbers: Vec<u8> = sweeps.iter().map(|s| s.elevation_number).collect();
         let end_timestamp_secs = sweeps
             .iter()
@@ -70,7 +70,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             .max()
             .unwrap_or(timestamp_secs);
 
-        log::info!(
+        log::debug!(
             "ingest: decompressed {} records, decoded {} radials across {} elevations in {:.1}ms (decompress: {:.1}ms, decode: {:.1}ms)",
             compressed_count,
             all_radials.len(),
@@ -83,11 +83,17 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // --- Phase 2: Extract sweep data for all (elevation, product) pairs ---
         let t_extract = web_time::Instant::now();
         let by_elevation = crate::nexrad::ingest_phases::group_radials_by_elevation(&all_radials);
-        let sweep_blobs = crate::nexrad::ingest_phases::extract_sweep_blobs(
+        let extracted = crate::nexrad::ingest_phases::extract_sweep_blobs(
             &by_elevation,
             &elevation_numbers,
             &scan_key,
         );
+        let sweep_blobs = extracted.blobs;
+        for meta in sweeps.iter_mut() {
+            if let Some(prods) = extracted.products_by_elev.get(&meta.elevation_number) {
+                meta.available_products = prods.clone();
+            }
+        }
         let extract_ms = t_extract.elapsed().as_secs_f64() * 1000.0;
 
         let sweep_count = sweep_blobs.len() as u32;
@@ -96,7 +102,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             .map(|(_, b): &(String, Vec<u8>)| b.len() as u64)
             .sum();
 
-        log::info!(
+        log::debug!(
             "ingest: extracted {} sweeps ({:.1}MB) in {:.1}ms",
             sweep_count,
             total_sweep_bytes as f64 / (1024.0 * 1024.0),
@@ -120,7 +126,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 ))
             })?;
         if deleted > 0 {
-            log::info!("ingest: replaced {} overlapping scan(s)", deleted);
+            log::debug!("ingest: replaced {} overlapping scan(s)", deleted);
         }
 
         // --- Phase 3: Store sweep blobs in IDB ---
@@ -149,7 +155,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        log::info!(
+        log::debug!(
             "ingest: complete {} in {:.0}ms | split {:.1} | decompress {:.1} | decode {:.1} | extract {:.1} | store {:.1} | index {:.1} | {} records, {} radials, {} elevations, {} sweeps, {:.1}MB",
             file_name, total_ms, split_ms, decompress_ms_total, decode_only_ms,
             extract_ms, store_ms, index_ms,
@@ -258,7 +264,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             let mut pre_completed = std::collections::HashSet::new();
 
             if skip_overlap_delete {
-                log::info!(
+                log::debug!(
                     "ingest_chunk: skipping overlap delete (resuming volume with cached data)"
                 );
                 let store = idb_store().await?;
@@ -270,7 +276,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     }
                 }
                 if !pre_completed.is_empty() {
-                    log::info!(
+                    log::debug!(
                         "ingest_chunk: pre-populated {} completed elevations from IDB",
                         pre_completed.len()
                     );
@@ -298,7 +304,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                         ))
                     })?;
                 if deleted > 0 {
-                    log::info!(
+                    log::debug!(
                         "ingest_chunk: replaced {} overlapping scan(s) before real-time ingest",
                         deleted
                     );
@@ -440,7 +446,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             if is_last_in_sweep {
                 if let Some(elev) = accum.current_elevation {
                     if !accum.completed_elevations.contains(&elev) {
-                        log::info!(
+                        log::debug!(
                             "Chunk#{}: last in sweep for elev {} — flushing ({} radials)",
                             chunk_index,
                             elev,
@@ -634,7 +640,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             )
         });
 
-        log::info!(
+        log::debug!(
             "ingest_chunk: chunk={} is_start={} is_end={} radials={} vcp={:?} has_vcp={} completed_elevs={:?} sweeps_stored={} {:.1}ms {}",
             chunk_index, is_start, is_end,
             accum_info.0, accum_info.2, accum_info.1,

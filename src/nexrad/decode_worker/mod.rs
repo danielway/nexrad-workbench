@@ -75,7 +75,7 @@ impl DecodeWorker {
         let wasm_url =
             discover_wasm_url().ok_or_else(|| "Could not find WASM URL in DOM".to_string())?;
 
-        log::info!(
+        log::debug!(
             "Creating decode worker with JS={}, WASM={}",
             js_url,
             wasm_url
@@ -166,7 +166,7 @@ impl DecodeWorker {
     pub fn flush_queue(&mut self) {
         if *self.ready.borrow() && !self.queue.is_empty() {
             let queued: Vec<_> = self.queue.drain(..).collect();
-            log::info!("Flushing {} queued worker requests", queued.len());
+            log::debug!("Flushing {} queued worker requests", queued.len());
             for request in queued {
                 match request {
                     QueuedRequest::Ingest(id, data, site_id, ts, file_name) => {

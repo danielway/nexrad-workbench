@@ -15,5 +15,5 @@ pub use camera::GlobeCamera;
 pub use geo_line_renderer::GeoLineRenderer;
 pub use globe_renderer::GlobeRenderer;
 pub use layer::{GeoFeature, GeoLayer, GeoLayerSet, GeoLayerType};
-pub use projection::MapProjection;
+pub use projection::{MapProjection, ProjectionFingerprint};
 pub use renderer::render_geo_layers;

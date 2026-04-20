@@ -110,6 +110,12 @@ pub(super) struct DecodedResultMsg {
     pub sweep_start_secs: f64,
     #[serde(default)]
     pub sweep_end_secs: f64,
+    #[serde(default = "default_azimuth_spacing_deg")]
+    pub azimuth_spacing_deg: f32,
+}
+
+fn default_azimuth_spacing_deg() -> f32 {
+    1.0
 }
 
 fn default_product() -> String {
@@ -379,6 +385,9 @@ pub struct DecodeResult {
     pub sweep_end_secs: f64,
     /// Per-radial collection timestamps in Unix seconds (parallel to azimuths).
     pub radial_times: Vec<f64>,
+    /// Median angular spacing between adjacent sorted radials, in degrees.
+    /// Used by the shader's search threshold instead of deriving from azimuth_count.
+    pub azimuth_spacing_deg: f32,
 }
 
 /// Per-sweep metadata for the volume ray marcher.
@@ -420,7 +429,15 @@ pub enum WorkerOutcome {
     /// Volume decode completed (all elevations packed for ray marching).
     VolumeDecoded(VolumeData),
     /// Error from any operation.
-    WorkerError { id: u64, message: String },
+    WorkerError {
+        id: u64,
+        message: String,
+        /// Volume start timestamp (Unix seconds) of the scan whose request
+        /// failed, if the id could be correlated with a pending ingest or
+        /// render. Lets callers clean up per-scan UI state (e.g. timeline
+        /// ghosts) without guessing from global state.
+        failed_scan_timestamp_secs: Option<i64>,
+    },
 }
 
 /// Context for a volume render request.

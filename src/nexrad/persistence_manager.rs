@@ -72,6 +72,7 @@ impl PersistenceManager {
             fs: Some(cam.free_speed),
             v3d: Some(state.viz_state.volume_3d_enabled),
             vdc: Some(state.viz_state.volume_density_cutoff),
+            rt: state.live_mode_state.is_active().then_some(true),
         };
         state::url_state::push_to_url(
             &state.viz_state.site_id,

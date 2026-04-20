@@ -240,7 +240,7 @@ impl ArchiveIndex {
             .filter(|(key, _)| key.site_id == site_id)
             .flat_map(|(_, listing)| listing.scan_boundaries())
             .collect();
-        boundaries.sort_by(|a, b| a.start.cmp(&b.start));
+        boundaries.sort_by_key(|a| a.start);
         boundaries.dedup_by(|a, b| a.start == b.start && a.end == b.end);
         boundaries
     }
