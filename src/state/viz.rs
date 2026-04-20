@@ -196,27 +196,21 @@ impl InterpolationMode {
 pub struct RenderProcessing {
     /// Interpolation mode (nearest vs bilinear).
     pub interpolation: InterpolationMode,
-    /// Whether despeckle filtering is enabled.
-    pub despeckle_enabled: bool,
-    /// Minimum valid neighbors to keep a pixel (1..8).
-    pub despeckle_threshold: u32,
     /// Global opacity for radar data (0.0..1.0).
     pub opacity: f32,
     /// Whether sweep animation is enabled (progressive radial reveal during playback).
     pub sweep_animation: bool,
-    /// Whether data age indicator is shown (desaturates oldest data behind sweep line).
-    pub data_age_indicator: bool,
+    /// Whether data age desaturation is shown (desaturates oldest data behind sweep line).
+    pub data_age_desaturation: bool,
 }
 
 impl Default for RenderProcessing {
     fn default() -> Self {
         Self {
             interpolation: InterpolationMode::Nearest,
-            despeckle_enabled: false,
-            despeckle_threshold: 3,
             opacity: 1.0,
             sweep_animation: false,
-            data_age_indicator: true,
+            data_age_desaturation: true,
         }
     }
 }

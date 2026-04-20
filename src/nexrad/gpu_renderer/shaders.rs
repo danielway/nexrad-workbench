@@ -25,8 +25,6 @@ uniform sampler2D u_lut_tex;
 uniform sampler2D u_azimuth_tex;
 
 uniform int u_interpolation;
-uniform int u_despeckle_enabled;
-uniform int u_despeckle_threshold;
 uniform float u_opacity;
 
 uniform float u_offset;
@@ -224,7 +222,7 @@ uniform vec2 u_radar_center;       // radar center in screen pixels
 uniform float u_radar_radius;      // max coverage radius in screen pixels
 {FRAGMENT_PREAMBLE}
 // Processing uniforms
-uniform int u_data_age_indicator; // 0 or 1: desaturate oldest data behind sweep line
+uniform int u_data_age_desaturation; // 0 or 1: desaturate oldest data behind sweep line
 
 // Sweep animation (dual-texture compositing)
 uniform sampler2D u_prev_data_tex;    // previous scan gate values (R32F, texture unit 3)
@@ -274,7 +272,7 @@ void main() {{
     // The fade zone is 90° ahead of the now line in rotation direction —
     // the oldest data from the previous rotation, about to be overwritten.
     float desat_factor = 0.0;
-    if (u_sweep_enabled == 1 && u_data_age_indicator == 1 && u_sweep_chunk_boundary >= 0.0) {{
+    if (u_sweep_enabled == 1 && u_data_age_desaturation == 1 && u_sweep_chunk_boundary >= 0.0) {{
         // Distance behind the now line (opposite rotation direction).
         // 0 = at now line, increases going back through received data.
         float behind_now = mod(u_sweep_chunk_boundary - azimuth_deg + 360.0, 360.0);
@@ -293,7 +291,7 @@ void main() {{
         }}
     }}
     // Fallback when no estimated antenna position is available
-    if (u_sweep_enabled == 1 && u_data_age_indicator == 1 && u_sweep_chunk_boundary < 0.0) {{
+    if (u_sweep_enabled == 1 && u_data_age_desaturation == 1 && u_sweep_chunk_boundary < 0.0) {{
         float age = mod(u_sweep_azimuth - azimuth_deg + 360.0, 360.0) / 360.0;
         desat_factor = clamp((age - 0.75) / 0.25, 0.0, 1.0) * 0.9;
     }}
@@ -398,37 +396,6 @@ void main() {{
     if (!is_valid(value)) {{
         fragColor = vec4(0.0);
         return;
-    }}
-
-    // Despeckle filter
-    if (u_despeckle_enabled == 1) {{
-        float dummy_az2;
-        float center_az;
-        if (use_prev) {{
-            center_az = find_nearest_az_p(azimuth_deg, s_azimuth_count, s_azimuth_spacing, u_prev_azimuth_tex, dummy_az2);
-        }} else {{
-            center_az = find_nearest_az_p(azimuth_deg, s_azimuth_count, s_azimuth_spacing, u_azimuth_tex, dummy_az2);
-        }}
-        float center_g = floor(gate_idx);
-        if (center_az >= 0.0) {{
-            int valid_count = 0;
-            for (int dg = -1; dg <= 1; dg++) {{
-                for (int da = -1; da <= 1; da++) {{
-                    if (dg == 0 && da == 0) continue;
-                    float ng = center_g + float(dg);
-                    float na = mod(center_az + float(da), s_azimuth_count);
-                    if (use_prev) {{
-                        if (is_valid(sample_data_p(u_prev_data_tex, s_gate_count, s_azimuth_count, ng, na))) valid_count++;
-                    }} else {{
-                        if (is_valid(sample_data_p(u_data_tex, s_gate_count, s_azimuth_count, ng, na))) valid_count++;
-                    }}
-                }}
-            }}
-            if (valid_count < u_despeckle_threshold) {{
-                fragColor = vec4(0.0);
-                return;
-            }}
-        }}
     }}
 
 {RAW_TO_PHYSICAL}

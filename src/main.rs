@@ -1196,7 +1196,7 @@ impl WorkbenchApp {
         }
 
         // Ensure continuous repainting for time-dependent UI elements (the "now"
-        // marker on the timeline and the data-age indicators) even when the user
+        // marker on the timeline and the data age desaturation) even when the user
         // is idle and playback is stopped.  Repaint once per second which is
         // sufficient for these indicators while being easy on the CPU.
         ctx.request_repaint_after(std::time::Duration::from_secs(1));

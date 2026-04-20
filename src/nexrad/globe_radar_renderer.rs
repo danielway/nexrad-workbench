@@ -120,29 +120,6 @@ void main() {{
         discard;
     }}
 
-    // Despeckle
-    if (u_despeckle_enabled == 1) {{
-        float dummy_az2;
-        float center_az = find_nearest_az_p(azimuth_deg, u_azimuth_count, u_azimuth_spacing_deg, u_azimuth_tex, dummy_az2);
-        float center_g = floor(gate_idx);
-        if (center_az >= 0.0) {{
-            int valid_count = 0;
-            for (int dg = -1; dg <= 1; dg++) {{
-                for (int da = -1; da <= 1; da++) {{
-                    if (dg == 0 && da == 0) continue;
-                    float ng = center_g + float(dg);
-                    float na = mod(center_az + float(da), u_azimuth_count);
-                    if (is_valid(sample_data_p(u_data_tex, u_gate_count, u_azimuth_count, ng, na))) {{
-                        valid_count++;
-                    }}
-                }}
-            }}
-            if (valid_count < u_despeckle_threshold) {{
-                discard;
-            }}
-        }}
-    }}
-
 {RAW_TO_PHYSICAL}
 {COLOR_LOOKUP}
 {PREMULTIPLIED_ALPHA_OUTPUT}
@@ -169,8 +146,6 @@ pub struct GlobeRadarRenderer {
     u_value_min: glow::UniformLocation,
     u_value_range: glow::UniformLocation,
     u_interpolation: glow::UniformLocation,
-    u_despeckle_enabled: glow::UniformLocation,
-    u_despeckle_threshold: glow::UniformLocation,
     u_opacity: glow::UniformLocation,
     u_offset: glow::UniformLocation,
     u_scale: glow::UniformLocation,
@@ -207,12 +182,6 @@ impl GlobeRadarRenderer {
         let u_value_min = gl.get_uniform_location(program, "u_value_min").unwrap();
         let u_value_range = gl.get_uniform_location(program, "u_value_range").unwrap();
         let u_interpolation = gl.get_uniform_location(program, "u_interpolation").unwrap();
-        let u_despeckle_enabled = gl
-            .get_uniform_location(program, "u_despeckle_enabled")
-            .unwrap();
-        let u_despeckle_threshold = gl
-            .get_uniform_location(program, "u_despeckle_threshold")
-            .unwrap();
         let u_opacity = gl.get_uniform_location(program, "u_opacity").unwrap();
         let u_offset = gl.get_uniform_location(program, "u_offset").unwrap();
         let u_scale = gl.get_uniform_location(program, "u_scale").unwrap();
@@ -269,8 +238,6 @@ impl GlobeRadarRenderer {
             u_value_min,
             u_value_range,
             u_interpolation,
-            u_despeckle_enabled,
-            u_despeckle_threshold,
             u_opacity,
             u_offset,
             u_scale,
@@ -391,14 +358,6 @@ impl GlobeRadarRenderer {
                 crate::state::InterpolationMode::Bilinear => 1,
             };
             gl.uniform_1_i32(Some(&self.u_interpolation), interp_mode);
-            gl.uniform_1_i32(
-                Some(&self.u_despeckle_enabled),
-                processing.despeckle_enabled as i32,
-            );
-            gl.uniform_1_i32(
-                Some(&self.u_despeckle_threshold),
-                processing.despeckle_threshold as i32,
-            );
             gl.uniform_1_f32(Some(&self.u_opacity), processing.opacity);
 
             // Raw-to-physical conversion

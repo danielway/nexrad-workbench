@@ -236,22 +236,6 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.add_space(8.0);
 
-            // Despeckle
-            ui.checkbox(&mut proc.despeckle_enabled, "Despeckle");
-            if proc.despeckle_enabled {
-                ui.indent("despeckle_indent", |ui| {
-                    let mut threshold = proc.despeckle_threshold as i32;
-                    if ui
-                        .add(egui::Slider::new(&mut threshold, 1..=16).text("Threshold"))
-                        .changed()
-                    {
-                        proc.despeckle_threshold = threshold as u32;
-                    }
-                });
-            }
-
-            ui.add_space(4.0);
-
             // Sweep animation (disabled in macro mode — not meaningful when
             // playback jumps between complete frames)
             ui.add_enabled_ui(!in_macro, |ui| {
@@ -263,10 +247,10 @@ fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
                     });
             });
 
-            // Data age indicator (only meaningful when sweep animation is on)
+            // Data age desaturation (only meaningful when sweep animation is on)
             ui.add_enabled_ui(proc.sweep_animation && !in_macro, |ui| {
-                ui.indent("data_age_indent", |ui| {
-                    ui.checkbox(&mut proc.data_age_indicator, "Data Age Indicator")
+                ui.indent("data_age_desaturation_indent", |ui| {
+                    ui.checkbox(&mut proc.data_age_desaturation, "Data Age Desaturation")
                         .on_hover_text(
                             "Desaturate the oldest data behind the sweep line to indicate staleness",
                         );
