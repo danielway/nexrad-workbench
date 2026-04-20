@@ -27,6 +27,8 @@ pub struct UserPreferences {
     #[serde(default = "default_true")]
     pub layer_cities: bool,
     #[serde(default)]
+    pub layer_national_mosaic: bool,
+    #[serde(default)]
     pub layer_alerts: bool,
     #[serde(default)]
     pub use_local_time: bool,
@@ -69,6 +71,7 @@ impl Default for UserPreferences {
             layer_labels: true,
             layer_nexrad_sites: false,
             layer_cities: true,
+            layer_national_mosaic: false,
             layer_alerts: false,
             use_local_time: false,
             preferred_site: None,
@@ -94,6 +97,7 @@ impl UserPreferences {
             layer_labels: state.layer_state.geo.labels,
             layer_nexrad_sites: state.layer_state.geo.nexrad_sites,
             layer_cities: state.layer_state.geo.cities,
+            layer_national_mosaic: state.layer_state.geo.national_mosaic,
             layer_alerts: state.layer_state.geo.alerts,
             use_local_time: state.use_local_time,
             preferred_site: state.preferred_site.clone(),
@@ -121,6 +125,7 @@ impl UserPreferences {
         state.layer_state.geo.labels = self.layer_labels;
         state.layer_state.geo.nexrad_sites = self.layer_nexrad_sites;
         state.layer_state.geo.cities = self.layer_cities;
+        state.layer_state.geo.national_mosaic = self.layer_national_mosaic;
         state.layer_state.geo.alerts = self.layer_alerts;
         state.use_local_time = self.use_local_time;
         state.preferred_site = self.preferred_site.clone();
