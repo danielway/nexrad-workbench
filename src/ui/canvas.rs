@@ -3,8 +3,8 @@
 use super::canvas_inspector::{render_distance_measurement, render_inspector, render_storm_cells};
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
-    draw_color_scale, draw_compass, draw_globe, draw_overlay_info, render_nexrad_sites,
-    render_radar_sweep,
+    draw_color_scale, draw_compass, draw_globe, draw_national_mosaic, draw_overlay_info,
+    render_nexrad_sites, render_radar_sweep,
 };
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
@@ -68,6 +68,15 @@ pub fn render_canvas_with_geo(
                 let mut projection =
                     MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
                 projection.update(state.viz_state.zoom, state.viz_state.pan_offset, rect);
+
+                if state.layer_state.geo.national_mosaic {
+                    draw_national_mosaic(
+                        &painter,
+                        &projection,
+                        &state.national_mosaic,
+                        state.viz_state.zoom,
+                    );
+                }
 
                 if let Some(layers) = geo_layers {
                     crate::geo::render_geo_layers(

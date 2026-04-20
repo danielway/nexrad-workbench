@@ -216,6 +216,10 @@ pub struct AppState {
     /// Persistent worker initialization error message.
     /// When set, a non-dismissable error banner is shown in the top bar.
     pub worker_init_error: Option<String>,
+
+    /// National radar mosaic overlay — fetches the CONUS composite while
+    /// the corresponding layer toggle is enabled.
+    pub national_mosaic: crate::nexrad::NationalMosaic,
 }
 
 /// State for the datetime jump picker popup.

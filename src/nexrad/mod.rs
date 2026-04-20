@@ -19,6 +19,7 @@ pub(crate) mod download_queue;
 pub(crate) mod globe_radar_renderer;
 pub(crate) mod gpu_renderer;
 pub(crate) mod ingest_phases;
+mod national_mosaic;
 pub(crate) mod network_monitor;
 pub(crate) mod persistence_manager;
 mod realtime;
@@ -42,6 +43,7 @@ pub use decode_worker::{
 pub use download::{ListingResult, NetworkStats};
 pub use globe_radar_renderer::GlobeRadarRenderer;
 pub use gpu_renderer::RadarGpuRenderer;
+pub use national_mosaic::NationalMosaic;
 pub use network_monitor::{
     is_cross_origin_isolated, NetworkAggregate, NetworkMonitor, NetworkRequest,
 };

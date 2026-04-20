@@ -27,6 +27,8 @@ pub struct UserPreferences {
     #[serde(default = "default_true")]
     pub layer_cities: bool,
     #[serde(default)]
+    pub layer_national_mosaic: bool,
+    #[serde(default)]
     pub use_local_time: bool,
     /// Preferred NEXRAD site from first-visit selection. When `Some`, the
     /// first-visit modal is skipped and this site is used as the default.
@@ -75,6 +77,7 @@ impl Default for UserPreferences {
             layer_labels: true,
             layer_nexrad_sites: false,
             layer_cities: true,
+            layer_national_mosaic: false,
             use_local_time: false,
             preferred_site: None,
             interpolation: InterpolationMode::default(),
@@ -101,6 +104,7 @@ impl UserPreferences {
             layer_labels: state.layer_state.geo.labels,
             layer_nexrad_sites: state.layer_state.geo.nexrad_sites,
             layer_cities: state.layer_state.geo.cities,
+            layer_national_mosaic: state.layer_state.geo.national_mosaic,
             use_local_time: state.use_local_time,
             preferred_site: state.preferred_site.clone(),
             interpolation: state.render_processing.interpolation,
@@ -129,6 +133,7 @@ impl UserPreferences {
         state.layer_state.geo.labels = self.layer_labels;
         state.layer_state.geo.nexrad_sites = self.layer_nexrad_sites;
         state.layer_state.geo.cities = self.layer_cities;
+        state.layer_state.geo.national_mosaic = self.layer_national_mosaic;
         state.use_local_time = self.use_local_time;
         state.preferred_site = self.preferred_site.clone();
         state.render_processing.interpolation = self.interpolation;
