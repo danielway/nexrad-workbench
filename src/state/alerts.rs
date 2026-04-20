@@ -36,7 +36,7 @@ impl AlertsState {
             .iter()
             .filter(|a| crate::alerts::bbox_intersects(a, bounds))
             .collect();
-        out.sort_by(|a, b| b.severity.rank().cmp(&a.severity.rank()));
+        out.sort_by_key(|a| std::cmp::Reverse(a.severity.rank()));
         out
     }
 
