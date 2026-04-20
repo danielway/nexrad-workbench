@@ -163,6 +163,9 @@ pub struct ElevationListEntry {
     pub waveform: String,
     pub is_sails: bool,
     pub is_mrle: bool,
+    /// Product names (matching `SweepDataKey` / worker strings) available at
+    /// this elevation. Empty means "unknown" — skip product-availability checks.
+    pub available_products: Vec<String>,
 }
 
 /// Interpolation mode for radar rendering.

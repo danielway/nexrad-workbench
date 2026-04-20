@@ -95,6 +95,7 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
             // Elevation list
             let entries = state.viz_state.cached_vcp_elevations.clone();
             let list_enabled = !is_auto;
+            let selected_product = state.viz_state.product.to_worker_string();
 
             ui.add_enabled_ui(list_enabled, |ui| {
                 if entries.is_empty() {
@@ -125,6 +126,13 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                                         if *elevation_number == entry.elevation_number
                                 );
 
+                                // Empty available_products means "unknown" — allow.
+                                let product_available = entry.available_products.is_empty()
+                                    || entry
+                                        .available_products
+                                        .iter()
+                                        .any(|p| p == selected_product);
+
                                 ui.horizontal(|ui| {
                                     // Build the label text
                                     let num_str = format!(
@@ -132,8 +140,18 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                                         entry.elevation_number, entry.angle
                                     );
 
-                                    let resp =
-                                        ui.selectable_label(is_selected, RichText::new(&num_str));
+                                    let resp = ui
+                                        .add_enabled(
+                                            product_available,
+                                            egui::Button::selectable(
+                                                is_selected,
+                                                RichText::new(&num_str),
+                                            ),
+                                        )
+                                        .on_disabled_hover_text(format!(
+                                            "{} not available at this elevation",
+                                            state.viz_state.product.label()
+                                        ));
 
                                     // Waveform badge
                                     if !entry.waveform.is_empty() {

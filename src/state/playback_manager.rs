@@ -330,6 +330,14 @@ pub(crate) fn most_recent_sweep_elevation(scan: &Scan, playback_ts: f64, fallbac
 
 /// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
 pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationListEntry> {
+    let products_for = |elev_num: u8| -> Vec<String> {
+        scan.sweeps
+            .iter()
+            .find(|s| s.elevation_number == elev_num)
+            .map(|s| s.available_products.clone())
+            .unwrap_or_default()
+    };
+
     // 1. Prefer extracted VCP pattern (has waveform, SAILS, MRLE info)
     if let Some(ref pattern) = scan.vcp_pattern {
         if !pattern.elevations.is_empty() {
@@ -337,12 +345,16 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
                 .elevations
                 .iter()
                 .enumerate()
-                .map(|(i, e)| crate::state::ElevationListEntry {
-                    elevation_number: (i + 1) as u8,
-                    angle: e.angle,
-                    waveform: e.waveform.clone(),
-                    is_sails: e.is_sails,
-                    is_mrle: e.is_mrle,
+                .map(|(i, e)| {
+                    let elevation_number = (i + 1) as u8;
+                    crate::state::ElevationListEntry {
+                        elevation_number,
+                        angle: e.angle,
+                        waveform: e.waveform.clone(),
+                        is_sails: e.is_sails,
+                        is_mrle: e.is_mrle,
+                        available_products: products_for(elevation_number),
+                    }
                 })
                 .collect();
         }
@@ -354,12 +366,16 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
             .elevations
             .iter()
             .enumerate()
-            .map(|(i, e)| crate::state::ElevationListEntry {
-                elevation_number: (i + 1) as u8,
-                angle: e.angle,
-                waveform: e.waveform.to_string(),
-                is_sails: false,
-                is_mrle: false,
+            .map(|(i, e)| {
+                let elevation_number = (i + 1) as u8;
+                crate::state::ElevationListEntry {
+                    elevation_number,
+                    angle: e.angle,
+                    waveform: e.waveform.to_string(),
+                    is_sails: false,
+                    is_mrle: false,
+                    available_products: products_for(elevation_number),
+                }
             })
             .collect();
     }
@@ -373,6 +389,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
             waveform: String::new(),
             is_sails: false,
             is_mrle: false,
+            available_products: s.available_products.clone(),
         })
         .collect()
 }
