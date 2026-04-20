@@ -108,8 +108,34 @@ pub(crate) fn handle_canvas_interaction(
         }
     } else if response.clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
-            if let Some((site_id, lat, lon)) = pick_site_at(click_pos, projection, state) {
-                apply_site_selection(state, site_id, lat, lon);
+            // Alert hit-testing first: when the alerts overlay is on, a click
+            // inside an alert polygon opens that alert's detail modal.
+            let mut handled = false;
+            if state.layer_state.geo.alerts {
+                let geo = projection.screen_to_geo(click_pos);
+                let bounds = projection.visible_bounds();
+                let mut best: Option<(u8, String)> = None;
+                for alert in &state.alerts.alerts {
+                    if !crate::alerts::bbox_intersects(alert, bounds) {
+                        continue;
+                    }
+                    if crate::alerts::contains_point(alert, geo.x, geo.y) {
+                        let rank = alert.severity.rank();
+                        if best.as_ref().is_none_or(|(r, _)| rank > *r) {
+                            best = Some((rank, alert.id.clone()));
+                        }
+                    }
+                }
+                if let Some((_, id)) = best {
+                    state.push_command(crate::state::AppCommand::OpenAlert(id));
+                    handled = true;
+                }
+            }
+            // Fall through to site-marker click selection.
+            if !handled {
+                if let Some((site_id, lat, lon)) = pick_site_at(click_pos, projection, state) {
+                    apply_site_selection(state, site_id, lat, lon);
+                }
             }
         }
     }

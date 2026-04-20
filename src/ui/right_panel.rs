@@ -209,6 +209,10 @@ fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
             ui.checkbox(&mut state.layer_state.geo.cities, "Cities");
             ui.checkbox(&mut state.layer_state.geo.labels, "Labels");
+            ui.checkbox(&mut state.layer_state.geo.alerts, "Weather Alerts")
+                .on_hover_text(
+                    "Show active NWS alert polygons on the 2D map (click polygon for details)",
+                );
         });
 }
 
