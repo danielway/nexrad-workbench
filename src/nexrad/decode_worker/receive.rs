@@ -9,6 +9,7 @@ use wasm_bindgen::JsCast;
 use web_sys::MessageEvent;
 
 use super::types::*;
+use crate::data::keys::ScanKey;
 
 // ---------------------------------------------------------------------------
 // onmessage callback setup (called from DecodeWorker::new)
@@ -34,6 +35,11 @@ pub(super) fn setup_onmessage(
     let pending_render_c = pending_render.clone();
     let pending_render_live_c = pending_render_live.clone();
     let pending_volume_c = pending_volume.clone();
+    let pending_ingest_err = pending_ingest.clone();
+    let pending_chunk_ingest_err = pending_chunk_ingest.clone();
+    let pending_render_err = pending_render.clone();
+    let pending_render_live_err = pending_render_live.clone();
+    let pending_volume_err = pending_volume.clone();
     let results_c = results.clone();
     let ctx_c = ctx.clone();
 
@@ -69,7 +75,15 @@ pub(super) fn setup_onmessage(
                 ctx_c.request_repaint();
             }
             Some("error") => {
-                handle_error_message(&data, &results_c);
+                handle_error_message(
+                    &data,
+                    &pending_ingest_err,
+                    &pending_chunk_ingest_err,
+                    &pending_render_err,
+                    &pending_render_live_err,
+                    &pending_volume_err,
+                    &results_c,
+                );
                 ctx_c.request_repaint();
             }
             other => {
@@ -419,7 +433,23 @@ fn handle_volume_decoded_message(
 }
 
 /// Handle an "error" message from the worker.
-fn handle_error_message(data: &JsValue, results: &Rc<RefCell<Vec<WorkerOutcome>>>) {
+///
+/// Looks up the failing request id across all pending maps and removes it —
+/// otherwise a failed ingest would leak its context indefinitely. When the
+/// request can be correlated, the associated scan's start timestamp is
+/// surfaced on the outcome so the main loop can reset per-scan UI state
+/// (e.g. the timeline "processing" ghost) for the correct scan rather than
+/// guessing from `displayed_scan_timestamp`.
+#[allow(clippy::too_many_arguments)]
+fn handle_error_message(
+    data: &JsValue,
+    pending_ingest: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
+    pending_chunk_ingest: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
+    pending_render: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_render_live: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_volume: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
+) {
     let e: ErrorMsg = match serde_wasm_bindgen::from_value(data.clone()) {
         Ok(e) => e,
         Err(err) => {
@@ -430,8 +460,23 @@ fn handle_error_message(data: &JsValue, results: &Rc<RefCell<Vec<WorkerOutcome>>
 
     log::warn!("Worker error (request {}): {}", e.id, e.message);
 
+    let failed_scan_timestamp_secs = if let Some(ctx) = pending_ingest.borrow_mut().remove(&e.id) {
+        Some(ctx.timestamp_secs)
+    } else if let Some(ctx) = pending_chunk_ingest.borrow_mut().remove(&e.id) {
+        Some(ctx.timestamp_secs)
+    } else if let Some(ctx) = pending_render.borrow_mut().remove(&e.id) {
+        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs())
+    } else if let Some(ctx) = pending_render_live.borrow_mut().remove(&e.id) {
+        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs())
+    } else if let Some(ctx) = pending_volume.borrow_mut().remove(&e.id) {
+        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs())
+    } else {
+        None
+    };
+
     results.borrow_mut().push(WorkerOutcome::WorkerError {
         id: e.id,
         message: e.message,
+        failed_scan_timestamp_secs,
     });
 }

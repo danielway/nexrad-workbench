@@ -1366,8 +1366,12 @@ impl WorkbenchApp {
                 nexrad::WorkerOutcome::VolumeDecoded(volume_data) => {
                     self.handle_volume_decoded_outcome(volume_data);
                 }
-                nexrad::WorkerOutcome::WorkerError { id, message } => {
-                    self.handle_worker_error_outcome(id, message);
+                nexrad::WorkerOutcome::WorkerError {
+                    id,
+                    message,
+                    failed_scan_timestamp_secs,
+                } => {
+                    self.handle_worker_error_outcome(id, message, failed_scan_timestamp_secs);
                 }
             }
         }
@@ -2083,7 +2087,12 @@ impl WorkbenchApp {
         }
     }
 
-    fn handle_worker_error_outcome(&mut self, id: u64, message: String) {
+    fn handle_worker_error_outcome(
+        &mut self,
+        id: u64,
+        message: String,
+        failed_scan_timestamp_secs: Option<i64>,
+    ) {
         log::warn!("Worker error (request {}): {}", id, message);
         self.state.status_message = format!("Worker error: {}", message);
 
@@ -2096,12 +2105,17 @@ impl WorkbenchApp {
             self.clear_display_no_sweep();
         }
 
-        // Clean up ghost and progress for the failed scan.
-        if let Some(displayed_ts) = self.state.viz_state.displayed_scan_timestamp {
+        // Clean up the "processing" timeline ghost for the failed scan.
+        // Prefer the scan attributed to the failing worker request so the
+        // right ghost is removed even after the user scrolled away and
+        // displayed_scan_timestamp now points elsewhere.
+        let cleanup_ts =
+            failed_scan_timestamp_secs.or(self.state.viz_state.displayed_scan_timestamp);
+        if let Some(ts) = cleanup_ts {
             self.state
                 .download_progress
                 .in_flight_scans
-                .retain(|&(start, _)| start != displayed_ts);
+                .retain(|&(start, _)| start != ts);
         }
         self.state.session_stats.pipeline.processing = false;
         self.state.session_stats.pipeline.rendering = false;

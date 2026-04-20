@@ -429,7 +429,15 @@ pub enum WorkerOutcome {
     /// Volume decode completed (all elevations packed for ray marching).
     VolumeDecoded(VolumeData),
     /// Error from any operation.
-    WorkerError { id: u64, message: String },
+    WorkerError {
+        id: u64,
+        message: String,
+        /// Volume start timestamp (Unix seconds) of the scan whose request
+        /// failed, if the id could be correlated with a pending ingest or
+        /// render. Lets callers clean up per-scan UI state (e.g. timeline
+        /// ghosts) without guessing from global state.
+        failed_scan_timestamp_secs: Option<i64>,
+    },
 }
 
 /// Context for a volume render request.
