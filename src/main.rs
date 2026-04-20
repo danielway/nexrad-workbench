@@ -915,11 +915,15 @@ impl WorkbenchApp {
             elevation_number = self.render.best_available_elevation(elevation_number);
         }
 
+        let product = self.state.viz_state.product.to_worker_string().to_string();
+
         // Preemptive availability gate (archive/scrub path only — live-mode
         // scans may have more elevations than radar_timeline yet knows about).
         // If the displayed scan exists in radar_timeline but has no sweep at
-        // this elevation, clear the canvas rather than issuing a request the
-        // worker will reject with "No pre-computed sweep".
+        // this elevation — or has a sweep that doesn't carry the selected
+        // product (e.g. reflectivity-only split cuts when viewing velocity) —
+        // clear the canvas rather than issuing a request the worker will
+        // reject with "No pre-computed sweep".
         if !self.state.live_mode_state.is_active() {
             if let Some(displayed_ts) = self.state.viz_state.displayed_scan_timestamp {
                 if let Some(scan) = self
@@ -927,20 +931,30 @@ impl WorkbenchApp {
                     .radar_timeline
                     .find_scan_at_timestamp(displayed_ts as f64)
                 {
-                    if !scan.sweeps.is_empty()
-                        && !scan
+                    if !scan.sweeps.is_empty() {
+                        let matching = scan
                             .sweeps
                             .iter()
-                            .any(|s| s.elevation_number == elevation_number)
-                    {
-                        self.clear_display_no_sweep();
-                        return;
+                            .find(|s| s.elevation_number == elevation_number);
+                        let missing = match matching {
+                            None => true,
+                            // Empty available_products means "unknown" (legacy
+                            // index entries predating product tracking) — fall
+                            // through to the worker rather than blanking.
+                            Some(s) => {
+                                !s.available_products.is_empty()
+                                    && !s.available_products.iter().any(|p| p == &product)
+                            }
+                        };
+                        if missing {
+                            self.clear_display_no_sweep();
+                            return;
+                        }
                     }
                 }
             }
         }
 
-        let product = self.state.viz_state.product.to_worker_string().to_string();
         let is_auto = self.state.viz_state.elevation_selection.is_auto();
 
         if self

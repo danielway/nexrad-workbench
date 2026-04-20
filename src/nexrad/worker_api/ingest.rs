@@ -62,7 +62,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let has_vcp = decoded.has_vcp;
         let phase1_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
-        let sweeps = crate::nexrad::ingest_phases::build_sweep_meta(&radial_metas);
+        let mut sweeps = crate::nexrad::ingest_phases::build_sweep_meta(&radial_metas);
         let elevation_numbers: Vec<u8> = sweeps.iter().map(|s| s.elevation_number).collect();
         let end_timestamp_secs = sweeps
             .iter()
@@ -83,11 +83,17 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // --- Phase 2: Extract sweep data for all (elevation, product) pairs ---
         let t_extract = web_time::Instant::now();
         let by_elevation = crate::nexrad::ingest_phases::group_radials_by_elevation(&all_radials);
-        let sweep_blobs = crate::nexrad::ingest_phases::extract_sweep_blobs(
+        let extracted = crate::nexrad::ingest_phases::extract_sweep_blobs(
             &by_elevation,
             &elevation_numbers,
             &scan_key,
         );
+        let sweep_blobs = extracted.blobs;
+        for meta in sweeps.iter_mut() {
+            if let Some(prods) = extracted.products_by_elev.get(&meta.elevation_number) {
+                meta.available_products = prods.clone();
+            }
+        }
         let extract_ms = t_extract.elapsed().as_secs_f64() * 1000.0;
 
         let sweep_count = sweep_blobs.len() as u32;

@@ -217,25 +217,38 @@ pub(crate) fn group_radials_by_elevation(
     by_elevation
 }
 
+pub(crate) struct ExtractedSweepBlobs {
+    pub blobs: Vec<(String, Vec<u8>)>,
+    pub products_by_elev: HashMap<u8, Vec<String>>,
+}
+
 pub(crate) fn extract_sweep_blobs(
     by_elevation: &HashMap<u8, Vec<&::nexrad::model::data::Radial>>,
     elevation_numbers: &[u8],
     scan_key: &ScanKey,
-) -> Vec<(String, Vec<u8>)> {
+) -> ExtractedSweepBlobs {
     use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
 
-    let mut sweep_blobs: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut products_by_elev: HashMap<u8, Vec<String>> = HashMap::new();
     for &elev_num in elevation_numbers {
         if let Some(sorted_radials) = by_elevation.get(&elev_num) {
             for (product, product_name) in PRODUCTS {
                 if let Some(sweep) = extract_sweep_data_from_sorted(sorted_radials, *product) {
                     let key = SweepDataKey::new(scan_key.clone(), elev_num, *product_name);
-                    sweep_blobs.push((key.to_storage_key(), sweep.to_bytes()));
+                    blobs.push((key.to_storage_key(), sweep.to_bytes()));
+                    products_by_elev
+                        .entry(elev_num)
+                        .or_default()
+                        .push((*product_name).to_string());
                 }
             }
         }
     }
-    sweep_blobs
+    ExtractedSweepBlobs {
+        blobs,
+        products_by_elev,
+    }
 }
 
 pub(crate) struct ChunkDecodeResult {
@@ -445,10 +458,12 @@ pub(crate) fn build_flush_sweep_blobs(
 
     for &elev_num in newly_completed {
         if let Some(sorted_radials) = by_elevation.get(&elev_num) {
+            let mut available_products: Vec<String> = Vec::new();
             for (product, product_name) in PRODUCTS {
                 if let Some(sweep) = extract_sweep_data_from_sorted(sorted_radials, *product) {
                     let key = SweepDataKey::new(scan_key.clone(), elev_num, *product_name);
                     blobs.push((key.to_storage_key(), sweep.to_bytes()));
+                    available_products.push((*product_name).to_string());
                 }
             }
 
@@ -472,6 +487,7 @@ pub(crate) fn build_flush_sweep_blobs(
                     elevation: (angle_sum / count as f64) as f32,
                     elevation_number: elev_num,
                     start_azimuth: first_az,
+                    available_products,
                 });
             }
         }
@@ -518,6 +534,9 @@ pub(crate) fn build_sweep_meta(radial_metas: &[(i64, u8, f32, f32)]) -> Vec<Swee
             elevation: (acc.angle_sum / acc.count as f64) as f32,
             elevation_number: elev_num,
             start_azimuth: acc.first_azimuth,
+            // Populated by the archive ingest caller after `extract_sweep_blobs`
+            // reports which products were successfully extracted per elevation.
+            available_products: Vec::new(),
         })
         .collect()
 }
