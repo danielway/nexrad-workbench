@@ -476,7 +476,7 @@ impl ExtractedVcp {
                     is_clear_air,
                     &e.waveform,
                     e.prf_number,
-                ) as f64
+                )
             })
             .collect();
 

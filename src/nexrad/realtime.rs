@@ -360,7 +360,7 @@ async fn streaming_loop(
                             join_all(to_download.iter().map(|id| download_chunk(&site_id, id)))
                                 .await;
                         let mut out = Vec::with_capacity(results.len());
-                        for (chunk_id, res) in to_download.iter().zip(results.into_iter()) {
+                        for (chunk_id, res) in to_download.iter().zip(results) {
                             match res {
                                 Ok((_id, chunk)) => {
                                     let chunk_data = chunk.data().to_vec();
