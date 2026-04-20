@@ -1,9 +1,10 @@
 //! National radar mosaic overlay.
 //!
-//! Fetches the Iowa Environmental Mesonet CONUS base-reflectivity composite
-//! PNG and makes it available as a GPU texture for painting under per-site
-//! radar data. Polls only while the layer is enabled; dropping the layer
-//! releases the texture and stops polling.
+//! Fetches a CONUS base-reflectivity composite PNG (NOAA NCEP MRMS via
+//! GeoServer WMS) and makes it available as a GPU texture for painting
+//! under per-site radar data. Polls only while the layer is enabled;
+//! dropping the layer releases the texture and stops polling. Failed
+//! fetches back off so a broken endpoint does not retry every frame.
 
 use eframe::egui;
 use futures_channel::oneshot;
@@ -13,29 +14,53 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
-/// Iowa Environmental Mesonet "always-latest" CONUS base-reflectivity PNG.
-/// Served as a plate-carrée / EPSG:4326 raster, refreshed every ~5 min.
-const MOSAIC_URL: &str = "https://mesonet.agron.iastate.edu/GIS/uscomp/n0r_0.png";
+/// NOAA NCEP GeoServer WMS endpoint serving the MRMS quality-controlled
+/// CONUS base reflectivity. Returns a single PNG rendered to whatever bbox
+/// and pixel size we request, with `Access-Control-Allow-Origin: *`.
+/// Updated by the upstream MRMS feed every ~2 min.
+const MOSAIC_URL: &str = concat!(
+    "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows",
+    "?service=WMS&version=1.1.1&request=GetMap",
+    "&layers=conus_bref_qcd",
+    "&bbox=-126,24,-66,50",
+    "&width=1200&height=520",
+    "&srs=EPSG:4326",
+    "&format=image/png&transparent=true&styles=",
+);
 
 /// Bounds of the composite in degrees: (min_lon, min_lat, max_lon, max_lat).
-/// Derived from the companion `.wld` world file for the n0r CONUS composite.
+/// Must match the bbox in [`MOSAIC_URL`] above so the image registers
+/// correctly under the map projection.
 const MOSAIC_BOUNDS: (f64, f64, f64, f64) = (-126.0, 24.0, -66.0, 50.0);
 
 /// How often to refetch while enabled (seconds). Matches source cadence.
 const REFRESH_INTERVAL_SECS: f64 = 120.0;
 
-struct Loaded {
-    image: egui::ColorImage,
-    fetched_at: f64,
+/// Backoff after a failed fetch (seconds). Stops the per-frame retry storm
+/// that would otherwise hammer the endpoint when it returns errors.
+const FAILURE_BACKOFF_SECS: f64 = 300.0;
+
+enum FetchOutcome {
+    Loaded {
+        image: egui::ColorImage,
+        fetched_at: f64,
+    },
+    Failed {
+        attempted_at: f64,
+    },
 }
 
 /// Holds the current mosaic texture and drives background refreshes.
 pub struct NationalMosaic {
     texture: Option<egui::TextureHandle>,
-    last_fetch_ts: Option<f64>,
+    /// Timestamp (seconds) of the last attempt — successful or not. Used to
+    /// gate the next attempt against the success or failure interval.
+    last_attempt_ts: Option<f64>,
+    /// True if the most recent attempt failed; controls which interval applies.
+    last_attempt_failed: bool,
     in_flight: Rc<RefCell<bool>>,
-    sender: Sender<Loaded>,
-    receiver: Receiver<Loaded>,
+    sender: Sender<FetchOutcome>,
+    receiver: Receiver<FetchOutcome>,
 }
 
 impl Default for NationalMosaic {
@@ -43,7 +68,8 @@ impl Default for NationalMosaic {
         let (sender, receiver) = channel();
         Self {
             texture: None,
-            last_fetch_ts: None,
+            last_attempt_ts: None,
+            last_attempt_failed: false,
             in_flight: Rc::new(RefCell::new(false)),
             sender,
             receiver,
@@ -57,22 +83,29 @@ impl NationalMosaic {
     /// so no GPU memory is held while the layer is off.
     pub fn poll_tick(&mut self, ctx: &egui::Context, enabled: bool) {
         if !enabled {
-            if self.texture.is_some() || self.last_fetch_ts.is_some() {
+            if self.texture.is_some() || self.last_attempt_ts.is_some() {
                 self.texture = None;
-                self.last_fetch_ts = None;
+                self.last_attempt_ts = None;
+                self.last_attempt_failed = false;
             }
             while self.receiver.try_recv().is_ok() {}
             return;
         }
 
-        while let Ok(loaded) = self.receiver.try_recv() {
-            let handle = ctx.load_texture(
-                "national_mosaic",
-                loaded.image,
-                egui::TextureOptions::LINEAR,
-            );
-            self.texture = Some(handle);
-            self.last_fetch_ts = Some(loaded.fetched_at);
+        while let Ok(outcome) = self.receiver.try_recv() {
+            match outcome {
+                FetchOutcome::Loaded { image, fetched_at } => {
+                    let handle =
+                        ctx.load_texture("national_mosaic", image, egui::TextureOptions::LINEAR);
+                    self.texture = Some(handle);
+                    self.last_attempt_ts = Some(fetched_at);
+                    self.last_attempt_failed = false;
+                }
+                FetchOutcome::Failed { attempted_at } => {
+                    self.last_attempt_ts = Some(attempted_at);
+                    self.last_attempt_failed = true;
+                }
+            }
         }
 
         if *self.in_flight.borrow() {
@@ -80,9 +113,14 @@ impl NationalMosaic {
         }
 
         let now = js_sys::Date::now() / 1000.0;
-        let due = match self.last_fetch_ts {
+        let interval = if self.last_attempt_failed {
+            FAILURE_BACKOFF_SECS
+        } else {
+            REFRESH_INTERVAL_SECS
+        };
+        let due = match self.last_attempt_ts {
             None => true,
-            Some(ts) => now - ts >= REFRESH_INTERVAL_SECS,
+            Some(ts) => now - ts >= interval,
         };
         if !due {
             return;
@@ -93,16 +131,20 @@ impl NationalMosaic {
         let in_flight = self.in_flight.clone();
         let ctx_clone = ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            match fetch_and_decode(MOSAIC_URL).await {
-                Ok(image) => {
-                    let fetched_at = js_sys::Date::now() / 1000.0;
-                    let _ = sender.send(Loaded { image, fetched_at });
-                    ctx_clone.request_repaint();
-                }
+            let outcome = match fetch_and_decode(MOSAIC_URL).await {
+                Ok(image) => FetchOutcome::Loaded {
+                    image,
+                    fetched_at: js_sys::Date::now() / 1000.0,
+                },
                 Err(e) => {
                     log::warn!("National mosaic fetch failed: {}", e);
+                    FetchOutcome::Failed {
+                        attempted_at: js_sys::Date::now() / 1000.0,
+                    }
                 }
-            }
+            };
+            let _ = sender.send(outcome);
+            ctx_clone.request_repaint();
             *in_flight.borrow_mut() = false;
         });
     }
