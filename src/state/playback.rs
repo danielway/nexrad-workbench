@@ -3,6 +3,10 @@
 //! Implements a dual-time model separating playback position from wall-clock time,
 //! with timeline bounds enforcement and zoom-based feature restrictions.
 
+/// Zoom boundary between macro (scan blocks) and micro (individual sweeps) modes,
+/// in pixels per second.
+pub const MICRO_ZOOM_THRESHOLD: f64 = 1.0;
+
 /// Playback mode derived from timeline zoom level.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PlaybackMode {
@@ -445,7 +449,7 @@ impl PlaybackState {
 
     /// Derive the current playback mode from timeline zoom level.
     pub fn playback_mode(&self) -> PlaybackMode {
-        if self.timeline_zoom < 1.0 {
+        if self.timeline_zoom < MICRO_ZOOM_THRESHOLD {
             PlaybackMode::Macro
         } else {
             PlaybackMode::Micro
