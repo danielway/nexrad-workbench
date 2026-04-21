@@ -198,6 +198,15 @@ pub struct LiveModeState {
     /// the reset in `handle_volume_complete` so the next volume's snapshot
     /// can compute its inter-volume gap.
     pub previous_volume_end_secs: Option<f64>,
+
+    /// Per-chunk arrival diagnostics for the current volume. One entry per
+    /// successful fetch, in arrival order. Reset on `handle_volume_complete`
+    /// (a trimmed copy is attached to `last_volume_forecast` via the modal).
+    pub chunk_arrivals: Vec<crate::state::ChunkArrivalStat>,
+
+    /// Most recent volume's `chunk_arrivals`, preserved for the diagnostics
+    /// modal alongside `last_volume_forecast`.
+    pub last_chunk_arrivals: Vec<crate::state::ChunkArrivalStat>,
 }
 
 impl Default for LiveModeState {
@@ -234,6 +243,8 @@ impl Default for LiveModeState {
             current_volume_forecast: None,
             last_volume_forecast: None,
             previous_volume_end_secs: None,
+            chunk_arrivals: Vec::new(),
+            last_chunk_arrivals: Vec::new(),
         }
     }
 }
@@ -306,6 +317,8 @@ impl LiveModeState {
         self.current_volume_forecast = None;
         self.last_volume_forecast = None;
         self.previous_volume_end_secs = None;
+        self.chunk_arrivals.clear();
+        self.last_chunk_arrivals.clear();
     }
 
     /// Set error state with message.
@@ -459,6 +472,10 @@ impl LiveModeState {
         }
         self.previous_volume_end_secs = Some(now);
 
+        // Preserve the just-completed volume's per-chunk arrival stats for the
+        // diagnostics modal, then reset for the next volume.
+        self.last_chunk_arrivals = std::mem::take(&mut self.chunk_arrivals);
+
         self.phase = LivePhase::Streaming;
         self.phase_started_at = Some(now);
         self.elevations_received.clear();
@@ -549,6 +566,15 @@ impl LiveModeState {
             }
         }
         self.try_capture_forecast();
+    }
+
+    /// Append a chunk arrival diagnostic sample for the current volume.
+    pub fn record_chunk_arrival(&mut self, stat: crate::state::ChunkArrivalStat) {
+        // Bound memory — clamp to 1024 per volume; anything beyond that is
+        // pathological and unhelpful to the diagnostics modal.
+        if self.chunk_arrivals.len() < 1024 {
+            self.chunk_arrivals.push(stat);
+        }
     }
 
     /// Record last radial azimuth and timestamp from a chunk.

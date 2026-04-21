@@ -109,3 +109,55 @@ pub struct VolumeForecastSnapshot {
     /// Reserved for when the forecaster predicts the gap; always `None` today.
     pub predicted_inter_volume_gap_secs: Option<f64>,
 }
+
+/// Per-chunk arrival diagnostic sample. Captured by the real-time streaming
+/// loop on every successful chunk fetch and retained for the current volume.
+///
+/// The purpose is to answer:
+/// * How many empty polls did each chunk take? (wasted S3 requests)
+/// * How accurate was `time_until_next()` compared to actual arrival?
+/// * For chunks with empty polls, when could the fetch have succeeded
+///   earliest? (we know it wasn't there at `last_empty_poll_at` and it was
+///   there at `success_at`, so the earliest usable download time lies
+///   somewhere in between)
+#[derive(Clone, Debug)]
+pub struct ChunkArrivalStat {
+    /// 1-based sequence number within the volume at the time of success.
+    pub sequence: u32,
+    /// "Start" / "Intermediate" / "End".
+    pub chunk_type: &'static str,
+    /// What the iterator's `time_until_next()` said the chunk would be
+    /// available at (Unix seconds). `None` if the iterator had no prediction.
+    pub predicted_available_at: Option<f64>,
+    /// Time the first poll for this chunk was issued (end of the predicted
+    /// sleep), Unix seconds.
+    #[allow(dead_code)] // captured for future analysis; not currently rendered
+    pub scheduled_at: f64,
+    /// Number of empty `Ok(None)` polls before the successful fetch.
+    pub empty_polls: u32,
+    /// Time of the most recent empty poll (Unix seconds). `None` when
+    /// `empty_polls == 0`. Lower bound on when the chunk actually became
+    /// available on S3.
+    pub last_empty_poll_at: Option<f64>,
+    /// Time the successful poll received its response (Unix seconds).
+    pub success_at: f64,
+    /// HTTP round-trip time for the successful fetch, milliseconds.
+    pub fetch_latency_ms: f64,
+}
+
+impl ChunkArrivalStat {
+    /// Positive values mean the forecaster was too optimistic (we polled
+    /// before the chunk was actually available). Negative values mean we
+    /// waited longer than necessary.
+    pub fn prediction_error_secs(&self) -> Option<f64> {
+        self.predicted_available_at.map(|p| self.success_at - p)
+    }
+
+    /// Time between the last empty poll and the successful download.
+    /// Represents wait that could potentially have been avoided if the
+    /// poll schedule were better aligned to S3 publishing time.
+    pub fn wait_after_last_empty_ms(&self) -> Option<f64> {
+        self.last_empty_poll_at
+            .map(|t| (self.success_at - t) * 1000.0)
+    }
+}

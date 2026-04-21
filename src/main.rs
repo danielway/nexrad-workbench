@@ -1037,6 +1037,7 @@ impl WorkbenchApp {
                 fetch_latency_ms,
                 projected_volume_end_secs,
                 chunk_projections,
+                arrival_stat,
             } => {
                 self.state
                     .session_stats
@@ -1057,6 +1058,10 @@ impl WorkbenchApp {
                     projected_volume_end_secs,
                     chunk_projections,
                 );
+
+                if let Some(stat) = arrival_stat {
+                    self.state.live_mode_state.record_chunk_arrival(stat);
+                }
 
                 // Record chunk latency for the acquisition drawer
                 self.state.acquisition.record_chunk_latency(

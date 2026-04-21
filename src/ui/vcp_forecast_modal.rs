@@ -7,7 +7,8 @@
 
 use super::colors::ui as ui_colors;
 use crate::state::{
-    AppState, RateSource, SweepForecast, SweepStatus, SweepTiming, VolumeForecastSnapshot,
+    AppState, ChunkArrivalStat, RateSource, SweepForecast, SweepStatus, SweepTiming,
+    VolumeForecastSnapshot,
 };
 use eframe::egui::{self, RichText, Vec2};
 use std::fmt::Write as _;
@@ -23,12 +24,22 @@ pub fn render_vcp_forecast_modal(ctx: &egui::Context, state: &mut AppState) {
     }
 
     let dark = state.is_dark;
-    let snap_opt = state
-        .live_mode_state
-        .current_volume_forecast
-        .as_ref()
-        .or(state.live_mode_state.last_volume_forecast.as_ref())
-        .cloned();
+    let (snap_opt, arrivals) = {
+        let live = &state.live_mode_state;
+        if live.current_volume_forecast.is_some() {
+            (
+                live.current_volume_forecast.clone(),
+                live.chunk_arrivals.clone(),
+            )
+        } else if live.last_volume_forecast.is_some() {
+            (
+                live.last_volume_forecast.clone(),
+                live.last_chunk_arrivals.clone(),
+            )
+        } else {
+            (None, Vec::new())
+        }
+    };
 
     egui::Window::new("VCP forecast diagnostics")
         .collapsible(false)
@@ -59,7 +70,7 @@ pub fn render_vcp_forecast_modal(ctx: &egui::Context, state: &mut AppState) {
                 }
             }
             Some(snap) => {
-                render_snapshot(ui, ctx, &snap, dark, state);
+                render_snapshot(ui, ctx, &snap, &arrivals, dark, state);
             }
         });
 }
@@ -68,6 +79,7 @@ fn render_snapshot(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
     snap: &VolumeForecastSnapshot,
+    arrivals: &[ChunkArrivalStat],
     dark: bool,
     state: &mut AppState,
 ) {
@@ -288,7 +300,96 @@ fn render_snapshot(
                         value_color,
                     );
                 }
+
+                // Chunk-level aggregates
+                let total_empty = total_empty_polls(arrivals);
+                let any_retry = arrivals.iter().filter(|a| a.empty_polls > 0).count();
+                kv(
+                    ui,
+                    "Empty polls (total)",
+                    &format!(
+                        "{total_empty}  (chunks w/ ≥1 retry: {any_retry}/{})",
+                        arrivals.len()
+                    ),
+                    label_color,
+                    value_color,
+                );
+                let pred_errs: Vec<f64> = arrivals
+                    .iter()
+                    .filter_map(|a| a.prediction_error_secs())
+                    .collect();
+                if let Some((mean, median, max_abs)) = stats_on(&pred_errs) {
+                    kv(
+                        ui,
+                        "Chunk prediction error (success - predicted)",
+                        &format!("mean {mean:+.2}s  median {median:+.2}s  max|{max_abs:.2}s|"),
+                        label_color,
+                        value_color,
+                    );
+                }
+                let wait_after_last_empty: Vec<f64> = arrivals
+                    .iter()
+                    .filter_map(|a| a.wait_after_last_empty_ms())
+                    .collect();
+                if let Some((mean, median, max_abs)) = stats_on(&wait_after_last_empty) {
+                    kv(
+                        ui,
+                        "Wait after last empty (success - last_empty)",
+                        &format!("mean {mean:.0}ms  median {median:.0}ms  max {max_abs:.0}ms"),
+                        label_color,
+                        value_color,
+                    );
+                }
             });
+
+            ui.separator();
+
+            // ── Chunk arrivals ─────────────────────────────────────────
+            ui.label(
+                RichText::new("Chunk arrivals")
+                    .size(12.0)
+                    .strong()
+                    .color(heading_color),
+            );
+            if arrivals.is_empty() {
+                ui.indent("arrivals_empty", |ui| {
+                    ui.label(
+                        RichText::new("— no chunks recorded yet")
+                            .size(11.0)
+                            .color(label_color),
+                    );
+                });
+            } else {
+                egui::Grid::new("vcp_forecast_arrivals_grid")
+                    .striped(true)
+                    .min_col_width(44.0)
+                    .spacing(Vec2::new(10.0, 4.0))
+                    .show(ui, |ui| {
+                        for header in [
+                            "seq",
+                            "type",
+                            "empty",
+                            "predicted_at",
+                            "success_at",
+                            "pred_err",
+                            "last_empty",
+                            "wait_after_empty",
+                            "fetch_ms",
+                        ] {
+                            ui.label(
+                                RichText::new(header)
+                                    .size(10.0)
+                                    .strong()
+                                    .color(heading_color),
+                            );
+                        }
+                        ui.end_row();
+
+                        for a in arrivals {
+                            arrival_row(ui, a, snap.volume_start, label_color, value_color);
+                        }
+                    });
+            }
 
             ui.add_space(6.0);
         });
@@ -296,7 +397,7 @@ fn render_snapshot(
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button("Copy to clipboard").clicked() {
-            let text = serialize_forecast(snap);
+            let text = serialize_forecast(snap, arrivals);
             ctx.copy_text(text);
             state.status_message = "Forecast diagnostics copied to clipboard".to_string();
         }
@@ -306,6 +407,63 @@ fn render_snapshot(
             }
         });
     });
+}
+
+fn arrival_row(
+    ui: &mut egui::Ui,
+    a: &ChunkArrivalStat,
+    vol_start: f64,
+    label_color: egui::Color32,
+    value_color: egui::Color32,
+) {
+    let mono = |ui: &mut egui::Ui, text: String, color: egui::Color32| {
+        ui.label(RichText::new(text).size(10.0).monospace().color(color));
+    };
+    let fmt_off = |t: f64| format!("+{:.2}s", t - vol_start);
+
+    mono(ui, format!("{}", a.sequence), value_color);
+    mono(ui, a.chunk_type.to_string(), label_color);
+    let empty_color = if a.empty_polls > 0 {
+        egui::Color32::from_rgb(220, 140, 60)
+    } else {
+        value_color
+    };
+    mono(ui, format!("{}", a.empty_polls), empty_color);
+    mono(
+        ui,
+        a.predicted_available_at
+            .map(fmt_off)
+            .unwrap_or_else(|| "—".into()),
+        value_color,
+    );
+    mono(ui, fmt_off(a.success_at), value_color);
+    mono(
+        ui,
+        a.prediction_error_secs()
+            .map(|e| format!("{e:+.2}s"))
+            .unwrap_or_else(|| "—".into()),
+        value_color,
+    );
+    mono(
+        ui,
+        a.last_empty_poll_at
+            .map(fmt_off)
+            .unwrap_or_else(|| "—".into()),
+        value_color,
+    );
+    mono(
+        ui,
+        a.wait_after_last_empty_ms()
+            .map(|ms| format!("{ms:.0}ms"))
+            .unwrap_or_else(|| "—".into()),
+        value_color,
+    );
+    mono(ui, format!("{:.0}ms", a.fetch_latency_ms), value_color);
+    ui.end_row();
+}
+
+fn total_empty_polls(arrivals: &[ChunkArrivalStat]) -> u32 {
+    arrivals.iter().map(|a| a.empty_polls).sum()
 }
 
 // ── Grid row ────────────────────────────────────────────────────────────
@@ -503,7 +661,7 @@ fn format_time(secs: f64) -> String {
 
 // ── Plain-text serialization (clipboard payload) ────────────────────────
 
-pub fn serialize_forecast(snap: &VolumeForecastSnapshot) -> String {
+pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArrivalStat]) -> String {
     let mut out = String::new();
 
     let name = snap.vcp_name.unwrap_or("?");
@@ -671,6 +829,81 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot) -> String {
             _ => "—".into(),
         },
     );
+
+    // ── Chunk arrivals ───────────────────────────────────────────────
+    let total_empty = total_empty_polls(arrivals);
+    let any_retry = arrivals.iter().filter(|a| a.empty_polls > 0).count();
+    let _ = writeln!(
+        out,
+        "chunk_arrivals: count={} total_empty_polls={} chunks_with_retries={}/{}",
+        arrivals.len(),
+        total_empty,
+        any_retry,
+        arrivals.len()
+    );
+    let pred_errs: Vec<f64> = arrivals
+        .iter()
+        .filter_map(|a| a.prediction_error_secs())
+        .collect();
+    if let Some((mean, median, max_abs)) = stats_on(&pred_errs) {
+        let _ = writeln!(
+            out,
+            "chunk_pred_err: mean={mean:+.2}s  median={median:+.2}s  max_abs={max_abs:.2}s"
+        );
+    } else {
+        let _ = writeln!(out, "chunk_pred_err: —");
+    }
+    let wait_after_empty_ms: Vec<f64> = arrivals
+        .iter()
+        .filter_map(|a| a.wait_after_last_empty_ms())
+        .collect();
+    if let Some((mean, median, max_abs)) = stats_on(&wait_after_empty_ms) {
+        let _ = writeln!(
+            out,
+            "wait_after_last_empty_ms: mean={mean:.0}  median={median:.0}  max_abs={max_abs:.0}"
+        );
+    } else {
+        let _ = writeln!(out, "wait_after_last_empty_ms: —  (no retries)");
+    }
+    let fetch_ms: Vec<f64> = arrivals.iter().map(|a| a.fetch_latency_ms).collect();
+    if let Some((mean, median, max_abs)) = stats_on(&fetch_ms) {
+        let _ = writeln!(
+            out,
+            "fetch_latency_ms: mean={mean:.0}  median={median:.0}  max_abs={max_abs:.0}"
+        );
+    }
+
+    if !arrivals.is_empty() {
+        out.push('\n');
+        let _ = writeln!(
+            out,
+            "seq  type          empty  predicted_at  success_at  pred_err  last_empty   wait_after_empty  fetch_ms"
+        );
+        for a in arrivals {
+            let fmt_off = |t: f64| format!("+{:.2}s", t - snap.volume_start);
+            let _ = writeln!(
+                out,
+                "{:>3}  {:<12}  {:>5}  {:>12}  {:>10}  {:>8}  {:>10}  {:>15}  {:>8}",
+                a.sequence,
+                a.chunk_type,
+                a.empty_polls,
+                a.predicted_available_at
+                    .map(fmt_off)
+                    .unwrap_or_else(|| "—".into()),
+                fmt_off(a.success_at),
+                a.prediction_error_secs()
+                    .map(|e| format!("{e:+.2}s"))
+                    .unwrap_or_else(|| "—".into()),
+                a.last_empty_poll_at
+                    .map(fmt_off)
+                    .unwrap_or_else(|| "—".into()),
+                a.wait_after_last_empty_ms()
+                    .map(|ms| format!("{ms:.0}ms"))
+                    .unwrap_or_else(|| "—".into()),
+                format!("{:.0}ms", a.fetch_latency_ms),
+            );
+        }
+    }
 
     out
 }

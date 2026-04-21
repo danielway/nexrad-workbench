@@ -49,7 +49,7 @@ pub use stats::{
 // AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
-pub use vcp_forecast::{RateSource, SweepForecast, VolumeForecastSnapshot};
+pub use vcp_forecast::{ChunkArrivalStat, RateSource, SweepForecast, VolumeForecastSnapshot};
 pub use vcp_position::{SweepPosition, SweepStatus, SweepTiming, VcpPositionModel};
 pub use viz::{
     ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct, RenderProcessing,
