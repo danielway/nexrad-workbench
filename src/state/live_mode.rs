@@ -676,9 +676,15 @@ impl LiveModeState {
 
             // Prefer library projection bounds when usable; otherwise use the
             // VCP-weighted cumulative offset (same cascade as VcpPositionModel).
+            // The last chunk publishes at the *start* of its bucket; the sweep
+            // runs for one more bucket after that. Add `sweep_dur / N` to max_t.
             let (predicted_start, predicted_end) = match proj {
-                Some((min_t, max_t, _, rate)) if min_t < f64::MAX => {
-                    let end = if max_t > f64::MIN {
+                Some((min_t, max_t, chunk_count, rate)) if min_t < f64::MAX => {
+                    let end = if max_t > f64::MIN && rate > 0.0 && chunk_count > 0 {
+                        let sweep_dur = (360.0 / rate - 0.67).max(0.0);
+                        let bucket = sweep_dur / chunk_count as f64;
+                        max_t + bucket
+                    } else if max_t > f64::MIN {
                         max_t
                     } else if rate > 0.0 {
                         min_t + (360.0 / rate - 0.67).max(0.0)

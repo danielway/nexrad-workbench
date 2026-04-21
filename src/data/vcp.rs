@@ -250,6 +250,9 @@ pub fn is_clear_air_vcp(vcp: u16) -> bool {
 /// Based on empirical analysis of 851 sweep measurements across VCPs 12, 34, 35, 212.
 /// PRF numbers map to categories: 1-2 = Low, 3 = Med, 4-5 = High.
 pub fn fallback_azimuth_rate(is_clear_air: bool, waveform: &str, prf_number: u8) -> f64 {
+    // Accept both "B" (short code used by `ExtractedVcp.waveform`) and
+    // "Batch" (library Debug format) so we don't silently drop into the
+    // default branch when callers happen to use the short form.
     if is_clear_air {
         match (waveform, prf_number) {
             ("CS", 1) => 5.0,
@@ -257,10 +260,10 @@ pub fn fallback_azimuth_rate(is_clear_air: bool, waveform: &str, prf_number: u8)
             ("CS", _) => 5.0, // Default CS clear-air
             ("CDW", _) => 15.7,
             ("CDWO", _) => 8.5,
-            ("Batch", 3) => 14.6,
-            ("Batch", 4) => 17.8,
-            ("Batch", 5) => 16.9,
-            ("Batch", _) => 18.1,
+            ("B" | "Batch", 3) => 14.6,
+            ("B" | "Batch", 4) => 17.8,
+            ("B" | "Batch", 5) => 16.9,
+            ("B" | "Batch", _) => 18.1,
             _ => 10.0, // Conservative default for unknown clear-air waveforms
         }
     } else {
@@ -270,10 +273,10 @@ pub fn fallback_azimuth_rate(is_clear_air: bool, waveform: &str, prf_number: u8)
             ("CS", _) => 21.1, // Default CS precip
             ("CDW", _) => 18.8,
             ("CDWO", _) => 28.5,
-            ("Batch", 3) => 26.2,
-            ("Batch", 4) => 26.9,
-            ("Batch", 5) => 27.7,
-            ("Batch", _) => 26.8,
+            ("B" | "Batch", 3) => 26.2,
+            ("B" | "Batch", 4) => 26.9,
+            ("B" | "Batch", 5) => 27.7,
+            ("B" | "Batch", _) => 26.8,
             _ => 22.0, // Conservative default for unknown precip waveforms
         }
     }
@@ -364,7 +367,7 @@ mod tests {
     #[test]
     fn fallback_azimuth_rate_all_positive() {
         for is_clear_air in [true, false] {
-            for waveform in ["CS", "CDW", "CDWO", "Batch", "Unknown"] {
+            for waveform in ["CS", "CDW", "CDWO", "B", "Batch", "Unknown"] {
                 for prf in 0..=8 {
                     let rate = fallback_azimuth_rate(is_clear_air, waveform, prf);
                     assert!(
@@ -374,6 +377,22 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn fallback_azimuth_rate_matches_short_and_long_batch_keys() {
+        // Production callers pass "B" (see ExtractedVcp.waveform); make sure
+        // it reaches the Batch arms, not the generic default.
+        for prf in [3u8, 4, 5, 6] {
+            let short = fallback_azimuth_rate(false, "B", prf);
+            let long = fallback_azimuth_rate(false, "Batch", prf);
+            assert_eq!(short, long, "short/long keys disagree at prf={prf}");
+            assert_ne!(short, 22.0, "prf={prf} fell through to default");
+        }
+        assert_eq!(fallback_azimuth_rate(false, "B", 3), 26.2);
+        assert_eq!(fallback_azimuth_rate(false, "B", 4), 26.9);
+        assert_eq!(fallback_azimuth_rate(false, "B", 5), 27.7);
+        assert_eq!(fallback_azimuth_rate(true, "B", 3), 14.6);
     }
 
     #[test]

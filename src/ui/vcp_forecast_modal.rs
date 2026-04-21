@@ -1050,7 +1050,7 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
     if let Some((mean, median, max_abs)) = stats_on(&slop_ms) {
         let _ = writeln!(
             out,
-            "scheduler_slop_ms: mean={mean:+.0}  median={median:+.0}  max_abs={max_abs:.0}  (scheduled - predicted; should be near 0)"
+            "scheduler_slop_ms: mean={mean:+.0}  median={median:+.0}  max_abs={max_abs:.0}  (scheduled - predicted; expected ≈ POLL_DELAY_AFTER_PREDICTED_MS)"
         );
     }
     let fetch_ms: Vec<f64> = arrivals.iter().map(|a| a.fetch_latency_ms).collect();

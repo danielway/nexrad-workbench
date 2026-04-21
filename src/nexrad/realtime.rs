@@ -220,6 +220,11 @@ async fn streaming_loop(
     const CHUNK_POLL_MAX_RETRIES: u32 = 25; // 25 × 500ms = 12.5s
     const CHUNK_POLL_GRACE_MS: u32 = 2500; // 2.5s final grace → 15s total
 
+    // Pad added to the first poll wait per chunk; collapses the "fire a hair
+    // early → empty poll → sleep 500ms → fire" path on chunks whose
+    // predictions are tight. Retry waits are unaffected.
+    const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 300;
+
     let hint = get_cached_volume(&site_id);
     let init_future = acquire_streaming_state(&site_id, hint);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
@@ -517,14 +522,23 @@ async fn streaming_loop(
         // first iteration for a given chunk — subsequent retry iterations
         // re-enter here with a near-zero wait, which would overwrite the
         // original estimate.
+        let is_first_iter_for_chunk = cur_predicted_at.is_none();
         let time_until_next_opt = iter.time_until_next().and_then(|d| d.to_std().ok());
-        if cur_predicted_at.is_none() {
+        if is_first_iter_for_chunk {
             if let Some(d) = time_until_next_opt {
                 cur_predicted_at = Some(current_timestamp_f64() + d.as_secs_f64());
             }
         }
         if let Some(wait_duration) = time_until_next_opt {
-            let wait_ms = wait_duration.as_millis() as u32;
+            let mut wait_ms = wait_duration.as_millis() as u32;
+            // Pad the first (prediction-driven) wait per chunk so we fire
+            // slightly after `predicted_available_at`. Retry waits after an
+            // empty poll come through `sleep_ms(CHUNK_POLL_INTERVAL_MS)` in
+            // the `Ok(None)` arm, not here, so the pad applies exactly once
+            // per chunk.
+            if is_first_iter_for_chunk && wait_ms > 0 {
+                wait_ms = wait_ms.saturating_add(POLL_DELAY_AFTER_PREDICTED_MS);
+            }
             if wait_ms > 0 && !interruptible_sleep(&state, &ctx, wait_ms).await {
                 log::debug!("Realtime streaming stopped");
                 break;
