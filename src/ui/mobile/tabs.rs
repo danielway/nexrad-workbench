@@ -14,10 +14,15 @@ const ACTION_BAR_HEIGHT: f32 = 56.0;
 const SCRUBBER_AREA_HEIGHT: f32 = super::scrubber::SCRUBBER_HEIGHT + 4.0;
 
 pub(crate) fn render_mobile_chrome(ctx: &egui::Context, state: &mut AppState) {
+    // iOS safe area: when installed as a home-screen PWA, the canvas extends
+    // under the home indicator reservation. Pad the action bar below the
+    // icons so they don't sit flush with the bottom edge of the screen.
+    let (_t, _r, inset_bottom, _l) = super::safe_area_insets();
+
     // Bottommost — the icon action bar.
     egui::TopBottomPanel::bottom("mobile_action_bar")
         .resizable(false)
-        .exact_height(ACTION_BAR_HEIGHT)
+        .exact_height(ACTION_BAR_HEIGHT + inset_bottom)
         .show(ctx, |ui| {
             render_action_bar(ui, state);
         });
@@ -34,11 +39,15 @@ pub(crate) fn render_mobile_chrome(ctx: &egui::Context, state: &mut AppState) {
 
 /// Four equal-width icon buttons. Each reserves a full-width slot so the
 /// touch target is ~25% of the viewport width regardless of icon size.
+///
+/// The slot height stays fixed at `ACTION_BAR_HEIGHT` even when the hosting
+/// panel is taller (iOS safe-area bottom inset); the extra space falls
+/// below the icons as blank panel padding clearing the home indicator.
 fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState) {
     let total_w = ui.available_width();
-    let total_h = ui.available_height();
+    let slot_h = ACTION_BAR_HEIGHT;
     let slot_w = total_w / 4.0;
-    let icon_size = ((total_h - 10.0) * 0.55).clamp(18.0, 24.0);
+    let icon_size = ((slot_h - 10.0) * 0.55).clamp(18.0, 24.0);
 
     let is_live = state.live_mode_state.is_active();
     let live_color = if is_live {
@@ -48,7 +57,7 @@ fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState) {
     };
     let settings_open = state.mobile_settings_open;
 
-    ui.horizontal(|ui| {
+    ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         ui.spacing_mut().item_spacing.y = 0.0;
 
@@ -56,7 +65,7 @@ fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState) {
         if icon_slot(
             ui,
             slot_w,
-            total_h,
+            slot_h,
             egui_phosphor::regular::CELL_TOWER,
             icon_size,
             ui.visuals().strong_text_color(),
@@ -76,7 +85,7 @@ fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState) {
         if icon_slot(
             ui,
             slot_w,
-            total_h,
+            slot_h,
             egui_phosphor::regular::CROSSHAIR,
             icon_size,
             ui.visuals().strong_text_color(),
@@ -92,7 +101,7 @@ fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState) {
         if icon_slot(
             ui,
             slot_w,
-            total_h,
+            slot_h,
             egui_phosphor::regular::BROADCAST,
             icon_size,
             live_color,
@@ -114,7 +123,7 @@ fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState) {
         if icon_slot(
             ui,
             slot_w,
-            total_h,
+            slot_h,
             egui_phosphor::regular::DOTS_THREE,
             icon_size,
             ui.visuals().strong_text_color(),

@@ -62,6 +62,30 @@
     </script>
 
     <script>
+        // Safe-area inset reader. The WASM app calls this each frame on mobile
+        // to learn how much to pad the top and bottom chrome. Reading
+        // getComputedStyle on every frame is cheap (no layout thrash — the
+        // custom properties never change after initial layout unless the
+        // device rotates) and avoids having to enable the CssStyleDeclaration
+        // feature in web-sys.
+        (function () {
+            function parsePx(v) {
+                var n = parseFloat(v);
+                return isFinite(n) ? n : 0;
+            }
+            window.__nexradSafeAreaInsets = function () {
+                var cs = getComputedStyle(document.documentElement);
+                return {
+                    top: parsePx(cs.getPropertyValue('--sa-inset-top')),
+                    right: parsePx(cs.getPropertyValue('--sa-inset-right')),
+                    bottom: parsePx(cs.getPropertyValue('--sa-inset-bottom')),
+                    left: parsePx(cs.getPropertyValue('--sa-inset-left')),
+                };
+            };
+        })();
+    </script>
+
+    <script>
         // Live favicon recoloring. The WASM app calls window.setFaviconColor(hex)
         // on every AppMode transition (Idle/Archive/Live) to retint the SVG.
         // The static assets/favicon.svg (orange phosphor) is the fallback for
@@ -127,6 +151,18 @@
             height: 100%;
             overflow: hidden;
             background-color: #1a1a2e;
+        }
+
+        /* iOS safe-area insets exposed as CSS custom properties so the WASM
+           app can read them via getComputedStyle. Needed because the canvas
+           extends under the status bar / home indicator when installed as a
+           PWA (viewport-fit=cover + apple-mobile-web-app-status-bar-style
+           black-translucent), and egui has to compensate in its own layout. */
+        :root {
+            --sa-inset-top: env(safe-area-inset-top, 0px);
+            --sa-inset-right: env(safe-area-inset-right, 0px);
+            --sa-inset-bottom: env(safe-area-inset-bottom, 0px);
+            --sa-inset-left: env(safe-area-inset-left, 0px);
         }
 
         #app_canvas {

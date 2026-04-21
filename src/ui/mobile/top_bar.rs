@@ -8,7 +8,14 @@
 use crate::state::{AppMode, AppState};
 use eframe::egui::{self, Align, Color32, Frame, Layout, RichText};
 
+const TOP_BAR_CONTENT_HEIGHT: f32 = 44.0;
+
 pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
+    // iOS safe area: when installed as a home-screen PWA, the canvas extends
+    // under the translucent status bar. Pad the top so OS icons don't
+    // overlap our content.
+    let (inset_top, _inset_right, _inset_bottom, _inset_left) = super::safe_area_insets();
+
     // Same mode accent bar as desktop — the colored stripe doubles as the
     // app icon / status indicator.
     egui::TopBottomPanel::top("mobile_mode_accent")
@@ -20,8 +27,12 @@ pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
         });
 
     egui::TopBottomPanel::top("mobile_top_bar")
-        .exact_height(44.0)
+        .exact_height(TOP_BAR_CONTENT_HEIGHT + inset_top)
         .show(ctx, |ui| {
+            // Push the top-bar content below the iOS status bar reservation.
+            if inset_top > 0.0 {
+                ui.add_space(inset_top);
+            }
             ui.horizontal_centered(|ui| {
                 // Site chip — primary control, tapping opens the site modal.
                 let site_label = format!(
