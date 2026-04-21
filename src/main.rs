@@ -2955,15 +2955,29 @@ impl eframe::App for WorkbenchApp {
         // consumers see consistent state from the same `now` timestamp.
         self.state.refresh_live_model();
 
+        // Resolve mobile/desktop layout for this frame before panels render.
+        self.state.refresh_mobile_mode(ctx);
+
         // Recolor the favicon if the AppMode changed this frame.
         self.sync_favicon_to_mode();
 
-        // Render UI panels in the correct order for egui layout
-        // Side and top/bottom panels must be rendered before CentralPanel
-        ui::render_top_bar(ctx, &mut self.state);
-        ui::render_bottom_panel(ctx, &mut self.state);
-        ui::render_left_panel(ctx, &mut self.state);
-        ui::render_right_panel(ctx, &mut self.state);
+        // Render UI panels in the correct order for egui layout.
+        // Side and top/bottom panels must be rendered before CentralPanel.
+        // On mobile, the tabbed chrome replaces both the desktop top bar and
+        // bottom panel; the left/right side panels early-return internally.
+        if self.state.is_mobile {
+            ui::render_mobile_top_bar(ctx, &mut self.state);
+            ui::render_mobile_chrome(ctx, &mut self.state);
+            // The desktop bottom_panel is still called so its per-frame
+            // side effects (pulse animation update) run. It early-returns
+            // before rendering when `is_mobile` is true.
+            ui::render_bottom_panel(ctx, &mut self.state);
+        } else {
+            ui::render_top_bar(ctx, &mut self.state);
+            ui::render_bottom_panel(ctx, &mut self.state);
+            ui::render_left_panel(ctx, &mut self.state);
+            ui::render_right_panel(ctx, &mut self.state);
+        }
 
         // Render canvas with GPU-based radar rendering
         ui::render_canvas_with_geo(ctx, &mut self.state, Some(&self.geo_layers), &self.gpu);

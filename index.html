@@ -120,6 +120,10 @@
         #app_canvas {
             width: 100%;
             height: 100%;
+            /* Prevent the browser from claiming touch gestures (pinch-to-zoom,
+               double-tap-to-zoom, swipe-to-scroll) so they reach egui as
+               multi-touch events. */
+            touch-action: none;
         }
 
         #loading_text {

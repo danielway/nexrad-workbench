@@ -8,7 +8,7 @@ use crate::state::{
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Render the datetime picker popup for jumping to a specific time.
-fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
     if !state.datetime_picker.open {
         return;
     }

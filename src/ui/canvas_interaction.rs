@@ -21,6 +21,46 @@ pub(crate) fn handle_globe_interaction(
 ) {
     use crate::geo::camera::CameraMode;
 
+    // Multi-touch: two-finger pinch zooms, two-finger drag pans the pivot
+    // (orbit modes). When a pinch is active we skip the single-finger drag
+    // and scroll-wheel branches below to avoid double-applying motion.
+    if let Some(t) = super::mobile::gestures::consume(&response.ctx) {
+        if (t.zoom - 1.0).abs() > f32::EPSILON {
+            // Camera's zoom() takes a scroll-like delta; convert the
+            // proportional zoom_delta into a comparable magnitude.
+            let scroll_equivalent = (t.zoom - 1.0) * 120.0;
+            state.viz_state.camera.zoom(scroll_equivalent);
+        }
+        if t.pan != Vec2::ZERO {
+            let viewport_h = response.rect.height();
+            match state.viz_state.camera.mode {
+                CameraMode::PlanetOrbit | CameraMode::SiteOrbit => {
+                    state
+                        .viz_state
+                        .camera
+                        .pan_pivot(t.pan.x, t.pan.y, viewport_h);
+                }
+                CameraMode::FreeLook => {
+                    state
+                        .viz_state
+                        .camera
+                        .free_translate(t.pan.x, t.pan.y, viewport_h);
+                }
+            }
+        }
+        // Double-click still falls through below.
+        if response.double_clicked() {
+            if let Some(click_pos) = response.interact_pointer_pos() {
+                if let Some((lat, lon)) = state.viz_state.camera.screen_to_geo(click_pos, *rect) {
+                    state.viz_state.camera.move_pivot_to(lat, lon);
+                } else {
+                    state.viz_state.camera.recenter();
+                }
+            }
+        }
+        return;
+    }
+
     if response.dragged() {
         let delta = response.drag_delta();
         let viewport_h = response.rect.height();
@@ -140,25 +180,44 @@ pub(crate) fn handle_canvas_interaction(
         }
     }
 
-    if response.dragged() {
-        state.viz_state.pan_offset += response.drag_delta();
-    }
+    // Multi-touch takes priority over single-finger drag + scroll so a
+    // two-finger pinch doesn't double-apply motion through both paths.
+    let touch = super::mobile::gestures::consume(&response.ctx);
 
-    if response.hovered() {
-        let scroll_delta = response.ctx.input(|i| i.raw_scroll_delta);
-        if scroll_delta.y != 0.0 {
-            let zoom_factor = 1.0 + scroll_delta.y * 0.001;
+    if let Some(t) = touch {
+        // Pinch-zoom anchored on the gesture focus.
+        if (t.zoom - 1.0).abs() > f32::EPSILON {
             let old_zoom = state.viz_state.zoom;
-            let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 25.0);
-
-            if let Some(cursor_pos) = response.hover_pos() {
-                let cursor_rel = cursor_pos - rect.center();
-                let ratio = new_zoom / old_zoom;
-                state.viz_state.pan_offset =
-                    cursor_rel * (1.0 - ratio) + state.viz_state.pan_offset * ratio;
-            }
-
+            let new_zoom = (old_zoom * t.zoom).clamp(0.1, 25.0);
+            let focus_rel = t.focus - rect.center();
+            let ratio = new_zoom / old_zoom;
+            state.viz_state.pan_offset =
+                focus_rel * (1.0 - ratio) + state.viz_state.pan_offset * ratio;
             state.viz_state.zoom = new_zoom;
+        }
+        // Two-finger drag = pan.
+        state.viz_state.pan_offset += t.pan;
+    } else {
+        if response.dragged() {
+            state.viz_state.pan_offset += response.drag_delta();
+        }
+
+        if response.hovered() {
+            let scroll_delta = response.ctx.input(|i| i.raw_scroll_delta);
+            if scroll_delta.y != 0.0 {
+                let zoom_factor = 1.0 + scroll_delta.y * 0.001;
+                let old_zoom = state.viz_state.zoom;
+                let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 25.0);
+
+                if let Some(cursor_pos) = response.hover_pos() {
+                    let cursor_rel = cursor_pos - rect.center();
+                    let ratio = new_zoom / old_zoom;
+                    state.viz_state.pan_offset =
+                        cursor_rel * (1.0 - ratio) + state.viz_state.pan_offset * ratio;
+                }
+
+                state.viz_state.zoom = new_zoom;
+            }
         }
     }
 

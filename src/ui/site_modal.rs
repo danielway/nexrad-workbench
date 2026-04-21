@@ -66,6 +66,14 @@ impl Default for SiteModalState {
     }
 }
 
+/// Pick a modal window width that fits the current viewport. Narrow devices
+/// (phones) shrink the modal to leave a small gutter; wider viewports clamp
+/// to `desktop` so the modal isn't absurdly wide on a big monitor.
+fn responsive_width(ctx: &egui::Context, desktop: f32) -> f32 {
+    let viewport_w = ctx.input(|i| i.viewport_rect()).width();
+    (viewport_w - 16.0).min(desktop).max(240.0)
+}
+
 /// Apply a site selection to app state: update viz, center camera, refresh timeline.
 pub(super) fn apply_site_selection(state: &mut AppState, site_id: &str, lat: f64, lon: f64) {
     state.viz_state.site_id = site_id.to_string();
@@ -328,11 +336,14 @@ fn render_welcome_screen(
         "Change Radar Site"
     };
 
+    let window_w = responsive_width(ctx, 380.0);
+    let btn_w = (window_w - 36.0).max(200.0);
+
     egui::Window::new(title)
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(380.0, 0.0))
+        .fixed_size(Vec2::new(window_w, 0.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             ui.add_space(4.0);
@@ -358,7 +369,7 @@ fn render_welcome_screen(
                     ))
                     .size(15.0),
                 )
-                .min_size(Vec2::new(320.0, 36.0));
+                .min_size(Vec2::new(btn_w, 44.0));
 
                 if ui.add(btn).clicked() {
                     modal_state.error_message = None;
@@ -378,7 +389,7 @@ fn render_welcome_screen(
                     ))
                     .size(15.0),
                 )
-                .min_size(Vec2::new(320.0, 36.0));
+                .min_size(Vec2::new(btn_w, 44.0));
 
                 if ui.add(btn).clicked() {
                     modal_state.error_message = None;
@@ -397,7 +408,7 @@ fn render_welcome_screen(
                     ))
                     .size(15.0),
                 )
-                .min_size(Vec2::new(320.0, 36.0));
+                .min_size(Vec2::new(btn_w, 44.0));
 
                 if ui.add(btn).clicked() {
                     modal_state.error_message = None;
@@ -436,11 +447,16 @@ fn render_site_list(
 
     let title = "Select Radar Site";
 
+    let window_w = responsive_width(ctx, 420.0);
+    let viewport_h = ctx.input(|i| i.viewport_rect()).height();
+    let window_h = (viewport_h - 80.0).clamp(320.0, 500.0);
+    let search_w = (window_w - 80.0).max(120.0);
+
     egui::Window::new(title)
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(420.0, 500.0))
+        .fixed_size(Vec2::new(window_w, window_h))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             ui.add_space(4.0);
@@ -465,7 +481,7 @@ fn render_site_list(
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut modal_state.filter)
                         .hint_text("Site ID, name, or state...")
-                        .desired_width(300.0),
+                        .desired_width(search_w),
                 );
                 // Auto-focus the search field
                 if state.site_modal_open {
@@ -517,9 +533,10 @@ fn render_site_list(
 
             ui.add_space(4.0);
 
-            // Scrollable site list
+            // Scrollable site list — height scales with the modal.
+            let list_h = (window_h - 120.0).max(200.0);
             egui::ScrollArea::vertical()
-                .max_height(380.0)
+                .max_height(list_h)
                 .show(ui, |ui| {
                     for site in &filtered {
                         let is_current = site.id == state.viz_state.site_id;
@@ -552,11 +569,13 @@ fn render_zip_entry(
     state: &mut AppState,
     modal_state: &mut SiteModalState,
 ) -> bool {
+    let window_w = responsive_width(ctx, 340.0);
+
     egui::Window::new("Enter Zip Code")
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(340.0, 0.0))
+        .fixed_size(Vec2::new(window_w, 0.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             ui.add_space(4.0);
@@ -640,11 +659,12 @@ fn render_zip_entry(
 
 /// Render a "please wait" screen while async operation is in progress.
 fn render_pending_screen(ctx: &egui::Context) {
+    let window_w = responsive_width(ctx, 300.0);
     egui::Window::new("Finding Nearest Site...")
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(300.0, 0.0))
+        .fixed_size(Vec2::new(window_w, 0.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             ui.add_space(12.0);

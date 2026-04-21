@@ -262,7 +262,7 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
 /// Render a compact alerts indicator for the top bar. Shows nothing when
 /// no active NWS alerts intersect the current viewing area (or when the
 /// viewing area is undefined, e.g. in 3D globe mode).
-fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
     // Show a subtle loading/error hint on the first fetch so the user knows
     // the feed is being contacted. After the first success, stay quiet unless
     // there are alerts to surface.
@@ -372,7 +372,7 @@ fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
 /// Render the unified mode badge (Idle / Archive / Live) in the top bar.
 /// The Live branch preserves the previous pulse animation and streaming
 /// detail text (chunk counter, acquire-lock elapsed, next-chunk countdown).
-fn render_mode_badge(ui: &mut egui::Ui, state: &AppState) {
+pub(super) fn render_mode_badge(ui: &mut egui::Ui, state: &AppState) {
     let mode = state.app_mode;
     let color = mode.color();
 

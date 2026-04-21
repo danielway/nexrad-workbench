@@ -6,7 +6,7 @@ use crate::state::{
 use eframe::egui::{self, RichText, ScrollArea};
 
 pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
-    if !state.right_sidebar_visible {
+    if state.is_mobile || !state.right_sidebar_visible {
         return;
     }
 
@@ -43,7 +43,7 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
         });
 }
 
-fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CollapsingHeader::new(RichText::new("Product").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -200,7 +200,7 @@ fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CollapsingHeader::new(RichText::new("Layers").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -223,7 +223,7 @@ fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
     let in_macro = state.playback_state.playback_mode() == crate::state::PlaybackMode::Macro;
     egui::CollapsingHeader::new(RichText::new("Rendering").strong())
         .default_open(true)
@@ -311,7 +311,7 @@ fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CollapsingHeader::new(RichText::new("Tools").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -352,7 +352,7 @@ fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CollapsingHeader::new(RichText::new("Events").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -536,7 +536,7 @@ fn event_color(id: u64) -> egui::Color32 {
     PALETTE[(id % PALETTE.len() as u64) as usize]
 }
 
-fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
     egui::CollapsingHeader::new(RichText::new("Storage").strong())
         .default_open(true)
         .show(ui, |ui| {

@@ -25,7 +25,7 @@ struct RadarStateAtTimestamp<'a> {
 }
 
 pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
-    if !state.left_sidebar_visible {
+    if state.is_mobile || !state.left_sidebar_visible {
         return;
     }
 
