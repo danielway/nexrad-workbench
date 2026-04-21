@@ -14,6 +14,14 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     // Update live mode pulse animation
     state.live_mode_state.update_pulse(dt);
 
+    // Mobile chrome owns the bottom region; skip the desktop panel entirely.
+    // (Spacebar toggle is skipped along with it — on mobile there's no
+    // keyboard, and on a narrow desktop window it's reasonable to lose it
+    // in favor of the mobile layout.)
+    if state.is_mobile {
+        return;
+    }
+
     // Handle spacebar to toggle playback (only when no text input is focused)
     let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space) && !i.modifiers.any());
     let has_focus = ctx.memory(|m| m.focused().is_some());

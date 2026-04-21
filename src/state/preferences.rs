@@ -46,6 +46,11 @@ pub struct UserPreferences {
     pub sweep_animation: bool,
     #[serde(default = "default_true")]
     pub data_age_desaturation: bool,
+
+    /// Mobile UI override: `None` = auto, `Some(true)` = force mobile,
+    /// `Some(false)` = force desktop.
+    #[serde(default)]
+    pub mobile_override: Option<bool>,
 }
 
 fn default_true() -> bool {
@@ -79,6 +84,7 @@ impl Default for UserPreferences {
             opacity: 1.0,
             sweep_animation: false,
             data_age_desaturation: true,
+            mobile_override: None,
         }
     }
 }
@@ -105,6 +111,7 @@ impl UserPreferences {
             opacity: state.render_processing.opacity,
             sweep_animation: state.render_processing.sweep_animation,
             data_age_desaturation: state.render_processing.data_age_desaturation,
+            mobile_override: state.mobile_override,
         }
     }
 
@@ -133,6 +140,7 @@ impl UserPreferences {
         state.render_processing.opacity = self.opacity;
         state.render_processing.sweep_animation = self.sweep_animation;
         state.render_processing.data_age_desaturation = self.data_age_desaturation;
+        state.mobile_override = self.mobile_override;
     }
 
     /// Load preferences from localStorage.

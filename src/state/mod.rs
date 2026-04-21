@@ -234,6 +234,49 @@ pub struct AppState {
 
     /// NWS active alerts + related modal state.
     pub alerts: AlertsState,
+
+    /// Resolved mobile mode for the current frame. Computed by
+    /// [`AppState::refresh_mobile_mode`] from viewport width and touch history.
+    /// When true, panels collapse to the mobile chrome.
+    pub is_mobile: bool,
+
+    /// Sticky flag — set the first time any touch event is seen. Used by
+    /// the auto-detection in [`AppState::refresh_mobile_mode`] so that a
+    /// touch laptop (or phone rotated from portrait to landscape) doesn't
+    /// flip back to desktop layout mid-session.
+    pub touch_seen_ever: bool,
+
+    /// User override for mobile mode. `None` = auto (default), `Some(true)` =
+    /// force mobile, `Some(false)` = force desktop. Persisted via preferences.
+    pub mobile_override: Option<bool>,
+
+    /// Which mobile tab is currently showing its content in the bottom sheet.
+    pub mobile_active_tab: MobileTab,
+}
+
+/// Tabs in the mobile bottom chrome. Order matches the tab bar layout.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum MobileTab {
+    #[default]
+    Playback,
+    Product,
+    Layers,
+    More,
+}
+
+impl MobileTab {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Playback => "Play",
+            Self::Product => "Product",
+            Self::Layers => "Layers",
+            Self::More => "More",
+        }
+    }
+
+    pub fn all() -> [Self; 4] {
+        [Self::Playback, Self::Product, Self::Layers, Self::More]
+    }
 }
 
 /// State for the datetime jump picker popup.
@@ -393,6 +436,30 @@ impl AppState {
         } else {
             AppMode::Idle
         };
+    }
+
+    /// Refresh the mobile-mode flag for this frame.
+    ///
+    /// Auto mode: `width < 600px` plus either a sticky "touch has been seen"
+    /// flag or `width < 500px` (so a very narrow desktop window also switches
+    /// without needing a touch event). A user override in `mobile_override`
+    /// takes precedence.
+    pub fn refresh_mobile_mode(&mut self, ctx: &eframe::egui::Context) {
+        let width = ctx.content_rect().width();
+        let touch_now = ctx.input(|i| i.any_touches() || i.multi_touch().is_some());
+        if touch_now {
+            self.touch_seen_ever = true;
+        }
+        let auto = width < 600.0 && (self.touch_seen_ever || width < 500.0);
+        self.is_mobile = self.mobile_override.unwrap_or(auto);
+
+        // Mobile v1 is 2D-only. If the user was in globe mode on desktop and
+        // the layout flipped to mobile (browser resize, forced override),
+        // snap back to 2D rather than leaving them in a view they have no
+        // controls for.
+        if self.is_mobile && self.viz_state.view_mode != ViewMode::Flat2D {
+            self.viz_state.view_mode = ViewMode::Flat2D;
+        }
     }
 
     /// Whether sweep animation is effectively enabled: requires both the user

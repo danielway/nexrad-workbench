@@ -145,6 +145,11 @@ const SHORTCUT_SECTIONS: &[ShortcutSection] = &[
 
 /// Process keyboard shortcuts. Call once per frame from the main update loop.
 pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
+    // No keyboard on mobile; skip shortcut processing entirely.
+    if state.is_mobile {
+        return;
+    }
+
     // Skip shortcut processing when a text field has focus
     let has_focus = ctx.memory(|m| m.focused().is_some());
     if has_focus {
