@@ -85,8 +85,12 @@ pub enum DownloadResult {
         fetch_latency_ms: f64,
         decode_latency_ms: f64,
     },
-    /// Download failed with an error message
-    Error(String),
+    /// Download failed.
+    ///
+    /// `scan_start` is the timestamp (Unix seconds) of the scan the failed
+    /// download was attempting. With parallel downloads this is essential to
+    /// correlate the failure with the right queue entry.
+    Error { message: String, scan_start: i64 },
     /// Found in cache, no download needed
     CacheHit(CachedScan),
 }

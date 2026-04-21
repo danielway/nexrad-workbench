@@ -1,16 +1,20 @@
-//! Render coordinator: owns the decode worker and render request deduplication.
+//! Render coordinator: owns the decode worker pool and render request deduplication.
 //!
 //! Consolidates the five tightly-coupled fields that were scattered between
 //! WorkbenchApp and Renderers into a single owner.
 
-use super::decode_worker::{DecodeWorker, WorkerOutcome};
+use super::decode_worker::{default_pool_size, WorkerOutcome, WorkerPool};
 use super::render_request::{RenderRequest, VolumeRenderRequest};
 
-/// Coordinates render requests to the decode worker, deduplicating
+/// Coordinates render requests to a pool of decode workers, deduplicating
 /// identical requests and owning the current scan/elevation state.
+///
+/// The pool is chosen to saturate the ingest pipeline with parallel
+/// decompress/decode work while keeping the UI thread responsive — see
+/// [`default_pool_size`] for the sizing heuristic.
 pub struct RenderCoordinator {
-    /// Web Worker for offloading expensive NEXRAD operations.
-    worker: Option<DecodeWorker>,
+    /// Pool of Web Workers for offloading expensive NEXRAD operations.
+    worker: Option<WorkerPool>,
     /// Scan key of the currently displayed scan ("SITE|TIMESTAMP_MS").
     current_scan_key: Option<String>,
     /// Available elevation numbers for the current scan (from ingest).
@@ -22,7 +26,7 @@ pub struct RenderCoordinator {
 }
 
 impl RenderCoordinator {
-    pub fn new(worker: Option<DecodeWorker>) -> Self {
+    pub fn new(worker: Option<WorkerPool>) -> Self {
         Self {
             worker,
             current_scan_key: None,
@@ -247,15 +251,15 @@ impl RenderCoordinator {
         }
     }
 
-    /// Try to create a new decode worker (retry after failure).
+    /// Try to create a new decode worker pool (retry after failure).
     pub fn create_worker(&mut self, ctx: eframe::egui::Context) -> Result<(), String> {
-        match DecodeWorker::new(ctx) {
-            Ok(w) => {
-                self.worker = Some(w);
+        match WorkerPool::new(ctx, default_pool_size()) {
+            Ok(pool) => {
+                self.worker = Some(pool);
                 Ok(())
             }
             Err(e) => {
-                log::warn!("Failed to create decode worker: {}", e);
+                log::warn!("Failed to create decode worker pool: {}", e);
                 Err(format!("Decode worker failed to initialize: {}", e))
             }
         }

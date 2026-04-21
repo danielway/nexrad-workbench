@@ -357,11 +357,17 @@ async fn download_specific_file(
         }
         Ok(Err(e)) => {
             stats.request_completed(0);
-            return DownloadResult::Error(format!("Failed to list files: {}", e));
+            return DownloadResult::Error {
+                message: format!("Failed to list files: {}", e),
+                scan_start: timestamp,
+            };
         }
         Err(timeout_msg) => {
             stats.request_completed(0);
-            return DownloadResult::Error(timeout_msg);
+            return DownloadResult::Error {
+                message: timeout_msg,
+                scan_start: timestamp,
+            };
         }
     };
 
@@ -369,7 +375,10 @@ async fn download_specific_file(
     let file_meta = match files.iter().find(|f| f.name() == file_name) {
         Some(f) => f.clone(),
         None => {
-            return DownloadResult::Error(format!("File not found: {}", file_name));
+            return DownloadResult::Error {
+                message: format!("File not found: {}", file_name),
+                scan_start: timestamp,
+            };
         }
     };
 
@@ -386,11 +395,17 @@ async fn download_specific_file(
         Ok(Ok(file)) => file,
         Ok(Err(e)) => {
             stats.request_completed(0);
-            return DownloadResult::Error(format!("Download failed: {}", e));
+            return DownloadResult::Error {
+                message: format!("Download failed: {}", e),
+                scan_start: timestamp,
+            };
         }
         Err(timeout_msg) => {
             stats.request_completed(0);
-            return DownloadResult::Error(timeout_msg);
+            return DownloadResult::Error {
+                message: timeout_msg,
+                scan_start: timestamp,
+            };
         }
     };
     let fetch_ms = fetch_start.elapsed().as_secs_f64() * 1000.0;

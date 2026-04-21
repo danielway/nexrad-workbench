@@ -384,11 +384,14 @@ impl WorkbenchApp {
         let initial_prefs = state::UserPreferences::from_app_state(&state);
         let has_preferred_site = state.preferred_site.is_some();
 
-        // Create decode worker (offloads nexrad::load() to a Web Worker)
-        let decode_worker = match nexrad::DecodeWorker::new(cc.egui_ctx.clone()) {
-            Ok(w) => Some(w),
+        // Create decode worker pool (offloads heavy NEXRAD work to parallel
+        // Web Workers so the download → decompress → store pipeline can fan
+        // out across cores instead of serializing through a single worker).
+        let pool_size = nexrad::default_pool_size();
+        let decode_worker = match nexrad::WorkerPool::new(cc.egui_ctx.clone(), pool_size) {
+            Ok(pool) => Some(pool),
             Err(e) => {
-                log::warn!("Failed to create decode worker: {}", e);
+                log::warn!("Failed to create decode worker pool: {}", e);
                 state.worker_init_error =
                     Some(format!("Decode worker failed to initialize: {}", e));
                 None
@@ -484,76 +487,102 @@ impl WorkbenchApp {
     fn process_selection_download(&mut self, ctx: &egui::Context, download_type: Option<bool>) {
         let site_id = self.state.viz_state.site_id.clone();
 
-        // If we have items in the queue, try to advance the state machine
+        // If we have items in the queue, try to advance the state machine.
+        // The queue allows up to `max_parallel` concurrent downloads; we both
+        // reap completed slots and fill empty slots on every poll.
         if self.acquisition.download_queue.has_work() {
-            // If there is an Active item, check whether its download has finished
-            if let Some(active) = self.acquisition.download_queue.active_item() {
-                let still_pending = self
-                    .acquisition
-                    .download_channel
-                    .is_download_pending(&site_id, active.scan_start);
-
-                if still_pending {
-                    // Still downloading, wait
-                    return;
-                }
-
-                // Download finished — transition Active → Done
-                let active_start = active.scan_start;
-                self.acquisition
-                    .download_queue
-                    .mark_active_done(active_start);
+            // 1. Sweep all Active items and mark any whose download has finished.
+            let finished_starts: Vec<i64> = self
+                .acquisition
+                .download_queue
+                .active_items()
+                .filter_map(|item| {
+                    if !self
+                        .acquisition
+                        .download_channel
+                        .is_download_pending(&site_id, item.scan_start)
+                    {
+                        Some(item.scan_start)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for start in finished_starts {
+                self.acquisition.download_queue.mark_active_done(start);
             }
 
-            // Advance the queue (handles pause check internally)
+            // 2. Refresh the timeline-ghost list from the queue state.
+            self.state.download_progress.active_scans = self
+                .acquisition
+                .download_queue
+                .active_items()
+                .map(|item| (item.scan_start, item.scan_end))
+                .collect();
+
+            // 3. Fill as many concurrency slots as possible.
             let is_paused = self.state.acquisition.is_paused();
-            match self.acquisition.download_queue.advance(is_paused) {
-                QueueAction::StartDownload {
-                    idx: _,
-                    date,
-                    file_name,
-                    scan_start,
-                    scan_end,
-                    remaining,
-                } => {
-                    self.state.status_message =
-                        format!("Downloading {} ({} remaining)", file_name, remaining);
-                    self.state.download_progress.active_scan = Some((scan_start, scan_end));
-                    self.state.download_progress.phase = crate::state::DownloadPhase::Downloading;
-                    self.state.download_progress.batch_completed += 1;
-
-                    // Mark next acquisition operation as active
-                    if let Some(op_id) = self.state.acquisition.next_queued_id() {
-                        self.state.acquisition.mark_active(op_id);
-                        self.acquisition
-                            .download_queue
-                            .set_active_operation_id(Some(op_id));
-                    }
-
-                    self.acquisition.download_channel.download_file(
-                        ctx.clone(),
-                        site_id.clone(),
+            let mut completed_this_pump = false;
+            loop {
+                match self.acquisition.download_queue.advance(is_paused) {
+                    QueueAction::StartDownload {
+                        idx: _,
                         date,
                         file_name,
                         scan_start,
-                        self.acquisition.facade().clone(),
-                    );
-                }
-                QueueAction::Complete => {
-                    self.state.download_selection_in_progress = false;
-                    self.state.download_progress.pending_scans.clear();
-                    self.state.download_progress.active_scan = None;
-                    self.state.download_progress.phase = crate::state::DownloadPhase::Done;
-                    // Full clear only if no in-flight scans remain.
-                    if self.state.download_progress.in_flight_scans.is_empty() {
-                        self.state.download_progress.clear();
+                        scan_end,
+                        remaining,
+                    } => {
+                        self.state.status_message =
+                            format!("Downloading {} ({} remaining)", file_name, remaining);
+                        self.state.download_progress.phase =
+                            crate::state::DownloadPhase::Downloading;
+                        self.state.download_progress.batch_completed += 1;
+                        self.state
+                            .download_progress
+                            .active_scans
+                            .push((scan_start, scan_end));
+
+                        // Mark next acquisition operation as active and pin it
+                        // to this download's scan_start so correlation survives
+                        // concurrent completions.
+                        if let Some(op_id) = self.state.acquisition.next_queued_id() {
+                            self.state.acquisition.mark_active(op_id);
+                            self.acquisition
+                                .download_queue
+                                .set_operation_id(scan_start, op_id);
+                        }
+
+                        self.acquisition.download_channel.download_file(
+                            ctx.clone(),
+                            site_id.clone(),
+                            date,
+                            file_name,
+                            scan_start,
+                            self.acquisition.facade().clone(),
+                        );
                     }
-                    self.state.status_message = "Selection download complete".to_string();
-                    log::debug!("Selection download complete");
+                    QueueAction::Complete => {
+                        completed_this_pump = true;
+                        break;
+                    }
+                    QueueAction::Saturated | QueueAction::Paused => {
+                        break;
+                    }
                 }
-                QueueAction::Paused | QueueAction::StillDownloading => {
-                    return;
+            }
+
+            if completed_this_pump {
+                self.state.download_selection_in_progress = false;
+                self.state.download_progress.pending_scans.clear();
+                self.state.download_progress.active_scans.clear();
+                self.state.download_progress.phase = crate::state::DownloadPhase::Done;
+                // Full clear only if no in-flight scans remain.
+                if self.state.download_progress.in_flight_scans.is_empty() {
+                    self.state.download_progress.clear();
                 }
+                self.state.status_message = "Selection download complete".to_string();
+                log::debug!("Selection download complete");
             }
             return;
         }
@@ -783,33 +812,37 @@ impl WorkbenchApp {
             progress.batch_total = self.acquisition.download_queue.len() as u32;
             progress.batch_completed = 0;
             progress.phase = crate::state::DownloadPhase::Downloading;
-            let first = &self.acquisition.download_queue.items()[0];
-            progress.active_scan = Some((first.scan_start, first.scan_end));
+            progress.active_scans.clear();
         }
 
-        // Kick off first download
-        if let Some(QueueAction::StartDownload {
+        // Kick off as many downloads as the concurrency limit allows.
+        let is_paused = self.state.acquisition.is_paused();
+        while let QueueAction::StartDownload {
             idx: _,
             date,
             file_name,
             scan_start,
-            scan_end: _,
+            scan_end,
             remaining,
-        }) = self.acquisition.download_queue.start_first()
+        } = self.acquisition.download_queue.advance(is_paused)
         {
-            self.state.status_message = format!("Downloading {} ({} total)", file_name, remaining);
+            self.state.status_message =
+                format!("Downloading {} ({} remaining)", file_name, remaining);
+            self.state
+                .download_progress
+                .active_scans
+                .push((scan_start, scan_end));
 
-            // Mark the first acquisition operation as active
             if let Some(op_id) = self.state.acquisition.next_queued_id() {
                 self.state.acquisition.mark_active(op_id);
                 self.acquisition
                     .download_queue
-                    .set_active_operation_id(Some(op_id));
+                    .set_operation_id(scan_start, op_id);
             }
 
             self.acquisition.download_channel.download_file(
                 ctx.clone(),
-                site_id,
+                site_id.clone(),
                 date,
                 file_name,
                 scan_start,
@@ -2277,21 +2310,40 @@ impl WorkbenchApp {
 
         // Mark acquisition operation completed on success
         if let Some(scan) = scan_opt {
-            if let Some(op_id) = self.acquisition.download_queue.take_active_operation_id() {
+            let scan_ts = scan.key.scan_start.as_secs();
+            if let Some(op_id) = self.acquisition.download_queue.take_operation_id(scan_ts) {
                 self.state
                     .acquisition
                     .mark_completed(op_id, scan.data.len() as u64);
             }
         }
 
-        if let nexrad::DownloadResult::Error(msg) = &result {
-            self.state.status_message = format!("Download failed: {}", msg);
-            log::error!("Download failed: {}", msg);
+        if let nexrad::DownloadResult::Error {
+            message,
+            scan_start,
+        } = &result
+        {
+            self.state.status_message = format!("Download failed: {}", message);
+            log::error!("Download failed: {}", message);
 
-            // Mark acquisition operation as failed and error-pause
-            if let Some(op_id) = self.acquisition.download_queue.take_active_operation_id() {
-                self.state.acquisition.mark_failed(op_id, msg.clone());
+            // Mark this scan's acquisition operation as failed
+            if let Some(op_id) = self
+                .acquisition
+                .download_queue
+                .take_operation_id(*scan_start)
+            {
+                self.state.acquisition.mark_failed(op_id, message.clone());
             }
+
+            // Transition the failed queue item out of Active so the concurrency
+            // slot frees up for the next pump.
+            self.acquisition
+                .download_queue
+                .mark_active_done(*scan_start);
+            self.state
+                .download_progress
+                .active_scans
+                .retain(|&(s, _)| s != *scan_start);
 
             // Clear download progress on error if no more work remains
             if !self.acquisition.download_queue.has_work() {

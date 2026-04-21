@@ -172,8 +172,8 @@ pub(super) fn render_download_ghosts(
         draw_ghost(s, e, false, false);
     }
 
-    // Draw active scan
-    if let Some((s, e)) = progress.active_scan {
+    // Draw active scans
+    for &(s, e) in &progress.active_scans {
         draw_ghost(s, e, true, false);
     }
 

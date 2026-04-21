@@ -37,8 +37,8 @@ pub use acquisition_coordinator::AcquisitionCoordinator;
 pub use archive_index::ScanBoundary;
 pub use cache_channel::CacheLoadResult;
 pub use decode_worker::{
-    ChunkIngestResult, DecodeResult, DecodeWorker, IngestResult, VolumeData, VolumeSweepMeta,
-    WorkerOutcome,
+    default_pool_size, ChunkIngestResult, DecodeResult, IngestResult, VolumeData, VolumeSweepMeta,
+    WorkerOutcome, WorkerPool,
 };
 pub use download::{ListingResult, NetworkStats};
 pub use globe_radar_renderer::GlobeRadarRenderer;
