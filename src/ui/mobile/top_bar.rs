@@ -90,11 +90,18 @@ pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
 
                 // Version stamp — right-aligned. Useful for cross-referencing
                 // a deployed build against git history when reporting bugs.
+                // Tap to toggle between truncated (fits the bar) and full
+                // (shows the complete hash / version string).
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(8.0);
+
+                    let expanded_id = egui::Id::new("mobile_top_bar_version_expanded");
+                    let expanded: bool =
+                        ui.ctx().data(|d| d.get_temp(expanded_id).unwrap_or(false));
+
                     const MAX_LEN: usize = 18;
                     let version = env!("NEXRAD_VERSION");
-                    let display = if version.len() > MAX_LEN {
+                    let display = if !expanded && version.len() > MAX_LEN {
                         let mut truncated = String::with_capacity(MAX_LEN + 3);
                         for (i, ch) in version.char_indices() {
                             if i >= MAX_LEN {
@@ -107,11 +114,18 @@ pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
                     } else {
                         version.to_string()
                     };
-                    ui.label(
-                        RichText::new(display)
-                            .size(10.0)
-                            .color(Color32::from_rgb(120, 120, 120)),
+
+                    let response = ui.add(
+                        egui::Button::new(
+                            RichText::new(display)
+                                .size(10.0)
+                                .color(Color32::from_rgb(120, 120, 120)),
+                        )
+                        .frame(false),
                     );
+                    if response.clicked() {
+                        ui.ctx().data_mut(|d| d.insert_temp(expanded_id, !expanded));
+                    }
                 });
             });
 
