@@ -504,6 +504,7 @@ async fn streaming_loop(
     let mut none_retries: u32 = 0;
     let mut cur_predicted_at: Option<f64> = None; // absolute Unix seconds
     let mut cur_scheduled_at: Option<f64> = None; // first poll time
+    let mut cur_first_empty_at: Option<f64> = None;
     let mut cur_last_empty_at: Option<f64> = None;
     loop {
         // Check stop signal
@@ -567,12 +568,33 @@ async fn streaming_loop(
                     .identifier
                     .upload_date_time()
                     .map(|dt| dt.timestamp_millis() as f64 / 1000.0);
+
+                // Look up this chunk's entry in the library's projection list
+                // so we can attach elevation_number and chunk-within-sweep
+                // position to the arrival stat.
+                let chunk_projections = build_chunk_projections(&iter);
+                let (elevation_number, chunk_index_in_sweep, chunks_in_sweep) =
+                    match chunk_projections.as_ref().and_then(|projs| {
+                        projs.iter().find(|p| p.sequence as u32 == chunks_in_volume)
+                    }) {
+                        Some(p) => (
+                            p.elevation_number.map(|e| e as u8),
+                            Some(p.chunk_index_in_sweep as u32),
+                            Some(p.chunks_in_sweep as u32),
+                        ),
+                        None => (None, None, None),
+                    };
+
                 let arrival_stat = crate::state::ChunkArrivalStat {
                     sequence: chunks_in_volume,
                     chunk_type: type_label,
+                    elevation_number,
+                    chunk_index_in_sweep,
+                    chunks_in_sweep,
                     predicted_available_at: cur_predicted_at,
                     scheduled_at: cur_scheduled_at.unwrap_or(success_at),
                     empty_polls: none_retries,
+                    first_empty_poll_at: cur_first_empty_at,
                     last_empty_poll_at: cur_last_empty_at,
                     s3_last_modified_at,
                     success_at,
@@ -583,6 +605,7 @@ async fn streaming_loop(
                 none_retries = 0;
                 cur_predicted_at = None;
                 cur_scheduled_at = None;
+                cur_first_empty_at = None;
                 cur_last_empty_at = None;
 
                 let time_until_next = iter.time_until_next().and_then(|td| td.to_std().ok());
@@ -605,7 +628,7 @@ async fn streaming_loop(
                         is_volume_end: is_end,
                         fetch_latency_ms: chunk_fetch_ms,
                         projected_volume_end_secs: get_projected_volume_end_secs(&iter),
-                        chunk_projections: build_chunk_projections(&iter),
+                        chunk_projections,
                         arrival_stat: Some(arrival_stat),
                     });
                 }
@@ -615,7 +638,11 @@ async fn streaming_loop(
             Ok(None) => {
                 // Chunk not ready yet, brief retry
                 none_retries += 1;
-                cur_last_empty_at = Some(current_timestamp_f64());
+                let now = current_timestamp_f64();
+                if cur_first_empty_at.is_none() {
+                    cur_first_empty_at = Some(now);
+                }
+                cur_last_empty_at = Some(now);
                 if none_retries >= CHUNK_POLL_MAX_RETRIES {
                     let elapsed_secs =
                         (none_retries * CHUNK_POLL_INTERVAL_MS + CHUNK_POLL_GRACE_MS) / 1000;
@@ -637,6 +664,7 @@ async fn streaming_loop(
                             none_retries = 0;
                             cur_predicted_at = None;
                             cur_scheduled_at = None;
+                            cur_first_empty_at = None;
                             cur_last_empty_at = None;
                             continue;
                         }

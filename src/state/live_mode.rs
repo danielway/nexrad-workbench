@@ -753,7 +753,6 @@ impl LiveModeState {
             actual_volume_end: None,
             expected_elevation_count: vcp.elevations.len() as u8,
             sweeps,
-            captured_at: vol_start,
             chunk_projections_available_at_start: chunk_projections_available,
             previous_volume_end: self.previous_volume_end_secs,
             inter_volume_gap_secs,

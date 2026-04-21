@@ -96,8 +96,6 @@ pub struct VolumeForecastSnapshot {
     pub actual_volume_end: Option<f64>,
     pub expected_elevation_count: u8,
     pub sweeps: Vec<SweepForecast>,
-    /// When the snapshot was taken (Unix seconds).
-    pub captured_at: f64,
     /// Whether `chunk_projections` were present at snapshot time — useful
     /// context when reading the `predicted_chunks` column.
     pub chunk_projections_available_at_start: bool,
@@ -126,22 +124,36 @@ pub struct ChunkArrivalStat {
     pub sequence: u32,
     /// "Start" / "Intermediate" / "End".
     pub chunk_type: &'static str,
+    /// 1-based elevation number the chunk contributes to. `None` for the
+    /// volume-start chunk (which carries VCP metadata, not a specific sweep).
+    pub elevation_number: Option<u8>,
+    /// 0-based index of this chunk within its sweep (e.g. 0, 1, 2 for a
+    /// standard sweep; 0–5 for super-res).
+    pub chunk_index_in_sweep: Option<u32>,
+    /// Total chunks expected in this sweep (3 for standard, 6 for super-res).
+    pub chunks_in_sweep: Option<u32>,
     /// What the iterator's `time_until_next()` said the chunk would be
     /// available at (Unix seconds). `None` if the iterator had no prediction.
     pub predicted_available_at: Option<f64>,
     /// Time the first poll for this chunk was issued (end of the predicted
-    /// sleep), Unix seconds.
-    #[allow(dead_code)] // captured for future analysis; not currently rendered
+    /// sleep), Unix seconds. The gap `scheduled_at - predicted_available_at`
+    /// is the scheduler slop (how precisely we woke on the predicted time).
     pub scheduled_at: f64,
     /// Number of empty `Ok(None)` polls before the successful fetch.
     pub empty_polls: u32,
+    /// Time of the first empty poll for this chunk (Unix seconds). `None`
+    /// when `empty_polls == 0`. Together with `last_empty_poll_at` bounds
+    /// the retry cluster.
+    pub first_empty_poll_at: Option<f64>,
     /// Time of the most recent empty poll (Unix seconds). `None` when
     /// `empty_polls == 0`. Crude lower bound on when the chunk actually
     /// became available on S3 — we only learn it via polling.
     pub last_empty_poll_at: Option<f64>,
     /// S3's `Last-Modified` header for the object (Unix seconds). When
     /// present this is the authoritative earliest-possible-download time
-    /// and strictly tighter than `last_empty_poll_at`.
+    /// and strictly tighter than `last_empty_poll_at`. Note: header has
+    /// 1-second resolution, so derived `wait_after_s3_publish_ms` values
+    /// are ±1s noisy.
     pub s3_last_modified_at: Option<f64>,
     /// Time the successful poll received its response (Unix seconds).
     pub success_at: f64,
@@ -157,6 +169,13 @@ impl ChunkArrivalStat {
         self.predicted_available_at.map(|p| self.success_at - p)
     }
 
+    /// Milliseconds between when we intended to wake and when we actually
+    /// polled — the scheduler's precision relative to the prediction.
+    pub fn scheduler_slop_ms(&self) -> Option<f64> {
+        self.predicted_available_at
+            .map(|p| (self.scheduled_at - p) * 1000.0)
+    }
+
     /// Time between the last empty poll and the successful download.
     /// Represents wait that could potentially have been avoided if the
     /// poll schedule were better aligned to S3 publishing time.
@@ -170,6 +189,9 @@ impl ChunkArrivalStat {
     /// object was provably available at `s3_last_modified_at`, so any
     /// lag beyond that is pure client-side waste (wasted sleep + wasted
     /// retries if we polled before it was published).
+    ///
+    /// Caveat: `Last-Modified` has 1-second resolution, so values are
+    /// ±1 s noisy. Negative values indicate client/server clock skew.
     pub fn wait_after_s3_publish_ms(&self) -> Option<f64> {
         self.s3_last_modified_at
             .map(|t| (self.success_at - t) * 1000.0)

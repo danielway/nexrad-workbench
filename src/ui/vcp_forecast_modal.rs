@@ -223,15 +223,24 @@ fn render_snapshot(
                     .color(heading_color),
             );
 
+            ui.label(
+                RichText::new(
+                    "legend: tag = SAILS / MRLE / BASE / — (standard);  \
+                     src = LIB (projection library) / VCP (message rate) / FB (fallback);  \
+                     Δ values are actual − predicted",
+                )
+                .size(10.0)
+                .color(label_color),
+            );
             egui::Grid::new("vcp_forecast_grid")
                 .striped(true)
                 .min_col_width(44.0)
                 .spacing(Vec2::new(10.0, 4.0))
                 .show(ui, |ui| {
                     for header in [
-                        "elv", "ang", "wf", "prf", "S", "M", "B", "vcp_r", "fb_r", "used", "src",
+                        "elv", "ang", "wf", "prf", "tag", "vcp_r", "fb_r", "used", "src",
                         "pred_dur", "act_dur", "Δdur", "pred_ch", "act_ch", "Δch", "Δstart",
-                        "obs_rate", "timing", "status",
+                        "timing", "status",
                     ] {
                         ui.label(
                             RichText::new(header)
@@ -319,13 +328,25 @@ fn render_snapshot(
                 // Chunk-level aggregates
                 let total_empty = total_empty_polls(arrivals);
                 let any_retry = arrivals.iter().filter(|a| a.empty_polls > 0).count();
+                let total_requests = arrivals.len() as u32 + total_empty;
+                let waste_pct = if total_requests > 0 {
+                    100.0 * total_empty as f64 / total_requests as f64
+                } else {
+                    0.0
+                };
                 kv(
                     ui,
-                    "Empty polls (total)",
+                    "S3 requests (total / wasted)",
                     &format!(
-                        "{total_empty}  (chunks w/ ≥1 retry: {any_retry}/{})",
-                        arrivals.len()
+                        "{total_requests} total → {total_empty} wasted ({waste_pct:.1}%)"
                     ),
+                    label_color,
+                    value_color,
+                );
+                kv(
+                    ui,
+                    "Chunks with ≥1 retry",
+                    &format!("{any_retry}/{}", arrivals.len()),
                     label_color,
                     value_color,
                 );
@@ -364,10 +385,23 @@ fn render_snapshot(
                     kv(
                         ui,
                         "Wait after S3 publish (success - Last-Modified)",
-                        &format!("mean {mean:.0}ms  median {median:.0}ms  max {max_abs:.0}ms"),
+                        &format!(
+                            "mean {mean:.0}ms  median {median:.0}ms  max {max_abs:.0}ms  (±1s noise)"
+                        ),
                         label_color,
                         value_color,
                     );
+                    // Negative min ⇒ client clock is ahead of S3 (clock skew).
+                    let min_wait = wait_after_s3.iter().copied().fold(f64::INFINITY, f64::min);
+                    if min_wait < 0.0 {
+                        kv(
+                            ui,
+                            "  clock skew estimate",
+                            &format!("client ~{:.0}ms ahead of S3", -min_wait),
+                            label_color,
+                            value_color,
+                        );
+                    }
                 }
             });
 
@@ -389,6 +423,14 @@ fn render_snapshot(
                     );
                 });
             } else {
+                ui.label(
+                    RichText::new(
+                        "legend: elev shows elevation# (chunk-index/chunks-in-sweep);  \
+                         times are offsets from volume_start;  wait_after_s3 has ±1s precision",
+                    )
+                    .size(10.0)
+                    .color(label_color),
+                );
                 egui::Grid::new("vcp_forecast_arrivals_grid")
                     .striped(true)
                     .min_col_width(44.0)
@@ -397,10 +439,12 @@ fn render_snapshot(
                         for header in [
                             "seq",
                             "type",
+                            "elev",
                             "empty",
                             "predicted_at",
                             "success_at",
                             "pred_err",
+                            "first_empty",
                             "last_empty",
                             "wait_after_empty",
                             "s3_last_mod",
@@ -416,7 +460,16 @@ fn render_snapshot(
                         }
                         ui.end_row();
 
+                        let mut prev_elev: Option<u8> = None;
                         for a in arrivals {
+                            // Insert a blank visual break between elevations.
+                            if prev_elev.is_some() && a.elevation_number != prev_elev {
+                                for _ in 0..13 {
+                                    ui.label("");
+                                }
+                                ui.end_row();
+                            }
+                            prev_elev = a.elevation_number;
                             arrival_row(ui, a, snap.volume_start, label_color, value_color);
                         }
                     });
@@ -454,6 +507,7 @@ fn arrival_row(
 
     mono(ui, format!("{}", a.sequence), value_color);
     mono(ui, a.chunk_type.to_string(), label_color);
+    mono(ui, fmt_elev(a), label_color);
     let empty_color = if a.empty_polls > 0 {
         egui::Color32::from_rgb(220, 140, 60)
     } else {
@@ -472,6 +526,13 @@ fn arrival_row(
         ui,
         a.prediction_error_secs()
             .map(|e| format!("{e:+.2}s"))
+            .unwrap_or_else(|| "—".into()),
+        value_color,
+    );
+    mono(
+        ui,
+        a.first_empty_poll_at
+            .map(fmt_off)
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
@@ -528,9 +589,7 @@ fn grid_row(
     mono(ui, format!("{:.2}°", s.elev_angle), value_color);
     mono(ui, s.waveform.clone(), value_color);
     mono(ui, format!("{}", s.prf_number), value_color);
-    mono(ui, yesno(s.is_sails), label_color);
-    mono(ui, yesno(s.is_mrle), label_color);
-    mono(ui, yesno(s.is_base_tilt), label_color);
+    mono(ui, cut_type_tag(s).to_string(), label_color);
     mono(
         ui,
         s.vcp_azimuth_rate
@@ -590,13 +649,6 @@ fn grid_row(
     );
     mono(
         ui,
-        s.observed_rate_dps
-            .map(|r| format!("{r:.2}"))
-            .unwrap_or_else(|| "—".into()),
-        value_color,
-    );
-    mono(
-        ui,
         match s.timing_source {
             Some(SweepTiming::Observed) => "Observed".to_string(),
             Some(SweepTiming::Anchored) => "Anchored".to_string(),
@@ -616,6 +668,18 @@ fn grid_row(
     );
     let _ = vol_start; // reserved for future per-row offset columns
     ui.end_row();
+}
+
+fn cut_type_tag(s: &SweepForecast) -> &'static str {
+    if s.is_sails {
+        "SAILS"
+    } else if s.is_mrle {
+        "MRLE"
+    } else if s.is_base_tilt {
+        "BASE"
+    } else {
+        "—"
+    }
 }
 
 fn kv(
@@ -638,11 +702,17 @@ fn kv(
     });
 }
 
-fn yesno(v: bool) -> String {
-    if v {
-        "Y".into()
-    } else {
-        "-".into()
+/// Format the elevation / chunk-in-sweep identifier for display.
+/// E.g. "1 (1/3)" for elevation 1, chunk 1 of 3. "—" for the volume Start chunk.
+fn fmt_elev(a: &ChunkArrivalStat) -> String {
+    match (
+        a.elevation_number,
+        a.chunk_index_in_sweep,
+        a.chunks_in_sweep,
+    ) {
+        (Some(e), Some(i), Some(n)) => format!("{} ({}/{})", e, i + 1, n),
+        (Some(e), _, _) => format!("{}", e),
+        _ => "—".into(),
     }
 }
 
@@ -715,12 +785,7 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
         "VCP {} ({})  clear_air={}  elevations={}",
         snap.vcp_number, name, snap.is_clear_air, snap.expected_elevation_count
     );
-    let _ = writeln!(
-        out,
-        "volume_start={}  captured_at=+{:.1}s",
-        format_time(snap.volume_start),
-        snap.captured_at - snap.volume_start
-    );
+    let _ = writeln!(out, "volume_start={}", format_time(snap.volume_start));
     let predicted_dur = snap.predicted_volume_end - snap.volume_start;
     let _ = writeln!(
         out,
@@ -757,20 +822,22 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
 
     let _ = writeln!(
         out,
-        "elv  angle  wf    prf S M B  vcp_r  fb_r  used  src | pred_dur act_dur  Δdur  | pred_ch act_ch Δch | Δstart obs_rate | timing     status"
+        "legend: tag = SAILS/MRLE/BASE/— (standard);  src = LIB (projection) / VCP (msg rate) / FB (fallback);  Δ = actual − predicted"
+    );
+    let _ = writeln!(
+        out,
+        "elv  angle  wf    prf tag    vcp_r  fb_r  used  src | pred_dur act_dur  Δdur  | pred_ch act_ch Δch | Δstart  | timing     status"
     );
 
     for s in &snap.sweeps {
         let _ = writeln!(
             out,
-            "{:>3}  {:>5.2}  {:<4} {:>3} {} {} {}  {:>5}  {:>5.2} {:>5.2} {:<3} | {:>6.1}s {:>6}s {:>5} | {:>6} {:>6} {:>3} | {:>6} {:>7} | {:<10} {}",
+            "{:>3}  {:>5.2}  {:<4} {:>3} {:<5}  {:>5}  {:>5.2} {:>5.2} {:<3} | {:>6.1}s {:>6}s {:>5} | {:>6} {:>6} {:>3} | {:>6}  | {:<10} {}",
             s.elev_number,
             s.elev_angle,
             trim_str(&s.waveform, 4),
             s.prf_number,
-            yesno(s.is_sails),
-            yesno(s.is_mrle),
-            yesno(s.is_base_tilt),
+            cut_type_tag(s),
             s.vcp_azimuth_rate
                 .map(|r| format!("{r:.2}"))
                 .unwrap_or_else(|| "—".into()),
@@ -796,9 +863,6 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
             },
             s.actual_start
                 .map(|a| format!("{:+.2}s", a - s.predicted_start))
-                .unwrap_or_else(|| "—".into()),
-            s.observed_rate_dps
-                .map(|r| format!("{r:.2}"))
                 .unwrap_or_else(|| "—".into()),
             match s.timing_source {
                 Some(SweepTiming::Observed) => "Observed",
@@ -878,11 +942,21 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
     // ── Chunk arrivals ───────────────────────────────────────────────
     let total_empty = total_empty_polls(arrivals);
     let any_retry = arrivals.iter().filter(|a| a.empty_polls > 0).count();
+    let total_requests = arrivals.len() as u32 + total_empty;
+    let waste_pct = if total_requests > 0 {
+        100.0 * total_empty as f64 / total_requests as f64
+    } else {
+        0.0
+    };
     let _ = writeln!(
         out,
-        "chunk_arrivals: count={} total_empty_polls={} chunks_with_retries={}/{}",
+        "s3_requests: {total_requests} total ({} successes + {total_empty} empty polls) → {waste_pct:.1}% wasted",
+        arrivals.len()
+    );
+    let _ = writeln!(
+        out,
+        "chunk_arrivals: count={} chunks_with_retries={}/{}",
         arrivals.len(),
-        total_empty,
         any_retry,
         arrivals.len()
     );
@@ -919,9 +993,21 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
         .filter(|a| a.s3_last_modified_at.is_some())
         .count();
     if let Some((mean, median, max_abs)) = stats_on(&wait_after_s3_ms) {
+        let min_wait = wait_after_s3_ms
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let skew_note = if min_wait < 0.0 {
+            format!(
+                "  (min={min_wait:.0}ms — negative ⇒ client clock ~{:.0}ms ahead of S3; Last-Modified has 1-s precision)",
+                -min_wait
+            )
+        } else {
+            "  (Last-Modified has 1-s precision so values are ±1000ms noisy)".to_string()
+        };
         let _ = writeln!(
             out,
-            "wait_after_s3_publish_ms: mean={mean:.0}  median={median:.0}  max_abs={max_abs:.0}  (coverage {}/{})",
+            "wait_after_s3_publish_ms: mean={mean:.0}  median={median:.0}  max_abs={max_abs:.0}  (coverage {}/{}){skew_note}",
             s3_coverage,
             arrivals.len()
         );
@@ -929,6 +1015,16 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
         let _ = writeln!(
             out,
             "wait_after_s3_publish_ms: —  (Last-Modified unavailable for all chunks)"
+        );
+    }
+    let slop_ms: Vec<f64> = arrivals
+        .iter()
+        .filter_map(|a| a.scheduler_slop_ms())
+        .collect();
+    if let Some((mean, median, max_abs)) = stats_on(&slop_ms) {
+        let _ = writeln!(
+            out,
+            "scheduler_slop_ms: mean={mean:+.0}  median={median:+.0}  max_abs={max_abs:.0}  (scheduled - predicted; should be near 0)"
         );
     }
     let fetch_ms: Vec<f64> = arrivals.iter().map(|a| a.fetch_latency_ms).collect();
@@ -943,15 +1039,27 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
         out.push('\n');
         let _ = writeln!(
             out,
-            "seq  type          empty  predicted_at  success_at  pred_err  last_empty  wait_after_empty  s3_last_mod  wait_after_s3  fetch_ms"
+            "legend: all times are offsets from volume_start;  elev shows elevation# (chunk-index-in-sweep / chunks-in-sweep)"
         );
+        let _ = writeln!(
+            out,
+            "seq  type          elev        empty  predicted_at  success_at  pred_err  first_empty  last_empty  wait_after_empty  s3_last_mod  wait_after_s3  fetch_ms"
+        );
+        let mut prev_elev: Option<u8> = None;
         for a in arrivals {
+            // Blank line on elevation transitions (but not before the first row).
+            if prev_elev.is_some() && a.elevation_number != prev_elev {
+                out.push('\n');
+            }
+            prev_elev = a.elevation_number;
+
             let fmt_off = |t: f64| format!("+{:.2}s", t - snap.volume_start);
             let _ = writeln!(
                 out,
-                "{:>3}  {:<12}  {:>5}  {:>12}  {:>10}  {:>8}  {:>10}  {:>15}  {:>11}  {:>13}  {:>8}",
+                "{:>3}  {:<12}  {:<10}  {:>5}  {:>12}  {:>10}  {:>8}  {:>11}  {:>10}  {:>15}  {:>11}  {:>13}  {:>8}",
                 a.sequence,
                 a.chunk_type,
+                fmt_elev(a),
                 a.empty_polls,
                 a.predicted_available_at
                     .map(fmt_off)
@@ -959,6 +1067,9 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
                 fmt_off(a.success_at),
                 a.prediction_error_secs()
                     .map(|e| format!("{e:+.2}s"))
+                    .unwrap_or_else(|| "—".into()),
+                a.first_empty_poll_at
+                    .map(fmt_off)
                     .unwrap_or_else(|| "—".into()),
                 a.last_empty_poll_at
                     .map(fmt_off)
