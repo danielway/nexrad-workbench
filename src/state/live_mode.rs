@@ -729,6 +729,21 @@ impl LiveModeState {
             .previous_volume_end_secs
             .map(|prev_end| vol_start - prev_end);
 
+        // Predicted gap: the iterator's predicted_available_at for the Start
+        // chunk of this volume, minus the previous volume's observed end.
+        // That's the forecaster's "when will the next volume begin arriving"
+        // estimate, which drives whether we start polling for it too early
+        // (wasted 404s) or too late (wasted wait).
+        let predicted_inter_volume_gap_secs = match self.previous_volume_end_secs {
+            Some(prev_end) => self
+                .chunk_arrivals
+                .first()
+                .filter(|a| a.chunk_type == "Start")
+                .and_then(|a| a.predicted_available_at)
+                .map(|pred| pred - prev_end),
+            None => None,
+        };
+
         let snap = crate::state::VolumeForecastSnapshot {
             vcp_number,
             vcp_name,
@@ -742,7 +757,7 @@ impl LiveModeState {
             chunk_projections_available_at_start: chunk_projections_available,
             previous_volume_end: self.previous_volume_end_secs,
             inter_volume_gap_secs,
-            predicted_inter_volume_gap_secs: None,
+            predicted_inter_volume_gap_secs,
         };
         self.current_volume_forecast = Some(snap);
 

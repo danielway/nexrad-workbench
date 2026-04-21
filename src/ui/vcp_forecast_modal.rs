@@ -180,21 +180,36 @@ fn render_snapshot(
                     label_color,
                     value_color,
                 );
-                match snap.inter_volume_gap_secs {
-                    Some(gap) => kv(
+                let gap_obs = snap
+                    .inter_volume_gap_secs
+                    .map(|g| format!("{g:+.2}s"))
+                    .unwrap_or_else(|| "—".into());
+                let gap_pred = snap
+                    .predicted_inter_volume_gap_secs
+                    .map(|g| format!("{g:+.2}s"))
+                    .unwrap_or_else(|| "—".into());
+                let gap_delta = match (
+                    snap.inter_volume_gap_secs,
+                    snap.predicted_inter_volume_gap_secs,
+                ) {
+                    (Some(o), Some(p)) => format!("{:+.2}s", o - p),
+                    _ => "—".into(),
+                };
+                kv(
+                    ui,
+                    "Inter-volume gap (obs / pred / Δ)",
+                    &format!("{gap_obs} / {gap_pred} / {gap_delta}"),
+                    label_color,
+                    value_color,
+                );
+                if let Some(prev_end) = snap.previous_volume_end {
+                    kv(
                         ui,
-                        "Inter-volume gap",
-                        &format!(
-                            "{:+.1}s (prev end {})",
-                            gap,
-                            snap.previous_volume_end
-                                .map(format_time)
-                                .unwrap_or_else(|| "—".into())
-                        ),
+                        "  prev volume end",
+                        &format_time(prev_end),
                         label_color,
                         value_color,
-                    ),
-                    None => kv(ui, "Inter-volume gap", "—", label_color, value_color),
+                    );
                 }
             });
 
@@ -340,6 +355,20 @@ fn render_snapshot(
                         value_color,
                     );
                 }
+                // Authoritative lag vs. S3 publish time (Last-Modified header).
+                let wait_after_s3: Vec<f64> = arrivals
+                    .iter()
+                    .filter_map(|a| a.wait_after_s3_publish_ms())
+                    .collect();
+                if let Some((mean, median, max_abs)) = stats_on(&wait_after_s3) {
+                    kv(
+                        ui,
+                        "Wait after S3 publish (success - Last-Modified)",
+                        &format!("mean {mean:.0}ms  median {median:.0}ms  max {max_abs:.0}ms"),
+                        label_color,
+                        value_color,
+                    );
+                }
             });
 
             ui.separator();
@@ -374,6 +403,8 @@ fn render_snapshot(
                             "pred_err",
                             "last_empty",
                             "wait_after_empty",
+                            "s3_last_mod",
+                            "wait_after_s3",
                             "fetch_ms",
                         ] {
                             ui.label(
@@ -454,6 +485,20 @@ fn arrival_row(
     mono(
         ui,
         a.wait_after_last_empty_ms()
+            .map(|ms| format!("{ms:.0}ms"))
+            .unwrap_or_else(|| "—".into()),
+        value_color,
+    );
+    mono(
+        ui,
+        a.s3_last_modified_at
+            .map(fmt_off)
+            .unwrap_or_else(|| "—".into()),
+        value_color,
+    );
+    mono(
+        ui,
+        a.wait_after_s3_publish_ms()
             .map(|ms| format!("{ms:.0}ms"))
             .unwrap_or_else(|| "—".into()),
         value_color,
@@ -865,6 +910,27 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
     } else {
         let _ = writeln!(out, "wait_after_last_empty_ms: —  (no retries)");
     }
+    let wait_after_s3_ms: Vec<f64> = arrivals
+        .iter()
+        .filter_map(|a| a.wait_after_s3_publish_ms())
+        .collect();
+    let s3_coverage = arrivals
+        .iter()
+        .filter(|a| a.s3_last_modified_at.is_some())
+        .count();
+    if let Some((mean, median, max_abs)) = stats_on(&wait_after_s3_ms) {
+        let _ = writeln!(
+            out,
+            "wait_after_s3_publish_ms: mean={mean:.0}  median={median:.0}  max_abs={max_abs:.0}  (coverage {}/{})",
+            s3_coverage,
+            arrivals.len()
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "wait_after_s3_publish_ms: —  (Last-Modified unavailable for all chunks)"
+        );
+    }
     let fetch_ms: Vec<f64> = arrivals.iter().map(|a| a.fetch_latency_ms).collect();
     if let Some((mean, median, max_abs)) = stats_on(&fetch_ms) {
         let _ = writeln!(
@@ -877,13 +943,13 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
         out.push('\n');
         let _ = writeln!(
             out,
-            "seq  type          empty  predicted_at  success_at  pred_err  last_empty   wait_after_empty  fetch_ms"
+            "seq  type          empty  predicted_at  success_at  pred_err  last_empty  wait_after_empty  s3_last_mod  wait_after_s3  fetch_ms"
         );
         for a in arrivals {
             let fmt_off = |t: f64| format!("+{:.2}s", t - snap.volume_start);
             let _ = writeln!(
                 out,
-                "{:>3}  {:<12}  {:>5}  {:>12}  {:>10}  {:>8}  {:>10}  {:>15}  {:>8}",
+                "{:>3}  {:<12}  {:>5}  {:>12}  {:>10}  {:>8}  {:>10}  {:>15}  {:>11}  {:>13}  {:>8}",
                 a.sequence,
                 a.chunk_type,
                 a.empty_polls,
@@ -898,6 +964,12 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
                     .map(fmt_off)
                     .unwrap_or_else(|| "—".into()),
                 a.wait_after_last_empty_ms()
+                    .map(|ms| format!("{ms:.0}ms"))
+                    .unwrap_or_else(|| "—".into()),
+                a.s3_last_modified_at
+                    .map(fmt_off)
+                    .unwrap_or_else(|| "—".into()),
+                a.wait_after_s3_publish_ms()
                     .map(|ms| format!("{ms:.0}ms"))
                     .unwrap_or_else(|| "—".into()),
                 format!("{:.0}ms", a.fetch_latency_ms),

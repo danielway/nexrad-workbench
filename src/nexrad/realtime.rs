@@ -563,6 +563,10 @@ async fn streaming_loop(
                 } else {
                     "Intermediate"
                 };
+                let s3_last_modified_at = chunk
+                    .identifier
+                    .upload_date_time()
+                    .map(|dt| dt.timestamp_millis() as f64 / 1000.0);
                 let arrival_stat = crate::state::ChunkArrivalStat {
                     sequence: chunks_in_volume,
                     chunk_type: type_label,
@@ -570,6 +574,7 @@ async fn streaming_loop(
                     scheduled_at: cur_scheduled_at.unwrap_or(success_at),
                     empty_polls: none_retries,
                     last_empty_poll_at: cur_last_empty_at,
+                    s3_last_modified_at,
                     success_at,
                     fetch_latency_ms: chunk_fetch_ms,
                 };

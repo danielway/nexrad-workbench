@@ -136,9 +136,13 @@ pub struct ChunkArrivalStat {
     /// Number of empty `Ok(None)` polls before the successful fetch.
     pub empty_polls: u32,
     /// Time of the most recent empty poll (Unix seconds). `None` when
-    /// `empty_polls == 0`. Lower bound on when the chunk actually became
-    /// available on S3.
+    /// `empty_polls == 0`. Crude lower bound on when the chunk actually
+    /// became available on S3 — we only learn it via polling.
     pub last_empty_poll_at: Option<f64>,
+    /// S3's `Last-Modified` header for the object (Unix seconds). When
+    /// present this is the authoritative earliest-possible-download time
+    /// and strictly tighter than `last_empty_poll_at`.
+    pub s3_last_modified_at: Option<f64>,
     /// Time the successful poll received its response (Unix seconds).
     pub success_at: f64,
     /// HTTP round-trip time for the successful fetch, milliseconds.
@@ -158,6 +162,16 @@ impl ChunkArrivalStat {
     /// poll schedule were better aligned to S3 publishing time.
     pub fn wait_after_last_empty_ms(&self) -> Option<f64> {
         self.last_empty_poll_at
+            .map(|t| (self.success_at - t) * 1000.0)
+    }
+
+    /// Time between S3's `Last-Modified` and our successful download.
+    /// Unlike `wait_after_last_empty_ms`, this is authoritative: the
+    /// object was provably available at `s3_last_modified_at`, so any
+    /// lag beyond that is pure client-side waste (wasted sleep + wasted
+    /// retries if we polled before it was published).
+    pub fn wait_after_s3_publish_ms(&self) -> Option<f64> {
+        self.s3_last_modified_at
             .map(|t| (self.success_at - t) * 1000.0)
     }
 }
