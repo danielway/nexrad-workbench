@@ -554,18 +554,6 @@ pub(super) fn render_realtime_progress(
                 block,
                 DashedBorder::rect(Stroke::new(1.0, border_color), 4.0, 8.0, 3.0, 6.0),
             );
-
-            // Chunk count label (e.g., "2/6")
-            if width > 30.0 {
-                let label = format!("{}/{}", chunks_received, exp_n);
-                painter.text(
-                    block.center(),
-                    egui::Align2::CENTER_CENTER,
-                    label,
-                    egui::FontId::monospace(8.0),
-                    Color32::from_rgba_unmultiplied(140, 200, 255, 180),
-                );
-            }
         } else if is_future {
             // Check if this is the first future sweep (next to receive data)
             // and we're waiting for a chunk with no downloading sweep active.
