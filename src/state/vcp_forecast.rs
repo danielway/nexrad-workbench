@@ -104,7 +104,9 @@ pub struct VolumeForecastSnapshot {
     pub previous_volume_end: Option<f64>,
     /// `volume_start - previous_volume_end` when both are known.
     pub inter_volume_gap_secs: Option<f64>,
-    /// Reserved for when the forecaster predicts the gap; always `None` today.
+    /// Forecaster's predicted gap: `predicted_available_at` on the new
+    /// volume's Start chunk minus the previous volume's observed end,
+    /// when both are known.
     pub predicted_inter_volume_gap_secs: Option<f64>,
 }
 
