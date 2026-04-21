@@ -148,18 +148,14 @@
             margin: 0;
             padding: 0;
             width: 100%;
-            /* Use dvh (dynamic viewport height) where supported so iOS Safari
-               collapsing toolbars don't leave gaps at the bottom of the page.
-               The 100% fallback is for browsers without dvh support. */
             height: 100%;
-            height: 100dvh;
             overflow: hidden;
-            /* Match egui's default dark-mode panel_fill (Color32::from_gray(27)).
-               When the canvas momentarily fails to cover the full viewport
-               (e.g. iOS home-indicator area in a PWA), the sliver that peeks
-               through now blends with the app's chrome instead of showing a
-               contrasting bluish stripe. */
-            background-color: #1b1b1b;
+            /* The app overrides egui's dark panel_fill to Color32::BLACK
+               (main.rs: visuals.panel_fill = BLACK). Match that here so any
+               sliver of body that peeks through behind the canvas (iOS PWA
+               home-indicator area, fractional pixel rounding) blends with
+               the app chrome. */
+            background-color: #000000;
         }
 
         /* iOS safe-area insets exposed as CSS custom properties so the WASM
@@ -175,6 +171,17 @@
         }
 
         #app_canvas {
+            /* Anchor the canvas to every viewport edge explicitly. Previously
+               using width/height: 100% left a small dark strip at the bottom
+               on iOS PWAs — likely iOS rounding the body's effective pixel
+               height down while the visual viewport is a hair taller. Pinning
+               with position: fixed + inset: 0 side-steps containing-block
+               sizing quirks and fills the screen edge-to-edge. */
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
             display: block;
             width: 100%;
             height: 100%;
