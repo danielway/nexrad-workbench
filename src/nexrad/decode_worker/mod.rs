@@ -4,10 +4,12 @@
 //! thread into a dedicated Web Worker. Communication uses `postMessage` with
 //! Transferable ArrayBuffers for zero-copy data transfer.
 
+mod pool;
 mod receive;
 mod send;
 mod types;
 
+pub use pool::{default_pool_size, WorkerPool};
 pub use types::{
     ChunkIngestContext, ChunkIngestResult, DecodeResult, IngestContext, IngestResult,
     RenderContext, VolumeData, VolumeRenderContext, VolumeSweepMeta, WorkerOutcome,

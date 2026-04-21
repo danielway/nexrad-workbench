@@ -242,9 +242,10 @@ pub struct DownloadProgress {
     /// Scan boundaries (start, end) of files queued but not yet loaded.
     /// The timeline renders ghost markers spanning these intervals.
     pub pending_scans: Vec<(i64, i64)>,
-    /// Boundary of the file currently being downloaded/processed.
-    /// Its ghost marker pulses to distinguish it from queued items.
-    pub active_scan: Option<(i64, i64)>,
+    /// Boundaries of files currently being downloaded.
+    /// Their ghost markers pulse to distinguish them from queued items.
+    /// Multiple entries when parallel downloads are in flight.
+    pub active_scans: Vec<(i64, i64)>,
     /// Phase of the currently active file.
     pub phase: DownloadPhase,
     /// Batch total file count.
