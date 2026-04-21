@@ -28,8 +28,8 @@
 
     
 <script type="module">
-import init, * as bindings from '/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-c1976a17910445ab.js';
-const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-c1976a17910445ab_bg.wasm' });
+import init, * as bindings from '/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-7a0779bd471d766a.js';
+const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-7a0779bd471d766a_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -177,6 +177,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         }
 
         #app_canvas {
+            display: block;
             width: 100%;
             height: 100%;
             /* Prevent the browser from claiming touch gestures (pinch-to-zoom,
@@ -214,7 +215,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             to { transform: rotate(360deg); }
         }
     </style>
-<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-c1976a17910445ab.js" crossorigin="anonymous" integrity="sha384-yCQqtINN6YBwJICvx3ellhR+zMnlIA1S54V1x5jRP6AQ98gkoKeH0J9Gym5rt4yK"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-c1976a17910445ab_bg.wasm" crossorigin="anonymous" integrity="sha384-qJwqU8EIzcI3GT5L08j40E4fFVzCU/o6pTb88URQIL9fbleJJp9f87yfDacIaVF/" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-7a0779bd471d766a.js" crossorigin="anonymous" integrity="sha384-SgYB1TUvRbWlMt8Q3+0dGJRGvPFqdKEeNiJEaz8GRfWwFJkCAuXg7pTUzRlQ8nyk"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-7a0779bd471d766a_bg.wasm" crossorigin="anonymous" integrity="sha384-oNi9ezztQlMUJZbhPXa7msKnDwiFVh1EQoWxHOr8xOLZUm9m11zAtt1167ksn9m8" as="fetch" type="application/wasm"></head>
 <body>
     <canvas id="app_canvas"></canvas>
     <div id="loading_text">
