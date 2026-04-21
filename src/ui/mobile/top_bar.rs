@@ -2,38 +2,48 @@
 //!
 //! Replaces the desktop top bar on mobile: drops the sidebar toggles, help
 //! button, and view-mode switcher (all irrelevant on mobile), and trims to
-//! the essentials: mode accent, app mode badge, site chip, alerts, worker
-//! error banner, and a small version stamp in the top-right.
+//! the essentials: mode badge, site chip, alerts, worker error banner, and
+//! a small version stamp in the top-right. The app-mode accent is painted
+//! as a 2px colored line at the bottom edge of the bar (the border between
+//! the bar and the canvas) rather than as a separate stripe at the very
+//! top — the top edge sits under the iOS status bar / notch on real
+//! devices, where a thin stripe is either obscured or crowded against OS
+//! icons.
 
 use crate::state::{AppMode, AppState};
-use eframe::egui::{self, Align, Color32, Frame, Layout, RichText};
+use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText};
 
 const TOP_BAR_CONTENT_HEIGHT: f32 = 44.0;
+const ACCENT_THICKNESS: f32 = 2.0;
 
 pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
-    // under the translucent status bar. Pad the top so OS icons don't
-    // overlap our content.
+    // under the translucent status bar / notch. Pad the top so OS icons
+    // don't overlap our content.
     let (inset_top, _inset_right, _inset_bottom, _inset_left) = super::safe_area_insets();
 
-    // Same mode accent bar as desktop — the colored stripe doubles as the
-    // app icon / status indicator.
-    egui::TopBottomPanel::top("mobile_mode_accent")
-        .resizable(false)
-        .exact_height(3.0)
-        .frame(Frame::NONE.fill(state.app_mode.color()))
-        .show(ctx, |ui| {
-            ui.allocate_space(ui.available_size());
-        });
+    let panel_fill = ctx.style().visuals.panel_fill;
+    let accent_color = state.app_mode.color();
+
+    // Zero inner-margin frame so the content sits as high as possible —
+    // egui's default top-panel frame adds a couple of pixels of padding on
+    // every side, which is noticeable below the iOS status bar.
+    let frame = Frame::NONE.fill(panel_fill).inner_margin(Margin::ZERO);
 
     egui::TopBottomPanel::top("mobile_top_bar")
-        .exact_height(TOP_BAR_CONTENT_HEIGHT + inset_top)
+        .resizable(false)
+        .exact_height(inset_top + TOP_BAR_CONTENT_HEIGHT)
+        .frame(frame)
         .show(ctx, |ui| {
-            // Push the top-bar content below the iOS status bar reservation.
             if inset_top > 0.0 {
                 ui.add_space(inset_top);
             }
+
+            let panel_rect = ui.max_rect();
+
             ui.horizontal_centered(|ui| {
+                ui.add_space(8.0);
+
                 // Site chip — primary control, tapping opens the site modal.
                 let site_label = format!(
                     "{} {}",
@@ -51,13 +61,12 @@ pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
 
                 // Compact mode badge (Idle / Archive / Live).
                 let mode = state.app_mode;
-                let color = mode.color();
                 let icon = match mode {
                     AppMode::Idle => egui_phosphor::regular::PAUSE_CIRCLE,
                     AppMode::Archive => egui_phosphor::regular::ARCHIVE_BOX,
                     AppMode::Live => egui_phosphor::regular::BROADCAST,
                 };
-                ui.label(RichText::new(icon).size(14.0).color(color));
+                ui.label(RichText::new(icon).size(14.0).color(accent_color));
 
                 // Alerts chip (reuses the desktop helper).
                 super::super::top_bar::render_alerts_chip(ui, state);
@@ -82,6 +91,7 @@ pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
                 // Version stamp — right-aligned. Useful for cross-referencing
                 // a deployed build against git history when reporting bugs.
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(8.0);
                     const MAX_LEN: usize = 18;
                     let version = env!("NEXRAD_VERSION");
                     let display = if version.len() > MAX_LEN {
@@ -104,5 +114,16 @@ pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
                     );
                 });
             });
+
+            // Paint the app-mode accent as a thin border along the bottom
+            // edge of the panel, separating it from the canvas below.
+            let y = panel_rect.bottom() - ACCENT_THICKNESS * 0.5;
+            ui.painter().line_segment(
+                [
+                    egui::pos2(panel_rect.left(), y),
+                    egui::pos2(panel_rect.right(), y),
+                ],
+                egui::Stroke::new(ACCENT_THICKNESS, accent_color),
+            );
         });
 }
