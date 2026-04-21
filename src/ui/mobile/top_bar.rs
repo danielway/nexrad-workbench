@@ -1,12 +1,12 @@
 //! Compact mobile top bar.
 //!
-//! Replaces the desktop top bar on mobile: drops the sidebar toggles, version
-//! stamp, help button, and view-mode switcher (all irrelevant on mobile), and
-//! trims to the essentials: mode accent, app mode badge, site chip, alerts,
-//! and worker error banner.
+//! Replaces the desktop top bar on mobile: drops the sidebar toggles, help
+//! button, and view-mode switcher (all irrelevant on mobile), and trims to
+//! the essentials: mode accent, app mode badge, site chip, alerts, worker
+//! error banner, and a small version stamp in the top-right.
 
 use crate::state::{AppMode, AppState};
-use eframe::egui::{self, Color32, Frame, RichText};
+use eframe::egui::{self, Align, Color32, Frame, Layout, RichText};
 
 pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
     // Same mode accent bar as desktop — the colored stripe doubles as the
@@ -67,6 +67,31 @@ pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
                         state.push_command(crate::state::AppCommand::RetryWorker);
                     }
                 }
+
+                // Version stamp — right-aligned. Useful for cross-referencing
+                // a deployed build against git history when reporting bugs.
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    const MAX_LEN: usize = 18;
+                    let version = env!("NEXRAD_VERSION");
+                    let display = if version.len() > MAX_LEN {
+                        let mut truncated = String::with_capacity(MAX_LEN + 3);
+                        for (i, ch) in version.char_indices() {
+                            if i >= MAX_LEN {
+                                break;
+                            }
+                            truncated.push(ch);
+                        }
+                        truncated.push('\u{2026}');
+                        truncated
+                    } else {
+                        version.to_string()
+                    };
+                    ui.label(
+                        RichText::new(display)
+                            .size(10.0)
+                            .color(Color32::from_rgb(120, 120, 120)),
+                    );
+                });
             });
         });
 }

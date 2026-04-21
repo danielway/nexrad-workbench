@@ -3,7 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <!-- viewport-fit=cover lets the canvas extend into the iPhone safe areas
+         (notch, home indicator) when installed as a home-screen PWA. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>NEXRAD Workbench</title>
 
     <!-- Browser favicon. SVG is live-recolored by `setFaviconColor` (see below) to
@@ -13,6 +15,16 @@
     <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png">
     <link rel="manifest" href="assets/manifest.webmanifest">
     <meta name="theme-color" content="#ff9b2e">
+
+    <!-- iOS "Add to Home Screen" PWA metadata. The manifest's display:standalone
+         covers modern browsers, but iOS Safari still reads these legacy tags to
+         decide whether to launch without Safari chrome and how to style the
+         status bar. `black-translucent` lets the app paint under the status bar
+         together with viewport-fit=cover above. -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="NEXRAD">
 
     <link data-trunk rel="rust" data-wasm-opt="2" />
     <link data-trunk rel="copy-file" href="worker.js" />
