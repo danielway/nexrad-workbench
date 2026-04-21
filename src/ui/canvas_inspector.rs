@@ -224,11 +224,29 @@ pub(crate) fn render_storm_cells(
             StrokeKind::Outside,
         );
 
+        // Major-axis tick through the centroid. Length scales with the
+        // smaller of the bounding-box extents so the tick stays inside.
+        let box_half = ((br.x - tl.x).abs().min((br.y - tl.y).abs())) * 0.5;
+        let tick_len = box_half.clamp(6.0, 40.0);
+        // orientation_deg is a compass heading folded into [0, 180). Convert
+        // back to a screen-space direction (y grows downward on screen, so
+        // flip the y component).
+        let theta = cell.orientation_deg.to_radians();
+        let dx = theta.sin() * tick_len;
+        let dy = -theta.cos() * tick_len;
+        painter.line_segment(
+            [center - Vec2::new(dx, dy), center + Vec2::new(dx, dy)],
+            Stroke::new(1.5, color),
+        );
+
         // Draw centroid marker
         painter.circle_stroke(center, 6.0, Stroke::new(2.0, color));
 
-        // Label with max dBZ
-        let label = format!("{:.0}", cell.max_dbz);
+        // Label: max dBZ · bearing / range from radar.
+        let label = format!(
+            "{:.0} dBZ · {:03.0}\u{00B0} / {:.0} km",
+            cell.max_dbz, cell.bearing_from_radar_deg, cell.range_from_radar_km
+        );
         painter.text(
             center + Vec2::new(8.0, -8.0),
             egui::Align2::LEFT_BOTTOM,

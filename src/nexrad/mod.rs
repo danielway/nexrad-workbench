@@ -14,6 +14,7 @@ mod archive_index;
 mod cache_channel;
 pub(crate) mod color_table;
 mod decode_worker;
+pub(crate) mod detection;
 mod download;
 pub(crate) mod download_queue;
 pub(crate) mod globe_radar_renderer;

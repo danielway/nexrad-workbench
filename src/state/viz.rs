@@ -229,16 +229,30 @@ pub enum ViewMode {
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct StormCellInfo {
-    /// Centroid latitude.
+    /// Reflectivity-weighted centroid latitude.
     pub lat: f64,
-    /// Centroid longitude.
+    /// Reflectivity-weighted centroid longitude.
     pub lon: f64,
-    /// Maximum reflectivity (dBZ).
+    /// Maximum reflectivity (dBZ) anywhere in the cell.
     pub max_dbz: f32,
-    /// Cell area in km^2.
+    /// Mean reflectivity (dBZ) across the cell's gates.
+    pub mean_dbz: f32,
+    /// Cell footprint area in km².
     pub area_km2: f32,
     /// Bounding box (min_lat, min_lon, max_lat, max_lon).
     pub bounds: (f64, f64, f64, f64),
+    /// Compass bearing (0° = N, clockwise) from radar to centroid.
+    pub bearing_from_radar_deg: f32,
+    /// Great-circle-approximate distance from radar to centroid, km.
+    pub range_from_radar_km: f32,
+    /// Orientation of the cell's major axis in compass degrees, folded
+    /// into [0, 180) since an axis is undirected.
+    pub orientation_deg: f32,
+    /// √(λ_major / λ_minor) from the pixel-weighted covariance. 1.0 = round.
+    pub elongation: f32,
+    /// Number of gates comprising the cell. Useful for debugging / further
+    /// filtering.
+    pub gate_count: u32,
 }
 
 /// Visualization state including view controls.
