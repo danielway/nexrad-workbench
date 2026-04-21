@@ -4,13 +4,13 @@ use super::canvas_inspector::{render_distance_measurement, render_inspector, ren
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
     draw_color_scale, draw_compass, draw_globe, draw_national_mosaic, draw_overlay_info,
-    render_alerts, render_nexrad_sites, render_radar_sweep,
+    render_alerts, render_nexrad_sites, render_radar_sweep, RadarCutout,
 };
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::RadarGpuRenderer;
 use crate::state::{AppState, RenderProcessing, ViewMode};
-use eframe::egui::{self, Color32, Rect, Sense};
+use eframe::egui::{self, Color32, Rect, Sense, Stroke};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};
 
@@ -78,12 +78,39 @@ pub fn render_canvas_with_geo(
                 // the projection.
                 state.viz_state.last_visible_bounds = Some(projection.visible_bounds());
 
+                // Screen-space cutout circle for the active radar's coverage.
+                // Computed once so both the mosaic cutout and the boundary
+                // stroke use the exact same center/radius.
+                let radar_cutout = gpu_renderer.and_then(|renderer| {
+                    let max_range_km = {
+                        let r = renderer.lock().expect("renderer mutex poisoned");
+                        if !r.has_data() {
+                            return None;
+                        }
+                        r.max_range_km()
+                    };
+                    let km_to_deg = 1.0 / 111.0;
+                    let lat_correction = state.viz_state.center_lat.to_radians().cos();
+                    let lon_range = max_range_km * km_to_deg / lat_correction;
+                    let center = projection.geo_to_screen(Coord {
+                        x: state.viz_state.center_lon,
+                        y: state.viz_state.center_lat,
+                    });
+                    let edge = projection.geo_to_screen(Coord {
+                        x: state.viz_state.center_lon + lon_range,
+                        y: state.viz_state.center_lat,
+                    });
+                    let radius = (edge.x - center.x).abs();
+                    Some(RadarCutout { center, radius })
+                });
+
                 if state.layer_state.geo.national_mosaic {
                     draw_national_mosaic(
                         &painter,
                         &projection,
                         &state.national_mosaic,
                         state.viz_state.zoom,
+                        radar_cutout,
                     );
                 }
 
@@ -126,6 +153,16 @@ pub fn render_canvas_with_geo(
                         gpu_sweep,
                         chunk_boundary,
                     );
+
+                    // Boundary ring at the edge of the active site's data range,
+                    // matching the mosaic cutout so the seam reads as a single circle.
+                    if let Some(c) = radar_cutout {
+                        painter.circle_stroke(
+                            c.center,
+                            c.radius,
+                            Stroke::new(1.5, canvas_colors::ring_major(dark)),
+                        );
+                    }
                     // Request only as fast as the visible animation requires. A
                     // bare `request_repaint()` pins the UI at full display rate
                     // (often 60 fps) and compounds every per-frame loop below.
