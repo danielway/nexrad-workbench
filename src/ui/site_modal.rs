@@ -74,6 +74,24 @@ fn responsive_width(ctx: &egui::Context, desktop: f32) -> f32 {
     (viewport_w - 16.0).min(desktop).max(240.0)
 }
 
+/// Open the site modal in `Pending` mode and start browser geolocation.
+///
+/// Used by the mobile bottom bar's location button to bypass the welcome
+/// screen and go straight to "finding nearest site". The polling loop in
+/// `render_site_modal` handles the result — success closes the modal after
+/// applying the selection, failure drops back to the welcome screen with
+/// the error visible.
+pub fn trigger_geolocation(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    modal_state: &mut SiteModalState,
+) {
+    state.site_modal_open = true;
+    modal_state.mode = SiteModalMode::Pending;
+    modal_state.error_message = None;
+    start_geolocation(modal_state.location_results.clone(), ctx.clone());
+}
+
 /// Apply a site selection to app state: update viz, center camera, refresh timeline.
 pub(super) fn apply_site_selection(state: &mut AppState, site_id: &str, lat: f64, lon: f64) {
     state.viz_state.site_id = site_id.to_string();

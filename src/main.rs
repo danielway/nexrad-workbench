@@ -3018,6 +3018,14 @@ impl eframe::App for WorkbenchApp {
         // On mobile, the tabbed chrome replaces both the desktop top bar and
         // bottom panel; the left/right side panels early-return internally.
         if self.state.is_mobile {
+            // Consume any deferred geolocation request raised by the mobile
+            // action bar. Handled here because the site-modal state lives
+            // outside AppState.
+            if self.state.mobile_geolocate_requested {
+                self.state.mobile_geolocate_requested = false;
+                ui::trigger_geolocation(ctx, &mut self.state, &mut self.site_modal_state);
+            }
+
             ui::render_mobile_top_bar(ctx, &mut self.state);
             ui::render_mobile_chrome(ctx, &mut self.state);
             // The desktop bottom_panel is still called so its per-frame
@@ -3039,6 +3047,7 @@ impl eframe::App for WorkbenchApp {
 
         // Render overlays (on top of everything)
         ui::render_site_modal(ctx, &mut self.state, &mut self.site_modal_state);
+        ui::render_mobile_settings_modal(ctx, &mut self.state);
         ui::render_shortcuts_help(ctx, &mut self.state);
         ui::render_wipe_modal(ctx, &mut self.state);
         ui::render_stats_modal(ctx, &mut self.state);
