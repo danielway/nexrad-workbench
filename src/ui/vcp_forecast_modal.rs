@@ -376,7 +376,10 @@ fn render_snapshot(
                         value_color,
                     );
                 }
-                // Authoritative lag vs. S3 publish time (Last-Modified header).
+                // Lag vs. S3 publish time (Last-Modified header).
+                // The header is rendered with 1-second resolution, so individual
+                // values carry ±1s of quantization noise — treat magnitudes below
+                // that as indistinguishable from zero.
                 let wait_after_s3: Vec<f64> = arrivals
                     .iter()
                     .filter_map(|a| a.wait_after_s3_publish_ms())
@@ -386,18 +389,32 @@ fn render_snapshot(
                         ui,
                         "Wait after S3 publish (success - Last-Modified)",
                         &format!(
-                            "mean {mean:.0}ms  median {median:.0}ms  max {max_abs:.0}ms  (±1s noise)"
+                            "mean {mean:.0}ms  median {median:.0}ms  max {max_abs:.0}ms  (±1s quantized)"
                         ),
                         label_color,
                         value_color,
                     );
-                    // Negative min ⇒ client clock is ahead of S3 (clock skew).
-                    let min_wait = wait_after_s3.iter().copied().fold(f64::INFINITY, f64::min);
-                    if min_wait < 0.0 {
+                    // Values outside ±1s are real client-side wait (or real skew).
+                    // Values within ±1s are noise from Last-Modified truncation.
+                    let measurable: Vec<f64> =
+                        wait_after_s3.iter().copied().filter(|v| v.abs() > 1000.0).collect();
+                    if let Some((mean_m, _median_m, max_m)) = stats_on(&measurable) {
                         kv(
                             ui,
-                            "  clock skew estimate",
-                            &format!("client ~{:.0}ms ahead of S3", -min_wait),
+                            "  measurable waits (|>1s|)",
+                            &format!(
+                                "{}/{}  mean {mean_m:.0}ms  max {max_m:.0}ms",
+                                measurable.len(),
+                                wait_after_s3.len()
+                            ),
+                            label_color,
+                            value_color,
+                        );
+                    } else {
+                        kv(
+                            ui,
+                            "  measurable waits (|>1s|)",
+                            "none — all chunks within ±1s quantization noise",
                             label_color,
                             value_color,
                         );
@@ -993,24 +1010,33 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
         .filter(|a| a.s3_last_modified_at.is_some())
         .count();
     if let Some((mean, median, max_abs)) = stats_on(&wait_after_s3_ms) {
-        let min_wait = wait_after_s3_ms
-            .iter()
-            .copied()
-            .fold(f64::INFINITY, f64::min);
-        let skew_note = if min_wait < 0.0 {
-            format!(
-                "  (min={min_wait:.0}ms — negative ⇒ client clock ~{:.0}ms ahead of S3; Last-Modified has 1-s precision)",
-                -min_wait
-            )
-        } else {
-            "  (Last-Modified has 1-s precision so values are ±1000ms noisy)".to_string()
-        };
         let _ = writeln!(
             out,
-            "wait_after_s3_publish_ms: mean={mean:.0}  median={median:.0}  max_abs={max_abs:.0}  (coverage {}/{}){skew_note}",
+            "wait_after_s3_publish_ms: mean={mean:.0}  median={median:.0}  max_abs={max_abs:.0}  (coverage {}/{}; ±1s quantized — Last-Modified is second-precision)",
             s3_coverage,
             arrivals.len()
         );
+        // Filter to measurable waits only — |values| > 1000 ms are outside the
+        // quantization noise band and reflect real client-side wait.
+        let measurable: Vec<f64> = wait_after_s3_ms
+            .iter()
+            .copied()
+            .filter(|v| v.abs() > 1000.0)
+            .collect();
+        if let Some((mean_m, _median_m, max_m)) = stats_on(&measurable) {
+            let _ = writeln!(
+                out,
+                "wait_after_s3_measurable: {}/{} chunks outside ±1s band  mean={mean_m:.0}ms  max={max_m:.0}ms",
+                measurable.len(),
+                wait_after_s3_ms.len()
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "wait_after_s3_measurable: 0/{} — all chunks within ±1s quantization noise (no measurable client-side wait)",
+                wait_after_s3_ms.len()
+            );
+        }
     } else {
         let _ = writeln!(
             out,

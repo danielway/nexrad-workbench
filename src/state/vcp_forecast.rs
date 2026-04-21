@@ -185,13 +185,12 @@ impl ChunkArrivalStat {
     }
 
     /// Time between S3's `Last-Modified` and our successful download.
-    /// Unlike `wait_after_last_empty_ms`, this is authoritative: the
-    /// object was provably available at `s3_last_modified_at`, so any
-    /// lag beyond that is pure client-side waste (wasted sleep + wasted
-    /// retries if we polled before it was published).
-    ///
-    /// Caveat: `Last-Modified` has 1-second resolution, so values are
-    /// ±1 s noisy. Negative values indicate client/server clock skew.
+    /// Unlike `wait_after_last_empty_ms`, this tries to be authoritative
+    /// (the object was provably available at `s3_last_modified_at`), but
+    /// `Last-Modified` has 1-second resolution so individual values carry
+    /// ±1 s of quantization noise — including sign flips. Magnitudes
+    /// smaller than 1000 ms are indistinguishable from zero; treat only
+    /// `|wait| > 1000 ms` as real client-side wait (or real clock skew).
     pub fn wait_after_s3_publish_ms(&self) -> Option<f64> {
         self.s3_last_modified_at
             .map(|t| (self.success_at - t) * 1000.0)
