@@ -255,13 +255,23 @@ pub struct AppState {
     /// force mobile, `Some(false)` = force desktop. Persisted via preferences.
     pub mobile_override: Option<bool>,
 
-    /// Which mobile tab is currently showing its content in the bottom sheet.
-    pub mobile_active_tab: MobileTab,
+    /// Whether the mobile settings modal (opened via the ellipsis button in
+    /// the mobile bottom bar) is currently visible.
+    pub mobile_settings_open: bool,
+
+    /// Active tab inside the mobile settings modal.
+    pub mobile_settings_tab: MobileSettingsTab,
+
+    /// Latched when the mobile bottom bar's location button is tapped. The
+    /// main update loop consumes this flag and kicks off geolocation against
+    /// the `SiteModalState` that lives outside `AppState`, avoiding a direct
+    /// state dependency from the bottom-bar renderer.
+    pub mobile_geolocate_requested: bool,
 }
 
-/// Tabs in the mobile bottom chrome. Order matches the tab bar layout.
+/// Tabs in the mobile settings modal. Order matches the tab strip layout.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum MobileTab {
+pub enum MobileSettingsTab {
     #[default]
     Playback,
     Product,
@@ -269,10 +279,10 @@ pub enum MobileTab {
     More,
 }
 
-impl MobileTab {
+impl MobileSettingsTab {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Playback => "Play",
+            Self::Playback => "Playback",
             Self::Product => "Product",
             Self::Layers => "Layers",
             Self::More => "More",

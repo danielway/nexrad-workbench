@@ -35,11 +35,13 @@ pub use bottom_panel::render_bottom_panel;
 pub use canvas::render_canvas_with_geo;
 pub use event_modal::{render_event_modal, EventModalState};
 pub use left_panel::render_left_panel;
-pub(crate) use mobile::{render_mobile_chrome, render_mobile_top_bar};
+pub(crate) use mobile::{
+    render_mobile_chrome, render_mobile_settings_modal, render_mobile_top_bar,
+};
 pub use network_panel::render_network_log;
 pub use right_panel::render_right_panel;
 pub use shortcuts::{handle_shortcuts, render_shortcuts_help};
-pub use site_modal::{render_site_modal, SiteModalState};
+pub use site_modal::{render_site_modal, trigger_geolocation, SiteModalState};
 pub use stats_modal::render_stats_modal;
 pub use top_bar::render_top_bar;
 pub use vcp_forecast_modal::render_vcp_forecast_modal;
