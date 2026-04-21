@@ -181,6 +181,23 @@ pub struct LiveModeState {
     /// Structural metadata covers all chunks; projected times only for future chunks.
     /// Updated each time a new chunk arrives.
     pub chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
+
+    /// Diagnostic snapshot of the current live volume's forecast vs. actuals.
+    /// Populated at volume start (when both VCP pattern and volume_start are
+    /// known) by `try_capture_forecast`. Used by the VCP forecast diagnostics
+    /// modal to let the user compare predicted and observed values.
+    pub current_volume_forecast: Option<crate::state::VolumeForecastSnapshot>,
+
+    /// Most recently completed `current_volume_forecast`, moved here by
+    /// `handle_volume_complete`. Kept so the diagnostics modal still has
+    /// something to display immediately after a volume ends and before the
+    /// next one's snapshot is captured.
+    pub last_volume_forecast: Option<crate::state::VolumeForecastSnapshot>,
+
+    /// Observed end timestamp of the previous volume (Unix seconds). Survives
+    /// the reset in `handle_volume_complete` so the next volume's snapshot
+    /// can compute its inter-volume gap.
+    pub previous_volume_end_secs: Option<f64>,
 }
 
 impl Default for LiveModeState {
@@ -214,6 +231,9 @@ impl Default for LiveModeState {
             last_radial_time_secs: None,
             projected_volume_end_secs: None,
             chunk_projections: None,
+            current_volume_forecast: None,
+            last_volume_forecast: None,
+            previous_volume_end_secs: None,
         }
     }
 }
@@ -283,6 +303,9 @@ impl LiveModeState {
         self.last_radial_time_secs = None;
         self.projected_volume_end_secs = None;
         self.chunk_projections = None;
+        self.current_volume_forecast = None;
+        self.last_volume_forecast = None;
+        self.previous_volume_end_secs = None;
     }
 
     /// Set error state with message.
@@ -426,6 +449,16 @@ impl LiveModeState {
                 self.last_volume_duration_secs = Some(dur);
             }
         }
+
+        // Seal the forecast snapshot and preserve it for the diagnostics modal.
+        // Move it into `last_volume_forecast` so the modal has something to show
+        // while the next volume is spinning up.
+        if let Some(mut snap) = self.current_volume_forecast.take() {
+            snap.actual_volume_end = Some(now);
+            self.last_volume_forecast = Some(snap);
+        }
+        self.previous_volume_end_secs = Some(now);
+
         self.phase = LivePhase::Streaming;
         self.phase_started_at = Some(now);
         self.elevations_received.clear();
@@ -468,12 +501,14 @@ impl LiveModeState {
     /// sweeps for the current volume.
     pub fn update_sweep_metas(&mut self, metas: Vec<crate::data::SweepMeta>) {
         self.completed_sweep_metas = metas;
+        self.fill_forecast_actuals();
     }
 
     /// Record which elevation is currently being accumulated (partial sweep).
     /// Resets `sweep_start_azimuth` when the elevation changes.
     pub fn record_in_progress_elevation(&mut self, elevation: Option<u8>, radials: Option<u32>) {
-        if elevation != self.current_in_progress_elevation {
+        let elevation_changed = elevation != self.current_in_progress_elevation;
+        if elevation_changed {
             self.current_elev_chunks.clear();
             self.sweep_start_azimuth = None;
             // Keep live_data_azimuth_range until the LiveDecoded result arrives
@@ -482,6 +517,12 @@ impl LiveModeState {
         }
         self.current_in_progress_elevation = elevation;
         self.current_in_progress_radials = radials;
+
+        if elevation_changed {
+            if let Some(new_elev) = elevation {
+                self.capture_mid_prediction(new_elev);
+            }
+        }
     }
 
     /// Record VCP info from an ingest result. When a full `ExtractedVcp` with
@@ -507,6 +548,7 @@ impl LiveModeState {
                 self.estimated_sweep_durations = vcp.sweep_durations(vol_dur);
             }
         }
+        self.try_capture_forecast();
     }
 
     /// Record last radial azimuth and timestamp from a chunk.
@@ -516,6 +558,236 @@ impl LiveModeState {
         }
         if let Some(t) = time_secs {
             self.last_radial_time_secs = Some(t);
+        }
+    }
+
+    /// Capture a cold-start forecast snapshot for the current volume, if the
+    /// prerequisites are met and we don't already have one.
+    ///
+    /// Called at the end of `record_vcp` and also from the main update loop
+    /// right after `current_volume_start` is first set — either one may run
+    /// first depending on the order chunks arrive.
+    pub fn try_capture_forecast(&mut self) {
+        if self.current_volume_forecast.is_some() {
+            return;
+        }
+        let Some(vol_start) = self.current_volume_start else {
+            return;
+        };
+        let Some(vcp) = self.current_vcp_pattern.as_ref() else {
+            return;
+        };
+        if vcp.elevations.is_empty() {
+            return;
+        }
+
+        let vcp_number = vcp.number;
+        let vcp_name = crate::state::get_vcp_definition(vcp_number).map(|d| d.name);
+        let is_clear_air = crate::data::vcp::is_clear_air_vcp(vcp_number);
+
+        let total_vol_dur = vcp.estimated_volume_duration().unwrap_or(300.0);
+        let predicted_volume_end = self
+            .projected_volume_end_secs
+            .unwrap_or(vol_start + total_vol_dur);
+        let sweep_durations = vcp.sweep_durations(total_vol_dur);
+
+        // Group chunk_projections by elevation for per-sweep predictions.
+        let chunk_projections_available = self.chunk_projections.is_some();
+        let projected_per_elev: Option<
+            std::collections::BTreeMap<u8, (f64, f64, u32, f64)>, // (min_time, max_time, chunk_count, rate)
+        > = self.chunk_projections.as_ref().map(|projs| {
+            let mut map: std::collections::BTreeMap<u8, (f64, f64, u32, f64)> =
+                std::collections::BTreeMap::new();
+            for chunk in projs {
+                if let Some(e) = chunk.elevation_number {
+                    let entry = map.entry(e as u8).or_insert((
+                        f64::MAX,
+                        f64::MIN,
+                        0u32,
+                        chunk.azimuth_rate_dps,
+                    ));
+                    entry.2 += 1;
+                    if let Some(t) = chunk.projected_time_secs {
+                        entry.0 = entry.0.min(t);
+                        entry.1 = entry.1.max(t);
+                    }
+                    if entry.3 <= 0.0 {
+                        entry.3 = chunk.azimuth_rate_dps;
+                    }
+                }
+            }
+            map
+        });
+
+        let mut sweeps: Vec<crate::state::SweepForecast> = Vec::with_capacity(vcp.elevations.len());
+        let mut cum_offset = 0.0f64;
+
+        for (idx, elev) in vcp.elevations.iter().enumerate() {
+            let elev_number = (idx + 1) as u8;
+            let weighted_dur = sweep_durations
+                .get(idx)
+                .copied()
+                .unwrap_or(total_vol_dur / vcp.elevations.len() as f64);
+
+            let fallback_rate = crate::data::vcp::fallback_azimuth_rate(
+                is_clear_air,
+                &elev.waveform,
+                elev.prf_number,
+            );
+
+            // Rate selection priority: library projection > VCP msg > Method B fallback.
+            let proj = projected_per_elev
+                .as_ref()
+                .and_then(|m| m.get(&elev_number))
+                .copied();
+            let (rate_used, rate_source) = match (proj, elev.azimuth_rate) {
+                (Some((_, _, _, r)), _) if r > 0.0 => {
+                    (r, crate::state::RateSource::ProjectionLibrary)
+                }
+                (_, Some(r)) if r > 0.0 => (r as f64, crate::state::RateSource::VcpMessage),
+                _ => (fallback_rate, crate::state::RateSource::MethodBFallback),
+            };
+
+            // Prefer library projection bounds when usable; otherwise use the
+            // VCP-weighted cumulative offset (same cascade as VcpPositionModel).
+            let (predicted_start, predicted_end) = match proj {
+                Some((min_t, max_t, _, rate)) if min_t < f64::MAX => {
+                    let end = if max_t > f64::MIN {
+                        max_t
+                    } else if rate > 0.0 {
+                        min_t + (360.0 / rate - 0.67).max(0.0)
+                    } else {
+                        min_t + weighted_dur
+                    };
+                    (min_t, end)
+                }
+                _ => (
+                    vol_start + cum_offset,
+                    vol_start + cum_offset + weighted_dur,
+                ),
+            };
+
+            let predicted_duration = (predicted_end - predicted_start).max(0.0);
+            let predicted_chunks = proj.map(|(_, _, count, _)| count);
+
+            sweeps.push(crate::state::SweepForecast {
+                elev_number,
+                elev_angle: elev.angle,
+                waveform: elev.waveform.clone(),
+                prf_number: elev.prf_number,
+                is_sails: elev.is_sails,
+                is_mrle: elev.is_mrle,
+                is_base_tilt: elev.is_base_tilt,
+                vcp_azimuth_rate: elev.azimuth_rate,
+                fallback_azimuth_rate: fallback_rate,
+                azimuth_rate_used: rate_used,
+                rate_source,
+                predicted_start,
+                predicted_end,
+                predicted_duration,
+                predicted_chunks,
+                mid_predicted_start: None,
+                mid_predicted_end: None,
+                actual_start: None,
+                actual_end: None,
+                actual_chunks: None,
+                observed_rate_dps: None,
+                timing_source: None,
+                status: crate::state::SweepStatus::Future,
+            });
+
+            cum_offset += weighted_dur;
+        }
+
+        let inter_volume_gap_secs = self
+            .previous_volume_end_secs
+            .map(|prev_end| vol_start - prev_end);
+
+        let snap = crate::state::VolumeForecastSnapshot {
+            vcp_number,
+            vcp_name,
+            is_clear_air,
+            volume_start: vol_start,
+            predicted_volume_end,
+            actual_volume_end: None,
+            expected_elevation_count: vcp.elevations.len() as u8,
+            sweeps,
+            captured_at: vol_start,
+            chunk_projections_available_at_start: chunk_projections_available,
+            previous_volume_end: self.previous_volume_end_secs,
+            inter_volume_gap_secs,
+            predicted_inter_volume_gap_secs: None,
+        };
+        self.current_volume_forecast = Some(snap);
+
+        // Pre-fill actuals and mid-predictions in case some data arrived before
+        // the snapshot could be taken (e.g., VCP message came in after the
+        // first sweep of the volume had already been ingested).
+        self.fill_forecast_actuals();
+        if let Some(cur_elev) = self.current_in_progress_elevation {
+            self.capture_mid_prediction(cur_elev);
+        }
+    }
+
+    /// Walk `completed_sweep_metas` + `chunk_elev_spans` and fill actuals on
+    /// the current volume's forecast snapshot, if any.
+    fn fill_forecast_actuals(&mut self) {
+        let Some(snap) = self.current_volume_forecast.as_mut() else {
+            return;
+        };
+        for meta in &self.completed_sweep_metas {
+            let Some(forecast) = snap
+                .sweeps
+                .iter_mut()
+                .find(|s| s.elev_number == meta.elevation_number)
+            else {
+                continue;
+            };
+            forecast.actual_start = Some(meta.start);
+            forecast.actual_end = Some(meta.end);
+            let dur = meta.end - meta.start;
+            forecast.observed_rate_dps = if dur > 0.0 { Some(360.0 / dur) } else { None };
+            forecast.actual_chunks = Some(
+                self.chunk_elev_spans
+                    .iter()
+                    .filter(|&&(e, _, _, _)| e == meta.elevation_number)
+                    .count() as u32,
+            );
+            forecast.timing_source = Some(crate::state::SweepTiming::Observed);
+            forecast.status = crate::state::SweepStatus::Complete;
+        }
+    }
+
+    /// Record the "mid" prediction — what the projection library predicts for
+    /// the given elevation's bounds *now*, when it has just become in-progress.
+    fn capture_mid_prediction(&mut self, elev: u8) {
+        let Some(snap) = self.current_volume_forecast.as_mut() else {
+            return;
+        };
+        let Some(forecast) = snap.sweeps.iter_mut().find(|s| s.elev_number == elev) else {
+            return;
+        };
+        if forecast.mid_predicted_start.is_some() {
+            return;
+        }
+
+        if let Some(ref projs) = self.chunk_projections {
+            let mut min_t = f64::MAX;
+            let mut max_t = f64::MIN;
+            for chunk in projs {
+                if chunk.elevation_number == Some(elev as usize) {
+                    if let Some(t) = chunk.projected_time_secs {
+                        min_t = min_t.min(t);
+                        max_t = max_t.max(t);
+                    }
+                }
+            }
+            if min_t < f64::MAX {
+                forecast.mid_predicted_start = Some(min_t);
+                if max_t > f64::MIN {
+                    forecast.mid_predicted_end = Some(max_t);
+                }
+            }
         }
     }
 }
