@@ -28,8 +28,8 @@
 
     
 <script type="module">
-import init, * as bindings from '/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-e7837ea8726d2844.js';
-const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-e7837ea8726d2844_bg.wasm' });
+import init, * as bindings from '/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-29839c295955e4f8.js';
+const wasm = await init({ module_or_path: '/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-29839c295955e4f8_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -159,18 +159,14 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             margin: 0;
             padding: 0;
             width: 100%;
-            /* Use dvh (dynamic viewport height) where supported so iOS Safari
-               collapsing toolbars don't leave gaps at the bottom of the page.
-               The 100% fallback is for browsers without dvh support. */
             height: 100%;
-            height: 100dvh;
             overflow: hidden;
-            /* Match egui's default dark-mode panel_fill (Color32::from_gray(27)).
-               When the canvas momentarily fails to cover the full viewport
-               (e.g. iOS home-indicator area in a PWA), the sliver that peeks
-               through now blends with the app's chrome instead of showing a
-               contrasting bluish stripe. */
-            background-color: #1b1b1b;
+            /* The app overrides egui's dark panel_fill to Color32::BLACK
+               (main.rs: visuals.panel_fill = BLACK). Match that here so any
+               sliver of body that peeks through behind the canvas (iOS PWA
+               home-indicator area, fractional pixel rounding) blends with
+               the app chrome. */
+            background-color: #000000;
         }
 
         /* iOS safe-area insets exposed as CSS custom properties so the WASM
@@ -186,6 +182,17 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         }
 
         #app_canvas {
+            /* Anchor the canvas to every viewport edge explicitly. Previously
+               using width/height: 100% left a small dark strip at the bottom
+               on iOS PWAs — likely iOS rounding the body's effective pixel
+               height down while the visual viewport is a hair taller. Pinning
+               with position: fixed + inset: 0 side-steps containing-block
+               sizing quirks and fills the screen edge-to-edge. */
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            left: 0;
             display: block;
             width: 100%;
             height: 100%;
@@ -224,7 +231,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
             to { transform: rotate(360deg); }
         }
     </style>
-<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-e7837ea8726d2844.js" crossorigin="anonymous" integrity="sha384-SgYB1TUvRbWlMt8Q3+0dGJRGvPFqdKEeNiJEaz8GRfWwFJkCAuXg7pTUzRlQ8nyk"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-e7837ea8726d2844_bg.wasm" crossorigin="anonymous" integrity="sha384-NoXbELZ3kg+tJa77L8zDuAAAIsSF45kjZmF6i0tzangUa1ZKQdkGnYUuKTzSFpwZ" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-29839c295955e4f8.js" crossorigin="anonymous" integrity="sha384-PLPN2HNoENPcuvYHaNaJZSxVG9gvRoTYy9AcSqUyfZ2CvwPuQJ3W04BjRruWvrNx"><link rel="preload" href="/nexrad-workbench/pr-preview/pr-106/nexrad-workbench-29839c295955e4f8_bg.wasm" crossorigin="anonymous" integrity="sha384-L2dYilXujXB1TAYmF5KC+bWrzq9ueM68XnblG+4HFpcjpnMGDZCHs3jLENXp6Vcx" as="fetch" type="application/wasm"></head>
 <body>
     <canvas id="app_canvas"></canvas>
     <div id="loading_text">
