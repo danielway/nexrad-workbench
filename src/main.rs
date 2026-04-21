@@ -1070,6 +1070,7 @@ impl WorkbenchApp {
                 fetch_latency_ms,
                 projected_volume_end_secs,
                 chunk_projections,
+                arrival_stat,
             } => {
                 self.state
                     .session_stats
@@ -1090,6 +1091,10 @@ impl WorkbenchApp {
                     projected_volume_end_secs,
                     chunk_projections,
                 );
+
+                if let Some(stat) = arrival_stat {
+                    self.state.live_mode_state.record_chunk_arrival(stat);
+                }
 
                 // Record chunk latency for the acquisition drawer
                 self.state.acquisition.record_chunk_latency(
@@ -1659,6 +1664,11 @@ impl WorkbenchApp {
             // header (the first radial of the volume scan).
             if let Some(header_time) = result.volume_header_time_secs {
                 self.state.live_mode_state.current_volume_start = Some(header_time);
+                // Retry the forecast snapshot in case the VCP pattern was
+                // already recorded before the volume-start timestamp arrived.
+                // `record_vcp` below also calls this, so the usual flow picks
+                // up regardless of which side arrives first.
+                self.state.live_mode_state.try_capture_forecast();
             }
             if !result.elevations_completed.is_empty() {
                 let vol_start_ts = self
@@ -3042,6 +3052,7 @@ impl eframe::App for WorkbenchApp {
         ui::render_shortcuts_help(ctx, &mut self.state);
         ui::render_wipe_modal(ctx, &mut self.state);
         ui::render_stats_modal(ctx, &mut self.state);
+        ui::render_vcp_forecast_modal(ctx, &mut self.state);
         ui::render_network_log(ctx, &mut self.state);
         ui::render_event_modal(ctx, &mut self.state, &mut self.event_modal_state);
         ui::render_alerts_modals(ctx, &mut self.state);

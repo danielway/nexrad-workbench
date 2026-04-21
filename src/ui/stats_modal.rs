@@ -252,6 +252,34 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
 
             ui.separator();
 
+            // --- Diagnostics ---
+            ui.label(
+                RichText::new("Diagnostics")
+                    .size(12.0)
+                    .strong()
+                    .color(heading_color),
+            );
+            ui.indent("diag_section", |ui| {
+                let has_forecast = state.live_mode_state.current_volume_forecast.is_some()
+                    || state.live_mode_state.last_volume_forecast.is_some();
+                if ui
+                    .add_enabled(
+                        has_forecast,
+                        egui::Button::new("VCP forecast diagnostics").small(),
+                    )
+                    .on_hover_text(
+                        "Compare VCP-based predictions against observed sweeps for the current live volume",
+                    )
+                    .on_disabled_hover_text("Available after a live VCP message has been received")
+                    .clicked()
+                {
+                    state.vcp_forecast_open = true;
+                    state.stats_detail_open = false;
+                }
+            });
+
+            ui.separator();
+
             // --- Cache ---
             stat_row(
                 ui,

@@ -61,6 +61,9 @@ pub enum RealtimeResult {
         /// Per-chunk projection info for the entire volume.
         /// Structural metadata is present for all chunks; projected times only for future chunks.
         chunk_projections: Option<Vec<ChunkProjectionInfo>>,
+        /// Arrival diagnostics (empty-poll counts, predicted vs. actual time).
+        /// `None` on synthetic emissions such as the resume-from-cache path.
+        arrival_stat: Option<crate::state::ChunkArrivalStat>,
     },
     /// Raw chunk data for incremental ingest
     ChunkData {
@@ -454,6 +457,7 @@ async fn streaming_loop(
                 fetch_latency_ms: 0.0,
                 projected_volume_end_secs: get_projected_volume_end_secs(&iter),
                 chunk_projections: build_chunk_projections(&iter),
+                arrival_stat: None,
             });
         }
         ctx.request_repaint();
@@ -488,13 +492,20 @@ async fn streaming_loop(
                 fetch_latency_ms: 0.0,
                 projected_volume_end_secs: get_projected_volume_end_secs(&iter),
                 chunk_projections: build_chunk_projections(&iter),
+                arrival_stat: None,
             });
         }
         ctx.request_repaint();
     }
 
     // --- Main streaming loop: emit ChunkData per chunk ---
+    // Per-chunk arrival tracking: captured on the first iteration for each
+    // chunk and reset on success (or on final-retry recovery).
     let mut none_retries: u32 = 0;
+    let mut cur_predicted_at: Option<f64> = None; // absolute Unix seconds
+    let mut cur_scheduled_at: Option<f64> = None; // first poll time
+    let mut cur_first_empty_at: Option<f64> = None;
+    let mut cur_last_empty_at: Option<f64> = None;
     loop {
         // Check stop signal
         if state.borrow().stop_requested {
@@ -502,8 +513,17 @@ async fn streaming_loop(
             break;
         }
 
-        // Wait for expected chunk time
-        if let Some(wait_duration) = iter.time_until_next().and_then(|d| d.to_std().ok()) {
+        // Wait for expected chunk time. Only capture the prediction on the
+        // first iteration for a given chunk — subsequent retry iterations
+        // re-enter here with a near-zero wait, which would overwrite the
+        // original estimate.
+        let time_until_next_opt = iter.time_until_next().and_then(|d| d.to_std().ok());
+        if cur_predicted_at.is_none() {
+            if let Some(d) = time_until_next_opt {
+                cur_predicted_at = Some(current_timestamp_f64() + d.as_secs_f64());
+            }
+        }
+        if let Some(wait_duration) = time_until_next_opt {
             let wait_ms = wait_duration.as_millis() as u32;
             if wait_ms > 0 && !interruptible_sleep(&state, &ctx, wait_ms).await {
                 log::debug!("Realtime streaming stopped");
@@ -511,12 +531,16 @@ async fn streaming_loop(
             }
         }
 
+        if cur_scheduled_at.is_none() {
+            cur_scheduled_at = Some(current_timestamp_f64());
+        }
+
         // Fetch next chunk (with timing)
         let chunk_fetch_start = web_time::Instant::now();
         match iter.try_next().await {
             Ok(Some(chunk)) => {
-                none_retries = 0;
                 let chunk_fetch_ms = chunk_fetch_start.elapsed().as_secs_f64() * 1000.0;
+                let success_at = current_timestamp_f64();
                 stats_tracker.update(&stats, &iter);
 
                 let chunk_data = chunk.chunk.data().to_vec();
@@ -532,6 +556,57 @@ async fn streaming_loop(
                 }
 
                 chunks_in_volume += 1;
+
+                let type_label: &'static str = if is_start {
+                    "Start"
+                } else if is_end {
+                    "End"
+                } else {
+                    "Intermediate"
+                };
+                let s3_last_modified_at = chunk
+                    .identifier
+                    .upload_date_time()
+                    .map(|dt| dt.timestamp_millis() as f64 / 1000.0);
+
+                // Look up this chunk's entry in the library's projection list
+                // so we can attach elevation_number and chunk-within-sweep
+                // position to the arrival stat.
+                let chunk_projections = build_chunk_projections(&iter);
+                let (elevation_number, chunk_index_in_sweep, chunks_in_sweep) =
+                    match chunk_projections.as_ref().and_then(|projs| {
+                        projs.iter().find(|p| p.sequence as u32 == chunks_in_volume)
+                    }) {
+                        Some(p) => (
+                            p.elevation_number.map(|e| e as u8),
+                            Some(p.chunk_index_in_sweep as u32),
+                            Some(p.chunks_in_sweep as u32),
+                        ),
+                        None => (None, None, None),
+                    };
+
+                let arrival_stat = crate::state::ChunkArrivalStat {
+                    sequence: chunks_in_volume,
+                    chunk_type: type_label,
+                    elevation_number,
+                    chunk_index_in_sweep,
+                    chunks_in_sweep,
+                    predicted_available_at: cur_predicted_at,
+                    scheduled_at: cur_scheduled_at.unwrap_or(success_at),
+                    empty_polls: none_retries,
+                    first_empty_poll_at: cur_first_empty_at,
+                    last_empty_poll_at: cur_last_empty_at,
+                    s3_last_modified_at,
+                    success_at,
+                    fetch_latency_ms: chunk_fetch_ms,
+                };
+
+                // Reset tracking state for the next chunk
+                none_retries = 0;
+                cur_predicted_at = None;
+                cur_scheduled_at = None;
+                cur_first_empty_at = None;
+                cur_last_empty_at = None;
 
                 let time_until_next = iter.time_until_next().and_then(|td| td.to_std().ok());
 
@@ -553,7 +628,8 @@ async fn streaming_loop(
                         is_volume_end: is_end,
                         fetch_latency_ms: chunk_fetch_ms,
                         projected_volume_end_secs: get_projected_volume_end_secs(&iter),
-                        chunk_projections: build_chunk_projections(&iter),
+                        chunk_projections,
+                        arrival_stat: Some(arrival_stat),
                     });
                 }
 
@@ -562,6 +638,11 @@ async fn streaming_loop(
             Ok(None) => {
                 // Chunk not ready yet, brief retry
                 none_retries += 1;
+                let now = current_timestamp_f64();
+                if cur_first_empty_at.is_none() {
+                    cur_first_empty_at = Some(now);
+                }
+                cur_last_empty_at = Some(now);
                 if none_retries >= CHUNK_POLL_MAX_RETRIES {
                     let elapsed_secs =
                         (none_retries * CHUNK_POLL_INTERVAL_MS + CHUNK_POLL_GRACE_MS) / 1000;
@@ -576,8 +657,15 @@ async fn streaming_loop(
                     }
                     match iter.try_next().await {
                         Ok(Some(_chunk)) => {
-                            // Recovered — let the next loop iteration handle it normally
+                            // Recovered — let the next loop iteration handle it normally.
+                            // Reset the per-chunk tracking so the next successful fetch
+                            // emits a fresh ChunkArrivalStat (the discarded chunk here
+                            // is an existing quirk of the recovery path).
                             none_retries = 0;
+                            cur_predicted_at = None;
+                            cur_scheduled_at = None;
+                            cur_first_empty_at = None;
+                            cur_last_empty_at = None;
                             continue;
                         }
                         Ok(None) => {
@@ -682,6 +770,11 @@ impl StatsTracker {
 
 fn current_timestamp() -> i64 {
     (js_sys::Date::now() / 1000.0) as i64
+}
+
+/// Unix seconds with millisecond precision — for diagnostics timestamps.
+fn current_timestamp_f64() -> f64 {
+    js_sys::Date::now() / 1000.0
 }
 
 async fn sleep_ms(ms: u32) {

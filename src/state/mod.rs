@@ -21,6 +21,7 @@ mod stats;
 pub(crate) mod theme;
 pub(crate) mod url_state;
 pub(crate) mod vcp;
+pub(crate) mod vcp_forecast;
 mod vcp_position;
 mod viz;
 
@@ -48,6 +49,7 @@ pub use stats::{
 // AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
+pub use vcp_forecast::{ChunkArrivalStat, RateSource, SweepForecast, VolumeForecastSnapshot};
 pub use vcp_position::{SweepPosition, SweepStatus, SweepTiming, VcpPositionModel};
 pub use viz::{
     ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct, RenderProcessing,
@@ -190,6 +192,9 @@ pub struct AppState {
 
     /// Whether the stats detail popup is open.
     pub stats_detail_open: bool,
+
+    /// Whether the VCP forecast diagnostics modal is open.
+    pub vcp_forecast_open: bool,
 
     /// User-saved weather event bookmarks.
     pub saved_events: SavedEvents,

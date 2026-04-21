@@ -27,6 +27,7 @@ mod site_modal;
 mod stats_modal;
 mod timeline;
 mod top_bar;
+mod vcp_forecast_modal;
 mod wipe_modal;
 
 pub use alerts_modal::render_alerts_modals;
@@ -41,4 +42,5 @@ pub use shortcuts::{handle_shortcuts, render_shortcuts_help};
 pub use site_modal::{render_site_modal, SiteModalState};
 pub use stats_modal::render_stats_modal;
 pub use top_bar::render_top_bar;
+pub use vcp_forecast_modal::render_vcp_forecast_modal;
 pub use wipe_modal::render_wipe_modal;
