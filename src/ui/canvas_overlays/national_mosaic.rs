@@ -14,9 +14,12 @@ use crate::nexrad::NationalMosaic;
 use eframe::egui::{self, Color32, Painter, Pos2, Shape};
 use geo_types::Coord;
 
-/// Zoom level above which the per-site radar dominates the viewport and the
-/// mosaic is hidden to save draw time.
-const MAX_DISPLAY_ZOOM: f32 = 4.0;
+/// Zoom levels bounding the mosaic's linear fade. Below `FADE_START_ZOOM`
+/// the mosaic renders at full base alpha; at or above `FADE_END_ZOOM` it
+/// sits at the capped alpha floor. The mosaic is never hidden entirely —
+/// it just recedes to make the active radar dominant.
+const FADE_START_ZOOM: f32 = 0.5;
+const FADE_END_ZOOM: f32 = 2.5;
 
 /// Grid resolution used to warp the mosaic rectangle through the projection.
 /// A single quad visibly skews under the cos(lat) longitude correction when
@@ -43,10 +46,6 @@ pub(crate) fn draw_national_mosaic(
     zoom: f32,
     cutout: Option<RadarCutout>,
 ) {
-    if zoom > MAX_DISPLAY_ZOOM {
-        return;
-    }
-
     let texture = match mosaic.texture() {
         Some(t) => t,
         None => return,
@@ -57,9 +56,14 @@ pub(crate) fn draw_national_mosaic(
         return;
     }
 
-    // Semi-transparent so vector layers above remain legible. Unmultiplied
-    // alpha because the PNG is already straight-alpha.
-    let tint = Color32::from_rgba_unmultiplied(255, 255, 255, 180);
+    // Semi-transparent so vector layers above remain legible. Fade as the
+    // user zooms in toward a single site so the mosaic recedes in favor of
+    // the active radar; capped at 50% reduction from the base alpha.
+    // Unmultiplied alpha because the PNG is already straight-alpha.
+    const BASE_ALPHA: f32 = 180.0;
+    let fade_t = ((zoom - FADE_START_ZOOM) / (FADE_END_ZOOM - FADE_START_ZOOM)).clamp(0.0, 1.0);
+    let alpha = (BASE_ALPHA * (1.0 - 0.5 * fade_t)) as u8;
+    let tint = Color32::from_rgba_unmultiplied(255, 255, 255, alpha);
     let mut mesh = egui::Mesh::with_texture(texture.id());
 
     // Precompute the base grid's lon/lat and screen positions so that the

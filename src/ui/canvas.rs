@@ -79,19 +79,18 @@ pub fn render_canvas_with_geo(
                 state.viz_state.last_visible_bounds = Some(projection.visible_bounds());
 
                 // Screen-space cutout circle for the active radar's coverage.
-                // Computed once so both the mosaic cutout and the boundary
-                // stroke use the exact same center/radius.
+                // Fixed at the WSR-88D reflectivity range so the hole stays
+                // stable as the user scrubs elevations/products instead of
+                // tracking the current sweep's per-gate extent.
+                const NEXRAD_MAX_RANGE_KM: f64 = 460.0;
                 let radar_cutout = gpu_renderer.and_then(|renderer| {
-                    let max_range_km = {
-                        let r = renderer.lock().expect("renderer mutex poisoned");
-                        if !r.has_data() {
-                            return None;
-                        }
-                        r.max_range_km()
-                    };
+                    let has_data = renderer.lock().expect("renderer mutex poisoned").has_data();
+                    if !has_data {
+                        return None;
+                    }
                     let km_to_deg = 1.0 / 111.0;
                     let lat_correction = state.viz_state.center_lat.to_radians().cos();
-                    let lon_range = max_range_km * km_to_deg / lat_correction;
+                    let lon_range = NEXRAD_MAX_RANGE_KM * km_to_deg / lat_correction;
                     let center = projection.geo_to_screen(Coord {
                         x: state.viz_state.center_lon,
                         y: state.viz_state.center_lat,
