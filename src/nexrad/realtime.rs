@@ -225,6 +225,24 @@ async fn streaming_loop(
     // predictions are tight. Retry waits are unaffected.
     const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 300;
 
+    // Extra wait, on top of POLL_DELAY_AFTER_PREDICTED_MS, applied only when
+    // the next chunk crosses a sweep or volume boundary. The upstream timing
+    // model treats sweep transitions with the same per-elevation azimuth-rate
+    // physics it uses for intra-sweep chunks, so it consistently fires
+    // ~1–2 s before the first chunk of each new sweep is actually published
+    // to S3 — every empty poll observed in real-world telemetry came from
+    // these transition chunks. The initial value is sized to the observed
+    // median residual; the value then EMAs toward the per-session mean of
+    // `success_at − predicted_at` for transition chunks so it self-tunes if
+    // this site/VCP runs faster or slower than the default.
+    const SWEEP_TRANSITION_BUDGET_MS_INITIAL: u32 = 1000;
+    const SWEEP_TRANSITION_BUDGET_MS_MIN: u32 = 200;
+    const SWEEP_TRANSITION_BUDGET_MS_MAX: u32 = 3000;
+    // Margin added on top of the EMA target so we wake just after the
+    // expected arrival rather than right on top of it (avoids the
+    // coin-flip that would otherwise produce a single empty + retry).
+    const SWEEP_TRANSITION_SAFETY_MS: u32 = 200;
+
     let hint = get_cached_volume(&site_id);
     let init_future = acquire_streaming_state(&site_id, hint);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
@@ -511,6 +529,13 @@ async fn streaming_loop(
     let mut cur_scheduled_at: Option<f64> = None; // first poll time
     let mut cur_first_empty_at: Option<f64> = None;
     let mut cur_last_empty_at: Option<f64> = None;
+    // Whether the chunk currently being awaited crosses a sweep/volume
+    // boundary. Captured alongside `cur_predicted_at` on the first iteration
+    // so we know to feed the observed residual back into the EMA below.
+    let mut cur_is_transition: bool = false;
+    // Adaptive budget for transition-chunk polling, persisted across the
+    // session. Updated by EMA after each transition arrival.
+    let mut sweep_transition_budget_ms: u32 = SWEEP_TRANSITION_BUDGET_MS_INITIAL;
     loop {
         // Check stop signal
         if state.borrow().stop_requested {
@@ -528,6 +553,12 @@ async fn streaming_loop(
             if let Some(d) = time_until_next_opt {
                 cur_predicted_at = Some(current_timestamp_f64() + d.as_secs_f64());
             }
+            // Snapshot the transition flag for this chunk so it survives
+            // across retry iterations — `next_chunk_starts_sweep_or_volume`
+            // is computed from the iterator's `current` position, which
+            // doesn't change until a successful fetch advances it, but
+            // capturing once keeps the polling and accounting paths in sync.
+            cur_is_transition = iter.next_chunk_starts_sweep_or_volume();
         }
         if let Some(wait_duration) = time_until_next_opt {
             let mut wait_ms = wait_duration.as_millis() as u32;
@@ -538,6 +569,9 @@ async fn streaming_loop(
             // per chunk.
             if is_first_iter_for_chunk && wait_ms > 0 {
                 wait_ms = wait_ms.saturating_add(POLL_DELAY_AFTER_PREDICTED_MS);
+                if cur_is_transition {
+                    wait_ms = wait_ms.saturating_add(sweep_transition_budget_ms);
+                }
             }
             if wait_ms > 0 && !interruptible_sleep(&state, &ctx, wait_ms).await {
                 log::debug!("Realtime streaming stopped");
@@ -615,12 +649,36 @@ async fn streaming_loop(
                     fetch_latency_ms: chunk_fetch_ms,
                 };
 
+                // Closed-loop EMA on the sweep-transition budget. Whenever a
+                // transition chunk arrives, treat `success_at − predicted_at`
+                // as the truth signal: that's how late the upstream prediction
+                // actually was. The budget needed to wake exactly there is
+                // (residual − POLL_DELAY) + safety margin. Blend toward that
+                // with α = 0.3 so a single noisy sample can't whipsaw the
+                // value, then clamp to a sane range.
+                if cur_is_transition {
+                    if let Some(predicted) = cur_predicted_at {
+                        let residual_ms = ((success_at - predicted) * 1000.0).max(0.0) as u32;
+                        let needed = residual_ms
+                            .saturating_sub(POLL_DELAY_AFTER_PREDICTED_MS)
+                            .saturating_add(SWEEP_TRANSITION_SAFETY_MS);
+                        // EMA: new = 0.7 * old + 0.3 * needed
+                        let blended =
+                            (sweep_transition_budget_ms as u64 * 7 + needed as u64 * 3) / 10;
+                        sweep_transition_budget_ms = (blended as u32).clamp(
+                            SWEEP_TRANSITION_BUDGET_MS_MIN,
+                            SWEEP_TRANSITION_BUDGET_MS_MAX,
+                        );
+                    }
+                }
+
                 // Reset tracking state for the next chunk
                 none_retries = 0;
                 cur_predicted_at = None;
                 cur_scheduled_at = None;
                 cur_first_empty_at = None;
                 cur_last_empty_at = None;
+                cur_is_transition = false;
 
                 let time_until_next = iter.time_until_next().and_then(|td| td.to_std().ok());
 
@@ -680,6 +738,7 @@ async fn streaming_loop(
                             cur_scheduled_at = None;
                             cur_first_empty_at = None;
                             cur_last_empty_at = None;
+                            cur_is_transition = false;
                             continue;
                         }
                         Ok(None) => {
