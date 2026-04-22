@@ -2074,6 +2074,17 @@ impl WorkbenchApp {
                 );
                 r.set_current_sweep_id(Some(live_sweep_id));
                 r.update_color_table(gl, &result.product);
+
+                // Re-run storm cell detection on the freshly-uploaded live
+                // sweep so the overlay tracks the incoming chunks rather
+                // than freezing until the user toggles the feature.
+                if self.state.viz_state.storm_cells_visible {
+                    self.state.viz_state.detected_storm_cells = r.detect_storm_cells(
+                        self.state.viz_state.center_lat,
+                        self.state.viz_state.center_lon,
+                        self.state.viz_state.storm_cell_threshold_dbz,
+                    );
+                }
             }
         }
 

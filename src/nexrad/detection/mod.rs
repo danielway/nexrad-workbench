@@ -37,8 +37,15 @@ pub struct DetectionInput<'a> {
 
 /// Tuning knobs for the detector.
 pub struct DetectionParams {
-    /// Minimum physical value (dBZ) to include a gate in a cell.
+    /// Core (promotion) threshold in dBZ. A component must contain at
+    /// least one gate this strong to survive.
     pub threshold_dbz: f32,
+    /// How far below `threshold_dbz` the edge threshold sits. Gates between
+    /// `threshold_dbz - edge_margin_dbz` and `threshold_dbz` are allowed
+    /// to bridge two core regions, preventing a single storm from
+    /// fragmenting into adjacent blobs when its reflectivity core has
+    /// natural gaps.
+    pub edge_margin_dbz: f32,
     /// Reject cells smaller than this. Guards against noise speckle.
     pub min_area_km2: f32,
     /// Reject cells with fewer than this many gates, regardless of area.
@@ -49,8 +56,9 @@ impl Default for DetectionParams {
     fn default() -> Self {
         Self {
             threshold_dbz: 35.0,
-            min_area_km2: 5.0,
-            min_gate_count: 4,
+            edge_margin_dbz: 5.0,
+            min_area_km2: 15.0,
+            min_gate_count: 8,
         }
     }
 }
@@ -65,27 +73,37 @@ pub fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> Vec<Sto
         return Vec::new();
     }
 
-    // 1. Build the physical-dBZ mask + values. Invalid gates (sentinels or
-    //    negative azimuth rows) are encoded as NaN so the component pass
-    //    can treat them uniformly.
-    let grid = build_physical_grid(input, params.threshold_dbz);
+    let core_threshold = params.threshold_dbz;
+    let edge_threshold = params.threshold_dbz - params.edge_margin_dbz.max(0.0);
 
-    // 2. Label connected components with 8-neighborhood + azimuth wrap.
-    let components = components::label(
-        &grid,
-        input.azimuth_count,
-        input.gate_count,
-        params.threshold_dbz,
-    );
+    // 1. Decode raw gate values into physical dBZ, masking anything below
+    //    the edge threshold as NaN. Gates between edge and core thresholds
+    //    participate in connectivity but must be promoted by an internal
+    //    core gate to survive.
+    let grid = build_physical_grid(input, edge_threshold);
 
-    // 3. Derive geometry for each component, filter small cells.
+    // 2. Label connected components with 8-neighborhood + azimuth wrap
+    //    (wrap only when the angular gap between adjacent sorted azimuth
+    //    indices is within the median spacing).
+    let components =
+        components::label(&grid, input.azimuths, input.azimuth_count, input.gate_count);
+
+    // 3. Promote + summarize. Drop any component without a core-threshold
+    //    gate, then drop any that fail the size filters.
     components
         .into_iter()
         .filter_map(|pixels| {
             if (pixels.len() as u32) < params.min_gate_count {
                 return None;
             }
-            let cell = features::summarize(&pixels, &grid, input, params.threshold_dbz);
+            let has_core = pixels.iter().any(|&(a, g)| {
+                let idx = a as usize * input.gate_count + g as usize;
+                grid[idx] >= core_threshold
+            });
+            if !has_core {
+                return None;
+            }
+            let cell = features::summarize(&pixels, &grid, input, edge_threshold);
             if cell.area_km2 < params.min_area_km2 {
                 None
             } else {
@@ -97,10 +115,9 @@ pub fn detect_cells(input: &DetectionInput, params: &DetectionParams) -> Vec<Sto
 
 /// Decode raw gate values into physical dBZ, writing NaN for any gate that
 /// shouldn't participate in detection (sentinel, padded azimuth row, below
-/// threshold). The resulting grid lets `components::label` skip invalid
-/// gates with a single `is_nan` check and lets `features::summarize` read
-/// the already-converted value.
-fn build_physical_grid(input: &DetectionInput, threshold_dbz: f32) -> Vec<f32> {
+/// edge threshold). Gates at or above `edge_threshold_dbz` keep their
+/// physical value so `features::summarize` can read it back.
+fn build_physical_grid(input: &DetectionInput, edge_threshold_dbz: f32) -> Vec<f32> {
     let n = input.azimuth_count * input.gate_count;
     let mut grid = vec![f32::NAN; n];
 
@@ -123,7 +140,7 @@ fn build_physical_grid(input: &DetectionInput, threshold_dbz: f32) -> Vec<f32> {
             } else {
                 (raw - input.data_offset) / input.data_scale
             };
-            if physical >= threshold_dbz {
+            if physical >= edge_threshold_dbz {
                 grid[row_start + g] = physical;
             }
         }
