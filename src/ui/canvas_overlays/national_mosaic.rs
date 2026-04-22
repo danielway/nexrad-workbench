@@ -57,9 +57,14 @@ pub(crate) fn draw_national_mosaic(
         return;
     }
 
-    // Semi-transparent so vector layers above remain legible. Unmultiplied
-    // alpha because the PNG is already straight-alpha.
-    let tint = Color32::from_rgba_unmultiplied(255, 255, 255, 180);
+    // Semi-transparent so vector layers above remain legible. Fade as the
+    // user zooms in toward a single site so the mosaic recedes in favor of
+    // the active radar; capped at 50% reduction from the base alpha.
+    // Unmultiplied alpha because the PNG is already straight-alpha.
+    const BASE_ALPHA: f32 = 180.0;
+    let fade_t = ((zoom - 1.0) / (MAX_DISPLAY_ZOOM - 1.0)).clamp(0.0, 1.0);
+    let alpha = (BASE_ALPHA * (1.0 - 0.5 * fade_t)) as u8;
+    let tint = Color32::from_rgba_unmultiplied(255, 255, 255, alpha);
     let mut mesh = egui::Mesh::with_texture(texture.id());
 
     // Precompute the base grid's lon/lat and screen positions so that the
