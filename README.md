@@ -65,7 +65,7 @@ The project automatically deploys to GitHub Pages on push to `main`. The CI pipe
 | Language | Rust 2021, compiled to WebAssembly |
 | UI framework | eframe/egui 0.33 |
 | Graphics | WebGL2 via glow 0.16 |
-| NEXRAD data | `nexrad`, `nexrad-data`, `nexrad-decode`, `nexrad-model`, `nexrad-process`, `nexrad-render` crates |
+| NEXRAD data | `nexrad`, `nexrad-data`, `nexrad-decode`, `nexrad-model`, `nexrad-render` crates |
 | Browser APIs | wasm-bindgen, web-sys, js-sys |
 | Build tool | Trunk |
 | CI/CD | GitHub Actions |

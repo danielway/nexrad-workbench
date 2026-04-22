@@ -140,8 +140,9 @@ impl RadarGpuRenderer {
 
     /// Detect storm cells from the current CPU-side data.
     ///
-    /// Returns lightweight cell info for rendering on the canvas.
-    /// Uses nexrad-process connected-component analysis on the reflectivity data.
+    /// Thin adapter over `crate::nexrad::detection` — packages the shadow
+    /// copies of the rendered sweep into a `DetectionInput` and runs the
+    /// in-tree threshold + connected-component detector.
     pub fn detect_storm_cells(
         &self,
         radar_lat: f64,
@@ -157,117 +158,32 @@ impl RadarGpuRenderer {
         let az_count = self.current.azimuth_count as usize;
         let gate_count = self.current.gate_count as usize;
 
-        // Compute azimuth spacing
-        let az_spacing = if az_count > 1 {
-            360.0 / az_count as f32
-        } else {
-            1.0
-        };
-
-        // Build a SweepField from the CPU data
-        let t_field = web_time::Instant::now();
-        let mut field = nexrad_model::data::SweepField::new_empty(
-            "Reflectivity",
-            "dBZ",
-            0.5, // elevation doesn't matter for 2D detection
-            self.cpu.azimuths.clone(),
-            az_spacing,
-            self.current.first_gate_km,
-            self.current.gate_interval_km,
+        let input = crate::nexrad::detection::DetectionInput {
+            azimuths: &self.cpu.azimuths,
+            gate_values: &self.cpu.gate_values,
+            azimuth_count: az_count,
             gate_count,
-        );
-
-        // Populate the field with our gate values (convert raw -> physical)
-        let mut valid_gates = 0u32;
-        for az_idx in 0..az_count {
-            let row_start = az_idx * gate_count;
-            for g in 0..gate_count {
-                let raw = self.cpu.gate_values[row_start + g];
-                // Raw sentinels: 0 = below threshold, 1 = range folded
-                if raw > 1.0 {
-                    let physical = if self.current.data_scale == 0.0 {
-                        raw
-                    } else {
-                        (raw - self.current.data_offset) / self.current.data_scale
-                    };
-                    field.set(az_idx, g, physical, nexrad_model::data::GateStatus::Valid);
-                    valid_gates += 1;
-                }
-                // new_empty defaults to NoData, so we only set Valid gates
-            }
-        }
-        let field_ms = t_field.elapsed().as_secs_f64() * 1000.0;
-
-        // Build coordinate system from site location
-        use nexrad_model::geo::RadarCoordinateSystem;
-        use nexrad_model::meta::Site;
-        use nexrad_process::detection::StormCellDetector;
-
-        let site = Site::new(
-            *b"SITE",
-            radar_lat as f32,
-            radar_lon as f32,
-            0, // altitude (not critical for 2D detection)
-            0, // tower height
-        );
-        let coord_system = RadarCoordinateSystem::new(&site);
-
-        // Run detection
-        let t_detect = web_time::Instant::now();
-        let detector: StormCellDetector = match StormCellDetector::new(threshold_dbz, 10) {
-            Ok(d) => d,
-            Err(_) => return Vec::new(),
+            first_gate_km: self.current.first_gate_km,
+            gate_interval_km: self.current.gate_interval_km,
+            data_scale: self.current.data_scale,
+            data_offset: self.current.data_offset,
+            radar_lat,
+            radar_lon,
+        };
+        let params = crate::nexrad::detection::DetectionParams {
+            threshold_dbz,
+            ..Default::default()
         };
 
-        let cells: Vec<nexrad_process::detection::StormCell> =
-            match detector.detect(&field, &coord_system) {
-                Ok(c) => c,
-                Err(e) => {
-                    log::warn!("Storm cell detection failed: {}", e);
-                    return Vec::new();
-                }
-            };
-        let detect_ms = t_detect.elapsed().as_secs_f64() * 1000.0;
-
-        // Convert to lightweight info, filtering out small noise cells
-        let t_convert = web_time::Instant::now();
-        const MIN_AREA_KM2: f64 = 5.0;
-
-        let result: Vec<_> = cells
-            .iter()
-            .filter(|cell| cell.area_km2() >= MIN_AREA_KM2)
-            .map(|cell| {
-                let centroid = cell.centroid();
-                let bounds = cell.bounds();
-                crate::state::StormCellInfo {
-                    lat: centroid.latitude,
-                    lon: centroid.longitude,
-                    max_dbz: cell.max_reflectivity_dbz(),
-                    area_km2: cell.area_km2() as f32,
-                    bounds: (
-                        bounds.min_latitude(),
-                        bounds.min_longitude(),
-                        bounds.max_latitude(),
-                        bounds.max_longitude(),
-                    ),
-                }
-            })
-            .collect();
-        let convert_ms = t_convert.elapsed().as_secs_f64() * 1000.0;
-        let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
+        let result = crate::nexrad::detection::detect_cells(&input, &params);
 
         log::debug!(
-            "detect_storm_cells: {}x{} grid, {} valid gates, {} raw cells, {} after filter (>={:.0} km2), {:.1}ms (field: {:.1}ms, detect: {:.1}ms, convert: {:.1}ms)",
+            "detect_storm_cells: {}x{} grid, {} cells (>= {:.0} dBZ), {:.1}ms",
             az_count,
             gate_count,
-            valid_gates,
-            cells.len(),
             result.len(),
-            MIN_AREA_KM2,
-            total_ms,
-            field_ms,
-            detect_ms,
-            convert_ms,
+            threshold_dbz,
+            t_total.elapsed().as_secs_f64() * 1000.0,
         );
 
         result

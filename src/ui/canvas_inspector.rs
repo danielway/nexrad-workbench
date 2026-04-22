@@ -7,7 +7,7 @@
 use crate::geo::MapProjection;
 use crate::nexrad::RadarGpuRenderer;
 use crate::state::StormCellInfo;
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};
 
@@ -185,6 +185,11 @@ fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     r * c
 }
 
+/// Number of samples for each cell's extent ellipse. A ~32-gon is
+/// indistinguishable from a true ellipse at typical zoom levels while
+/// staying cheap to tessellate.
+const ELLIPSE_SEGMENTS: usize = 32;
+
 pub(crate) fn render_storm_cells(
     painter: &Painter,
     projection: &MapProjection,
@@ -197,7 +202,6 @@ pub(crate) fn render_storm_cells(
             y: cell.lat,
         });
 
-        // Color based on max dBZ intensity
         let color = if cell.max_dbz >= 60.0 {
             Color32::from_rgb(255, 50, 50) // Severe
         } else if cell.max_dbz >= 50.0 {
@@ -206,33 +210,43 @@ pub(crate) fn render_storm_cells(
             Color32::from_rgb(255, 220, 80) // Moderate
         };
 
-        // Draw bounding box
-        let (min_lat, min_lon, max_lat, max_lon) = cell.bounds;
-        let tl = projection.geo_to_screen(Coord {
-            x: min_lon,
-            y: max_lat,
-        });
-        let br = projection.geo_to_screen(Coord {
-            x: max_lon,
-            y: min_lat,
-        });
-        let bounds_rect = Rect::from_two_pos(tl, br);
-        painter.rect_stroke(
-            bounds_rect,
-            2.0,
-            Stroke::new(1.5, color),
-            StrokeKind::Outside,
-        );
+        // Derive ellipse semi-axes from area + elongation: an ellipse of
+        // area A and ratio e has semi-minor b = √(A / (π·e)) and semi-major
+        // a = b·e. Clamp to avoid imaginary/zero axes for tiny cells.
+        let elongation = cell.elongation.max(1.0);
+        let area = cell.area_km2.max(1.0);
+        let semi_minor_km = (area as f64 / (std::f64::consts::PI * elongation as f64)).sqrt();
+        let semi_major_km = semi_minor_km * elongation as f64;
 
-        // Draw centroid marker
-        painter.circle_stroke(center, 6.0, Stroke::new(2.0, color));
+        let cos_lat = cell.lat.to_radians().cos().max(1e-6);
+        // Compass heading (0° = N, CW) → math angle (0 = +x east, CCW).
+        let math_angle_rad = (90.0 - cell.orientation_deg as f64).to_radians();
+        let (sin_t, cos_t) = math_angle_rad.sin_cos();
 
-        // Label with max dBZ
-        let label = format!("{:.0}", cell.max_dbz);
+        let mut points = Vec::with_capacity(ELLIPSE_SEGMENTS);
+        for i in 0..ELLIPSE_SEGMENTS {
+            let phi = (i as f64) / (ELLIPSE_SEGMENTS as f64) * std::f64::consts::TAU;
+            // Ellipse point in axis-aligned frame (km).
+            let ex = semi_major_km * phi.cos();
+            let ey = semi_minor_km * phi.sin();
+            // Rotate into radar-local frame (x = east, y = north, km).
+            let dx_km = ex * cos_t - ey * sin_t;
+            let dy_km = ex * sin_t + ey * cos_t;
+            // km → lat/lon offset (equirectangular, matches projection).
+            let lat = cell.lat + dy_km / 111.0;
+            let lon = cell.lon + dx_km / (111.0 * cos_lat);
+            points.push(projection.geo_to_screen(Coord { x: lon, y: lat }));
+        }
+        painter.add(Shape::closed_line(points, Stroke::new(1.5, color)));
+
+        // Small centroid marker + max-dBZ label. Bearing/range stay
+        // available in the state struct for future tooltip / side-panel
+        // consumers; surfacing them inline on the map was too noisy.
+        painter.circle_stroke(center, 3.0, Stroke::new(1.5, color));
         painter.text(
-            center + Vec2::new(8.0, -8.0),
+            center + Vec2::new(6.0, -6.0),
             egui::Align2::LEFT_BOTTOM,
-            label,
+            format!("{:.0}", cell.max_dbz),
             egui::FontId::proportional(10.0),
             color,
         );
