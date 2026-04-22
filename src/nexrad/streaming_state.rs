@@ -265,6 +265,32 @@ impl StreamingState {
         }
     }
 
+    /// Whether the next chunk to fetch crosses a sweep or volume boundary.
+    ///
+    /// Returns `true` when the next chunk is the first of a new elevation cut
+    /// or the Start of a new volume. Both cases share the same publishing
+    /// behavior — extra processing/uplink latency that the upstream timing
+    /// model under-budgets — so the polling loop can apply an additional
+    /// wait on top of the library's prediction.
+    ///
+    /// Returns `false` when we can't determine the next chunk (no VCP yet,
+    /// no mapper) — callers should treat this as "no extra budget".
+    pub fn next_chunk_starts_sweep_or_volume(&self) -> bool {
+        let Some(mapper) = self.elevation_mapper.as_ref() else {
+            return false;
+        };
+        let Some(next) = self.current.next_chunk(mapper) else {
+            return false;
+        };
+        match next {
+            NextChunk::Volume(_) => true,
+            NextChunk::Sequence(next_id) => mapper
+                .get_chunk_metadata(next_id.sequence())
+                .map(|m| m.is_first_in_sweep())
+                .unwrap_or(false),
+        }
+    }
+
     pub fn chunk_metadata(&self, sequence: usize) -> Option<&ChunkMetadata> {
         self.elevation_mapper
             .as_ref()
