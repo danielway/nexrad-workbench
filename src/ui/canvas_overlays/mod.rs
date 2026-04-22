@@ -10,6 +10,7 @@ mod compass;
 mod globe;
 mod info;
 mod national_mosaic;
+mod scale_bar;
 mod sites;
 mod sweep;
 
@@ -19,5 +20,6 @@ pub(crate) use compass::draw_compass;
 pub(crate) use globe::draw_globe;
 pub(crate) use info::draw_overlay_info;
 pub(crate) use national_mosaic::{draw_national_mosaic, RadarCutout};
+pub(crate) use scale_bar::draw_scale_bar;
 pub(crate) use sites::render_nexrad_sites;
 pub(crate) use sweep::render_radar_sweep;

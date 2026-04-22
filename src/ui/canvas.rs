@@ -4,7 +4,7 @@ use super::canvas_inspector::{render_distance_measurement, render_inspector, ren
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
     draw_color_scale, draw_compass, draw_globe, draw_national_mosaic, draw_overlay_info,
-    render_alerts, render_nexrad_sites, render_radar_sweep, RadarCutout,
+    draw_scale_bar, render_alerts, render_nexrad_sites, render_radar_sweep, RadarCutout,
 };
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
@@ -245,6 +245,7 @@ pub fn render_canvas_with_geo(
 
                 draw_color_scale(ui, &rect, &state.viz_state.product);
                 draw_overlay_info(ui, &rect, state);
+                draw_scale_bar(ui, &rect, &projection);
 
                 handle_canvas_interaction(&response, &rect, state, &projection);
             }
