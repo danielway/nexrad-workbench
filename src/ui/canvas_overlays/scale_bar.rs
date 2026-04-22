@@ -6,7 +6,7 @@
 //! frame so it stays accurate across zoom and pan.
 
 use crate::geo::MapProjection;
-use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, Stroke};
 
 const TARGET_BAR_WIDTH_PX: f32 = 120.0;
 const KM_TO_MI: f64 = 0.621371;
@@ -27,37 +27,15 @@ pub(crate) fn draw_scale_bar(ui: &mut egui::Ui, rect: &Rect, projection: &MapPro
 
     let painter = ui.painter();
 
-    let margin = 16.0f32;
-    let row_height = 18.0f32;
-    let bar_thickness = 2.0f32;
-    let cap_height = 6.0f32;
-    let label_pad = 4.0f32;
+    let margin = 10.0f32;
+    let row_height = 16.0f32;
+    let bar_thickness = 1.5f32;
+    let cap_height = 5.0f32;
+    let label_pad = 3.0f32;
 
-    let max_pixels = km_pixels.max(mi_pixels);
-    let panel_w = max_pixels + 24.0;
-    let panel_h = row_height * 2.0 + 8.0;
-    let panel_left = rect.left() + margin;
-    let panel_bottom = rect.bottom() - margin;
-    let panel_rect = Rect::from_min_size(
-        Pos2::new(panel_left, panel_bottom - panel_h),
-        Vec2::new(panel_w, panel_h),
-    );
-
-    painter.rect_filled(
-        panel_rect,
-        3.0,
-        Color32::from_rgba_unmultiplied(15, 15, 25, 160),
-    );
-    painter.rect_stroke(
-        panel_rect,
-        3.0,
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(80, 80, 100, 140)),
-        egui::StrokeKind::Outside,
-    );
-
-    let bar_left = panel_left + 12.0;
-    let km_y = panel_rect.top() + row_height * 0.5 + 2.0;
-    let mi_y = km_y + row_height;
+    let bar_left = rect.left() + margin;
+    let mi_y = rect.bottom() - margin - cap_height * 0.5;
+    let km_y = mi_y - row_height;
 
     draw_row(
         painter,
