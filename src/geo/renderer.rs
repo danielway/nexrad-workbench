@@ -5,8 +5,50 @@
 use super::layer::FeatureProjection;
 use super::{GeoFeature, GeoLayer, GeoLayerSet, MapProjection};
 use crate::state::GeoLayerVisibility;
-use eframe::egui::{Color32, FontId, Painter, Pos2, Stroke};
+use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Stroke, Vec2};
 use geo_types::Coord;
+
+/// Which geo rendering pass to execute. Split so lines/markers can draw
+/// below the radar texture while labels draw on top of it for legibility.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum GeoPass {
+    Lines,
+    Labels,
+}
+
+/// Draws `text` with a 1px black outline by repeating the draw call at eight
+/// surrounding offsets before drawing the colored text on top. Cheap enough
+/// for the label counts we render and keeps labels legible against any
+/// underlying radar color.
+pub fn text_with_halo(
+    painter: &Painter,
+    pos: Pos2,
+    align: Align2,
+    text: &str,
+    font: FontId,
+    color: Color32,
+) {
+    const OFFSETS: [(f32, f32); 8] = [
+        (-1.0, -1.0),
+        (0.0, -1.0),
+        (1.0, -1.0),
+        (-1.0, 0.0),
+        (1.0, 0.0),
+        (-1.0, 1.0),
+        (0.0, 1.0),
+        (1.0, 1.0),
+    ];
+    for (dx, dy) in OFFSETS {
+        painter.text(
+            pos + Vec2::new(dx, dy),
+            align,
+            text,
+            font.clone(),
+            Color32::BLACK,
+        );
+    }
+    painter.text(pos, align, text, font, color);
+}
 
 /// Renders all visible geographic layers to the canvas.
 ///
@@ -21,11 +63,12 @@ pub fn render_geo_layers(
     projection: &MapProjection,
     zoom: f32,
     show_labels: bool,
+    pass: GeoPass,
 ) {
     // Render layers in order (back to front)
     for (layer, visible) in layers_with_visibility(layers, visibility) {
         if visible && layer.visible && zoom >= layer.layer_type.min_zoom() {
-            render_layer(painter, layer, projection, show_labels, zoom);
+            render_layer(painter, layer, projection, show_labels, zoom, pass);
         }
     }
 }
@@ -52,6 +95,7 @@ fn render_layer(
     projection: &MapProjection,
     show_labels: bool,
     zoom: f32,
+    pass: GeoPass,
 ) {
     let color = layer.effective_color();
     let line_width = layer.effective_line_width();
@@ -71,6 +115,7 @@ fn render_layer(
             show_labels,
             zoom,
             layer.layer_type,
+            pass,
         );
     }
 }
@@ -87,23 +132,29 @@ fn render_feature(
     show_labels: bool,
     zoom: f32,
     layer_type: super::GeoLayerType,
+    pass: GeoPass,
 ) {
+    let draw_lines = pass == GeoPass::Lines;
+    let draw_labels = pass == GeoPass::Labels && show_labels;
     match (feature, entry) {
         (GeoFeature::Point(coord, label), _) => {
+            // Pass the label through only when labels are enabled so the
+            // marker still draws even with the user's label toggle off.
+            let effective_label = if show_labels { label.as_deref() } else { None };
             render_point(
                 painter,
                 coord,
                 projection,
                 color,
-                label.as_deref(),
-                show_labels,
+                effective_label,
                 zoom,
+                pass,
             );
         }
-        (GeoFeature::LineString(coords), FeatureProjection::Single(points)) => {
+        (GeoFeature::LineString(coords), FeatureProjection::Single(points)) if draw_lines => {
             render_projected_line(painter, coords, points, projection, stroke);
         }
-        (GeoFeature::MultiLineString(lines), FeatureProjection::Multi(parts)) => {
+        (GeoFeature::MultiLineString(lines), FeatureProjection::Multi(parts)) if draw_lines => {
             for (coords, points) in lines.iter().zip(parts.iter()) {
                 render_projected_line(painter, coords, points, projection, stroke);
             }
@@ -116,18 +167,22 @@ fn render_feature(
             },
             FeatureProjection::Single(points),
         ) => {
-            render_projected_line(painter, exterior, points, projection, stroke);
-            if show_labels {
+            if draw_lines {
+                render_projected_line(painter, exterior, points, projection, stroke);
+            }
+            if draw_labels {
                 if let Some(text) = label {
                     render_polygon_label(painter, exterior, projection, text, zoom, layer_type);
                 }
             }
         }
         (GeoFeature::MultiPolygon { polygons, label }, FeatureProjection::Multi(parts)) => {
-            for ((exterior, _holes), points) in polygons.iter().zip(parts.iter()) {
-                render_projected_line(painter, exterior, points, projection, stroke);
+            if draw_lines {
+                for ((exterior, _holes), points) in polygons.iter().zip(parts.iter()) {
+                    render_projected_line(painter, exterior, points, projection, stroke);
+                }
             }
-            if show_labels {
+            if draw_labels {
                 if let Some(text) = label {
                     if let Some((largest_exterior, _)) = polygons.iter().max_by(|(a, _), (b, _)| {
                         let area_a = polygon_bbox_area(a);
@@ -254,7 +309,7 @@ fn render_polygon_label(
     // Style based on layer type
     let (base_size, color) = match layer_type {
         GeoLayerType::States => (12.0, Color32::from_rgb(220, 220, 240)),
-        GeoLayerType::Counties => (8.0, Color32::from_rgb(100, 100, 115)),
+        GeoLayerType::Counties => (8.0, Color32::from_rgb(210, 210, 225)),
         GeoLayerType::Cities => (10.0, Color32::from_rgb(200, 200, 220)),
         GeoLayerType::Highways => (8.0, Color32::from_rgb(130, 110, 90)),
         GeoLayerType::Lakes => (9.0, Color32::from_rgb(100, 130, 180)),
@@ -263,24 +318,27 @@ fn render_polygon_label(
     // Scale font size with zoom, clamped to reasonable range
     let font_size = (base_size * zoom).clamp(base_size * 0.7, base_size * 1.5);
 
-    painter.text(
+    text_with_halo(
+        painter,
         pos,
-        eframe::egui::Align2::CENTER_CENTER,
+        Align2::CENTER_CENTER,
         text,
         FontId::proportional(font_size),
         color,
     );
 }
 
-/// Renders a point feature (city marker, etc.).
+/// Renders a point feature (city marker, etc.). The marker circle is drawn in
+/// the `Lines` pass and its label in the `Labels` pass so text can sit over
+/// the radar while markers stay underneath.
 fn render_point(
     painter: &Painter,
     coord: &Coord<f64>,
     projection: &MapProjection,
     color: Color32,
     label: Option<&str>,
-    show_labels: bool,
     zoom: f32,
+    pass: GeoPass,
 ) {
     // Skip if outside visible bounds
     if !projection.is_visible(*coord, 0.5) {
@@ -288,23 +346,25 @@ fn render_point(
     }
 
     let pos = projection.geo_to_screen(*coord);
-
-    // Draw a small circle for the point
     let radius = (2.5 * zoom.sqrt()).clamp(2.0, 5.0);
-    painter.circle_filled(pos, radius, color);
 
-    // Draw label if present and labels are enabled
-    if show_labels {
-        if let Some(text) = label {
-            let font_size = (9.0 * zoom.sqrt()).clamp(8.0, 13.0);
-            let label_pos = Pos2::new(pos.x + radius + 2.0, pos.y - 2.0);
-            painter.text(
-                label_pos,
-                eframe::egui::Align2::LEFT_CENTER,
-                text,
-                FontId::proportional(font_size),
-                color,
-            );
+    match pass {
+        GeoPass::Lines => {
+            painter.circle_filled(pos, radius, color);
+        }
+        GeoPass::Labels => {
+            if let Some(text) = label {
+                let font_size = (9.0 * zoom.sqrt()).clamp(8.0, 13.0);
+                let label_pos = Pos2::new(pos.x + radius + 2.0, pos.y - 2.0);
+                text_with_halo(
+                    painter,
+                    label_pos,
+                    Align2::LEFT_CENTER,
+                    text,
+                    FontId::proportional(font_size),
+                    color,
+                );
+            }
         }
     }
 }

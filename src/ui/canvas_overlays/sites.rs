@@ -5,7 +5,7 @@
 //! highlighted; off-screen sites are culled for performance.
 
 use crate::data::{get_site, NEXRAD_SITES};
-use crate::geo::MapProjection;
+use crate::geo::{text_with_halo, GeoPass, MapProjection};
 use crate::state::GeoLayerVisibility;
 use eframe::egui::{self, Painter, Stroke, Vec2};
 use geo_types::Coord;
@@ -17,6 +17,7 @@ pub(crate) fn render_nexrad_sites(
     projection: &MapProjection,
     current_site_id: &str,
     visibility: &GeoLayerVisibility,
+    pass: GeoPass,
 ) {
     let current_site_id_upper = current_site_id.to_uppercase();
     let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
@@ -41,17 +42,27 @@ pub(crate) fn render_nexrad_sites(
                 y: site.lat,
             });
 
-            painter.circle_filled(screen_pos, 4.0, site_colors::OTHER);
-            painter.circle_stroke(screen_pos, 4.0, Stroke::new(1.0, site_colors::OTHER_STROKE));
-
-            if visibility.labels {
-                painter.text(
-                    screen_pos + Vec2::new(6.0, -2.0),
-                    egui::Align2::LEFT_CENTER,
-                    site.id,
-                    egui::FontId::proportional(10.0),
-                    site_colors::LABEL,
-                );
+            match pass {
+                GeoPass::Lines => {
+                    painter.circle_filled(screen_pos, 4.0, site_colors::OTHER);
+                    painter.circle_stroke(
+                        screen_pos,
+                        4.0,
+                        Stroke::new(1.0, site_colors::OTHER_STROKE),
+                    );
+                }
+                GeoPass::Labels => {
+                    if visibility.labels {
+                        text_with_halo(
+                            painter,
+                            screen_pos + Vec2::new(6.0, -2.0),
+                            egui::Align2::LEFT_CENTER,
+                            site.id,
+                            egui::FontId::proportional(10.0),
+                            site_colors::LABEL,
+                        );
+                    }
+                }
             }
         }
     }
@@ -62,19 +73,25 @@ pub(crate) fn render_nexrad_sites(
             y: site.lat,
         });
 
-        painter.circle_filled(screen_pos, 6.0, site_colors::CURRENT);
-        painter.circle_stroke(
-            screen_pos,
-            6.0,
-            Stroke::new(1.5, site_colors::CURRENT_STROKE),
-        );
-
-        painter.text(
-            screen_pos + Vec2::new(8.0, -2.0),
-            egui::Align2::LEFT_CENTER,
-            site.id,
-            egui::FontId::proportional(11.0),
-            site_colors::CURRENT_LABEL,
-        );
+        match pass {
+            GeoPass::Lines => {
+                painter.circle_filled(screen_pos, 6.0, site_colors::CURRENT);
+                painter.circle_stroke(
+                    screen_pos,
+                    6.0,
+                    Stroke::new(1.5, site_colors::CURRENT_STROKE),
+                );
+            }
+            GeoPass::Labels => {
+                text_with_halo(
+                    painter,
+                    screen_pos + Vec2::new(8.0, -2.0),
+                    egui::Align2::LEFT_CENTER,
+                    site.id,
+                    egui::FontId::proportional(11.0),
+                    site_colors::CURRENT_LABEL,
+                );
+            }
+        }
     }
 }

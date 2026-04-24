@@ -22,6 +22,10 @@ pub(crate) fn render_alerts(painter: &Painter, projection: &MapProjection, alert
         .collect();
     ordered.sort_by_key(|a| a.severity.rank());
 
+    // Slightly wider black halo underneath so colored strokes stay legible
+    // against bright radar fills.
+    let halo_stroke = Stroke::new(4.5, Color32::BLACK);
+
     for alert in ordered {
         let (r, g, b) = alert.severity.color();
         let stroke_color = Color32::from_rgba_unmultiplied(r, g, b, 220);
@@ -42,6 +46,7 @@ pub(crate) fn render_alerts(painter: &Painter, projection: &MapProjection, alert
                 if ring.len() < 3 {
                     continue;
                 }
+                painter.add(Shape::closed_line(ring.clone(), halo_stroke));
                 painter.add(Shape::closed_line(ring.clone(), stroke));
             }
         }
