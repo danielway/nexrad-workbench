@@ -31,10 +31,10 @@ const INTER_VOLUME_GAP_SECS: f64 = 8.5;
 /// chunk's upload, within the same volume.
 ///
 /// The Start chunk is metadata-only and is published almost immediately; the first
-/// intermediate chunk lags by only a few seconds (observed ~2s in one VCP 212 volume).
-/// This is distinct from `INTER_VOLUME_GAP_SECS`, which measures the gap between
-/// the *End* of one volume and the *Start* of the next.
-const START_TO_FIRST_INTERMEDIATE_GAP_SECS: f64 = 3.0;
+/// intermediate chunk lags by ~1–2s in practice (observed across three VCP 212
+/// volumes). This is distinct from `INTER_VOLUME_GAP_SECS`, which measures the gap
+/// between the *End* of one volume and the *Start* of the next.
+const START_TO_FIRST_INTERMEDIATE_GAP_SECS: f64 = 1.5;
 
 /// Physics-based timing model for predicting chunk and sweep timing from VCP parameters.
 ///
