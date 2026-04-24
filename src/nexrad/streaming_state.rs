@@ -6,12 +6,15 @@
 //! init (fetch latest + optional start chunk, extract VCP), pull-based
 //! `try_next`, and timing/metadata accessors.
 
+use super::timing::{
+    estimate_chunk_availability_time, project_scan_timing, ChunkCharacteristics, ChunkMetadata,
+    ChunkTimingStats, ElevationChunkMapper, ScanTimingProjection,
+};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::debug;
 use nexrad_data::aws::realtime::{
-    download_chunk, estimate_chunk_availability_time, list_chunks_in_volume, project_scan_timing,
-    Chunk, ChunkCharacteristics, ChunkIdentifier, ChunkMetadata, ChunkTimingStats, ChunkType,
-    DownloadedChunk, ElevationChunkMapper, NextChunk, ScanTimingProjection, VolumeIndex,
+    download_chunk, list_chunks_in_volume, Chunk, ChunkIdentifier, ChunkType, DownloadedChunk,
+    VolumeIndex,
 };
 use nexrad_data::result::{aws::AWSError, Error, Result};
 use nexrad_decode::messages::volume_coverage_pattern;
@@ -124,15 +127,30 @@ impl StreamingState {
             .elevation_mapper
             .as_ref()
             .ok_or(AWSError::FailedToDetermineNextChunk)?;
-        let next = self
-            .current
-            .next_chunk(mapper)
-            .ok_or(AWSError::FailedToDetermineNextChunk)?;
+        let final_sequence = mapper.final_sequence();
+        let current_sequence = self.current.sequence();
 
-        match next {
-            NextChunk::Sequence(next_id) => self.try_fetch_chunk(next_id).await,
-            NextChunk::Volume(next_volume) => self.try_fetch_volume_start(next_volume).await,
+        if current_sequence == final_sequence {
+            return self
+                .try_fetch_volume_start(self.current.volume().next())
+                .await;
         }
+
+        let next_sequence = current_sequence + 1;
+        let next_type = if next_sequence == final_sequence {
+            ChunkType::End
+        } else {
+            ChunkType::Intermediate
+        };
+        let next_id = ChunkIdentifier::new(
+            self.current.site().to_string(),
+            *self.current.volume(),
+            *self.current.date_time_prefix(),
+            next_sequence,
+            next_type,
+            None,
+        );
+        self.try_fetch_chunk(next_id).await
     }
 
     async fn try_fetch_chunk(

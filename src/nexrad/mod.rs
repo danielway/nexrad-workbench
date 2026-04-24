@@ -29,6 +29,7 @@ pub(crate) mod render_coordinator;
 pub(crate) mod render_request;
 pub(crate) mod streaming_manager;
 mod streaming_state;
+pub(crate) mod timing;
 mod types;
 mod volume_discovery;
 pub(crate) mod volume_ray_renderer;
