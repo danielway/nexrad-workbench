@@ -27,6 +27,15 @@ const INTER_SWEEP_ELEVATION_RATE_SECS_PER_DEG: f64 = 0.08;
 /// Derived from analysis: mean ~8.5s, range 7-10s.
 const INTER_VOLUME_GAP_SECS: f64 = 8.5;
 
+/// Gap in seconds between the Start chunk's upload and the first intermediate
+/// chunk's upload, within the same volume.
+///
+/// The Start chunk is metadata-only and is published almost immediately; the first
+/// intermediate chunk lags by only a few seconds (observed ~2s in one VCP 212 volume).
+/// This is distinct from `INTER_VOLUME_GAP_SECS`, which measures the gap between
+/// the *End* of one volume and the *Start* of the next.
+const START_TO_FIRST_INTERMEDIATE_GAP_SECS: f64 = 3.0;
+
 /// Physics-based timing model for predicting chunk and sweep timing from VCP parameters.
 ///
 /// All predictions are derived from analysis of 59 archive volumes across 12 NEXRAD sites,
@@ -81,8 +90,19 @@ impl ChunkTimingModel {
     }
 
     /// Predicted inter-volume gap in seconds (constant 8.5s).
+    ///
+    /// Measures the gap from the End chunk of one volume to the Start chunk of the next.
     pub fn inter_volume_gap_secs() -> f64 {
         INTER_VOLUME_GAP_SECS
+    }
+
+    /// Predicted gap in seconds from the Start chunk to the first intermediate chunk
+    /// within the same volume (constant 3.0s).
+    ///
+    /// Distinct from [`inter_volume_gap_secs`]: that measures End → Start across volumes,
+    /// whereas this measures Start → first intermediate within a single volume.
+    pub fn start_to_first_intermediate_gap_secs() -> f64 {
+        START_TO_FIRST_INTERMEDIATE_GAP_SECS
     }
 
     /// Estimate the time interval in seconds between two consecutive chunks.

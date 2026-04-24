@@ -38,9 +38,10 @@ pub fn estimate_chunk_processing_time(
     elevation_chunk_mapper: &ElevationChunkMapper,
     timing_stats: Option<&ChunkTimingStats>,
 ) -> Option<ChronoDuration> {
-    // Start chunks: use the inter-volume gap model
+    // Start chunks: the next chunk is the first intermediate within the same volume,
+    // which follows the Start chunk by only a few seconds (not the full inter-volume gap).
     if chunk.chunk_type() == ChunkType::Start {
-        let gap_ms = (ChunkTimingModel::inter_volume_gap_secs() * 1000.0) as i64;
+        let gap_ms = (ChunkTimingModel::start_to_first_intermediate_gap_secs() * 1000.0) as i64;
         return Some(ChronoDuration::milliseconds(gap_ms));
     }
 
