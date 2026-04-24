@@ -91,6 +91,12 @@ struct RealtimeState {
     active: bool,
     time_until_next: Option<Duration>,
     stop_requested: bool,
+    /// ACTUAL category: most recently observed volume header time (Unix
+    /// seconds), parsed by the worker from the first Message 31 radial of
+    /// the current volume. Pushed in from `main.rs` after each ingest
+    /// response; consumed by the streaming loop to populate the projection
+    /// anchor in a later commit.
+    pending_volume_header_time_secs: Option<f64>,
 }
 
 /// Channel for real-time NEXRAD streaming.
@@ -159,6 +165,13 @@ impl RealtimeChannel {
             Some(state.results.remove(0))
         }
     }
+
+    /// Push the ACTUAL volume header time parsed by the worker after an
+    /// ingest response. The streaming loop picks this up and stamps it onto
+    /// the `StreamingState` before the next projection.
+    pub fn record_volume_header_time_secs(&self, secs: f64) {
+        self.state.borrow_mut().pending_volume_header_time_secs = Some(secs);
+    }
 }
 
 /// Build projection info from the streaming state's current position.
@@ -204,6 +217,31 @@ fn get_projected_volume_end_available_at_secs(state: &StreamingState) -> Option<
     state
         .projected_volume_end_available_at()
         .map(|dt| dt.timestamp() as f64)
+}
+
+/// Drain any pending volume-header time pushed in from `main.rs` after a
+/// worker ingest and stamp it onto the `StreamingState`. Logs a debug line
+/// with the lag between the S3 upload time of the current anchor chunk and
+/// the parsed collection time, which is the empirical "NEXRAD ingest lag".
+fn drain_pending_volume_header_time(
+    state_cell: &Rc<RefCell<RealtimeState>>,
+    iter: &mut StreamingState,
+) {
+    let pending = state_cell
+        .borrow_mut()
+        .pending_volume_header_time_secs
+        .take();
+    if let Some(secs) = pending {
+        let prior = iter.latest_volume_header_time_secs();
+        iter.record_volume_header_time_secs(secs);
+        if prior != Some(secs) {
+            log::debug!(
+                "volume_header_time: updated to {:.3}s (prior={:?})",
+                secs,
+                prior
+            );
+        }
+    }
 }
 
 async fn streaming_loop(
@@ -539,6 +577,10 @@ async fn streaming_loop(
             break;
         }
 
+        // Ingest any volume header time the worker parsed from the most
+        // recent chunk's radials so projections in this iteration can see it.
+        drain_pending_volume_header_time(&state, &mut iter);
+
         // Wait for expected chunk time. Only capture the prediction on the
         // first iteration for a given chunk — subsequent retry iterations
         // re-enter here with a near-zero wait, which would overwrite the
@@ -603,6 +645,23 @@ async fn streaming_loop(
                     .identifier
                     .upload_date_time()
                     .map(|dt| dt.timestamp_millis() as f64 / 1000.0);
+
+                // Empirical NEXRAD ingest lag: difference between the chunk's
+                // S3 upload time (AVAILABILITY) and the parsed volume header
+                // time (ACTUAL collection). Feeds the collection/availability
+                // model introduced in a follow-up commit.
+                if let (Some(upload_secs), Some(header_secs)) =
+                    (s3_last_modified_at, iter.latest_volume_header_time_secs())
+                {
+                    log::debug!(
+                        "ingest lag: upload={:.3}s header={:.3}s Δ={:+.3}s (seq={} type={})",
+                        upload_secs,
+                        header_secs,
+                        upload_secs - header_secs,
+                        chunks_in_volume,
+                        type_label,
+                    );
+                }
 
                 // Look up this chunk's entry in the library's projection list
                 // so we can attach elevation_number and chunk-within-sweep

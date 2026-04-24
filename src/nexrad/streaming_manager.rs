@@ -41,6 +41,14 @@ impl StreamingManager {
         self.realtime_channel.time_until_next()
     }
 
+    /// Push the ACTUAL volume header time (Unix seconds) parsed by the worker
+    /// from the first Message 31 radial of the current volume down into the
+    /// streaming loop. The loop stamps it onto the `StreamingState` before
+    /// the next projection.
+    pub fn record_volume_header_time_secs(&self, secs: f64) {
+        self.realtime_channel.record_volume_header_time_secs(secs);
+    }
+
     /// Drain all pending results from the realtime channel into events.
     pub fn poll(&mut self) -> Vec<StreamingEvent> {
         let mut events = Vec::new();

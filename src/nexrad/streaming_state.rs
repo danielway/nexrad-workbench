@@ -37,6 +37,11 @@ pub struct StreamingState {
     vcp: Option<volume_coverage_pattern::Message<'static>>,
     timing_stats: ChunkTimingStats,
     last_chunk_time: Option<DateTime<Utc>>,
+    /// ACTUAL category: most recently observed volume header time (Unix seconds),
+    /// parsed by the worker from the first Message 31 radial of the current volume.
+    /// Pushed in from `main.rs` after each ingest response. Reset on volume boundary.
+    /// Used in a later commit as the anchor for projected COLLECTION times.
+    latest_volume_header_time_secs: Option<f64>,
     requests_made: usize,
     bytes_downloaded: u64,
 }
@@ -103,6 +108,7 @@ impl StreamingState {
             vcp,
             timing_stats: ChunkTimingStats::new(),
             last_chunk_time,
+            latest_volume_header_time_secs: None,
             requests_made,
             bytes_downloaded,
         };
@@ -167,6 +173,7 @@ impl StreamingState {
                         self.elevation_mapper = Some(ElevationChunkMapper::new(&v));
                         self.vcp = Some(v);
                     }
+                    self.latest_volume_header_time_secs = None;
                 }
 
                 if let (Some(upload), Some(prev)) =
@@ -211,6 +218,7 @@ impl StreamingState {
                 self.elevation_mapper = Some(ElevationChunkMapper::new(&v));
                 self.vcp = Some(v);
             }
+            self.latest_volume_header_time_secs = None;
         } else if self.elevation_mapper.is_none() {
             // Joined mid-volume without a mapper — fetch the Start chunk too.
             let start_id = ChunkIdentifier::new(
@@ -274,6 +282,19 @@ impl StreamingState {
     /// Expose the rolling timing statistics for persistence by the streaming loop.
     pub fn timing_stats(&self) -> &ChunkTimingStats {
         &self.timing_stats
+    }
+
+    /// Record the ACTUAL volume header time parsed by the worker from the
+    /// first Message 31 radial of the current volume. Pushed in from the
+    /// streaming loop after each ingest response.
+    pub fn record_volume_header_time_secs(&mut self, secs: f64) {
+        self.latest_volume_header_time_secs = Some(secs);
+    }
+
+    /// Most recently recorded volume header time (Unix seconds), if any.
+    #[allow(dead_code)] // Consumed in a later commit to anchor collection-time projections.
+    pub fn latest_volume_header_time_secs(&self) -> Option<f64> {
+        self.latest_volume_header_time_secs
     }
 
     /// Replace the rolling timing statistics with a previously-persisted snapshot.
