@@ -131,10 +131,6 @@ pub fn render_canvas_with_geo(
                     &state.layer_state.geo,
                 );
 
-                if state.layer_state.geo.alerts && !state.alerts.alerts.is_empty() {
-                    render_alerts(&painter, &projection, &state.alerts.alerts);
-                }
-
                 let sweep_info = compute_sweep_line_azimuth(state);
                 let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(state, sweep_info);
 
@@ -186,6 +182,10 @@ pub fn render_canvas_with_geo(
                         ui.ctx()
                             .request_repaint_after(std::time::Duration::from_millis(100));
                     }
+                }
+
+                if state.layer_state.geo.alerts && !state.alerts.alerts.is_empty() {
+                    render_alerts(&painter, &projection, &state.alerts.alerts);
                 }
 
                 if state.viz_state.storm_cells_visible
