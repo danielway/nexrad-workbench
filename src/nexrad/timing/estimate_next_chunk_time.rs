@@ -51,16 +51,18 @@ pub fn estimate_chunk_processing_time(
 
         // Check for historical timing data first.
         //
-        // Note: the other fields key on the anchor chunk's elevation (pre-existing
-        // upstream convention), but `is_first_in_sweep` describes the *arriving*
-        // chunk — matching how samples are written in `StreamingState::update_timing_stats`.
-        // This keeps inter-sweep-transition samples out of the intra-sweep bucket.
-        if let Some(elevation) = elevation_chunk_mapper
-            .get_sequence_elevation_number(chunk.sequence())
+        // Key this lookup on the *arriving* chunk's (next_metadata) characteristics
+        // rather than the anchor's. Writes in `StreamingState::update_timing_stats`
+        // record each chunk's arrival duration under the arriving chunk's elevation,
+        // so reading under the anchor's elevation looks up the wrong bucket and
+        // silently falls back to pure physics. This cost us ~30% of the effective
+        // shift from the physics penalties on sweep transitions.
+        if let Some(elevation) = next_metadata
+            .elevation_number()
             .and_then(|elevation_number| vcp.elevations().get(elevation_number - 1))
         {
             let characteristics = ChunkCharacteristics {
-                chunk_type: chunk.chunk_type(),
+                chunk_type: ChunkType::Intermediate,
                 waveform_type: elevation.waveform_type(),
                 channel_configuration: elevation.channel_configuration(),
                 is_first_in_sweep: next_metadata.is_first_in_sweep(),
