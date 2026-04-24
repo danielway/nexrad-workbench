@@ -246,6 +246,34 @@ fn get_projected_volume_end_available_at_secs(state: &StreamingState) -> Option<
         .map(|dt| dt.timestamp() as f64)
 }
 
+/// Default provisional lag applied when we have no observed median lag
+/// yet. Matches the default in the projector so a cold stream's first
+/// ScanKey lands near the eventual real value.
+const DEFAULT_PROVISIONAL_LAG_SECS: f64 = 5.0;
+
+/// Provisional scan-start timestamp (Unix seconds) for a new volume.
+///
+/// Uses the Start chunk's S3 upload time minus the current median
+/// availability lag from `ChunkTimingStats` (falling back to
+/// `DEFAULT_PROVISIONAL_LAG_SECS`). That lands close to the real volume
+/// header collection time — closer than the wall-clock receipt time it
+/// replaces — without needing to wait for the first M chunk's radial
+/// parse. If there is no upload time, fall back to wall clock.
+fn provisional_scan_start_secs(
+    start_upload: Option<chrono::DateTime<chrono::Utc>>,
+    iter: &StreamingState,
+) -> i64 {
+    let median_lag_secs = iter
+        .timing_stats()
+        .median_availability_lag_secs()
+        .unwrap_or(DEFAULT_PROVISIONAL_LAG_SECS);
+    if let Some(upload) = start_upload {
+        let upload_secs = upload.timestamp_millis() as f64 / 1000.0;
+        return (upload_secs - median_lag_secs).round() as i64;
+    }
+    current_timestamp()
+}
+
 /// Drain anything pushed in from `main.rs` after a worker ingest and stamp
 /// it onto the `StreamingState`: the ACTUAL volume header time (anchors
 /// collection-time projections) and the empirical per-chunk availability
@@ -377,7 +405,8 @@ async fn streaming_loop(
     if let Some(start_chunk) = init_result.start_chunk {
         // Joined mid-volume: emit the start chunk + current sweep's chunks only.
         let start_data = start_chunk.chunk.data().to_vec();
-        current_scan_start_secs = current_timestamp();
+        current_scan_start_secs =
+            provisional_scan_start_secs(start_chunk.identifier.upload_date_time(), &iter);
 
         log::debug!(
             "Init: emitting start_chunk ({} bytes) for mid-volume join",
@@ -562,7 +591,10 @@ async fn streaming_loop(
         let latest_type = init_result.latest_chunk.identifier.chunk_type();
         let latest_is_start = latest_type == ChunkType::Start;
         let latest_is_end = latest_type == ChunkType::End;
-        current_scan_start_secs = current_timestamp();
+        current_scan_start_secs = provisional_scan_start_secs(
+            init_result.latest_chunk.identifier.upload_date_time(),
+            &iter,
+        );
         chunks_in_volume = 1;
         cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
 
@@ -662,7 +694,8 @@ async fn streaming_loop(
                 // Reset counters on new volume
                 if is_start {
                     chunks_in_volume = 0;
-                    current_scan_start_secs = current_timestamp();
+                    current_scan_start_secs =
+                        provisional_scan_start_secs(chunk.identifier.upload_date_time(), &iter);
                     cache_volume_number(&site_id, *chunk.identifier.volume());
                 }
 
