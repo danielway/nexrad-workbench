@@ -262,6 +262,10 @@ async fn streaming_loop(
     };
 
     let mut iter = init_result.state;
+    if let Some(cached) = load_cached_timing_stats(&site_id) {
+        iter.preload_timing_stats(cached);
+        log::debug!("Loaded cached timing stats for {}", site_id);
+    }
     let mut stats_tracker = StatsTracker::new(&iter);
     stats_tracker.update(&stats, &iter);
 
@@ -647,6 +651,8 @@ async fn streaming_loop(
                     });
                 }
 
+                save_timing_stats(&site_id, iter.timing_stats());
+
                 ctx.request_repaint();
             }
             Ok(None) => {
@@ -834,6 +840,35 @@ fn get_cached_volume(site_id: &str) -> Option<nexrad_data::aws::realtime::Volume
     } else {
         None
     }
+}
+
+// ── Timing stats persistence ──────────────────────────────────────────────
+
+fn timing_stats_key(site_id: &str) -> String {
+    format!("nexrad_timing_stats_{}", site_id)
+}
+
+/// Persist the site's rolling chunk-timing statistics to localStorage so the
+/// next session starts warm instead of cold-starting from pure physics.
+fn save_timing_stats(site_id: &str, stats: &super::timing::ChunkTimingStats) {
+    let Some(json) = stats.to_json() else {
+        return;
+    };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = window.local_storage() else {
+        return;
+    };
+    let _ = storage.set_item(&timing_stats_key(site_id), &json);
+}
+
+/// Read a previously-persisted timing stats snapshot for the site, if any.
+fn load_cached_timing_stats(site_id: &str) -> Option<super::timing::ChunkTimingStats> {
+    let window = web_sys::window()?;
+    let storage = window.local_storage().ok()??;
+    let raw = storage.get_item(&timing_stats_key(site_id)).ok()??;
+    super::timing::ChunkTimingStats::from_json(&raw)
 }
 
 /// Run [`find_latest_volume`] then initialize a [`StreamingState`] at that volume.

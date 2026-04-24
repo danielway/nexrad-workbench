@@ -1,11 +1,17 @@
 use chrono::Duration;
 use nexrad_data::aws::realtime::ChunkType;
 use nexrad_decode::messages::volume_coverage_pattern::{ChannelConfiguration, WaveformType};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 
 /// Maximum number of timing samples to keep per chunk characteristics
 const MAX_TIMING_SAMPLES: usize = 10;
+
+/// Schema version for the serialized `ChunkTimingStats` payload in localStorage.
+/// Bump when the on-disk shape changes so old caches are ignored rather than
+/// silently misinterpreted.
+const PERSIST_SCHEMA_VERSION: u32 = 1;
 
 /// Characteristics of a chunk that affect timing.
 ///
@@ -123,5 +129,160 @@ impl ChunkTimingStats {
                 )
             })
             .collect()
+    }
+
+    /// Serialize to a compact JSON string suitable for localStorage.
+    ///
+    /// The payload includes a schema version; `from_json` ignores payloads with
+    /// a mismatched version so schema bumps cleanly invalidate old caches.
+    pub fn to_json(&self) -> Option<String> {
+        let dto = ChunkTimingStatsDto {
+            version: PERSIST_SCHEMA_VERSION,
+            timings: self
+                .timings
+                .iter()
+                .filter_map(|(k, v)| {
+                    let chars_dto = characteristics_to_dto(k)?;
+                    let samples = v
+                        .iter()
+                        .map(|t| TimingStatDto {
+                            duration_ms: t.duration.num_milliseconds(),
+                            attempts: t.attempts,
+                        })
+                        .collect();
+                    Some((chars_dto, samples))
+                })
+                .collect(),
+        };
+        serde_json::to_string(&dto).ok()
+    }
+
+    /// Deserialize from a JSON string previously produced by `to_json`.
+    ///
+    /// Returns `None` on any parse error or version mismatch. Individual samples
+    /// with unrecognised enum variants are silently dropped — a corrupted entry
+    /// should not poison the whole cache.
+    pub fn from_json(raw: &str) -> Option<Self> {
+        let dto: ChunkTimingStatsDto = serde_json::from_str(raw).ok()?;
+        if dto.version != PERSIST_SCHEMA_VERSION {
+            return None;
+        }
+        let mut timings: HashMap<ChunkCharacteristics, VecDeque<TimingStat>> = HashMap::new();
+        for (chars_dto, samples) in dto.timings {
+            let Some(chars) = characteristics_from_dto(&chars_dto) else {
+                continue;
+            };
+            let mut queue: VecDeque<TimingStat> =
+                VecDeque::with_capacity(samples.len().min(MAX_TIMING_SAMPLES));
+            for sample in samples.into_iter().rev().take(MAX_TIMING_SAMPLES).rev() {
+                queue.push_back(TimingStat {
+                    duration: Duration::milliseconds(sample.duration_ms),
+                    attempts: sample.attempts,
+                });
+            }
+            if !queue.is_empty() {
+                timings.insert(chars, queue);
+            }
+        }
+        Some(Self { timings })
+    }
+}
+
+// ── Persistence DTOs ──────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize)]
+struct ChunkTimingStatsDto {
+    version: u32,
+    timings: Vec<(ChunkCharacteristicsDto, Vec<TimingStatDto>)>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ChunkCharacteristicsDto {
+    chunk_type: String,
+    waveform_type: String,
+    channel_configuration: String,
+    is_first_in_sweep: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TimingStatDto {
+    duration_ms: i64,
+    attempts: usize,
+}
+
+fn characteristics_to_dto(c: &ChunkCharacteristics) -> Option<ChunkCharacteristicsDto> {
+    Some(ChunkCharacteristicsDto {
+        chunk_type: chunk_type_to_str(c.chunk_type).to_string(),
+        waveform_type: waveform_type_to_str(c.waveform_type).to_string(),
+        channel_configuration: channel_configuration_to_str(c.channel_configuration).to_string(),
+        is_first_in_sweep: c.is_first_in_sweep,
+    })
+}
+
+fn characteristics_from_dto(dto: &ChunkCharacteristicsDto) -> Option<ChunkCharacteristics> {
+    Some(ChunkCharacteristics {
+        chunk_type: chunk_type_from_str(&dto.chunk_type)?,
+        waveform_type: waveform_type_from_str(&dto.waveform_type)?,
+        channel_configuration: channel_configuration_from_str(&dto.channel_configuration)?,
+        is_first_in_sweep: dto.is_first_in_sweep,
+    })
+}
+
+fn chunk_type_to_str(t: ChunkType) -> &'static str {
+    match t {
+        ChunkType::Start => "S",
+        ChunkType::Intermediate => "I",
+        ChunkType::End => "E",
+    }
+}
+
+fn chunk_type_from_str(s: &str) -> Option<ChunkType> {
+    match s {
+        "S" => Some(ChunkType::Start),
+        "I" => Some(ChunkType::Intermediate),
+        "E" => Some(ChunkType::End),
+        _ => None,
+    }
+}
+
+fn waveform_type_to_str(t: WaveformType) -> &'static str {
+    match t {
+        WaveformType::CS => "CS",
+        WaveformType::CDW => "CDW",
+        WaveformType::CDWO => "CDWO",
+        WaveformType::B => "B",
+        WaveformType::SPP => "SPP",
+        WaveformType::Unknown => "Unknown",
+    }
+}
+
+fn waveform_type_from_str(s: &str) -> Option<WaveformType> {
+    match s {
+        "CS" => Some(WaveformType::CS),
+        "CDW" => Some(WaveformType::CDW),
+        "CDWO" => Some(WaveformType::CDWO),
+        "B" => Some(WaveformType::B),
+        "SPP" => Some(WaveformType::SPP),
+        "Unknown" => Some(WaveformType::Unknown),
+        _ => None,
+    }
+}
+
+fn channel_configuration_to_str(c: ChannelConfiguration) -> &'static str {
+    match c {
+        ChannelConfiguration::ConstantPhase => "constant_phase",
+        ChannelConfiguration::RandomPhase => "random_phase",
+        ChannelConfiguration::SZ2Phase => "sz2_phase",
+        ChannelConfiguration::UnknownPhase => "unknown_phase",
+    }
+}
+
+fn channel_configuration_from_str(s: &str) -> Option<ChannelConfiguration> {
+    match s {
+        "constant_phase" => Some(ChannelConfiguration::ConstantPhase),
+        "random_phase" => Some(ChannelConfiguration::RandomPhase),
+        "sz2_phase" => Some(ChannelConfiguration::SZ2Phase),
+        "unknown_phase" => Some(ChannelConfiguration::UnknownPhase),
+        _ => None,
     }
 }

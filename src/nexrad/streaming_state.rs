@@ -271,6 +271,17 @@ impl StreamingState {
         }
     }
 
+    /// Expose the rolling timing statistics for persistence by the streaming loop.
+    pub fn timing_stats(&self) -> &ChunkTimingStats {
+        &self.timing_stats
+    }
+
+    /// Replace the rolling timing statistics with a previously-persisted snapshot.
+    /// Called once on stream start when a localStorage cache is available for the site.
+    pub fn preload_timing_stats(&mut self, stats: ChunkTimingStats) {
+        self.timing_stats = stats;
+    }
+
     pub fn next_expected_time(&self) -> Option<DateTime<Utc>> {
         let vcp = self.vcp.as_ref()?;
         let mapper = self.elevation_mapper.as_ref()?;
