@@ -179,6 +179,12 @@ pub struct LiveModeState {
     /// model (sweep_duration = 360/rate - 0.67s).
     pub projected_volume_end_available_at_secs: Option<f64>,
 
+    /// COLLECTION category: projected Unix-seconds time the radar finishes
+    /// physically scanning the final chunk of the current volume. Drives
+    /// timeline placeholders for future-chunk positioning, whereas
+    /// `projected_volume_end_available_at_secs` drives countdown language.
+    pub projected_volume_end_collection_secs: Option<f64>,
+
     /// Per-chunk projection info from the library's physics model.
     /// Structural metadata covers all chunks; projected times only for future chunks.
     /// Updated each time a new chunk arrives.
@@ -241,6 +247,7 @@ impl Default for LiveModeState {
             last_radial_azimuth: None,
             last_radial_time_secs: None,
             projected_volume_end_available_at_secs: None,
+            projected_volume_end_collection_secs: None,
             chunk_projections: None,
             current_volume_forecast: None,
             last_volume_forecast: None,
@@ -315,6 +322,7 @@ impl LiveModeState {
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
         self.projected_volume_end_available_at_secs = None;
+        self.projected_volume_end_collection_secs = None;
         self.chunk_projections = None;
         self.current_volume_forecast = None;
         self.last_volume_forecast = None;
@@ -418,6 +426,7 @@ impl LiveModeState {
     ///
     /// This is the main integration point between the RealtimeChannel and
     /// the live mode state machine.
+    #[allow(clippy::too_many_arguments)]
     pub fn handle_realtime_chunk(
         &mut self,
         chunks_in_volume: u32,
@@ -425,10 +434,12 @@ impl LiveModeState {
         is_volume_end: bool,
         now: f64,
         projected_volume_end_available_at_secs: Option<f64>,
+        projected_volume_end_collection_secs: Option<f64>,
         chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
     ) {
         self.chunks_received = chunks_in_volume;
         self.projected_volume_end_available_at_secs = projected_volume_end_available_at_secs;
+        self.projected_volume_end_collection_secs = projected_volume_end_collection_secs;
         self.chunk_projections = chunk_projections;
 
         if is_volume_end {
@@ -494,6 +505,7 @@ impl LiveModeState {
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
         self.projected_volume_end_available_at_secs = None;
+        self.projected_volume_end_collection_secs = None;
         self.chunk_projections = None;
     }
 
@@ -614,12 +626,17 @@ impl LiveModeState {
         let is_clear_air = crate::data::vcp::is_clear_air_vcp(vcp_number);
 
         let total_vol_dur = vcp.estimated_volume_duration().unwrap_or(300.0);
+        // Predicted end of volume on the timeline is the COLLECTION time of
+        // the final chunk — not its S3 availability. Timeline placeholders
+        // reflect when the radar finishes physically scanning.
         let predicted_volume_end = self
-            .projected_volume_end_available_at_secs
+            .projected_volume_end_collection_secs
             .unwrap_or(vol_start + total_vol_dur);
         let sweep_durations = vcp.sweep_durations(total_vol_dur);
 
         // Group chunk_projections by elevation for per-sweep predictions.
+        // Uses projected COLLECTION times so future-sweep bounds on the
+        // timeline reflect when the radar will scan, not when chunks upload.
         let chunk_projections_available = self.chunk_projections.is_some();
         let projected_per_elev: Option<
             std::collections::BTreeMap<u8, (f64, f64, u32, f64)>, // (min_time, max_time, chunk_count, rate)
@@ -635,7 +652,7 @@ impl LiveModeState {
                         chunk.azimuth_rate_dps,
                     ));
                     entry.2 += 1;
-                    if let Some(t) = chunk.projected_available_at_secs {
+                    if let Some(t) = chunk.projected_collection_time_secs {
                         entry.0 = entry.0.min(t);
                         entry.1 = entry.1.max(t);
                     }
@@ -824,7 +841,10 @@ impl LiveModeState {
             let mut max_t = f64::MIN;
             for chunk in projs {
                 if chunk.elevation_number == Some(elev as usize) {
-                    if let Some(t) = chunk.projected_available_at_secs {
+                    // COLLECTION time — elevation bounds on the timeline
+                    // represent when the radar will physically scan, not
+                    // when chunks will upload.
+                    if let Some(t) = chunk.projected_collection_time_secs {
                         min_t = min_t.min(t);
                         max_t = max_t.max(t);
                     }

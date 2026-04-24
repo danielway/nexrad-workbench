@@ -370,6 +370,17 @@ impl StreamingState {
             .map(|p| p.volume_end_available_at())
     }
 
+    /// COLLECTION category: projected Unix-seconds time the radar finishes
+    /// physically scanning the final chunk of the current volume. Drives
+    /// the timeline's right-edge marker for the in-progress volume.
+    pub fn projected_volume_end_collection_secs(&self) -> Option<f64> {
+        let projection = self.project_remaining_scan()?;
+        projection
+            .chunks()
+            .last()
+            .map(|c| c.projected_collection_time_secs())
+    }
+
     pub fn requests_made(&self) -> usize {
         self.requests_made
     }

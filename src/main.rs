@@ -1069,6 +1069,7 @@ impl WorkbenchApp {
                 is_volume_end,
                 fetch_latency_ms,
                 projected_volume_end_available_at_secs,
+                projected_volume_end_collection_secs,
                 chunk_projections,
                 arrival_stat,
             } => {
@@ -1089,6 +1090,7 @@ impl WorkbenchApp {
                     is_volume_end,
                     now,
                     projected_volume_end_available_at_secs,
+                    projected_volume_end_collection_secs,
                     chunk_projections,
                 );
 

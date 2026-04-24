@@ -66,6 +66,10 @@ pub enum RealtimeResult {
         /// of the current volume becomes available in S3, from the library's
         /// physics model.
         projected_volume_end_available_at_secs: Option<f64>,
+        /// COLLECTION category: projected Unix-seconds time the radar finishes
+        /// physically scanning the final chunk of the current volume. Drives
+        /// the timeline's projected end-of-volume marker.
+        projected_volume_end_collection_secs: Option<f64>,
         /// Per-chunk projection info for the entire volume.
         /// Structural metadata is present for all chunks; projected times only for future chunks.
         chunk_projections: Option<Vec<ChunkProjectionInfo>>,
@@ -580,6 +584,7 @@ async fn streaming_loop(
                 projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
                     &iter,
                 ),
+                projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
                 chunk_projections: build_chunk_projections(&iter),
                 arrival_stat: None,
             });
@@ -620,6 +625,7 @@ async fn streaming_loop(
                 projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
                     &iter,
                 ),
+                projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
                 chunk_projections: build_chunk_projections(&iter),
                 arrival_stat: None,
             });
@@ -790,6 +796,8 @@ async fn streaming_loop(
                         fetch_latency_ms: chunk_fetch_ms,
                         projected_volume_end_available_at_secs:
                             get_projected_volume_end_available_at_secs(&iter),
+                        projected_volume_end_collection_secs: iter
+                            .projected_volume_end_collection_secs(),
                         chunk_projections,
                         arrival_stat: Some(arrival_stat),
                     });
