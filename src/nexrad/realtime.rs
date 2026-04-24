@@ -34,6 +34,11 @@ pub struct ChunkProjectionInfo {
     pub elevation_angle_deg: f64,
     /// Azimuth rotation rate in degrees/second from the VCP.
     pub azimuth_rate_dps: f64,
+    /// COLLECTION category: projected Unix-seconds time the radar physically
+    /// emits/receives for this chunk. `Some` for future chunks (from
+    /// ScanTimingProjection), `None` for past chunks. Drives timeline
+    /// placeholders for future sweeps.
+    pub projected_collection_time_secs: Option<f64>,
     /// AVAILABILITY category: projected Unix-seconds time this chunk becomes
     /// available in S3. `Some` for future chunks (from ScanTimingProjection),
     /// `None` for past chunks.
@@ -181,14 +186,20 @@ fn build_chunk_projections(state: &StreamingState) -> Option<Vec<ChunkProjection
     let all_meta = state.all_chunk_metadata()?;
     let projection = state.project_remaining_scan();
 
-    // Build a lookup from sequence → projected-availability-time for future chunks
-    let projected_available_at_by_seq: std::collections::HashMap<usize, f64> = projection
+    // Build lookups from sequence → {collection, availability} times.
+    let (projected_collection_by_seq, projected_available_at_by_seq): (
+        std::collections::HashMap<usize, f64>,
+        std::collections::HashMap<usize, f64>,
+    ) = projection
         .as_ref()
         .map(|p| {
-            p.chunks()
-                .iter()
-                .map(|c| (c.sequence(), c.projected_available_at().timestamp() as f64))
-                .collect()
+            let mut collection = std::collections::HashMap::new();
+            let mut available = std::collections::HashMap::new();
+            for c in p.chunks() {
+                collection.insert(c.sequence(), c.projected_collection_time_secs());
+                available.insert(c.sequence(), c.projected_available_at().timestamp() as f64);
+            }
+            (collection, available)
         })
         .unwrap_or_default();
 
@@ -200,6 +211,9 @@ fn build_chunk_projections(state: &StreamingState) -> Option<Vec<ChunkProjection
                 elevation_number: meta.elevation_number(),
                 elevation_angle_deg: meta.elevation_angle_deg(),
                 azimuth_rate_dps: meta.azimuth_rate_dps(),
+                projected_collection_time_secs: projected_collection_by_seq
+                    .get(&meta.sequence())
+                    .copied(),
                 projected_available_at_secs: projected_available_at_by_seq
                     .get(&meta.sequence())
                     .copied(),

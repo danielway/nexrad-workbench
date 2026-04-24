@@ -334,7 +334,13 @@ impl StreamingState {
     pub fn project_remaining_scan(&self) -> Option<ScanTimingProjection> {
         let vcp = self.vcp.as_ref()?;
         let mapper = self.elevation_mapper.as_ref()?;
-        project_scan_timing(&self.current, vcp, mapper, Some(&self.timing_stats))
+        project_scan_timing(
+            &self.current,
+            self.latest_volume_header_time_secs,
+            vcp,
+            mapper,
+            Some(&self.timing_stats),
+        )
     }
 
     /// AVAILABILITY category: projected S3-availability time of the final

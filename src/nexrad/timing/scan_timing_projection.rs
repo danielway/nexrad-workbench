@@ -5,9 +5,12 @@ use nexrad_decode::messages::volume_coverage_pattern;
 
 /// A projected timeline for all remaining chunks in a volume scan.
 ///
-/// Built from the VCP's azimuth rates and elevation angles using a physics-based model,
-/// optionally refined with historical timing observations. This enables UIs to show
-/// projected timelines for the entire remaining scan, not just the next chunk.
+/// Carries two parallel time axes for each chunk:
+///   - ACTUAL + physics → projected COLLECTION time (when the radar emits/receives).
+///   - Collection + lag → projected AVAILABILITY time (when the chunk appears on S3).
+///
+/// The collection axis anchors on the parsed volume header time when the caller
+/// supplies one; otherwise it falls back to a lag-adjusted S3 upload time.
 #[derive(Debug, Clone)]
 pub struct ScanTimingProjection {
     /// The sequence number of the anchor chunk (the last observed chunk).
@@ -16,6 +19,14 @@ pub struct ScanTimingProjection {
     /// time as a fallback). Used as the base for projecting future chunks'
     /// availability.
     anchor_available_at: DateTime<Utc>,
+    /// COLLECTION category: parsed radial-header collection time of the
+    /// current volume when available, else `anchor_available_at -
+    /// observed_anchor_lag_secs` as an estimate.
+    anchor_collection_time_secs: f64,
+    /// AVAILABILITY-lag category: empirical delay between ACTUAL collection
+    /// time of the anchor and its S3 upload time. `None` when the header
+    /// time is unavailable (falls back to `DEFAULT_AVAILABILITY_LAG_SECS`).
+    observed_anchor_lag_secs: Option<f64>,
     /// Projected timing for each future chunk, in sequence order.
     chunks: Vec<ChunkProjection>,
     /// AVAILABILITY category: projected time the final chunk becomes
@@ -24,6 +35,12 @@ pub struct ScanTimingProjection {
     /// Projected total remaining duration from anchor to volume end.
     remaining_duration: Duration,
 }
+
+/// Fallback NEXRAD ingest lag (Unix seconds) used when we have no observed
+/// anchor lag yet. Chosen to roughly match typical S3 upload latencies
+/// observed during live streaming (~5-15 s). A later commit replaces this
+/// with a median from the split `ChunkTimingStats`.
+const DEFAULT_AVAILABILITY_LAG_SECS: f64 = 5.0;
 
 impl ScanTimingProjection {
     /// The sequence number of the anchor chunk this projection is relative to.
@@ -36,6 +53,22 @@ impl ScanTimingProjection {
     /// projected availability times for future chunks.
     pub fn anchor_available_at(&self) -> DateTime<Utc> {
         self.anchor_available_at
+    }
+
+    /// COLLECTION category: Unix-seconds collection time of the anchor
+    /// chunk — parsed from a radial header when available, otherwise
+    /// estimated as `anchor_available_at - observed_anchor_lag`.
+    #[allow(dead_code)] // Consumed by debug UI in a later commit.
+    pub fn anchor_collection_time_secs(&self) -> f64 {
+        self.anchor_collection_time_secs
+    }
+
+    /// AVAILABILITY-lag category: observed anchor lag, if the caller
+    /// provided an ACTUAL collection anchor. `None` signals the default
+    /// fallback lag was used and projections carry more uncertainty.
+    #[allow(dead_code)] // Consumed by debug UI in a later commit.
+    pub fn observed_anchor_lag_secs(&self) -> Option<f64> {
+        self.observed_anchor_lag_secs
     }
 
     /// Projected timing for each future chunk, in sequence order.
@@ -64,6 +97,10 @@ pub struct ChunkProjection {
     elevation_number: Option<usize>,
     /// Elevation angle in degrees (0.0 for the Start chunk).
     elevation_angle_deg: f64,
+    /// COLLECTION category: projected Unix-seconds time the radar physically
+    /// emits/receives for this chunk. Drives timeline placeholders for
+    /// future sweeps and chunks.
+    projected_collection_time_secs: f64,
     /// AVAILABILITY category: projected time this chunk becomes available
     /// in S3. Drives the download scheduler and "next in Xs" UI language.
     projected_available_at: DateTime<Utc>,
@@ -97,6 +134,12 @@ impl ChunkProjection {
         self.projected_available_at
     }
 
+    /// COLLECTION category: projected Unix-seconds time the radar physically
+    /// emits/receives for this chunk.
+    pub fn projected_collection_time_secs(&self) -> f64 {
+        self.projected_collection_time_secs
+    }
+
     /// Duration from the anchor to this chunk's projected availability.
     pub fn offset_from_anchor(&self) -> Duration {
         self.offset_from_anchor
@@ -116,20 +159,27 @@ impl ChunkProjection {
 /// Build a timing projection for all remaining chunks in the current volume.
 ///
 /// The projection starts from `anchor_chunk` (the most recently observed chunk) and
-/// projects forward through the final chunk in the volume. Each chunk's projected
-/// availability time is computed using the VCP's azimuth rates, elevation angles,
-/// and optionally historical timing data.
+/// projects forward through the final chunk in the volume. Each chunk carries both a
+/// projected COLLECTION time (ACTUAL collection anchor + physics intervals) and a
+/// projected AVAILABILITY time (COLLECTION + empirical ingest lag).
+///
+/// When `anchor_collection_time_secs` is `Some`, projections are anchored in real
+/// collection time and availability uses the observed anchor lag. Otherwise the
+/// function falls back to anchoring on `anchor_chunk.upload_date_time()` with a
+/// default lag estimate, which keeps behavior identical to the pre-split model.
 ///
 /// Returns `None` if the anchor chunk's metadata cannot be resolved or if there are
 /// no remaining chunks to project.
 pub fn project_scan_timing(
     anchor_chunk: &ChunkIdentifier,
+    anchor_collection_time_secs: Option<f64>,
     _vcp: &volume_coverage_pattern::Message,
     mapper: &ElevationChunkMapper,
     timing_stats: Option<&ChunkTimingStats>,
 ) -> Option<ScanTimingProjection> {
     let anchor_sequence = anchor_chunk.sequence();
     let anchor_available_at = anchor_chunk.upload_date_time().unwrap_or_else(Utc::now);
+    let anchor_available_at_secs = anchor_available_at.timestamp_millis() as f64 / 1000.0;
     let final_sequence = mapper.final_sequence();
 
     // Nothing to project if we're at or past the final chunk
@@ -138,6 +188,24 @@ pub fn project_scan_timing(
     }
 
     let anchor_metadata = mapper.get_chunk_metadata(anchor_sequence)?;
+
+    // Split anchor into collection + lag. When the caller knows the ACTUAL
+    // volume header collection time, use it and derive the empirical lag as
+    // upload − collection. Otherwise fall back to a default lag (collection
+    // estimated as upload − default_lag) so behavior matches the pre-split
+    // availability projection.
+    let (anchor_collection_secs, observed_lag_secs, availability_lag_secs) =
+        match anchor_collection_time_secs {
+            Some(collection_secs) => {
+                let lag = anchor_available_at_secs - collection_secs;
+                (collection_secs, Some(lag), lag)
+            }
+            None => (
+                anchor_available_at_secs - DEFAULT_AVAILABILITY_LAG_SECS,
+                None,
+                DEFAULT_AVAILABILITY_LAG_SECS,
+            ),
+        };
 
     let mut projections = Vec::new();
     let mut cumulative_offset_ms: i64 = 0;
@@ -175,12 +243,19 @@ pub fn project_scan_timing(
 
         let interval_duration = Duration::milliseconds(interval_ms);
         let offset_duration = Duration::milliseconds(cumulative_offset_ms);
-        let projected_available_at = anchor_available_at + offset_duration;
+        let offset_secs = cumulative_offset_ms as f64 / 1000.0;
+
+        let projected_collection_time_secs = anchor_collection_secs + offset_secs;
+        let projected_available_at_secs = projected_collection_time_secs + availability_lag_secs;
+        let projected_available_at =
+            DateTime::<Utc>::from_timestamp_millis((projected_available_at_secs * 1000.0) as i64)
+                .unwrap_or(anchor_available_at);
 
         projections.push(ChunkProjection {
             sequence: seq,
             elevation_number: next_metadata.elevation_number(),
             elevation_angle_deg: next_metadata.elevation_angle_deg(),
+            projected_collection_time_secs,
             projected_available_at,
             offset_from_anchor: offset_duration,
             interval_from_previous: interval_duration,
@@ -199,6 +274,8 @@ pub fn project_scan_timing(
     Some(ScanTimingProjection {
         anchor_sequence,
         anchor_available_at,
+        anchor_collection_time_secs: anchor_collection_secs,
+        observed_anchor_lag_secs: observed_lag_secs,
         chunks: projections,
         volume_end_available_at,
         remaining_duration,
@@ -228,5 +305,5 @@ pub fn project_full_scan_timing(
         Some(start_time),
     );
 
-    project_scan_timing(&start_chunk, vcp, mapper, timing_stats)
+    project_scan_timing(&start_chunk, None, vcp, mapper, timing_stats)
 }
