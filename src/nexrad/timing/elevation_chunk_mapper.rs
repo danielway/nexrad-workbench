@@ -1,4 +1,4 @@
-use nexrad_decode::messages::volume_coverage_pattern;
+use nexrad_decode::messages::volume_coverage_pattern::{self, WaveformType};
 
 /// Metadata describing a chunk's position within the volume scan.
 ///
@@ -23,6 +23,8 @@ pub struct ChunkMetadata {
     azimuth_rate_dps: f64,
     /// Elevation angle in degrees (from VCP).
     elevation_angle_deg: f64,
+    /// Waveform type for this elevation (from VCP). `None` for the Start chunk.
+    waveform_type: Option<WaveformType>,
     /// Whether this is the Start chunk (sequence 1, metadata-only).
     is_start_chunk: bool,
 }
@@ -68,6 +70,11 @@ impl ChunkMetadata {
         self.elevation_angle_deg
     }
 
+    /// Waveform type for this elevation. `None` for the Start chunk.
+    pub fn waveform_type(&self) -> Option<WaveformType> {
+        self.waveform_type
+    }
+
     /// Whether this is the Start chunk (sequence 1, metadata-only).
     pub fn is_start_chunk(&self) -> bool {
         self.is_start_chunk
@@ -99,6 +106,7 @@ impl ElevationChunkMapper {
             is_last_in_sweep: false,
             azimuth_rate_dps: 0.0,
             elevation_angle_deg: 0.0,
+            waveform_type: None,
             is_start_chunk: true,
         });
 
@@ -116,6 +124,7 @@ impl ElevationChunkMapper {
 
             let azimuth_rate = elevation.azimuth_rate();
             let elevation_angle = elevation.elevation_angle();
+            let waveform_type = elevation.waveform_type();
 
             for chunk_idx in 0..elevation_chunk_count {
                 let seq = total_chunk_count + chunk_idx;
@@ -128,6 +137,7 @@ impl ElevationChunkMapper {
                     is_last_in_sweep: chunk_idx == elevation_chunk_count - 1,
                     azimuth_rate_dps: azimuth_rate,
                     elevation_angle_deg: elevation_angle,
+                    waveform_type: Some(waveform_type),
                     is_start_chunk: false,
                 });
             }

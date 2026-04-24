@@ -1,4 +1,5 @@
 use super::ChunkMetadata;
+use nexrad_decode::messages::volume_coverage_pattern::WaveformType;
 
 /// Sweep duration bias correction in seconds.
 ///
@@ -58,15 +59,25 @@ impl ChunkTimingModel {
         Self::sweep_duration_secs(azimuth_rate_dps).map(|d| d / chunks_in_sweep as f64)
     }
 
-    /// Predicted inter-sweep gap in seconds based on elevation angle change.
+    /// Predicted inter-sweep gap in seconds based on elevation angle change and
+    /// waveform transition.
     ///
-    /// Formula: `0.7 + (|from_elevation - to_elevation| * 0.08)`
+    /// Formula: `0.7 + (|from_elevation - to_elevation| * 0.08) + waveform_penalty`
     ///
     /// The base 0.7s represents mode switching overhead. The 0.08s per degree represents
     /// antenna slew rate during transitions (much faster than the survey rotation rate).
-    pub fn inter_sweep_gap_secs(from_elevation_deg: f64, to_elevation_deg: f64) -> f64 {
+    /// The waveform penalty accounts for additional mode-switch overhead when the
+    /// waveform type changes between sweeps (see [`waveform_transition_penalty_secs`]).
+    pub fn inter_sweep_gap_secs(
+        from_elevation_deg: f64,
+        to_elevation_deg: f64,
+        from_waveform: Option<WaveformType>,
+        to_waveform: Option<WaveformType>,
+    ) -> f64 {
         let elevation_change = (to_elevation_deg - from_elevation_deg).abs();
-        INTER_SWEEP_BASE_GAP_SECS + (elevation_change * INTER_SWEEP_ELEVATION_RATE_SECS_PER_DEG)
+        INTER_SWEEP_BASE_GAP_SECS
+            + (elevation_change * INTER_SWEEP_ELEVATION_RATE_SECS_PER_DEG)
+            + waveform_transition_penalty_secs(from_waveform, to_waveform)
     }
 
     /// Predicted inter-volume gap in seconds (constant 8.5s).
@@ -97,6 +108,8 @@ impl ChunkTimingModel {
             let gap = Self::inter_sweep_gap_secs(
                 previous.elevation_angle_deg(),
                 next.elevation_angle_deg(),
+                previous.waveform_type(),
+                next.waveform_type(),
             );
 
             return match chunk_duration {
@@ -114,5 +127,44 @@ impl ChunkTimingModel {
     /// Uses the midpoint of observed chunk durations (~4s) as a conservative default.
     fn fallback_chunk_duration_secs() -> f64 {
         4.0
+    }
+}
+
+/// Extra inter-sweep gap in seconds attributable to a waveform-type transition.
+///
+/// The base `inter_sweep_gap_secs` already covers antenna slew and a small mode-switch
+/// overhead. This function adds a further penalty when the waveform type itself changes,
+/// which empirically dominates the physics-only prediction error on sweep boundaries.
+///
+/// Calibration is from one VCP 212 volume (2026-04-24, 24 elevations) where the base
+/// formula predicted first-chunk-of-sweep arrivals 2–4s too early on waveform changes.
+/// Specific pairs are matched first; asymmetric catch-alls apply when only one side is
+/// known.
+fn waveform_transition_penalty_secs(from: Option<WaveformType>, to: Option<WaveformType>) -> f64 {
+    let (from, to) = match (from, to) {
+        (Some(f), Some(t)) => (f, t),
+        // Start chunk or otherwise unknown: no additional penalty — the caller
+        // (inter_volume_gap branch, or base inter-sweep gap) already covers it.
+        _ => return 0.0,
+    };
+
+    if std::mem::discriminant(&from) == std::mem::discriminant(&to) {
+        return 0.0;
+    }
+
+    match (from, to) {
+        // CS → CDW: same-angle SAILS/MRLE transition, observed 5–6 empty polls
+        // per chunk with pred_err +3.4 to +4.0s against a 0.7s base.
+        (WaveformType::CS, WaveformType::CDW) => 2.8,
+        // CDW → CS: reverse direction, observed ~+1s drift.
+        (WaveformType::CDW, WaveformType::CS) => 1.0,
+        // B → CDWO: high-elevation transition, observed pred_err ~+3s.
+        (WaveformType::B, WaveformType::CDWO) => 3.0,
+        // CDWO leaving to any other waveform: small penalty, ~+1s.
+        (WaveformType::CDWO, _) => 1.0,
+        // Anything arriving at B: small penalty, ~+1s.
+        (_, WaveformType::B) => 1.0,
+        // Catch-all for untabulated waveform changes: conservative middle ground.
+        _ => 2.0,
     }
 }
