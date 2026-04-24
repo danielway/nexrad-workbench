@@ -68,10 +68,19 @@ impl fmt::Display for UnixMillis {
 ///
 /// A scan is uniquely identified by site + start time. The start time
 /// is derived from the first record's timestamp (from VCP metadata or
-/// first radial collection time).
+/// first radial collection time) in the historical/archive path. In the
+/// real-time streaming path, the start is set to `upload_date_time −
+/// median availability lag` when the Start chunk arrives (see
+/// `realtime.rs::provisional_scan_start_secs`), which typically lands
+/// within ~1 s of the true collection time.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ScanKey {
     pub site: SiteId,
+    /// ACTUAL category: Unix-millis volume collection start time. In
+    /// real-time mode this is a close estimate (upload minus median lag)
+    /// rather than the parsed value until/unless an IDB rename refines
+    /// it, but consumers should treat it as actual collection time for
+    /// display and comparison purposes.
     pub scan_start: UnixMillis,
 }
 
@@ -189,10 +198,15 @@ pub struct PrecomputedSweep {
     pub offset: f32,
     pub radial_count: u32,
     pub mean_elevation: f32,
+    /// ACTUAL category: earliest radial collection time (Unix seconds).
+    /// Parsed directly from radial headers, so this is the authoritative
+    /// start-of-sweep time used throughout the timeline and canvas.
     pub sweep_start_secs: f64,
+    /// ACTUAL category: latest radial collection time (Unix seconds).
     pub sweep_end_secs: f64,
     pub azimuths: Vec<f32>,
-    /// Per-radial collection timestamps in Unix seconds (parallel to azimuths).
+    /// ACTUAL category: per-radial collection timestamps in Unix seconds,
+    /// parallel to `azimuths`.
     pub radial_times: Vec<f64>,
     pub gate_values: GateValues,
 }
@@ -398,9 +412,13 @@ impl ScanCompleteness {
 /// Lightweight sweep metadata persisted in the scan index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SweepMeta {
-    /// Start timestamp (Unix seconds with sub-second precision).
+    /// ACTUAL category: sweep start time (Unix seconds, sub-second
+    /// precision), derived from the earliest radial's collection
+    /// timestamp. Authoritative — the canvas and timeline use this
+    /// directly for placing the sweep.
     pub start: f64,
-    /// End timestamp (Unix seconds with sub-second precision).
+    /// ACTUAL category: sweep end time (Unix seconds, sub-second
+    /// precision), latest radial's collection timestamp.
     pub end: f64,
     /// Elevation angle in degrees.
     pub elevation: f32,

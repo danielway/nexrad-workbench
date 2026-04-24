@@ -2,6 +2,29 @@
 //!
 //! This module handles the state machine for real-time streaming mode,
 //! including phase tracking, animation state, and exit conditions.
+//!
+//! # Timing model invariants
+//!
+//! Fields in `LiveModeState` are labelled by category in their doc comments:
+//! - ACTUAL — parsed from radial/message headers (`current_volume_start`,
+//!   `completed_sweep_metas`, `last_radial_time_secs`, `chunk_elev_spans`).
+//!   Drives the radar canvas, the current-time indicator, and "Age" labels.
+//! - PROJECTED COLLECTION — derived from VCP physics anchored on an ACTUAL
+//!   reference (`projected_volume_end_collection_secs`, `chunk_projections`
+//!   via `projected_collection_time_secs`). Drives timeline placeholders
+//!   for future sweeps and chunks.
+//! - PROJECTED AVAILABILITY — empirical S3-upload estimates
+//!   (`projected_volume_end_available_at_secs`,
+//!   `next_chunk_available_at_secs`, `chunk_projections` via
+//!   `projected_available_at_secs`). Drives the scheduler and the
+//!   "next in Xs" countdown language.
+//!
+//! Live playhead (`TimeModel::playback_position` when `realtime_lock`
+//! is on) deliberately tracks wall clock rather than clamping to the
+//! latest received sweep's end. Clamping would cause visible stutter at
+//! each chunk boundary; the canvas already resolves whichever sweep has
+//! `end ≤ playback_position`, so wall-clock tracking satisfies principle
+//! 1 (canvas shows ACTUAL data) without the stutter.
 
 use std::time::Duration;
 

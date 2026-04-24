@@ -2,6 +2,12 @@
 //!
 //! Displays the current site and product at top, followed by symmetric
 //! "Current" and "Previous" sections showing elevation, time, and age.
+//!
+//! INVARIANT: every time/age value shown here is ACTUAL — derived from
+//! real radial collection timestamps (via `viz_state.timestamp` and
+//! `data_staleness_*`) and the wall clock. No projected collection or
+//! availability times reach the canvas; principle 1 of the timing model
+//! requires the canvas and current-time indicator to show only actuals.
 
 use crate::state::AppState;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
