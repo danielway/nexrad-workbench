@@ -223,7 +223,13 @@ async fn streaming_loop(
     // Pad added to the first poll wait per chunk; collapses the "fire a hair
     // early → empty poll → sleep 500ms → fire" path on chunks whose
     // predictions are tight. Retry waits are unaffected.
-    const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 300;
+    //
+    // Sized to hedge the observed +0.96s mean chunk_pred_err (chunks arrive ~1s
+    // later than predicted on average, largely because S3 Last-Modified is
+    // second-quantized — ~0.5s of that 0.96s is quantization alone). 600ms plus
+    // the ~300ms of WASM/setTimeout slop lands scheduled fetches close to actual
+    // arrival for most intra-sweep chunks.
+    const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 600;
 
     let hint = get_cached_volume(&site_id);
     let init_future = acquire_streaming_state(&site_id, hint);
