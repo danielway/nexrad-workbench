@@ -102,6 +102,11 @@ struct RealtimeState {
     /// response; consumed by the streaming loop to populate the projection
     /// anchor in a later commit.
     pending_volume_header_time_secs: Option<f64>,
+    /// Empirical availability lag (seconds) for the most recently ingested
+    /// chunk, computed in `main.rs` as `s3_last_modified - chunk_max_time`.
+    /// Drained by the streaming loop and attached to the latest
+    /// `ChunkTimingStats` sample.
+    pending_availability_lag_secs: Option<f64>,
 }
 
 /// Channel for real-time NEXRAD streaming.
@@ -177,6 +182,14 @@ impl RealtimeChannel {
     pub fn record_volume_header_time_secs(&self, secs: f64) {
         self.state.borrow_mut().pending_volume_header_time_secs = Some(secs);
     }
+
+    /// Push an empirical availability lag (S3 upload − ACTUAL chunk
+    /// collection time, seconds) for the chunk just ingested. The streaming
+    /// loop attaches it to the most recent `ChunkTimingStats` sample so
+    /// future projections can use a median lag rather than a hard default.
+    pub fn record_availability_lag_secs(&self, lag_secs: f64) {
+        self.state.borrow_mut().pending_availability_lag_secs = Some(lag_secs);
+    }
 }
 
 /// Build projection info from the streaming state's current position.
@@ -233,19 +246,22 @@ fn get_projected_volume_end_available_at_secs(state: &StreamingState) -> Option<
         .map(|dt| dt.timestamp() as f64)
 }
 
-/// Drain any pending volume-header time pushed in from `main.rs` after a
-/// worker ingest and stamp it onto the `StreamingState`. Logs a debug line
-/// with the lag between the S3 upload time of the current anchor chunk and
-/// the parsed collection time, which is the empirical "NEXRAD ingest lag".
-fn drain_pending_volume_header_time(
+/// Drain anything pushed in from `main.rs` after a worker ingest and stamp
+/// it onto the `StreamingState`: the ACTUAL volume header time (anchors
+/// collection-time projections) and the empirical per-chunk availability
+/// lag (feeds `ChunkTimingStats`).
+fn drain_pending_ingest_observations(
     state_cell: &Rc<RefCell<RealtimeState>>,
     iter: &mut StreamingState,
 ) {
-    let pending = state_cell
-        .borrow_mut()
-        .pending_volume_header_time_secs
-        .take();
-    if let Some(secs) = pending {
+    let (pending_header, pending_lag) = {
+        let mut s = state_cell.borrow_mut();
+        (
+            s.pending_volume_header_time_secs.take(),
+            s.pending_availability_lag_secs.take(),
+        )
+    };
+    if let Some(secs) = pending_header {
         let prior = iter.latest_volume_header_time_secs();
         iter.record_volume_header_time_secs(secs);
         if prior != Some(secs) {
@@ -255,6 +271,9 @@ fn drain_pending_volume_header_time(
                 prior
             );
         }
+    }
+    if let Some(lag_secs) = pending_lag {
+        iter.record_availability_lag_for_current(lag_secs);
     }
 }
 
@@ -591,9 +610,10 @@ async fn streaming_loop(
             break;
         }
 
-        // Ingest any volume header time the worker parsed from the most
-        // recent chunk's radials so projections in this iteration can see it.
-        drain_pending_volume_header_time(&state, &mut iter);
+        // Ingest any volume header time + availability lag the worker
+        // produced from the most recent chunk's radials so projections and
+        // stats in this iteration see them.
+        drain_pending_ingest_observations(&state, &mut iter);
 
         // Wait for expected chunk time. Only capture the prediction on the
         // first iteration for a given chunk — subsequent retry iterations

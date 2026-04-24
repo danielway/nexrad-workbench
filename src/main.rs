@@ -1674,6 +1674,25 @@ impl WorkbenchApp {
                 // up regardless of which side arrives first.
                 self.state.live_mode_state.try_capture_forecast();
             }
+
+            // Record the empirical availability lag (S3 upload − ACTUAL
+            // chunk collection time) into the projector's stats bucket.
+            // Uses the chunk's latest-radial time (when the radar finished
+            // this chunk) paired with the most recent arrival stat's
+            // Last-Modified header.
+            if let (Some(chunk_max_secs), Some(s3_at)) = (
+                result.chunk_max_time_secs,
+                self.state
+                    .live_mode_state
+                    .chunk_arrivals
+                    .last()
+                    .and_then(|a| a.s3_last_modified_at),
+            ) {
+                let lag_secs = s3_at - chunk_max_secs;
+                if lag_secs.is_finite() {
+                    self.streaming.record_availability_lag_secs(lag_secs);
+                }
+            }
             if !result.elevations_completed.is_empty() {
                 let vol_start_ts = self
                     .state

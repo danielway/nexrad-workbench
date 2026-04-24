@@ -191,20 +191,20 @@ pub fn project_scan_timing(
 
     // Split anchor into collection + lag. When the caller knows the ACTUAL
     // volume header collection time, use it and derive the empirical lag as
-    // upload − collection. Otherwise fall back to a default lag (collection
-    // estimated as upload − default_lag) so behavior matches the pre-split
-    // availability projection.
+    // upload − collection. Otherwise fall back to a lag estimate: prefer the
+    // median lag observed in `ChunkTimingStats`, else a static default.
     let (anchor_collection_secs, observed_lag_secs, availability_lag_secs) =
         match anchor_collection_time_secs {
             Some(collection_secs) => {
                 let lag = anchor_available_at_secs - collection_secs;
                 (collection_secs, Some(lag), lag)
             }
-            None => (
-                anchor_available_at_secs - DEFAULT_AVAILABILITY_LAG_SECS,
-                None,
-                DEFAULT_AVAILABILITY_LAG_SECS,
-            ),
+            None => {
+                let fallback_lag = timing_stats
+                    .and_then(|s| s.median_availability_lag_secs())
+                    .unwrap_or(DEFAULT_AVAILABILITY_LAG_SECS);
+                (anchor_available_at_secs - fallback_lag, None, fallback_lag)
+            }
         };
 
     let mut projections = Vec::new();

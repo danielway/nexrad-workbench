@@ -11,7 +11,10 @@ const MAX_TIMING_SAMPLES: usize = 10;
 /// Schema version for the serialized `ChunkTimingStats` payload in localStorage.
 /// Bump when the on-disk shape changes so old caches are ignored rather than
 /// silently misinterpreted.
-const PERSIST_SCHEMA_VERSION: u32 = 1;
+///
+/// v2 added `availability_lag_ms` to every sample; v1 payloads are discarded
+/// because the field can't be backfilled from S3 deltas alone.
+const PERSIST_SCHEMA_VERSION: u32 = 2;
 
 /// Characteristics of a chunk that affect timing.
 ///
@@ -41,12 +44,18 @@ impl Hash for ChunkCharacteristics {
     }
 }
 
-/// Statistics for a single timing sample
+/// Statistics for a single timing sample.
+///
+/// `duration` is the legacy S3-upload→S3-upload delta (AVAILABILITY-to-
+/// AVAILABILITY), used by the scheduler via `get_average_timing`.
+/// `availability_lag` is the empirical (upload − ACTUAL collection) delay
+/// for this chunk when the collection time could be recorded; used by the
+/// projector to estimate the availability-lag tail per characteristics.
+/// `None` indicates the sample predates collection-time plumbing.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TimingStat {
-    /// Duration of the timing sample
     duration: Duration,
-    /// Number of attempts to download the chunk
+    availability_lag: Option<Duration>,
     attempts: usize,
 }
 
@@ -65,21 +74,69 @@ impl ChunkTimingStats {
         }
     }
 
-    /// Add a timing sample for the given chunk characteristics
+    /// Add an S3-upload-delta timing sample for the given chunk characteristics.
+    /// `availability_lag` is optional; pass `Some` when the per-chunk lag
+    /// (S3 upload − ACTUAL collection time) can be computed from a successful
+    /// worker ingest, `None` when only the S3 delta is known.
     pub fn add_timing(
         &mut self,
         characteristics: ChunkCharacteristics,
         duration: Duration,
+        availability_lag: Option<Duration>,
         attempts: usize,
     ) {
         let entry = self.timings.entry(characteristics).or_default();
 
-        entry.push_back(TimingStat { duration, attempts });
+        entry.push_back(TimingStat {
+            duration,
+            availability_lag,
+            attempts,
+        });
 
         // Maintain the rolling window by removing oldest if we exceed the max
         if entry.len() > MAX_TIMING_SAMPLES {
             entry.pop_front();
         }
+    }
+
+    /// Update the most recent sample for the given characteristics to attach
+    /// an availability lag observation. Used when the S3 delta is recorded in
+    /// the streaming loop but the ACTUAL collection time only becomes known
+    /// later once the worker decodes the chunk.
+    pub fn attach_availability_lag(
+        &mut self,
+        characteristics: &ChunkCharacteristics,
+        availability_lag: Duration,
+    ) {
+        if let Some(entry) = self.timings.get_mut(characteristics) {
+            if let Some(latest) = entry.back_mut() {
+                latest.availability_lag = Some(availability_lag);
+            }
+        }
+    }
+
+    /// Median availability lag (S3 upload − ACTUAL collection) across all
+    /// characteristics, as Unix seconds. Returns `None` until at least one
+    /// sample with a lag observation has been recorded. Median (not mean)
+    /// so clock outliers don't skew the projection fallback.
+    pub fn median_availability_lag_secs(&self) -> Option<f64> {
+        let mut lags_ms: Vec<i64> = self
+            .timings
+            .values()
+            .flat_map(|queue| queue.iter())
+            .filter_map(|stat| stat.availability_lag.map(|d| d.num_milliseconds()))
+            .collect();
+        if lags_ms.is_empty() {
+            return None;
+        }
+        lags_ms.sort_unstable();
+        let mid = lags_ms.len() / 2;
+        let median_ms = if lags_ms.len().is_multiple_of(2) {
+            (lags_ms[mid - 1] + lags_ms[mid]) / 2
+        } else {
+            lags_ms[mid]
+        };
+        Some(median_ms as f64 / 1000.0)
     }
 
     /// Get the average timing for the given chunk characteristics
@@ -147,6 +204,7 @@ impl ChunkTimingStats {
                         .iter()
                         .map(|t| TimingStatDto {
                             duration_ms: t.duration.num_milliseconds(),
+                            availability_lag_ms: t.availability_lag.map(|d| d.num_milliseconds()),
                             attempts: t.attempts,
                         })
                         .collect();
@@ -177,6 +235,7 @@ impl ChunkTimingStats {
             for sample in samples.into_iter().rev().take(MAX_TIMING_SAMPLES).rev() {
                 queue.push_back(TimingStat {
                     duration: Duration::milliseconds(sample.duration_ms),
+                    availability_lag: sample.availability_lag_ms.map(Duration::milliseconds),
                     attempts: sample.attempts,
                 });
             }
@@ -207,6 +266,8 @@ struct ChunkCharacteristicsDto {
 #[derive(Serialize, Deserialize)]
 struct TimingStatDto {
     duration_ms: i64,
+    #[serde(default)]
+    availability_lag_ms: Option<i64>,
     attempts: usize,
 }
 

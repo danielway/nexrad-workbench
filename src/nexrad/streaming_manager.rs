@@ -49,6 +49,13 @@ impl StreamingManager {
         self.realtime_channel.record_volume_header_time_secs(secs);
     }
 
+    /// Push the empirical per-chunk availability lag (S3 upload − chunk
+    /// collection time, seconds) from the most recent worker ingest down
+    /// into the streaming loop.
+    pub fn record_availability_lag_secs(&self, lag_secs: f64) {
+        self.realtime_channel.record_availability_lag_secs(lag_secs);
+    }
+
     /// Drain all pending results from the realtime channel into events.
     pub fn poll(&mut self) -> Vec<StreamingEvent> {
         let mut events = Vec::new();

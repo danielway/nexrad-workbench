@@ -259,24 +259,44 @@ impl StreamingState {
         duration: ChronoDuration,
         attempts: usize,
     ) {
-        if let (Some(vcp), Some(mapper)) = (&self.vcp, &self.elevation_mapper) {
-            if let Some(elevation) = mapper
-                .get_sequence_elevation_number(chunk_id.sequence())
-                .and_then(|n| vcp.elevations().get(n - 1))
-            {
-                let is_first_in_sweep = mapper
-                    .get_chunk_metadata(chunk_id.sequence())
-                    .is_some_and(|m| m.is_first_in_sweep());
-                let characteristics = ChunkCharacteristics {
-                    chunk_type: chunk_id.chunk_type(),
-                    waveform_type: elevation.waveform_type(),
-                    channel_configuration: elevation.channel_configuration(),
-                    is_first_in_sweep,
-                };
-                self.timing_stats
-                    .add_timing(characteristics, duration, attempts);
-            }
+        if let Some(characteristics) = self.characteristics_for_sequence(chunk_id) {
+            self.timing_stats
+                .add_timing(characteristics, duration, None, attempts);
         }
+    }
+
+    fn characteristics_for_sequence(
+        &self,
+        chunk_id: &ChunkIdentifier,
+    ) -> Option<ChunkCharacteristics> {
+        let vcp = self.vcp.as_ref()?;
+        let mapper = self.elevation_mapper.as_ref()?;
+        let elevation = mapper
+            .get_sequence_elevation_number(chunk_id.sequence())
+            .and_then(|n| vcp.elevations().get(n - 1))?;
+        let is_first_in_sweep = mapper
+            .get_chunk_metadata(chunk_id.sequence())
+            .is_some_and(|m| m.is_first_in_sweep());
+        Some(ChunkCharacteristics {
+            chunk_type: chunk_id.chunk_type(),
+            waveform_type: elevation.waveform_type(),
+            channel_configuration: elevation.channel_configuration(),
+            is_first_in_sweep,
+        })
+    }
+
+    /// Attach an observed availability-lag (S3 upload − ACTUAL collection
+    /// time) sample to the most recent timing stat recorded for the current
+    /// chunk. Called from the streaming loop after a worker ingest produces
+    /// the parsed chunk collection time.
+    pub fn record_availability_lag_for_current(&mut self, lag_secs: f64) {
+        let Some(characteristics) = self.characteristics_for_sequence(&self.current.clone()) else {
+            return;
+        };
+        self.timing_stats.attach_availability_lag(
+            &characteristics,
+            ChronoDuration::milliseconds((lag_secs * 1000.0) as i64),
+        );
     }
 
     /// Expose the rolling timing statistics for persistence by the streaming loop.
