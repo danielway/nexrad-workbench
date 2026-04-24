@@ -150,6 +150,7 @@ pub fn project_scan_timing(
                         chunk_type: ChunkType::Intermediate,
                         waveform_type: elev_data.waveform_type(),
                         channel_configuration: elev_data.channel_configuration(),
+                        is_first_in_sweep: next_metadata.is_first_in_sweep(),
                     };
 
                     if let Some(avg_timing) = stats.get_average_timing(&characteristics) {

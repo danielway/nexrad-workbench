@@ -256,10 +256,14 @@ impl StreamingState {
                 .get_sequence_elevation_number(chunk_id.sequence())
                 .and_then(|n| vcp.elevations().get(n - 1))
             {
+                let is_first_in_sweep = mapper
+                    .get_chunk_metadata(chunk_id.sequence())
+                    .is_some_and(|m| m.is_first_in_sweep());
                 let characteristics = ChunkCharacteristics {
                     chunk_type: chunk_id.chunk_type(),
                     waveform_type: elevation.waveform_type(),
                     channel_configuration: elevation.channel_configuration(),
+                    is_first_in_sweep,
                 };
                 self.timing_stats
                     .add_timing(characteristics, duration, attempts);

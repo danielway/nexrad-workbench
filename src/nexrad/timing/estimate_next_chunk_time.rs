@@ -49,7 +49,12 @@ pub fn estimate_chunk_processing_time(
     if let Some(next_metadata) = elevation_chunk_mapper.get_chunk_metadata(chunk.sequence() + 1) {
         let current_metadata = elevation_chunk_mapper.get_chunk_metadata(chunk.sequence());
 
-        // Check for historical timing data first
+        // Check for historical timing data first.
+        //
+        // Note: the other fields key on the anchor chunk's elevation (pre-existing
+        // upstream convention), but `is_first_in_sweep` describes the *arriving*
+        // chunk — matching how samples are written in `StreamingState::update_timing_stats`.
+        // This keeps inter-sweep-transition samples out of the intra-sweep bucket.
         if let Some(elevation) = elevation_chunk_mapper
             .get_sequence_elevation_number(chunk.sequence())
             .and_then(|elevation_number| vcp.elevations().get(elevation_number - 1))
@@ -58,6 +63,7 @@ pub fn estimate_chunk_processing_time(
                 chunk_type: chunk.chunk_type(),
                 waveform_type: elevation.waveform_type(),
                 channel_configuration: elevation.channel_configuration(),
+                is_first_in_sweep: next_metadata.is_first_in_sweep(),
             };
 
             let average_timing =

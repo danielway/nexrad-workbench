@@ -7,7 +7,12 @@ use std::hash::{Hash, Hasher};
 /// Maximum number of timing samples to keep per chunk characteristics
 const MAX_TIMING_SAMPLES: usize = 10;
 
-/// Characteristics of a chunk that affect timing
+/// Characteristics of a chunk that affect timing.
+///
+/// `is_first_in_sweep` is part of the key because first-chunks-of-sweep include a
+/// substantial inter-sweep transition overhead (antenna slew + waveform mode switch),
+/// while intra-sweep chunks are purely rotation-rate-driven. Mixing the two into one
+/// statistics bucket prevents the rolling average from converging on either value.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct ChunkCharacteristics {
     /// Type of the chunk
@@ -16,6 +21,9 @@ pub struct ChunkCharacteristics {
     pub waveform_type: WaveformType,
     /// Channel configuration of the elevation
     pub channel_configuration: ChannelConfiguration,
+    /// Whether this chunk is the first in its sweep (inter-sweep transition overhead
+    /// applies). See struct docs for why this is keyed separately.
+    pub is_first_in_sweep: bool,
 }
 
 impl Hash for ChunkCharacteristics {
@@ -23,6 +31,7 @@ impl Hash for ChunkCharacteristics {
         std::mem::discriminant(&self.chunk_type).hash(state);
         std::mem::discriminant(&self.waveform_type).hash(state);
         std::mem::discriminant(&self.channel_configuration).hash(state);
+        self.is_first_in_sweep.hash(state);
     }
 }
 
