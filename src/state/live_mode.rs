@@ -88,8 +88,9 @@ pub struct LiveModeState {
     /// Typical interval between chunks in seconds (~12s)
     pub chunk_interval_secs: f64,
 
-    /// Expected arrival time of next chunk (Unix seconds)
-    pub next_chunk_expected_at: Option<f64>,
+    /// AVAILABILITY category: projected Unix-seconds arrival time of the
+    /// next chunk in S3. Drives the "next in Xs" countdown.
+    pub next_chunk_available_at_secs: Option<f64>,
 
     /// Error message if in Error phase
     pub error_message: Option<String>,
@@ -173,9 +174,10 @@ pub struct LiveModeState {
     /// `last_radial_azimuth`, allows linear extrapolation of sweep line.
     pub last_radial_time_secs: Option<f64>,
 
-    /// Library-projected volume end time (Unix seconds).
-    /// From nexrad-data's physics-based model (sweep_duration = 360/rate - 0.67s).
-    pub projected_volume_end_secs: Option<f64>,
+    /// AVAILABILITY category: projected Unix-seconds S3-arrival time of the
+    /// final chunk in the current volume. From nexrad-data's physics-based
+    /// model (sweep_duration = 360/rate - 0.67s).
+    pub projected_volume_end_available_at_secs: Option<f64>,
 
     /// Per-chunk projection info from the library's physics model.
     /// Structural metadata covers all chunks; projected times only for future chunks.
@@ -215,7 +217,7 @@ impl Default for LiveModeState {
             phase: LivePhase::Idle,
             phase_started_at: None,
             chunk_interval_secs: 12.0,
-            next_chunk_expected_at: None,
+            next_chunk_available_at_secs: None,
             error_message: None,
             last_exit_reason: None,
             chunks_received: 0,
@@ -238,7 +240,7 @@ impl Default for LiveModeState {
             live_data_azimuth_range: None,
             last_radial_azimuth: None,
             last_radial_time_secs: None,
-            projected_volume_end_secs: None,
+            projected_volume_end_available_at_secs: None,
             chunk_projections: None,
             current_volume_forecast: None,
             last_volume_forecast: None,
@@ -269,7 +271,7 @@ impl LiveModeState {
             }
             LivePhase::WaitingForChunk => {
                 state.chunks_received = 10;
-                state.next_chunk_expected_at = Some(now + 8.0); // 8 seconds remaining
+                state.next_chunk_available_at_secs = Some(now + 8.0); // 8 seconds remaining
             }
             LivePhase::AcquiringLock => {
                 // Just acquiring, no chunks yet
@@ -297,7 +299,7 @@ impl LiveModeState {
     pub fn stop(&mut self, reason: LiveExitReason) {
         self.phase = LivePhase::Idle;
         self.phase_started_at = None;
-        self.next_chunk_expected_at = None;
+        self.next_chunk_available_at_secs = None;
         self.last_exit_reason = Some(reason);
         self.elevations_received.clear();
         self.current_volume_start = None;
@@ -312,7 +314,7 @@ impl LiveModeState {
         self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
-        self.projected_volume_end_secs = None;
+        self.projected_volume_end_available_at_secs = None;
         self.chunk_projections = None;
         self.current_volume_forecast = None;
         self.last_volume_forecast = None;
@@ -340,7 +342,7 @@ impl LiveModeState {
     pub fn wait_for_next_chunk(&mut self, now: f64) {
         self.phase = LivePhase::WaitingForChunk;
         self.phase_started_at = Some(now);
-        self.next_chunk_expected_at = Some(now + self.chunk_interval_secs);
+        self.next_chunk_available_at_secs = Some(now + self.chunk_interval_secs);
         self.chunks_received += 1;
     }
 
@@ -362,7 +364,7 @@ impl LiveModeState {
     /// Get remaining countdown for WaitingForChunk phase.
     pub fn countdown_remaining_secs(&self, now: f64) -> Option<f64> {
         if self.phase == LivePhase::WaitingForChunk {
-            self.next_chunk_expected_at
+            self.next_chunk_available_at_secs
                 .map(|expected| (expected - now).max(0.0))
         } else {
             None
@@ -422,11 +424,11 @@ impl LiveModeState {
         time_until_next: Option<Duration>,
         is_volume_end: bool,
         now: f64,
-        projected_volume_end_secs: Option<f64>,
+        projected_volume_end_available_at_secs: Option<f64>,
         chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
     ) {
         self.chunks_received = chunks_in_volume;
-        self.projected_volume_end_secs = projected_volume_end_secs;
+        self.projected_volume_end_available_at_secs = projected_volume_end_available_at_secs;
         self.chunk_projections = chunk_projections;
 
         if is_volume_end {
@@ -437,7 +439,7 @@ impl LiveModeState {
             // Waiting for next chunk
             self.phase = LivePhase::WaitingForChunk;
             self.phase_started_at = Some(now);
-            self.next_chunk_expected_at = Some(now + duration.as_secs_f64());
+            self.next_chunk_available_at_secs = Some(now + duration.as_secs_f64());
             self.chunk_interval_secs = duration.as_secs_f64();
         } else {
             // Actively receiving
@@ -491,7 +493,7 @@ impl LiveModeState {
         self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
-        self.projected_volume_end_secs = None;
+        self.projected_volume_end_available_at_secs = None;
         self.chunk_projections = None;
     }
 
@@ -613,7 +615,7 @@ impl LiveModeState {
 
         let total_vol_dur = vcp.estimated_volume_duration().unwrap_or(300.0);
         let predicted_volume_end = self
-            .projected_volume_end_secs
+            .projected_volume_end_available_at_secs
             .unwrap_or(vol_start + total_vol_dur);
         let sweep_durations = vcp.sweep_durations(total_vol_dur);
 
@@ -633,7 +635,7 @@ impl LiveModeState {
                         chunk.azimuth_rate_dps,
                     ));
                     entry.2 += 1;
-                    if let Some(t) = chunk.projected_time_secs {
+                    if let Some(t) = chunk.projected_available_at_secs {
                         entry.0 = entry.0.min(t);
                         entry.1 = entry.1.max(t);
                     }
@@ -822,7 +824,7 @@ impl LiveModeState {
             let mut max_t = f64::MIN;
             for chunk in projs {
                 if chunk.elevation_number == Some(elev as usize) {
-                    if let Some(t) = chunk.projected_time_secs {
+                    if let Some(t) = chunk.projected_available_at_secs {
                         min_t = min_t.min(t);
                         max_t = max_t.max(t);
                     }

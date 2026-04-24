@@ -1068,7 +1068,7 @@ impl WorkbenchApp {
                 time_until_next,
                 is_volume_end,
                 fetch_latency_ms,
-                projected_volume_end_secs,
+                projected_volume_end_available_at_secs,
                 chunk_projections,
                 arrival_stat,
             } => {
@@ -1081,14 +1081,14 @@ impl WorkbenchApp {
                     is_volume_end,
                     fetch_latency_ms,
                     time_until_next,
-                    projected_volume_end_secs,
+                    projected_volume_end_available_at_secs,
                 );
                 self.state.live_mode_state.handle_realtime_chunk(
                     chunks_in_volume,
                     time_until_next,
                     is_volume_end,
                     now,
-                    projected_volume_end_secs,
+                    projected_volume_end_available_at_secs,
                     chunk_projections,
                 );
 
@@ -2465,7 +2465,7 @@ impl WorkbenchApp {
         if self.state.live_mode_state.is_active() {
             if let Some(duration) = self.streaming.time_until_next() {
                 let now = js_sys::Date::now() / 1000.0;
-                self.state.live_mode_state.next_chunk_expected_at =
+                self.state.live_mode_state.next_chunk_available_at_secs =
                     Some(now + duration.as_secs_f64());
             }
         }

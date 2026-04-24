@@ -316,8 +316,11 @@ impl StreamingState {
         project_scan_timing(&self.current, vcp, mapper, Some(&self.timing_stats))
     }
 
-    pub fn projected_volume_end_time(&self) -> Option<DateTime<Utc>> {
-        self.project_remaining_scan().map(|p| p.volume_end_time())
+    /// AVAILABILITY category: projected S3-availability time of the final
+    /// chunk of the current volume.
+    pub fn projected_volume_end_available_at(&self) -> Option<DateTime<Utc>> {
+        self.project_remaining_scan()
+            .map(|p| p.volume_end_available_at())
     }
 
     pub fn requests_made(&self) -> usize {

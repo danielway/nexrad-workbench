@@ -34,9 +34,10 @@ pub struct ChunkProjectionInfo {
     pub elevation_angle_deg: f64,
     /// Azimuth rotation rate in degrees/second from the VCP.
     pub azimuth_rate_dps: f64,
-    /// Projected time this chunk becomes available (Unix seconds).
-    /// `Some` for future chunks (from ScanTimingProjection), `None` for past chunks.
-    pub projected_time_secs: Option<f64>,
+    /// AVAILABILITY category: projected Unix-seconds time this chunk becomes
+    /// available in S3. `Some` for future chunks (from ScanTimingProjection),
+    /// `None` for past chunks.
+    pub projected_available_at_secs: Option<f64>,
     /// Whether this chunk starts a new sweep.
     pub starts_new_sweep: bool,
     /// 0-based index of this chunk within its sweep.
@@ -56,8 +57,10 @@ pub enum RealtimeResult {
         time_until_next: Option<Duration>,
         is_volume_end: bool,
         fetch_latency_ms: f64,
-        /// Projected volume end time (Unix seconds), from the library's physics model.
-        projected_volume_end_secs: Option<f64>,
+        /// AVAILABILITY category: projected Unix-seconds time the final chunk
+        /// of the current volume becomes available in S3, from the library's
+        /// physics model.
+        projected_volume_end_available_at_secs: Option<f64>,
         /// Per-chunk projection info for the entire volume.
         /// Structural metadata is present for all chunks; projected times only for future chunks.
         chunk_projections: Option<Vec<ChunkProjectionInfo>>,
@@ -165,13 +168,13 @@ fn build_chunk_projections(state: &StreamingState) -> Option<Vec<ChunkProjection
     let all_meta = state.all_chunk_metadata()?;
     let projection = state.project_remaining_scan();
 
-    // Build a lookup from sequence → projected_time for future chunks
-    let projected_times: std::collections::HashMap<usize, f64> = projection
+    // Build a lookup from sequence → projected-availability-time for future chunks
+    let projected_available_at_by_seq: std::collections::HashMap<usize, f64> = projection
         .as_ref()
         .map(|p| {
             p.chunks()
                 .iter()
-                .map(|c| (c.sequence(), c.projected_time().timestamp() as f64))
+                .map(|c| (c.sequence(), c.projected_available_at().timestamp() as f64))
                 .collect()
         })
         .unwrap_or_default();
@@ -184,7 +187,9 @@ fn build_chunk_projections(state: &StreamingState) -> Option<Vec<ChunkProjection
                 elevation_number: meta.elevation_number(),
                 elevation_angle_deg: meta.elevation_angle_deg(),
                 azimuth_rate_dps: meta.azimuth_rate_dps(),
-                projected_time_secs: projected_times.get(&meta.sequence()).copied(),
+                projected_available_at_secs: projected_available_at_by_seq
+                    .get(&meta.sequence())
+                    .copied(),
                 starts_new_sweep: meta.is_first_in_sweep(),
                 chunk_index_in_sweep: meta.chunk_index_in_sweep(),
                 chunks_in_sweep: meta.chunks_in_sweep(),
@@ -193,10 +198,11 @@ fn build_chunk_projections(state: &StreamingState) -> Option<Vec<ChunkProjection
     )
 }
 
-/// Get the projected volume end time from the streaming state.
-fn get_projected_volume_end_secs(state: &StreamingState) -> Option<f64> {
+/// Get the projected S3-availability time of the current volume's final
+/// chunk (Unix seconds).
+fn get_projected_volume_end_available_at_secs(state: &StreamingState) -> Option<f64> {
     state
-        .projected_volume_end_time()
+        .projected_volume_end_available_at()
         .map(|dt| dt.timestamp() as f64)
 }
 
@@ -471,7 +477,9 @@ async fn streaming_loop(
                 time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
-                projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
+                    &iter,
+                ),
                 chunk_projections: build_chunk_projections(&iter),
                 arrival_stat: None,
             });
@@ -506,7 +514,9 @@ async fn streaming_loop(
                 time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
-                projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
+                    &iter,
+                ),
                 chunk_projections: build_chunk_projections(&iter),
                 arrival_stat: None,
             });
@@ -652,7 +662,8 @@ async fn streaming_loop(
                         time_until_next,
                         is_volume_end: is_end,
                         fetch_latency_ms: chunk_fetch_ms,
-                        projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                        projected_volume_end_available_at_secs:
+                            get_projected_volume_end_available_at_secs(&iter),
                         chunk_projections,
                         arrival_stat: Some(arrival_stat),
                     });

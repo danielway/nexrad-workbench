@@ -12,12 +12,15 @@ use nexrad_decode::messages::volume_coverage_pattern;
 pub struct ScanTimingProjection {
     /// The sequence number of the anchor chunk (the last observed chunk).
     anchor_sequence: usize,
-    /// The anchor time (upload time of the anchor chunk, or current time).
-    anchor_time: DateTime<Utc>,
+    /// AVAILABILITY category: S3-upload time of the anchor chunk (or current
+    /// time as a fallback). Used as the base for projecting future chunks'
+    /// availability.
+    anchor_available_at: DateTime<Utc>,
     /// Projected timing for each future chunk, in sequence order.
     chunks: Vec<ChunkProjection>,
-    /// Projected time when the final chunk becomes available.
-    volume_end_time: DateTime<Utc>,
+    /// AVAILABILITY category: projected time the final chunk becomes
+    /// available in S3.
+    volume_end_available_at: DateTime<Utc>,
     /// Projected total remaining duration from anchor to volume end.
     remaining_duration: Duration,
 }
@@ -28,9 +31,11 @@ impl ScanTimingProjection {
         self.anchor_sequence
     }
 
-    /// The anchor time this projection is relative to.
-    pub fn anchor_time(&self) -> DateTime<Utc> {
-        self.anchor_time
+    /// AVAILABILITY category: the S3-upload time of the anchor chunk (or
+    /// current time as a fallback). Physics intervals added to this yield
+    /// projected availability times for future chunks.
+    pub fn anchor_available_at(&self) -> DateTime<Utc> {
+        self.anchor_available_at
     }
 
     /// Projected timing for each future chunk, in sequence order.
@@ -38,9 +43,10 @@ impl ScanTimingProjection {
         &self.chunks
     }
 
-    /// Projected time when the final chunk becomes available.
-    pub fn volume_end_time(&self) -> DateTime<Utc> {
-        self.volume_end_time
+    /// AVAILABILITY category: projected time the final chunk becomes
+    /// available in S3.
+    pub fn volume_end_available_at(&self) -> DateTime<Utc> {
+        self.volume_end_available_at
     }
 
     /// Projected remaining duration from anchor to volume end.
@@ -58,8 +64,9 @@ pub struct ChunkProjection {
     elevation_number: Option<usize>,
     /// Elevation angle in degrees (0.0 for the Start chunk).
     elevation_angle_deg: f64,
-    /// Projected time this chunk becomes available in S3.
-    projected_time: DateTime<Utc>,
+    /// AVAILABILITY category: projected time this chunk becomes available
+    /// in S3. Drives the download scheduler and "next in Xs" UI language.
+    projected_available_at: DateTime<Utc>,
     /// Duration from the anchor to this chunk's projected availability.
     offset_from_anchor: Duration,
     /// Duration from the previous chunk to this chunk.
@@ -84,9 +91,10 @@ impl ChunkProjection {
         self.elevation_angle_deg
     }
 
-    /// Projected time this chunk becomes available in S3.
-    pub fn projected_time(&self) -> DateTime<Utc> {
-        self.projected_time
+    /// AVAILABILITY category: projected time this chunk becomes available
+    /// in S3.
+    pub fn projected_available_at(&self) -> DateTime<Utc> {
+        self.projected_available_at
     }
 
     /// Duration from the anchor to this chunk's projected availability.
@@ -121,7 +129,7 @@ pub fn project_scan_timing(
     timing_stats: Option<&ChunkTimingStats>,
 ) -> Option<ScanTimingProjection> {
     let anchor_sequence = anchor_chunk.sequence();
-    let anchor_time = anchor_chunk.upload_date_time().unwrap_or_else(Utc::now);
+    let anchor_available_at = anchor_chunk.upload_date_time().unwrap_or_else(Utc::now);
     let final_sequence = mapper.final_sequence();
 
     // Nothing to project if we're at or past the final chunk
@@ -167,13 +175,13 @@ pub fn project_scan_timing(
 
         let interval_duration = Duration::milliseconds(interval_ms);
         let offset_duration = Duration::milliseconds(cumulative_offset_ms);
-        let projected_time = anchor_time + offset_duration;
+        let projected_available_at = anchor_available_at + offset_duration;
 
         projections.push(ChunkProjection {
             sequence: seq,
             elevation_number: next_metadata.elevation_number(),
             elevation_angle_deg: next_metadata.elevation_angle_deg(),
-            projected_time,
+            projected_available_at,
             offset_from_anchor: offset_duration,
             interval_from_previous: interval_duration,
             starts_new_sweep: next_metadata.is_first_in_sweep(),
@@ -182,17 +190,17 @@ pub fn project_scan_timing(
         prev_metadata = next_metadata;
     }
 
-    let volume_end_time = projections
+    let volume_end_available_at = projections
         .last()
-        .map(|p| p.projected_time)
-        .unwrap_or(anchor_time);
+        .map(|p| p.projected_available_at)
+        .unwrap_or(anchor_available_at);
     let remaining_duration = Duration::milliseconds(cumulative_offset_ms);
 
     Some(ScanTimingProjection {
         anchor_sequence,
-        anchor_time,
+        anchor_available_at,
         chunks: projections,
-        volume_end_time,
+        volume_end_available_at,
         remaining_duration,
     })
 }
