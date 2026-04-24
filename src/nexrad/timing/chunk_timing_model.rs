@@ -156,8 +156,12 @@ impl ChunkTimingModel {
 /// overhead. This function adds a further penalty when the waveform type itself changes,
 /// which empirically dominates the physics-only prediction error on sweep boundaries.
 ///
-/// Calibration is from one VCP 212 volume (2026-04-24, 24 elevations) where the base
-/// formula predicted first-chunk-of-sweep arrivals 2–4s too early on waveform changes.
+/// Calibration is from two VCP 212 volumes (2026-04-24). The initial values were
+/// tuned from the first volume; after deploying them, a second volume showed residual
+/// pred_err of +1.8 to +3.1s on CS→CDW (penalty was diluted ~30% by the physics/historical
+/// blend in `scan_timing_projection`) and +1.95s on B→CDWO. These values are sized to
+/// land predictions within ~0.5s of observed after blend dilution.
+///
 /// Specific pairs are matched first; asymmetric catch-alls apply when only one side is
 /// known.
 fn waveform_transition_penalty_secs(from: Option<WaveformType>, to: Option<WaveformType>) -> f64 {
@@ -173,13 +177,14 @@ fn waveform_transition_penalty_secs(from: Option<WaveformType>, to: Option<Wavef
     }
 
     match (from, to) {
-        // CS → CDW: same-angle SAILS/MRLE transition, observed 5–6 empty polls
-        // per chunk with pred_err +3.4 to +4.0s against a 0.7s base.
-        (WaveformType::CS, WaveformType::CDW) => 2.8,
-        // CDW → CS: reverse direction, observed ~+1s drift.
+        // CS → CDW: same-angle SAILS/MRLE transition. The dominant source of
+        // remaining empty polls. Effective shift after 70/30 blend dilution is ~2.8s.
+        (WaveformType::CS, WaveformType::CDW) => 4.0,
+        // CDW → CS: reverse direction, observed ~+1s drift (held on Δstart across both volumes).
         (WaveformType::CDW, WaveformType::CS) => 1.0,
-        // B → CDWO: high-elevation transition, observed pred_err ~+3s.
-        (WaveformType::B, WaveformType::CDWO) => 3.0,
+        // B → CDWO: high-elevation transition between B sweeps and CDWO. Bumped after
+        // a second volume showed +1.95s residual pred_err at this transition.
+        (WaveformType::B, WaveformType::CDWO) => 3.5,
         // CDWO leaving to any other waveform: small penalty, ~+1s.
         (WaveformType::CDWO, _) => 1.0,
         // Anything arriving at B: small penalty, ~+1s.
