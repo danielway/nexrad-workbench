@@ -439,21 +439,6 @@ fn compute_gpu_sweep_state(
         None
     };
 
-    // Debug: log gpu_sweep once per change
-    if state.live_radar_model.active {
-        if let Some((az, start)) = gpu_sweep {
-            let prev_cache = state.viz_state.last_sweep_line_cache;
-            if prev_cache.is_none_or(|(pa, ps)| (pa - az).abs() > 1.0 || (ps - start).abs() > 1.0) {
-                log::debug!(
-                    "gpu_sweep live: az={:.1} start={:.1} swept_arc={:.1}",
-                    az,
-                    start,
-                    ((az - start) % 360.0 + 360.0) % 360.0,
-                );
-            }
-        }
-    }
-
     // Cache sweep position for between-sweep display
     if let Some((az, start)) = gpu_sweep {
         if az != 0.0 || start != 0.0 {
