@@ -52,7 +52,13 @@ pub struct ChunkProjectionInfo {
 }
 
 /// Result type for realtime streaming events.
+///
+/// `ChunkReceived` is significantly larger than the other variants because it
+/// carries the per-chunk diagnostic bundle (`arrival_stat`) used by the VCP
+/// forecast modal. Boxing it would add an allocation per chunk for no gain —
+/// these values are produced and consumed within the same frame.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RealtimeResult {
     /// Iterator initialized, streaming started
     Started { site_id: String },
@@ -639,9 +645,8 @@ async fn streaming_loop(
     // chunk and reset on success (or on final-retry recovery).
     let mut none_retries: u32 = 0;
     let mut cur_predicted_at: Option<f64> = None; // absolute Unix seconds
-    let mut cur_scheduled_at: Option<f64> = None; // first poll time
-    let mut cur_first_empty_at: Option<f64> = None;
     let mut cur_last_empty_at: Option<f64> = None;
+    let mut cur_diagnostics: Option<super::timing::EstimatedChunkProcessing> = None;
     loop {
         // Check stop signal
         if state.borrow().stop_requested {
@@ -664,6 +669,10 @@ async fn streaming_loop(
             if let Some(d) = time_until_next_opt {
                 cur_predicted_at = Some(current_timestamp_f64() + d.as_secs_f64());
             }
+            // Capture the rich estimator diagnostics (which path, sample
+            // count, physics breakdown) at the first poll for this chunk
+            // so we can attribute prediction error component-by-component.
+            cur_diagnostics = iter.next_chunk_processing_diagnostics();
         }
         if let Some(wait_duration) = time_until_next_opt {
             let mut wait_ms = wait_duration.as_millis() as u32;
@@ -679,10 +688,6 @@ async fn streaming_loop(
                 log::debug!("Realtime streaming stopped");
                 break;
             }
-        }
-
-        if cur_scheduled_at.is_none() {
-            cur_scheduled_at = Some(current_timestamp_f64());
         }
 
         // Fetch next chunk (with timing)
@@ -752,6 +757,27 @@ async fn streaming_loop(
                         None => (None, None, None),
                     };
 
+                // Anchor source the projector was using for the *previous*
+                // chunk — i.e. the one whose arrival we're recording.
+                // Captured AFTER `try_next` advances `iter.current` is fine
+                // because `current_anchor_source` reads collection-end +
+                // median-lag state, both of which are independent of which
+                // chunk is "current".
+                let anchor_source = Some(iter.current_anchor_source());
+
+                let (bucket_key, stats_n_at_prediction, scheduler_path, physics_breakdown) =
+                    match cur_diagnostics.as_ref() {
+                        Some(d) => (
+                            d.bucket
+                                .as_ref()
+                                .map(crate::state::BucketKey::from_characteristics),
+                            d.stats_n_at_prediction,
+                            Some(d.path),
+                            d.physics_breakdown,
+                        ),
+                        None => (None, 0, None, None),
+                    };
+
                 let arrival_stat = crate::state::ChunkArrivalStat {
                     sequence: chunks_in_volume,
                     chunk_type: type_label,
@@ -759,21 +785,23 @@ async fn streaming_loop(
                     chunk_index_in_sweep,
                     chunks_in_sweep,
                     predicted_available_at: cur_predicted_at,
-                    scheduled_at: cur_scheduled_at.unwrap_or(success_at),
                     empty_polls: none_retries,
-                    first_empty_poll_at: cur_first_empty_at,
                     last_empty_poll_at: cur_last_empty_at,
                     s3_last_modified_at,
                     success_at,
-                    fetch_latency_ms: chunk_fetch_ms,
+                    bucket_key,
+                    stats_n_at_prediction,
+                    scheduler_path,
+                    physics_breakdown,
+                    anchor_source,
+                    availability_lag_ms: None,
                 };
 
                 // Reset tracking state for the next chunk
                 none_retries = 0;
                 cur_predicted_at = None;
-                cur_scheduled_at = None;
-                cur_first_empty_at = None;
                 cur_last_empty_at = None;
+                cur_diagnostics = None;
 
                 let time_until_next = iter.time_until_next().and_then(|td| td.to_std().ok());
 
@@ -810,11 +838,7 @@ async fn streaming_loop(
             Ok(None) => {
                 // Chunk not ready yet, brief retry
                 none_retries += 1;
-                let now = current_timestamp_f64();
-                if cur_first_empty_at.is_none() {
-                    cur_first_empty_at = Some(now);
-                }
-                cur_last_empty_at = Some(now);
+                cur_last_empty_at = Some(current_timestamp_f64());
                 if none_retries >= CHUNK_POLL_MAX_RETRIES {
                     let elapsed_secs =
                         (none_retries * CHUNK_POLL_INTERVAL_MS + CHUNK_POLL_GRACE_MS) / 1000;
@@ -835,9 +859,8 @@ async fn streaming_loop(
                             // is an existing quirk of the recovery path).
                             none_retries = 0;
                             cur_predicted_at = None;
-                            cur_scheduled_at = None;
-                            cur_first_empty_at = None;
                             cur_last_empty_at = None;
+                            cur_diagnostics = None;
                             continue;
                         }
                         Ok(None) => {

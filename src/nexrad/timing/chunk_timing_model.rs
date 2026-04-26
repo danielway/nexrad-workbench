@@ -1,6 +1,52 @@
 use super::ChunkMetadata;
 use nexrad_decode::messages::volume_coverage_pattern::WaveformType;
 
+/// Which case [`ChunkTimingModel::estimate_chunk_interval_secs`] selected.
+///
+/// Recorded on the per-chunk diagnostic so we can tell whether a prediction
+/// error came from intra-sweep rotation rate, inter-sweep transition, or the
+/// fixed inter-volume gap — three completely different fixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntervalCase {
+    /// Pure rotation rate: same elevation, no transition.
+    IntraSweep,
+    /// First chunk of a new sweep within the same volume — base gap +
+    /// elevation slew + waveform penalty + chunk duration.
+    InterSweep,
+    /// First chunk of a new volume — fixed `INTER_VOLUME_GAP_SECS`.
+    InterVolume,
+}
+
+impl IntervalCase {
+    pub fn short(&self) -> &'static str {
+        match self {
+            IntervalCase::IntraSweep => "intra",
+            IntervalCase::InterSweep => "inter_sweep",
+            IntervalCase::InterVolume => "inter_volume",
+        }
+    }
+}
+
+/// Decomposition of a single physics-model interval prediction.
+///
+/// `total_secs` is what the legacy `estimate_chunk_interval_secs` returns;
+/// the other fields expose the components that fed it so prediction error
+/// can be attributed to a specific knob.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PhysicsBreakdown {
+    pub case: IntervalCase,
+    pub total_secs: f64,
+    /// Per-chunk rotation duration (sweep_duration / chunks_in_sweep).
+    /// `None` for InterVolume (no chunk-duration term applies) or when the
+    /// azimuth rate wasn't available and a fallback was used.
+    pub chunk_duration_secs: Option<f64>,
+    /// Inter-sweep gap base (0.7s) + elevation slew. `None` outside InterSweep.
+    pub inter_sweep_gap_secs: Option<f64>,
+    /// Waveform-transition penalty applied within an inter-sweep gap. `None`
+    /// outside InterSweep (or when no penalty applies).
+    pub waveform_penalty_secs: Option<f64>,
+}
+
 /// Sweep duration bias correction in seconds.
 ///
 /// Sweeps consistently finish ~0.67s before a full 360-degree rotation would predict,
@@ -107,39 +153,79 @@ impl ChunkTimingModel {
 
     /// Estimate the time interval in seconds between two consecutive chunks.
     ///
-    /// Three cases:
-    /// 1. **Start chunk** (inter-volume): Returns the inter-volume gap (~8.5s).
-    /// 2. **First chunk in a new sweep** (inter-sweep): Chunk duration + inter-sweep gap.
-    /// 3. **Intra-sweep chunk**: Pure chunk duration (sweep_duration / chunks_in_sweep).
-    ///
-    /// Falls back to static defaults if the azimuth rate is zero or unavailable.
+    /// Thin wrapper around [`Self::estimate_chunk_interval_breakdown`] for callers
+    /// that only need the total. Diagnostic paths should call the breakdown form
+    /// directly so the component split is observable.
     pub fn estimate_chunk_interval_secs(previous: &ChunkMetadata, next: &ChunkMetadata) -> f64 {
+        Self::estimate_chunk_interval_breakdown(previous, next).total_secs
+    }
+
+    /// Estimate the time interval between two consecutive chunks, with the
+    /// physics decomposition exposed for diagnostics.
+    ///
+    /// Three cases:
+    /// 1. **Start chunk** (inter-volume): fixed inter-volume gap (~8.5s).
+    /// 2. **First chunk in a new sweep** (inter-sweep): chunk duration +
+    ///    inter-sweep gap (base + elevation slew + waveform penalty).
+    /// 3. **Intra-sweep chunk**: pure chunk duration (sweep_duration /
+    ///    chunks_in_sweep).
+    ///
+    /// Falls back to a static chunk-duration default if the azimuth rate is
+    /// zero or unavailable; in that case `chunk_duration_secs` in the
+    /// returned breakdown is `None` to signal the fallback was used.
+    pub fn estimate_chunk_interval_breakdown(
+        previous: &ChunkMetadata,
+        next: &ChunkMetadata,
+    ) -> PhysicsBreakdown {
         // Case 1: Start chunk (beginning of new volume)
         if next.is_start_chunk() {
-            return Self::inter_volume_gap_secs();
+            return PhysicsBreakdown {
+                case: IntervalCase::InterVolume,
+                total_secs: Self::inter_volume_gap_secs(),
+                chunk_duration_secs: None,
+                inter_sweep_gap_secs: None,
+                waveform_penalty_secs: None,
+            };
         }
 
-        // Get the chunk duration for the next chunk's sweep
         let chunk_duration =
             Self::chunk_duration_secs(next.azimuth_rate_dps(), next.chunks_in_sweep());
 
         // Case 2: First chunk in a new sweep (inter-sweep transition)
         if next.is_first_in_sweep() {
-            let gap = Self::inter_sweep_gap_secs(
-                previous.elevation_angle_deg(),
-                next.elevation_angle_deg(),
-                previous.waveform_type(),
-                next.waveform_type(),
-            );
-
-            return match chunk_duration {
+            let waveform_penalty =
+                waveform_transition_penalty_secs(previous.waveform_type(), next.waveform_type());
+            let elevation_change =
+                (next.elevation_angle_deg() - previous.elevation_angle_deg()).abs();
+            let gap = INTER_SWEEP_BASE_GAP_SECS
+                + elevation_change * INTER_SWEEP_ELEVATION_RATE_SECS_PER_DEG
+                + waveform_penalty;
+            let total = match chunk_duration {
                 Some(d) => d + gap,
                 None => gap + Self::fallback_chunk_duration_secs(),
             };
+            return PhysicsBreakdown {
+                case: IntervalCase::InterSweep,
+                total_secs: total,
+                chunk_duration_secs: chunk_duration,
+                inter_sweep_gap_secs: Some(gap),
+                waveform_penalty_secs: if waveform_penalty > 0.0 {
+                    Some(waveform_penalty)
+                } else {
+                    None
+                },
+            };
         }
 
-        // Case 3: Intra-sweep chunk (same elevation, continuous rotation)
-        chunk_duration.unwrap_or(Self::fallback_chunk_duration_secs())
+        // Case 3: Intra-sweep chunk
+        let total = chunk_duration.unwrap_or(Self::fallback_chunk_duration_secs());
+        PhysicsBreakdown {
+            case: IntervalCase::IntraSweep,
+            total_secs: total,
+            chunk_duration_secs: chunk_duration,
+            inter_sweep_gap_secs: None,
+            waveform_penalty_secs: None,
+        }
     }
 
     /// Fallback chunk duration when azimuth rate is unavailable.

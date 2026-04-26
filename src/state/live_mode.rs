@@ -614,6 +614,15 @@ impl LiveModeState {
         }
     }
 
+    /// Back-fill the empirical availability lag (`s3_last_modified − chunk_max_collection_time`)
+    /// onto the most recent chunk arrival record. Computed in `main.rs` once
+    /// the worker ingest yields the chunk's last-radial time.
+    pub fn attach_availability_lag_to_last_arrival(&mut self, lag_ms: i64) {
+        if let Some(last) = self.chunk_arrivals.last_mut() {
+            last.availability_lag_ms = Some(lag_ms);
+        }
+    }
+
     /// Record last radial azimuth and timestamp from a chunk.
     pub fn record_last_radial(&mut self, azimuth: Option<f32>, time_secs: Option<f64>) {
         if let Some(az) = azimuth {

@@ -1700,6 +1700,12 @@ impl WorkbenchApp {
                 let lag_secs = s3_at - chunk_max_secs;
                 if lag_secs.is_finite() {
                     self.streaming.record_availability_lag_secs(lag_secs);
+                    // Back-fill the per-chunk availability lag onto the most
+                    // recent arrival record so the diagnostics modal can
+                    // surface per-chunk lag (not just the global median).
+                    self.state
+                        .live_mode_state
+                        .attach_availability_lag_to_last_arrival((lag_secs * 1000.0) as i64);
                 }
             }
             if !result.elevations_completed.is_empty() {

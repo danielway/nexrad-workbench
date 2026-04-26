@@ -3,6 +3,33 @@ use chrono::{DateTime, Duration, Utc};
 use nexrad_data::aws::realtime::{ChunkIdentifier, ChunkType, VolumeIndex};
 use nexrad_decode::messages::volume_coverage_pattern;
 
+/// Which branch [`project_scan_timing`] used to anchor the collection axis.
+/// Surfaced on per-chunk diagnostics so we can tell whether a projection was
+/// based on a real radial-derived anchor or had to fall back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnchorSource {
+    /// Used the caller-supplied ACTUAL collection time (parsed from a radial
+    /// header). Best case — projections are anchored on real data.
+    ObservedCollection,
+    /// No collection time available; estimated as `upload − median lag` from
+    /// `ChunkTimingStats`. Reasonable once stats have warmed up.
+    UploadMinusMedian,
+    /// No collection time and no lag stats; fell back to
+    /// `upload − DEFAULT_AVAILABILITY_LAG_SECS`. Cold start only — projections
+    /// will carry the largest uncertainty.
+    UploadMinusDefault,
+}
+
+impl AnchorSource {
+    pub fn short(&self) -> &'static str {
+        match self {
+            AnchorSource::ObservedCollection => "obs",
+            AnchorSource::UploadMinusMedian => "median",
+            AnchorSource::UploadMinusDefault => "default",
+        }
+    }
+}
+
 /// A projected timeline for all remaining chunks in a volume scan.
 ///
 /// Carries two parallel time axes for each chunk:
@@ -27,6 +54,9 @@ pub struct ScanTimingProjection {
     /// time of the anchor and its S3 upload time. `None` when the header
     /// time is unavailable (falls back to `DEFAULT_AVAILABILITY_LAG_SECS`).
     observed_anchor_lag_secs: Option<f64>,
+    /// Which branch the anchor came from — surfaced in diagnostics so we
+    /// can tell when a projection is degraded by a fallback anchor.
+    anchor_source: AnchorSource,
     /// Projected timing for each future chunk, in sequence order.
     chunks: Vec<ChunkProjection>,
     /// AVAILABILITY category: projected time the final chunk becomes
@@ -69,6 +99,12 @@ impl ScanTimingProjection {
     #[allow(dead_code)] // Consumed by debug UI in a later commit.
     pub fn observed_anchor_lag_secs(&self) -> Option<f64> {
         self.observed_anchor_lag_secs
+    }
+
+    /// Which branch the anchor came from. Used by the diagnostics modal to
+    /// flag projections built on a fallback anchor.
+    pub fn anchor_source(&self) -> AnchorSource {
+        self.anchor_source
     }
 
     /// Projected timing for each future chunk, in sequence order.
@@ -193,18 +229,31 @@ pub fn project_scan_timing(
     // volume header collection time, use it and derive the empirical lag as
     // upload − collection. Otherwise fall back to a lag estimate: prefer the
     // median lag observed in `ChunkTimingStats`, else a static default.
-    let (anchor_collection_secs, observed_lag_secs, availability_lag_secs) =
+    let (anchor_collection_secs, observed_lag_secs, availability_lag_secs, anchor_source) =
         match anchor_collection_time_secs {
             Some(collection_secs) => {
                 let lag = anchor_available_at_secs - collection_secs;
-                (collection_secs, Some(lag), lag)
+                (
+                    collection_secs,
+                    Some(lag),
+                    lag,
+                    AnchorSource::ObservedCollection,
+                )
             }
-            None => {
-                let fallback_lag = timing_stats
-                    .and_then(|s| s.median_availability_lag_secs())
-                    .unwrap_or(DEFAULT_AVAILABILITY_LAG_SECS);
-                (anchor_available_at_secs - fallback_lag, None, fallback_lag)
-            }
+            None => match timing_stats.and_then(|s| s.median_availability_lag_secs()) {
+                Some(median_lag) => (
+                    anchor_available_at_secs - median_lag,
+                    None,
+                    median_lag,
+                    AnchorSource::UploadMinusMedian,
+                ),
+                None => (
+                    anchor_available_at_secs - DEFAULT_AVAILABILITY_LAG_SECS,
+                    None,
+                    DEFAULT_AVAILABILITY_LAG_SECS,
+                    AnchorSource::UploadMinusDefault,
+                ),
+            },
         };
 
     let mut projections = Vec::new();
@@ -276,6 +325,7 @@ pub fn project_scan_timing(
         anchor_available_at,
         anchor_collection_time_secs: anchor_collection_secs,
         observed_anchor_lag_secs: observed_lag_secs,
+        anchor_source,
         chunks: projections,
         volume_end_available_at,
         remaining_duration,

@@ -25,12 +25,14 @@ mod elevation_chunk_mapper;
 mod estimate_next_chunk_time;
 mod scan_timing_projection;
 
-pub use chunk_timing_model::ChunkTimingModel;
-pub use chunk_timing_stats::{ChunkCharacteristics, ChunkTimingStats};
+pub use chunk_timing_model::{ChunkTimingModel, IntervalCase, PhysicsBreakdown};
+pub use chunk_timing_stats::{BucketStats, ChunkCharacteristics, ChunkTimingStats};
 pub use elevation_chunk_mapper::{ChunkMetadata, ElevationChunkMapper};
 pub use estimate_next_chunk_time::{
-    estimate_chunk_availability_time, estimate_chunk_processing_time,
+    estimate_chunk_availability_time, estimate_chunk_processing_diagnostics,
+    estimate_chunk_processing_time, EstimatedChunkProcessing, SchedulerPath,
 };
 pub use scan_timing_projection::{
-    project_full_scan_timing, project_scan_timing, ChunkProjection, ScanTimingProjection,
+    project_full_scan_timing, project_scan_timing, AnchorSource, ChunkProjection,
+    ScanTimingProjection,
 };

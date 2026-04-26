@@ -44,6 +44,51 @@ impl Hash for ChunkCharacteristics {
     }
 }
 
+/// Per-bucket diagnostic snapshot, returned by
+/// [`ChunkTimingStats::per_bucket_stats`]. Used in the VCP forecast
+/// diagnostics summary so we can see which buckets have warmed up and
+/// whether their availability lag deviates from the global median.
+#[derive(Debug, Clone, Copy)]
+pub struct BucketStats {
+    pub characteristics: ChunkCharacteristics,
+    pub sample_count: usize,
+    pub mean_duration_ms: i64,
+    /// Median availability lag for this bucket only. `None` until at least
+    /// one sample with a recorded `availability_lag` exists for this bucket.
+    pub median_lag_ms: Option<i64>,
+    /// How many of `sample_count` samples carried a non-`None`
+    /// `availability_lag` measurement.
+    pub lag_sample_count: usize,
+}
+
+fn chunk_type_order(t: ChunkType) -> u8 {
+    match t {
+        ChunkType::Start => 0,
+        ChunkType::Intermediate => 1,
+        ChunkType::End => 2,
+    }
+}
+
+fn waveform_order(w: WaveformType) -> u8 {
+    match w {
+        WaveformType::CS => 0,
+        WaveformType::CDW => 1,
+        WaveformType::CDWO => 2,
+        WaveformType::B => 3,
+        WaveformType::SPP => 4,
+        WaveformType::Unknown => 5,
+    }
+}
+
+fn channel_order(c: ChannelConfiguration) -> u8 {
+    match c {
+        ChannelConfiguration::ConstantPhase => 0,
+        ChannelConfiguration::RandomPhase => 1,
+        ChannelConfiguration::SZ2Phase => 2,
+        ChannelConfiguration::UnknownPhase => 3,
+    }
+}
+
 /// Statistics for a single timing sample.
 ///
 /// `duration` is the legacy S3-upload→S3-upload delta (AVAILABILITY-to-
@@ -186,6 +231,76 @@ impl ChunkTimingStats {
                 )
             })
             .collect()
+    }
+
+    /// Number of samples held for the given characteristics bucket.
+    /// 0 if the bucket has never been populated. Capped at
+    /// [`MAX_TIMING_SAMPLES`] (10) by the rolling window.
+    pub fn sample_count(&self, characteristics: &ChunkCharacteristics) -> usize {
+        self.timings.get(characteristics).map_or(0, |q| q.len())
+    }
+
+    /// Total number of samples across all buckets — useful as a "warmup
+    /// progress" metric in the diagnostics header.
+    pub fn total_sample_count(&self) -> usize {
+        self.timings.values().map(|q| q.len()).sum()
+    }
+
+    /// Per-bucket diagnostic snapshot. One entry per characteristics bucket
+    /// that has at least one sample. Sorted by `(chunk_type, waveform_type,
+    /// channel_configuration, is_first_in_sweep)` for stable display order.
+    pub fn per_bucket_stats(&self) -> Vec<BucketStats> {
+        let mut out: Vec<BucketStats> = self
+            .timings
+            .iter()
+            .filter_map(|(k, q)| {
+                if q.is_empty() {
+                    return None;
+                }
+                let n = q.len();
+                let mean_duration_ms =
+                    q.iter().map(|s| s.duration.num_milliseconds()).sum::<i64>() / n as i64;
+                let mut lags: Vec<i64> = q
+                    .iter()
+                    .filter_map(|s| s.availability_lag.map(|d| d.num_milliseconds()))
+                    .collect();
+                let median_lag_ms = if lags.is_empty() {
+                    None
+                } else {
+                    lags.sort_unstable();
+                    let mid = lags.len() / 2;
+                    Some(if lags.len().is_multiple_of(2) {
+                        (lags[mid - 1] + lags[mid]) / 2
+                    } else {
+                        lags[mid]
+                    })
+                };
+                let lag_sample_count = lags.len();
+                Some(BucketStats {
+                    characteristics: *k,
+                    sample_count: n,
+                    mean_duration_ms,
+                    median_lag_ms,
+                    lag_sample_count,
+                })
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            let ka = (
+                chunk_type_order(a.characteristics.chunk_type),
+                waveform_order(a.characteristics.waveform_type),
+                channel_order(a.characteristics.channel_configuration),
+                a.characteristics.is_first_in_sweep,
+            );
+            let kb = (
+                chunk_type_order(b.characteristics.chunk_type),
+                waveform_order(b.characteristics.waveform_type),
+                channel_order(b.characteristics.channel_configuration),
+                b.characteristics.is_first_in_sweep,
+            );
+            ka.cmp(&kb)
+        });
+        out
     }
 
     /// Serialize to a compact JSON string suitable for localStorage.

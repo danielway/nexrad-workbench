@@ -7,8 +7,9 @@
 //! `try_next`, and timing/metadata accessors.
 
 use super::timing::{
-    estimate_chunk_availability_time, project_scan_timing, ChunkCharacteristics, ChunkMetadata,
-    ChunkTimingStats, ElevationChunkMapper, ScanTimingProjection,
+    estimate_chunk_availability_time, estimate_chunk_processing_diagnostics, project_scan_timing,
+    ChunkCharacteristics, ChunkMetadata, ChunkTimingStats, ElevationChunkMapper,
+    EstimatedChunkProcessing, ScanTimingProjection,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::debug;
@@ -335,6 +336,32 @@ impl StreamingState {
             None
         } else {
             Some(expected - now)
+        }
+    }
+
+    /// Diagnostic counterpart to [`time_until_next`] — returns the path the
+    /// scheduler took, the bucket sample count at prediction time, and the
+    /// physics decomposition (when applicable) so callers can attach them
+    /// to per-chunk arrival records.
+    pub fn next_chunk_processing_diagnostics(&self) -> Option<EstimatedChunkProcessing> {
+        let vcp = self.vcp.as_ref()?;
+        let mapper = self.elevation_mapper.as_ref()?;
+        estimate_chunk_processing_diagnostics(&self.current, vcp, mapper, Some(&self.timing_stats))
+    }
+
+    /// Anchor source the projector would use right now — `ObservedCollection`
+    /// when an ACTUAL collection-end time is available for the current chunk,
+    /// `UploadMinusMedian` when only `ChunkTimingStats` median lag is, or
+    /// `UploadMinusDefault` otherwise. Captured per-chunk so we can spot
+    /// degraded projections in the diagnostics modal.
+    pub fn current_anchor_source(&self) -> super::timing::AnchorSource {
+        use super::timing::AnchorSource;
+        if self.latest_chunk_collection_end_secs.is_some() {
+            AnchorSource::ObservedCollection
+        } else if self.timing_stats.median_availability_lag_secs().is_some() {
+            AnchorSource::UploadMinusMedian
+        } else {
+            AnchorSource::UploadMinusDefault
         }
     }
 
