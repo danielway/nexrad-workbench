@@ -41,12 +41,11 @@ impl StreamingManager {
         self.realtime_channel.time_until_next()
     }
 
-    /// Push the ACTUAL volume header time (Unix seconds) parsed by the worker
-    /// from the first Message 31 radial of the current volume down into the
-    /// streaming loop. The loop stamps it onto the `StreamingState` before
-    /// the next projection.
-    pub fn record_volume_header_time_secs(&self, secs: f64) {
-        self.realtime_channel.record_volume_header_time_secs(secs);
+    /// Push the latest radial collection time (Unix seconds) of the chunk
+    /// just ingested into the streaming loop, so the next projection
+    /// anchors on the current chunk's true collection time.
+    pub fn record_chunk_collection_end_secs(&self, secs: f64) {
+        self.realtime_channel.record_chunk_collection_end_secs(secs);
     }
 
     /// Push the empirical per-chunk availability lag (S3 upload − chunk

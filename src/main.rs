@@ -1666,15 +1666,22 @@ impl WorkbenchApp {
             // header (the first radial of the volume scan).
             if let Some(header_time) = result.volume_header_time_secs {
                 self.state.live_mode_state.current_volume_start = Some(header_time);
-                // Push the parsed collection time down into the streaming
-                // loop so it can anchor future-chunk projections on ACTUAL
-                // collection time rather than S3 upload time.
-                self.streaming.record_volume_header_time_secs(header_time);
                 // Retry the forecast snapshot in case the VCP pattern was
                 // already recorded before the volume-start timestamp arrived.
                 // `record_vcp` below also calls this, so the usual flow picks
                 // up regardless of which side arrives first.
                 self.state.live_mode_state.try_capture_forecast();
+            }
+
+            // Push the most recent chunk's collection-end time down to the
+            // streaming loop so the next projection anchors on the current
+            // chunk's actual collection time (not the volume's start time).
+            // Without this, forward-chunk projections come out as
+            // volume_start + small_offset, landing in the past once the
+            // volume is past its first chunk.
+            if let Some(chunk_max_secs) = result.chunk_max_time_secs {
+                self.streaming
+                    .record_chunk_collection_end_secs(chunk_max_secs);
             }
 
             // Record the empirical availability lag (S3 upload − ACTUAL

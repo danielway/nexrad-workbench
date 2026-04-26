@@ -37,11 +37,14 @@ pub struct StreamingState {
     vcp: Option<volume_coverage_pattern::Message<'static>>,
     timing_stats: ChunkTimingStats,
     last_chunk_time: Option<DateTime<Utc>>,
-    /// ACTUAL category: most recently observed volume header time (Unix seconds),
-    /// parsed by the worker from the first Message 31 radial of the current volume.
-    /// Pushed in from `main.rs` after each ingest response. Reset on volume boundary.
-    /// Used in a later commit as the anchor for projected COLLECTION times.
-    latest_volume_header_time_secs: Option<f64>,
+    /// ACTUAL category: collection-end time (Unix seconds) of the most
+    /// recently ingested chunk, parsed by the worker as the latest radial
+    /// timestamp in the chunk. Pushed in from `main.rs` after each ingest
+    /// response and reset on volume boundary. Used as the anchor for
+    /// projected COLLECTION times — the projector adds cumulative
+    /// inter-chunk physics intervals to this to place future chunks on
+    /// the timeline.
+    latest_chunk_collection_end_secs: Option<f64>,
     requests_made: usize,
     bytes_downloaded: u64,
 }
@@ -108,7 +111,7 @@ impl StreamingState {
             vcp,
             timing_stats: ChunkTimingStats::new(),
             last_chunk_time,
-            latest_volume_header_time_secs: None,
+            latest_chunk_collection_end_secs: None,
             requests_made,
             bytes_downloaded,
         };
@@ -173,7 +176,7 @@ impl StreamingState {
                         self.elevation_mapper = Some(ElevationChunkMapper::new(&v));
                         self.vcp = Some(v);
                     }
-                    self.latest_volume_header_time_secs = None;
+                    self.latest_chunk_collection_end_secs = None;
                 }
 
                 if let (Some(upload), Some(prev)) =
@@ -218,7 +221,7 @@ impl StreamingState {
                 self.elevation_mapper = Some(ElevationChunkMapper::new(&v));
                 self.vcp = Some(v);
             }
-            self.latest_volume_header_time_secs = None;
+            self.latest_chunk_collection_end_secs = None;
         } else if self.elevation_mapper.is_none() {
             // Joined mid-volume without a mapper — fetch the Start chunk too.
             let start_id = ChunkIdentifier::new(
@@ -304,17 +307,19 @@ impl StreamingState {
         &self.timing_stats
     }
 
-    /// Record the ACTUAL volume header time parsed by the worker from the
-    /// first Message 31 radial of the current volume. Pushed in from the
-    /// streaming loop after each ingest response.
-    pub fn record_volume_header_time_secs(&mut self, secs: f64) {
-        self.latest_volume_header_time_secs = Some(secs);
+    /// Record the latest radial collection time (Unix seconds) of the
+    /// most recently ingested chunk. Pushed in from the streaming loop
+    /// after each ingest response and used as the anchor for projected
+    /// COLLECTION times — the projector adds cumulative inter-chunk
+    /// physics intervals to this value.
+    pub fn record_chunk_collection_end_secs(&mut self, secs: f64) {
+        self.latest_chunk_collection_end_secs = Some(secs);
     }
 
-    /// Most recently recorded volume header time (Unix seconds), if any.
-    #[allow(dead_code)] // Consumed in a later commit to anchor collection-time projections.
-    pub fn latest_volume_header_time_secs(&self) -> Option<f64> {
-        self.latest_volume_header_time_secs
+    /// Most recently recorded chunk collection-end time (Unix seconds),
+    /// if any. None until the first M chunk of a volume has been ingested.
+    pub fn latest_chunk_collection_end_secs(&self) -> Option<f64> {
+        self.latest_chunk_collection_end_secs
     }
 
     /// Replace the rolling timing statistics with a previously-persisted snapshot.
@@ -356,7 +361,7 @@ impl StreamingState {
         let mapper = self.elevation_mapper.as_ref()?;
         project_scan_timing(
             &self.current,
-            self.latest_volume_header_time_secs,
+            self.latest_chunk_collection_end_secs,
             vcp,
             mapper,
             Some(&self.timing_stats),

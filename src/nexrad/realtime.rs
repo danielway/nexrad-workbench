@@ -100,12 +100,12 @@ struct RealtimeState {
     active: bool,
     time_until_next: Option<Duration>,
     stop_requested: bool,
-    /// ACTUAL category: most recently observed volume header time (Unix
-    /// seconds), parsed by the worker from the first Message 31 radial of
-    /// the current volume. Pushed in from `main.rs` after each ingest
-    /// response; consumed by the streaming loop to populate the projection
-    /// anchor in a later commit.
-    pending_volume_header_time_secs: Option<f64>,
+    /// ACTUAL category: latest radial collection time (Unix seconds) of
+    /// the most recently ingested chunk. Pushed in from `main.rs` after
+    /// each ingest response and drained by the streaming loop into
+    /// `StreamingState` so projections anchor on the current chunk's true
+    /// collection time rather than the volume's start.
+    pending_chunk_collection_end_secs: Option<f64>,
     /// Empirical availability lag (seconds) for the most recently ingested
     /// chunk, computed in `main.rs` as `s3_last_modified - chunk_max_time`.
     /// Drained by the streaming loop and attached to the latest
@@ -180,11 +180,12 @@ impl RealtimeChannel {
         }
     }
 
-    /// Push the ACTUAL volume header time parsed by the worker after an
-    /// ingest response. The streaming loop picks this up and stamps it onto
-    /// the `StreamingState` before the next projection.
-    pub fn record_volume_header_time_secs(&self, secs: f64) {
-        self.state.borrow_mut().pending_volume_header_time_secs = Some(secs);
+    /// Push the latest radial collection time (Unix seconds) parsed from
+    /// the chunk that was just ingested. The streaming loop drains this
+    /// and stamps it onto `StreamingState` so the next projection anchors
+    /// on the current chunk's actual collection time.
+    pub fn record_chunk_collection_end_secs(&self, secs: f64) {
+        self.state.borrow_mut().pending_chunk_collection_end_secs = Some(secs);
     }
 
     /// Push an empirical availability lag (S3 upload − ACTUAL chunk
@@ -286,19 +287,19 @@ fn drain_pending_ingest_observations(
     state_cell: &Rc<RefCell<RealtimeState>>,
     iter: &mut StreamingState,
 ) {
-    let (pending_header, pending_lag) = {
+    let (pending_collection_end, pending_lag) = {
         let mut s = state_cell.borrow_mut();
         (
-            s.pending_volume_header_time_secs.take(),
+            s.pending_chunk_collection_end_secs.take(),
             s.pending_availability_lag_secs.take(),
         )
     };
-    if let Some(secs) = pending_header {
-        let prior = iter.latest_volume_header_time_secs();
-        iter.record_volume_header_time_secs(secs);
+    if let Some(secs) = pending_collection_end {
+        let prior = iter.latest_chunk_collection_end_secs();
+        iter.record_chunk_collection_end_secs(secs);
         if prior != Some(secs) {
             log::debug!(
-                "volume_header_time: updated to {:.3}s (prior={:?})",
+                "chunk_collection_end: updated to {:.3}s (prior={:?})",
                 secs,
                 prior
             );
@@ -720,17 +721,16 @@ async fn streaming_loop(
                     .map(|dt| dt.timestamp_millis() as f64 / 1000.0);
 
                 // Empirical NEXRAD ingest lag: difference between the chunk's
-                // S3 upload time (AVAILABILITY) and the parsed volume header
-                // time (ACTUAL collection). Feeds the collection/availability
-                // model introduced in a follow-up commit.
-                if let (Some(upload_secs), Some(header_secs)) =
-                    (s3_last_modified_at, iter.latest_volume_header_time_secs())
+                // S3 upload time (AVAILABILITY) and its latest radial
+                // collection time (ACTUAL).
+                if let (Some(upload_secs), Some(collection_end_secs)) =
+                    (s3_last_modified_at, iter.latest_chunk_collection_end_secs())
                 {
                     log::debug!(
-                        "ingest lag: upload={:.3}s header={:.3}s Δ={:+.3}s (seq={} type={})",
+                        "ingest lag: upload={:.3}s collection_end={:.3}s Δ={:+.3}s (seq={} type={})",
                         upload_secs,
-                        header_secs,
-                        upload_secs - header_secs,
+                        collection_end_secs,
+                        upload_secs - collection_end_secs,
                         chunks_in_volume,
                         type_label,
                     );
