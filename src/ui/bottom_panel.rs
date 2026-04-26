@@ -76,21 +76,6 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
             PlaybackMode::Macro => state.playback_state.advance_macro(dt as f64),
         }
 
-        // Pin playback position on the visible timeline during playback.
-        // In live/real-time mode, pin at 75% from left (right quarter) so more
-        // history is visible. In archive playback, pin at 25% from left.
-        let view_width_secs = state.playback_state.view_width_secs();
-        if view_width_secs > 0.0 {
-            let pin_fraction = if state.live_mode_state.is_active() {
-                0.75
-            } else {
-                0.25
-            };
-            let target_offset = view_width_secs * pin_fraction;
-            let pos = state.playback_state.playback_position();
-            state.playback_state.timeline_view_start = pos - target_offset;
-        }
-
         // Repaint at 30 FPS while playing — smooth for continuous micro-mode
         // advances and well above the 1–15 FPS frame cadence macro mode emits.
         ctx.request_repaint_after(std::time::Duration::from_millis(33));

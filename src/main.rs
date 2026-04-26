@@ -1867,7 +1867,6 @@ impl WorkbenchApp {
             } else {
                 let now = js_sys::Date::now() / 1000.0;
                 self.state.playback_state.set_playback_position(now);
-                self.state.playback_state.center_view_on(now);
             }
 
             log::debug!(
