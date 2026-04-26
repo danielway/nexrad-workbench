@@ -208,39 +208,33 @@ impl StreamingState {
     ) -> Result<Option<DownloadedChunk>> {
         let chunks = list_chunks_in_volume(&self.site, volume, 100).await?;
         self.requests_made += 1;
-        let latest = match chunks.last() {
+
+        // Always emit the Start chunk first when transitioning to a new
+        // volume — the worker accumulator is cleared on the previous
+        // volume's End and only re-initializes when an `is_start: true`
+        // chunk arrives. If we instead emitted the latest chunk in the
+        // new volume (potentially Intermediate, when polling lands after
+        // the inter-volume gap and several chunks are already published),
+        // every subsequent ingest would error with
+        // "No accumulator — missing Start chunk?".
+        //
+        // Subsequent `try_next` iterations fetch chunks 2, 3, … in
+        // sequence order via the normal `try_fetch_chunk` path.
+        let target = match chunks.iter().find(|c| c.chunk_type() == ChunkType::Start) {
             Some(id) => id,
-            None => return Ok(None), // Volume hasn't started yet
+            None => return Ok(None), // Start chunk hasn't been published yet
         };
-        let (identifier, chunk) = download_chunk(&self.site, latest).await?;
+        let (identifier, chunk) = download_chunk(&self.site, target).await?;
         self.requests_made += 1;
         self.bytes_downloaded += chunk.data().len() as u64;
 
-        if identifier.chunk_type() == ChunkType::Start {
-            if let Ok(v) = extract_vcp(&chunk) {
-                self.elevation_mapper = Some(ElevationChunkMapper::new(&v));
-                self.vcp = Some(v);
-            }
-            self.latest_chunk_collection_end_secs = None;
-        } else if self.elevation_mapper.is_none() {
-            // Joined mid-volume without a mapper — fetch the Start chunk too.
-            let start_id = ChunkIdentifier::new(
-                self.site.clone(),
-                volume,
-                *identifier.date_time_prefix(),
-                1,
-                ChunkType::Start,
-                None,
-            );
-            if let Ok((_, start_chunk)) = download_chunk(&self.site, &start_id).await {
-                self.requests_made += 1;
-                self.bytes_downloaded += start_chunk.data().len() as u64;
-                if let Ok(v) = extract_vcp(&start_chunk) {
-                    self.elevation_mapper = Some(ElevationChunkMapper::new(&v));
-                    self.vcp = Some(v);
-                }
-            }
+        // Identifier must be Start by construction above; extract VCP and
+        // reset the per-volume collection-end anchor.
+        if let Ok(v) = extract_vcp(&chunk) {
+            self.elevation_mapper = Some(ElevationChunkMapper::new(&v));
+            self.vcp = Some(v);
         }
+        self.latest_chunk_collection_end_secs = None;
 
         if let (Some(upload), Some(prev)) = (identifier.upload_date_time(), self.last_chunk_time) {
             self.update_timing_stats(&identifier, upload - prev, 1);
