@@ -765,18 +765,24 @@ async fn streaming_loop(
                 // chunk is "current".
                 let anchor_source = Some(iter.current_anchor_source());
 
-                let (bucket_key, stats_n_at_prediction, scheduler_path, physics_breakdown) =
-                    match cur_diagnostics.as_ref() {
-                        Some(d) => (
-                            d.bucket
-                                .as_ref()
-                                .map(crate::state::BucketKey::from_characteristics),
-                            d.stats_n_at_prediction,
-                            Some(d.path),
-                            d.physics_breakdown,
-                        ),
-                        None => (None, 0, None, None),
-                    };
+                let (
+                    bucket_key,
+                    stats_n_at_prediction,
+                    scheduler_path,
+                    physics_breakdown,
+                    predicted_wait_secs,
+                ) = match cur_diagnostics.as_ref() {
+                    Some(d) => (
+                        d.bucket
+                            .as_ref()
+                            .map(crate::state::BucketKey::from_characteristics),
+                        d.stats_n_at_prediction,
+                        Some(d.path),
+                        d.physics_breakdown,
+                        Some(d.duration.num_milliseconds() as f64 / 1000.0),
+                    ),
+                    None => (None, 0, None, None, None),
+                };
 
                 let arrival_stat = crate::state::ChunkArrivalStat {
                     sequence: chunks_in_volume,
@@ -795,6 +801,8 @@ async fn streaming_loop(
                     physics_breakdown,
                     anchor_source,
                     availability_lag_ms: None,
+                    collection_time_secs: None,
+                    predicted_wait_secs,
                 };
 
                 // Reset tracking state for the next chunk

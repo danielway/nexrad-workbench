@@ -190,6 +190,20 @@ pub struct ChunkArrivalStat {
     /// `attach_availability_lag_ms`. `None` until that back-fill happens (or
     /// permanently if either timestamp is unavailable).
     pub availability_lag_ms: Option<i64>,
+    /// ACTUAL chunk collection-end time (Unix seconds, ms-precise) — the
+    /// last radial timestamp parsed by the worker for this chunk. Back-filled
+    /// from `main.rs` alongside `availability_lag_ms`. `None` until the
+    /// worker ingest completes for this chunk. Together with the previous
+    /// arrival's `collection_time_secs`, lets us compute the actual
+    /// collection-space interval per chunk free of S3 1-second quantization.
+    pub collection_time_secs: Option<f64>,
+    /// Wait the scheduler returned for this chunk on its first poll —
+    /// `EstimatedChunkProcessing.duration` from the estimator. The interval
+    /// the projector/scheduler *actually* used (already includes the 70/30
+    /// historical blend when `path == Historical`). Pair with
+    /// `collection_time_secs` to compute the per-chunk interval prediction
+    /// error in collection space.
+    pub predicted_wait_secs: Option<f64>,
 }
 
 /// Compact serialisable bucket key. Mirrors `ChunkCharacteristics` but
@@ -267,5 +281,26 @@ impl ChunkArrivalStat {
     pub fn wait_after_last_empty_ms(&self) -> Option<f64> {
         self.last_empty_poll_at
             .map(|t| (self.success_at - t) * 1000.0)
+    }
+
+    /// Actual collection-space interval between this chunk and `prev` — the
+    /// ground truth the predicted wait should be compared against. Returns
+    /// `None` if either chunk hasn't had its collection time back-filled.
+    pub fn actual_interval_secs(&self, prev: &ChunkArrivalStat) -> Option<f64> {
+        match (self.collection_time_secs, prev.collection_time_secs) {
+            (Some(c), Some(p)) if c > p => Some(c - p),
+            _ => None,
+        }
+    }
+
+    /// Per-chunk interval prediction error in collection space, milliseconds:
+    /// `actual_interval − predicted_wait`. Positive means we underestimated
+    /// the gap (the chunk took longer to arrive than predicted), which is
+    /// the dominant signal for "sweep too short" / "sweeps shifted earlier"
+    /// symptoms.
+    pub fn interval_error_ms(&self, prev: &ChunkArrivalStat) -> Option<f64> {
+        let actual = self.actual_interval_secs(prev)?;
+        let predicted = self.predicted_wait_secs?;
+        Some((actual - predicted) * 1000.0)
     }
 }

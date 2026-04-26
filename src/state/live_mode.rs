@@ -614,12 +614,20 @@ impl LiveModeState {
         }
     }
 
-    /// Back-fill the empirical availability lag (`s3_last_modified − chunk_max_collection_time`)
-    /// onto the most recent chunk arrival record. Computed in `main.rs` once
-    /// the worker ingest yields the chunk's last-radial time.
-    pub fn attach_availability_lag_to_last_arrival(&mut self, lag_ms: i64) {
+    /// Back-fill the per-chunk collection-end time and (when available)
+    /// empirical availability lag onto the most recent chunk arrival record.
+    /// Both quantities come from the worker ingest (which parses the chunk's
+    /// last-radial timestamp) and are dispatched together from `main.rs`.
+    pub fn attach_collection_data_to_last_arrival(
+        &mut self,
+        collection_time_secs: f64,
+        availability_lag_ms: Option<i64>,
+    ) {
         if let Some(last) = self.chunk_arrivals.last_mut() {
-            last.availability_lag_ms = Some(lag_ms);
+            last.collection_time_secs = Some(collection_time_secs);
+            if let Some(lag_ms) = availability_lag_ms {
+                last.availability_lag_ms = Some(lag_ms);
+            }
         }
     }
 

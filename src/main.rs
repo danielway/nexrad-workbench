@@ -1689,24 +1689,31 @@ impl WorkbenchApp {
             // Uses the chunk's latest-radial time (when the radar finished
             // this chunk) paired with the most recent arrival stat's
             // Last-Modified header.
-            if let (Some(chunk_max_secs), Some(s3_at)) = (
-                result.chunk_max_time_secs,
-                self.state
+            if let Some(chunk_max_secs) = result.chunk_max_time_secs {
+                // Lag requires both a parsed collection time AND the chunk's
+                // S3 Last-Modified header. Stamp collection time unconditionally
+                // and lag only when both are finite.
+                let s3_at = self
+                    .state
                     .live_mode_state
                     .chunk_arrivals
                     .last()
-                    .and_then(|a| a.s3_last_modified_at),
-            ) {
-                let lag_secs = s3_at - chunk_max_secs;
-                if lag_secs.is_finite() {
-                    self.streaming.record_availability_lag_secs(lag_secs);
-                    // Back-fill the per-chunk availability lag onto the most
-                    // recent arrival record so the diagnostics modal can
-                    // surface per-chunk lag (not just the global median).
-                    self.state
-                        .live_mode_state
-                        .attach_availability_lag_to_last_arrival((lag_secs * 1000.0) as i64);
+                    .and_then(|a| a.s3_last_modified_at);
+                let lag_secs = s3_at
+                    .map(|s3| s3 - chunk_max_secs)
+                    .filter(|v| v.is_finite());
+                if let Some(lag) = lag_secs {
+                    self.streaming.record_availability_lag_secs(lag);
                 }
+                // Back-fill onto the most recent arrival so the diagnostics
+                // modal can compute per-chunk collection-space intervals
+                // and (when available) per-chunk availability lag.
+                self.state
+                    .live_mode_state
+                    .attach_collection_data_to_last_arrival(
+                        chunk_max_secs,
+                        lag_secs.map(|lag| (lag * 1000.0) as i64),
+                    );
             }
             if !result.elevations_completed.is_empty() {
                 let vol_start_ts = self

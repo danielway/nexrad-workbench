@@ -196,7 +196,7 @@ fn render_snapshot(
                 .show(ui, |ui| {
                     for header in [
                         "elv", "ang", "wf", "used", "src", "pred_dur", "act_dur", "Δdur",
-                        "pred_ch", "act_ch", "Δch", "timing", "status",
+                        "Δstart", "pred_ch", "act_ch", "Δch", "timing", "status",
                     ] {
                         ui.label(
                             RichText::new(header)
@@ -287,8 +287,21 @@ fn render_snapshot(
                 if let Some((mean, median, max_abs)) = stats_on(&pred_errs) {
                     kv(
                         ui,
-                        "Chunk pred error (success − predicted)",
+                        "Chunk pred error (avail-space)",
                         &format!("mean {mean:+.2}s  median {median:+.2}s  max|{max_abs:.2}s|"),
+                        label_color,
+                        value_color,
+                    );
+                }
+                let interval_errs_ms = collect_interval_errors_ms(arrivals);
+                if let Some((mean, median, max_abs)) = stats_on(&interval_errs_ms) {
+                    kv(
+                        ui,
+                        "Interval err (collection-space, +ve = underestimated)",
+                        &format!(
+                            "mean {mean:+.0}ms  median {median:+.0}ms  max|{max_abs:.0}ms|  (n={})",
+                            interval_errs_ms.len()
+                        ),
                         label_color,
                         value_color,
                     );
@@ -437,6 +450,7 @@ fn render_snapshot(
                     RichText::new(
                         "elev = elevation# (chunk-i+1/N);  \
                          path = hist|phys|legacy|start;  anchor = obs|median|default;  \
+                         act_int / pred_wait / Δint are collection-space (Δint = act_int − pred_wait);  \
                          physics shows the dominant case + key terms",
                     )
                     .size(10.0)
@@ -457,7 +471,9 @@ fn render_snapshot(
                             "path",
                             "anchor",
                             "pred_err",
-                            "wait_empty",
+                            "act_int",
+                            "pred_wait",
+                            "Δint",
                             "lag_ms",
                             "physics",
                         ] {
@@ -471,15 +487,17 @@ fn render_snapshot(
                         ui.end_row();
 
                         let mut prev_elev: Option<u8> = None;
+                        let mut prev_arrival: Option<&ChunkArrivalStat> = None;
                         for a in arrivals {
                             if prev_elev.is_some() && a.elevation_number != prev_elev {
-                                for _ in 0..12 {
+                                for _ in 0..14 {
                                     ui.label("");
                                 }
                                 ui.end_row();
                             }
                             prev_elev = a.elevation_number;
-                            arrival_row(ui, a, label_color, value_color);
+                            arrival_row(ui, a, prev_arrival, label_color, value_color);
+                            prev_arrival = Some(a);
                         }
                     });
             }
@@ -505,6 +523,7 @@ fn render_snapshot(
 fn arrival_row(
     ui: &mut egui::Ui,
     a: &ChunkArrivalStat,
+    prev: Option<&ChunkArrivalStat>,
     label_color: egui::Color32,
     value_color: egui::Color32,
 ) {
@@ -551,12 +570,32 @@ fn arrival_row(
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
+    let act_int = prev.and_then(|p| a.actual_interval_secs(p));
     mono_label(
         ui,
-        &a.wait_after_last_empty_ms()
-            .map(|ms| format!("{ms:.0}ms"))
+        &act_int
+            .map(|s| format!("{s:.2}s"))
             .unwrap_or_else(|| "—".into()),
         value_color,
+    );
+    mono_label(
+        ui,
+        &a.predicted_wait_secs
+            .map(|s| format!("{s:.2}s"))
+            .unwrap_or_else(|| "—".into()),
+        value_color,
+    );
+    let int_err = prev.and_then(|p| a.interval_error_ms(p));
+    let int_err_color = match int_err {
+        Some(e) if e.abs() > 1000.0 => egui::Color32::from_rgb(220, 140, 60),
+        _ => value_color,
+    };
+    mono_label_color(
+        ui,
+        &int_err
+            .map(|ms| format!("{ms:+.0}ms"))
+            .unwrap_or_else(|| "—".into()),
+        int_err_color,
     );
     mono_label(
         ui,
@@ -607,6 +646,13 @@ fn grid_row(
         ui,
         &s.actual_duration()
             .map(|d| format!("{:+.2}s", d - s.predicted_duration))
+            .unwrap_or_else(|| "—".into()),
+        value_color,
+    );
+    mono_label(
+        ui,
+        &s.actual_start
+            .map(|a| format!("{:+.2}s", a - s.predicted_start))
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
@@ -786,6 +832,23 @@ struct BucketRow {
     median_wait_after_empty_ms: Option<f64>,
 }
 
+/// Collect per-chunk interval-prediction errors in collection space (ms).
+/// Walks pairs of consecutive arrivals; only contributes when both have a
+/// `collection_time_secs` and the later has a `predicted_wait_secs`.
+fn collect_interval_errors_ms(arrivals: &[ChunkArrivalStat]) -> Vec<f64> {
+    let mut out = Vec::new();
+    let mut prev: Option<&ChunkArrivalStat> = None;
+    for a in arrivals {
+        if let Some(p) = prev {
+            if let Some(e) = a.interval_error_ms(p) {
+                out.push(e);
+            }
+        }
+        prev = Some(a);
+    }
+    out
+}
+
 /// Per-bucket sample collector — one entry per bucket key seen.
 struct BucketAccum {
     bucket: BucketKey,
@@ -951,12 +1014,12 @@ pub fn serialize_forecast(
     // ── Per-elevation table ─────────────────────────────────────────
     let _ = writeln!(
         out,
-        "elv  ang    wf    used  src | pred_dur act_dur Δdur   | pred_ch act_ch Δch | timing status"
+        "elv  ang    wf    used  src | pred_dur act_dur Δdur   Δstart | pred_ch act_ch Δch | timing status"
     );
     for s in &snap.sweeps {
         let _ = writeln!(
             out,
-            "{:>3}  {:>5.2}  {:<4} {:>5.2} {:<3} | {:>6.1}s {:>6}s {:>5} | {:>6} {:>6} {:>3} | {:<6} {}",
+            "{:>3}  {:>5.2}  {:<4} {:>5.2} {:<3} | {:>6.1}s {:>6}s {:>5} {:>6} | {:>6} {:>6} {:>3} | {:<6} {}",
             s.elev_number,
             s.elev_angle,
             trim_str(&s.waveform, 4),
@@ -968,6 +1031,9 @@ pub fn serialize_forecast(
                 .unwrap_or_else(|| "—".into()),
             s.actual_duration()
                 .map(|d| format!("{:+.2}s", d - s.predicted_duration))
+                .unwrap_or_else(|| "—".into()),
+            s.actual_start
+                .map(|a| format!("{:+.2}s", a - s.predicted_start))
                 .unwrap_or_else(|| "—".into()),
             s.predicted_chunks
                 .map(|c| format!("{c}"))
@@ -1045,7 +1111,15 @@ pub fn serialize_forecast(
     if let Some((mean, median, max_abs)) = stats_on(&pred_errs) {
         let _ = writeln!(
             out,
-            "chunk_pred_err: mean={mean:+.2}s median={median:+.2}s max_abs={max_abs:.2}s"
+            "chunk_pred_err: mean={mean:+.2}s median={median:+.2}s max_abs={max_abs:.2}s  (availability-space)"
+        );
+    }
+    let interval_errs_ms = collect_interval_errors_ms(arrivals);
+    if let Some((mean, median, max_abs)) = stats_on(&interval_errs_ms) {
+        let _ = writeln!(
+            out,
+            "interval_err: mean={mean:+.0}ms median={median:+.0}ms max_abs={max_abs:.0}ms  (collection-space, n={}; positive = chunk took longer than predicted)",
+            interval_errs_ms.len()
         );
     }
     let wait_after_empty_ms: Vec<f64> = arrivals
@@ -1116,21 +1190,24 @@ pub fn serialize_forecast(
     if !arrivals.is_empty() {
         let _ = writeln!(
             out,
-            "chunk_arrivals  (path = hist|phys|legacy|start;  anchor = obs|median|default)"
+            "chunk_arrivals  (path = hist|phys|legacy|start;  anchor = obs|median|default;  Δint = act_int − pred_wait, collection-space)"
         );
         let _ = writeln!(
             out,
-            "  seq  type          elev        empty  bucket            stats_n  path    anchor   pred_err  wait_empty   lag_ms    physics"
+            "  seq  type          elev        empty  bucket            stats_n  path    anchor   pred_err  act_int  pred_wait    Δint     lag_ms    physics"
         );
         let mut prev_elev: Option<u8> = None;
+        let mut prev_arrival: Option<&ChunkArrivalStat> = None;
         for a in arrivals {
             if prev_elev.is_some() && a.elevation_number != prev_elev {
                 out.push('\n');
             }
             prev_elev = a.elevation_number;
+            let act_int = prev_arrival.and_then(|p| a.actual_interval_secs(p));
+            let int_err = prev_arrival.and_then(|p| a.interval_error_ms(p));
             let _ = writeln!(
                 out,
-                "  {:>3}  {:<12}  {:<10}  {:>5}  {:<16}  {:>7}  {:<6}  {:<7}  {:>8}  {:>10}  {:>7}  {}",
+                "  {:>3}  {:<12}  {:<10}  {:>5}  {:<16}  {:>7}  {:<6}  {:<7}  {:>8}  {:>7}  {:>9}  {:>8}  {:>7}  {}",
                 a.sequence,
                 a.chunk_type,
                 fmt_elev(a),
@@ -1149,14 +1226,21 @@ pub fn serialize_forecast(
                 a.prediction_error_secs()
                     .map(|e| format!("{e:+.2}s"))
                     .unwrap_or_else(|| "—".into()),
-                a.wait_after_last_empty_ms()
-                    .map(|ms| format!("{ms:.0}ms"))
+                act_int
+                    .map(|s| format!("{s:.2}s"))
+                    .unwrap_or_else(|| "—".into()),
+                a.predicted_wait_secs
+                    .map(|s| format!("{s:.2}s"))
+                    .unwrap_or_else(|| "—".into()),
+                int_err
+                    .map(|ms| format!("{ms:+.0}ms"))
                     .unwrap_or_else(|| "—".into()),
                 a.availability_lag_ms
                     .map(|ms| format!("{ms:+}ms"))
                     .unwrap_or_else(|| "—".into()),
                 fmt_physics(a.physics_breakdown.as_ref()),
             );
+            prev_arrival = Some(a);
         }
     }
 
