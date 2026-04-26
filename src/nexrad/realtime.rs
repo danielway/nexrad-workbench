@@ -435,6 +435,23 @@ async fn streaming_loop(
                 // sweep, not replacing the full volume.
                 skip_overlap_delete: true,
             });
+            // Why: chunk_projections is consumed by the worker fast-path to
+            // detect last-chunk-in-sweep. ChunkReceived is the only event
+            // that updates it on the main thread, so without this push the
+            // resumed sweep's chunks reach the worker with stale/None
+            // projections and finalize only on the next sweep's first chunk.
+            s.results.push(RealtimeResult::ChunkReceived {
+                chunks_in_volume: 1,
+                time_until_next: None,
+                is_volume_end: false,
+                fetch_latency_ms: 0.0,
+                projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
+                    &iter,
+                ),
+                projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
+                chunk_projections: build_chunk_projections(&iter),
+                arrival_stat: None,
+            });
         }
         ctx.request_repaint();
 
@@ -538,6 +555,18 @@ async fn streaming_loop(
                                 is_end: false,
                                 timestamp: current_scan_start_secs,
                                 skip_overlap_delete: false,
+                            });
+                            s.results.push(RealtimeResult::ChunkReceived {
+                                chunks_in_volume,
+                                time_until_next: None,
+                                is_volume_end: false,
+                                fetch_latency_ms: 0.0,
+                                projected_volume_end_available_at_secs:
+                                    get_projected_volume_end_available_at_secs(&iter),
+                                projected_volume_end_collection_secs: iter
+                                    .projected_volume_end_collection_secs(),
+                                chunk_projections: build_chunk_projections(&iter),
+                                arrival_stat: None,
                             });
                         }
                         ctx.request_repaint();
