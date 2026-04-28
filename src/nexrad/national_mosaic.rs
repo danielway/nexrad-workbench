@@ -3,9 +3,12 @@
 //! Fetches a CONUS base-reflectivity composite PNG (NOAA NCEP MRMS via
 //! GeoServer WMS) and makes it available as a GPU texture for painting
 //! under per-site radar data. Polls only while the layer is enabled;
-//! dropping the layer releases the texture and stops polling. Failed
-//! fetches back off so a broken endpoint does not retry every frame.
+//! dropping the layer releases the texture and stops polling. Each refresh
+//! routes through `crate::net::retry::with_retry`, so transient failures get
+//! a short burst of exponential-backoff retries instead of waiting for the
+//! full refresh interval to roll around.
 
+use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 use eframe::egui;
 use futures_channel::oneshot;
 use std::cell::RefCell;
@@ -34,11 +37,10 @@ const MOSAIC_URL: &str = concat!(
 const MOSAIC_BOUNDS: (f64, f64, f64, f64) = (-126.0, 24.0, -66.0, 50.0);
 
 /// How often to refetch while enabled (seconds). Matches source cadence.
+/// Applied for both successful and failed attempts — transient failures are
+/// already absorbed by `with_retry`'s in-burst backoff, so a persistent
+/// failure just means the next 120 s tick will retry.
 const REFRESH_INTERVAL_SECS: f64 = 120.0;
-
-/// Backoff after a failed fetch (seconds). Stops the per-frame retry storm
-/// that would otherwise hammer the endpoint when it returns errors.
-const FAILURE_BACKOFF_SECS: f64 = 300.0;
 
 enum FetchOutcome {
     Loaded {
@@ -54,10 +56,8 @@ enum FetchOutcome {
 pub struct NationalMosaic {
     texture: Option<egui::TextureHandle>,
     /// Timestamp (seconds) of the last attempt — successful or not. Used to
-    /// gate the next attempt against the success or failure interval.
+    /// gate the next attempt against `REFRESH_INTERVAL_SECS`.
     last_attempt_ts: Option<f64>,
-    /// True if the most recent attempt failed; controls which interval applies.
-    last_attempt_failed: bool,
     in_flight: Rc<RefCell<bool>>,
     sender: Sender<FetchOutcome>,
     receiver: Receiver<FetchOutcome>,
@@ -69,7 +69,6 @@ impl Default for NationalMosaic {
         Self {
             texture: None,
             last_attempt_ts: None,
-            last_attempt_failed: false,
             in_flight: Rc::new(RefCell::new(false)),
             sender,
             receiver,
@@ -86,7 +85,6 @@ impl NationalMosaic {
             if self.texture.is_some() || self.last_attempt_ts.is_some() {
                 self.texture = None;
                 self.last_attempt_ts = None;
-                self.last_attempt_failed = false;
             }
             while self.receiver.try_recv().is_ok() {}
             return;
@@ -99,11 +97,9 @@ impl NationalMosaic {
                         ctx.load_texture("national_mosaic", image, egui::TextureOptions::LINEAR);
                     self.texture = Some(handle);
                     self.last_attempt_ts = Some(fetched_at);
-                    self.last_attempt_failed = false;
                 }
                 FetchOutcome::Failed { attempted_at } => {
                     self.last_attempt_ts = Some(attempted_at);
-                    self.last_attempt_failed = true;
                 }
             }
         }
@@ -113,14 +109,9 @@ impl NationalMosaic {
         }
 
         let now = js_sys::Date::now() / 1000.0;
-        let interval = if self.last_attempt_failed {
-            FAILURE_BACKOFF_SECS
-        } else {
-            REFRESH_INTERVAL_SECS
-        };
         let due = match self.last_attempt_ts {
             None => true,
-            Some(ts) => now - ts >= interval,
+            Some(ts) => now - ts >= REFRESH_INTERVAL_SECS,
         };
         if !due {
             return;
@@ -131,13 +122,27 @@ impl NationalMosaic {
         let in_flight = self.in_flight.clone();
         let ctx_clone = ctx.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let outcome = match fetch_and_decode(MOSAIC_URL).await {
+            let outcome = match with_retry(&DEFAULT_POLICY, "national_mosaic", |_attempt| async {
+                match fetch_and_decode(MOSAIC_URL).await {
+                    Ok(image) => Verdict::Ok(image),
+                    Err(e) => {
+                        // The HtmlImageElement load API doesn't surface HTTP
+                        // status codes, so we can't distinguish 4xx from 5xx
+                        // from network failure. Treat all errors as transient
+                        // and let the policy's attempt budget bound it.
+                        log::debug!("National mosaic fetch attempt failed: {}", e);
+                        Verdict::Retry { after: None }
+                    }
+                }
+            })
+            .await
+            {
                 Ok(image) => FetchOutcome::Loaded {
                     image,
                     fetched_at: js_sys::Date::now() / 1000.0,
                 },
-                Err(e) => {
-                    log::warn!("National mosaic fetch failed: {}", e);
+                Err(msg) => {
+                    log::warn!("National mosaic fetch failed: {}", msg);
                     FetchOutcome::Failed {
                         attempted_at: js_sys::Date::now() / 1000.0,
                     }

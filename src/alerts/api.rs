@@ -10,6 +10,7 @@ use wasm_bindgen_futures::JsFuture;
 
 use super::channel::{AlertsChannel, AlertsEvent};
 use super::parse::parse_response;
+use crate::net::retry::{parse_retry_after, with_retry, Verdict, DEFAULT_POLICY};
 
 /// Endpoint for currently-active alerts across the US. The API returns
 /// GeoJSON; the `Accept` header requests the weather.gov content type.
@@ -48,14 +49,29 @@ enum FetchOutcome {
 }
 
 async fn fetch_inner(if_none_match: Option<String>) -> Result<FetchOutcome, String> {
-    let window = web_sys::window().ok_or_else(|| "no window".to_string())?;
+    with_retry(&DEFAULT_POLICY, "alerts", |_attempt| {
+        let etag = if_none_match.clone();
+        async move { fetch_attempt(etag).await }
+    })
+    .await
+}
+
+/// Run a single fetch attempt and classify its outcome.
+async fn fetch_attempt(if_none_match: Option<String>) -> Verdict<FetchOutcome> {
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return Verdict::Terminal("no window".into()),
+    };
 
     // Build a Request with the custom headers we need.
     let init = web_sys::RequestInit::new();
     init.set_method("GET");
     init.set_mode(web_sys::RequestMode::Cors);
 
-    let headers = web_sys::Headers::new().map_err(|_| "failed to allocate headers".to_string())?;
+    let headers = match web_sys::Headers::new() {
+        Ok(h) => h,
+        Err(_) => return Verdict::Terminal("failed to allocate headers".into()),
+    };
     let _ = headers.set("Accept", ACCEPT);
     let _ = headers.set("User-Agent", USER_AGENT);
     if let Some(etag) = if_none_match.as_ref() {
@@ -63,38 +79,64 @@ async fn fetch_inner(if_none_match: Option<String>) -> Result<FetchOutcome, Stri
     }
     init.set_headers(&JsValue::from(headers));
 
-    let request = web_sys::Request::new_with_str_and_init(ALERTS_URL, &init)
-        .map_err(|e| format!("request init failed: {:?}", e))?;
+    let request = match web_sys::Request::new_with_str_and_init(ALERTS_URL, &init) {
+        Ok(r) => r,
+        Err(e) => return Verdict::Terminal(format!("request init failed: {:?}", e)),
+    };
 
-    let resp_value = JsFuture::from(window.fetch_with_request(&request))
-        .await
-        .map_err(|e| format!("network error: {}", err_text(e)))?;
+    // Network-layer error (DNS, connection refused, CORS preflight failure, …)
+    // is retryable.
+    let resp_value = match JsFuture::from(window.fetch_with_request(&request)).await {
+        Ok(v) => v,
+        Err(e) => {
+            log::debug!("alerts: network error: {}", err_text(e));
+            return Verdict::Retry { after: None };
+        }
+    };
 
-    let resp: web_sys::Response = resp_value
-        .dyn_into()
-        .map_err(|_| "invalid response object".to_string())?;
+    let resp: web_sys::Response = match resp_value.dyn_into() {
+        Ok(r) => r,
+        Err(_) => return Verdict::Terminal("invalid response object".into()),
+    };
 
     let status = resp.status();
     if status == 304 {
-        return Ok(FetchOutcome::NotModified);
+        return Verdict::Ok(FetchOutcome::NotModified);
+    }
+    if status == 408 || status == 429 || (500..=599).contains(&status) {
+        let after = resp
+            .headers()
+            .get("Retry-After")
+            .ok()
+            .flatten()
+            .and_then(|s| parse_retry_after(&s));
+        return Verdict::Retry { after };
     }
     if !resp.ok() {
-        return Err(format!("HTTP {}", status));
+        return Verdict::Terminal(format!("HTTP {}", status));
     }
 
     let etag = resp.headers().get("ETag").ok().flatten();
 
-    let text_promise = resp
-        .text()
-        .map_err(|e| format!("failed to read body: {}", err_text(e)))?;
-    let text_value = JsFuture::from(text_promise)
-        .await
-        .map_err(|e| format!("failed to read body: {}", err_text(e)))?;
-    let body = text_value
-        .as_string()
-        .ok_or_else(|| "body not a string".to_string())?;
+    let text_promise = match resp.text() {
+        Ok(p) => p,
+        Err(e) => return Verdict::Terminal(format!("failed to read body: {}", err_text(e))),
+    };
+    let text_value = match JsFuture::from(text_promise).await {
+        Ok(v) => v,
+        Err(e) => {
+            // Body read failure mid-stream — same network-class issue as the
+            // initial fetch, retry it.
+            log::debug!("alerts: body read error: {}", err_text(e));
+            return Verdict::Retry { after: None };
+        }
+    };
+    let body = match text_value.as_string() {
+        Some(s) => s,
+        None => return Verdict::Terminal("body not a string".into()),
+    };
 
-    Ok(FetchOutcome::Updated { body, etag })
+    Verdict::Ok(FetchOutcome::Updated { body, etag })
 }
 
 fn err_text(v: JsValue) -> String {
