@@ -340,13 +340,16 @@ async fn streaming_loop(
     // early → empty poll → sleep 500ms → fire" path on chunks whose
     // predictions are tight. Retry waits are unaffected.
     //
-    // Sized to cover the ~300 ms of WASM/setTimeout slop plus a small margin
-    // for prediction bias. Previously bumped to 600 ms as a blunt hedge for
-    // sweep-transition mispredictions; the proper fix for those lives in the
-    // timing model + historical-stats lookup, so this can stay modest and
-    // avoid adding latency to the ~90% of chunks that are intra-sweep and
-    // predicted accurately.
-    const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 400;
+    // Sized from observed availability-space prediction error: across all
+    // buckets in a representative VCP 212 volume, scheduler predictions ran
+    // ~900 ms early in availability-space (collection-space prediction is
+    // accurate; the residual is S3-availability lag the projector under-
+    // estimates). `wait_after_last_empty_ms` clusters tightly at ~670 ms,
+    // confirming that when we fire early we miss by roughly one poll cycle.
+    // 750 ms covers the typical case while leaving outliers (one-chunk lag
+    // spikes) to the existing retry path. The deeper fix is per-bucket lag
+    // in the projector and an EWMA on lag history.
+    const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 750;
 
     let hint = get_cached_volume(&site_id);
     let init_future = acquire_streaming_state(&site_id, hint);
