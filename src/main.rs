@@ -13,6 +13,7 @@
 mod alerts;
 mod data;
 mod geo;
+mod net;
 mod nexrad;
 mod state;
 mod ui;

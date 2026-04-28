@@ -17,6 +17,9 @@ use std::time::Duration;
 use eframe::egui;
 
 use crate::data::facade::DataFacade;
+use crate::net::retry::{
+    attempt_with_timeout, compute_delay, sleep_duration, Verdict, REALTIME_CHUNK_POLICY,
+};
 
 /// Projected timing and structural info for a single chunk in the volume.
 ///
@@ -332,13 +335,10 @@ async fn streaming_loop(
     // the timeout wins the select, the init future is dropped, which drops any
     // in-flight HTTP request futures and cancels them.
     const ACQUIRE_TIMEOUT_SECS: u32 = 10;
-    const CHUNK_POLL_INTERVAL_MS: u32 = 500;
-    const CHUNK_POLL_MAX_RETRIES: u32 = 25; // 25 × 500ms = 12.5s
-    const CHUNK_POLL_GRACE_MS: u32 = 2500; // 2.5s final grace → 15s total
 
     // Pad added to the first poll wait per chunk; collapses the "fire a hair
-    // early → empty poll → sleep 500ms → fire" path on chunks whose
-    // predictions are tight. Retry waits are unaffected.
+    // early → empty poll → backoff → fire" path on chunks whose predictions
+    // are tight. Retry waits are governed by `REALTIME_CHUNK_POLICY`.
     //
     // Sized from observed availability-space prediction error: across all
     // buckets in a representative VCP 212 volume, scheduler predictions ran
@@ -710,9 +710,8 @@ async fn streaming_loop(
             let mut wait_ms = wait_duration.as_millis() as u32;
             // Pad the first (prediction-driven) wait per chunk so we fire
             // slightly after `predicted_available_at`. Retry waits after an
-            // empty poll come through `sleep_ms(CHUNK_POLL_INTERVAL_MS)` in
-            // the `Ok(None)` arm, not here, so the pad applies exactly once
-            // per chunk.
+            // empty poll come through the `REALTIME_CHUNK_POLICY` backoff
+            // loop below, not here, so the pad applies exactly once per chunk.
             if is_first_iter_for_chunk && wait_ms > 0 {
                 wait_ms = wait_ms.saturating_add(POLL_DELAY_AFTER_PREDICTED_MS);
             }
@@ -722,10 +721,64 @@ async fn streaming_loop(
             }
         }
 
-        // Fetch next chunk (with timing)
+        // Fetch next chunk. The first attempt fires at the timing-prediction
+        // sleep above; if it returns 404 (chunk not yet published) or a
+        // transient transport error, the loop below applies the standard
+        // exponential-backoff-with-jitter policy from `REALTIME_CHUNK_POLICY`.
+        // The retry loop is inlined (rather than going through `with_retry`)
+        // because each attempt borrows `iter` mutably and the resulting Future
+        // can't escape an `FnMut` closure body.
         let chunk_fetch_start = web_time::Instant::now();
-        match iter.try_next().await {
-            Ok(Some(chunk)) => {
+        let policy = &REALTIME_CHUNK_POLICY;
+        let mut last_msg: Option<String> = None;
+        let fetch_outcome: Result<nexrad_data::aws::realtime::DownloadedChunk, String> = 'retry: {
+            for attempt in 1..=policy.max_attempts {
+                if state.borrow().stop_requested {
+                    break 'retry Err("stopped".into());
+                }
+                if attempt > 1 {
+                    none_retries = attempt - 1;
+                    cur_last_empty_at = Some(current_timestamp_f64());
+                }
+                let verdict = attempt_with_timeout(
+                    async { classify_chunk_result(iter.try_next().await) },
+                    policy.per_attempt_timeout,
+                )
+                .await;
+                match verdict {
+                    Verdict::Ok(c) => break 'retry Ok(c),
+                    Verdict::Terminal(m) => break 'retry Err(m),
+                    Verdict::Retry { after } => {
+                        last_msg = Some(format!("attempt {} empty/transient", attempt));
+                        if attempt >= policy.max_attempts {
+                            break;
+                        }
+                        let elapsed = chunk_fetch_start.elapsed();
+                        if elapsed >= policy.total_budget {
+                            break 'retry Err(format!(
+                                "chunk_fetch: budget {}s exhausted after {} attempts",
+                                policy.total_budget.as_secs(),
+                                attempt
+                            ));
+                        }
+                        let mut delay = compute_delay(policy, attempt, after);
+                        let remaining = policy.total_budget.saturating_sub(elapsed);
+                        if delay > remaining {
+                            delay = remaining;
+                        }
+                        sleep_duration(delay).await;
+                    }
+                }
+            }
+            Err(format!(
+                "chunk_fetch: gave up after {} attempts ({})",
+                policy.max_attempts,
+                last_msg.as_deref().unwrap_or("retry exhausted")
+            ))
+        };
+
+        match fetch_outcome {
+            Ok(chunk) => {
                 let chunk_fetch_ms = chunk_fetch_start.elapsed().as_secs_f64() * 1000.0;
                 let success_at = current_timestamp_f64();
                 stats_tracker.update(&stats, &iter);
@@ -875,64 +928,10 @@ async fn streaming_loop(
 
                 ctx.request_repaint();
             }
-            Ok(None) => {
-                // Chunk not ready yet, brief retry
-                none_retries += 1;
-                cur_last_empty_at = Some(current_timestamp_f64());
-                if none_retries >= CHUNK_POLL_MAX_RETRIES {
-                    let elapsed_secs =
-                        (none_retries * CHUNK_POLL_INTERVAL_MS + CHUNK_POLL_GRACE_MS) / 1000;
-                    log::warn!(
-                        "Streaming: {} consecutive empty polls, attempting final fetch after {}ms delay",
-                        none_retries,
-                        CHUNK_POLL_GRACE_MS,
-                    );
-                    sleep_ms(CHUNK_POLL_GRACE_MS).await;
-                    if state.borrow().stop_requested {
-                        break;
-                    }
-                    match iter.try_next().await {
-                        Ok(Some(_chunk)) => {
-                            // Recovered — let the next loop iteration handle it normally.
-                            // Reset the per-chunk tracking so the next successful fetch
-                            // emits a fresh ChunkArrivalStat (the discarded chunk here
-                            // is an existing quirk of the recovery path).
-                            none_retries = 0;
-                            cur_predicted_at = None;
-                            cur_last_empty_at = None;
-                            cur_diagnostics = None;
-                            continue;
-                        }
-                        Ok(None) => {
-                            log::error!(
-                                "Streaming: final retry still empty after ~{}s, giving up",
-                                elapsed_secs
-                            );
-                            let mut s = state.borrow_mut();
-                            s.results.push(RealtimeResult::Error(format!(
-                                "Chunk polling timed out — no data received for ~{} seconds",
-                                elapsed_secs
-                            )));
-                            s.active = false;
-                            ctx.request_repaint();
-                            break;
-                        }
-                        Err(e) => {
-                            log::error!("Streaming error on final retry: {}", e);
-                            let mut s = state.borrow_mut();
-                            s.results.push(RealtimeResult::Error(format!("{}", e)));
-                            s.active = false;
-                            ctx.request_repaint();
-                            break;
-                        }
-                    }
-                }
-                sleep_ms(CHUNK_POLL_INTERVAL_MS).await;
-            }
-            Err(e) => {
-                log::error!("Streaming error: {}", e);
+            Err(msg) => {
+                log::error!("Streaming error: {}", msg);
                 let mut s = state.borrow_mut();
-                s.results.push(RealtimeResult::Error(format!("{}", e)));
+                s.results.push(RealtimeResult::Error(msg));
                 s.active = false;
                 ctx.request_repaint();
                 break;
@@ -941,6 +940,31 @@ async fn streaming_loop(
     }
 
     state.borrow_mut().active = false;
+}
+
+/// Map a `nexrad-data` chunk-fetch result to a retry [`Verdict`].
+///
+/// `Ok(None)` (S3 returned 404 — chunk not yet published) is treated as a
+/// retryable miss in this call site, since real-time chunks land seconds late
+/// by design. Transport-layer errors are also retryable; data-decoding and
+/// identifier errors are terminal.
+fn classify_chunk_result(
+    result: nexrad_data::result::Result<Option<nexrad_data::aws::realtime::DownloadedChunk>>,
+) -> Verdict<nexrad_data::aws::realtime::DownloadedChunk> {
+    use nexrad_data::result::aws::AWSError;
+    use nexrad_data::result::Error;
+    match result {
+        Ok(Some(chunk)) => Verdict::Ok(chunk),
+        Ok(None) => Verdict::Retry { after: None },
+        Err(Error::AWS(
+            AWSError::S3GetObjectRequest(_)
+            | AWSError::S3GetObject(_)
+            | AWSError::S3Streaming(_)
+            | AWSError::S3ListObjects(_)
+            | AWSError::TruncatedListObjectsResponse,
+        )) => Verdict::Retry { after: None },
+        Err(e) => Verdict::Terminal(format!("{}", e)),
+    }
 }
 
 /// Sleep in increments, updating countdown UI and checking stop flag.

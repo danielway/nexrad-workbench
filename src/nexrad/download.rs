@@ -6,6 +6,7 @@
 use super::archive_index::{current_timestamp_secs, ArchiveFileMeta, ArchiveListing};
 use super::types::{CachedScan, DownloadResult};
 use crate::data::{DataFacade, ScanCompleteness, ScanKey};
+use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 use chrono::NaiveDate;
 use eframe::egui;
 use std::cell::RefCell;
@@ -229,19 +230,16 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
 
     log::debug!("Fetching archive listing for {}/{}", site_id, date);
 
-    let files = match with_timeout(
-        archive::list_files(site_id, &date),
-        REQUEST_TIMEOUT_MS,
-        "Archive listing",
-    )
+    let site_owned = site_id.to_string();
+    let files = match with_retry(&DEFAULT_POLICY, "archive_list", |_attempt| {
+        let s = site_owned.clone();
+        async move { classify_nexrad_result(archive::list_files(&s, &date).await) }
+    })
     .await
     {
-        Ok(Ok(files)) => files,
-        Ok(Err(e)) => {
-            return ListingResult::Error(format!("Failed to list files: {}", e));
-        }
-        Err(timeout_msg) => {
-            return ListingResult::Error(timeout_msg);
+        Ok(files) => files,
+        Err(msg) => {
+            return ListingResult::Error(format!("Failed to list files: {}", msg));
         }
     };
 
@@ -277,46 +275,26 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
     }
 }
 
-/// Timeout duration for individual network requests (listing + download).
-const REQUEST_TIMEOUT_MS: u32 = 30_000; // 30 seconds
-
-/// Run a future with a timeout. Returns `Err(msg)` if the timeout fires first.
-async fn with_timeout<T>(
-    future: impl std::future::Future<Output = T>,
-    timeout_ms: u32,
-    label: &str,
-) -> Result<T, String> {
-    let label = label.to_string();
-    let timeout = async {
-        sleep_ms(timeout_ms).await;
-    };
-
-    futures_util::pin_mut!(future);
-    futures_util::pin_mut!(timeout);
-
-    match futures_util::future::select(future, timeout).await {
-        futures_util::future::Either::Left((val, _)) => Ok(val),
-        futures_util::future::Either::Right(_) => {
-            Err(format!("{} timed out after {}s", label, timeout_ms / 1000))
-        }
+/// Map a `nexrad-data` archive result to a retry [`Verdict`].
+///
+/// Transport-layer S3 errors (network failures, 5xx, mid-stream errors,
+/// truncated lists) are retryable. Everything else — including `S3ObjectNotFound`
+/// (404), which means the file genuinely does not exist in the archive — is
+/// terminal.
+fn classify_nexrad_result<T>(result: nexrad_data::result::Result<T>) -> Verdict<T> {
+    use nexrad_data::result::aws::AWSError;
+    use nexrad_data::result::Error;
+    match result {
+        Ok(v) => Verdict::Ok(v),
+        Err(Error::AWS(
+            AWSError::S3GetObjectRequest(_)
+            | AWSError::S3GetObject(_)
+            | AWSError::S3Streaming(_)
+            | AWSError::S3ListObjects(_)
+            | AWSError::TruncatedListObjectsResponse,
+        )) => Verdict::Retry { after: None },
+        Err(e) => Verdict::Terminal(format!("{}", e)),
     }
-}
-
-async fn sleep_ms(ms: u32) {
-    use wasm_bindgen::prelude::*;
-
-    #[wasm_bindgen]
-    extern "C" {
-        #[wasm_bindgen(js_name = setTimeout)]
-        fn set_timeout(closure: &Closure<dyn FnMut()>, millis: u32) -> i32;
-    }
-
-    let (tx, rx) = futures_channel::oneshot::channel::<()>();
-    let closure = Closure::once(move || {
-        let _ = tx.send(());
-    });
-    set_timeout(&closure, ms);
-    let _ = rx.await;
 }
 
 /// Downloads a specific file from the archive.
@@ -344,28 +322,21 @@ async fn download_specific_file(
 
     // Request 1: List files to find the one we want
     stats.request_started();
-    let files = match with_timeout(
-        archive::list_files(site_id, &date),
-        REQUEST_TIMEOUT_MS,
-        "Archive listing",
-    )
+    let site_owned = site_id.to_string();
+    let files = match with_retry(&DEFAULT_POLICY, "archive_list", |_attempt| {
+        let s = site_owned.clone();
+        async move { classify_nexrad_result(archive::list_files(&s, &date).await) }
+    })
     .await
     {
-        Ok(Ok(files)) => {
+        Ok(files) => {
             stats.request_completed(0);
             files
         }
-        Ok(Err(e)) => {
+        Err(msg) => {
             stats.request_completed(0);
             return DownloadResult::Error {
-                message: format!("Failed to list files: {}", e),
-                scan_start: timestamp,
-            };
-        }
-        Err(timeout_msg) => {
-            stats.request_completed(0);
-            return DownloadResult::Error {
-                message: timeout_msg,
+                message: format!("Failed to list files: {}", msg),
                 scan_start: timestamp,
             };
         }
@@ -385,25 +356,17 @@ async fn download_specific_file(
     // Request 2: Download the file
     stats.request_started();
     let fetch_start = web_time::Instant::now();
-    let file = match with_timeout(
-        archive::download_file(file_meta),
-        REQUEST_TIMEOUT_MS,
-        "File download",
-    )
+    let file = match with_retry(&DEFAULT_POLICY, "archive_download", |_attempt| {
+        let id = file_meta.clone();
+        async move { classify_nexrad_result(archive::download_file(id).await) }
+    })
     .await
     {
-        Ok(Ok(file)) => file,
-        Ok(Err(e)) => {
+        Ok(file) => file,
+        Err(msg) => {
             stats.request_completed(0);
             return DownloadResult::Error {
-                message: format!("Download failed: {}", e),
-                scan_start: timestamp,
-            };
-        }
-        Err(timeout_msg) => {
-            stats.request_completed(0);
-            return DownloadResult::Error {
-                message: timeout_msg,
+                message: format!("Download failed: {}", msg),
                 scan_start: timestamp,
             };
         }
