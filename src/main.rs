@@ -244,6 +244,7 @@ impl WorkbenchApp {
 
         // Apply URL parameters (site, time, lat/lon)
         let url_params = state::url_state::parse_from_url();
+        state.dev_mode = url_params.dev;
         if let Some(ref site) = url_params.site {
             state.viz_state.site_id = site.to_uppercase();
             if let Some(site_info) = data::sites::get_site(site) {
@@ -465,7 +466,9 @@ impl WorkbenchApp {
                 sms
             },
             event_modal_state: ui::EventModalState::default(),
-            network_monitor: nexrad::NetworkMonitor::new(),
+            // Lazily initialized when dev mode is enabled (at startup if the
+            // URL has `dev=true`, or when the user toggles it on later).
+            network_monitor: None,
             playback_manager: PlaybackManager::new(),
             alerts_manager: alerts::AlertsManager::new(),
             scrub_cache: ScrubCache::default(),
@@ -476,6 +479,12 @@ impl WorkbenchApp {
         app.state.cross_origin_isolated = nexrad::is_cross_origin_isolated();
         if !app.state.cross_origin_isolated {
             log::warn!("Not cross-origin isolated: SharedArrayBuffer unavailable");
+        }
+
+        // Attach the service-worker network monitor only in dev mode. When
+        // toggled on later, `update_network_stats` will lazily attach it.
+        if app.state.dev_mode {
+            app.network_monitor = nexrad::NetworkMonitor::new();
         }
 
         app
@@ -1074,9 +1083,11 @@ impl WorkbenchApp {
                 chunk_projections,
                 arrival_stat,
             } => {
-                self.state
-                    .session_stats
-                    .record_fetch_latency(fetch_latency_ms);
+                if self.state.dev_mode {
+                    self.state
+                        .session_stats
+                        .record_fetch_latency(fetch_latency_ms);
+                }
                 log::debug!(
                     "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?} proj_end={:?}",
                     chunks_in_volume,
@@ -1211,9 +1222,11 @@ impl WorkbenchApp {
     /// Per-frame bookkeeping: record stats, apply theme, recompute staleness,
     /// update storm cells, and detect site changes.
     fn apply_frame_setup(&mut self, ctx: &egui::Context) {
-        // Record frame time for FPS meter
-        let dt = ctx.input(|i| i.stable_dt);
-        self.state.session_stats.record_frame_time(dt);
+        // Record frame time for FPS meter (dev mode only)
+        if self.state.dev_mode {
+            let dt = ctx.input(|i| i.stable_dt);
+            self.state.session_stats.record_frame_time(dt);
+        }
 
         // Resolve theme and apply egui visuals
         self.state.is_dark = self.state.theme_mode.is_dark();
@@ -1540,22 +1553,24 @@ impl WorkbenchApp {
             result.context.fetch_latency_ms,
         );
 
-        self.state
-            .session_stats
-            .record_fetch_latency(result.context.fetch_latency_ms);
-        self.state
-            .session_stats
-            .record_processing_time(result.total_ms);
+        if self.state.dev_mode {
+            self.state
+                .session_stats
+                .record_fetch_latency(result.context.fetch_latency_ms);
+            self.state
+                .session_stats
+                .record_processing_time(result.total_ms);
 
-        // Store detailed ingest timing for the detail modal.
-        self.state.session_stats.last_ingest_detail = Some(crate::state::IngestTimingDetail {
-            split_ms: result.split_ms,
-            decompress_ms: result.decompress_ms,
-            decode_ms: result.decode_ms,
-            extract_ms: result.extract_ms,
-            store_ms: result.store_ms,
-            index_ms: result.index_ms,
-        });
+            // Store detailed ingest timing for the detail modal.
+            self.state.session_stats.last_ingest_detail = Some(crate::state::IngestTimingDetail {
+                split_ms: result.split_ms,
+                decompress_ms: result.decompress_ms,
+                decode_ms: result.decode_ms,
+                extract_ms: result.extract_ms,
+                store_ms: result.store_ms,
+                index_ms: result.index_ms,
+            });
+        }
 
         // Track the scan for render requests
         self.render
@@ -1931,7 +1946,9 @@ impl WorkbenchApp {
             result.total_ms,
         );
 
-        self.state.session_stats.record_render_time(result.total_ms);
+        if self.state.dev_mode {
+            self.state.session_stats.record_render_time(result.total_ms);
+        }
 
         // Cache decoded data for stateless sweep animation
         let result_sweep_id = sweep_cache_key(
@@ -2022,13 +2039,15 @@ impl WorkbenchApp {
         }
         let gpu_upload_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
 
-        // Store detailed render timing for the detail modal.
-        self.state.session_stats.last_render_detail = Some(crate::state::RenderTimingDetail {
-            fetch_ms: result.fetch_ms,
-            deser_ms: result.deser_ms,
-            marshal_ms: result.marshal_ms,
-            gpu_upload_ms,
-        });
+        // Store detailed render timing for the detail modal (dev mode only).
+        if self.state.dev_mode {
+            self.state.session_stats.last_render_detail = Some(crate::state::RenderTimingDetail {
+                fetch_ms: result.fetch_ms,
+                deser_ms: result.deser_ms,
+                marshal_ms: result.marshal_ms,
+                gpu_upload_ms,
+            });
+        }
 
         // GPU upload complete.
         self.state.session_stats.pipeline.mark_render_done();
@@ -2277,12 +2296,14 @@ impl WorkbenchApp {
                 fetch_latency_ms,
                 decode_latency_ms,
             } => {
-                self.state
-                    .session_stats
-                    .record_fetch_latency(*fetch_latency_ms);
-                self.state
-                    .session_stats
-                    .record_processing_time(*decode_latency_ms);
+                if self.state.dev_mode {
+                    self.state
+                        .session_stats
+                        .record_fetch_latency(*fetch_latency_ms);
+                    self.state
+                        .session_stats
+                        .record_processing_time(*decode_latency_ms);
+                }
                 (Some(scan), false)
             }
             nexrad::DownloadResult::CacheHit(scan) => (Some(scan), true),
@@ -2998,6 +3019,15 @@ impl WorkbenchApp {
         self.state
             .session_stats
             .update_from_network_stats(&network_stats);
+
+        // Service worker metrics are only collected in dev mode. Lazily
+        // attach the listener the first time dev mode becomes active.
+        if !self.state.dev_mode {
+            return;
+        }
+        if self.network_monitor.is_none() {
+            self.network_monitor = nexrad::NetworkMonitor::new();
+        }
 
         // Drain service worker network metrics into app state
         if let Some(ref monitor) = self.network_monitor {

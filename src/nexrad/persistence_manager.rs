@@ -81,6 +81,7 @@ impl PersistenceManager {
             state.viz_state.center_lat,
             state.viz_state.center_lon,
             &view,
+            state.dev_mode,
         );
 
         // Save user preferences if changed (piggyback on URL throttle)

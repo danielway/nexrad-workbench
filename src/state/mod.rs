@@ -190,6 +190,11 @@ pub struct AppState {
     /// Whether to display times in local timezone (false = UTC).
     pub use_local_time: bool,
 
+    /// Developer mode: shows perf timings, FPS, network metrics, and the COI
+    /// badge in the status bar, and enables the code paths that feed them.
+    /// Mirrored to/from the `?dev=true` URL parameter.
+    pub dev_mode: bool,
+
     /// Whether the stats detail popup is open.
     pub stats_detail_open: bool,
 

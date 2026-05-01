@@ -98,7 +98,10 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
 
-    let drawer_expanded = state.acquisition.drawer_expanded;
+    // The acquisition drawer is reachable only via the dev-mode-only network
+    // metric label. Force it closed when dev mode is off so a previously
+    // expanded drawer doesn't linger after the user toggles dev off.
+    let drawer_expanded = state.dev_mode && state.acquisition.drawer_expanded;
     let controls_height = 104.0;
     let top_bar_height = 36.0;
     let min_central_height = 100.0;

@@ -79,6 +79,8 @@ pub struct UrlParams {
     pub lat: Option<f64>,
     pub lon: Option<f64>,
     pub view: ViewState,
+    /// Developer mode flag — `true` only when `?dev=true` is present.
+    pub dev: bool,
 }
 
 /// Parse URL query parameters from the current browser URL.
@@ -90,6 +92,7 @@ pub fn parse_from_url() -> UrlParams {
         lat: None,
         lon: None,
         view: ViewState::default(),
+        dev: false,
     };
 
     let Ok(search) = web_sys::window().expect("no window").location().search() else {
@@ -118,6 +121,7 @@ pub fn parse_from_url() -> UrlParams {
                     }
                 }
             }
+            "dev" => params.dev = value == "true",
             _ => {}
         }
     }
@@ -126,14 +130,28 @@ pub fn parse_from_url() -> UrlParams {
 }
 
 /// Push current state to the URL query string using `replaceState`.
-pub fn push_to_url(site: &str, time: f64, product: &str, lat: f64, lon: f64, view: &ViewState) {
+///
+/// `dev` is appended as `&dev=true` only when true; when false the parameter
+/// is omitted so off-mode URLs stay clean.
+pub fn push_to_url(
+    site: &str,
+    time: f64,
+    product: &str,
+    lat: f64,
+    lon: f64,
+    view: &ViewState,
+    dev: bool,
+) {
     let v_json = serde_json::to_vec(view).unwrap_or_default();
     let v_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&v_json);
 
-    let query = format!(
+    let mut query = format!(
         "?site={}&t={:.0}&product={}&lat={:.4}&lon={:.4}&v={}",
         site, time, product, lat, lon, v_b64
     );
+    if dev {
+        query.push_str("&dev=true");
+    }
 
     let window = web_sys::window().expect("no window");
     let history = window.history().expect("no history");

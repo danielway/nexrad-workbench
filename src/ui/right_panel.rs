@@ -39,7 +39,22 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
                 ui.add_space(5.0);
 
                 render_storage_section(ui, state);
+                ui.add_space(5.0);
+
+                render_developer_section(ui, state);
             });
+        });
+}
+
+fn render_developer_section(ui: &mut egui::Ui, state: &mut AppState) {
+    egui::CollapsingHeader::new(RichText::new("Developer").strong())
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.checkbox(&mut state.dev_mode, "Developer mode")
+                .on_hover_text(
+                    "Show network metrics, pipeline timings, FPS, and the COI badge \
+                     in the status bar. Adds ?dev=true to the URL when enabled.",
+                );
         });
 }
 
