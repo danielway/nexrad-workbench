@@ -1228,16 +1228,22 @@ impl WorkbenchApp {
             self.state.session_stats.record_frame_time(dt);
         }
 
-        // Resolve theme and apply egui visuals
+        // Resolve theme and apply egui visuals. The `Visuals` struct is
+        // cloned into the egui context on each `set_visuals` call, so guard
+        // against the per-frame allocation+copy when the resolved theme
+        // hasn't changed.
         self.state.is_dark = self.state.theme_mode.is_dark();
-        if self.state.is_dark {
-            let mut visuals = egui::Visuals::dark();
-            visuals.panel_fill = egui::Color32::BLACK;
-            visuals.window_fill = egui::Color32::BLACK;
-            visuals.extreme_bg_color = egui::Color32::BLACK;
-            ctx.set_visuals(visuals);
-        } else {
-            ctx.set_visuals(egui::Visuals::light());
+        if self.state.render_cache.last_dark != Some(self.state.is_dark) {
+            if self.state.is_dark {
+                let mut visuals = egui::Visuals::dark();
+                visuals.panel_fill = egui::Color32::BLACK;
+                visuals.window_fill = egui::Color32::BLACK;
+                visuals.extreme_bg_color = egui::Color32::BLACK;
+                ctx.set_visuals(visuals);
+            } else {
+                ctx.set_visuals(egui::Visuals::light());
+            }
+            self.state.render_cache.last_dark = Some(self.state.is_dark);
         }
 
         // Recompute data staleness every frame against wall-clock time.
@@ -2840,14 +2846,30 @@ impl WorkbenchApp {
 
         let is_auto = self.state.viz_state.elevation_selection.is_auto();
 
-        // Determine which sweep should be the previous-sweep under-layer.
-        let prev_info = PlaybackManager::find_prev_sweep(
-            &self.state.radar_timeline,
-            playback_ts,
+        // Cache the previous-sweep search by its inputs. When the user is
+        // paused on the same sweep frame after frame, the timeline walk in
+        // `find_prev_sweep` becomes a no-op cache hit.
+        let cache_key = state::PrevSweepCacheKey {
+            playback_ts_bits: playback_ts.to_bits(),
             displayed_elev,
             is_auto,
-            MAX_SCAN_AGE_SECS,
-        );
+            scan_count: self.state.radar_timeline.scans.len(),
+        };
+        let prev_info = if self.state.render_cache.prev_sweep_cache_key.as_ref() == Some(&cache_key)
+        {
+            self.state.render_cache.prev_sweep_cache_value
+        } else {
+            let computed = PlaybackManager::find_prev_sweep(
+                &self.state.radar_timeline,
+                playback_ts,
+                displayed_elev,
+                is_auto,
+                MAX_SCAN_AGE_SECS,
+            );
+            self.state.render_cache.prev_sweep_cache_key = Some(cache_key);
+            self.state.render_cache.prev_sweep_cache_value = computed;
+            computed
+        };
 
         let (prev_scan_key_ts, prev_elev_num, prev_elev_deg, prev_start, prev_end) = match prev_info
         {

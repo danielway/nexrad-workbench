@@ -78,6 +78,29 @@ pub fn render_canvas_with_geo(
                 // the projection.
                 state.viz_state.last_visible_bounds = Some(projection.visible_bounds());
 
+                // Camera-motion tracking for the label-tier debounce. The
+                // projection fingerprint changes whenever pan, zoom, center,
+                // or rect changes; we record the time of last change and
+                // expose `camera_settled` so the label cache only rebuilds
+                // after motion has stopped for `SETTLE_WINDOW_SECS`.
+                let now_secs = js_sys::Date::now() / 1000.0;
+                state
+                    .render_cache
+                    .camera_motion
+                    .observe(projection.fingerprint(), now_secs);
+                let camera_settled = state.render_cache.camera_motion.is_settled(now_secs);
+                // Schedule exactly one wake-up at the settle moment so the
+                // label tier rebuilds on time even when nothing else is
+                // animating. No-op if already settled.
+                if let Some(remaining) =
+                    state.render_cache.camera_motion.time_until_settle(now_secs)
+                {
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(
+                            (remaining * 1000.0).ceil().max(1.0) as u64,
+                        ));
+                }
+
                 // Screen-space cutout circle for the active radar's coverage.
                 // Fixed at the WSR-88D reflectivity range so the hole stays
                 // stable as the user scrubs elevations/products instead of
@@ -122,6 +145,8 @@ pub fn render_canvas_with_geo(
                         state.viz_state.zoom,
                         state.layer_state.geo.labels,
                         crate::geo::GeoPass::Lines,
+                        dark,
+                        camera_settled,
                     );
                 }
 
@@ -202,6 +227,8 @@ pub fn render_canvas_with_geo(
                         state.viz_state.zoom,
                         state.layer_state.geo.labels,
                         crate::geo::GeoPass::Labels,
+                        dark,
+                        camera_settled,
                     );
                 }
 

@@ -15,6 +15,7 @@ mod playback;
 pub(crate) mod playback_manager;
 mod preferences;
 pub(crate) mod radar_data;
+pub(crate) mod render_cache;
 mod saved_events;
 mod settings;
 mod stats;
@@ -38,6 +39,7 @@ pub use live_radar_model::LiveRadarModel;
 pub use playback::{LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
+pub use render_cache::{PrevSweepCacheKey, RenderCache};
 pub use saved_events::{SavedEvent, SavedEvents};
 pub use settings::{format_bytes, StorageSettings};
 pub use stats::{
@@ -272,6 +274,10 @@ pub struct AppState {
     /// the `SiteModalState` that lives outside `AppState`, avoiding a direct
     /// state dependency from the bottom-bar renderer.
     pub mobile_geolocate_requested: bool,
+
+    /// Per-frame render caches: camera-motion tracking for label-tier
+    /// debouncing, prev-sweep lookup memoization, and theme-gating state.
+    pub render_cache: RenderCache,
 }
 
 /// Tabs in the mobile settings modal. Order matches the tab strip layout.
