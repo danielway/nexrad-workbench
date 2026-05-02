@@ -13,6 +13,7 @@
 mod alerts;
 mod data;
 mod geo;
+mod mping;
 mod net;
 mod nexrad;
 mod state;
@@ -161,6 +162,14 @@ pub struct WorkbenchApp {
 
     /// NWS alerts polling lifecycle.
     alerts_manager: alerts::AlertsManager,
+
+    /// mPING storm-report fetch lifecycle.
+    mping_manager: mping::MpingManager,
+
+    /// In-flight text-edit buffer for the mPING settings modal. Lives
+    /// outside `AppState` so it doesn't need `Default + Clone` and so the
+    /// transient input doesn't survive a reload.
+    mping_modal_state: ui::MpingModalState,
 
     /// Cache of the inputs that drive `advance_playback`'s scrub-detection
     /// pass so we can skip the O(scans) timeline search on idle frames
@@ -471,6 +480,8 @@ impl WorkbenchApp {
             network_monitor: None,
             playback_manager: PlaybackManager::new(),
             alerts_manager: alerts::AlertsManager::new(),
+            mping_manager: mping::MpingManager::new(),
+            mping_modal_state: ui::MpingModalState::default(),
             scrub_cache: ScrubCache::default(),
             last_favicon_mode: None,
         };
@@ -3121,6 +3132,12 @@ impl eframe::App for WorkbenchApp {
         // Poll the NWS alerts feed if due; drain any completed fetches.
         self.alerts_manager.tick(ctx, &mut self.state);
 
+        // Poll mPING storm reports if due; drain completed fetches.
+        if std::mem::take(&mut self.state.mping.invalidate_requested) {
+            self.mping_manager.invalidate();
+        }
+        self.mping_manager.tick(ctx, &mut self.state);
+
         // Compute the live radar model snapshot for this frame so all UI
         // consumers see consistent state from the same `now` timestamp.
         self.state.refresh_live_model();
@@ -3173,5 +3190,6 @@ impl eframe::App for WorkbenchApp {
         ui::render_network_log(ctx, &mut self.state);
         ui::render_event_modal(ctx, &mut self.state, &mut self.event_modal_state);
         ui::render_alerts_modals(ctx, &mut self.state);
+        ui::render_mping_modal(ctx, &mut self.state, &mut self.mping_modal_state);
     }
 }

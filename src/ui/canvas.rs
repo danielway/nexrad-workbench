@@ -4,7 +4,8 @@ use super::canvas_inspector::{render_distance_measurement, render_inspector, ren
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
     draw_color_scale, draw_compass, draw_globe, draw_national_mosaic, draw_overlay_info,
-    draw_scale_bar, render_alerts, render_nexrad_sites, render_radar_sweep, RadarCutout,
+    draw_scale_bar, render_alerts, render_mping_reports, render_nexrad_sites, render_radar_sweep,
+    RadarCutout,
 };
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
@@ -213,6 +214,16 @@ pub fn render_canvas_with_geo(
 
                 if state.layer_state.geo.alerts && !state.alerts.alerts.is_empty() {
                     render_alerts(&painter, &projection, &state.alerts.alerts);
+                }
+
+                if state.layer_state.geo.mping && !state.mping.reports.is_empty() {
+                    render_mping_reports(
+                        &painter,
+                        &projection,
+                        &state.mping.reports,
+                        state.mping.window_min_ms,
+                        state.mping.window_max_ms,
+                    );
                 }
 
                 // Labels pass: draw on top of radar + alerts so text stays
