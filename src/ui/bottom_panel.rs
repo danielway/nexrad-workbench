@@ -1,12 +1,11 @@
 //! Bottom panel UI: orchestrates the timeline, playback controls, and session statistics.
 
 use super::acquisition_drawer::render_acquisition_drawer;
-use super::colors::{live, ui as ui_colors};
 use crate::state::{AppState, LiveExitReason, PlaybackMode, PlaybackSpeed};
-use eframe::egui::{self, RichText};
+use eframe::egui::{self};
 
 use super::playback_controls::render_playback_controls;
-use super::timeline::render_timeline;
+use super::timeline::{render_now_button, render_timeline};
 
 pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     let dt = ctx.input(|i| i.stable_dt);
@@ -149,69 +148,19 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
             }
 
             ui.vertical(|ui| {
-                // Mode and acquisition status bar
-                ui.horizontal(|ui| {
-                    let mode_label = if state.live_mode_state.is_active() {
-                        "REAL-TIME"
-                    } else {
-                        "NAVIGATE"
-                    };
-                    let mode_color = if state.live_mode_state.is_active() {
-                        live::STREAMING
-                    } else {
-                        ui_colors::label(state.is_dark)
-                    };
-                    ui.label(
-                        RichText::new(mode_label)
-                            .size(10.0)
-                            .strong()
-                            .color(mode_color),
-                    );
-
-                    // Show data staleness if available
-                    if let Some(end_staleness) = state.viz_state.data_staleness_secs {
-                        ui.separator();
-                        let format_compact = |secs: f64| -> String {
-                            if secs < 60.0 {
-                                format!("{:.0}s", secs)
-                            } else if secs < 3600.0 {
-                                format!("{:.0}m", secs / 60.0)
-                            } else if secs < 86400.0 {
-                                format!("{:.1}h", secs / 3600.0)
-                            } else if secs < 86400.0 * 365.0 {
-                                format!("{:.0}d", secs / 86400.0)
-                            } else {
-                                format!("{:.1}y", secs / (86400.0 * 365.25))
-                            }
-                        };
-                        let age_text = if end_staleness < 300.0 {
-                            if let Some(start_staleness) = state.viz_state.data_staleness_start_secs
-                            {
-                                format!(
-                                    "{}–{} old",
-                                    format_compact(start_staleness),
-                                    format_compact(end_staleness),
-                                )
-                            } else {
-                                format!("{} old", format_compact(end_staleness))
-                            }
-                        } else {
-                            format!("{} old", format_compact(end_staleness))
-                        };
-                        let age_color = if end_staleness < 60.0 {
-                            ui_colors::SUCCESS
-                        } else if end_staleness < 300.0 {
-                            ui_colors::ACTIVE
-                        } else {
-                            egui::Color32::from_rgb(220, 80, 80)
-                        };
-                        ui.label(RichText::new(age_text).size(10.0).color(age_color));
-                    }
-                });
-
-                // Timeline row
+                // Timeline row: timeline expands to fill available width;
+                // the "Now" toggle button is anchored on the right.
                 ui.add_space(2.0);
-                render_timeline(ui, state);
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        render_now_button(ui, state);
+                        ui.allocate_ui_with_layout(
+                            egui::Vec2::new(ui.available_width(), ui.available_height()),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| render_timeline(ui, state),
+                        );
+                    });
+                });
 
                 ui.add_space(2.0);
 

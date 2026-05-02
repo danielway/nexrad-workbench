@@ -40,8 +40,6 @@ pub mod live {
     pub const ACQUIRING: Color32 = Color32::from_rgb(255, 180, 50);
     /// Red - actively streaming.
     pub const STREAMING: Color32 = Color32::from_rgb(255, 80, 80);
-    /// Blue - waiting for next chunk.
-    pub const WAITING: Color32 = Color32::from_rgb(100, 180, 255);
 }
 
 /// Top-level application mode indicator colors (theme-independent).
@@ -248,21 +246,6 @@ pub mod timeline {
     /// Pending (expected but not yet received) sweep placeholder.
     pub fn rt_pending_sweep_border() -> Color32 {
         Color32::from_rgba_unmultiplied(80, 120, 180, 100)
-    }
-
-    /// Dotted border for the "next chunk" placeholder block.
-    pub fn rt_next_chunk_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(140, 200, 255, 140)
-    }
-
-    /// Very faint fill for the "next chunk" placeholder block.
-    pub fn rt_next_chunk_fill() -> Color32 {
-        Color32::from_rgba_unmultiplied(100, 180, 255, 20)
-    }
-
-    /// Countdown label color for the "next chunk" placeholder.
-    pub fn rt_next_chunk_label() -> Color32 {
-        Color32::from_rgba_unmultiplied(160, 220, 255, 220)
     }
 
     // ── Saved event overlay colors ────────────────────────────────────

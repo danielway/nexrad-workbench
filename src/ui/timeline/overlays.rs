@@ -184,13 +184,9 @@ pub(super) fn render_download_ghosts(
 }
 
 /// Non-model fields needed for realtime overlay rendering that don't belong in
-/// the position model (UI animation state, countdown, chunk interval).
+/// the position model.
 pub(super) struct LiveOverlayContext {
-    pub countdown_secs: Option<f64>,
-    pub chunk_interval_secs: f64,
     pub in_progress_radials: u32,
-    pub elevations_received: Vec<u8>,
-    pub in_progress_elevation: Option<u8>,
 }
 
 /// Render real-time streaming progress on the timeline.
@@ -394,10 +390,7 @@ pub(super) fn render_realtime_progress(
         return;
     }
 
-    let received = &ctx.elevations_received;
-    let in_progress_elev = ctx.in_progress_elevation;
     let in_progress_radials = ctx.in_progress_radials;
-    let countdown = ctx.countdown_secs;
 
     for sweep_pos in &model.sweeps {
         let elev_num = sweep_pos.elevation_number;
@@ -521,30 +514,9 @@ pub(super) fn render_realtime_progress(
                         Stroke::new(0.5, Color32::from_rgba_unmultiplied(100, 180, 255, 90)),
                         StrokeKind::Inside,
                     );
-                } else if slot == chunks_received && countdown.is_some() {
-                    // ── Next-chunk placeholder with countdown ──
-                    painter.rect_filled(slot_rect, 1.0, tl_colors::rt_next_chunk_fill());
-                    let dot_color = tl_colors::rt_next_chunk_border();
-                    stroke_dashed_rect(
-                        painter,
-                        slot_rect,
-                        DashedBorder::uniform(Stroke::new(1.0, dot_color), 2.0, 4.0),
-                    );
-                    // Countdown label
-                    if let Some(remaining) = countdown {
-                        if slot_rect.width() > 16.0 {
-                            painter.text(
-                                slot_rect.center(),
-                                egui::Align2::CENTER_CENTER,
-                                format!("{}s", remaining.ceil() as i32),
-                                egui::FontId::monospace(8.0),
-                                tl_colors::rt_next_chunk_label(),
-                            );
-                        }
-                    }
                 }
-                // Future slots beyond the next-chunk placeholder are left empty
-                // (the sweep's dashed border already indicates estimated bounds).
+                // Future slots are left empty (the sweep's dashed border
+                // already indicates estimated bounds).
             }
 
             // Dashed border around the entire sweep block
@@ -555,93 +527,13 @@ pub(super) fn render_realtime_progress(
                 DashedBorder::rect(Stroke::new(1.0, border_color), 4.0, 8.0, 3.0, 6.0),
             );
         } else if is_future {
-            // Check if this is the first future sweep (next to receive data)
-            // and we're waiting for a chunk with no downloading sweep active.
-            let is_next_sweep = in_progress_elev.is_none()
-                && countdown.is_some()
-                && !received.iter().any(|&e| e > elev_num);
-
-            // For the "next" sweep, also check it's the very first future one
-            let is_first_future = is_next_sweep
-                && (elev_num == 1 || received.last().is_some_and(|&last| last == elev_num - 1));
-
-            if is_first_future {
-                // -- Next-chunk placeholder on the first future sweep --
-                // Sized to one estimated chunk slot (sweep width / chunks_expected).
-                let future_exp_n = match &sweep_pos.status {
-                    crate::state::SweepStatus::Future => {
-                        // Use same formula as InProgress: estimate from sweep duration
-                        let dur = sweep_pos.duration();
-                        if dur > 0.0 && ctx.chunk_interval_secs > 0.0 {
-                            (dur / ctx.chunk_interval_secs).ceil() as u32
-                        } else {
-                            3
-                        }
-                    }
-                    _ => 3,
-                }
-                .max(1);
-                let slot_width = block.width() / future_exp_n as f32;
-                let nc_end_x = (block.min.x + slot_width.max(8.0)).min(block.max.x);
-                let nc_rect = Rect::from_min_max(
-                    Pos2::new(block.min.x, block.min.y),
-                    Pos2::new(nc_end_x, block.max.y),
-                );
-                let nc_width = nc_rect.width();
-
-                let nc_fill = tl_colors::rt_next_chunk_fill();
-                let dot_color = tl_colors::rt_next_chunk_border();
-
-                painter.rect_filled(nc_rect, 1.0, nc_fill);
-
-                // Dotted border (2px on, 2px off)
-                stroke_dashed_rect(
-                    painter,
-                    nc_rect,
-                    DashedBorder::uniform(Stroke::new(1.0, dot_color), 2.0, 4.0),
-                );
-
-                // Countdown label
-                if let Some(remaining) = countdown {
-                    if nc_width > 16.0 {
-                        painter.text(
-                            nc_rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            format!("{}s", remaining.ceil() as i32),
-                            egui::FontId::monospace(8.0),
-                            tl_colors::rt_next_chunk_label(),
-                        );
-                    }
-                }
-
-                // Still draw the rest of the sweep as regular future dashed outline
-                if nc_end_x < block.max.x {
-                    let rest_block = Rect::from_min_max(
-                        Pos2::new(nc_end_x, block.min.y),
-                        Pos2::new(block.max.x, block.max.y),
-                    );
-                    let dash_color = tl_colors::rt_pending_sweep_border();
-                    stroke_dashed_rect(
-                        painter,
-                        rest_block,
-                        DashedBorder::rect(Stroke::new(0.5, dash_color), 4.0, 8.0, 3.0, 6.0)
-                            .with_edges(DashedEdges {
-                                top: true,
-                                bottom: true,
-                                left: false,
-                                right: true,
-                            }),
-                    );
-                }
-            } else {
-                // -- Regular future: dashed outline to indicate estimated bounds --
-                let dash_color = tl_colors::rt_pending_sweep_border();
-                stroke_dashed_rect(
-                    painter,
-                    block,
-                    DashedBorder::rect(Stroke::new(0.5, dash_color), 4.0, 8.0, 3.0, 6.0),
-                );
-            }
+            // -- Future sweep: dashed outline to indicate estimated bounds --
+            let dash_color = tl_colors::rt_pending_sweep_border();
+            stroke_dashed_rect(
+                painter,
+                block,
+                DashedBorder::rect(Stroke::new(0.5, dash_color), 4.0, 8.0, 3.0, 6.0),
+            );
         }
 
         // Elevation label (for all states, when wide enough)

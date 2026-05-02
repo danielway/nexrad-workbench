@@ -77,6 +77,8 @@ pub enum AppCommand {
     DownloadAtPosition,
     /// Start live/real-time streaming.
     StartLive,
+    /// Stop live/real-time streaming (user toggled the Now button off).
+    StopLive,
     /// Check and run eviction after a storage operation.
     CheckEviction,
     /// Wipe all data (IndexedDB + localStorage) and reload.

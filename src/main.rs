@@ -1035,7 +1035,6 @@ impl WorkbenchApp {
     }
 
     /// Stop live mode streaming.
-    #[allow(dead_code)] // Called from UI when user stops live mode
     fn stop_live_mode(&mut self, reason: state::LiveExitReason) {
         log::info!("Stopping live mode: {:?}", reason);
 
@@ -1389,6 +1388,9 @@ impl WorkbenchApp {
                 }
                 state::AppCommand::StartLive => {
                     self.start_live_mode(ctx);
+                }
+                state::AppCommand::StopLive => {
+                    self.stop_live_mode(state::LiveExitReason::UserStopped);
                 }
                 state::AppCommand::DownloadSelection => {
                     do_download_selection = true;
@@ -1819,10 +1821,10 @@ impl WorkbenchApp {
             }
 
             // ── Log + dispatch: live partial-sweep render ─────────────
-            // Always render whatever elevation is currently being
-            // accumulated — the user expects to see live progress
-            // regardless of which elevation was previously displayed.
-            if !result.is_end {
+            // Gated on `show_partial_sweeps`: when false (default), chunks
+            // still accumulate but the canvas only updates on volume
+            // completion. When true, every chunk renders as it arrives.
+            if !result.is_end && self.state.live_mode_state.show_partial_sweeps {
                 if let Some(target_elev) = result.current_elevation {
                     let product = self.state.viz_state.product.to_worker_string().to_string();
 

@@ -8,10 +8,10 @@ mod strokes;
 mod sweep_track;
 mod tooltips;
 
-use super::colors::timeline as tl_colors;
-use crate::state::{AppState, LivePhase};
+use super::colors::{live as live_colors, timeline as tl_colors};
+use crate::state::{AppCommand, AppState, LivePhase, PlaybackSpeed};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
-use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, Vec2};
 
 use interaction::handle_timeline_interaction;
 use overlays::{render_download_ghosts, render_realtime_progress, render_saved_events};
@@ -447,16 +447,10 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     if let Some(ref position) = state.live_radar_model.position {
         let anim_time = ui.ctx().input(|i| i.time);
         let overlay_ctx = overlays::LiveOverlayContext {
-            countdown_secs: state
-                .live_mode_state
-                .countdown_remaining_secs(frame_now_secs),
-            chunk_interval_secs: state.live_mode_state.chunk_interval_secs,
             in_progress_radials: state
                 .live_mode_state
                 .current_in_progress_radials
                 .unwrap_or(0),
-            elevations_received: state.live_mode_state.elevations_received.clone(),
-            in_progress_elevation: state.live_mode_state.current_in_progress_elevation,
         };
         render_realtime_progress(
             &painter,
@@ -670,4 +664,86 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
     // -- Interaction handling --
     handle_timeline_interaction(ui, state, &response, &full_rect, view_start, zoom);
+}
+
+/// Render the "Now" toggle button (and its full/partial sub-menu) at the
+/// right end of the timeline row. Toggling it enters or exits real-time
+/// streaming. The label includes a chunk countdown while waiting.
+pub(super) fn render_now_button(ui: &mut egui::Ui, state: &mut AppState) {
+    let phase = state.live_mode_state.phase;
+    let is_active = state.live_mode_state.is_active();
+    let pulse = state.live_mode_state.pulse_alpha();
+    let now_secs = state.playback_state.playback_position();
+
+    let (label, color) = match phase {
+        LivePhase::AcquiringLock => {
+            let pulsed = Color32::from_rgba_unmultiplied(
+                live_colors::ACQUIRING.r(),
+                live_colors::ACQUIRING.g(),
+                live_colors::ACQUIRING.b(),
+                (128.0 + 127.0 * pulse) as u8,
+            );
+            ("Now (connecting…)".to_string(), pulsed)
+        }
+        LivePhase::Streaming => {
+            let pulsed = Color32::from_rgba_unmultiplied(
+                live_colors::STREAMING.r(),
+                live_colors::STREAMING.g(),
+                live_colors::STREAMING.b(),
+                (128.0 + 127.0 * pulse) as u8,
+            );
+            ("● Now".to_string(), pulsed)
+        }
+        LivePhase::WaitingForChunk => {
+            let pulsed = Color32::from_rgba_unmultiplied(
+                live_colors::STREAMING.r(),
+                live_colors::STREAMING.g(),
+                live_colors::STREAMING.b(),
+                (128.0 + 127.0 * pulse) as u8,
+            );
+            let label = match state.live_mode_state.countdown_remaining_secs(now_secs) {
+                Some(remaining) => format!("● Now (next in {}s)", remaining.ceil() as i32),
+                None => "● Now".to_string(),
+            };
+            (label, pulsed)
+        }
+        _ => ("Now".to_string(), Color32::from_rgb(180, 180, 180)),
+    };
+
+    let hover = if is_active {
+        "Exit real-time streaming"
+    } else {
+        "Enter real-time streaming"
+    };
+
+    let now_btn = ui
+        .button(RichText::new(label).size(12.0).color(color))
+        .on_hover_text(hover);
+    if now_btn.clicked() {
+        if is_active {
+            state.push_command(AppCommand::StopLive);
+        } else {
+            state.push_command(AppCommand::StartLive);
+            state.playback_state.speed = PlaybackSpeed::Realtime;
+        }
+    }
+
+    ui.menu_button(
+        RichText::new(egui_phosphor::regular::CARET_DOWN)
+            .size(10.0)
+            .color(color),
+        |ui| {
+            let mut partial = state.live_mode_state.show_partial_sweeps;
+            ui.radio_value(&mut partial, false, "Full scans");
+            ui.radio_value(&mut partial, true, "Partial sweeps");
+            if partial != state.live_mode_state.show_partial_sweeps {
+                state.live_mode_state.show_partial_sweeps = partial;
+            }
+        },
+    );
+
+    if matches!(phase, LivePhase::WaitingForChunk) {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(250));
+    }
 }

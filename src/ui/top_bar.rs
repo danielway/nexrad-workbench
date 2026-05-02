@@ -397,40 +397,4 @@ pub(super) fn render_mode_badge(ui: &mut egui::Ui, state: &AppState) {
 
     ui.label(RichText::new(icon_str).size(16.0).color(icon_color));
     ui.label(RichText::new(mode.label()).size(13.0).strong().color(color));
-
-    // Live-only trailing detail: chunk count, countdown, or elapsed acquire time.
-    if mode == AppMode::Live {
-        use crate::state::LivePhase;
-        let now = state.playback_state.playback_position();
-        let phase = state.live_mode_state.phase;
-        let detail = match phase {
-            LivePhase::AcquiringLock => {
-                let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
-                format!("acquiring lock... {}s", elapsed)
-            }
-            LivePhase::Streaming => format!(
-                "({} chunks) receiving...",
-                state.live_mode_state.chunks_received
-            ),
-            LivePhase::WaitingForChunk => {
-                if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now) {
-                    format!(
-                        "({} chunks) next in {}s",
-                        state.live_mode_state.chunks_received,
-                        remaining.ceil() as i32
-                    )
-                } else {
-                    format!("({} chunks)", state.live_mode_state.chunks_received)
-                }
-            }
-            _ => String::new(),
-        };
-        if !detail.is_empty() {
-            ui.label(
-                RichText::new(detail)
-                    .size(12.0)
-                    .color(Color32::from_rgb(180, 180, 180)),
-            );
-        }
-    }
 }

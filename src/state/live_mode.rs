@@ -238,6 +238,11 @@ pub struct LiveModeState {
     /// Most recent volume's `chunk_arrivals`, preserved for the diagnostics
     /// modal alongside `last_volume_forecast`.
     pub last_chunk_arrivals: Vec<crate::state::ChunkArrivalStat>,
+
+    /// When false (default), partial-sweep render dispatches are suppressed —
+    /// chunks still accumulate in the worker, but the canvas only updates on
+    /// volume completion. When true, every chunk renders as it arrives.
+    pub show_partial_sweeps: bool,
 }
 
 impl Default for LiveModeState {
@@ -277,6 +282,7 @@ impl Default for LiveModeState {
             previous_volume_end_secs: None,
             chunk_arrivals: Vec::new(),
             last_chunk_arrivals: Vec::new(),
+            show_partial_sweeps: false,
         }
     }
 }

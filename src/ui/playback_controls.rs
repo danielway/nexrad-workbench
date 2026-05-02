@@ -1,10 +1,8 @@
 //! Playback controls: play/pause, speed, datetime picker, live indicator, and session stats.
 
-use super::colors::{live, timeline as tl_colors, ui as ui_colors};
+use super::colors::{timeline as tl_colors, ui as ui_colors};
 use super::timeline::format_timestamp_full;
-use crate::state::{
-    AppState, LiveExitReason, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed, TimeModel,
-};
+use crate::state::{AppState, LiveExitReason, LoopMode, PlaybackMode, PlaybackSpeed, TimeModel};
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Render the datetime picker popup for jumping to a specific time.
@@ -173,30 +171,6 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
 
     // Datetime picker popup
     render_datetime_picker_popup(ui, state);
-
-    // Live mode indicator badge (when active)
-    if state.live_mode_state.is_active() {
-        render_live_indicator(ui, state);
-        ui.separator();
-    }
-
-    // Live button (only shown when not in live mode)
-    #[allow(clippy::collapsible_if)]
-    if !state.live_mode_state.is_active() {
-        if ui
-            .button(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(14.0)
-                    .color(Color32::from_rgb(150, 150, 150)),
-            )
-            .on_hover_text("Start live streaming")
-            .clicked()
-        {
-            // Signal main loop to start live mode
-            state.push_command(crate::state::AppCommand::StartLive);
-            state.playback_state.speed = PlaybackSpeed::Realtime;
-        }
-    }
 
     // Play/Stop button
     let play_text = if state.playback_state.playing {
@@ -441,86 +415,6 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         render_session_stats(ui, state);
     });
-}
-
-/// Render live mode indicator badge with pulsing dot.
-fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
-    let phase = state.live_mode_state.phase;
-    let pulse_alpha = state.live_mode_state.pulse_alpha();
-
-    // Get current time for status text
-    let now = state.playback_state.playback_position();
-
-    match phase {
-        LivePhase::AcquiringLock => {
-            // Show "CONNECTING" with orange pulsing
-            let pulsed_color = Color32::from_rgba_unmultiplied(
-                live::ACQUIRING.r(),
-                live::ACQUIRING.g(),
-                live::ACQUIRING.b(),
-                (128.0 + 127.0 * pulse_alpha) as u8,
-            );
-            ui.label(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(16.0)
-                    .color(pulsed_color),
-            );
-
-            let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
-            ui.label(
-                RichText::new(format!("CONNECTING {}s", elapsed))
-                    .size(11.0)
-                    .strong()
-                    .color(live::ACQUIRING),
-            );
-        }
-        LivePhase::Streaming | LivePhase::WaitingForChunk => {
-            // Show red "LIVE" indicator (always visible once streaming)
-            let pulsed_color = Color32::from_rgba_unmultiplied(
-                live::STREAMING.r(),
-                live::STREAMING.g(),
-                live::STREAMING.b(),
-                (128.0 + 127.0 * pulse_alpha) as u8,
-            );
-            ui.label(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(16.0)
-                    .color(pulsed_color),
-            );
-            ui.label(
-                RichText::new("LIVE")
-                    .size(11.0)
-                    .strong()
-                    .color(live::STREAMING),
-            );
-
-            // Show chunk count
-            if state.live_mode_state.chunks_received > 0 {
-                ui.label(
-                    RichText::new(format!("({})", state.live_mode_state.chunks_received))
-                        .size(10.0)
-                        .color(ui_colors::value(state.is_dark)),
-                );
-            }
-
-            // Show status: downloading or waiting
-            if phase == LivePhase::Streaming {
-                ui.label(
-                    RichText::new("receiving...")
-                        .size(10.0)
-                        .italics()
-                        .color(ui_colors::SUCCESS),
-                );
-            } else if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now) {
-                ui.label(
-                    RichText::new(format!("next in {}s", remaining.ceil() as i32))
-                        .size(10.0)
-                        .color(live::WAITING),
-                );
-            }
-        }
-        _ => {}
-    }
 }
 
 /// Render session statistics (right-aligned in the bottom bar).
