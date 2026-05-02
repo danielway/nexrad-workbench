@@ -12,6 +12,12 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
     if !state.stats_detail_open {
         return;
     }
+    // The modal is only reachable from the dev-mode pipeline indicator.
+    // If dev mode was disabled while it was open, close it silently.
+    if !state.dev_mode {
+        state.stats_detail_open = false;
+        return;
+    }
 
     if super::modal_helper::modal_backdrop(ctx, "stats_modal_backdrop", 160) {
         state.stats_detail_open = false;

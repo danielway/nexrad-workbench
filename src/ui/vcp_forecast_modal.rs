@@ -4,13 +4,23 @@
 //! snapshot side-by-side with observed actuals, and provides a copy-to-
 //! clipboard button so the plain-text output can be pasted into a chat
 //! message for iterating on the forecasting algorithms.
+//!
+//! The data shown here is intentionally curated for an "optimize the model"
+//! workflow: every column either drives a tuning decision (which estimator
+//! path fired, which bucket key was used, sample count, anchor source,
+//! per-chunk lag) or quantifies prediction error against actuals. Raw
+//! wall-clock timestamps and structural metadata that don't influence the
+//! model are deliberately omitted — they can be reconstructed from the
+//! deltas if needed and would otherwise bloat the clipboard payload.
 
 use super::colors::ui as ui_colors;
+use crate::nexrad::timing::{AnchorSource, IntervalCase, PhysicsBreakdown, SchedulerPath};
 use crate::state::{
-    AppState, ChunkArrivalStat, RateSource, SweepForecast, SweepStatus, SweepTiming,
+    AppState, BucketKey, ChunkArrivalStat, SweepForecast, SweepStatus, SweepTiming,
     VolumeForecastSnapshot,
 };
 use eframe::egui::{self, RichText, Vec2};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 pub fn render_vcp_forecast_modal(ctx: &egui::Context, state: &mut AppState) {
@@ -24,6 +34,7 @@ pub fn render_vcp_forecast_modal(ctx: &egui::Context, state: &mut AppState) {
     }
 
     let dark = state.is_dark;
+    let site_id = state.viz_state.site_id.clone();
     let (snap_opt, arrivals) = {
         let live = &state.live_mode_state;
         if live.current_volume_forecast.is_some() {
@@ -45,7 +56,7 @@ pub fn render_vcp_forecast_modal(ctx: &egui::Context, state: &mut AppState) {
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .fixed_size(Vec2::new(860.0, 560.0))
+        .fixed_size(Vec2::new(940.0, 580.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| match snap_opt {
             None => {
@@ -70,7 +81,7 @@ pub fn render_vcp_forecast_modal(ctx: &egui::Context, state: &mut AppState) {
                 }
             }
             Some(snap) => {
-                render_snapshot(ui, ctx, &snap, &arrivals, dark, state);
+                render_snapshot(ui, ctx, &snap, &arrivals, &site_id, dark, state);
             }
         });
 }
@@ -80,6 +91,7 @@ fn render_snapshot(
     ctx: &egui::Context,
     snap: &VolumeForecastSnapshot,
     arrivals: &[ChunkArrivalStat],
+    site_id: &str,
     dark: bool,
     state: &mut AppState,
 ) {
@@ -88,7 +100,7 @@ fn render_snapshot(
     let heading_color = ui_colors::ACTIVE;
 
     egui::ScrollArea::vertical()
-        .max_height(480.0)
+        .max_height(500.0)
         .show(ui, |ui| {
             // ── Volume metadata ─────────────────────────────────────────
             ui.label(
@@ -101,26 +113,15 @@ fn render_snapshot(
                 let name = snap.vcp_name.unwrap_or("?");
                 kv(
                     ui,
-                    "VCP",
-                    &format!("{} ({})", snap.vcp_number, name),
-                    label_color,
-                    value_color,
-                );
-                kv(
-                    ui,
-                    "Mode",
-                    if snap.is_clear_air {
-                        "clear air"
-                    } else {
-                        "precip"
-                    },
-                    label_color,
-                    value_color,
-                );
-                kv(
-                    ui,
-                    "Elevations",
-                    &format!("{}", snap.expected_elevation_count),
+                    "Site / VCP",
+                    &format!(
+                        "{} · {} ({}) · {} · {} elev",
+                        site_id,
+                        snap.vcp_number,
+                        name,
+                        if snap.is_clear_air { "clear" } else { "precip" },
+                        snap.expected_elevation_count
+                    ),
                     label_color,
                     value_color,
                 );
@@ -132,51 +133,18 @@ fn render_snapshot(
                     value_color,
                 );
                 let predicted_dur = snap.predicted_volume_end - snap.volume_start;
+                let drift_str = snap
+                    .actual_volume_end
+                    .map(|e| format!("{:+.1}s", e - snap.predicted_volume_end))
+                    .unwrap_or_else(|| "—".into());
+                let actual_dur_str = snap
+                    .actual_volume_end
+                    .map(|e| format!("{:.1}s", e - snap.volume_start))
+                    .unwrap_or_else(|| "—".into());
                 kv(
                     ui,
-                    "Predicted end",
-                    &format!(
-                        "{} (+{:.1}s)",
-                        format_time(snap.predicted_volume_end),
-                        predicted_dur
-                    ),
-                    label_color,
-                    value_color,
-                );
-                match snap.actual_volume_end {
-                    Some(end) => {
-                        let drift = end - snap.predicted_volume_end;
-                        kv(
-                            ui,
-                            "Actual end",
-                            &format!(
-                                "{} (+{:.1}s, drift {:+.1}s)",
-                                format_time(end),
-                                end - snap.volume_start,
-                                drift
-                            ),
-                            label_color,
-                            value_color,
-                        );
-                    }
-                    None => kv(ui, "Actual end", "—", label_color, value_color),
-                }
-                kv(
-                    ui,
-                    "Projections at start",
-                    if snap.chunk_projections_available_at_start {
-                        "yes"
-                    } else {
-                        "no"
-                    },
-                    label_color,
-                    value_color,
-                );
-                let (m_a, m_b, m_lib) = rate_source_tally(snap);
-                kv(
-                    ui,
-                    "Rate sources",
-                    &format!("VCP={m_a}  fallback={m_b}  library={m_lib}"),
+                    "Duration (pred / actual / drift)",
+                    &format!("{predicted_dur:.1}s / {actual_dur_str} / {drift_str}"),
                     label_color,
                     value_color,
                 );
@@ -202,15 +170,6 @@ fn render_snapshot(
                     label_color,
                     value_color,
                 );
-                if let Some(prev_end) = snap.previous_volume_end {
-                    kv(
-                        ui,
-                        "  prev volume end",
-                        &format_time(prev_end),
-                        label_color,
-                        value_color,
-                    );
-                }
             });
 
             ui.separator();
@@ -222,12 +181,10 @@ fn render_snapshot(
                     .strong()
                     .color(heading_color),
             );
-
             ui.label(
                 RichText::new(
-                    "legend: tag = SAILS / MRLE / BASE / — (standard);  \
-                     src = LIB (projection library) / VCP (message rate) / FB (fallback);  \
-                     Δ values are actual − predicted",
+                    "src = LIB (projection library) / VCP (msg rate) / FB (Method-B fallback);  \
+                     Δ = actual − predicted",
                 )
                 .size(10.0)
                 .color(label_color),
@@ -238,9 +195,8 @@ fn render_snapshot(
                 .spacing(Vec2::new(10.0, 4.0))
                 .show(ui, |ui| {
                     for header in [
-                        "elv", "ang", "wf", "prf", "tag", "vcp_r", "fb_r", "used", "src",
-                        "pred_dur", "act_dur", "Δdur", "pred_ch", "act_ch", "Δch", "Δstart",
-                        "timing", "status",
+                        "elv", "ang", "wf", "used", "src", "pred_dur", "act_dur", "Δdur",
+                        "Δstart", "pred_ch", "act_ch", "Δch", "timing", "status",
                     ] {
                         ui.label(
                             RichText::new(header)
@@ -252,7 +208,7 @@ fn render_snapshot(
                     ui.end_row();
 
                     for s in &snap.sweeps {
-                        grid_row(ui, s, snap.volume_start, label_color, value_color);
+                        grid_row(ui, s, label_color, value_color);
                     }
                 });
 
@@ -282,16 +238,8 @@ fn render_snapshot(
                 if let Some((mean, median, max_abs)) = stats_on(&dur_errs) {
                     kv(
                         ui,
-                        "Duration error (actual - predicted)",
+                        "Sweep duration error",
                         &format!("mean {mean:+.2}s  median {median:+.2}s  max|{max_abs:.2}s|"),
-                        label_color,
-                        value_color,
-                    );
-                } else {
-                    kv(
-                        ui,
-                        "Duration error",
-                        "— (no complete sweeps yet)",
                         label_color,
                         value_color,
                     );
@@ -307,25 +255,13 @@ fn render_snapshot(
                 if let Some((mean, _median, max_abs)) = stats_on(&chunk_errs) {
                     kv(
                         ui,
-                        "Chunk count error",
+                        "Sweep chunk-count error",
                         &format!("mean {mean:+.2}  max|{max_abs:.0}|"),
-                        label_color,
-                        value_color,
-                    );
-                } else {
-                    kv(ui, "Chunk count error", "—", label_color, value_color);
-                }
-                if let Some(end) = snap.actual_volume_end {
-                    kv(
-                        ui,
-                        "Volume-end drift",
-                        &format!("{:+.2}s", end - snap.predicted_volume_end),
                         label_color,
                         value_color,
                     );
                 }
 
-                // Chunk-level aggregates
                 let total_empty = total_empty_polls(arrivals);
                 let any_retry = arrivals.iter().filter(|a| a.empty_polls > 0).count();
                 let total_requests = arrivals.len() as u32 + total_empty;
@@ -336,17 +272,11 @@ fn render_snapshot(
                 };
                 kv(
                     ui,
-                    "S3 requests (total / wasted)",
+                    "S3 requests / wasted",
                     &format!(
-                        "{total_requests} total → {total_empty} wasted ({waste_pct:.1}%)"
+                        "{total_requests} → {total_empty} wasted ({waste_pct:.1}%);  retries on {any_retry}/{} chunks",
+                        arrivals.len()
                     ),
-                    label_color,
-                    value_color,
-                );
-                kv(
-                    ui,
-                    "Chunks with ≥1 retry",
-                    &format!("{any_retry}/{}", arrivals.len()),
                     label_color,
                     value_color,
                 );
@@ -357,8 +287,21 @@ fn render_snapshot(
                 if let Some((mean, median, max_abs)) = stats_on(&pred_errs) {
                     kv(
                         ui,
-                        "Chunk prediction error (success - predicted)",
+                        "Chunk pred error (avail-space)",
                         &format!("mean {mean:+.2}s  median {median:+.2}s  max|{max_abs:.2}s|"),
+                        label_color,
+                        value_color,
+                    );
+                }
+                let interval_errs_ms = collect_interval_errors_ms(arrivals);
+                if let Some((mean, median, max_abs)) = stats_on(&interval_errs_ms) {
+                    kv(
+                        ui,
+                        "Interval err (collection-space, +ve = underestimated)",
+                        &format!(
+                            "mean {mean:+.0}ms  median {median:+.0}ms  max|{max_abs:.0}ms|  (n={})",
+                            interval_errs_ms.len()
+                        ),
                         label_color,
                         value_color,
                     );
@@ -370,59 +313,122 @@ fn render_snapshot(
                 if let Some((mean, median, max_abs)) = stats_on(&wait_after_last_empty) {
                     kv(
                         ui,
-                        "Wait after last empty (success - last_empty)",
+                        "Wait after last empty",
                         &format!("mean {mean:.0}ms  median {median:.0}ms  max {max_abs:.0}ms"),
                         label_color,
                         value_color,
                     );
                 }
-                // Lag vs. S3 publish time (Last-Modified header).
-                // The header is rendered with 1-second resolution, so individual
-                // values carry ±1s of quantization noise — treat magnitudes below
-                // that as indistinguishable from zero.
-                let wait_after_s3: Vec<f64> = arrivals
+                let lag_ms_values: Vec<f64> = arrivals
                     .iter()
-                    .filter_map(|a| a.wait_after_s3_publish_ms())
+                    .filter_map(|a| a.availability_lag_ms.map(|m| m as f64))
                     .collect();
-                if let Some((mean, median, max_abs)) = stats_on(&wait_after_s3) {
+                if let Some((mean, median, max_abs)) = stats_on(&lag_ms_values) {
                     kv(
                         ui,
-                        "Wait after S3 publish (success - Last-Modified)",
+                        "Availability lag (s3_last_mod − chunk_collection_end)",
                         &format!(
-                            "mean {mean:.0}ms  median {median:.0}ms  max {max_abs:.0}ms  (±1s quantized)"
+                            "mean {mean:.0}ms  median {median:.0}ms  max|{max_abs:.0}ms|  ({}/{} samples)",
+                            lag_ms_values.len(),
+                            arrivals.len()
                         ),
                         label_color,
                         value_color,
                     );
-                    // Values outside ±1s are real client-side wait (or real skew).
-                    // Values within ±1s are noise from Last-Modified truncation.
-                    let measurable: Vec<f64> =
-                        wait_after_s3.iter().copied().filter(|v| v.abs() > 1000.0).collect();
-                    if let Some((mean_m, _median_m, max_m)) = stats_on(&measurable) {
-                        kv(
-                            ui,
-                            "  measurable waits (|>1s|)",
-                            &format!(
-                                "{}/{}  mean {mean_m:.0}ms  max {max_m:.0}ms",
-                                measurable.len(),
-                                wait_after_s3.len()
-                            ),
-                            label_color,
-                            value_color,
-                        );
-                    } else {
-                        kv(
-                            ui,
-                            "  measurable waits (|>1s|)",
-                            "none — all chunks within ±1s quantization noise",
-                            label_color,
-                            value_color,
-                        );
-                    }
+                }
+                let path_tally = scheduler_path_tally(arrivals);
+                if path_tally.iter().any(|(_, n)| *n > 0) {
+                    kv(
+                        ui,
+                        "Estimator path",
+                        &format_path_tally(&path_tally),
+                        label_color,
+                        value_color,
+                    );
+                }
+                let anchor_tally = anchor_source_tally(arrivals);
+                if anchor_tally.iter().any(|(_, n)| *n > 0) {
+                    kv(
+                        ui,
+                        "Anchor source",
+                        &format_anchor_tally(&anchor_tally),
+                        label_color,
+                        value_color,
+                    );
                 }
             });
 
             ui.separator();
+
+            // ── Per-bucket stats ───────────────────────────────────────
+            let bucket_rows = compute_per_bucket_stats(arrivals);
+            if !bucket_rows.is_empty() {
+                ui.label(
+                    RichText::new("Per-bucket stats (chunks observed this volume)")
+                        .size(12.0)
+                        .strong()
+                        .color(heading_color),
+                );
+                ui.label(
+                    RichText::new(
+                        "bucket = chunk_type|waveform|channel|first_in_sweep;  \
+                         lag = s3_last_mod − chunk_collection_end",
+                    )
+                    .size(10.0)
+                    .color(label_color),
+                );
+                egui::Grid::new("vcp_forecast_bucket_grid")
+                    .striped(true)
+                    .min_col_width(44.0)
+                    .spacing(Vec2::new(10.0, 4.0))
+                    .show(ui, |ui| {
+                        for header in [
+                            "bucket",
+                            "n",
+                            "med_pred_err",
+                            "med_lag_ms",
+                            "n_lag",
+                            "med_wait_after_empty",
+                        ] {
+                            ui.label(
+                                RichText::new(header)
+                                    .size(10.0)
+                                    .strong()
+                                    .color(heading_color),
+                            );
+                        }
+                        ui.end_row();
+
+                        for row in &bucket_rows {
+                            mono_label(ui, &row.bucket.short(), value_color);
+                            mono_label(ui, &format!("{}", row.n), value_color);
+                            mono_label(
+                                ui,
+                                &row.median_pred_err_ms
+                                    .map(|m| format!("{m:+.0}ms"))
+                                    .unwrap_or_else(|| "—".into()),
+                                value_color,
+                            );
+                            mono_label(
+                                ui,
+                                &row.median_lag_ms
+                                    .map(|m| format!("{m:+.0}ms"))
+                                    .unwrap_or_else(|| "—".into()),
+                                value_color,
+                            );
+                            mono_label(ui, &format!("{}", row.n_lag), value_color);
+                            mono_label(
+                                ui,
+                                &row.median_wait_after_empty_ms
+                                    .map(|m| format!("{m:.0}ms"))
+                                    .unwrap_or_else(|| "—".into()),
+                                value_color,
+                            );
+                            ui.end_row();
+                        }
+                    });
+                ui.separator();
+            }
 
             // ── Chunk arrivals ─────────────────────────────────────────
             ui.label(
@@ -442,15 +448,17 @@ fn render_snapshot(
             } else {
                 ui.label(
                     RichText::new(
-                        "legend: elev shows elevation# (chunk-index/chunks-in-sweep);  \
-                         times are offsets from volume_start;  wait_after_s3 has ±1s precision",
+                        "elev = elevation# (chunk-i+1/N);  \
+                         path = hist|phys|legacy|start;  anchor = obs|median|default;  \
+                         act_int / pred_wait / Δint are collection-space (Δint = act_int − pred_wait);  \
+                         physics shows the dominant case + key terms",
                     )
                     .size(10.0)
                     .color(label_color),
                 );
                 egui::Grid::new("vcp_forecast_arrivals_grid")
                     .striped(true)
-                    .min_col_width(44.0)
+                    .min_col_width(40.0)
                     .spacing(Vec2::new(10.0, 4.0))
                     .show(ui, |ui| {
                         for header in [
@@ -458,15 +466,16 @@ fn render_snapshot(
                             "type",
                             "elev",
                             "empty",
-                            "predicted_at",
-                            "success_at",
+                            "bucket",
+                            "stats_n",
+                            "path",
+                            "anchor",
                             "pred_err",
-                            "first_empty",
-                            "last_empty",
-                            "wait_after_empty",
-                            "s3_last_mod",
-                            "wait_after_s3",
-                            "fetch_ms",
+                            "act_int",
+                            "pred_wait",
+                            "Δint",
+                            "lag_ms",
+                            "physics",
                         ] {
                             ui.label(
                                 RichText::new(header)
@@ -478,16 +487,17 @@ fn render_snapshot(
                         ui.end_row();
 
                         let mut prev_elev: Option<u8> = None;
+                        let mut prev_arrival: Option<&ChunkArrivalStat> = None;
                         for a in arrivals {
-                            // Insert a blank visual break between elevations.
                             if prev_elev.is_some() && a.elevation_number != prev_elev {
-                                for _ in 0..13 {
+                                for _ in 0..14 {
                                     ui.label("");
                                 }
                                 ui.end_row();
                             }
                             prev_elev = a.elevation_number;
-                            arrival_row(ui, a, snap.volume_start, label_color, value_color);
+                            arrival_row(ui, a, prev_arrival, label_color, value_color);
+                            prev_arrival = Some(a);
                         }
                     });
             }
@@ -498,7 +508,7 @@ fn render_snapshot(
     ui.separator();
     ui.horizontal(|ui| {
         if ui.button("Copy to clipboard").clicked() {
-            let text = serialize_forecast(snap, arrivals);
+            let text = serialize_forecast(snap, arrivals, site_id);
             ctx.copy_text(text);
             state.status_message = "Forecast diagnostics copied to clipboard".to_string();
         }
@@ -513,190 +523,182 @@ fn render_snapshot(
 fn arrival_row(
     ui: &mut egui::Ui,
     a: &ChunkArrivalStat,
-    vol_start: f64,
+    prev: Option<&ChunkArrivalStat>,
     label_color: egui::Color32,
     value_color: egui::Color32,
 ) {
-    let mono = |ui: &mut egui::Ui, text: String, color: egui::Color32| {
-        ui.label(RichText::new(text).size(10.0).monospace().color(color));
-    };
-    let fmt_off = |t: f64| format!("+{:.2}s", t - vol_start);
-
-    mono(ui, format!("{}", a.sequence), value_color);
-    mono(ui, a.chunk_type.to_string(), label_color);
-    mono(ui, fmt_elev(a), label_color);
+    mono_label(ui, &format!("{}", a.sequence), value_color);
+    mono_label(ui, a.chunk_type, label_color);
+    mono_label(ui, &fmt_elev(a), label_color);
     let empty_color = if a.empty_polls > 0 {
         egui::Color32::from_rgb(220, 140, 60)
     } else {
         value_color
     };
-    mono(ui, format!("{}", a.empty_polls), empty_color);
-    mono(
+    mono_label_color(ui, &format!("{}", a.empty_polls), empty_color);
+    mono_label(
         ui,
-        a.predicted_available_at
-            .map(fmt_off)
+        &a.bucket_key
+            .as_ref()
+            .map(BucketKey::short)
             .unwrap_or_else(|| "—".into()),
+        label_color,
+    );
+    mono_label(
+        ui,
+        &if a.stats_n_at_prediction == 0 {
+            "—".into()
+        } else {
+            format!("{}", a.stats_n_at_prediction)
+        },
         value_color,
     );
-    mono(ui, fmt_off(a.success_at), value_color);
-    mono(
+    mono_label(
         ui,
-        a.prediction_error_secs()
+        a.scheduler_path.map(|p| p.short()).unwrap_or("—"),
+        label_color,
+    );
+    mono_label(
+        ui,
+        a.anchor_source.map(|s| s.short()).unwrap_or("—"),
+        label_color,
+    );
+    mono_label(
+        ui,
+        &a.prediction_error_secs()
             .map(|e| format!("{e:+.2}s"))
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
-    mono(
+    let act_int = prev.and_then(|p| a.actual_interval_secs(p));
+    mono_label(
         ui,
-        a.first_empty_poll_at
-            .map(fmt_off)
+        &act_int
+            .map(|s| format!("{s:.2}s"))
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
-    mono(
+    mono_label(
         ui,
-        a.last_empty_poll_at
-            .map(fmt_off)
+        &a.predicted_wait_secs
+            .map(|s| format!("{s:.2}s"))
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
-    mono(
+    let int_err = prev.and_then(|p| a.interval_error_ms(p));
+    let int_err_color = match int_err {
+        Some(e) if e.abs() > 1000.0 => egui::Color32::from_rgb(220, 140, 60),
+        _ => value_color,
+    };
+    mono_label_color(
         ui,
-        a.wait_after_last_empty_ms()
-            .map(|ms| format!("{ms:.0}ms"))
+        &int_err
+            .map(|ms| format!("{ms:+.0}ms"))
+            .unwrap_or_else(|| "—".into()),
+        int_err_color,
+    );
+    mono_label(
+        ui,
+        &a.availability_lag_ms
+            .map(|ms| format!("{ms:+}ms"))
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
-    mono(
-        ui,
-        a.s3_last_modified_at
-            .map(fmt_off)
-            .unwrap_or_else(|| "—".into()),
-        value_color,
-    );
-    mono(
-        ui,
-        a.wait_after_s3_publish_ms()
-            .map(|ms| format!("{ms:.0}ms"))
-            .unwrap_or_else(|| "—".into()),
-        value_color,
-    );
-    mono(ui, format!("{:.0}ms", a.fetch_latency_ms), value_color);
+    mono_label(ui, &fmt_physics(a.physics_breakdown.as_ref()), value_color);
     ui.end_row();
+}
+
+fn mono_label(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    ui.label(RichText::new(text).size(10.0).monospace().color(color));
+}
+
+fn mono_label_color(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    ui.label(RichText::new(text).size(10.0).monospace().color(color));
 }
 
 fn total_empty_polls(arrivals: &[ChunkArrivalStat]) -> u32 {
     arrivals.iter().map(|a| a.empty_polls).sum()
 }
 
-// ── Grid row ────────────────────────────────────────────────────────────
+// ── Per-elevation grid row ──────────────────────────────────────────────
 
 fn grid_row(
     ui: &mut egui::Ui,
     s: &SweepForecast,
-    vol_start: f64,
     label_color: egui::Color32,
     value_color: egui::Color32,
 ) {
-    let mono = |ui: &mut egui::Ui, text: String, color: egui::Color32| {
-        ui.label(RichText::new(text).size(10.0).monospace().color(color));
-    };
+    mono_label(ui, &format!("{}", s.elev_number), value_color);
+    mono_label(ui, &format!("{:.2}°", s.elev_angle), value_color);
+    mono_label(ui, &s.waveform, value_color);
+    mono_label(ui, &format!("{:.2}", s.azimuth_rate_used), value_color);
+    mono_label(ui, s.rate_source.short(), label_color);
 
-    mono(ui, format!("{}", s.elev_number), value_color);
-    mono(ui, format!("{:.2}°", s.elev_angle), value_color);
-    mono(ui, s.waveform.clone(), value_color);
-    mono(ui, format!("{}", s.prf_number), value_color);
-    mono(ui, cut_type_tag(s).to_string(), label_color);
-    mono(
+    mono_label(ui, &format!("{:.1}s", s.predicted_duration), value_color);
+    mono_label(
         ui,
-        s.vcp_azimuth_rate
-            .map(|r| format!("{r:.2}"))
-            .unwrap_or_else(|| "—".into()),
-        value_color,
-    );
-    mono(ui, format!("{:.2}", s.fallback_azimuth_rate), value_color);
-    mono(ui, format!("{:.2}", s.azimuth_rate_used), value_color);
-    mono(ui, s.rate_source.short().to_string(), label_color);
-
-    mono(ui, format!("{:.1}s", s.predicted_duration), value_color);
-    mono(
-        ui,
-        s.actual_duration()
+        &s.actual_duration()
             .map(|d| format!("{d:.1}s"))
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
-    mono(
+    mono_label(
         ui,
-        s.actual_duration()
+        &s.actual_duration()
             .map(|d| format!("{:+.2}s", d - s.predicted_duration))
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
+    mono_label(
+        ui,
+        &s.actual_start
+            .map(|a| format!("{:+.2}s", a - s.predicted_start))
+            .unwrap_or_else(|| "—".into()),
+        value_color,
+    );
 
-    mono(
+    mono_label(
         ui,
-        s.predicted_chunks
+        &s.predicted_chunks
             .map(|c| format!("{c}"))
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
-    mono(
+    mono_label(
         ui,
-        s.actual_chunks
+        &s.actual_chunks
             .map(|c| format!("{c}"))
             .unwrap_or_else(|| "—".into()),
         value_color,
     );
-    mono(
+    mono_label(
         ui,
-        match (s.actual_chunks, s.predicted_chunks) {
+        &match (s.actual_chunks, s.predicted_chunks) {
             (Some(a), Some(p)) => format!("{:+}", a as i32 - p as i32),
             _ => "—".into(),
         },
         value_color,
     );
-
-    mono(
-        ui,
-        s.actual_start
-            .map(|a| format!("{:+.2}s", a - s.predicted_start))
-            .unwrap_or_else(|| "—".into()),
-        value_color,
-    );
-    mono(
+    mono_label(
         ui,
         match s.timing_source {
-            Some(SweepTiming::Observed) => "Observed".to_string(),
-            Some(SweepTiming::Anchored) => "Anchored".to_string(),
-            Some(SweepTiming::Estimated) => "Estimated".to_string(),
-            None => "—".into(),
+            Some(SweepTiming::Observed) => "Obs",
+            Some(SweepTiming::Anchored) => "Anch",
+            Some(SweepTiming::Estimated) => "Est",
+            None => "—",
         },
         label_color,
     );
-    mono(
+    mono_label(
         ui,
         match s.status {
-            SweepStatus::Complete => "Complete".to_string(),
-            SweepStatus::InProgress { .. } => "InProg".to_string(),
-            SweepStatus::Future => "Future".to_string(),
+            SweepStatus::Complete => "Complete",
+            SweepStatus::InProgress { .. } => "InProg",
+            SweepStatus::Future => "Future",
         },
         label_color,
     );
-    let _ = vol_start; // reserved for future per-row offset columns
     ui.end_row();
-}
-
-fn cut_type_tag(s: &SweepForecast) -> &'static str {
-    if s.is_sails {
-        "SAILS"
-    } else if s.is_mrle {
-        "MRLE"
-    } else if s.is_base_tilt {
-        "BASE"
-    } else {
-        "—"
-    }
 }
 
 fn kv(
@@ -719,8 +721,6 @@ fn kv(
     });
 }
 
-/// Format the elevation / chunk-in-sweep identifier for display.
-/// E.g. "1 (1/3)" for elevation 1, chunk 1 of 3. "—" for the volume Start chunk.
 fn fmt_elev(a: &ChunkArrivalStat) -> String {
     match (
         a.elevation_number,
@@ -733,18 +733,35 @@ fn fmt_elev(a: &ChunkArrivalStat) -> String {
     }
 }
 
-fn rate_source_tally(snap: &VolumeForecastSnapshot) -> (usize, usize, usize) {
-    let mut a = 0;
-    let mut b = 0;
-    let mut lib = 0;
-    for s in &snap.sweeps {
-        match s.rate_source {
-            RateSource::VcpMessage => a += 1,
-            RateSource::MethodBFallback => b += 1,
-            RateSource::ProjectionLibrary => lib += 1,
+/// Compact one-cell summary of the physics decomposition. Format:
+///   intra: chunk_dur
+///   inter_sweep: gap+wf=total
+///   inter_volume: total
+fn fmt_physics(b: Option<&PhysicsBreakdown>) -> String {
+    let Some(b) = b else {
+        return "—".into();
+    };
+    match b.case {
+        IntervalCase::IntraSweep => match b.chunk_duration_secs {
+            Some(d) => format!("intra {d:.2}s"),
+            None => format!("intra ~{:.2}s", b.total_secs),
+        },
+        IntervalCase::InterSweep => {
+            let gap = b.inter_sweep_gap_secs.unwrap_or(0.0);
+            let wf = b.waveform_penalty_secs.unwrap_or(0.0);
+            let chunk = b.chunk_duration_secs.unwrap_or(0.0);
+            // wf is included inside `gap` already; show it separately so
+            // the source of any anomaly is obvious at a glance.
+            format!(
+                "is g={:.2} (wf={:.1}) ch={:.2} → {:.2}s",
+                gap - wf,
+                wf,
+                chunk,
+                b.total_secs
+            )
         }
+        IntervalCase::InterVolume => format!("inter_vol {:.2}s", b.total_secs),
     }
-    (a, b, lib)
 }
 
 fn count_statuses(snap: &VolumeForecastSnapshot) -> (usize, usize, usize) {
@@ -778,12 +795,24 @@ fn stats_on(values: &[f64]) -> Option<(f64, f64, f64)> {
     Some((mean, median, max_abs))
 }
 
+fn median_of(mut values: Vec<f64>) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = values.len() / 2;
+    Some(if values.len().is_multiple_of(2) {
+        (values[mid - 1] + values[mid]) / 2.0
+    } else {
+        values[mid]
+    })
+}
+
 /// Format a Unix-seconds timestamp as `YYYY-MM-DD HH:MM:SSZ`.
 fn format_time(secs: f64) -> String {
     let ms = (secs * 1000.0) as i64;
     let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64));
     let iso = date.to_iso_string().as_string().unwrap_or_default();
-    // "2026-04-21T18:14:03.000Z" → "2026-04-21 18:14:03Z"
     if iso.len() >= 20 {
         format!("{} {}Z", &iso[0..10], &iso[11..19])
     } else {
@@ -791,156 +820,181 @@ fn format_time(secs: f64) -> String {
     }
 }
 
+// ── Per-bucket aggregation (computed from arrivals) ─────────────────────
+
+#[derive(Debug, Clone)]
+struct BucketRow {
+    bucket: BucketKey,
+    n: usize,
+    median_pred_err_ms: Option<f64>,
+    median_lag_ms: Option<f64>,
+    n_lag: usize,
+    median_wait_after_empty_ms: Option<f64>,
+}
+
+/// Collect per-chunk interval-prediction errors in collection space (ms).
+/// Walks pairs of consecutive arrivals; only contributes when both have a
+/// `collection_time_secs` and the later has a `predicted_wait_secs`.
+fn collect_interval_errors_ms(arrivals: &[ChunkArrivalStat]) -> Vec<f64> {
+    let mut out = Vec::new();
+    let mut prev: Option<&ChunkArrivalStat> = None;
+    for a in arrivals {
+        if let Some(p) = prev {
+            if let Some(e) = a.interval_error_ms(p) {
+                out.push(e);
+            }
+        }
+        prev = Some(a);
+    }
+    out
+}
+
+/// Per-bucket sample collector — one entry per bucket key seen.
+struct BucketAccum {
+    bucket: BucketKey,
+    pred_errs_ms: Vec<f64>,
+    lags_ms: Vec<f64>,
+    waits_ms: Vec<f64>,
+}
+
+fn compute_per_bucket_stats(arrivals: &[ChunkArrivalStat]) -> Vec<BucketRow> {
+    let mut by_bucket: BTreeMap<String, BucketAccum> = BTreeMap::new();
+    for a in arrivals {
+        let Some(bucket) = a.bucket_key else {
+            continue;
+        };
+        let entry = by_bucket.entry(bucket.short()).or_insert(BucketAccum {
+            bucket,
+            pred_errs_ms: Vec::new(),
+            lags_ms: Vec::new(),
+            waits_ms: Vec::new(),
+        });
+        if let Some(e) = a.prediction_error_secs() {
+            entry.pred_errs_ms.push(e * 1000.0);
+        }
+        if let Some(l) = a.availability_lag_ms {
+            entry.lags_ms.push(l as f64);
+        }
+        if let Some(w) = a.wait_after_last_empty_ms() {
+            entry.waits_ms.push(w);
+        }
+    }
+    by_bucket
+        .into_values()
+        .map(|acc| {
+            let n = acc
+                .pred_errs_ms
+                .len()
+                .max(acc.lags_ms.len())
+                .max(acc.waits_ms.len())
+                .max(1);
+            let n_lag = acc.lags_ms.len();
+            BucketRow {
+                bucket: acc.bucket,
+                n,
+                median_pred_err_ms: median_of(acc.pred_errs_ms),
+                median_lag_ms: median_of(acc.lags_ms),
+                n_lag,
+                median_wait_after_empty_ms: median_of(acc.waits_ms),
+            }
+        })
+        .collect()
+}
+
+fn scheduler_path_tally(arrivals: &[ChunkArrivalStat]) -> [(SchedulerPath, u32); 4] {
+    let mut t = [
+        (SchedulerPath::StartConstant, 0u32),
+        (SchedulerPath::Historical, 0),
+        (SchedulerPath::Physics, 0),
+        (SchedulerPath::Legacy, 0),
+    ];
+    for a in arrivals {
+        if let Some(p) = a.scheduler_path {
+            for slot in t.iter_mut() {
+                if slot.0 == p {
+                    slot.1 += 1;
+                }
+            }
+        }
+    }
+    t
+}
+
+fn format_path_tally(t: &[(SchedulerPath, u32); 4]) -> String {
+    t.iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(p, n)| format!("{}={}", p.short(), n))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn anchor_source_tally(arrivals: &[ChunkArrivalStat]) -> [(AnchorSource, u32); 3] {
+    let mut t = [
+        (AnchorSource::ObservedCollection, 0u32),
+        (AnchorSource::UploadMinusMedian, 0),
+        (AnchorSource::UploadMinusDefault, 0),
+    ];
+    for a in arrivals {
+        if let Some(s) = a.anchor_source {
+            for slot in t.iter_mut() {
+                if slot.0 == s {
+                    slot.1 += 1;
+                }
+            }
+        }
+    }
+    t
+}
+
+fn format_anchor_tally(t: &[(AnchorSource, u32); 3]) -> String {
+    t.iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(s, n)| format!("{}={}", s.short(), n))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
 // ── Plain-text serialization (clipboard payload) ────────────────────────
 
-pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArrivalStat]) -> String {
+pub fn serialize_forecast(
+    snap: &VolumeForecastSnapshot,
+    arrivals: &[ChunkArrivalStat],
+    site_id: &str,
+) -> String {
     let mut out = String::new();
 
     let name = snap.vcp_name.unwrap_or("?");
     let _ = writeln!(
         out,
-        "VCP {} ({})  clear_air={}  elevations={}",
-        snap.vcp_number, name, snap.is_clear_air, snap.expected_elevation_count
+        "site={} VCP={} ({}) mode={} elevations={}",
+        site_id,
+        snap.vcp_number,
+        name,
+        if snap.is_clear_air {
+            "clear_air"
+        } else {
+            "precip"
+        },
+        snap.expected_elevation_count
     );
     let _ = writeln!(out, "volume_start={}", format_time(snap.volume_start));
     let predicted_dur = snap.predicted_volume_end - snap.volume_start;
+    let actual_dur_str = snap
+        .actual_volume_end
+        .map(|e| format!("{:.1}s", e - snap.volume_start))
+        .unwrap_or_else(|| "—".into());
+    let drift_str = snap
+        .actual_volume_end
+        .map(|e| format!("{:+.1}s", e - snap.predicted_volume_end))
+        .unwrap_or_else(|| "—".into());
     let _ = writeln!(
         out,
-        "predicted_end={} (+{:.1}s)  actual_end={}  drift={}",
-        format_time(snap.predicted_volume_end),
-        predicted_dur,
-        snap.actual_volume_end
-            .map(|e| format!("{} (+{:.1}s)", format_time(e), e - snap.volume_start))
-            .unwrap_or_else(|| "—".into()),
-        snap.actual_volume_end
-            .map(|e| format!("{:+.1}s", e - snap.predicted_volume_end))
-            .unwrap_or_else(|| "—".into())
+        "duration: pred={:.1}s actual={} drift={}",
+        predicted_dur, actual_dur_str, drift_str
     );
     let _ = writeln!(
         out,
-        "inter_volume_gap={} (prev_end={})  predicted_gap={}",
-        snap.inter_volume_gap_secs
-            .map(|g| format!("{g:+.2}s"))
-            .unwrap_or_else(|| "—".into()),
-        snap.previous_volume_end
-            .map(format_time)
-            .unwrap_or_else(|| "—".into()),
-        snap.predicted_inter_volume_gap_secs
-            .map(|g| format!("{g:+.2}s"))
-            .unwrap_or_else(|| "—".into())
-    );
-    let (m_a, m_b, m_lib) = rate_source_tally(snap);
-    let _ = writeln!(
-        out,
-        "projections_at_start={}  rates: vcp={}  fallback={}  library={}",
-        snap.chunk_projections_available_at_start, m_a, m_b, m_lib
-    );
-    out.push('\n');
-
-    let _ = writeln!(
-        out,
-        "legend: tag = SAILS/MRLE/BASE/— (standard);  src = LIB (projection) / VCP (msg rate) / FB (fallback);  Δ = actual − predicted"
-    );
-    let _ = writeln!(
-        out,
-        "elv  angle  wf    prf tag    vcp_r  fb_r  used  src | pred_dur act_dur  Δdur  | pred_ch act_ch Δch | Δstart  | timing     status"
-    );
-
-    for s in &snap.sweeps {
-        let _ = writeln!(
-            out,
-            "{:>3}  {:>5.2}  {:<4} {:>3} {:<5}  {:>5}  {:>5.2} {:>5.2} {:<3} | {:>6.1}s {:>6}s {:>5} | {:>6} {:>6} {:>3} | {:>6}  | {:<10} {}",
-            s.elev_number,
-            s.elev_angle,
-            trim_str(&s.waveform, 4),
-            s.prf_number,
-            cut_type_tag(s),
-            s.vcp_azimuth_rate
-                .map(|r| format!("{r:.2}"))
-                .unwrap_or_else(|| "—".into()),
-            s.fallback_azimuth_rate,
-            s.azimuth_rate_used,
-            s.rate_source.short(),
-            s.predicted_duration,
-            s.actual_duration()
-                .map(|d| format!("{d:.1}"))
-                .unwrap_or_else(|| "—".into()),
-            s.actual_duration()
-                .map(|d| format!("{:+.2}s", d - s.predicted_duration))
-                .unwrap_or_else(|| "—".into()),
-            s.predicted_chunks
-                .map(|c| format!("{c}"))
-                .unwrap_or_else(|| "—".into()),
-            s.actual_chunks
-                .map(|c| format!("{c}"))
-                .unwrap_or_else(|| "—".into()),
-            match (s.actual_chunks, s.predicted_chunks) {
-                (Some(a), Some(p)) => format!("{:+}", a as i32 - p as i32),
-                _ => "—".into(),
-            },
-            s.actual_start
-                .map(|a| format!("{:+.2}s", a - s.predicted_start))
-                .unwrap_or_else(|| "—".into()),
-            match s.timing_source {
-                Some(SweepTiming::Observed) => "Observed",
-                Some(SweepTiming::Anchored) => "Anchored",
-                Some(SweepTiming::Estimated) => "Estimated",
-                None => "—",
-            },
-            match s.status {
-                SweepStatus::Complete => "Complete",
-                SweepStatus::InProgress { .. } => "InProgress",
-                SweepStatus::Future => "Future",
-            },
-        );
-    }
-
-    out.push('\n');
-
-    let (complete, in_progress, future) = count_statuses(snap);
-    let _ = writeln!(
-        out,
-        "summary: complete={complete}  in_progress={in_progress}  future={future}"
-    );
-
-    let dur_errs: Vec<f64> = snap
-        .sweeps
-        .iter()
-        .filter_map(|s| s.actual_duration().map(|d| d - s.predicted_duration))
-        .collect();
-    if let Some((mean, median, max_abs)) = stats_on(&dur_errs) {
-        let _ = writeln!(
-            out,
-            "duration_err: mean={mean:+.2}s  median={median:+.2}s  max_abs={max_abs:.2}s"
-        );
-    } else {
-        let _ = writeln!(out, "duration_err: —");
-    }
-
-    let chunk_errs: Vec<f64> = snap
-        .sweeps
-        .iter()
-        .filter_map(|s| match (s.actual_chunks, s.predicted_chunks) {
-            (Some(a), Some(p)) => Some(a as f64 - p as f64),
-            _ => None,
-        })
-        .collect();
-    if let Some((mean, _median, max_abs)) = stats_on(&chunk_errs) {
-        let _ = writeln!(out, "chunk_err:    mean={mean:+.2}  max_abs={max_abs:.0}");
-    } else {
-        let _ = writeln!(out, "chunk_err: —");
-    }
-
-    if let Some(end) = snap.actual_volume_end {
-        let _ = writeln!(
-            out,
-            "volume_end_drift: {:+.2}s",
-            end - snap.predicted_volume_end
-        );
-    }
-    let _ = writeln!(
-        out,
-        "inter_volume_gap: observed={}  predicted={}  delta={}",
+        "inter_volume_gap: obs={} pred={} delta={}",
         snap.inter_volume_gap_secs
             .map(|g| format!("{g:+.2}s"))
             .unwrap_or_else(|| "—".into()),
@@ -955,8 +1009,88 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
             _ => "—".into(),
         },
     );
+    out.push('\n');
 
-    // ── Chunk arrivals ───────────────────────────────────────────────
+    // ── Per-elevation table ─────────────────────────────────────────
+    let _ = writeln!(
+        out,
+        "elv  ang    wf    used  src | pred_dur act_dur Δdur   Δstart | pred_ch act_ch Δch | timing status"
+    );
+    for s in &snap.sweeps {
+        let _ = writeln!(
+            out,
+            "{:>3}  {:>5.2}  {:<4} {:>5.2} {:<3} | {:>6.1}s {:>6}s {:>5} {:>6} | {:>6} {:>6} {:>3} | {:<6} {}",
+            s.elev_number,
+            s.elev_angle,
+            trim_str(&s.waveform, 4),
+            s.azimuth_rate_used,
+            s.rate_source.short(),
+            s.predicted_duration,
+            s.actual_duration()
+                .map(|d| format!("{d:.1}"))
+                .unwrap_or_else(|| "—".into()),
+            s.actual_duration()
+                .map(|d| format!("{:+.2}s", d - s.predicted_duration))
+                .unwrap_or_else(|| "—".into()),
+            s.actual_start
+                .map(|a| format!("{:+.2}s", a - s.predicted_start))
+                .unwrap_or_else(|| "—".into()),
+            s.predicted_chunks
+                .map(|c| format!("{c}"))
+                .unwrap_or_else(|| "—".into()),
+            s.actual_chunks
+                .map(|c| format!("{c}"))
+                .unwrap_or_else(|| "—".into()),
+            match (s.actual_chunks, s.predicted_chunks) {
+                (Some(a), Some(p)) => format!("{:+}", a as i32 - p as i32),
+                _ => "—".into(),
+            },
+            match s.timing_source {
+                Some(SweepTiming::Observed) => "Obs",
+                Some(SweepTiming::Anchored) => "Anch",
+                Some(SweepTiming::Estimated) => "Est",
+                None => "—",
+            },
+            match s.status {
+                SweepStatus::Complete => "Complete",
+                SweepStatus::InProgress { .. } => "InProgress",
+                SweepStatus::Future => "Future",
+            },
+        );
+    }
+    out.push('\n');
+
+    // ── Summary ─────────────────────────────────────────────────────
+    let (complete, in_progress, future) = count_statuses(snap);
+    let _ = writeln!(
+        out,
+        "summary: complete={complete} in_progress={in_progress} future={future}"
+    );
+
+    let dur_errs: Vec<f64> = snap
+        .sweeps
+        .iter()
+        .filter_map(|s| s.actual_duration().map(|d| d - s.predicted_duration))
+        .collect();
+    if let Some((mean, median, max_abs)) = stats_on(&dur_errs) {
+        let _ = writeln!(
+            out,
+            "duration_err: mean={mean:+.2}s median={median:+.2}s max_abs={max_abs:.2}s"
+        );
+    }
+
+    let chunk_errs: Vec<f64> = snap
+        .sweeps
+        .iter()
+        .filter_map(|s| match (s.actual_chunks, s.predicted_chunks) {
+            (Some(a), Some(p)) => Some(a as f64 - p as f64),
+            _ => None,
+        })
+        .collect();
+    if let Some((mean, _median, max_abs)) = stats_on(&chunk_errs) {
+        let _ = writeln!(out, "chunk_err: mean={mean:+.2} max_abs={max_abs:.0}");
+    }
+
     let total_empty = total_empty_polls(arrivals);
     let any_retry = arrivals.iter().filter(|a| a.empty_polls > 0).count();
     let total_requests = arrivals.len() as u32 + total_empty;
@@ -967,14 +1101,7 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
     };
     let _ = writeln!(
         out,
-        "s3_requests: {total_requests} total ({} successes + {total_empty} empty polls) → {waste_pct:.1}% wasted",
-        arrivals.len()
-    );
-    let _ = writeln!(
-        out,
-        "chunk_arrivals: count={} chunks_with_retries={}/{}",
-        arrivals.len(),
-        any_retry,
+        "s3_requests: {total_requests} total → {total_empty} wasted ({waste_pct:.1}%)  retries_on={any_retry}/{} chunks",
         arrivals.len()
     );
     let pred_errs: Vec<f64> = arrivals
@@ -984,10 +1111,16 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
     if let Some((mean, median, max_abs)) = stats_on(&pred_errs) {
         let _ = writeln!(
             out,
-            "chunk_pred_err: mean={mean:+.2}s  median={median:+.2}s  max_abs={max_abs:.2}s"
+            "chunk_pred_err: mean={mean:+.2}s median={median:+.2}s max_abs={max_abs:.2}s  (availability-space)"
         );
-    } else {
-        let _ = writeln!(out, "chunk_pred_err: —");
+    }
+    let interval_errs_ms = collect_interval_errors_ms(arrivals);
+    if let Some((mean, median, max_abs)) = stats_on(&interval_errs_ms) {
+        let _ = writeln!(
+            out,
+            "interval_err: mean={mean:+.0}ms median={median:+.0}ms max_abs={max_abs:.0}ms  (collection-space, n={}; positive = chunk took longer than predicted)",
+            interval_errs_ms.len()
+        );
     }
     let wait_after_empty_ms: Vec<f64> = arrivals
         .iter()
@@ -996,121 +1129,118 @@ pub fn serialize_forecast(snap: &VolumeForecastSnapshot, arrivals: &[ChunkArriva
     if let Some((mean, median, max_abs)) = stats_on(&wait_after_empty_ms) {
         let _ = writeln!(
             out,
-            "wait_after_last_empty_ms: mean={mean:.0}  median={median:.0}  max_abs={max_abs:.0}"
+            "wait_after_last_empty_ms: mean={mean:.0} median={median:.0} max_abs={max_abs:.0}"
         );
-    } else {
-        let _ = writeln!(out, "wait_after_last_empty_ms: —  (no retries)");
     }
-    let wait_after_s3_ms: Vec<f64> = arrivals
+    let lag_ms: Vec<f64> = arrivals
         .iter()
-        .filter_map(|a| a.wait_after_s3_publish_ms())
+        .filter_map(|a| a.availability_lag_ms.map(|m| m as f64))
         .collect();
-    let s3_coverage = arrivals
-        .iter()
-        .filter(|a| a.s3_last_modified_at.is_some())
-        .count();
-    if let Some((mean, median, max_abs)) = stats_on(&wait_after_s3_ms) {
+    if let Some((mean, median, max_abs)) = stats_on(&lag_ms) {
         let _ = writeln!(
             out,
-            "wait_after_s3_publish_ms: mean={mean:.0}  median={median:.0}  max_abs={max_abs:.0}  (coverage {}/{}; ±1s quantized — Last-Modified is second-precision)",
-            s3_coverage,
+            "availability_lag_ms: mean={mean:.0} median={median:.0} max_abs={max_abs:.0}  (n={}/{})",
+            lag_ms.len(),
             arrivals.len()
         );
-        // Filter to measurable waits only — |values| > 1000 ms are outside the
-        // quantization noise band and reflect real client-side wait.
-        let measurable: Vec<f64> = wait_after_s3_ms
-            .iter()
-            .copied()
-            .filter(|v| v.abs() > 1000.0)
-            .collect();
-        if let Some((mean_m, _median_m, max_m)) = stats_on(&measurable) {
+    }
+    let path_tally = scheduler_path_tally(arrivals);
+    if path_tally.iter().any(|(_, n)| *n > 0) {
+        let _ = writeln!(out, "path: {}", format_path_tally(&path_tally));
+    }
+    let anchor_tally = anchor_source_tally(arrivals);
+    if anchor_tally.iter().any(|(_, n)| *n > 0) {
+        let _ = writeln!(out, "anchor: {}", format_anchor_tally(&anchor_tally));
+    }
+    out.push('\n');
+
+    // ── Per-bucket table ────────────────────────────────────────────
+    let bucket_rows = compute_per_bucket_stats(arrivals);
+    if !bucket_rows.is_empty() {
+        let _ = writeln!(
+            out,
+            "per_bucket  (bucket = chunk_type|waveform|channel|first_in_sweep)"
+        );
+        let _ = writeln!(
+            out,
+            "  bucket           n   med_pred_err  med_lag    n_lag  med_wait_empty"
+        );
+        for row in &bucket_rows {
             let _ = writeln!(
                 out,
-                "wait_after_s3_measurable: {}/{} chunks outside ±1s band  mean={mean_m:.0}ms  max={max_m:.0}ms",
-                measurable.len(),
-                wait_after_s3_ms.len()
-            );
-        } else {
-            let _ = writeln!(
-                out,
-                "wait_after_s3_measurable: 0/{} — all chunks within ±1s quantization noise (no measurable client-side wait)",
-                wait_after_s3_ms.len()
+                "  {:<16} {:>3}  {:>11}  {:>8}  {:>5}  {:>13}",
+                row.bucket.short(),
+                row.n,
+                row.median_pred_err_ms
+                    .map(|m| format!("{m:+.0}ms"))
+                    .unwrap_or_else(|| "—".into()),
+                row.median_lag_ms
+                    .map(|m| format!("{m:+.0}ms"))
+                    .unwrap_or_else(|| "—".into()),
+                row.n_lag,
+                row.median_wait_after_empty_ms
+                    .map(|m| format!("{m:.0}ms"))
+                    .unwrap_or_else(|| "—".into()),
             );
         }
-    } else {
-        let _ = writeln!(
-            out,
-            "wait_after_s3_publish_ms: —  (Last-Modified unavailable for all chunks)"
-        );
-    }
-    let slop_ms: Vec<f64> = arrivals
-        .iter()
-        .filter_map(|a| a.scheduler_slop_ms())
-        .collect();
-    if let Some((mean, median, max_abs)) = stats_on(&slop_ms) {
-        let _ = writeln!(
-            out,
-            "scheduler_slop_ms: mean={mean:+.0}  median={median:+.0}  max_abs={max_abs:.0}  (scheduled - predicted; expected ≈ POLL_DELAY_AFTER_PREDICTED_MS)"
-        );
-    }
-    let fetch_ms: Vec<f64> = arrivals.iter().map(|a| a.fetch_latency_ms).collect();
-    if let Some((mean, median, max_abs)) = stats_on(&fetch_ms) {
-        let _ = writeln!(
-            out,
-            "fetch_latency_ms: mean={mean:.0}  median={median:.0}  max_abs={max_abs:.0}"
-        );
+        out.push('\n');
     }
 
+    // ── Per-chunk arrivals table ───────────────────────────────────
     if !arrivals.is_empty() {
-        out.push('\n');
         let _ = writeln!(
             out,
-            "legend: all times are offsets from volume_start;  elev shows elevation# (chunk-index-in-sweep / chunks-in-sweep)"
+            "chunk_arrivals  (path = hist|phys|legacy|start;  anchor = obs|median|default;  Δint = act_int − pred_wait, collection-space)"
         );
         let _ = writeln!(
             out,
-            "seq  type          elev        empty  predicted_at  success_at  pred_err  first_empty  last_empty  wait_after_empty  s3_last_mod  wait_after_s3  fetch_ms"
+            "  seq  type          elev        empty  bucket            stats_n  path    anchor   pred_err  act_int  pred_wait    Δint     lag_ms    physics"
         );
         let mut prev_elev: Option<u8> = None;
+        let mut prev_arrival: Option<&ChunkArrivalStat> = None;
         for a in arrivals {
-            // Blank line on elevation transitions (but not before the first row).
             if prev_elev.is_some() && a.elevation_number != prev_elev {
                 out.push('\n');
             }
             prev_elev = a.elevation_number;
-
-            let fmt_off = |t: f64| format!("+{:.2}s", t - snap.volume_start);
+            let act_int = prev_arrival.and_then(|p| a.actual_interval_secs(p));
+            let int_err = prev_arrival.and_then(|p| a.interval_error_ms(p));
             let _ = writeln!(
                 out,
-                "{:>3}  {:<12}  {:<10}  {:>5}  {:>12}  {:>10}  {:>8}  {:>11}  {:>10}  {:>15}  {:>11}  {:>13}  {:>8}",
+                "  {:>3}  {:<12}  {:<10}  {:>5}  {:<16}  {:>7}  {:<6}  {:<7}  {:>8}  {:>7}  {:>9}  {:>8}  {:>7}  {}",
                 a.sequence,
                 a.chunk_type,
                 fmt_elev(a),
                 a.empty_polls,
-                a.predicted_available_at
-                    .map(fmt_off)
+                a.bucket_key
+                    .as_ref()
+                    .map(BucketKey::short)
                     .unwrap_or_else(|| "—".into()),
-                fmt_off(a.success_at),
+                if a.stats_n_at_prediction == 0 {
+                    "—".into()
+                } else {
+                    format!("{}", a.stats_n_at_prediction)
+                },
+                a.scheduler_path.map(|p| p.short()).unwrap_or("—"),
+                a.anchor_source.map(|s| s.short()).unwrap_or("—"),
                 a.prediction_error_secs()
                     .map(|e| format!("{e:+.2}s"))
                     .unwrap_or_else(|| "—".into()),
-                a.first_empty_poll_at
-                    .map(fmt_off)
+                act_int
+                    .map(|s| format!("{s:.2}s"))
                     .unwrap_or_else(|| "—".into()),
-                a.last_empty_poll_at
-                    .map(fmt_off)
+                a.predicted_wait_secs
+                    .map(|s| format!("{s:.2}s"))
                     .unwrap_or_else(|| "—".into()),
-                a.wait_after_last_empty_ms()
-                    .map(|ms| format!("{ms:.0}ms"))
+                int_err
+                    .map(|ms| format!("{ms:+.0}ms"))
                     .unwrap_or_else(|| "—".into()),
-                a.s3_last_modified_at
-                    .map(fmt_off)
+                a.availability_lag_ms
+                    .map(|ms| format!("{ms:+}ms"))
                     .unwrap_or_else(|| "—".into()),
-                a.wait_after_s3_publish_ms()
-                    .map(|ms| format!("{ms:.0}ms"))
-                    .unwrap_or_else(|| "—".into()),
-                format!("{:.0}ms", a.fetch_latency_ms),
+                fmt_physics(a.physics_breakdown.as_ref()),
             );
+            prev_arrival = Some(a);
         }
     }
 

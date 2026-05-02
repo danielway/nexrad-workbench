@@ -15,6 +15,7 @@ mod playback;
 pub(crate) mod playback_manager;
 mod preferences;
 pub(crate) mod radar_data;
+pub(crate) mod render_cache;
 mod saved_events;
 mod settings;
 mod stats;
@@ -35,11 +36,10 @@ pub use app_mode::AppMode;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
-pub use playback::{
-    LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel, MICRO_ZOOM_THRESHOLD,
-};
+pub use playback::{LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
+pub use render_cache::{PrevSweepCacheKey, RenderCache};
 pub use saved_events::{SavedEvent, SavedEvents};
 pub use settings::{format_bytes, StorageSettings};
 pub use stats::{
@@ -49,7 +49,9 @@ pub use stats::{
 // AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
 pub use vcp::get_vcp_definition;
-pub use vcp_forecast::{ChunkArrivalStat, RateSource, SweepForecast, VolumeForecastSnapshot};
+pub use vcp_forecast::{
+    BucketKey, ChunkArrivalStat, RateSource, SweepForecast, VolumeForecastSnapshot,
+};
 pub use vcp_position::{SweepPosition, SweepStatus, SweepTiming, VcpPositionModel};
 pub use viz::{
     ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct, RenderProcessing,
@@ -190,6 +192,11 @@ pub struct AppState {
     /// Whether to display times in local timezone (false = UTC).
     pub use_local_time: bool,
 
+    /// Developer mode: shows perf timings, FPS, network metrics, and the COI
+    /// badge in the status bar, and enables the code paths that feed them.
+    /// Mirrored to/from the `?dev=true` URL parameter.
+    pub dev_mode: bool,
+
     /// Whether the stats detail popup is open.
     pub stats_detail_open: bool,
 
@@ -267,6 +274,10 @@ pub struct AppState {
     /// the `SiteModalState` that lives outside `AppState`, avoiding a direct
     /// state dependency from the bottom-bar renderer.
     pub mobile_geolocate_requested: bool,
+
+    /// Per-frame render caches: camera-motion tracking for label-tier
+    /// debouncing, prev-sweep lookup memoization, and theme-gating state.
+    pub render_cache: RenderCache,
 }
 
 /// Tabs in the mobile settings modal. Order matches the tab strip layout.

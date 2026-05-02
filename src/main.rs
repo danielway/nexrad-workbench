@@ -13,6 +13,7 @@
 mod alerts;
 mod data;
 mod geo;
+mod net;
 mod nexrad;
 mod state;
 mod ui;
@@ -243,6 +244,7 @@ impl WorkbenchApp {
 
         // Apply URL parameters (site, time, lat/lon)
         let url_params = state::url_state::parse_from_url();
+        state.dev_mode = url_params.dev;
         if let Some(ref site) = url_params.site {
             state.viz_state.site_id = site.to_uppercase();
             if let Some(site_info) = data::sites::get_site(site) {
@@ -464,7 +466,9 @@ impl WorkbenchApp {
                 sms
             },
             event_modal_state: ui::EventModalState::default(),
-            network_monitor: nexrad::NetworkMonitor::new(),
+            // Lazily initialized when dev mode is enabled (at startup if the
+            // URL has `dev=true`, or when the user toggles it on later).
+            network_monitor: None,
             playback_manager: PlaybackManager::new(),
             alerts_manager: alerts::AlertsManager::new(),
             scrub_cache: ScrubCache::default(),
@@ -475,6 +479,12 @@ impl WorkbenchApp {
         app.state.cross_origin_isolated = nexrad::is_cross_origin_isolated();
         if !app.state.cross_origin_isolated {
             log::warn!("Not cross-origin isolated: SharedArrayBuffer unavailable");
+        }
+
+        // Attach the service-worker network monitor only in dev mode. When
+        // toggled on later, `update_network_stats` will lazily attach it.
+        if app.state.dev_mode {
+            app.network_monitor = nexrad::NetworkMonitor::new();
         }
 
         app
@@ -1068,27 +1078,31 @@ impl WorkbenchApp {
                 time_until_next,
                 is_volume_end,
                 fetch_latency_ms,
-                projected_volume_end_secs,
+                projected_volume_end_available_at_secs,
+                projected_volume_end_collection_secs,
                 chunk_projections,
                 arrival_stat,
             } => {
-                self.state
-                    .session_stats
-                    .record_fetch_latency(fetch_latency_ms);
+                if self.state.dev_mode {
+                    self.state
+                        .session_stats
+                        .record_fetch_latency(fetch_latency_ms);
+                }
                 log::debug!(
                     "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?} proj_end={:?}",
                     chunks_in_volume,
                     is_volume_end,
                     fetch_latency_ms,
                     time_until_next,
-                    projected_volume_end_secs,
+                    projected_volume_end_available_at_secs,
                 );
                 self.state.live_mode_state.handle_realtime_chunk(
                     chunks_in_volume,
                     time_until_next,
                     is_volume_end,
                     now,
-                    projected_volume_end_secs,
+                    projected_volume_end_available_at_secs,
+                    projected_volume_end_collection_secs,
                     chunk_projections,
                 );
 
@@ -1208,20 +1222,28 @@ impl WorkbenchApp {
     /// Per-frame bookkeeping: record stats, apply theme, recompute staleness,
     /// update storm cells, and detect site changes.
     fn apply_frame_setup(&mut self, ctx: &egui::Context) {
-        // Record frame time for FPS meter
-        let dt = ctx.input(|i| i.stable_dt);
-        self.state.session_stats.record_frame_time(dt);
+        // Record frame time for FPS meter (dev mode only)
+        if self.state.dev_mode {
+            let dt = ctx.input(|i| i.stable_dt);
+            self.state.session_stats.record_frame_time(dt);
+        }
 
-        // Resolve theme and apply egui visuals
+        // Resolve theme and apply egui visuals. The `Visuals` struct is
+        // cloned into the egui context on each `set_visuals` call, so guard
+        // against the per-frame allocation+copy when the resolved theme
+        // hasn't changed.
         self.state.is_dark = self.state.theme_mode.is_dark();
-        if self.state.is_dark {
-            let mut visuals = egui::Visuals::dark();
-            visuals.panel_fill = egui::Color32::BLACK;
-            visuals.window_fill = egui::Color32::BLACK;
-            visuals.extreme_bg_color = egui::Color32::BLACK;
-            ctx.set_visuals(visuals);
-        } else {
-            ctx.set_visuals(egui::Visuals::light());
+        if self.state.render_cache.last_dark != Some(self.state.is_dark) {
+            if self.state.is_dark {
+                let mut visuals = egui::Visuals::dark();
+                visuals.panel_fill = egui::Color32::BLACK;
+                visuals.window_fill = egui::Color32::BLACK;
+                visuals.extreme_bg_color = egui::Color32::BLACK;
+                ctx.set_visuals(visuals);
+            } else {
+                ctx.set_visuals(egui::Visuals::light());
+            }
+            self.state.render_cache.last_dark = Some(self.state.is_dark);
         }
 
         // Recompute data staleness every frame against wall-clock time.
@@ -1537,22 +1559,24 @@ impl WorkbenchApp {
             result.context.fetch_latency_ms,
         );
 
-        self.state
-            .session_stats
-            .record_fetch_latency(result.context.fetch_latency_ms);
-        self.state
-            .session_stats
-            .record_processing_time(result.total_ms);
+        if self.state.dev_mode {
+            self.state
+                .session_stats
+                .record_fetch_latency(result.context.fetch_latency_ms);
+            self.state
+                .session_stats
+                .record_processing_time(result.total_ms);
 
-        // Store detailed ingest timing for the detail modal.
-        self.state.session_stats.last_ingest_detail = Some(crate::state::IngestTimingDetail {
-            split_ms: result.split_ms,
-            decompress_ms: result.decompress_ms,
-            decode_ms: result.decode_ms,
-            extract_ms: result.extract_ms,
-            store_ms: result.store_ms,
-            index_ms: result.index_ms,
-        });
+            // Store detailed ingest timing for the detail modal.
+            self.state.session_stats.last_ingest_detail = Some(crate::state::IngestTimingDetail {
+                split_ms: result.split_ms,
+                decompress_ms: result.decompress_ms,
+                decode_ms: result.decode_ms,
+                extract_ms: result.extract_ms,
+                store_ms: result.store_ms,
+                index_ms: result.index_ms,
+            });
+        }
 
         // Track the scan for render requests
         self.render
@@ -1669,6 +1693,49 @@ impl WorkbenchApp {
                 // `record_vcp` below also calls this, so the usual flow picks
                 // up regardless of which side arrives first.
                 self.state.live_mode_state.try_capture_forecast();
+            }
+
+            // Push the most recent chunk's collection-end time down to the
+            // streaming loop so the next projection anchors on the current
+            // chunk's actual collection time (not the volume's start time).
+            // Without this, forward-chunk projections come out as
+            // volume_start + small_offset, landing in the past once the
+            // volume is past its first chunk.
+            if let Some(chunk_max_secs) = result.chunk_max_time_secs {
+                self.streaming
+                    .record_chunk_collection_end_secs(chunk_max_secs);
+            }
+
+            // Record the empirical availability lag (S3 upload − ACTUAL
+            // chunk collection time) into the projector's stats bucket.
+            // Uses the chunk's latest-radial time (when the radar finished
+            // this chunk) paired with the most recent arrival stat's
+            // Last-Modified header.
+            if let Some(chunk_max_secs) = result.chunk_max_time_secs {
+                // Lag requires both a parsed collection time AND the chunk's
+                // S3 Last-Modified header. Stamp collection time unconditionally
+                // and lag only when both are finite.
+                let s3_at = self
+                    .state
+                    .live_mode_state
+                    .chunk_arrivals
+                    .last()
+                    .and_then(|a| a.s3_last_modified_at);
+                let lag_secs = s3_at
+                    .map(|s3| s3 - chunk_max_secs)
+                    .filter(|v| v.is_finite());
+                if let Some(lag) = lag_secs {
+                    self.streaming.record_availability_lag_secs(lag);
+                }
+                // Back-fill onto the most recent arrival so the diagnostics
+                // modal can compute per-chunk collection-space intervals
+                // and (when available) per-chunk availability lag.
+                self.state
+                    .live_mode_state
+                    .attach_collection_data_to_last_arrival(
+                        chunk_max_secs,
+                        lag_secs.map(|lag| (lag * 1000.0) as i64),
+                    );
             }
             if !result.elevations_completed.is_empty() {
                 let vol_start_ts = self
@@ -1835,7 +1902,6 @@ impl WorkbenchApp {
             } else {
                 let now = js_sys::Date::now() / 1000.0;
                 self.state.playback_state.set_playback_position(now);
-                self.state.playback_state.center_view_on(now);
             }
 
             log::debug!(
@@ -1886,7 +1952,9 @@ impl WorkbenchApp {
             result.total_ms,
         );
 
-        self.state.session_stats.record_render_time(result.total_ms);
+        if self.state.dev_mode {
+            self.state.session_stats.record_render_time(result.total_ms);
+        }
 
         // Cache decoded data for stateless sweep animation
         let result_sweep_id = sweep_cache_key(
@@ -1977,13 +2045,15 @@ impl WorkbenchApp {
         }
         let gpu_upload_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
 
-        // Store detailed render timing for the detail modal.
-        self.state.session_stats.last_render_detail = Some(crate::state::RenderTimingDetail {
-            fetch_ms: result.fetch_ms,
-            deser_ms: result.deser_ms,
-            marshal_ms: result.marshal_ms,
-            gpu_upload_ms,
-        });
+        // Store detailed render timing for the detail modal (dev mode only).
+        if self.state.dev_mode {
+            self.state.session_stats.last_render_detail = Some(crate::state::RenderTimingDetail {
+                fetch_ms: result.fetch_ms,
+                deser_ms: result.deser_ms,
+                marshal_ms: result.marshal_ms,
+                gpu_upload_ms,
+            });
+        }
 
         // GPU upload complete.
         self.state.session_stats.pipeline.mark_render_done();
@@ -2232,12 +2302,14 @@ impl WorkbenchApp {
                 fetch_latency_ms,
                 decode_latency_ms,
             } => {
-                self.state
-                    .session_stats
-                    .record_fetch_latency(*fetch_latency_ms);
-                self.state
-                    .session_stats
-                    .record_processing_time(*decode_latency_ms);
+                if self.state.dev_mode {
+                    self.state
+                        .session_stats
+                        .record_fetch_latency(*fetch_latency_ms);
+                    self.state
+                        .session_stats
+                        .record_processing_time(*decode_latency_ms);
+                }
                 (Some(scan), false)
             }
             nexrad::DownloadResult::CacheHit(scan) => (Some(scan), true),
@@ -2465,7 +2537,7 @@ impl WorkbenchApp {
         if self.state.live_mode_state.is_active() {
             if let Some(duration) = self.streaming.time_until_next() {
                 let now = js_sys::Date::now() / 1000.0;
-                self.state.live_mode_state.next_chunk_expected_at =
+                self.state.live_mode_state.next_chunk_available_at_secs =
                     Some(now + duration.as_secs_f64());
             }
         }
@@ -2774,14 +2846,30 @@ impl WorkbenchApp {
 
         let is_auto = self.state.viz_state.elevation_selection.is_auto();
 
-        // Determine which sweep should be the previous-sweep under-layer.
-        let prev_info = PlaybackManager::find_prev_sweep(
-            &self.state.radar_timeline,
-            playback_ts,
+        // Cache the previous-sweep search by its inputs. When the user is
+        // paused on the same sweep frame after frame, the timeline walk in
+        // `find_prev_sweep` becomes a no-op cache hit.
+        let cache_key = state::PrevSweepCacheKey {
+            playback_ts_bits: playback_ts.to_bits(),
             displayed_elev,
             is_auto,
-            MAX_SCAN_AGE_SECS,
-        );
+            scan_count: self.state.radar_timeline.scans.len(),
+        };
+        let prev_info = if self.state.render_cache.prev_sweep_cache_key.as_ref() == Some(&cache_key)
+        {
+            self.state.render_cache.prev_sweep_cache_value
+        } else {
+            let computed = PlaybackManager::find_prev_sweep(
+                &self.state.radar_timeline,
+                playback_ts,
+                displayed_elev,
+                is_auto,
+                MAX_SCAN_AGE_SECS,
+            );
+            self.state.render_cache.prev_sweep_cache_key = Some(cache_key);
+            self.state.render_cache.prev_sweep_cache_value = computed;
+            computed
+        };
 
         let (prev_scan_key_ts, prev_elev_num, prev_elev_deg, prev_start, prev_end) = match prev_info
         {
@@ -2953,6 +3041,15 @@ impl WorkbenchApp {
         self.state
             .session_stats
             .update_from_network_stats(&network_stats);
+
+        // Service worker metrics are only collected in dev mode. Lazily
+        // attach the listener the first time dev mode becomes active.
+        if !self.state.dev_mode {
+            return;
+        }
+        if self.network_monitor.is_none() {
+            self.network_monitor = nexrad::NetworkMonitor::new();
+        }
 
         // Drain service worker network metrics into app state
         if let Some(ref monitor) = self.network_monitor {

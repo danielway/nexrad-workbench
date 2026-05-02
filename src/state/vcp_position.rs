@@ -128,15 +128,18 @@ impl VcpPositionModel {
         let vcp_number = live.current_vcp_number.unwrap_or(0);
 
         // ── Volume end time ───────────────────────────────────────────
-        // Prefer the library's physics-based projection, fall back to measured/estimated.
+        // COLLECTION time — right edge of the in-progress volume on the
+        // timeline is when the radar finishes scanning, not when the final
+        // chunk uploads.
         let expected_dur = live.last_volume_duration_secs.unwrap_or(300.0);
         let volume_end = live
-            .projected_volume_end_secs
+            .projected_volume_end_collection_secs
             .unwrap_or(vol_start + expected_dur);
 
         // ── Build projected sweep bounds from library projections ──────
-        // Group ChunkProjectionInfo by elevation_number to get per-sweep timing.
-        // Only chunks with projected_time_secs contribute to projected bounds.
+        // Sweep bounds are COLLECTION times (when the radar will physically
+        // scan), so timeline placeholders line up with the in-progress
+        // sweep's own collection-time axis.
         let projected_sweeps: Option<std::collections::BTreeMap<u8, ProjectedSweepBounds>> =
             live.chunk_projections.as_ref().map(|projections| {
                 let mut map: std::collections::BTreeMap<u8, ProjectedSweepBounds> =
@@ -151,7 +154,7 @@ impl VcpPositionModel {
                             chunk_count: 0,
                         });
                         entry.chunk_count += 1;
-                        if let Some(t) = chunk.projected_time_secs {
+                        if let Some(t) = chunk.projected_collection_time_secs {
                             entry.min_time = entry.min_time.min(t);
                             entry.max_time = entry.max_time.max(t);
                         }

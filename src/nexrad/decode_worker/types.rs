@@ -68,6 +68,10 @@ pub(super) struct ChunkIngestResultMsg {
     #[serde(default)]
     pub volume_header_time_secs: Option<f64>,
     #[serde(default)]
+    pub chunk_min_time_secs: Option<f64>,
+    #[serde(default)]
+    pub chunk_max_time_secs: Option<f64>,
+    #[serde(default)]
     pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
     #[serde(default)]
     pub chunk_elev_az_ranges: Vec<(u8, f32, f32)>,
@@ -333,6 +337,13 @@ pub struct ChunkIngestResult {
     pub last_radial_time_secs: Option<f64>,
     /// Volume header date/time in Unix seconds (authoritative scan start time).
     pub volume_header_time_secs: Option<f64>,
+    /// Earliest radial collection time (Unix seconds) observed in this chunk.
+    #[allow(dead_code)] // Consumed by debug UI in a later commit.
+    pub chunk_min_time_secs: Option<f64>,
+    /// Latest radial collection time (Unix seconds) observed in this chunk.
+    /// Paired with the chunk's S3 upload time yields the per-chunk
+    /// availability lag (AVAILABILITY − ACTUAL collection).
+    pub chunk_max_time_secs: Option<f64>,
     /// Per-elevation time spans within this chunk:
     /// (elevation_number, start_secs, end_secs, radial_count).
     pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,

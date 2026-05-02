@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::data::{all_sites_sorted, get_site, nearest_site};
+use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 use crate::state::AppState;
 use eframe::egui::{self, Color32, RichText, Vec2};
 use wasm_bindgen::prelude::*;
@@ -175,51 +176,21 @@ fn start_zip_lookup(zip: &str, results: Rc<RefCell<Vec<LocationResult>>>, ctx: e
     let results = results.clone();
 
     wasm_bindgen_futures::spawn_local(async move {
-        let result = async {
-            let window = web_sys::window().ok_or("No browser window")?;
-            let resp_value = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&url))
-                .await
-                .map_err(|_| "Network error looking up zip code".to_string())?;
-            let resp: web_sys::Response = resp_value
-                .dyn_into()
-                .map_err(|_| "Invalid response".to_string())?;
-
-            if !resp.ok() {
-                return Err("Zip code not found".to_string());
-            }
-
-            let json = wasm_bindgen_futures::JsFuture::from(
-                resp.json()
-                    .map_err(|_| "Failed to parse response".to_string())?,
-            )
+        let result: Result<(f64, f64), String> =
+            with_retry(&DEFAULT_POLICY, "zip_lookup", |_attempt| {
+                let url = url.clone();
+                async move { zip_lookup_attempt(&url).await }
+            })
             .await
-            .map_err(|_| "Failed to read response body".to_string())?;
-
-            // Zippopotam response: { "places": [{ "latitude": "...", "longitude": "..." }] }
-            let places = js_sys::Reflect::get(&json, &"places".into())
-                .map_err(|_| "Invalid response format".to_string())?;
-            let first = js_sys::Reflect::get_u32(&places, 0)
-                .map_err(|_| "No location data for zip code".to_string())?;
-
-            let lat_str = js_sys::Reflect::get(&first, &"latitude".into())
-                .map_err(|_| "Missing latitude".to_string())?
-                .as_string()
-                .ok_or("Invalid latitude")?;
-            let lon_str = js_sys::Reflect::get(&first, &"longitude".into())
-                .map_err(|_| "Missing longitude".to_string())?
-                .as_string()
-                .ok_or("Invalid longitude")?;
-
-            let lat: f64 = lat_str
-                .parse()
-                .map_err(|_| "Invalid latitude value".to_string())?;
-            let lon: f64 = lon_str
-                .parse()
-                .map_err(|_| "Invalid longitude value".to_string())?;
-
-            Ok((lat, lon))
-        }
-        .await;
+            .map_err(|msg| {
+                // Zippopotam returns 404 for invalid zips; surface a friendlier
+                // message than the raw HTTP status.
+                if msg.contains("HTTP 404") {
+                    "Zip code not found".to_string()
+                } else {
+                    msg
+                }
+            });
 
         match result {
             Ok((lat, lon)) => {
@@ -231,6 +202,77 @@ fn start_zip_lookup(zip: &str, results: Rc<RefCell<Vec<LocationResult>>>, ctx: e
         }
         ctx.request_repaint();
     });
+}
+
+/// One attempt against the Zippopotam.us API. Network errors and 5xx are
+/// retryable; 404 (invalid zip) and parse failures are terminal.
+async fn zip_lookup_attempt(url: &str) -> Verdict<(f64, f64)> {
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return Verdict::Terminal("No browser window".into()),
+    };
+
+    let resp_value = match wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url)).await {
+        Ok(v) => v,
+        Err(_) => return Verdict::Retry { after: None },
+    };
+    let resp: web_sys::Response = match resp_value.dyn_into() {
+        Ok(r) => r,
+        Err(_) => return Verdict::Terminal("Invalid response".into()),
+    };
+
+    let status = resp.status();
+    if status == 408 || status == 429 || (500..=599).contains(&status) {
+        return Verdict::Retry { after: None };
+    }
+    if !resp.ok() {
+        return Verdict::Terminal(format!("HTTP {}", status));
+    }
+
+    let json_promise = match resp.json() {
+        Ok(p) => p,
+        Err(_) => return Verdict::Terminal("Failed to parse response".into()),
+    };
+    let json = match wasm_bindgen_futures::JsFuture::from(json_promise).await {
+        Ok(v) => v,
+        Err(_) => return Verdict::Retry { after: None },
+    };
+
+    // Zippopotam response: { "places": [{ "latitude": "...", "longitude": "..." }] }
+    let places = match js_sys::Reflect::get(&json, &"places".into()) {
+        Ok(p) => p,
+        Err(_) => return Verdict::Terminal("Invalid response format".into()),
+    };
+    let first = match js_sys::Reflect::get_u32(&places, 0) {
+        Ok(f) => f,
+        Err(_) => return Verdict::Terminal("No location data for zip code".into()),
+    };
+
+    let lat_str = match js_sys::Reflect::get(&first, &"latitude".into()) {
+        Ok(v) => match v.as_string() {
+            Some(s) => s,
+            None => return Verdict::Terminal("Invalid latitude".into()),
+        },
+        Err(_) => return Verdict::Terminal("Missing latitude".into()),
+    };
+    let lon_str = match js_sys::Reflect::get(&first, &"longitude".into()) {
+        Ok(v) => match v.as_string() {
+            Some(s) => s,
+            None => return Verdict::Terminal("Invalid longitude".into()),
+        },
+        Err(_) => return Verdict::Terminal("Missing longitude".into()),
+    };
+
+    let lat: f64 = match lat_str.parse() {
+        Ok(v) => v,
+        Err(_) => return Verdict::Terminal("Invalid latitude value".into()),
+    };
+    let lon: f64 = match lon_str.parse() {
+        Ok(v) => v,
+        Err(_) => return Verdict::Terminal("Invalid longitude value".into()),
+    };
+
+    Verdict::Ok((lat, lon))
 }
 
 /// Render the site selection modal if open.

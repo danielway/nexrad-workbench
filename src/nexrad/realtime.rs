@@ -17,6 +17,9 @@ use std::time::Duration;
 use eframe::egui;
 
 use crate::data::facade::DataFacade;
+use crate::net::retry::{
+    attempt_with_timeout, compute_delay, sleep_duration, Verdict, REALTIME_CHUNK_POLICY,
+};
 
 /// Projected timing and structural info for a single chunk in the volume.
 ///
@@ -34,9 +37,15 @@ pub struct ChunkProjectionInfo {
     pub elevation_angle_deg: f64,
     /// Azimuth rotation rate in degrees/second from the VCP.
     pub azimuth_rate_dps: f64,
-    /// Projected time this chunk becomes available (Unix seconds).
-    /// `Some` for future chunks (from ScanTimingProjection), `None` for past chunks.
-    pub projected_time_secs: Option<f64>,
+    /// COLLECTION category: projected Unix-seconds time the radar physically
+    /// emits/receives for this chunk. `Some` for future chunks (from
+    /// ScanTimingProjection), `None` for past chunks. Drives timeline
+    /// placeholders for future sweeps.
+    pub projected_collection_time_secs: Option<f64>,
+    /// AVAILABILITY category: projected Unix-seconds time this chunk becomes
+    /// available in S3. `Some` for future chunks (from ScanTimingProjection),
+    /// `None` for past chunks.
+    pub projected_available_at_secs: Option<f64>,
     /// Whether this chunk starts a new sweep.
     pub starts_new_sweep: bool,
     /// 0-based index of this chunk within its sweep.
@@ -46,7 +55,13 @@ pub struct ChunkProjectionInfo {
 }
 
 /// Result type for realtime streaming events.
+///
+/// `ChunkReceived` is significantly larger than the other variants because it
+/// carries the per-chunk diagnostic bundle (`arrival_stat`) used by the VCP
+/// forecast modal. Boxing it would add an allocation per chunk for no gain —
+/// these values are produced and consumed within the same frame.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum RealtimeResult {
     /// Iterator initialized, streaming started
     Started { site_id: String },
@@ -56,8 +71,14 @@ pub enum RealtimeResult {
         time_until_next: Option<Duration>,
         is_volume_end: bool,
         fetch_latency_ms: f64,
-        /// Projected volume end time (Unix seconds), from the library's physics model.
-        projected_volume_end_secs: Option<f64>,
+        /// AVAILABILITY category: projected Unix-seconds time the final chunk
+        /// of the current volume becomes available in S3, from the library's
+        /// physics model.
+        projected_volume_end_available_at_secs: Option<f64>,
+        /// COLLECTION category: projected Unix-seconds time the radar finishes
+        /// physically scanning the final chunk of the current volume. Drives
+        /// the timeline's projected end-of-volume marker.
+        projected_volume_end_collection_secs: Option<f64>,
         /// Per-chunk projection info for the entire volume.
         /// Structural metadata is present for all chunks; projected times only for future chunks.
         chunk_projections: Option<Vec<ChunkProjectionInfo>>,
@@ -88,6 +109,17 @@ struct RealtimeState {
     active: bool,
     time_until_next: Option<Duration>,
     stop_requested: bool,
+    /// ACTUAL category: latest radial collection time (Unix seconds) of
+    /// the most recently ingested chunk. Pushed in from `main.rs` after
+    /// each ingest response and drained by the streaming loop into
+    /// `StreamingState` so projections anchor on the current chunk's true
+    /// collection time rather than the volume's start.
+    pending_chunk_collection_end_secs: Option<f64>,
+    /// Empirical availability lag (seconds) for the most recently ingested
+    /// chunk, computed in `main.rs` as `s3_last_modified - chunk_max_time`.
+    /// Drained by the streaming loop and attached to the latest
+    /// `ChunkTimingStats` sample.
+    pending_availability_lag_secs: Option<f64>,
 }
 
 /// Channel for real-time NEXRAD streaming.
@@ -156,6 +188,22 @@ impl RealtimeChannel {
             Some(state.results.remove(0))
         }
     }
+
+    /// Push the latest radial collection time (Unix seconds) parsed from
+    /// the chunk that was just ingested. The streaming loop drains this
+    /// and stamps it onto `StreamingState` so the next projection anchors
+    /// on the current chunk's actual collection time.
+    pub fn record_chunk_collection_end_secs(&self, secs: f64) {
+        self.state.borrow_mut().pending_chunk_collection_end_secs = Some(secs);
+    }
+
+    /// Push an empirical availability lag (S3 upload − ACTUAL chunk
+    /// collection time, seconds) for the chunk just ingested. The streaming
+    /// loop attaches it to the most recent `ChunkTimingStats` sample so
+    /// future projections can use a median lag rather than a hard default.
+    pub fn record_availability_lag_secs(&self, lag_secs: f64) {
+        self.state.borrow_mut().pending_availability_lag_secs = Some(lag_secs);
+    }
 }
 
 /// Build projection info from the streaming state's current position.
@@ -165,14 +213,20 @@ fn build_chunk_projections(state: &StreamingState) -> Option<Vec<ChunkProjection
     let all_meta = state.all_chunk_metadata()?;
     let projection = state.project_remaining_scan();
 
-    // Build a lookup from sequence → projected_time for future chunks
-    let projected_times: std::collections::HashMap<usize, f64> = projection
+    // Build lookups from sequence → {collection, availability} times.
+    let (projected_collection_by_seq, projected_available_at_by_seq): (
+        std::collections::HashMap<usize, f64>,
+        std::collections::HashMap<usize, f64>,
+    ) = projection
         .as_ref()
         .map(|p| {
-            p.chunks()
-                .iter()
-                .map(|c| (c.sequence(), c.projected_time().timestamp() as f64))
-                .collect()
+            let mut collection = std::collections::HashMap::new();
+            let mut available = std::collections::HashMap::new();
+            for c in p.chunks() {
+                collection.insert(c.sequence(), c.projected_collection_time_secs());
+                available.insert(c.sequence(), c.projected_available_at().timestamp() as f64);
+            }
+            (collection, available)
         })
         .unwrap_or_default();
 
@@ -184,7 +238,12 @@ fn build_chunk_projections(state: &StreamingState) -> Option<Vec<ChunkProjection
                 elevation_number: meta.elevation_number(),
                 elevation_angle_deg: meta.elevation_angle_deg(),
                 azimuth_rate_dps: meta.azimuth_rate_dps(),
-                projected_time_secs: projected_times.get(&meta.sequence()).copied(),
+                projected_collection_time_secs: projected_collection_by_seq
+                    .get(&meta.sequence())
+                    .copied(),
+                projected_available_at_secs: projected_available_at_by_seq
+                    .get(&meta.sequence())
+                    .copied(),
                 starts_new_sweep: meta.is_first_in_sweep(),
                 chunk_index_in_sweep: meta.chunk_index_in_sweep(),
                 chunks_in_sweep: meta.chunks_in_sweep(),
@@ -193,11 +252,71 @@ fn build_chunk_projections(state: &StreamingState) -> Option<Vec<ChunkProjection
     )
 }
 
-/// Get the projected volume end time from the streaming state.
-fn get_projected_volume_end_secs(state: &StreamingState) -> Option<f64> {
+/// Get the projected S3-availability time of the current volume's final
+/// chunk (Unix seconds).
+fn get_projected_volume_end_available_at_secs(state: &StreamingState) -> Option<f64> {
     state
-        .projected_volume_end_time()
+        .projected_volume_end_available_at()
         .map(|dt| dt.timestamp() as f64)
+}
+
+/// Default provisional lag applied when we have no observed median lag
+/// yet. Matches the default in the projector so a cold stream's first
+/// ScanKey lands near the eventual real value.
+const DEFAULT_PROVISIONAL_LAG_SECS: f64 = 5.0;
+
+/// Provisional scan-start timestamp (Unix seconds) for a new volume.
+///
+/// Uses the Start chunk's S3 upload time minus the current median
+/// availability lag from `ChunkTimingStats` (falling back to
+/// `DEFAULT_PROVISIONAL_LAG_SECS`). That lands close to the real volume
+/// header collection time — closer than the wall-clock receipt time it
+/// replaces — without needing to wait for the first M chunk's radial
+/// parse. If there is no upload time, fall back to wall clock.
+fn provisional_scan_start_secs(
+    start_upload: Option<chrono::DateTime<chrono::Utc>>,
+    iter: &StreamingState,
+) -> i64 {
+    let median_lag_secs = iter
+        .timing_stats()
+        .median_availability_lag_secs()
+        .unwrap_or(DEFAULT_PROVISIONAL_LAG_SECS);
+    if let Some(upload) = start_upload {
+        let upload_secs = upload.timestamp_millis() as f64 / 1000.0;
+        return (upload_secs - median_lag_secs).round() as i64;
+    }
+    current_timestamp()
+}
+
+/// Drain anything pushed in from `main.rs` after a worker ingest and stamp
+/// it onto the `StreamingState`: the ACTUAL volume header time (anchors
+/// collection-time projections) and the empirical per-chunk availability
+/// lag (feeds `ChunkTimingStats`).
+fn drain_pending_ingest_observations(
+    state_cell: &Rc<RefCell<RealtimeState>>,
+    iter: &mut StreamingState,
+) {
+    let (pending_collection_end, pending_lag) = {
+        let mut s = state_cell.borrow_mut();
+        (
+            s.pending_chunk_collection_end_secs.take(),
+            s.pending_availability_lag_secs.take(),
+        )
+    };
+    if let Some(secs) = pending_collection_end {
+        let prior = iter.latest_chunk_collection_end_secs();
+        iter.record_chunk_collection_end_secs(secs);
+        if prior != Some(secs) {
+            log::debug!(
+                "chunk_collection_end: updated to {:.3}s (prior={:?})",
+                secs,
+                prior
+            );
+        }
+    }
+    if let Some(lag_secs) = pending_lag {
+        iter.record_availability_lag_for_current(lag_secs);
+    }
 }
 
 async fn streaming_loop(
@@ -216,14 +335,21 @@ async fn streaming_loop(
     // the timeout wins the select, the init future is dropped, which drops any
     // in-flight HTTP request futures and cancels them.
     const ACQUIRE_TIMEOUT_SECS: u32 = 10;
-    const CHUNK_POLL_INTERVAL_MS: u32 = 500;
-    const CHUNK_POLL_MAX_RETRIES: u32 = 25; // 25 × 500ms = 12.5s
-    const CHUNK_POLL_GRACE_MS: u32 = 2500; // 2.5s final grace → 15s total
 
     // Pad added to the first poll wait per chunk; collapses the "fire a hair
-    // early → empty poll → sleep 500ms → fire" path on chunks whose
-    // predictions are tight. Retry waits are unaffected.
-    const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 300;
+    // early → empty poll → backoff → fire" path on chunks whose predictions
+    // are tight. Retry waits are governed by `REALTIME_CHUNK_POLICY`.
+    //
+    // Sized from observed availability-space prediction error: across all
+    // buckets in a representative VCP 212 volume, scheduler predictions ran
+    // ~900 ms early in availability-space (collection-space prediction is
+    // accurate; the residual is S3-availability lag the projector under-
+    // estimates). `wait_after_last_empty_ms` clusters tightly at ~670 ms,
+    // confirming that when we fire early we miss by roughly one poll cycle.
+    // 750 ms covers the typical case while leaving outliers (one-chunk lag
+    // spikes) to the existing retry path. The deeper fix is per-bucket lag
+    // in the projector and an EWMA on lag history.
+    const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 750;
 
     let hint = get_cached_volume(&site_id);
     let init_future = acquire_streaming_state(&site_id, hint);
@@ -262,6 +388,10 @@ async fn streaming_loop(
     };
 
     let mut iter = init_result.state;
+    if let Some(cached) = load_cached_timing_stats(&site_id) {
+        iter.preload_timing_stats(cached);
+        log::debug!("Loaded cached timing stats for {}", site_id);
+    }
     let mut stats_tracker = StatsTracker::new(&iter);
     stats_tracker.update(&stats, &iter);
 
@@ -289,7 +419,8 @@ async fn streaming_loop(
     if let Some(start_chunk) = init_result.start_chunk {
         // Joined mid-volume: emit the start chunk + current sweep's chunks only.
         let start_data = start_chunk.chunk.data().to_vec();
-        current_scan_start_secs = current_timestamp();
+        current_scan_start_secs =
+            provisional_scan_start_secs(start_chunk.identifier.upload_date_time(), &iter);
 
         log::debug!(
             "Init: emitting start_chunk ({} bytes) for mid-volume join",
@@ -306,6 +437,23 @@ async fn streaming_loop(
                 // Skip overlap deletion — we're only backfilling the current
                 // sweep, not replacing the full volume.
                 skip_overlap_delete: true,
+            });
+            // Why: chunk_projections is consumed by the worker fast-path to
+            // detect last-chunk-in-sweep. ChunkReceived is the only event
+            // that updates it on the main thread, so without this push the
+            // resumed sweep's chunks reach the worker with stale/None
+            // projections and finalize only on the next sweep's first chunk.
+            s.results.push(RealtimeResult::ChunkReceived {
+                chunks_in_volume: 1,
+                time_until_next: None,
+                is_volume_end: false,
+                fetch_latency_ms: 0.0,
+                projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
+                    &iter,
+                ),
+                projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
+                chunk_projections: build_chunk_projections(&iter),
+                arrival_stat: None,
             });
         }
         ctx.request_repaint();
@@ -411,6 +559,18 @@ async fn streaming_loop(
                                 timestamp: current_scan_start_secs,
                                 skip_overlap_delete: false,
                             });
+                            s.results.push(RealtimeResult::ChunkReceived {
+                                chunks_in_volume,
+                                time_until_next: None,
+                                is_volume_end: false,
+                                fetch_latency_ms: 0.0,
+                                projected_volume_end_available_at_secs:
+                                    get_projected_volume_end_available_at_secs(&iter),
+                                projected_volume_end_collection_secs: iter
+                                    .projected_volume_end_collection_secs(),
+                                chunk_projections: build_chunk_projections(&iter),
+                                arrival_stat: None,
+                            });
                         }
                         ctx.request_repaint();
                     }
@@ -460,7 +620,10 @@ async fn streaming_loop(
                 time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
-                projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
+                    &iter,
+                ),
+                projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
                 chunk_projections: build_chunk_projections(&iter),
                 arrival_stat: None,
             });
@@ -472,7 +635,10 @@ async fn streaming_loop(
         let latest_type = init_result.latest_chunk.identifier.chunk_type();
         let latest_is_start = latest_type == ChunkType::Start;
         let latest_is_end = latest_type == ChunkType::End;
-        current_scan_start_secs = current_timestamp();
+        current_scan_start_secs = provisional_scan_start_secs(
+            init_result.latest_chunk.identifier.upload_date_time(),
+            &iter,
+        );
         chunks_in_volume = 1;
         cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
 
@@ -495,7 +661,10 @@ async fn streaming_loop(
                 time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
-                projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
+                    &iter,
+                ),
+                projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
                 chunk_projections: build_chunk_projections(&iter),
                 arrival_stat: None,
             });
@@ -508,15 +677,19 @@ async fn streaming_loop(
     // chunk and reset on success (or on final-retry recovery).
     let mut none_retries: u32 = 0;
     let mut cur_predicted_at: Option<f64> = None; // absolute Unix seconds
-    let mut cur_scheduled_at: Option<f64> = None; // first poll time
-    let mut cur_first_empty_at: Option<f64> = None;
     let mut cur_last_empty_at: Option<f64> = None;
+    let mut cur_diagnostics: Option<super::timing::EstimatedChunkProcessing> = None;
     loop {
         // Check stop signal
         if state.borrow().stop_requested {
             log::debug!("Realtime streaming stopped");
             break;
         }
+
+        // Ingest any volume header time + availability lag the worker
+        // produced from the most recent chunk's radials so projections and
+        // stats in this iteration see them.
+        drain_pending_ingest_observations(&state, &mut iter);
 
         // Wait for expected chunk time. Only capture the prediction on the
         // first iteration for a given chunk — subsequent retry iterations
@@ -528,14 +701,17 @@ async fn streaming_loop(
             if let Some(d) = time_until_next_opt {
                 cur_predicted_at = Some(current_timestamp_f64() + d.as_secs_f64());
             }
+            // Capture the rich estimator diagnostics (which path, sample
+            // count, physics breakdown) at the first poll for this chunk
+            // so we can attribute prediction error component-by-component.
+            cur_diagnostics = iter.next_chunk_processing_diagnostics();
         }
         if let Some(wait_duration) = time_until_next_opt {
             let mut wait_ms = wait_duration.as_millis() as u32;
             // Pad the first (prediction-driven) wait per chunk so we fire
             // slightly after `predicted_available_at`. Retry waits after an
-            // empty poll come through `sleep_ms(CHUNK_POLL_INTERVAL_MS)` in
-            // the `Ok(None)` arm, not here, so the pad applies exactly once
-            // per chunk.
+            // empty poll come through the `REALTIME_CHUNK_POLICY` backoff
+            // loop below, not here, so the pad applies exactly once per chunk.
             if is_first_iter_for_chunk && wait_ms > 0 {
                 wait_ms = wait_ms.saturating_add(POLL_DELAY_AFTER_PREDICTED_MS);
             }
@@ -545,14 +721,64 @@ async fn streaming_loop(
             }
         }
 
-        if cur_scheduled_at.is_none() {
-            cur_scheduled_at = Some(current_timestamp_f64());
-        }
-
-        // Fetch next chunk (with timing)
+        // Fetch next chunk. The first attempt fires at the timing-prediction
+        // sleep above; if it returns 404 (chunk not yet published) or a
+        // transient transport error, the loop below applies the standard
+        // exponential-backoff-with-jitter policy from `REALTIME_CHUNK_POLICY`.
+        // The retry loop is inlined (rather than going through `with_retry`)
+        // because each attempt borrows `iter` mutably and the resulting Future
+        // can't escape an `FnMut` closure body.
         let chunk_fetch_start = web_time::Instant::now();
-        match iter.try_next().await {
-            Ok(Some(chunk)) => {
+        let policy = &REALTIME_CHUNK_POLICY;
+        let mut last_msg: Option<String> = None;
+        let fetch_outcome: Result<nexrad_data::aws::realtime::DownloadedChunk, String> = 'retry: {
+            for attempt in 1..=policy.max_attempts {
+                if state.borrow().stop_requested {
+                    break 'retry Err("stopped".into());
+                }
+                if attempt > 1 {
+                    none_retries = attempt - 1;
+                    cur_last_empty_at = Some(current_timestamp_f64());
+                }
+                let verdict = attempt_with_timeout(
+                    async { classify_chunk_result(iter.try_next().await) },
+                    policy.per_attempt_timeout,
+                )
+                .await;
+                match verdict {
+                    Verdict::Ok(c) => break 'retry Ok(c),
+                    Verdict::Terminal(m) => break 'retry Err(m),
+                    Verdict::Retry { after } => {
+                        last_msg = Some(format!("attempt {} empty/transient", attempt));
+                        if attempt >= policy.max_attempts {
+                            break;
+                        }
+                        let elapsed = chunk_fetch_start.elapsed();
+                        if elapsed >= policy.total_budget {
+                            break 'retry Err(format!(
+                                "chunk_fetch: budget {}s exhausted after {} attempts",
+                                policy.total_budget.as_secs(),
+                                attempt
+                            ));
+                        }
+                        let mut delay = compute_delay(policy, attempt, after);
+                        let remaining = policy.total_budget.saturating_sub(elapsed);
+                        if delay > remaining {
+                            delay = remaining;
+                        }
+                        sleep_duration(delay).await;
+                    }
+                }
+            }
+            Err(format!(
+                "chunk_fetch: gave up after {} attempts ({})",
+                policy.max_attempts,
+                last_msg.as_deref().unwrap_or("retry exhausted")
+            ))
+        };
+
+        match fetch_outcome {
+            Ok(chunk) => {
                 let chunk_fetch_ms = chunk_fetch_start.elapsed().as_secs_f64() * 1000.0;
                 let success_at = current_timestamp_f64();
                 stats_tracker.update(&stats, &iter);
@@ -565,7 +791,8 @@ async fn streaming_loop(
                 // Reset counters on new volume
                 if is_start {
                     chunks_in_volume = 0;
-                    current_scan_start_secs = current_timestamp();
+                    current_scan_start_secs =
+                        provisional_scan_start_secs(chunk.identifier.upload_date_time(), &iter);
                     cache_volume_number(&site_id, *chunk.identifier.volume());
                 }
 
@@ -583,6 +810,22 @@ async fn streaming_loop(
                     .upload_date_time()
                     .map(|dt| dt.timestamp_millis() as f64 / 1000.0);
 
+                // Empirical NEXRAD ingest lag: difference between the chunk's
+                // S3 upload time (AVAILABILITY) and its latest radial
+                // collection time (ACTUAL).
+                if let (Some(upload_secs), Some(collection_end_secs)) =
+                    (s3_last_modified_at, iter.latest_chunk_collection_end_secs())
+                {
+                    log::debug!(
+                        "ingest lag: upload={:.3}s collection_end={:.3}s Δ={:+.3}s (seq={} type={})",
+                        upload_secs,
+                        collection_end_secs,
+                        upload_secs - collection_end_secs,
+                        chunks_in_volume,
+                        type_label,
+                    );
+                }
+
                 // Look up this chunk's entry in the library's projection list
                 // so we can attach elevation_number and chunk-within-sweep
                 // position to the arrival stat.
@@ -599,6 +842,33 @@ async fn streaming_loop(
                         None => (None, None, None),
                     };
 
+                // Anchor source the projector was using for the *previous*
+                // chunk — i.e. the one whose arrival we're recording.
+                // Captured AFTER `try_next` advances `iter.current` is fine
+                // because `current_anchor_source` reads collection-end +
+                // median-lag state, both of which are independent of which
+                // chunk is "current".
+                let anchor_source = Some(iter.current_anchor_source());
+
+                let (
+                    bucket_key,
+                    stats_n_at_prediction,
+                    scheduler_path,
+                    physics_breakdown,
+                    predicted_wait_secs,
+                ) = match cur_diagnostics.as_ref() {
+                    Some(d) => (
+                        d.bucket
+                            .as_ref()
+                            .map(crate::state::BucketKey::from_characteristics),
+                        d.stats_n_at_prediction,
+                        Some(d.path),
+                        d.physics_breakdown,
+                        Some(d.duration.num_milliseconds() as f64 / 1000.0),
+                    ),
+                    None => (None, 0, None, None, None),
+                };
+
                 let arrival_stat = crate::state::ChunkArrivalStat {
                     sequence: chunks_in_volume,
                     chunk_type: type_label,
@@ -606,21 +876,25 @@ async fn streaming_loop(
                     chunk_index_in_sweep,
                     chunks_in_sweep,
                     predicted_available_at: cur_predicted_at,
-                    scheduled_at: cur_scheduled_at.unwrap_or(success_at),
                     empty_polls: none_retries,
-                    first_empty_poll_at: cur_first_empty_at,
                     last_empty_poll_at: cur_last_empty_at,
                     s3_last_modified_at,
                     success_at,
-                    fetch_latency_ms: chunk_fetch_ms,
+                    bucket_key,
+                    stats_n_at_prediction,
+                    scheduler_path,
+                    physics_breakdown,
+                    anchor_source,
+                    availability_lag_ms: None,
+                    collection_time_secs: None,
+                    predicted_wait_secs,
                 };
 
                 // Reset tracking state for the next chunk
                 none_retries = 0;
                 cur_predicted_at = None;
-                cur_scheduled_at = None;
-                cur_first_empty_at = None;
                 cur_last_empty_at = None;
+                cur_diagnostics = None;
 
                 let time_until_next = iter.time_until_next().and_then(|td| td.to_std().ok());
 
@@ -641,77 +915,23 @@ async fn streaming_loop(
                         time_until_next,
                         is_volume_end: is_end,
                         fetch_latency_ms: chunk_fetch_ms,
-                        projected_volume_end_secs: get_projected_volume_end_secs(&iter),
+                        projected_volume_end_available_at_secs:
+                            get_projected_volume_end_available_at_secs(&iter),
+                        projected_volume_end_collection_secs: iter
+                            .projected_volume_end_collection_secs(),
                         chunk_projections,
                         arrival_stat: Some(arrival_stat),
                     });
                 }
 
+                save_timing_stats(&site_id, iter.timing_stats());
+
                 ctx.request_repaint();
             }
-            Ok(None) => {
-                // Chunk not ready yet, brief retry
-                none_retries += 1;
-                let now = current_timestamp_f64();
-                if cur_first_empty_at.is_none() {
-                    cur_first_empty_at = Some(now);
-                }
-                cur_last_empty_at = Some(now);
-                if none_retries >= CHUNK_POLL_MAX_RETRIES {
-                    let elapsed_secs =
-                        (none_retries * CHUNK_POLL_INTERVAL_MS + CHUNK_POLL_GRACE_MS) / 1000;
-                    log::warn!(
-                        "Streaming: {} consecutive empty polls, attempting final fetch after {}ms delay",
-                        none_retries,
-                        CHUNK_POLL_GRACE_MS,
-                    );
-                    sleep_ms(CHUNK_POLL_GRACE_MS).await;
-                    if state.borrow().stop_requested {
-                        break;
-                    }
-                    match iter.try_next().await {
-                        Ok(Some(_chunk)) => {
-                            // Recovered — let the next loop iteration handle it normally.
-                            // Reset the per-chunk tracking so the next successful fetch
-                            // emits a fresh ChunkArrivalStat (the discarded chunk here
-                            // is an existing quirk of the recovery path).
-                            none_retries = 0;
-                            cur_predicted_at = None;
-                            cur_scheduled_at = None;
-                            cur_first_empty_at = None;
-                            cur_last_empty_at = None;
-                            continue;
-                        }
-                        Ok(None) => {
-                            log::error!(
-                                "Streaming: final retry still empty after ~{}s, giving up",
-                                elapsed_secs
-                            );
-                            let mut s = state.borrow_mut();
-                            s.results.push(RealtimeResult::Error(format!(
-                                "Chunk polling timed out — no data received for ~{} seconds",
-                                elapsed_secs
-                            )));
-                            s.active = false;
-                            ctx.request_repaint();
-                            break;
-                        }
-                        Err(e) => {
-                            log::error!("Streaming error on final retry: {}", e);
-                            let mut s = state.borrow_mut();
-                            s.results.push(RealtimeResult::Error(format!("{}", e)));
-                            s.active = false;
-                            ctx.request_repaint();
-                            break;
-                        }
-                    }
-                }
-                sleep_ms(CHUNK_POLL_INTERVAL_MS).await;
-            }
-            Err(e) => {
-                log::error!("Streaming error: {}", e);
+            Err(msg) => {
+                log::error!("Streaming error: {}", msg);
                 let mut s = state.borrow_mut();
-                s.results.push(RealtimeResult::Error(format!("{}", e)));
+                s.results.push(RealtimeResult::Error(msg));
                 s.active = false;
                 ctx.request_repaint();
                 break;
@@ -720,6 +940,31 @@ async fn streaming_loop(
     }
 
     state.borrow_mut().active = false;
+}
+
+/// Map a `nexrad-data` chunk-fetch result to a retry [`Verdict`].
+///
+/// `Ok(None)` (S3 returned 404 — chunk not yet published) is treated as a
+/// retryable miss in this call site, since real-time chunks land seconds late
+/// by design. Transport-layer errors are also retryable; data-decoding and
+/// identifier errors are terminal.
+fn classify_chunk_result(
+    result: nexrad_data::result::Result<Option<nexrad_data::aws::realtime::DownloadedChunk>>,
+) -> Verdict<nexrad_data::aws::realtime::DownloadedChunk> {
+    use nexrad_data::result::aws::AWSError;
+    use nexrad_data::result::Error;
+    match result {
+        Ok(Some(chunk)) => Verdict::Ok(chunk),
+        Ok(None) => Verdict::Retry { after: None },
+        Err(Error::AWS(
+            AWSError::S3GetObjectRequest(_)
+            | AWSError::S3GetObject(_)
+            | AWSError::S3Streaming(_)
+            | AWSError::S3ListObjects(_)
+            | AWSError::TruncatedListObjectsResponse,
+        )) => Verdict::Retry { after: None },
+        Err(e) => Verdict::Terminal(format!("{}", e)),
+    }
 }
 
 /// Sleep in increments, updating countdown UI and checking stop flag.
@@ -834,6 +1079,35 @@ fn get_cached_volume(site_id: &str) -> Option<nexrad_data::aws::realtime::Volume
     } else {
         None
     }
+}
+
+// ── Timing stats persistence ──────────────────────────────────────────────
+
+fn timing_stats_key(site_id: &str) -> String {
+    format!("nexrad_timing_stats_{}", site_id)
+}
+
+/// Persist the site's rolling chunk-timing statistics to localStorage so the
+/// next session starts warm instead of cold-starting from pure physics.
+fn save_timing_stats(site_id: &str, stats: &super::timing::ChunkTimingStats) {
+    let Some(json) = stats.to_json() else {
+        return;
+    };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = window.local_storage() else {
+        return;
+    };
+    let _ = storage.set_item(&timing_stats_key(site_id), &json);
+}
+
+/// Read a previously-persisted timing stats snapshot for the site, if any.
+fn load_cached_timing_stats(site_id: &str) -> Option<super::timing::ChunkTimingStats> {
+    let window = web_sys::window()?;
+    let storage = window.local_storage().ok()??;
+    let raw = storage.get_item(&timing_stats_key(site_id)).ok()??;
+    super::timing::ChunkTimingStats::from_json(&raw)
 }
 
 /// Run [`find_latest_volume`] then initialize a [`StreamingState`] at that volume.

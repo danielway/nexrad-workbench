@@ -76,19 +76,21 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
             PlaybackMode::Macro => state.playback_state.advance_macro(dt as f64),
         }
 
-        // Pin playback position on the visible timeline during playback.
-        // In live/real-time mode, pin at 75% from left (right quarter) so more
-        // history is visible. In archive playback, pin at 25% from left.
-        let view_width_secs = state.playback_state.view_width_secs();
-        if view_width_secs > 0.0 {
-            let pin_fraction = if state.live_mode_state.is_active() {
-                0.75
-            } else {
-                0.25
-            };
-            let target_offset = view_width_secs * pin_fraction;
-            let pos = state.playback_state.playback_position();
-            state.playback_state.timeline_view_start = pos - target_offset;
+        // In real-time streaming mode, keep the playhead on-screen. Pan/zoom is
+        // otherwise free; this only fires when "now" would fall outside the
+        // visible range, scrolling the view minimally to put it at the edge.
+        if state.live_mode_state.is_active() {
+            let view_width = state.playback_state.view_width_secs();
+            if view_width > 0.0 {
+                let now = state.playback_state.playback_position();
+                let view_start = state.playback_state.timeline_view_start;
+                let view_end = view_start + view_width;
+                if now > view_end {
+                    state.playback_state.timeline_view_start = now - view_width;
+                } else if now < view_start {
+                    state.playback_state.timeline_view_start = now;
+                }
+            }
         }
 
         // Repaint at 30 FPS while playing — smooth for continuous micro-mode
@@ -96,7 +98,10 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
 
-    let drawer_expanded = state.acquisition.drawer_expanded;
+    // The acquisition drawer is reachable only via the dev-mode-only network
+    // metric label. Force it closed when dev mode is off so a previously
+    // expanded drawer doesn't linger after the user toggles dev off.
+    let drawer_expanded = state.dev_mode && state.acquisition.drawer_expanded;
     let controls_height = 104.0;
     let top_bar_height = 36.0;
     let min_central_height = 100.0;

@@ -1,8 +1,7 @@
 //! NWS alerts canvas overlay.
 //!
 //! Draws the polygon footprints of every alert whose bounding box intersects
-//! the currently visible area. Each polygon is filled with a transparent
-//! severity color and outlined with a solid stroke.
+//! the currently visible area as a severity-colored outline.
 //!
 //! Only runs in 2D flat mode.
 
@@ -23,11 +22,14 @@ pub(crate) fn render_alerts(painter: &Painter, projection: &MapProjection, alert
         .collect();
     ordered.sort_by_key(|a| a.severity.rank());
 
+    // Slightly wider black halo underneath so colored strokes stay legible
+    // against bright radar fills.
+    let halo_stroke = Stroke::new(4.5, Color32::BLACK);
+
     for alert in ordered {
         let (r, g, b) = alert.severity.color();
-        let fill = Color32::from_rgba_unmultiplied(r, g, b, 48);
         let stroke_color = Color32::from_rgba_unmultiplied(r, g, b, 220);
-        let stroke = Stroke::new(1.5, stroke_color);
+        let stroke = Stroke::new(2.5, stroke_color);
 
         for polygon in &alert.geometry.polygons {
             // Project all rings once.
@@ -40,28 +42,12 @@ pub(crate) fn render_alerts(painter: &Painter, projection: &MapProjection, alert
                 })
                 .collect();
 
-            let Some(outer) = projected_rings.first() else {
-                continue;
-            };
-            if outer.len() < 3 {
-                continue;
-            }
-
-            // Filled outline — use a closed path with a tinted fill. egui's
-            // convex_polygon handles non-convex rings reasonably well for
-            // visualization purposes; self-intersecting rings are very rare
-            // in NWS alert data and if they occur, the fill will still give
-            // a meaningful visual indication.
-            painter.add(Shape::convex_polygon(outer.clone(), fill, Stroke::NONE));
-            painter.add(Shape::closed_line(outer.clone(), stroke));
-
-            // Hole rings: draw outline only so the user can see the cutout
-            // even though we don't actually subtract it from the fill.
-            for hole in projected_rings.iter().skip(1) {
-                if hole.len() < 3 {
+            for ring in &projected_rings {
+                if ring.len() < 3 {
                     continue;
                 }
-                painter.add(Shape::closed_line(hole.clone(), stroke));
+                painter.add(Shape::closed_line(ring.clone(), halo_stroke));
+                painter.add(Shape::closed_line(ring.clone(), stroke));
             }
         }
     }

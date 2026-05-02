@@ -283,6 +283,8 @@ fn handle_chunk_ingested_message(
             last_radial_azimuth: r.last_radial_azimuth,
             last_radial_time_secs: r.last_radial_time_secs,
             volume_header_time_secs: r.volume_header_time_secs,
+            chunk_min_time_secs: r.chunk_min_time_secs,
+            chunk_max_time_secs: r.chunk_max_time_secs,
             chunk_elev_spans: r.chunk_elev_spans,
             chunk_elev_az_ranges: r.chunk_elev_az_ranges,
         }));

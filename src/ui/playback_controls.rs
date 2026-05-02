@@ -536,75 +536,79 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
     let transferred = state.session_stats.format_transferred();
     let cache_size = state.session_stats.format_cache_size();
 
-    if let Some(fps) = fps {
-        ui.label(
-            RichText::new(format!("{:.0} fps", fps))
-                .size(11.0)
-                .color(ui_colors::value(dark)),
-        );
-        ui.separator();
-    }
-
-    // Pipeline status — clickable phase boxes open detail modal
-    render_pipeline_indicator(ui, state);
-
-    // Download group: requests + transferred
-    // Use service worker aggregate if available, otherwise fall back to channel stats
-    let sw_total = state.network_aggregate.total_requests;
-    let (display_count, display_transferred) = if sw_total > 0 {
-        (
-            sw_total,
-            crate::state::format_bytes(state.network_aggregate.total_bytes),
-        )
-    } else {
-        (request_count, transferred)
-    };
-
-    if active_count > 0 {
-        ui.label(
-            RichText::new(format!("({} active)", active_count))
-                .size(10.0)
-                .italics()
-                .color(ui_colors::ACTIVE),
-        );
-    }
-    if display_count > 0 {
-        // Clickable to toggle acquisition drawer (subsumes network log modal)
-        let queued = state.acquisition.queued_count();
-        let req_text = if queued > 0 {
-            format!("{}r / {} | {}q", display_count, display_transferred, queued)
-        } else {
-            format!("{}r / {}", display_count, display_transferred)
-        };
-
-        let drawer_icon = if state.acquisition.drawer_expanded {
-            egui_phosphor::regular::CARET_DOWN
-        } else {
-            egui_phosphor::regular::CARET_UP
-        };
-
-        if ui
-            .add(
-                egui::Label::new(
-                    RichText::new(format!("{} {}", drawer_icon, req_text))
-                        .size(10.0)
-                        .color(ui_colors::value(dark)),
-                )
-                .sense(egui::Sense::click()),
-            )
-            .on_hover_text("Click to toggle acquisition drawer")
-            .clicked()
-        {
-            state.acquisition.drawer_expanded = !state.acquisition.drawer_expanded;
+    // FPS, pipeline indicator, network metrics, and COI badge are all
+    // dev-mode-only diagnostics — hidden by default.
+    if state.dev_mode {
+        if let Some(fps) = fps {
+            ui.label(
+                RichText::new(format!("{:.0} fps", fps))
+                    .size(11.0)
+                    .color(ui_colors::value(dark)),
+            );
+            ui.separator();
         }
-        ui.separator();
-    }
 
-    // Cross-origin isolation indicator
-    if state.cross_origin_isolated {
-        ui.label(RichText::new("COI").size(9.0).color(ui_colors::SUCCESS))
-            .on_hover_text("Cross-Origin Isolated: SharedArrayBuffer available");
-        ui.separator();
+        // Pipeline status — clickable phase boxes open detail modal
+        render_pipeline_indicator(ui, state);
+
+        // Download group: requests + transferred
+        // Use service worker aggregate if available, otherwise fall back to channel stats
+        let sw_total = state.network_aggregate.total_requests;
+        let (display_count, display_transferred) = if sw_total > 0 {
+            (
+                sw_total,
+                crate::state::format_bytes(state.network_aggregate.total_bytes),
+            )
+        } else {
+            (request_count, transferred)
+        };
+
+        if active_count > 0 {
+            ui.label(
+                RichText::new(format!("({} active)", active_count))
+                    .size(10.0)
+                    .italics()
+                    .color(ui_colors::ACTIVE),
+            );
+        }
+        if display_count > 0 {
+            // Clickable to toggle acquisition drawer (subsumes network log modal)
+            let queued = state.acquisition.queued_count();
+            let req_text = if queued > 0 {
+                format!("{}r / {} | {}q", display_count, display_transferred, queued)
+            } else {
+                format!("{}r / {}", display_count, display_transferred)
+            };
+
+            let drawer_icon = if state.acquisition.drawer_expanded {
+                egui_phosphor::regular::CARET_DOWN
+            } else {
+                egui_phosphor::regular::CARET_UP
+            };
+
+            if ui
+                .add(
+                    egui::Label::new(
+                        RichText::new(format!("{} {}", drawer_icon, req_text))
+                            .size(10.0)
+                            .color(ui_colors::value(dark)),
+                    )
+                    .sense(egui::Sense::click()),
+                )
+                .on_hover_text("Click to toggle acquisition drawer")
+                .clicked()
+            {
+                state.acquisition.drawer_expanded = !state.acquisition.drawer_expanded;
+            }
+            ui.separator();
+        }
+
+        // Cross-origin isolation indicator
+        if state.cross_origin_isolated {
+            ui.label(RichText::new("COI").size(9.0).color(ui_colors::SUCCESS))
+                .on_hover_text("Cross-Origin Isolated: SharedArrayBuffer available");
+            ui.separator();
+        }
     }
 
     // Cache group: size with clear button
