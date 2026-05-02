@@ -8,21 +8,25 @@ A WebAssembly-based NEXRAD weather radar visualization application built with Ru
 src/
 ├── main.rs              # Application entry, event loop, channel orchestration
 ├── state/               # Application state management
-├── nexrad/              # NEXRAD data pipeline (download, decode, cache, render)
-├── ui/                  # egui panels and rendering
+├── nexrad/              # NEXRAD data pipeline (download, decode, cache, render, timing)
+├── ui/                  # egui panels and rendering (incl. mobile chrome)
 ├── geo/                 # Geographic projections and layer rendering
-└── data/                # Static data (site definitions), IndexedDB storage, keys
+├── data/                # Static data (sites, VCPs), IndexedDB storage, keys
+├── alerts/              # NWS active-alerts polling and types
+└── net/                 # Shared HTTP retry policy
 ```
 
 ### Module Responsibilities
 
 | Module | Purpose |
 |--------|---------|
-| `state` | Centralized state tree (`AppState`) with sub-states for playback, visualization, layers, live mode, acquisition, preferences, session stats |
-| `nexrad` | Data acquisition (download, realtime streaming), Web Worker operations, GPU rendering, 3D globe/volume rendering, coordination managers |
-| `ui` | Panel layout, timeline, canvas with overlays, playback controls, modals, keyboard shortcuts |
+| `state` | Centralized state tree (`AppState`) with sub-states for playback, visualization, layers, live mode, acquisition, alerts, preferences, session stats; per-frame derived models (`AppMode`, `LiveRadarModel`, `RenderCache`, `VcpPositionModel`, `VolumeForecastSnapshot`) |
+| `nexrad` | Data acquisition (download, realtime streaming, parallel volume discovery), Web Worker pool, GPU rendering, 3D globe/volume rendering, real-time chunk timing model, storm cell detection, national mosaic overlay, coordination managers |
+| `ui` | Desktop panel layout, timeline, canvas with overlays, playback controls, modals (alerts/events/site/wipe/stats/VCP forecast), keyboard shortcuts, mobile chrome and gestures |
 | `geo` | Map projection, camera system, geographic feature rendering (states, counties, cities), globe rendering |
-| `data` | NEXRAD site definitions, storage key types, IndexedDB abstraction, record storage facade |
+| `data` | NEXRAD site definitions, VCP pattern definitions, storage key types, IndexedDB abstraction, sweep storage facade |
+| `alerts` | NWS active-alerts API polling, polygon geometry, severity types, alerts manager |
+| `net` | Unified retry policy (`with_retry`) applied to every outbound HTTP request |
 
 ### Source Files
 
@@ -30,12 +34,18 @@ src/
 | File | Purpose |
 |------|---------|
 | `mod.rs` | Root `AppState` definition, `AppCommand` enum, re-exports |
+| `app_mode.rs` | Derived top-level mode (`Idle` / `Archive` / `Live`), recomputed each frame |
 | `playback.rs` | Playback controls — timestamp, speed, loop mode, selection range |
 | `playback_manager.rs` | Sweep cache, previous-sweep resolution, animation helpers |
 | `radar_data.rs` | `RadarTimeline` — scan/sweep/radial timeline representation |
 | `viz.rs` | Visualization state — product, palette, zoom, pan, render mode, view mode |
 | `live_mode.rs` | Live streaming state machine (`LivePhase`) and phase transitions |
+| `live_radar_model.rs` | Per-frame derived snapshot of live radar state for consistent UI consumption |
+| `vcp_position.rs` | Unified `VcpPositionModel` — sweep timing/position usable for archive and live |
+| `vcp_forecast.rs` | Diagnostic snapshot of VCP-based sweep forecasts vs. observed reality |
+| `render_cache.rs` | Per-frame render caches (camera-motion settle, prev-sweep memoization, theme-gating) |
 | `acquisition.rs` | Unified acquisition tracking — operation queue, status, network correlation |
+| `alerts.rs` | NWS alert list mirror plus modal selection state |
 | `layer.rs` | Geographic layer visibility toggles |
 | `preferences.rs` | User preferences persistence (localStorage) |
 | `saved_events.rs` | User-saved weather event bookmarks (localStorage) |
@@ -43,7 +53,7 @@ src/
 | `stats.rs` | Session metrics — download, ingest, and render timing |
 | `theme.rs` | Dark/light theme mode |
 | `url_state.rs` | URL parameter parsing for deep linking |
-| `vcp.rs` | Volume Coverage Pattern definitions |
+| `vcp.rs` | Re-export of canonical VCP definitions in `data::vcp` |
 
 #### `nexrad/`
 
@@ -52,8 +62,10 @@ Directory modules (split into sub-files):
 | Directory | Sub-files | Purpose |
 |-----------|-----------|---------|
 | `gpu_renderer/` | `mod.rs`, `shaders.rs`, `textures.rs`, `inspect.rs` | WebGL2 radar rendering with OKLab color interpolation, polar→Cartesian shader, LUT textures, CPU-side value lookups |
-| `decode_worker/` | `mod.rs`, `send.rs`, `receive.rs`, `types.rs` | Web Worker lifecycle, message send/receive, typed payloads, result polling |
+| `decode_worker/` | `mod.rs`, `pool.rs`, `send.rs`, `receive.rs`, `types.rs` | Web Worker pool lifecycle, message send/receive, typed payloads, result polling |
 | `worker_api/` | `mod.rs`, `ingest.rs`, `render.rs`, `render_live.rs` | WASM exports called from worker.js — ingest, render, live render implementations |
+| `timing/` | `mod.rs`, `chunk_timing_model.rs`, `chunk_timing_stats.rs`, `elevation_chunk_mapper.rs`, `estimate_next_chunk_time.rs`, `scan_timing_projection.rs` | Local fork of real-time chunk timing prediction (physics + statistics blending) intended to be contributed back to `nexrad-data` upstream |
+| `detection/` | `mod.rs`, `components.rs`, `features.rs` | Storm cell detection — connected-component analysis on reflectivity gates plus per-cell feature extraction |
 
 Single-file modules:
 
@@ -62,15 +74,18 @@ Single-file modules:
 | `acquisition_coordinator.rs` | Owns download pipeline, archive index, cache load channel, download queue |
 | `render_coordinator.rs` | Owns decode worker, request deduplication via `last_render_params` |
 | `streaming_manager.rs` | Live streaming and backfill lifecycle, unified polling API |
+| `streaming_state.rs` | Replacement for `nexrad_data` `ChunkIterator` that uses our parallel volume discovery |
+| `volume_discovery.rs` | Fast (parallel) discovery of the current real-time S3 volume directory |
 | `persistence_manager.rs` | URL state pushing (throttled ~1/sec) and preference saving |
 | `network_monitor.rs` | Service worker network metric collection and aggregate stats |
+| `national_mosaic.rs` | CONUS composite reflectivity overlay (NOAA MRMS WMS) — fetch, decode, GPU texture |
 | `download.rs` | AWS S3 download pipeline with async channels and progress tracking |
 | `archive_index.rs` | Archive file listing and caching |
 | `realtime.rs` | Real-time chunk streaming pipeline |
 | `record_decode.rs` | Archive2 record parsing and sweep data extraction |
 | `ingest_phases.rs` | Core decode pipeline: decompress, VCP extract, radial grouping, sweep blob generation |
 | `render_request.rs` | Render parameter types for request deduplication |
-| `types.rs` | `CachedScan`, `ScanMetadata` types |
+| `types.rs` | `DownloadResult`, `ScanMetadata` types |
 | `cache_channel.rs` | IndexedDB metadata loading channel |
 | `color_table.rs` | Product color scales and value ranges |
 | `download_queue.rs` | Serial download queue state machine |
@@ -83,8 +98,9 @@ Directory modules:
 
 | Directory | Sub-files | Purpose |
 |-----------|-----------|---------|
-| `timeline/` | `mod.rs`, `ruler.rs`, `scan_track.rs`, `sweep_track.rs`, `interaction.rs`, `overlays.rs`, `tooltips.rs` | Zoomable timeline with time ruler, scan/sweep tracks, scrubbing, download ghosts, saved event markers |
-| `canvas_overlays/` | `mod.rs`, `color_scale.rs`, `compass.rs`, `globe.rs`, `info.rs`, `sites.rs`, `sweep.rs` | Visual overlays drawn on top of the radar canvas |
+| `timeline/` | `mod.rs`, `ruler.rs`, `scan_track.rs`, `sweep_track.rs`, `interaction.rs`, `overlays.rs`, `strokes.rs`, `tooltips.rs` | Zoomable timeline with time ruler, scan/sweep tracks, scrubbing, download ghosts, saved event markers; `strokes.rs` batches dashed/hatched borders into single paint calls |
+| `canvas_overlays/` | `mod.rs`, `alerts.rs`, `color_scale.rs`, `compass.rs`, `globe.rs`, `info.rs`, `national_mosaic.rs`, `scale_bar.rs`, `sites.rs`, `sweep.rs` | Visual overlays drawn on top of the radar canvas (alert polygons, color scale, compass, globe, info text, CONUS mosaic, scale bar, NEXRAD site markers, sweep line/donut) |
+| `mobile/` | `mod.rs`, `gestures.rs`, `scrubber.rs`, `settings_modal.rs`, `tabs.rs`, `top_bar.rs` | Mobile chrome that replaces the desktop panel layout when `AppState::is_mobile` is true; multi-touch gesture digestion for the 2D canvas |
 
 Single-file modules:
 
@@ -105,6 +121,8 @@ Single-file modules:
 | `site_modal.rs` | Site selection modal |
 | `stats_modal.rs` | Session statistics detail modal |
 | `event_modal.rs` | Saved event create/edit/delete modal |
+| `alerts_modal.rs` | NWS alerts list and detail modals |
+| `vcp_forecast_modal.rs` | Diagnostics modal comparing predicted vs. observed sweep timing |
 | `wipe_modal.rs` | Cache wipe confirmation modal |
 | `modal_helper.rs` | Shared backdrop pattern for modal overlays |
 
@@ -122,10 +140,28 @@ Single-file modules:
 #### `data/`
 | File | Purpose |
 |------|---------|
-| `sites.rs` | All NEXRAD site definitions (156+ sites) |
-| `keys.rs` | Storage key types (`ScanKey`, `RecordKey`, `SweepDataKey`, `SweepMeta`, `ExtractedVcp`) |
+| `sites.rs` | All NEXRAD site definitions (~200 sites) |
+| `keys.rs` | Storage key types (`ScanKey`, `SweepDataKey`, `SweepMeta`, `ExtractedVcp`, `PrecomputedSweep`, `ScanIndexEntry`, `ScanCompleteness`) |
+| `vcp.rs` | Volume Coverage Pattern definitions (canonical home; `state::vcp` re-exports) |
 | `indexeddb.rs` | IndexedDB browser storage abstraction |
-| `facade.rs` | Record storage facade |
+| `facade.rs` | Sweep storage facade with cache eviction logic |
+
+#### `alerts/`
+| File | Purpose |
+|------|---------|
+| `mod.rs` | Module entry point and public re-exports |
+| `api.rs` | NWS alerts API client (`https://api.weather.gov/alerts/active`) |
+| `channel.rs` | Async channel that drives polling and surfaces results to the UI |
+| `geometry.rs` | Polygon helpers (`bbox_intersects`, `contains_point`) |
+| `manager.rs` | `AlertsManager` — poll cadence, dedup, viewport intersection |
+| `parse.rs` | GeoJSON parsing for alert polygons |
+| `types.rs` | `Alert`, `AlertSeverity` |
+
+#### `net/`
+| File | Purpose |
+|------|---------|
+| `mod.rs` | Module entry point |
+| `retry.rs` | Unified retry policy (`with_retry`, `Verdict`, `DEFAULT_POLICY`) used by every outbound request |
 
 ### JavaScript / HTML
 
@@ -228,7 +264,7 @@ if let Some(result) = channel.try_recv() {
 
 ### Web Worker
 
-Heavy computation (bzip2 decompression, NEXRAD decoding, sweep extraction, IDB I/O) runs in a dedicated Web Worker (`worker.js`) to keep the UI thread responsive. Communication uses `postMessage` with Transferable ArrayBuffers for zero-copy data transfer.
+Heavy computation (bzip2 decompression, NEXRAD decoding, sweep extraction, IDB I/O) runs in a pool of Web Workers (`worker.js`) to keep the UI thread responsive. The pool is sized at startup (`default_pool_size`); commands are dispatched to the next available worker. Communication uses `postMessage` with Transferable ArrayBuffers for zero-copy data transfer.
 
 | Operation | Direction | Purpose |
 |-----------|-----------|---------|
@@ -264,24 +300,23 @@ near-zero render latency for scrubbing and elevation changes.
 
 ### IndexedDB Schema
 
+Database `nexrad-workbench`, schema version 3. Two object stores:
+
 ```
 nexrad-workbench
-├── records           - Raw bzip2-compressed record blobs (legacy, kept for fallback)
-│   Key: "SITE|SCAN_START_MS|RECORD_ID"
-│   Value: ArrayBuffer (raw bytes)
+├── sweeps            - Pre-computed sweep blobs (primary render path)
+│   Key: "SITE|SCAN_START_MS|ELEV_NUM|PRODUCT"
+│   Value: ArrayBuffer (compact binary: azimuth count, gate count, metadata, raw gate values)
 │
-├── record_index      - Per-record metadata
-│   Key: "SITE|SCAN_START_MS|RECORD_ID"
-│   Value: { key, record_time, size_bytes, has_vcp, stored_at }
-│
-├── scan_index        - Per-scan metadata
-│   Key: "SITE|SCAN_START_MS"
-│   Value: { scan, has_vcp, expected_records, present_records, ... }
-│
-└── sweep_data        - Pre-computed sweep blobs (primary render path)
-    Key: "SITE|SCAN_START_MS|ELEV_NUM|PRODUCT"
-    Value: ArrayBuffer (compact binary: azimuth count, gate count, metadata, raw gate values)
+└── scan_index        - Per-scan metadata for fast timeline queries
+    Key: "SITE|SCAN_START_MS"
+    Value: { scan, has_vcp, expected_records, present_records, completeness, ... }
 ```
+
+Earlier schemas had `records` / `record_index` stores holding raw bzip2-compressed
+record blobs and per-record metadata. Those were dropped during the upgrade to
+version 3 — the render path is exclusively sweep-blob based, so per-record
+storage is no longer needed.
 
 ### Scan Completeness States
 
@@ -295,7 +330,7 @@ nexrad-workbench
 ### Three-Layer Cache
 
 1. **IndexedDB** (persistent, WASM only)
-   - Pre-computed sweep blobs and record-level storage
+   - Pre-computed sweep blobs and per-scan metadata
    - Configurable quota with LRU eviction
    - Survives page reload
 
@@ -320,13 +355,22 @@ AppState {
     viz_state: VizState,                 // site, zoom, pan, product, palette, render/view mode
     layer_state: LayerState,             // geographic layer visibility
     live_mode_state: LiveModeState,      // streaming state machine
-    acquisition_state: AcquisitionState, // download queue, operation tracking
+    app_mode: AppMode,                   // derived: Idle / Archive / Live
+    live_radar_model: LiveRadarModel,    // per-frame derived live snapshot
+    acquisition: AcquisitionState,       // download queue, operation tracking
+    alerts: AlertsState,                 // NWS alert list and modal state
+    national_mosaic: NationalMosaic,     // CONUS composite overlay state
+    saved_events: SavedEvents,           // user bookmarks
     session_stats: SessionStats,         // download/ingest/render metrics
     download_progress: DownloadProgress, // active download tracking
     storage_settings: StorageSettings,   // quota and eviction targets
     render_processing: RenderProcessing, // interpolation, smoothing options
+    render_cache: RenderCache,           // per-frame caches (camera-motion, prev-sweep)
     theme_mode: ThemeMode,               // dark/light/system
-    // ... UI flags, coordination flags, tool state
+    is_mobile: bool,                     // resolved mobile layout for the frame
+    dev_mode: bool,                      // diagnostic UI / perf timings
+    commands: VecDeque<AppCommand>,      // command queue drained each frame
+    // ... UI flags, modal toggles, tool state
 }
 ```
 
@@ -363,17 +407,20 @@ State changes are coordinated via boolean flags checked each frame:
 ```
 
 ### Canvas Overlays (drawn in order)
-1. Geographic layers (states, counties, highways, lakes, cities)
-2. Radar texture (GPU-rendered polar data)
-3. Range rings and radial lines
-4. Sweep animation line and donut chart
-5. NEXRAD site markers
-6. Info overlay (top-left: site, time, elevation, age)
-7. Color scale legend (right edge)
-8. Inspector tooltip and crosshair (on hover)
-9. Distance measurement line (when tool active)
-10. Storm cell bounding boxes (when detected)
-11. Compass rose (3D globe mode only)
+1. National mosaic (CONUS composite, with site cutout, when enabled)
+2. Geographic layers (states, counties, highways, lakes, cities)
+3. Radar texture (GPU-rendered polar data)
+4. Range rings and radial lines
+5. NWS alert polygon footprints (when enabled, 2D only)
+6. Sweep animation line and donut chart
+7. NEXRAD site markers
+8. Info overlay (top-left: site, time, elevation, age)
+9. Color scale legend (right edge)
+10. Map scale bar (bottom-left, 2D only)
+11. Inspector tooltip and crosshair (on hover)
+12. Distance measurement line (when tool active)
+13. Storm cell bounding boxes (when detected)
+14. Compass rose (3D globe mode only)
 
 ## Platform Support
 
