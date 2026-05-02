@@ -59,10 +59,12 @@ Sweep blobs are pre-computed during ingestion so that scrubbing and elevation ch
 
 - `src/main.rs` — App entry, update loop, coordination manager orchestration
 - `src/state/` — Centralized `AppState` with sub-states. UI actions emit `AppCommand` variants processed in the main loop.
-- `src/nexrad/` — Data pipeline: acquisition (`download.rs`, `realtime.rs`), worker communication (`decode_worker/`, `worker_api/`), GPU rendering (`gpu_renderer/`), coordination managers (`acquisition_coordinator.rs`, `render_coordinator.rs`, `streaming_manager.rs`, `persistence_manager.rs`)
-- `src/ui/` — egui panels, timeline (`timeline/`), canvas with overlays (`canvas_overlays/`), modals, shortcuts
+- `src/nexrad/` — Data pipeline: acquisition (`download.rs`, `realtime.rs`, `volume_discovery.rs`), worker communication (`decode_worker/`, `worker_api/`), GPU rendering (`gpu_renderer/`), real-time chunk timing (`timing/`), storm cell detection (`detection/`), national mosaic overlay (`national_mosaic.rs`), coordination managers (`acquisition_coordinator.rs`, `render_coordinator.rs`, `streaming_manager.rs`, `persistence_manager.rs`)
+- `src/ui/` — egui panels, timeline (`timeline/`), canvas with overlays (`canvas_overlays/`), modals, shortcuts, mobile chrome (`mobile/`)
 - `src/geo/` — Map projection, camera (2D/globe), geographic feature rendering
-- `src/data/` — Site definitions, storage key types (`ScanKey`, `SweepDataKey`), IndexedDB abstraction
+- `src/data/` — Site definitions, VCP definitions, storage key types (`ScanKey`, `SweepDataKey`), IndexedDB abstraction
+- `src/alerts/` — NWS active-alerts polling, geometry, and severity types
+- `src/net/` — Shared HTTP retry policy used by every outbound request
 - `worker.js` — ES module Web Worker dispatching postMessage to WASM exports
 - `service-worker.js` — Cross-origin isolation headers (COOP/COEP) and network metrics
 
@@ -90,9 +92,15 @@ Recent refactoring consolidated scattered fields into focused owners:
 Six message types (see `worker.js` header for full protocol):
 `init`, `ingest`, `ingest_chunk`, `render`, `render_volume`, `render_live`
 
+The decode worker is pooled — multiple worker instances share the load and one logical command may be served by any worker (see `nexrad/decode_worker/pool.rs`).
+
 ### IndexedDB Schema
 
-Two primary stores: `sweep_data` (pre-computed sweep blobs, keyed `SITE|MS|ELEV|PRODUCT`) and `scan_index` (per-scan metadata, keyed `SITE|MS`). Legacy `records` and `record_index` stores exist but the primary render path uses sweep blobs.
+Two object stores under database `nexrad-workbench` (current schema version 3):
+- `sweeps` — pre-computed sweep blobs (raw gate values + metadata), keyed `SITE|SCAN_MS|ELEV_NUM|PRODUCT`
+- `scan_index` — per-scan metadata for fast timeline queries, keyed `SITE|SCAN_MS`
+
+Earlier schemas had `records` / `record_index` stores; those are dropped on upgrade and the render path is exclusively sweep-blob based.
 
 ## Timestamps
 

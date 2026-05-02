@@ -90,8 +90,9 @@ User-controlled settings for product selection, processing, and rendering option
 - **Elevation selection**: Slider with VCP snap-to-nearest behavior.
 - **Render mode**: Fixed Tilt (specific product and elevation) or Most Recent (latest data regardless of product/elevation).
 - **Tools**: Inspector tool (hover for lat/lon and data values), distance measurement tool (click two points), and storm cell detection (configurable dBZ threshold with canvas overlay).
-- **Geographic layers**: Toggles for state boundaries, county boundaries, city labels, site markers.
+- **Geographic layers**: Toggles for state boundaries, county boundaries, city labels, site markers, national radar mosaic, and active NWS weather alerts.
 - **Storage management**: Cache quota slider (100 MB to 20 GB), usage display, clear cache and reset app controls.
+- **Developer mode**: Reveals diagnostic UI (per-frame timing, FPS, network metrics, cross-origin-isolation badge, VCP forecast modal). Mirrored to the URL via `?dev=true`.
 
 Collapsible via keyboard shortcut.
 
@@ -126,6 +127,12 @@ An alternative rendering mode projects radar data onto a 3D globe surface using 
 - **Inspector**: Hover over the canvas to see lat/lon coordinates and data values at the cursor position.
 - **Distance measurement**: Click two points on the canvas to measure the distance between them.
 - **Storm cell detection**: Identifies storm cells based on a configurable dBZ threshold (default 35.0 dBZ), renders cell boundaries and centroids as a canvas overlay with area calculations.
+
+### Additional Overlays
+
+- **National radar mosaic**: A CONUS-wide composite reflectivity layer (NOAA MRMS) painted under per-site radar data. When the active site is showing data, the mosaic is cut out around the site so the two layers don't visually compete.
+- **NWS weather alerts**: Active alert polygons from the National Weather Service, color-coded by severity. Alerts intersecting the viewing area are surfaced in the top bar, drawn as polygon footprints on the 2D map, and openable in a detail modal.
+- **Map scale bar**: Stacked km / miles bar in the bottom-left of the 2D view that snaps to round values as the user zooms.
 
 ## 5. Rendering Model
 
@@ -233,6 +240,10 @@ User preferences are persisted in browser local storage. Preferences include pla
 ### Appearance
 
 The application supports dark and light appearance modes, defaulting to the operating system's preference. Map base layers, UI chrome, and all interface elements adapt to the active mode. The user may override the OS default via application settings.
+
+### Mobile Layout
+
+On narrow viewports (and when touch input is detected) the application switches to a touch-first chrome: the desktop sidebars collapse, the timeline is replaced by a compact scrubber, and a tabbed settings modal exposes playback, product, layer, and miscellaneous controls. Multi-touch gestures (pinch zoom, two-finger pan) drive the 2D canvas. The user may override auto-detection in application settings to force desktop or mobile layout. The 3D globe view is desktop-only.
 
 ### Keyboard Shortcuts
 
