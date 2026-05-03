@@ -725,56 +725,66 @@ pub(super) fn render_now_button(ui: &mut egui::Ui, state: &mut AppState) {
         "Enter real-time streaming"
     };
 
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing.y = 1.0;
+    // Allocate an explicit-width column for the button group + countdown.
+    // Without an explicit width the inner `top_down` layout would claim
+    // the full available width of the parent right-to-left row, pushing
+    // the timeline onto its own line above.
+    let column_width: f32 = 110.0;
+    let column_height = ui.available_height();
+    ui.allocate_ui_with_layout(
+        Vec2::new(column_width, column_height),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
 
-        // Top: Live button with caret menu to its right.
-        ui.horizontal(|ui| {
-            let label = format!("{} Live", egui_phosphor::regular::BROADCAST);
-            let mut button = egui::Button::new(RichText::new(label).size(12.0).color(fg));
-            if let Some(c) = fill {
-                button = button.fill(c);
-            }
-            let live_btn = ui.add(button).on_hover_text(hover);
-            if live_btn.clicked() {
-                if is_active {
-                    state.push_command(AppCommand::StopLive);
-                } else {
-                    state.push_command(AppCommand::StartLive);
-                    state.playback_state.speed = PlaybackSpeed::Realtime;
+            // Top: Live button with caret menu to its right.
+            ui.horizontal(|ui| {
+                let label = format!("{} Live", egui_phosphor::regular::BROADCAST);
+                let mut button = egui::Button::new(RichText::new(label).size(12.0).color(fg));
+                if let Some(c) = fill {
+                    button = button.fill(c);
                 }
-            }
-
-            let menu_response = ui.menu_button(
-                RichText::new(egui_phosphor::regular::CARET_DOWN)
-                    .size(10.0)
-                    .color(fg),
-                |ui| {
-                    let mut partial = state.live_mode_state.show_partial_sweeps;
-                    ui.radio_value(&mut partial, false, "Full scans");
-                    ui.radio_value(&mut partial, true, "Partial sweeps");
-                    if partial != state.live_mode_state.show_partial_sweeps {
-                        state.live_mode_state.show_partial_sweeps = partial;
+                let live_btn = ui.add(button).on_hover_text(hover);
+                if live_btn.clicked() {
+                    if is_active {
+                        state.push_command(AppCommand::StopLive);
+                    } else {
+                        state.push_command(AppCommand::StartLive);
+                        state.playback_state.speed = PlaybackSpeed::Realtime;
                     }
-                },
-            );
-            menu_response
-                .response
-                .on_hover_text("Choose between full-scan or partial-sweep playback");
-        });
+                }
 
-        // Bottom: countdown label, directly beneath the button.
-        if matches!(phase, LivePhase::WaitingForChunk) {
-            if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now_secs) {
-                ui.label(
-                    RichText::new(format!("next in {}s", remaining.ceil() as i32))
+                let menu_response = ui.menu_button(
+                    RichText::new(egui_phosphor::regular::CARET_DOWN)
                         .size(10.0)
-                        .italics()
-                        .color(Color32::from_rgb(160, 160, 160)),
+                        .color(fg),
+                    |ui| {
+                        let mut partial = state.live_mode_state.show_partial_sweeps;
+                        ui.radio_value(&mut partial, false, "Full scans");
+                        ui.radio_value(&mut partial, true, "Partial sweeps");
+                        if partial != state.live_mode_state.show_partial_sweeps {
+                            state.live_mode_state.show_partial_sweeps = partial;
+                        }
+                    },
                 );
+                menu_response
+                    .response
+                    .on_hover_text("Choose between full-scan or partial-sweep playback");
+            });
+
+            // Bottom: countdown label, directly beneath the button.
+            if matches!(phase, LivePhase::WaitingForChunk) {
+                if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now_secs) {
+                    ui.label(
+                        RichText::new(format!("next in {}s", remaining.ceil() as i32))
+                            .size(10.0)
+                            .italics()
+                            .color(Color32::from_rgb(160, 160, 160)),
+                    );
+                }
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(250));
             }
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(250));
-        }
-    });
+        },
+    );
 }
