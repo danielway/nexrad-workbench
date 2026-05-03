@@ -63,6 +63,7 @@ pub fn spawn_fetch(
 async fn fetch_inner(api_key: &str, params: &FetchParams) -> Result<String, String> {
     let url = build_url(params);
     let auth_header = format!("Token {}", api_key);
+    log::info!("mping: GET {}", url);
 
     with_retry(&DEFAULT_POLICY, "mping", |_attempt| {
         let url = url.clone();
@@ -73,22 +74,27 @@ async fn fetch_inner(api_key: &str, params: &FetchParams) -> Result<String, Stri
 }
 
 fn build_url(params: &FetchParams) -> String {
-    let min_iso = chrono::DateTime::from_timestamp_millis(params.min_obtime_ms)
-        .map(|dt| dt.to_rfc3339())
-        .unwrap_or_default();
-    let max_iso = chrono::DateTime::from_timestamp_millis(params.max_obtime_ms)
-        .map(|dt| dt.to_rfc3339())
-        .unwrap_or_default();
+    // mPING expects timestamps in `YYYY-MM-DD HH:MM:SS` UTC form (per the
+    // examples in https://mping.ou.edu/api/). RFC3339 with a `+00:00`
+    // offset gets silently rejected by their filter and returns no rows.
+    let min_ts = format_obtime(params.min_obtime_ms);
+    let max_ts = format_obtime(params.max_obtime_ms);
     format!(
         "{}?obtime_gte={}&obtime_lte={}&dist={}&point={},{}&page_size={}",
         REPORTS_URL,
-        urlencode(&min_iso),
-        urlencode(&max_iso),
+        urlencode(&min_ts),
+        urlencode(&max_ts),
         params.radius_m,
         params.center_lon,
         params.center_lat,
         PAGE_SIZE,
     )
+}
+
+fn format_obtime(ts_ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ts_ms)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default()
 }
 
 /// Minimal percent-encoder for the values we put in query strings (ISO
