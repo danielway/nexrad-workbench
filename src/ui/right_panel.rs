@@ -235,6 +235,29 @@ pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .on_hover_text(
                     "Show active NWS alert polygons on the 2D map (click polygon for details)",
                 );
+
+            ui.horizontal(|ui| {
+                let has_key = state.mping.api_key.is_some();
+                ui.add_enabled_ui(has_key, |ui| {
+                    let resp =
+                        ui.checkbox(&mut state.layer_state.geo.mping, "Storm Reports (mPING)");
+                    if has_key {
+                        resp.on_hover_text(
+                            "Show crowd-sourced mPING storm reports near the active radar \
+                             (\u{00B1}30 min of the playback time, ~300 km radius)",
+                        );
+                    } else {
+                        resp.on_hover_text("Configure your mPING API key first \u{2192}");
+                    }
+                });
+                if ui
+                    .small_button("\u{2699}")
+                    .on_hover_text("mPING settings (API key)")
+                    .clicked()
+                {
+                    state.mping.settings_modal_open = true;
+                }
+            });
         });
 }
 

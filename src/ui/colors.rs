@@ -388,6 +388,30 @@ pub mod acquisition {
     pub const PAUSED: Color32 = Color32::from_rgb(255, 180, 50);
 }
 
+/// Colors for mPING storm-report markers (theme-independent).
+pub mod mping {
+    use super::Color32;
+    use crate::mping::ReportCategory;
+
+    /// Stroke (and label) color for any marker — chosen for legibility
+    /// against both bright reflectivity fills and the dark canvas
+    /// background.
+    pub const STROKE: Color32 = Color32::from_rgb(20, 20, 25);
+
+    /// Fill color for a report's marker, by category.
+    pub fn fill(category: ReportCategory) -> Color32 {
+        match category {
+            ReportCategory::RainSnow => Color32::from_rgb(120, 200, 255),
+            ReportCategory::Hail => Color32::from_rgb(255, 230, 80),
+            ReportCategory::WindDamage => Color32::from_rgb(255, 160, 60),
+            ReportCategory::Tornado => Color32::from_rgb(255, 80, 80),
+            ReportCategory::Flood => Color32::from_rgb(80, 120, 220),
+            ReportCategory::ReducedVisibility => Color32::from_rgb(180, 180, 180),
+            ReportCategory::Other => Color32::from_rgb(220, 220, 220),
+        }
+    }
+}
+
 /// Colors for NEXRAD site markers (theme-independent).
 pub mod sites {
     use super::Color32;

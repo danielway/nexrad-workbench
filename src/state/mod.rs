@@ -11,6 +11,7 @@ mod app_mode;
 mod layer;
 mod live_mode;
 mod live_radar_model;
+mod mping;
 mod playback;
 pub(crate) mod playback_manager;
 mod preferences;
@@ -36,6 +37,7 @@ pub use app_mode::AppMode;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
+pub use mping::MpingState;
 pub use playback::{LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
@@ -246,6 +248,9 @@ pub struct AppState {
 
     /// NWS active alerts + related modal state.
     pub alerts: AlertsState,
+
+    /// mPING storm reports + related modal state.
+    pub mping: MpingState,
 
     /// Resolved mobile mode for the current frame. Computed by
     /// [`AppState::refresh_mobile_mode`] from viewport width and touch history.

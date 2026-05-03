@@ -28,6 +28,8 @@ pub struct GeoLayerVisibility {
     pub national_mosaic: bool,
     /// Show NWS active alert polygons
     pub alerts: bool,
+    /// Show mPING crowd-sourced storm reports
+    pub mping: bool,
 }
 
 impl Default for GeoLayerVisibility {
@@ -42,6 +44,7 @@ impl Default for GeoLayerVisibility {
             lakes: false,
             national_mosaic: false,
             alerts: false,
+            mping: false,
         }
     }
 }

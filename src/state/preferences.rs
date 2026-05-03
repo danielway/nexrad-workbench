@@ -31,6 +31,12 @@ pub struct UserPreferences {
     #[serde(default)]
     pub layer_alerts: bool,
     #[serde(default)]
+    pub layer_mping: bool,
+    /// User-supplied mPING API key. Persisted in localStorage so the
+    /// integration survives reloads. Empty/None disables the layer.
+    #[serde(default)]
+    pub mping_api_key: Option<String>,
+    #[serde(default)]
     pub use_local_time: bool,
     /// Preferred NEXRAD site from first-visit selection. When `Some`, the
     /// first-visit modal is skipped and this site is used as the default.
@@ -78,6 +84,8 @@ impl Default for UserPreferences {
             layer_cities: true,
             layer_national_mosaic: false,
             layer_alerts: false,
+            layer_mping: false,
+            mping_api_key: None,
             use_local_time: false,
             preferred_site: None,
             interpolation: InterpolationMode::default(),
@@ -105,6 +113,8 @@ impl UserPreferences {
             layer_cities: state.layer_state.geo.cities,
             layer_national_mosaic: state.layer_state.geo.national_mosaic,
             layer_alerts: state.layer_state.geo.alerts,
+            layer_mping: state.layer_state.geo.mping,
+            mping_api_key: state.mping.api_key.clone(),
             use_local_time: state.use_local_time,
             preferred_site: state.preferred_site.clone(),
             interpolation: state.render_processing.interpolation,
@@ -134,6 +144,8 @@ impl UserPreferences {
         state.layer_state.geo.cities = self.layer_cities;
         state.layer_state.geo.national_mosaic = self.layer_national_mosaic;
         state.layer_state.geo.alerts = self.layer_alerts;
+        state.layer_state.geo.mping = self.layer_mping;
+        state.mping.api_key = self.mping_api_key.clone();
         state.use_local_time = self.use_local_time;
         state.preferred_site = self.preferred_site.clone();
         state.render_processing.interpolation = self.interpolation;
