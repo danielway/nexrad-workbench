@@ -3,7 +3,6 @@
 /// A single crowd-sourced storm report.
 pub struct StormReport {
     /// Stable mPING report id (from `id` field of the API result).
-    #[allow(dead_code)] // reserved for hover/click popovers
     pub id: i64,
     /// Observation time, milliseconds since Unix epoch.
     pub obtime_ms: f64,
@@ -11,7 +10,6 @@ pub struct StormReport {
     /// `"Tornado"`, `"Flood"`, `"Reduced Visibility"`, …).
     pub category: ReportCategory,
     /// Free-form description string from the API (e.g. "Mixed Ice Pellets and Snow").
-    #[allow(dead_code)] // reserved for hover/click popovers
     pub description: String,
     /// Latitude in decimal degrees.
     pub lat: f64,
@@ -42,6 +40,19 @@ impl ReportCategory {
             "Flood" => Self::Flood,
             "Reduced Visibility" => Self::ReducedVisibility,
             _ => Self::Other,
+        }
+    }
+
+    /// Human-readable label for the category, used in detail popovers.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::RainSnow => "Rain / Snow",
+            Self::Hail => "Hail",
+            Self::WindDamage => "Wind Damage",
+            Self::Tornado => "Tornado",
+            Self::Flood => "Flood",
+            Self::ReducedVisibility => "Reduced Visibility",
+            Self::Other => "Other",
         }
     }
 }

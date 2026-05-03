@@ -5,6 +5,7 @@
 
 use crate::data::NEXRAD_SITES;
 use crate::geo::MapProjection;
+use crate::mping::StormReport;
 use crate::state::AppState;
 use eframe::egui::{self, Rect, Vec2};
 use geo_types::Coord;
@@ -13,6 +14,11 @@ use super::site_modal::apply_site_selection;
 
 /// Pixel radius around a site marker that counts as a click hit.
 const SITE_HIT_RADIUS_PX: f32 = 10.0;
+
+/// Pixel radius around an mPING report marker that counts as a click hit.
+/// Slightly larger than the rendered dot (4.5 px) so small targets are
+/// still easy to hit on touch screens.
+const MPING_HIT_RADIUS_PX: f32 = 9.0;
 
 pub(crate) fn handle_globe_interaction(
     response: &egui::Response,
@@ -171,11 +177,25 @@ pub(crate) fn handle_canvas_interaction(
                     handled = true;
                 }
             }
+            // mPING marker click: open detail popover.
+            if !handled && state.layer_state.geo.mping {
+                if let Some(id) = pick_mping_report_at(click_pos, projection, &state.mping.reports)
+                {
+                    state.mping.selected_report_id = Some(id);
+                    handled = true;
+                }
+            }
             // Fall through to site-marker click selection.
             if !handled {
                 if let Some((site_id, lat, lon)) = pick_site_at(click_pos, projection, state) {
                     apply_site_selection(state, site_id, lat, lon);
+                    handled = true;
                 }
+            }
+            // Click missed every interactive overlay — dismiss any open
+            // mPING popover.
+            if !handled {
+                state.mping.selected_report_id = None;
             }
         }
     }
@@ -263,4 +283,36 @@ fn pick_site_at(
         }
     }
     best.map(|(id, lat, lon, _)| (id, lat, lon))
+}
+
+/// Return the id of the mPING report whose marker is closest to `click_pos`
+/// and within [`MPING_HIT_RADIUS_PX`], or `None` if no marker was hit.
+fn pick_mping_report_at(
+    click_pos: egui::Pos2,
+    projection: &MapProjection,
+    reports: &[StormReport],
+) -> Option<i64> {
+    let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
+    let padding = 0.5;
+    let hit_radius_sq = MPING_HIT_RADIUS_PX * MPING_HIT_RADIUS_PX;
+
+    let mut best: Option<(i64, f32)> = None;
+    for report in reports {
+        if report.lat < min_lat - padding
+            || report.lat > max_lat + padding
+            || report.lon < min_lon - padding
+            || report.lon > max_lon + padding
+        {
+            continue;
+        }
+        let screen_pos = projection.geo_to_screen(Coord {
+            x: report.lon,
+            y: report.lat,
+        });
+        let dist_sq = (screen_pos - click_pos).length_sq();
+        if dist_sq <= hit_radius_sq && best.is_none_or(|(_, d)| dist_sq < d) {
+            best = Some((report.id, dist_sq));
+        }
+    }
+    best.map(|(id, _)| id)
 }

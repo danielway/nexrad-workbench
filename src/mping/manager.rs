@@ -130,6 +130,14 @@ impl MpingManager {
                     reports.len(),
                     total_count
                 );
+                // If the previously-selected report id is no longer in the
+                // refreshed list, drop the stale selection so the popover
+                // doesn't reference a missing entry.
+                if let Some(sel) = state.mping.selected_report_id {
+                    if !reports.iter().any(|r| r.id == sel) {
+                        state.mping.selected_report_id = None;
+                    }
+                }
                 state.mping.reports = reports;
                 state.mping.total_count = total_count;
                 state.mping.last_error = None;
@@ -142,6 +150,7 @@ impl MpingManager {
                 // they were fresh.
                 state.mping.reports.clear();
                 state.mping.total_count = 0;
+                state.mping.selected_report_id = None;
             }
         }
     }

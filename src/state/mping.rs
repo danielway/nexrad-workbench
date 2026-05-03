@@ -33,4 +33,8 @@ pub struct MpingState {
     /// Latched when the user saves a new key — the main loop calls
     /// `MpingManager::invalidate()` and clears this flag, forcing a refetch.
     pub invalidate_requested: bool,
+    /// `id` of the currently-selected report (clicked marker). `None` means
+    /// no detail popover is visible. Cleared when the user clicks empty
+    /// canvas, presses Escape, or the reports list refreshes.
+    pub selected_report_id: Option<i64>,
 }
