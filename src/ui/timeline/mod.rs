@@ -235,12 +235,10 @@ pub(super) fn format_timestamp_full(ts: f64, use_local: bool) -> String {
     )
 }
 
-pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
-    let use_local = state.use_local_time;
-    let available_width = ui.available_width() as f64;
-    state.playback_state.timeline_width_px = available_width;
-
-    let zoom = state.playback_state.timeline_zoom;
+/// Total pixel height of the timeline widget for a given zoom level.
+/// Mirrors the per-track sizing inside `render_timeline` so the "Live"
+/// button can be sized to match.
+pub(super) fn timeline_row_height(zoom: f64) -> f32 {
     let detail_level = if zoom < 0.2 {
         DetailLevel::Solid
     } else if zoom < 1.0 {
@@ -248,10 +246,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         DetailLevel::Sweeps
     };
-
-    // Track heights — timestamp lane sits above the scan track so labels
-    // never overlap scan block content.  Sweep track only at Sweeps detail.
-    let tick_lane_h: f32 = 12.0; // dedicated lane for time tick labels
+    let tick_lane_h: f32 = 12.0;
     let scan_track_h: f32 = if detail_level == DetailLevel::Sweeps {
         20.0
     } else {
@@ -267,7 +262,40 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     } else {
         0.0
     };
-    let timeline_height = tick_lane_h + scan_track_h + separator_h + sweep_track_h;
+    tick_lane_h + scan_track_h + separator_h + sweep_track_h
+}
+
+pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
+    let use_local = state.use_local_time;
+    let available_width = ui.available_width() as f64;
+    state.playback_state.timeline_width_px = available_width;
+
+    let zoom = state.playback_state.timeline_zoom;
+    let detail_level = if zoom < 0.2 {
+        DetailLevel::Solid
+    } else if zoom < 1.0 {
+        DetailLevel::Scans
+    } else {
+        DetailLevel::Sweeps
+    };
+
+    let timeline_height = timeline_row_height(zoom);
+    let tick_lane_h: f32 = 12.0;
+    let scan_track_h: f32 = if detail_level == DetailLevel::Sweeps {
+        20.0
+    } else {
+        24.0
+    };
+    let sweep_track_h: f32 = if detail_level == DetailLevel::Sweeps {
+        20.0
+    } else {
+        0.0
+    };
+    let separator_h: f32 = if detail_level == DetailLevel::Sweeps {
+        1.0
+    } else {
+        0.0
+    };
 
     let (response, painter) = ui.allocate_painter(
         Vec2::new(available_width as f32, timeline_height),
@@ -666,48 +694,48 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     handle_timeline_interaction(ui, state, &response, &full_rect, view_start, zoom);
 }
 
-/// Render the "Now" toggle button (and its full/partial sub-menu) at the
+/// Render the "Live" toggle button (and its full/partial sub-menu) at the
 /// right end of the timeline row. Toggling it enters or exits real-time
 /// streaming. The label includes a chunk countdown while waiting.
+///
+/// Caller is expected to be inside a right-to-left horizontal layout, so
+/// items rendered earlier appear further to the right. Render order here:
+/// caret menu first (rightmost), then the Live button to its left.
 pub(super) fn render_now_button(ui: &mut egui::Ui, state: &mut AppState) {
     let phase = state.live_mode_state.phase;
     let is_active = state.live_mode_state.is_active();
     let pulse = state.live_mode_state.pulse_alpha();
     let now_secs = state.playback_state.playback_position();
+    let zoom = state.playback_state.timeline_zoom;
+    let row_height = timeline_row_height(zoom);
 
+    let pulsed = |base: Color32| {
+        Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), (128.0 + 127.0 * pulse) as u8)
+    };
     let (label, color) = match phase {
-        LivePhase::AcquiringLock => {
-            let pulsed = Color32::from_rgba_unmultiplied(
-                live_colors::ACQUIRING.r(),
-                live_colors::ACQUIRING.g(),
-                live_colors::ACQUIRING.b(),
-                (128.0 + 127.0 * pulse) as u8,
-            );
-            ("Now (connecting…)".to_string(), pulsed)
-        }
-        LivePhase::Streaming => {
-            let pulsed = Color32::from_rgba_unmultiplied(
-                live_colors::STREAMING.r(),
-                live_colors::STREAMING.g(),
-                live_colors::STREAMING.b(),
-                (128.0 + 127.0 * pulse) as u8,
-            );
-            ("● Now".to_string(), pulsed)
-        }
+        LivePhase::AcquiringLock => (
+            format!("{} Live (connecting…)", egui_phosphor::regular::BROADCAST),
+            pulsed(live_colors::ACQUIRING),
+        ),
+        LivePhase::Streaming => (
+            format!("{} Live", egui_phosphor::regular::BROADCAST),
+            pulsed(live_colors::STREAMING),
+        ),
         LivePhase::WaitingForChunk => {
-            let pulsed = Color32::from_rgba_unmultiplied(
-                live_colors::STREAMING.r(),
-                live_colors::STREAMING.g(),
-                live_colors::STREAMING.b(),
-                (128.0 + 127.0 * pulse) as u8,
-            );
             let label = match state.live_mode_state.countdown_remaining_secs(now_secs) {
-                Some(remaining) => format!("● Now (next in {}s)", remaining.ceil() as i32),
-                None => "● Now".to_string(),
+                Some(remaining) => format!(
+                    "{} Live (next in {}s)",
+                    egui_phosphor::regular::BROADCAST,
+                    remaining.ceil() as i32
+                ),
+                None => format!("{} Live", egui_phosphor::regular::BROADCAST),
             };
-            (label, pulsed)
+            (label, pulsed(live_colors::STREAMING))
         }
-        _ => ("Now".to_string(), Color32::from_rgb(180, 180, 180)),
+        _ => (
+            format!("{} Live", egui_phosphor::regular::BROADCAST),
+            Color32::from_rgb(180, 180, 180),
+        ),
     };
 
     let hover = if is_active {
@@ -716,19 +744,9 @@ pub(super) fn render_now_button(ui: &mut egui::Ui, state: &mut AppState) {
         "Enter real-time streaming"
     };
 
-    let now_btn = ui
-        .button(RichText::new(label).size(12.0).color(color))
-        .on_hover_text(hover);
-    if now_btn.clicked() {
-        if is_active {
-            state.push_command(AppCommand::StopLive);
-        } else {
-            state.push_command(AppCommand::StartLive);
-            state.playback_state.speed = PlaybackSpeed::Realtime;
-        }
-    }
-
-    ui.menu_button(
+    // Caret menu first → rightmost in r-to-l layout (sits to the right of
+    // the Live button).
+    let menu_response = ui.menu_button(
         RichText::new(egui_phosphor::regular::CARET_DOWN)
             .size(10.0)
             .color(color),
@@ -741,6 +759,25 @@ pub(super) fn render_now_button(ui: &mut egui::Ui, state: &mut AppState) {
             }
         },
     );
+    menu_response
+        .response
+        .on_hover_text("Choose between full-scan or partial-sweep playback");
+
+    // Live button: sized to match the timeline's row height.
+    let live_btn = ui
+        .add(
+            egui::Button::new(RichText::new(label).size(12.0).color(color))
+                .min_size(Vec2::new(0.0, row_height)),
+        )
+        .on_hover_text(hover);
+    if live_btn.clicked() {
+        if is_active {
+            state.push_command(AppCommand::StopLive);
+        } else {
+            state.push_command(AppCommand::StartLive);
+            state.playback_state.speed = PlaybackSpeed::Realtime;
+        }
+    }
 
     if matches!(phase, LivePhase::WaitingForChunk) {
         ui.ctx()
