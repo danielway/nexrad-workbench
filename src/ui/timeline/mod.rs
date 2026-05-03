@@ -696,46 +696,27 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// Render the "Live" toggle button (and its full/partial sub-menu) at the
 /// right end of the timeline row. Toggling it enters or exits real-time
-/// streaming. The label includes a chunk countdown while waiting.
+/// streaming. The button colors itself when active; a small adjacent
+/// label shows the next-chunk countdown so the button width stays stable.
 ///
 /// Caller is expected to be inside a right-to-left horizontal layout, so
 /// items rendered earlier appear further to the right. Render order here:
-/// caret menu first (rightmost), then the Live button to its left.
+/// caret menu (rightmost), Live button, then the countdown label to its
+/// left.
 pub(super) fn render_now_button(ui: &mut egui::Ui, state: &mut AppState) {
     let phase = state.live_mode_state.phase;
     let is_active = state.live_mode_state.is_active();
-    let pulse = state.live_mode_state.pulse_alpha();
     let now_secs = state.playback_state.playback_position();
-    let zoom = state.playback_state.timeline_zoom;
-    let row_height = timeline_row_height(zoom);
 
-    let pulsed = |base: Color32| {
-        Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), (128.0 + 127.0 * pulse) as u8)
-    };
-    let (label, color) = match phase {
-        LivePhase::AcquiringLock => (
-            format!("{} Live (connecting…)", egui_phosphor::regular::BROADCAST),
-            pulsed(live_colors::ACQUIRING),
+    // Fill drives the toggle visual; foreground stays high-contrast when
+    // a fill is set so the BROADCAST glyph + "Live" label remain readable.
+    let (fill, fg) = match phase {
+        LivePhase::AcquiringLock => (Some(live_colors::ACQUIRING), Color32::from_rgb(30, 20, 0)),
+        LivePhase::Streaming | LivePhase::WaitingForChunk => (
+            Some(live_colors::STREAMING),
+            Color32::from_rgb(255, 240, 240),
         ),
-        LivePhase::Streaming => (
-            format!("{} Live", egui_phosphor::regular::BROADCAST),
-            pulsed(live_colors::STREAMING),
-        ),
-        LivePhase::WaitingForChunk => {
-            let label = match state.live_mode_state.countdown_remaining_secs(now_secs) {
-                Some(remaining) => format!(
-                    "{} Live (next in {}s)",
-                    egui_phosphor::regular::BROADCAST,
-                    remaining.ceil() as i32
-                ),
-                None => format!("{} Live", egui_phosphor::regular::BROADCAST),
-            };
-            (label, pulsed(live_colors::STREAMING))
-        }
-        _ => (
-            format!("{} Live", egui_phosphor::regular::BROADCAST),
-            Color32::from_rgb(180, 180, 180),
-        ),
+        _ => (None, Color32::from_rgb(200, 200, 200)),
     };
 
     let hover = if is_active {
@@ -744,12 +725,12 @@ pub(super) fn render_now_button(ui: &mut egui::Ui, state: &mut AppState) {
         "Enter real-time streaming"
     };
 
-    // Caret menu first → rightmost in r-to-l layout (sits to the right of
-    // the Live button).
+    // Caret menu (rightmost) — uses the foreground color so it visually
+    // groups with the Live button regardless of toggle state.
     let menu_response = ui.menu_button(
         RichText::new(egui_phosphor::regular::CARET_DOWN)
             .size(10.0)
-            .color(color),
+            .color(fg),
         |ui| {
             let mut partial = state.live_mode_state.show_partial_sweeps;
             ui.radio_value(&mut partial, false, "Full scans");
@@ -763,13 +744,14 @@ pub(super) fn render_now_button(ui: &mut egui::Ui, state: &mut AppState) {
         .response
         .on_hover_text("Choose between full-scan or partial-sweep playback");
 
-    // Live button: sized to match the timeline's row height.
-    let live_btn = ui
-        .add(
-            egui::Button::new(RichText::new(label).size(12.0).color(color))
-                .min_size(Vec2::new(0.0, row_height)),
-        )
-        .on_hover_text(hover);
+    // Live button — fixed-width-ish label "🟢 Live" so the UI doesn't
+    // jump when the live state changes.
+    let label = format!("{} Live", egui_phosphor::regular::BROADCAST);
+    let mut button = egui::Button::new(RichText::new(label).size(12.0).color(fg));
+    if let Some(c) = fill {
+        button = button.fill(c);
+    }
+    let live_btn = ui.add(button).on_hover_text(hover);
     if live_btn.clicked() {
         if is_active {
             state.push_command(AppCommand::StopLive);
@@ -779,7 +761,16 @@ pub(super) fn render_now_button(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
 
+    // Countdown label to the left of the button (rendered last in r-to-l).
     if matches!(phase, LivePhase::WaitingForChunk) {
+        if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now_secs) {
+            ui.label(
+                RichText::new(format!("next in {}s", remaining.ceil() as i32))
+                    .size(10.0)
+                    .italics()
+                    .color(Color32::from_rgb(160, 160, 160)),
+            );
+        }
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(250));
     }
