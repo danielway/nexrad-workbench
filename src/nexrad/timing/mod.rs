@@ -24,6 +24,7 @@ mod chunk_timing_stats;
 mod elevation_chunk_mapper;
 mod estimate_next_chunk_time;
 mod scan_timing_projection;
+mod volume_cadence;
 
 pub use chunk_timing_model::{ChunkTimingModel, IntervalCase, PhysicsBreakdown};
 pub use chunk_timing_stats::{BucketStats, ChunkCharacteristics, ChunkTimingStats};
@@ -36,3 +37,4 @@ pub use scan_timing_projection::{
     project_full_scan_timing, project_scan_timing, AnchorSource, ChunkProjection,
     ScanTimingProjection,
 };
+pub use volume_cadence::VolumeCadenceTracker;

@@ -8,7 +8,8 @@
 
 use super::download::NetworkStats;
 use super::streaming_state::StreamingState;
-use super::volume_discovery::find_latest_volume;
+use super::timing::VolumeCadenceTracker;
+use super::volume_discovery::{find_latest_volume, VolumeHint};
 use futures_util::future::join_all;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -351,7 +352,14 @@ async fn streaming_loop(
     // in the projector and an EWMA on lag history.
     const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 750;
 
-    let hint = get_cached_volume(&site_id);
+    let hint = load_volume_hint(&site_id);
+    // Seed the cadence tracker from the cached hint (if any) so we persist a
+    // sensible cadence even if this session ends before observing a rollover.
+    let mut cadence = VolumeCadenceTracker::new(
+        hint.as_ref()
+            .map(|h| h.cadence_secs)
+            .unwrap_or(VolumeCadenceTracker::DEFAULT_SECS),
+    );
     let init_future = acquire_streaming_state(&site_id, hint);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
 
@@ -422,6 +430,13 @@ async fn streaming_loop(
         current_scan_start_secs =
             provisional_scan_start_secs(start_chunk.identifier.upload_date_time(), &iter);
 
+        // First-rollover sample for the cadence EWMA. Prefer the chunk's
+        // S3-upload time (consistent with subsequent rollover stamps) and
+        // fall back to wall-clock if the upload time isn't available.
+        cadence.record_rollover(rollover_timestamp_ms(
+            start_chunk.identifier.upload_date_time(),
+        ));
+
         log::debug!(
             "Init: emitting start_chunk ({} bytes) for mid-volume join",
             start_data.len()
@@ -463,7 +478,7 @@ async fn streaming_loop(
         // elevation, then download only those that precede it.
         let latest_seq = init_result.latest_chunk.identifier.sequence();
         let volume = *init_result.latest_chunk.identifier.volume();
-        cache_volume_number(&site_id, volume);
+        save_volume_hint(&site_id, volume, &cadence);
         chunks_in_volume = 1; // start chunk already emitted
 
         let latest_elev = iter
@@ -640,7 +655,18 @@ async fn streaming_loop(
             &iter,
         );
         chunks_in_volume = 1;
-        cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
+        // Joined at the head of a volume — record a rollover sample so the
+        // next observation produces a duration estimate.
+        if latest_is_start {
+            cadence.record_rollover(rollover_timestamp_ms(
+                init_result.latest_chunk.identifier.upload_date_time(),
+            ));
+        }
+        save_volume_hint(
+            &site_id,
+            *init_result.latest_chunk.identifier.volume(),
+            &cadence,
+        );
 
         log::debug!(
             "Init: emitting latest_chunk as start ({} bytes)",
@@ -793,7 +819,12 @@ async fn streaming_loop(
                     chunks_in_volume = 0;
                     current_scan_start_secs =
                         provisional_scan_start_secs(chunk.identifier.upload_date_time(), &iter);
-                    cache_volume_number(&site_id, *chunk.identifier.volume());
+                    // Volume rollover observed — fold the inter-rollover delta
+                    // into the cadence EWMA so the next session's prediction
+                    // tracks any VCP cadence shift.
+                    cadence.record_rollover(rollover_timestamp_ms(
+                        chunk.identifier.upload_date_time(),
+                    ));
                 }
 
                 chunks_in_volume += 1;
@@ -925,6 +956,10 @@ async fn streaming_loop(
                 }
 
                 save_timing_stats(&site_id, iter.timing_stats());
+                // Refresh the hint on every chunk so `observed_at_ms` stays
+                // close to wall-clock now — that's what makes the next
+                // session's prediction precise (predicted offset → 0).
+                save_volume_hint(&site_id, *chunk.identifier.volume(), &cadence);
 
                 ctx.request_repaint();
             }
@@ -1036,6 +1071,16 @@ fn current_timestamp_f64() -> f64 {
     js_sys::Date::now() / 1000.0
 }
 
+/// Wall-clock millis to use when recording a rollover. Prefers the chunk's
+/// S3-upload time so consecutive samples come from the same clock (S3),
+/// avoiding the network/poll-jitter noise that wall-clock arrival times
+/// would inject. Falls back to wall-clock if the upload time isn't known.
+fn rollover_timestamp_ms(upload: Option<chrono::DateTime<chrono::Utc>>) -> i64 {
+    upload
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or_else(|| js_sys::Date::now() as i64)
+}
+
 async fn sleep_ms(ms: u32) {
     use wasm_bindgen::prelude::*;
 
@@ -1053,29 +1098,49 @@ async fn sleep_ms(ms: u32) {
     let _ = rx.await;
 }
 
-// ── Volume number cache ────────────────────────────────────────────────
+// ── Volume hint cache ────────────────────────────────────────────────────
+//
+// The hint carries enough state — last-known volume, wall-clock observation
+// time, and EWMA volume cadence — to extrapolate the *current* active
+// volume on resume in a single probe (see `volume_discovery::predict_warm`).
+// Stored as JSON under `nexrad_volume_hint_v1_{site}`. The legacy
+// integer-only key `nexrad_volume_{site}` from earlier builds is ignored;
+// the first session post-upgrade goes through the cold-triangulation path
+// (~16 LISTs, still well under the prior 48-LIST behaviour).
 
-/// Cache the latest volume number in localStorage for fast resume.
-fn cache_volume_number(site_id: &str, volume: nexrad_data::aws::realtime::VolumeIndex) {
-    let key = format!("nexrad_volume_{}", site_id);
-    if let Some(window) = web_sys::window() {
-        if let Ok(Some(storage)) = window.local_storage() {
-            let _ = storage.set_item(&key, &volume.as_number().to_string());
-        }
-    }
+fn volume_hint_key(site_id: &str) -> String {
+    format!("nexrad_volume_hint_v1_{}", site_id)
 }
 
-/// Read the cached volume number for a site from localStorage.
-fn get_cached_volume(site_id: &str) -> Option<nexrad_data::aws::realtime::VolumeIndex> {
-    let key = format!("nexrad_volume_{}", site_id);
+/// Persist the current volume + cadence tracker as a [`VolumeHint`].
+/// `observed_at_ms` is stamped at call time (wall-clock).
+fn save_volume_hint(
+    site_id: &str,
+    volume: nexrad_data::aws::realtime::VolumeIndex,
+    cadence: &VolumeCadenceTracker,
+) {
+    let hint = VolumeHint::new(volume, js_sys::Date::now() as i64, cadence.current_secs());
+    let Ok(json) = serde_json::to_string(&hint) else {
+        return;
+    };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = window.local_storage() else {
+        return;
+    };
+    let _ = storage.set_item(&volume_hint_key(site_id), &json);
+}
+
+/// Read the cached [`VolumeHint`] for a site, or `None` if absent or
+/// unparsable. Hints from a prior schema version are silently dropped.
+fn load_volume_hint(site_id: &str) -> Option<VolumeHint> {
     let window = web_sys::window()?;
     let storage = window.local_storage().ok()??;
-    let raw = storage.get_item(&key).ok()??;
-    // Tolerate the legacy "VolumeIndex(N)" debug format that older builds wrote.
-    let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
-    let n = digits.parse::<usize>().ok()?;
-    if (1..=999).contains(&n) {
-        Some(nexrad_data::aws::realtime::VolumeIndex::new(n))
+    let raw = storage.get_item(&volume_hint_key(site_id)).ok()??;
+    let hint: VolumeHint = serde_json::from_str(&raw).ok()?;
+    if hint.version == VolumeHint::CURRENT_VERSION {
+        Some(hint)
     } else {
         None
     }
@@ -1116,7 +1181,7 @@ fn load_cached_timing_stats(site_id: &str) -> Option<super::timing::ChunkTimingS
 /// `ChunkIteratorInit` so the rest of the streaming loop is unchanged.
 async fn acquire_streaming_state(
     site_id: &str,
-    hint: Option<nexrad_data::aws::realtime::VolumeIndex>,
+    hint: Option<VolumeHint>,
 ) -> nexrad_data::result::Result<super::streaming_state::StreamingInit> {
     let search = find_latest_volume(site_id, hint).await?;
     let volume = search.volume.ok_or(nexrad_data::result::Error::AWS(
