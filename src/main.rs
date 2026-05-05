@@ -254,6 +254,9 @@ impl WorkbenchApp {
         // Apply URL parameters (site, time, lat/lon)
         let url_params = state::url_state::parse_from_url();
         state.dev_mode = url_params.dev;
+        if let Some(advanced) = url_params.ui_advanced {
+            state.advanced_mode = advanced;
+        }
         if let Some(ref site) = url_params.site {
             state.viz_state.site_id = site.to_uppercase();
             if let Some(site_info) = data::sites::get_site(site) {

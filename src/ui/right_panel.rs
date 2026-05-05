@@ -24,26 +24,47 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
                 ui.add_space(5.0);
 
                 render_layers_section(ui, state);
-                ui.add_space(5.0);
 
-                render_rendering_section(ui, state);
-                ui.add_space(5.0);
+                if state.show_advanced() {
+                    ui.add_space(5.0);
+                    render_rendering_section(ui, state);
+                    ui.add_space(5.0);
+                    render_volume_section(ui, state);
+                    ui.add_space(5.0);
+                    render_tools_section(ui, state);
+                    ui.add_space(5.0);
+                    render_events_section(ui, state);
+                    ui.add_space(5.0);
+                    render_storage_section(ui, state);
+                    ui.add_space(5.0);
+                    render_developer_section(ui, state);
+                }
 
-                render_volume_section(ui, state);
-                ui.add_space(5.0);
-
-                render_tools_section(ui, state);
-                ui.add_space(5.0);
-
-                render_events_section(ui, state);
-                ui.add_space(5.0);
-
-                render_storage_section(ui, state);
-                ui.add_space(5.0);
-
-                render_developer_section(ui, state);
+                ui.add_space(8.0);
+                render_advanced_footer(ui, state);
             });
         });
+}
+
+/// Footer link at the bottom of the right panel that toggles between
+/// Basic and Advanced UI modes. Symmetric label so users can flip back.
+fn render_advanced_footer(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.separator();
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        let label = if state.show_advanced() {
+            "\u{2190} Hide advanced controls"
+        } else {
+            "Show advanced controls \u{2192}"
+        };
+        let resp = ui
+            .small_button(label)
+            .on_hover_text("Toggle Basic / Advanced UI (Ctrl+Shift+A)");
+        if resp.clicked() {
+            state.advanced_mode = !state.advanced_mode;
+        }
+    });
 }
 
 fn render_developer_section(ui: &mut egui::Ui, state: &mut AppState) {
@@ -216,48 +237,56 @@ pub(super) fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
+    let advanced = state.show_advanced();
     egui::CollapsingHeader::new(RichText::new("Layers").strong())
         .default_open(true)
         .show(ui, |ui| {
-            ui.checkbox(&mut state.layer_state.geo.nexrad_sites, "NEXRAD Sites");
+            // Advanced-only: dense map clutter that casual viewers don't need.
+            if advanced {
+                ui.checkbox(&mut state.layer_state.geo.nexrad_sites, "NEXRAD Sites");
+            }
             ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
             ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
             ui.checkbox(&mut state.layer_state.geo.cities, "Cities");
-            ui.checkbox(&mut state.layer_state.geo.labels, "Labels");
-            ui.checkbox(
-                &mut state.layer_state.geo.national_mosaic,
-                "National Mosaic",
-            )
-            .on_hover_text(
-                "Overlay the CONUS base-reflectivity composite (Iowa State Mesonet, ~2 min refresh)",
-            );
+            if advanced {
+                ui.checkbox(&mut state.layer_state.geo.labels, "Labels");
+                ui.checkbox(
+                    &mut state.layer_state.geo.national_mosaic,
+                    "National Mosaic",
+                )
+                .on_hover_text(
+                    "Overlay the CONUS base-reflectivity composite (Iowa State Mesonet, ~2 min refresh)",
+                );
+            }
             ui.checkbox(&mut state.layer_state.geo.alerts, "Weather Alerts")
                 .on_hover_text(
                     "Show active NWS alert polygons on the 2D map (click polygon for details)",
                 );
 
-            ui.horizontal(|ui| {
-                let has_key = state.mping.api_key.is_some();
-                ui.add_enabled_ui(has_key, |ui| {
-                    let resp =
-                        ui.checkbox(&mut state.layer_state.geo.mping, "Storm Reports (mPING)");
-                    if has_key {
-                        resp.on_hover_text(
-                            "Show crowd-sourced mPING storm reports near the active radar \
-                             (\u{00B1}30 min of the playback time, ~300 km radius)",
-                        );
-                    } else {
-                        resp.on_hover_text("Configure your mPING API key first \u{2192}");
+            if advanced {
+                ui.horizontal(|ui| {
+                    let has_key = state.mping.api_key.is_some();
+                    ui.add_enabled_ui(has_key, |ui| {
+                        let resp =
+                            ui.checkbox(&mut state.layer_state.geo.mping, "Storm Reports (mPING)");
+                        if has_key {
+                            resp.on_hover_text(
+                                "Show crowd-sourced mPING storm reports near the active radar \
+                                 (\u{00B1}30 min of the playback time, ~300 km radius)",
+                            );
+                        } else {
+                            resp.on_hover_text("Configure your mPING API key first \u{2192}");
+                        }
+                    });
+                    if ui
+                        .small_button("\u{2699}")
+                        .on_hover_text("mPING settings (API key)")
+                        .clicked()
+                    {
+                        state.mping.settings_modal_open = true;
                     }
                 });
-                if ui
-                    .small_button("\u{2699}")
-                    .on_hover_text("mPING settings (API key)")
-                    .clicked()
-                {
-                    state.mping.settings_modal_open = true;
-                }
-            });
+            }
         });
 }
 

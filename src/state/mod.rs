@@ -199,6 +199,13 @@ pub struct AppState {
     /// Mirrored to/from the `?dev=true` URL parameter.
     pub dev_mode: bool,
 
+    /// Advanced UI mode: when `false` (Basic, default for new users), the
+    /// left panel and several right-panel sections are hidden. When `true`
+    /// (Advanced), all controls are visible regardless of operational mode.
+    /// Persisted in `UserPreferences`; existing users are migrated to `true`.
+    /// Override via `?ui=basic` or `?ui=advanced`.
+    pub advanced_mode: bool,
+
     /// Whether the stats detail popup is open.
     pub stats_detail_open: bool,
 
@@ -437,6 +444,14 @@ impl AppState {
         prefs.apply_to(&mut state);
 
         state
+    }
+
+    /// Whether advanced controls should be shown. Helper for UI gating
+    /// throughout the codebase — call this rather than reading
+    /// `advanced_mode` directly so future logic (e.g. forced-advanced
+    /// during a session) can live in one place.
+    pub fn show_advanced(&self) -> bool {
+        self.advanced_mode
     }
 
     /// Push a command onto the queue for the main update loop to process.

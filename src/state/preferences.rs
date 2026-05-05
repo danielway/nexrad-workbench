@@ -57,6 +57,13 @@ pub struct UserPreferences {
     /// `Some(false)` = force desktop.
     #[serde(default)]
     pub mobile_override: Option<bool>,
+
+    /// Whether advanced controls are visible. `false` = Basic (default for
+    /// new users), `true` = Advanced. Existing users with stored preferences
+    /// from before this feature are migrated to `true` on first load —
+    /// see [`UserPreferences::load`].
+    #[serde(default)]
+    pub advanced_mode: bool,
 }
 
 fn default_true() -> bool {
@@ -93,6 +100,7 @@ impl Default for UserPreferences {
             sweep_animation: false,
             data_age_desaturation: true,
             mobile_override: None,
+            advanced_mode: false,
         }
     }
 }
@@ -122,6 +130,7 @@ impl UserPreferences {
             sweep_animation: state.render_processing.sweep_animation,
             data_age_desaturation: state.render_processing.data_age_desaturation,
             mobile_override: state.mobile_override,
+            advanced_mode: state.advanced_mode,
         }
     }
 
@@ -153,6 +162,7 @@ impl UserPreferences {
         state.render_processing.sweep_animation = self.sweep_animation;
         state.render_processing.data_age_desaturation = self.data_age_desaturation;
         state.mobile_override = self.mobile_override;
+        state.advanced_mode = self.advanced_mode;
     }
 
     /// Load preferences from localStorage.
@@ -172,13 +182,32 @@ impl UserPreferences {
             _ => return Self::default(),
         };
 
-        match serde_json::from_str(&json) {
-            Ok(prefs) => {
+        // Two-phase parse: first as raw JSON to detect missing fields for
+        // migration, then to the typed struct. Existing users (stored prefs
+        // from before `advanced_mode` existed) are promoted to Advanced so
+        // their familiar UI is unchanged.
+        let raw: serde_json::Value = match serde_json::from_str(&json) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("Failed to parse user preferences: {}", e);
+                return Self::default();
+            }
+        };
+        let had_advanced_mode_field = raw.get("advanced_mode").is_some();
+
+        match serde_json::from_value::<Self>(raw) {
+            Ok(mut prefs) => {
+                if !had_advanced_mode_field {
+                    log::info!(
+                        "Migrating existing user preferences to Advanced mode (no advanced_mode field)"
+                    );
+                    prefs.advanced_mode = true;
+                }
                 log::debug!("Loaded user preferences from localStorage");
                 prefs
             }
             Err(e) => {
-                log::warn!("Failed to parse user preferences: {}", e);
+                log::warn!("Failed to deserialize user preferences: {}", e);
                 Self::default()
             }
         }
