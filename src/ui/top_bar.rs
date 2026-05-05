@@ -194,46 +194,75 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
 
                     ui.separator();
 
-                    // View mode selector — all options always visible
-                    let modes: &[(&str, ViewMode, Option<CameraMode>, Color32, &str)] = &[
-                        (
-                            "2D",
-                            ViewMode::Flat2D,
-                            None,
-                            Color32::from_rgb(100, 180, 255),
-                            "1",
-                        ),
-                        (
-                            "3D Site",
-                            ViewMode::Globe3D,
-                            Some(CameraMode::SiteOrbit),
-                            Color32::from_rgb(255, 200, 80),
-                            "2",
-                        ),
-                        (
-                            "3D Planet",
-                            ViewMode::Globe3D,
-                            Some(CameraMode::PlanetOrbit),
-                            Color32::from_rgb(120, 200, 120),
-                            "3",
-                        ),
-                        (
-                            "3D Free",
-                            ViewMode::Globe3D,
-                            Some(CameraMode::FreeLook),
-                            Color32::from_rgb(200, 140, 255),
-                            "4",
-                        ),
-                    ];
-
+                    // View mode selector. In Basic, collapse to a single
+                    // 2D / 3D toggle (3D picks SiteOrbit as the sensible
+                    // default for radar viewing). In Advanced, expose all
+                    // three 3D camera modes as separate pills.
                     let dim = Color32::from_rgb(100, 100, 100);
+
+                    let modes: &[(&str, ViewMode, Option<CameraMode>, Color32, &str)] =
+                        if state.show_advanced() {
+                            &[
+                                (
+                                    "2D",
+                                    ViewMode::Flat2D,
+                                    None,
+                                    Color32::from_rgb(100, 180, 255),
+                                    "1",
+                                ),
+                                (
+                                    "3D Site",
+                                    ViewMode::Globe3D,
+                                    Some(CameraMode::SiteOrbit),
+                                    Color32::from_rgb(255, 200, 80),
+                                    "2",
+                                ),
+                                (
+                                    "3D Planet",
+                                    ViewMode::Globe3D,
+                                    Some(CameraMode::PlanetOrbit),
+                                    Color32::from_rgb(120, 200, 120),
+                                    "3",
+                                ),
+                                (
+                                    "3D Free",
+                                    ViewMode::Globe3D,
+                                    Some(CameraMode::FreeLook),
+                                    Color32::from_rgb(200, 140, 255),
+                                    "4",
+                                ),
+                            ]
+                        } else {
+                            &[
+                                (
+                                    "2D",
+                                    ViewMode::Flat2D,
+                                    None,
+                                    Color32::from_rgb(100, 180, 255),
+                                    "1",
+                                ),
+                                (
+                                    "3D",
+                                    ViewMode::Globe3D,
+                                    Some(CameraMode::SiteOrbit),
+                                    Color32::from_rgb(255, 200, 80),
+                                    "2",
+                                ),
+                            ]
+                        };
 
                     for &(label, view, cam, color, key) in modes {
                         let is_active = match (view, cam) {
                             (ViewMode::Flat2D, _) => state.viz_state.view_mode == ViewMode::Flat2D,
                             (ViewMode::Globe3D, Some(cm)) => {
-                                state.viz_state.view_mode == ViewMode::Globe3D
-                                    && state.viz_state.camera.mode == cm
+                                if state.show_advanced() {
+                                    state.viz_state.view_mode == ViewMode::Globe3D
+                                        && state.viz_state.camera.mode == cm
+                                } else {
+                                    // In Basic the single 3D pill is active
+                                    // for any 3D camera mode.
+                                    state.viz_state.view_mode == ViewMode::Globe3D
+                                }
                             }
                             _ => false,
                         };
