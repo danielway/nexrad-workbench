@@ -508,12 +508,15 @@ impl AppState {
         }
     }
 
-    /// Whether sweep animation is effectively enabled: requires both the user
-    /// preference AND micro playback mode (zoomed in). In macro mode, sweep
-    /// animation is suppressed regardless of the user preference.
+    /// Whether sweep animation is effectively enabled. Requires the user
+    /// preference, micro playback mode (zoomed in), and Advanced UI mode.
+    /// Macro mode and Basic UI both suppress the animation regardless of
+    /// the stored preference; Basic users get a calmer display and the
+    /// preference is preserved across UI-mode toggles.
     pub fn effective_sweep_animation(&self) -> bool {
         self.render_processing.sweep_animation
             && self.playback_state.playback_mode() == PlaybackMode::Micro
+            && self.advanced_mode
     }
 
     /// Set the status message and record the timestamp for auto-dismissal.

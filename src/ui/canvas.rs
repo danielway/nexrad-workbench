@@ -457,15 +457,20 @@ fn compute_gpu_sweep_state(
     state: &mut AppState,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool) {
-    // Live mode with partial data takes priority over timeline sweep animation.
-    let gpu_sweep = if let Some((first_az, last_az)) = state
+    // Sweep visualization is gated on the user's toggle in every mode,
+    // including live. The live branch with partial-data boundaries used
+    // to bypass the gate; honor the toggle so unchecking actually hides
+    // the animation while live streaming.
+    let gpu_sweep = if !state.effective_sweep_animation() {
+        None
+    } else if let Some((first_az, last_az)) = state
         .live_radar_model
         .active_sweep
         .as_ref()
         .and_then(|s| s.data_azimuth_range)
     {
         Some((last_az, first_az))
-    } else if state.effective_sweep_animation() {
+    } else {
         let playback_ts = state.playback_state.playback_position();
         let sweep_bounds = state
             .radar_timeline
@@ -488,8 +493,6 @@ fn compute_gpu_sweep_state(
             Some((_, e)) if playback_ts <= e => sweep_info,
             _ => None,
         }
-    } else {
-        None
     };
 
     // Cache sweep position for between-sweep display

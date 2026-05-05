@@ -293,8 +293,10 @@ pub(crate) fn render_radar_sweep(
             }
         }
 
-        // Donut chart showing current vs previous sweep regions
-        if is_live || state.effective_sweep_animation() {
+        // Donut chart showing current vs previous sweep regions.
+        // Gated on the user's sweep_animation toggle so unchecking it
+        // hides the donut in every mode, including live.
+        if state.effective_sweep_animation() {
             if stale {
                 draw_sweep_donut_stale(painter, center, radius);
             } else {
