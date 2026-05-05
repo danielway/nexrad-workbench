@@ -3,7 +3,7 @@
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use super::timeline::format_timestamp_full;
 use crate::state::{
-    AppState, LiveExitReason, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed, TimeModel,
+    AppMode, AppState, LiveExitReason, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed, TimeModel,
 };
 use eframe::egui::{self, Color32, RichText, Vec2};
 
@@ -137,36 +137,41 @@ pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppSta
 
 pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
     let use_local = state.use_local_time;
+    let advanced = state.show_advanced();
+    // Idle = nothing under the playback cursor. Disable transport controls
+    // so they don't visibly do nothing; layout stays stable for when data
+    // arrives.
+    let interactive = state.app_mode != AppMode::Idle;
 
-    // Current position timestamp display (clickable to open datetime picker)
+    // Current position timestamp display. In Advanced it's a button that
+    // opens the datetime picker; in Basic it's a plain label so a casual
+    // viewer can't accidentally jump weeks into the past.
     {
         let selected_ts = state.playback_state.playback_position();
         let tz_suffix = if use_local { "" } else { " Z" };
-        let timestamp_btn = ui.add(
-            egui::Button::new(
-                RichText::new(format!(
-                    "{}{}",
-                    format_timestamp_full(selected_ts, use_local),
-                    tz_suffix
-                ))
-                .monospace()
-                .size(13.0)
-                .color(tl_colors::SELECTION),
-            )
-            .frame(false),
-        );
+        let text = RichText::new(format!(
+            "{}{}",
+            format_timestamp_full(selected_ts, use_local),
+            tz_suffix
+        ))
+        .monospace()
+        .size(13.0)
+        .color(tl_colors::SELECTION);
 
-        if timestamp_btn.clicked() {
-            state
-                .datetime_picker
-                .init_from_timestamp(selected_ts, use_local);
+        if advanced {
+            let timestamp_btn = ui.add(egui::Button::new(text).frame(false));
+            if timestamp_btn.clicked() {
+                state
+                    .datetime_picker
+                    .init_from_timestamp(selected_ts, use_local);
+            }
+            if timestamp_btn.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            timestamp_btn.on_hover_text("Click to jump to a specific date/time");
+        } else {
+            ui.label(text);
         }
-
-        if timestamp_btn.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-
-        timestamp_btn.on_hover_text("Click to jump to a specific date/time");
 
         ui.separator();
     }
@@ -198,14 +203,20 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
         }
     }
 
-    // Play/Stop button
+    // Play/Stop button — disabled in Idle (no data to play).
     let play_text = if state.playback_state.playing {
         egui_phosphor::regular::STOP
     } else {
         egui_phosphor::regular::PLAY
     };
 
-    if ui.button(RichText::new(play_text).size(14.0)).clicked() {
+    if ui
+        .add_enabled(
+            interactive,
+            egui::Button::new(RichText::new(play_text).size(14.0)),
+        )
+        .clicked()
+    {
         if state.playback_state.playing {
             // Stop - also exits live mode if active
             if state.live_mode_state.is_active() {
@@ -229,7 +240,10 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
 
     // Step backward
     if ui
-        .button(RichText::new(egui_phosphor::regular::SKIP_BACK).size(14.0))
+        .add_enabled(
+            interactive,
+            egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_BACK).size(14.0)),
+        )
         .clicked()
     {
         // Exit live mode when jogging
@@ -271,7 +285,10 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
 
     // Step forward
     if ui
-        .button(RichText::new(egui_phosphor::regular::SKIP_FORWARD).size(14.0))
+        .add_enabled(
+            interactive,
+            egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_FORWARD).size(14.0)),
+        )
         .clicked()
     {
         // Exit live mode when jogging
@@ -313,7 +330,10 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
 
     // "Now" button — jump to current wall-clock time
     if ui
-        .button(RichText::new(egui_phosphor::regular::CROSSHAIR).size(14.0))
+        .add_enabled(
+            interactive,
+            egui::Button::new(RichText::new(egui_phosphor::regular::CROSSHAIR).size(14.0)),
+        )
         .on_hover_text("Jump to current time")
         .clicked()
     {
@@ -339,46 +359,52 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
 
     ui.separator();
 
-    // Speed selector (mode-aware: macro shows fps labels, micro shows timeline speed)
+    // Speed selector (mode-aware: macro shows fps labels, micro shows timeline speed).
+    // Disabled in Idle alongside the rest of the transport controls.
     let mode = state.playback_state.playback_mode();
     let selected_label = match mode {
         PlaybackMode::Macro => state.playback_state.speed.macro_label(),
         PlaybackMode::Micro => state.playback_state.speed.label(),
     };
-    egui::ComboBox::from_id_salt("speed_selector")
-        .selected_text(selected_label)
-        .width(55.0)
-        .show_ui(ui, |ui| {
-            let speeds: &[PlaybackSpeed] = match mode {
-                PlaybackMode::Macro => PlaybackSpeed::macro_speeds(),
-                PlaybackMode::Micro => PlaybackSpeed::all(),
-            };
-            for speed in speeds {
-                let label = match mode {
-                    PlaybackMode::Macro => speed.macro_label(),
-                    PlaybackMode::Micro => speed.label(),
-                };
-                ui.selectable_value(&mut state.playback_state.speed, *speed, label);
-            }
-        });
-
-    // Loop mode selector (only show when playback bounds are set)
-    if state.playback_state.time_model.playback_bounds.is_some() {
-        ui.separator();
-        egui::ComboBox::from_id_salt("loop_mode_selector")
-            .selected_text(state.playback_state.time_model.loop_mode.label())
+    ui.add_enabled_ui(interactive, |ui| {
+        egui::ComboBox::from_id_salt("speed_selector")
+            .selected_text(selected_label)
             .width(55.0)
             .show_ui(ui, |ui| {
-                for mode in LoopMode::all() {
-                    ui.selectable_value(
-                        &mut state.playback_state.time_model.loop_mode,
-                        *mode,
-                        mode.label(),
-                    );
+                let speeds: &[PlaybackSpeed] = match mode {
+                    PlaybackMode::Macro => PlaybackSpeed::macro_speeds(),
+                    PlaybackMode::Micro => PlaybackSpeed::all(),
+                };
+                for speed in speeds {
+                    let label = match mode {
+                        PlaybackMode::Macro => speed.macro_label(),
+                        PlaybackMode::Micro => speed.label(),
+                    };
+                    ui.selectable_value(&mut state.playback_state.speed, *speed, label);
                 }
             });
+    });
 
-        // Clear selection button
+    // Loop mode + clear-selection. Show the loop combo only in Advanced.
+    // Always show the clear-selection X when bounds are set so a Basic
+    // user landing on a `?selection=…` URL has a way to clear it.
+    if state.playback_state.time_model.playback_bounds.is_some() {
+        ui.separator();
+        if advanced {
+            egui::ComboBox::from_id_salt("loop_mode_selector")
+                .selected_text(state.playback_state.time_model.loop_mode.label())
+                .width(55.0)
+                .show_ui(ui, |ui| {
+                    for mode in LoopMode::all() {
+                        ui.selectable_value(
+                            &mut state.playback_state.time_model.loop_mode,
+                            *mode,
+                            mode.label(),
+                        );
+                    }
+                });
+        }
+
         if ui
             .small_button(egui_phosphor::regular::X)
             .on_hover_text("Clear selection and playback bounds")
@@ -388,45 +414,45 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
         }
     }
 
-    ui.separator();
+    if advanced {
+        ui.separator();
 
-    // Download button
-    let has_selection = state.playback_state.selection_range().is_some();
-    let download_in_progress = state.download_selection_in_progress;
+        // Download button
+        let has_selection = state.playback_state.selection_range().is_some();
+        let download_in_progress = state.download_selection_in_progress;
 
-    if download_in_progress {
-        let label = if state.download_progress.is_batch() {
-            format!(
-                "{} {}/{}",
-                egui_phosphor::regular::DOWNLOAD_SIMPLE,
-                (state.download_progress.batch_completed + 1)
-                    .min(state.download_progress.batch_total),
-                state.download_progress.batch_total
-            )
-        } else {
-            format!("{} ...", egui_phosphor::regular::DOWNLOAD_SIMPLE)
-        };
-        ui.add_enabled(false, egui::Button::new(RichText::new(label).size(11.0)));
-    } else if has_selection {
-        if ui
+        if download_in_progress {
+            let label = if state.download_progress.is_batch() {
+                format!(
+                    "{} {}/{}",
+                    egui_phosphor::regular::DOWNLOAD_SIMPLE,
+                    (state.download_progress.batch_completed + 1)
+                        .min(state.download_progress.batch_total),
+                    state.download_progress.batch_total
+                )
+            } else {
+                format!("{} ...", egui_phosphor::regular::DOWNLOAD_SIMPLE)
+            };
+            ui.add_enabled(false, egui::Button::new(RichText::new(label).size(11.0)));
+        } else if has_selection {
+            if ui
+                .button(RichText::new(egui_phosphor::regular::DOWNLOAD_SIMPLE).size(14.0))
+                .on_hover_text("Download all scans in the selected time range")
+                .clicked()
+            {
+                state.push_command(crate::state::AppCommand::DownloadSelection);
+            }
+        } else if ui
             .button(RichText::new(egui_phosphor::regular::DOWNLOAD_SIMPLE).size(14.0))
-            .on_hover_text("Download all scans in the selected time range")
+            .on_hover_text("Download the scan at the current playback position")
             .clicked()
         {
-            state.push_command(crate::state::AppCommand::DownloadSelection);
+            state.push_command(crate::state::AppCommand::DownloadAtPosition);
         }
-    } else if ui
-        .button(RichText::new(egui_phosphor::regular::DOWNLOAD_SIMPLE).size(14.0))
-        .on_hover_text("Download the scan at the current playback position")
-        .clicked()
-    {
-        state.push_command(crate::state::AppCommand::DownloadAtPosition);
-    }
 
-    ui.separator();
+        ui.separator();
 
-    // UTC/Local toggle
-    {
+        // UTC/Local toggle
         let label = if state.use_local_time { "Local" } else { "UTC" };
         if ui
             .button(RichText::new(label).size(10.0).monospace())
