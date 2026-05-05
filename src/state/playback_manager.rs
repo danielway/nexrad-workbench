@@ -393,3 +393,24 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
         })
         .collect()
 }
+
+/// Build an elevation list from a live VCP pattern (no completed scan
+/// yet). `available_products` is left empty; the right panel treats
+/// that as "unknown — allow" so all products are selectable until a
+/// completed sweep narrows it down.
+pub(crate) fn build_elevation_list_from_vcp(
+    vcp: &crate::data::keys::ExtractedVcp,
+) -> Vec<crate::state::ElevationListEntry> {
+    vcp.elevations
+        .iter()
+        .enumerate()
+        .map(|(i, e)| crate::state::ElevationListEntry {
+            elevation_number: (i + 1) as u8,
+            angle: e.angle,
+            waveform: e.waveform.clone(),
+            is_sails: e.is_sails,
+            is_mrle: e.is_mrle,
+            available_products: Vec::new(),
+        })
+        .collect()
+}

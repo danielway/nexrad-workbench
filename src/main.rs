@@ -1763,6 +1763,22 @@ impl WorkbenchApp {
             }
             if let Some(ref vcp) = result.vcp {
                 self.state.live_mode_state.record_vcp(vcp);
+                // Populate the right-panel elevation list from the live
+                // VCP. Without this, resuming live streaming leaves the
+                // filter list empty (or stale from a prior archive scan)
+                // even though the left panel renders the same VCP fine.
+                // Only refresh on size change to avoid thrashing the
+                // selection on every chunk.
+                let needs_rebuild =
+                    self.state.viz_state.cached_vcp_elevations.len() != vcp.elevations.len();
+                if needs_rebuild {
+                    let entries = state::playback_manager::build_elevation_list_from_vcp(vcp);
+                    self.state
+                        .viz_state
+                        .elevation_selection
+                        .resolve_for_vcp(&entries);
+                    self.state.viz_state.cached_vcp_elevations = entries;
+                }
             }
 
             self.state.live_mode_state.record_in_progress_elevation(
