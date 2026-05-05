@@ -27,6 +27,10 @@ trunk build --release
 
 There are no Rust unit tests to run for the main crate (tests exist only in `data/keys.rs` but require wasm-bindgen-test infrastructure). Pre-commit hooks via cargo-husky enforce `cargo fmt` and `cargo clippy`.
 
+## Commits
+
+Always commit at natural milestones — a self-contained fix, a completed feature, or any coherent unit of work — proactively and without being asked. Do not batch changes until the end of a session, and do not wait for the user to prompt a commit. After `cargo check` and `cargo clippy -- -D warnings` are clean, commit. Match the repo's commit-message style (imperative subject, no trailing period; see `git log --oneline`). Never add `Co-Authored-By` lines. Only create new commits — never amend, never `--no-verify`.
+
 ## Key Constraints
 
 - **WASM-only target**: The default build target is `wasm32-unknown-unknown` (set in `.cargo/config.toml`). All code must compile for this target. Native stubs exist but are minimal.
@@ -59,7 +63,7 @@ Sweep blobs are pre-computed during ingestion so that scrubbing and elevation ch
 
 - `src/main.rs` — App entry, update loop, coordination manager orchestration
 - `src/state/` — Centralized `AppState` with sub-states. UI actions emit `AppCommand` variants processed in the main loop.
-- `src/nexrad/` — Data pipeline: acquisition (`download.rs`, `realtime.rs`, `volume_discovery.rs`), worker communication (`decode_worker/`, `worker_api/`), GPU rendering (`gpu_renderer/`), real-time chunk timing (`timing/`), storm cell detection (`detection/`), national mosaic overlay (`national_mosaic.rs`), coordination managers (`acquisition_coordinator.rs`, `render_coordinator.rs`, `streaming_manager.rs`, `persistence_manager.rs`)
+- `src/nexrad/` — Data pipeline: acquisition (`download.rs`, `realtime.rs`), worker communication (`decode_worker/`, `worker_api/`), GPU rendering (`gpu_renderer/`), real-time chunk timing (`timing/`), storm cell detection (`detection/`), national mosaic overlay (`national_mosaic.rs`), coordination managers (`acquisition_coordinator.rs`, `render_coordinator.rs`, `streaming_manager.rs`, `persistence_manager.rs`)
 - `src/ui/` — egui panels, timeline (`timeline/`), canvas with overlays (`canvas_overlays/`), modals, shortcuts, mobile chrome (`mobile/`)
 - `src/geo/` — Map projection, camera (2D/globe), geographic feature rendering
 - `src/data/` — Site definitions, VCP definitions, storage key types (`ScanKey`, `SweepDataKey`), IndexedDB abstraction
