@@ -139,6 +139,10 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                         state.shortcuts_help_visible = !state.shortcuts_help_visible;
                     }
 
+                    // Basic / Advanced pill — toggles UI complexity. Same
+                    // segmented-pill idiom as the view-mode selector below.
+                    render_ui_mode_pill(ui, state);
+
                     // Version stamp — clickable link to GitHub releases
                     {
                         const MAX_LEN: usize = 24;
@@ -257,6 +261,37 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
                 });
             });
         });
+}
+
+/// Two-segment Basic/Advanced pill matching the view-mode selector idiom.
+/// Active segment is bold + colored; inactive is dim. Click flips the
+/// preference (also bound to Ctrl+Shift+A in `shortcuts.rs`).
+fn render_ui_mode_pill(ui: &mut egui::Ui, state: &mut AppState) {
+    let active_color = Color32::from_rgb(100, 180, 255);
+    let dim = Color32::from_rgb(100, 100, 100);
+
+    // Right-to-left layout: render the rightmost segment first (Advanced).
+    for &(label, advanced_value) in &[("Advanced", true), ("Basic", false)] {
+        let is_active = state.show_advanced() == advanced_value;
+        let text = if is_active {
+            RichText::new(label).size(13.0).strong().color(active_color)
+        } else {
+            RichText::new(label).size(13.0).color(dim)
+        };
+        let resp = ui.add(egui::Button::new(text).frame(is_active));
+        if !is_active && resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if resp
+            .on_hover_text(format!(
+                "Switch to {} controls (Ctrl+Shift+A)",
+                label.to_lowercase()
+            ))
+            .clicked()
+        {
+            state.advanced_mode = advanced_value;
+        }
+    }
 }
 
 /// Render a compact alerts indicator for the top bar. Shows nothing when

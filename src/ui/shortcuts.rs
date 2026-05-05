@@ -122,6 +122,10 @@ const GENERAL_SHORTCUTS: &[Shortcut] = &[
         key: "Esc",
         description: "Close open modal / overlay",
     },
+    Shortcut {
+        key: "Ctrl+Shift+A",
+        description: "Toggle Basic / Advanced controls",
+    },
 ];
 
 const SHORTCUT_SECTIONS: &[ShortcutSection] = &[
@@ -170,6 +174,8 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
         i.key_pressed(egui::Key::Questionmark)
             || (i.key_pressed(egui::Key::Slash) && i.modifiers.shift)
     });
+    let toggle_advanced =
+        ctx.input(|i| i.key_pressed(egui::Key::A) && i.modifiers.command && i.modifiers.shift);
 
     // View mode switching (1-4 keys)
     let mode_1 = ctx.input(|i| i.key_pressed(egui::Key::Num1) && !i.modifiers.any());
@@ -407,6 +413,10 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
 
     if toggle_help {
         state.shortcuts_help_visible = !state.shortcuts_help_visible;
+    }
+
+    if toggle_advanced {
+        state.advanced_mode = !state.advanced_mode;
     }
 }
 
