@@ -101,7 +101,10 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     // metric label. Force it closed when dev mode is off so a previously
     // expanded drawer doesn't linger after the user toggles dev off.
     let drawer_expanded = state.dev_mode && state.acquisition.drawer_expanded;
-    let controls_height = 104.0;
+    // Sized to the new content layout (timeline 53 + spacing + controls
+    // ~24 + frame margins). Stays constant across macro/micro because
+    // the timeline locks its own height in render_timeline.
+    let controls_height = 88.0;
     let top_bar_height = 36.0;
     let min_central_height = 100.0;
     let max_panel_height =

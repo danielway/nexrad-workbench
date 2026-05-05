@@ -250,22 +250,16 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     };
 
     // Track heights — timestamp lane sits above the scan track so labels
-    // never overlap scan block content.  Sweep track only at Sweeps detail.
+    // never overlap scan block content. The total timeline height is
+    // constant across macro/micro transitions: at Sweeps detail the
+    // scan + separator + sweep tracks share the space; at lower detail
+    // the scan track expands to fill the same total so the bottom
+    // panel doesn't reflow when zooming.
     let tick_lane_h: f32 = 12.0; // dedicated lane for time tick labels
-    let scan_track_h: f32 = if detail_level == DetailLevel::Sweeps {
-        20.0
+    let (scan_track_h, separator_h, sweep_track_h) = if detail_level == DetailLevel::Sweeps {
+        (20.0_f32, 1.0_f32, 20.0_f32)
     } else {
-        24.0
-    };
-    let sweep_track_h: f32 = if detail_level == DetailLevel::Sweeps {
-        20.0
-    } else {
-        0.0
-    };
-    let separator_h: f32 = if detail_level == DetailLevel::Sweeps {
-        1.0
-    } else {
-        0.0
+        (41.0_f32, 0.0_f32, 0.0_f32)
     };
     let timeline_height = tick_lane_h + scan_track_h + separator_h + sweep_track_h;
 
