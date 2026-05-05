@@ -457,20 +457,20 @@ fn compute_gpu_sweep_state(
     state: &mut AppState,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool) {
-    // Sweep visualization is gated on the user's toggle in every mode,
-    // including live. The live branch with partial-data boundaries used
-    // to bypass the gate; honor the toggle so unchecking actually hides
-    // the animation while live streaming.
-    let gpu_sweep = if !state.effective_sweep_animation() {
-        None
-    } else if let Some((first_az, last_az)) = state
+    // In live mode the GPU needs the partial-data azimuth range to
+    // composite incoming chunks (and the overlay needs it to colour the
+    // donut wedges), so the live branch always emits sweep boundaries
+    // regardless of the user's sweep_animation preference. The overlay
+    // suppresses the rotating lines separately when the toggle is off.
+    // The archive branch still respects effective_sweep_animation().
+    let gpu_sweep = if let Some((first_az, last_az)) = state
         .live_radar_model
         .active_sweep
         .as_ref()
         .and_then(|s| s.data_azimuth_range)
     {
         Some((last_az, first_az))
-    } else {
+    } else if state.effective_sweep_animation() {
         let playback_ts = state.playback_state.playback_position();
         let sweep_bounds = state
             .radar_timeline
@@ -493,6 +493,8 @@ fn compute_gpu_sweep_state(
             Some((_, e)) if playback_ts <= e => sweep_info,
             _ => None,
         }
+    } else {
+        None
     };
 
     // Cache sweep position for between-sweep display

@@ -174,11 +174,14 @@ pub(crate) fn render_radar_sweep(
         Stroke::new(1.0, canvas_colors::center_marker_stroke(dark)),
     );
 
-    // Draw the sweep line and donut chart if sweep animation is active.
-    // In live mode, sweep_info = data boundaries (matching GPU compositing),
-    // and the "now" line is drawn separately at the estimated antenna position.
+    // Sweep overlay drawing. The donut (data-age coverage indicator)
+    // shows in live mode regardless of the toggle so the user always
+    // has spatial context for what's stale; the rotating lines (start,
+    // data edge, NOW, per-chunk boundaries) only draw when the user
+    // has sweep_animation enabled.
     if let Some((az, start_az)) = sweep_info {
         let is_live = state.live_radar_model.active;
+        let show_lines = state.effective_sweep_animation();
 
         let (start_line_color, data_edge_color, data_edge_width) = if stale {
             (
@@ -190,29 +193,31 @@ pub(crate) fn render_radar_sweep(
             (radar::sweep_start_line(), radar::SWEEP_LINE, 3.0)
         };
 
-        // Line at data start boundary
-        let start_angle_rad = (start_az - 90.0) * PI / 180.0;
-        let start_end = Pos2::new(
-            center.x + radius * start_angle_rad.cos(),
-            center.y + radius * start_angle_rad.sin(),
-        );
-        painter.line_segment([center, start_end], Stroke::new(1.5, start_line_color));
+        if show_lines {
+            // Line at data start boundary
+            let start_angle_rad = (start_az - 90.0) * PI / 180.0;
+            let start_end = Pos2::new(
+                center.x + radius * start_angle_rad.cos(),
+                center.y + radius * start_angle_rad.sin(),
+            );
+            painter.line_segment([center, start_end], Stroke::new(1.5, start_line_color));
 
-        // Line at data trailing edge
-        let data_angle_rad = (az - 90.0) * PI / 180.0;
-        painter.line_segment(
-            [
-                center,
-                Pos2::new(
-                    center.x + radius * data_angle_rad.cos(),
-                    center.y + radius * data_angle_rad.sin(),
-                ),
-            ],
-            Stroke::new(if is_live { 2.0 } else { data_edge_width }, data_edge_color),
-        );
+            // Line at data trailing edge
+            let data_angle_rad = (az - 90.0) * PI / 180.0;
+            painter.line_segment(
+                [
+                    center,
+                    Pos2::new(
+                        center.x + radius * data_angle_rad.cos(),
+                        center.y + radius * data_angle_rad.sin(),
+                    ),
+                ],
+                Stroke::new(if is_live { 2.0 } else { data_edge_width }, data_edge_color),
+            );
+        }
 
         // In live mode, draw a separate "NOW" line at the estimated antenna position
-        if is_live {
+        if is_live && show_lines {
             if let Some(now_az) = state.live_radar_model.estimated_azimuth {
                 let now_rad = (now_az - 90.0) * PI / 180.0;
                 let now_color = Color32::from_rgb(255, 80, 80);
@@ -279,24 +284,30 @@ pub(crate) fn render_radar_sweep(
             }
         }
 
-        // Draw chunk boundary lines across the radar render during live streaming
-        if let Some(sweep) = state.live_radar_model.active_sweep.as_ref() {
-            let boundary_line_color = Color32::from_rgba_unmultiplied(200, 200, 220, 100);
-            for c in sweep
-                .chunks
-                .iter()
-                .take(sweep.chunks.len().saturating_sub(1))
-            {
-                let a = (c.last_az - 90.0) * PI / 180.0;
-                let p_end = Pos2::new(center.x + radius * a.cos(), center.y + radius * a.sin());
-                painter.line_segment([center, p_end], Stroke::new(1.0, boundary_line_color));
+        // Per-chunk boundary lines across the radar render during live
+        // streaming. Treated as part of "the sweeping line" — gated on
+        // the toggle so they vanish when sweep animation is off.
+        if show_lines {
+            if let Some(sweep) = state.live_radar_model.active_sweep.as_ref() {
+                let boundary_line_color = Color32::from_rgba_unmultiplied(200, 200, 220, 100);
+                for c in sweep
+                    .chunks
+                    .iter()
+                    .take(sweep.chunks.len().saturating_sub(1))
+                {
+                    let a = (c.last_az - 90.0) * PI / 180.0;
+                    let p_end = Pos2::new(center.x + radius * a.cos(), center.y + radius * a.sin());
+                    painter.line_segment([center, p_end], Stroke::new(1.0, boundary_line_color));
+                }
             }
         }
 
-        // Donut chart showing current vs previous sweep regions.
-        // Gated on the user's sweep_animation toggle so unchecking it
-        // hides the donut in every mode, including live.
-        if state.effective_sweep_animation() {
+        // Donut chart showing current vs previous sweep coverage,
+        // shaded by data age. In live mode we keep this visible even
+        // when sweep_animation is off so the user has spatial context
+        // for which sectors are recent. Archive mode respects the
+        // toggle (where it's purely an animation artifact).
+        if is_live || state.effective_sweep_animation() {
             if stale {
                 draw_sweep_donut_stale(painter, center, radius);
             } else {
