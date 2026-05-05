@@ -39,32 +39,8 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
                     ui.add_space(5.0);
                     render_developer_section(ui, state);
                 }
-
-                ui.add_space(8.0);
-                render_advanced_footer(ui, state);
             });
         });
-}
-
-/// Footer link at the bottom of the right panel that toggles between
-/// Basic and Advanced UI modes. Symmetric label so users can flip back.
-fn render_advanced_footer(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.separator();
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.add_space(4.0);
-        let label = if state.show_advanced() {
-            "\u{2190} Hide advanced controls"
-        } else {
-            "Show advanced controls \u{2192}"
-        };
-        let resp = ui
-            .small_button(label)
-            .on_hover_text("Toggle Basic / Advanced UI (Ctrl+Shift+A)");
-        if resp.clicked() {
-            state.advanced_mode = !state.advanced_mode;
-        }
-    });
 }
 
 fn render_developer_section(ui: &mut egui::Ui, state: &mut AppState) {
