@@ -267,13 +267,19 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
         }
     }
 
+    // Step-forward and "Now" are no-ops in Live (cursor is locked to wall
+    // clock). Hide them in Basic+Live to declutter; Advanced always sees
+    // them so power users keep their workflow.
+    let show_forward_seek = advanced || state.app_mode != AppMode::Live;
+
     // Step forward
-    if ui
-        .add_enabled(
-            interactive,
-            egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_FORWARD).size(14.0)),
-        )
-        .clicked()
+    if show_forward_seek
+        && ui
+            .add_enabled(
+                interactive,
+                egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_FORWARD).size(14.0)),
+            )
+            .clicked()
     {
         // Exit live mode when jogging
         if state.live_mode_state.is_active() {
@@ -313,13 +319,14 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
     }
 
     // "Now" button — jump to current wall-clock time
-    if ui
-        .add_enabled(
-            interactive,
-            egui::Button::new(RichText::new(egui_phosphor::regular::CROSSHAIR).size(14.0)),
-        )
-        .on_hover_text("Jump to current time")
-        .clicked()
+    if show_forward_seek
+        && ui
+            .add_enabled(
+                interactive,
+                egui::Button::new(RichText::new(egui_phosphor::regular::CROSSHAIR).size(14.0)),
+            )
+            .on_hover_text("Jump to current time")
+            .clicked()
     {
         let now = TimeModel::wall_clock_time();
 
