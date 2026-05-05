@@ -30,7 +30,8 @@ pub use chunk_timing_stats::{BucketStats, ChunkCharacteristics, ChunkTimingStats
 pub use elevation_chunk_mapper::{ChunkMetadata, ElevationChunkMapper};
 pub use estimate_next_chunk_time::{
     estimate_chunk_availability_time, estimate_chunk_processing_diagnostics,
-    estimate_chunk_processing_time, EstimatedChunkProcessing, SchedulerPath,
+    estimate_chunk_processing_time, estimate_chunk_processing_time_to_target,
+    EstimatedChunkProcessing, SchedulerPath,
 };
 pub use scan_timing_projection::{
     project_full_scan_timing, project_scan_timing, AnchorSource, ChunkProjection,

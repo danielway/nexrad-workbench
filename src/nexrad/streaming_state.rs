@@ -6,9 +6,10 @@
 //! delegated to `nexrad_data::aws::realtime::get_latest_volume`.
 
 use super::timing::{
-    estimate_chunk_availability_time, estimate_chunk_processing_diagnostics, project_scan_timing,
-    ChunkCharacteristics, ChunkMetadata, ChunkTimingStats, ElevationChunkMapper,
-    EstimatedChunkProcessing, ScanTimingProjection,
+    estimate_chunk_availability_time, estimate_chunk_processing_diagnostics,
+    estimate_chunk_processing_time_to_target, project_scan_timing, ChunkCharacteristics,
+    ChunkMetadata, ChunkTimingStats, ElevationChunkMapper, EstimatedChunkProcessing,
+    ScanTimingProjection,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::debug;
@@ -26,6 +27,21 @@ pub struct StreamingInit {
     pub state: StreamingState,
     pub latest_chunk: DownloadedChunk,
     pub start_chunk: Option<DownloadedChunk>,
+}
+
+/// Outcome of a filter-aware chunk fetch attempt.
+///
+/// `Downloaded` and `NotYetAvailable` mirror the success / 404 cases of
+/// [`StreamingState::try_next`]. `SyntheticVolumeEnd` indicates that the
+/// active filter excludes every remaining sequence in the current volume
+/// (including the End chunk's elevation), so the loop should advance to the
+/// next volume's Start without issuing a fetch — the End chunk itself never
+/// surfaces in this case, but the volume-boundary signal does.
+#[derive(Debug)]
+pub enum TryNextOutcome {
+    Downloaded(DownloadedChunk),
+    NotYetAvailable,
+    SyntheticVolumeEnd,
 }
 
 /// Tracks the state of an ongoing real-time stream. Replaces `ChunkIterator`.
@@ -125,6 +141,89 @@ impl StreamingState {
             },
             start_chunk: start_chunk_download,
         })
+    }
+
+    /// Filter-aware variant of [`try_next`]. The predicate is invoked on each
+    /// candidate sequence's elevation number (`None` = Start chunk); when no
+    /// remaining sequence in the current volume matches, returns
+    /// [`TryNextOutcome::SyntheticVolumeEnd`] without issuing any HTTP and
+    /// advances the iterator's `current` to the volume's final sequence so
+    /// the next call rolls over to the new volume's Start.
+    ///
+    /// `accept_end` keeps the End chunk as an unconditional accept so the
+    /// real volume-boundary signal still lands when the user's filter
+    /// happens to cover the last sweep.
+    pub async fn try_next_matching(
+        &mut self,
+        accept_end: bool,
+        mut predicate: impl FnMut(Option<usize>) -> bool,
+    ) -> Result<TryNextOutcome> {
+        let (target_seq, final_seq) = {
+            let mapper = self
+                .elevation_mapper
+                .as_ref()
+                .ok_or(AWSError::FailedToDetermineNextChunk)?;
+            let final_seq = mapper.final_sequence();
+            let current_seq = self.current.sequence();
+
+            if current_seq >= final_seq {
+                let downloaded = self
+                    .try_fetch_volume_start(self.current.volume().next())
+                    .await?;
+                return Ok(match downloaded {
+                    Some(c) => TryNextOutcome::Downloaded(c),
+                    None => TryNextOutcome::NotYetAvailable,
+                });
+            }
+
+            let target =
+                mapper.next_matching_sequence_after(current_seq, accept_end, &mut predicate);
+            (target, final_seq)
+        };
+
+        let Some(target) = target_seq else {
+            // Filter excludes every remaining sequence in this volume
+            // (including the End chunk). Synthesize the volume-boundary
+            // by advancing `current` to the final sequence; the next call
+            // will fall through to `try_fetch_volume_start`.
+            self.advance_current_to_synthetic_end(final_seq);
+            return Ok(TryNextOutcome::SyntheticVolumeEnd);
+        };
+
+        let next_type = if target == final_seq {
+            ChunkType::End
+        } else {
+            ChunkType::Intermediate
+        };
+        let next_id = ChunkIdentifier::new(
+            self.current.site().to_string(),
+            *self.current.volume(),
+            *self.current.date_time_prefix(),
+            target,
+            next_type,
+            None,
+        );
+        let downloaded = self.try_fetch_chunk(next_id).await?;
+        Ok(match downloaded {
+            Some(c) => TryNextOutcome::Downloaded(c),
+            None => TryNextOutcome::NotYetAvailable,
+        })
+    }
+
+    /// Advance `current` to the volume's final sequence without issuing a
+    /// fetch. Used by the filter-aware path when every remaining chunk is
+    /// filtered out, so the next iteration rolls over to the next volume
+    /// via the existing `try_fetch_volume_start` path.
+    fn advance_current_to_synthetic_end(&mut self, final_sequence: usize) {
+        self.current = ChunkIdentifier::new(
+            self.current.site().to_string(),
+            *self.current.volume(),
+            *self.current.date_time_prefix(),
+            final_sequence,
+            ChunkType::End,
+            None,
+        );
+        self.latest_chunk_collection_end_secs = None;
     }
 
     /// Attempts to fetch the next chunk.
@@ -346,6 +445,58 @@ impl StreamingState {
         let vcp = self.vcp.as_ref()?;
         let mapper = self.elevation_mapper.as_ref()?;
         estimate_chunk_processing_diagnostics(&self.current, vcp, mapper, Some(&self.timing_stats))
+    }
+
+    /// Multi-hop diagnostic for the filter-aware streaming path: estimates the
+    /// time to the next chunk whose elevation matches `predicate`, summing
+    /// physics interval predictions across every hop in between. Returns
+    /// `(target_sequence, estimate)` or `None` if every remaining sequence in
+    /// the volume is filtered out.
+    pub fn next_matching_chunk_diagnostics(
+        &self,
+        accept_end: bool,
+        mut predicate: impl FnMut(Option<usize>) -> bool,
+    ) -> Option<(usize, EstimatedChunkProcessing)> {
+        let vcp = self.vcp.as_ref()?;
+        let mapper = self.elevation_mapper.as_ref()?;
+        let target = mapper.next_matching_sequence_after(
+            self.current.sequence(),
+            accept_end,
+            &mut predicate,
+        )?;
+        let diag = estimate_chunk_processing_time_to_target(
+            &self.current,
+            target,
+            vcp,
+            mapper,
+            Some(&self.timing_stats),
+        )?;
+        Some((target, diag))
+    }
+
+    /// Sequences in `[lower, upper]` matching `predicate`. Wraps the mapper
+    /// helper so the streaming loop can compute filter-aware backfill targets
+    /// without exposing the mapper itself.
+    pub fn mapper_matching_sequences_in_range(
+        &self,
+        lower: usize,
+        upper: usize,
+        predicate: impl FnMut(Option<usize>) -> bool,
+    ) -> Vec<usize> {
+        self.elevation_mapper
+            .as_ref()
+            .map(|m| m.matching_sequences_in_range(lower, upper, predicate))
+            .unwrap_or_default()
+    }
+
+    /// 1-based sequence number of the chunk currently anchoring the iterator.
+    pub fn current_sequence(&self) -> usize {
+        self.current.sequence()
+    }
+
+    /// Volume index the iterator is currently anchored in.
+    pub fn current_volume(&self) -> VolumeIndex {
+        *self.current.volume()
     }
 
     /// Anchor source the projector would use right now — `ObservedCollection`

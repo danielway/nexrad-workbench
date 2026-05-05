@@ -899,6 +899,11 @@ impl WorkbenchApp {
 
         self.state.status_message = "Connecting to live stream...".to_string();
 
+        // Push the current elevation filter into the channel before starting
+        // so the streaming loop's init-time backfill targets the user's
+        // selected elevation rather than a default.
+        self.streaming
+            .sync_filter(&self.state.viz_state.elevation_selection);
         self.streaming
             .start_live(ctx.clone(), site_id, self.acquisition.facade().clone());
     }
@@ -1139,6 +1144,7 @@ impl WorkbenchApp {
                 is_end,
                 timestamp,
                 skip_overlap_delete,
+                is_last_in_sweep,
             } => {
                 log::debug!(
                     "Realtime chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
@@ -1178,17 +1184,10 @@ impl WorkbenchApp {
                     self.state.session_stats.pipeline.processing = true;
                 }
 
-                // Look up whether this is the last chunk in its sweep from
-                // the projection metadata. sequence = chunk_index + 1 (1-based).
-                let sequence = (chunk_index + 1) as usize;
-                let is_last_in_sweep = self
-                    .state
-                    .live_mode_state
-                    .chunk_projections
-                    .as_ref()
-                    .and_then(|projs| projs.iter().find(|c| c.sequence == sequence))
-                    .map(|c| c.chunk_index_in_sweep + 1 == c.chunks_in_sweep)
-                    .unwrap_or(false);
+                // The streaming loop derives `is_last_in_sweep` from the VCP
+                // mapper at emission time (so it's correct even under filter
+                // mode where chunk_index no longer maps 1:1 to sequence).
+                let is_last_in_sweep = is_last_in_sweep.unwrap_or(false);
 
                 log::debug!(
                     "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={}, last_in_sweep={})",
@@ -2553,6 +2552,13 @@ impl WorkbenchApp {
 
     /// Drain the realtime channel and manage live-mode lifecycle.
     fn handle_streaming_results(&mut self, ctx: &egui::Context) {
+        // Push the user's elevation selection down to the realtime channel
+        // each frame. The manager diffs internally so this is a no-op when
+        // the selection hasn't changed; on a real change it bumps the
+        // channel's filter epoch so any in-flight sleep wakes within ~250ms.
+        self.streaming
+            .sync_filter(&self.state.viz_state.elevation_selection);
+
         for event in self.streaming.poll() {
             match event {
                 nexrad::StreamingEvent::Realtime(result) => {

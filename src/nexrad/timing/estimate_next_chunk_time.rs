@@ -233,6 +233,107 @@ pub fn estimate_chunk_processing_diagnostics(
     None
 }
 
+/// Multi-hop variant of [`estimate_chunk_processing_diagnostics`] used by the
+/// filter-aware streaming path.
+///
+/// Sums the per-hop physics interval for every step from the current chunk's
+/// sequence up to (and including) the hop into `target_sequence`, so a
+/// streaming loop that's about to skip several chunks can sleep through the
+/// entire run in one shot. Returns `None` when sequence metadata is missing.
+///
+/// The final hop substitutes the historical bucket average when one is
+/// available — this matches the single-hop diagnostic's behavior so a
+/// filter-disabled run is bit-identical to today.
+pub fn estimate_chunk_processing_time_to_target(
+    current: &ChunkIdentifier,
+    target_sequence: usize,
+    vcp: &volume_coverage_pattern::Message,
+    elevation_chunk_mapper: &ElevationChunkMapper,
+    timing_stats: Option<&ChunkTimingStats>,
+) -> Option<EstimatedChunkProcessing> {
+    let current_sequence = current.sequence();
+    if target_sequence <= current_sequence {
+        return None;
+    }
+
+    // Single-hop case: defer to the existing diagnostic so the no-filter
+    // path's predictions are identical to today's behavior.
+    if target_sequence == current_sequence + 1 {
+        return estimate_chunk_processing_diagnostics(
+            current,
+            vcp,
+            elevation_chunk_mapper,
+            timing_stats,
+        );
+    }
+
+    let mut total_secs: f64 = 0.0;
+    let mut last_breakdown: Option<PhysicsBreakdown> = None;
+
+    // First hop: handle the Start-chunk special case (1.5s constant) before
+    // any physics math so the constant matches the single-hop StartConstant
+    // path.
+    if current.chunk_type() == ChunkType::Start {
+        total_secs += ChunkTimingModel::start_to_first_intermediate_gap_secs();
+    } else {
+        let prev_meta = elevation_chunk_mapper.get_chunk_metadata(current_sequence)?;
+        let next_meta = elevation_chunk_mapper.get_chunk_metadata(current_sequence + 1)?;
+        let breakdown = ChunkTimingModel::estimate_chunk_interval_breakdown(prev_meta, next_meta);
+        total_secs += breakdown.total_secs;
+        last_breakdown = Some(breakdown);
+    }
+
+    // Intermediate hops: pure physics summing.
+    for seq in (current_sequence + 1)..target_sequence {
+        let prev_meta = elevation_chunk_mapper.get_chunk_metadata(seq)?;
+        let next_meta = elevation_chunk_mapper.get_chunk_metadata(seq + 1)?;
+        let breakdown = ChunkTimingModel::estimate_chunk_interval_breakdown(prev_meta, next_meta);
+        total_secs += breakdown.total_secs;
+        last_breakdown = Some(breakdown);
+    }
+
+    // Final hop: substitute historical bucket if available so the prediction
+    // for the chunk we're actually waiting on lands as accurately as a
+    // single-hop estimate would.
+    let target_meta = elevation_chunk_mapper.get_chunk_metadata(target_sequence)?;
+    let target_bucket = target_meta
+        .elevation_number()
+        .and_then(|n| vcp.elevations().get(n - 1))
+        .map(|elevation| ChunkCharacteristics {
+            chunk_type: ChunkType::Intermediate,
+            waveform_type: elevation.waveform_type(),
+            channel_configuration: elevation.channel_configuration(),
+            is_first_in_sweep: target_meta.is_first_in_sweep(),
+        });
+
+    let mut path = SchedulerPath::Physics;
+    let mut stats_n_at_prediction = 0usize;
+
+    if let (Some(stats), Some(bucket)) = (timing_stats, target_bucket.as_ref()) {
+        stats_n_at_prediction = stats.sample_count(bucket);
+        if let (Some(avg_timing), Some(avg_attempts)) = (
+            stats.get_average_timing(bucket),
+            stats.get_average_attempts(bucket),
+        ) {
+            // Replace the last hop's physics with the historical average so
+            // arrival-time prediction error is bounded by single-hop accuracy.
+            let last_physics_secs = last_breakdown.as_ref().map(|b| b.total_secs).unwrap_or(0.0);
+            total_secs = total_secs - last_physics_secs
+                + avg_timing.num_milliseconds() as f64 / 1000.0
+                + (avg_attempts - 1.0).max(0.0);
+            path = SchedulerPath::Historical;
+        }
+    }
+
+    Some(EstimatedChunkProcessing {
+        duration: ChronoDuration::milliseconds((total_secs * 1000.0) as i64),
+        path,
+        stats_n_at_prediction,
+        physics_breakdown: last_breakdown,
+        bucket: target_bucket,
+    })
+}
+
 /// Legacy default wait time based on waveform type and channel configuration.
 ///
 /// Only used as a last resort when chunk metadata is unavailable (should be rare).

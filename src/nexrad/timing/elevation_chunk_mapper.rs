@@ -192,4 +192,58 @@ impl ElevationChunkMapper {
     pub fn total_chunks(&self) -> usize {
         self.chunk_metadata.len()
     }
+
+    /// Find the next sequence after `current` that matches an elevation
+    /// predicate, scanning up through `final_sequence()`. Used by the
+    /// filter-aware streaming path to skip chunks that the renderer won't
+    /// display.
+    ///
+    /// `accept_end` is consulted only when the candidate is `final_sequence`:
+    /// callers that want to keep volume-boundary signaling pass `true`, callers
+    /// that are happy to synthesize the boundary pass `false`.
+    pub fn next_matching_sequence_after(
+        &self,
+        current: usize,
+        accept_end: bool,
+        mut predicate: impl FnMut(Option<usize>) -> bool,
+    ) -> Option<usize> {
+        let final_seq = self.final_sequence();
+        let start = current.saturating_add(1);
+        for seq in start..=final_seq {
+            let elev = self
+                .get_chunk_metadata(seq)
+                .and_then(|m| m.elevation_number());
+            if predicate(elev) {
+                return Some(seq);
+            }
+            if accept_end && seq == final_seq {
+                return Some(seq);
+            }
+        }
+        None
+    }
+
+    /// Sequences in the volume that match the predicate, restricted to the
+    /// range `[lower, upper]` inclusive. Used by the filter-aware backfill
+    /// path to determine which already-uploaded chunks to download in
+    /// parallel.
+    pub fn matching_sequences_in_range(
+        &self,
+        lower: usize,
+        upper: usize,
+        mut predicate: impl FnMut(Option<usize>) -> bool,
+    ) -> Vec<usize> {
+        let lower = lower.max(1);
+        let upper = upper.min(self.final_sequence());
+        let mut out = Vec::new();
+        for seq in lower..=upper {
+            let elev = self
+                .get_chunk_metadata(seq)
+                .and_then(|m| m.elevation_number());
+            if predicate(elev) {
+                out.push(seq);
+            }
+        }
+        out
+    }
 }
