@@ -184,24 +184,8 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
         render_live_indicator(ui, state);
         ui.separator();
     }
-
-    // Live button (only shown when not in live mode)
-    #[allow(clippy::collapsible_if)]
-    if !state.live_mode_state.is_active() {
-        if ui
-            .button(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(14.0)
-                    .color(Color32::from_rgb(150, 150, 150)),
-            )
-            .on_hover_text("Start live streaming")
-            .clicked()
-        {
-            // Signal main loop to start live mode
-            state.push_command(crate::state::AppCommand::StartLive);
-            state.playback_state.speed = PlaybackSpeed::Realtime;
-        }
-    }
+    // Live entry consolidated into the top-bar mode pill — clicking the
+    // pill opens the Go Live / Stop streaming menu.
 
     // Play/Stop button — disabled in Idle (no data to play).
     let play_text = if state.playback_state.playing {
