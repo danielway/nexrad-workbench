@@ -28,11 +28,13 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
         .exact_height(36.0)
         .show(ctx, |ui| {
             ui.horizontal_centered(|ui| {
-                // Left panel toggle
-                if ui
-                    .button(RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE).size(14.0))
-                    .on_hover_text("Toggle left panel")
-                    .clicked()
+                // Left panel toggle — hidden in Basic since the left panel
+                // (radar diagnostics) is itself force-hidden in Basic.
+                if state.show_advanced()
+                    && ui
+                        .button(RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE).size(14.0))
+                        .on_hover_text("Toggle left panel")
+                        .clicked()
                 {
                     state.left_sidebar_visible = !state.left_sidebar_visible;
                 }
