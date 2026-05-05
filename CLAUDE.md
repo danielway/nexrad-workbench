@@ -27,6 +27,10 @@ trunk build --release
 
 There are no Rust unit tests to run for the main crate (tests exist only in `data/keys.rs` but require wasm-bindgen-test infrastructure). Pre-commit hooks via cargo-husky enforce `cargo fmt` and `cargo clippy`.
 
+## Commits
+
+Always commit at natural milestones — a self-contained fix, a completed feature, or any coherent unit of work — proactively and without being asked. Do not batch changes until the end of a session, and do not wait for the user to prompt a commit. After `cargo check` and `cargo clippy -- -D warnings` are clean, commit. Match the repo's commit-message style (imperative subject, no trailing period; see `git log --oneline`). Never add `Co-Authored-By` lines. Only create new commits — never amend, never `--no-verify`.
+
 ## Key Constraints
 
 - **WASM-only target**: The default build target is `wasm32-unknown-unknown` (set in `.cargo/config.toml`). All code must compile for this target. Native stubs exist but are minimal.
