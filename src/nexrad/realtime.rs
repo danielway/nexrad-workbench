@@ -1,14 +1,13 @@
 //! Real-time NEXRAD streaming channel.
 //!
 //! Provides a channel-based interface for real-time NEXRAD data streaming
-//! from AWS. Uses our own [`super::volume_discovery::find_latest_volume`] +
-//! [`super::streaming_state::StreamingState`] instead of `ChunkIterator::start()`
-//! so we can resolve the current volume with 1-2 round trips of parallel
-//! probes instead of ~10 sequential binary-search LISTs.
+//! from AWS. Resolves the current volume via `nexrad_data`'s upstream
+//! `get_latest_volume` and then drives the stream through our own
+//! [`super::streaming_state::StreamingState`] (a slimmed replacement for the
+//! library's `ChunkIterator`).
 
 use super::download::NetworkStats;
 use super::streaming_state::StreamingState;
-use super::volume_discovery::find_latest_volume;
 use futures_util::future::join_all;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -351,8 +350,7 @@ async fn streaming_loop(
     // in the projector and an EWMA on lag history.
     const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 750;
 
-    let hint = get_cached_volume(&site_id);
-    let init_future = acquire_streaming_state(&site_id, hint);
+    let init_future = acquire_streaming_state(&site_id);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
 
     futures_util::pin_mut!(init_future);
@@ -1066,6 +1064,10 @@ fn cache_volume_number(site_id: &str, volume: nexrad_data::aws::realtime::Volume
 }
 
 /// Read the cached volume number for a site from localStorage.
+///
+/// Currently unused — discovery goes through `nexrad_data::aws::realtime::get_latest_volume`,
+/// which doesn't take a hint. Kept for the planned reintroduction as a fast-path hint.
+#[allow(dead_code)]
 fn get_cached_volume(site_id: &str) -> Option<nexrad_data::aws::realtime::VolumeIndex> {
     let key = format!("nexrad_volume_{}", site_id);
     let window = web_sys::window()?;
@@ -1110,17 +1112,19 @@ fn load_cached_timing_stats(site_id: &str) -> Option<super::timing::ChunkTimingS
     super::timing::ChunkTimingStats::from_json(&raw)
 }
 
-/// Run [`find_latest_volume`] then initialize a [`StreamingState`] at that volume.
+/// Run `nexrad_data`'s upstream `get_latest_volume` then initialize a
+/// [`StreamingState`] at that volume.
 ///
-/// The returned [`super::streaming_state::StreamingInit`] has the same shape as
-/// `ChunkIteratorInit` so the rest of the streaming loop is unchanged.
+/// The cached volume number written by [`cache_volume_number`] is intentionally
+/// ignored here — discovery uses the same sequential rotated-array binary
+/// search the library ships with. The cache will be reintroduced as a hint in
+/// a follow-up.
 async fn acquire_streaming_state(
     site_id: &str,
-    hint: Option<nexrad_data::aws::realtime::VolumeIndex>,
 ) -> nexrad_data::result::Result<super::streaming_state::StreamingInit> {
-    let search = find_latest_volume(site_id, hint).await?;
-    let volume = search.volume.ok_or(nexrad_data::result::Error::AWS(
+    let result = nexrad_data::aws::realtime::get_latest_volume(site_id).await?;
+    let volume = result.volume.ok_or(nexrad_data::result::Error::AWS(
         nexrad_data::result::aws::AWSError::LatestVolumeNotFound,
     ))?;
-    StreamingState::init_at_volume(site_id, volume, search.requests_made).await
+    StreamingState::init_at_volume(site_id, volume, result.calls).await
 }

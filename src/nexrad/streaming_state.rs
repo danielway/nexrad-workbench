@@ -1,10 +1,9 @@
-//! Replacement for `nexrad_data::aws::realtime::ChunkIterator` that lets us
-//! supply our own volume discovery (see [`super::volume_discovery`]) instead of
-//! the library's sequential binary search.
+//! Replacement for `nexrad_data::aws::realtime::ChunkIterator`.
 //!
-//! This mirrors the subset of `ChunkIterator` that `realtime.rs` actually uses:
+//! Mirrors the subset of `ChunkIterator` that `realtime.rs` actually uses:
 //! init (fetch latest + optional start chunk, extract VCP), pull-based
-//! `try_next`, and timing/metadata accessors.
+//! `try_next`, and timing/metadata accessors. Volume discovery itself is
+//! delegated to `nexrad_data::aws::realtime::get_latest_volume`.
 
 use super::timing::{
     estimate_chunk_availability_time, estimate_chunk_processing_diagnostics, project_scan_timing,
