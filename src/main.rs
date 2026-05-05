@@ -3112,6 +3112,17 @@ impl WorkbenchApp {
         let c = mode.color();
         let hex = format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
         let _ = js_set_favicon_color(&hex);
+
+        // Prefix the document title so backgrounded tabs surface the mode.
+        if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+            let prefix = match mode {
+                state::AppMode::Idle => "",
+                state::AppMode::Archive => "[ARCHIVE] ",
+                state::AppMode::Live => "[LIVE] ",
+            };
+            document.set_title(&format!("{}NEXRAD Workbench", prefix));
+        }
+
         self.last_favicon_mode = Some(mode);
     }
 }

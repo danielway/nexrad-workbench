@@ -407,8 +407,9 @@ pub(super) fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 /// Render the unified mode badge (Idle / Archive / Live) in the top bar.
-/// The Live branch preserves the previous pulse animation and streaming
-/// detail text (chunk counter, acquire-lock elapsed, next-chunk countdown).
+/// Drawn as a colored pill (~20% alpha fill + colored border) so the
+/// active mode is glanceable. The Live branch preserves the pulse
+/// animation and streaming detail text.
 pub(super) fn render_mode_badge(ui: &mut egui::Ui, state: &AppState) {
     let mode = state.app_mode;
     let color = mode.color();
@@ -432,8 +433,20 @@ pub(super) fn render_mode_badge(ui: &mut egui::Ui, state: &AppState) {
         color
     };
 
-    ui.label(RichText::new(icon_str).size(16.0).color(icon_color));
-    ui.label(RichText::new(mode.label()).size(13.0).strong().color(color));
+    let fill = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 40);
+    let stroke = egui::Stroke::new(1.0, color);
+    egui::Frame::default()
+        .fill(fill)
+        .stroke(stroke)
+        .corner_radius(egui::CornerRadius::same(4))
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.label(RichText::new(icon_str).size(15.0).color(icon_color));
+                ui.label(RichText::new(mode.label()).size(13.0).strong().color(color));
+            });
+        });
 
     // Live-only trailing detail: chunk count, countdown, or elapsed acquire time.
     if mode == AppMode::Live {
