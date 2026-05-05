@@ -519,6 +519,24 @@ impl AppState {
             && self.advanced_mode
     }
 
+    /// Elevation list for the current playback context, derived per
+    /// call from the same sources the left panel uses: scan at the
+    /// playback timestamp first, then the live VCP if streaming, else
+    /// empty. Both panels share this so they can't disagree about
+    /// what's available.
+    pub fn current_elevation_list(&self) -> Vec<ElevationListEntry> {
+        let ts = self.playback_state.playback_position();
+        if let Some(scan) = self.radar_timeline.find_scan_at_timestamp(ts) {
+            return playback_manager::build_elevation_list(scan);
+        }
+        if let Some(ref vcp) = self.live_mode_state.current_vcp_pattern {
+            if !vcp.elevations.is_empty() {
+                return playback_manager::build_elevation_list_from_vcp(vcp);
+            }
+        }
+        Vec::new()
+    }
+
     /// Set the status message and record the timestamp for auto-dismissal.
     #[allow(dead_code)]
     pub fn set_status(&mut self, msg: impl Into<String>) {

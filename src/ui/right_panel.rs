@@ -104,8 +104,9 @@ pub(super) fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             ui.separator();
 
-            // Elevation list
-            let entries = state.viz_state.cached_vcp_elevations.clone();
+            // Elevation list — shared derivation with the left panel so
+            // both reflect the same scan/live-VCP source per frame.
+            let entries = state.current_elevation_list();
             let list_enabled = !is_auto;
             let selected_product = state.viz_state.product.to_worker_string();
 

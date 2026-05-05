@@ -1762,22 +1762,26 @@ impl WorkbenchApp {
                     .record_elevations(&result.elevations_completed, vol_start_ts);
             }
             if let Some(ref vcp) = result.vcp {
+                // Snap the user's selected elevation angle to the closest
+                // entry in the new VCP when the pattern changes. Both
+                // panels read the elevation list lazily via
+                // AppState::current_elevation_list(), so no cache to
+                // refresh — this resolve is the only thing that needs
+                // to fire on a VCP transition.
+                let prev_count = self
+                    .state
+                    .live_mode_state
+                    .current_vcp_pattern
+                    .as_ref()
+                    .map(|p| p.elevations.len())
+                    .unwrap_or(0);
                 self.state.live_mode_state.record_vcp(vcp);
-                // Populate the right-panel elevation list from the live
-                // VCP. Without this, resuming live streaming leaves the
-                // filter list empty (or stale from a prior archive scan)
-                // even though the left panel renders the same VCP fine.
-                // Only refresh on size change to avoid thrashing the
-                // selection on every chunk.
-                let needs_rebuild =
-                    self.state.viz_state.cached_vcp_elevations.len() != vcp.elevations.len();
-                if needs_rebuild {
+                if prev_count != vcp.elevations.len() {
                     let entries = state::playback_manager::build_elevation_list_from_vcp(vcp);
                     self.state
                         .viz_state
                         .elevation_selection
                         .resolve_for_vcp(&entries);
-                    self.state.viz_state.cached_vcp_elevations = entries;
                 }
             }
 
@@ -2742,7 +2746,6 @@ impl WorkbenchApp {
                             self.render.set_elevations(elev_nums);
                         }
                         if let Some(entries) = new_elev_list {
-                            self.state.viz_state.cached_vcp_elevations = entries.clone();
                             self.state
                                 .viz_state
                                 .elevation_selection

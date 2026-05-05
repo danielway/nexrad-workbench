@@ -294,7 +294,7 @@ pub fn handle_shortcuts(ctx: &egui::Context, state: &mut AppState) {
     // E cycles elevation in 2D mode (where Q/E vertical movement doesn't apply).
     // In 3D mode, E is reserved for upward camera movement.
     if cycle_elevation && state.viz_state.view_mode == ViewMode::Flat2D {
-        let entries = &state.viz_state.cached_vcp_elevations;
+        let entries = state.current_elevation_list();
         if !entries.is_empty() {
             // Find current index and advance
             let current_idx = match &state.viz_state.elevation_selection {

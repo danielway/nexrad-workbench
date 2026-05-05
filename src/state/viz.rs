@@ -275,9 +275,6 @@ pub struct VizState {
     /// Elevation selection (specific VCP cut or auto/latest mode)
     pub elevation_selection: ElevationSelection,
 
-    /// Cached elevation list from the current VCP, for the UI list.
-    pub cached_vcp_elevations: Vec<ElevationListEntry>,
-
     /// Stored Fixed selection to restore when toggling off auto mode.
     pub last_fixed_selection: Option<(u8, f32)>,
 
@@ -373,7 +370,6 @@ impl Default for VizState {
             camera: GlobeCamera::centered_on(41.7312, -93.7229),
             product: RadarProduct::default(),
             elevation_selection: ElevationSelection::default(),
-            cached_vcp_elevations: Vec::new(),
             last_fixed_selection: None,
             site_id: "KDMX".to_string(),
             timestamp: "--:--:-- UTC".to_string(),
