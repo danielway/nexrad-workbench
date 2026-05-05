@@ -1434,7 +1434,7 @@ impl WorkbenchApp {
                 state::AppCommand::RetryWorker => match self.render.create_worker(ctx.clone()) {
                     Ok(()) => {
                         self.state.worker_init_error = None;
-                        self.state.set_status("Decode worker initialized");
+                        self.state.status_message = "Decode worker initialized".to_string();
                     }
                     Err(msg) => {
                         self.state.worker_init_error = Some(msg);

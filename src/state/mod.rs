@@ -536,11 +536,4 @@ impl AppState {
         }
         Vec::new()
     }
-
-    /// Set the status message and record the timestamp for auto-dismissal.
-    #[allow(dead_code)]
-    pub fn set_status(&mut self, msg: impl Into<String>) {
-        self.status_message = msg.into();
-        self.status_message_set_ms = js_sys::Date::now();
-    }
 }

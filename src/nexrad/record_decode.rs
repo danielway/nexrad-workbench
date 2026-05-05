@@ -4,9 +4,8 @@
 //! into radials, and to extract pre-computed sweep data from radials.
 
 use crate::data::keys::{GateValues, PrecomputedSweep};
-use ::nexrad::model::data::Radial;
+use ::nexrad::model::data::{DataMoment, Radial};
 use nexrad_data::volume::Record;
-use nexrad_model::data::DataMoment;
 use nexrad_render::Product;
 
 /// Decode a single LDM record into radials.
@@ -47,18 +46,6 @@ pub fn extract_volume_start_time(radials: &[Radial]) -> Option<f64> {
         .iter()
         .find(|r| matches!(r.radial_status(), RadialStatus::ScanStart))
         .map(|r| r.collection_timestamp() as f64 / 1000.0)
-}
-
-/// Extract sorted, deduplicated elevation numbers from already-decoded radials.
-///
-/// Use this when radials have already been decoded (e.g. after decompressing a
-/// record during ingest) to avoid redundant decompression.
-#[allow(dead_code)]
-pub fn extract_elevation_numbers(radials: &[Radial]) -> Vec<u8> {
-    let mut elevations: Vec<u8> = radials.iter().map(|r| r.elevation_number()).collect();
-    elevations.sort_unstable();
-    elevations.dedup();
-    elevations
 }
 
 /// Extract a pre-computed sweep from radials already filtered to one elevation

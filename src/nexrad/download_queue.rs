@@ -221,12 +221,6 @@ impl DownloadQueueManager {
         self.active_operation_ids.clear();
     }
 
-    /// Get the operation ID for the active download with the given scan_start.
-    #[allow(dead_code)]
-    pub fn operation_id(&self, scan_start: i64) -> Option<crate::state::OperationId> {
-        self.active_operation_ids.get(&scan_start).copied()
-    }
-
     /// Associate an acquisition operation ID with an active download.
     pub fn set_operation_id(&mut self, scan_start: i64, id: crate::state::OperationId) {
         self.active_operation_ids.insert(scan_start, id);

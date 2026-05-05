@@ -125,48 +125,6 @@ impl ArchiveListing {
             .find(|(_, b)| timestamp >= b.start && timestamp < b.end)
             .map(|(file, b)| (file, *b))
     }
-
-    /// Find the file containing or closest to the given timestamp.
-    #[allow(dead_code)]
-    pub fn find_file_at_timestamp(&self, timestamp: i64) -> Option<&ArchiveFileMeta> {
-        if self.files.is_empty() {
-            return None;
-        }
-
-        // Binary search for the closest file
-        match self.files.binary_search_by_key(&timestamp, |f| f.timestamp) {
-            Ok(idx) => Some(&self.files[idx]),
-            Err(idx) => {
-                // idx is where it would be inserted
-                if idx == 0 {
-                    Some(&self.files[0])
-                } else if idx >= self.files.len() {
-                    Some(&self.files[self.files.len() - 1])
-                } else {
-                    // Pick the closer one
-                    let before = &self.files[idx - 1];
-                    let after = &self.files[idx];
-                    if (timestamp - before.timestamp).abs() <= (after.timestamp - timestamp).abs() {
-                        Some(before)
-                    } else {
-                        Some(after)
-                    }
-                }
-            }
-        }
-    }
-
-    /// Find the file after the given timestamp.
-    #[allow(dead_code)]
-    pub fn find_next_file_after(&self, timestamp: i64) -> Option<&ArchiveFileMeta> {
-        self.files.iter().find(|f| f.timestamp > timestamp)
-    }
-
-    /// Find the file by name.
-    #[allow(dead_code)]
-    pub fn find_file_by_name(&self, name: &str) -> Option<&ArchiveFileMeta> {
-        self.files.iter().find(|f| f.name == name)
-    }
 }
 
 /// In-memory cache for archive listings.
@@ -212,22 +170,10 @@ impl ArchiveIndex {
         }
     }
 
-    /// Check if a listing is cached (and valid) for this site/date.
-    #[allow(dead_code)]
-    pub fn has_listing(&self, site_id: &str, date: &NaiveDate) -> bool {
-        self.get(site_id, date).is_some()
-    }
-
     /// Remove a specific cached listing (e.g. to force a re-fetch).
     pub fn remove(&mut self, site_id: &str, date: &NaiveDate) {
         let key = ArchiveIndexKey::new(site_id, *date);
         self.listings.remove(&key);
-    }
-
-    /// Clear all cached listings.
-    #[allow(dead_code)]
-    pub fn clear(&mut self) {
-        self.listings.clear();
     }
 
     /// Collect scan boundaries from all cached listings for a given site.
@@ -364,30 +310,6 @@ mod tests {
         assert_eq!(result[1].0.name, "b");
     }
 
-    // --- find_file_at_timestamp ---
-
-    #[test]
-    fn find_file_at_timestamp_exact() {
-        let l = listing(vec![file("a", 1000), file("b", 1300)]);
-        assert_eq!(l.find_file_at_timestamp(1000).unwrap().name, "a");
-        assert_eq!(l.find_file_at_timestamp(1300).unwrap().name, "b");
-    }
-
-    #[test]
-    fn find_file_at_timestamp_between() {
-        let l = listing(vec![file("a", 1000), file("b", 1300)]);
-        // 1100 is closer to 1000
-        assert_eq!(l.find_file_at_timestamp(1100).unwrap().name, "a");
-        // 1200 is closer to 1300
-        assert_eq!(l.find_file_at_timestamp(1200).unwrap().name, "b");
-    }
-
-    #[test]
-    fn find_file_at_timestamp_empty() {
-        let l = listing(vec![]);
-        assert!(l.find_file_at_timestamp(1000).is_none());
-    }
-
     // --- ArchiveIndex ---
 
     #[test]
@@ -402,7 +324,6 @@ mod tests {
         );
 
         assert!(idx.get("KDMX", &date).is_some());
-        assert!(idx.has_listing("KDMX", &date));
 
         idx.remove("KDMX", &date);
         assert!(idx.get("KDMX", &date).is_none());
