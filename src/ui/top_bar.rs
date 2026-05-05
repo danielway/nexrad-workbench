@@ -408,9 +408,11 @@ pub(super) fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// Render the unified mode badge (Idle / Archive / Live) in the top bar.
 /// Drawn as a colored pill (~20% alpha fill + colored border) so the
-/// active mode is glanceable. The Live branch preserves the pulse
-/// animation and streaming detail text.
-pub(super) fn render_mode_badge(ui: &mut egui::Ui, state: &AppState) {
+/// active mode is glanceable. Clicking the pill opens a small action
+/// menu (Go Live / Stop streaming) — the canonical way to enter or
+/// leave Live. The Live pulse animation and streaming detail text are
+/// preserved.
+pub(super) fn render_mode_badge(ui: &mut egui::Ui, state: &mut AppState) {
     let mode = state.app_mode;
     let color = mode.color();
 
@@ -435,7 +437,7 @@ pub(super) fn render_mode_badge(ui: &mut egui::Ui, state: &AppState) {
 
     let fill = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 40);
     let stroke = egui::Stroke::new(1.0, color);
-    egui::Frame::default()
+    let inner = egui::Frame::default()
         .fill(fill)
         .stroke(stroke)
         .corner_radius(egui::CornerRadius::same(4))
@@ -447,6 +449,45 @@ pub(super) fn render_mode_badge(ui: &mut egui::Ui, state: &AppState) {
                 ui.label(RichText::new(mode.label()).size(13.0).strong().color(color));
             });
         });
+    let pill_response = inner.response.interact(egui::Sense::click());
+    if pill_response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let hover_text = match mode {
+        AppMode::Live => "Streaming live — click to manage",
+        AppMode::Archive => "Browsing archive — click to go live",
+        AppMode::Idle => "No data loaded — click to go live",
+    };
+    let pill_response = pill_response.on_hover_text(hover_text);
+
+    egui::Popup::menu(&pill_response).show(|ui| {
+        ui.set_min_width(160.0);
+        if mode == AppMode::Live {
+            if ui
+                .button(format!("{} Stop streaming", egui_phosphor::regular::STOP))
+                .clicked()
+            {
+                state
+                    .live_mode_state
+                    .stop(crate::state::LiveExitReason::UserStopped);
+                state.playback_state.time_model.disable_realtime_lock();
+                state.playback_state.playing = false;
+                state.status_message = state
+                    .live_mode_state
+                    .last_exit_reason
+                    .map(|r| r.message().to_string())
+                    .unwrap_or_default();
+                ui.close();
+            }
+        } else if ui
+            .button(format!("{} Go live", egui_phosphor::regular::BROADCAST))
+            .clicked()
+        {
+            state.push_command(AppCommand::StartLive);
+            state.playback_state.speed = crate::state::PlaybackSpeed::Realtime;
+            ui.close();
+        }
+    });
 
     // Live-only trailing detail: chunk count, countdown, or elapsed acquire time.
     if mode == AppMode::Live {
