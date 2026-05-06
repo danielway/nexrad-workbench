@@ -26,7 +26,93 @@ existing object store and recreates them. The cache is treated as
 ephemeral — losing it on a version bump is acceptable, and that simpler
 upgrade path is what lets us evolve the binary blob layout freely.
 
-## 2. Why two stores
+## 2. Payload contents
+
+The values in each store have specific shapes. The `sweeps` payload is a
+hand-rolled binary blob optimized for zero-copy GPU upload; the
+`scan_index` payload is a serialized Rust struct holding the metadata
+the rest of the codebase reasons about. Both are defined in
+[`src/data/keys.rs`](../src/data/keys.rs).
+
+### 2a. `sweeps` value: `PrecomputedSweep` blob
+
+A single sweep's gate values, header, and per-radial metadata in one
+contiguous `ArrayBuffer`. Serialized by `PrecomputedSweep::to_bytes`
+and parsed at read time by `parse_sweep_header` (which returns scalar
+metadata + byte offsets, no allocation).
+
+**Header — 72 bytes, little-endian:**
+
+| Offset  | Type | Field                   | Notes                                              |
+| -------:| ---- | ----------------------- | -------------------------------------------------- |
+| `0..4`  | u32  | `azimuth_count`         | Number of radials                                  |
+| `4..8`  | u32  | `gate_count`            | Number of gates per radial                         |
+| `8..16` | f64  | `first_gate_range_km`   | Distance from radar to the first gate's centroid   |
+| `16..24`| f64  | `gate_interval_km`      | Spacing between adjacent gates                     |
+| `24..32`| f64  | `max_range_km`          | Distance to the far edge of the last gate          |
+| `32..36`| f32  | `scale`                 | Physical = (raw − offset) / scale                  |
+| `36..40`| f32  | `offset`                | Same                                               |
+| `40..44`| u32  | `radial_count`          | Echoed for convenience (== `azimuth_count` today)  |
+| `44`    | u8   | `data_word_size`        | `1` for u8 (REF, VEL, SW), `2` for u16 (CFP, dual-pol) |
+| `45`    | u8   | `format_version`        | `0` = no radial_times, `1` = with radial_times     |
+| `46..48`| —    | reserved                | 2 bytes of padding                                 |
+| `48..52`| f32  | `mean_elevation`        | Average elevation angle of the sweep (degrees)     |
+| `52..56`| —    | reserved                | 4 bytes of f64 alignment pad                       |
+| `56..64`| f64  | `sweep_start_secs`      | Unix seconds, earliest radial collection time      |
+| `64..72`| f64  | `sweep_end_secs`        | Unix seconds, latest radial collection time        |
+
+**Body — three array sections:**
+
+```
+72 ──────────────────► azimuths              (f32 × azimuth_count, sorted)
+72 + az·4 ───────────► radial_times          (f64 × azimuth_count, version 1 only;
+                                              parallel to azimuths, Unix seconds)
+72 + az·4 + rt_size ─► gate_values            (u8 or u16 × azimuth_count × gate_count,
+                                              row-major: radial-major, gate-minor)
+```
+
+The fragment shader applies `physical = (raw - offset) / scale`
+per-pixel. Raw values `0` (below threshold) and `1` (range folded) are
+sentinels — the shader checks `v > 1.5` before converting. Because the
+linear transform is invariant under interpolation, bilinear/smoothing
+filters on the GPU operate on raw values.
+
+### 2b. `scan_index` value: `ScanIndexEntry`
+
+A `Serialize`/`Deserialize` Rust struct. Round-trips through
+`serde-wasm-bindgen` (no JSON detour) and IDB stores the result via
+the structured-clone algorithm.
+
+| Field                     | Type                  | Meaning                                                                                       |
+| ------------------------- | --------------------- | --------------------------------------------------------------------------------------------- |
+| `scan`                    | `ScanKey`             | `{ site, scan_start: UnixMillis }` — the storage key, kept in the value for self-description  |
+| `has_vcp`                 | `bool`                | True once the volume header (record 0) has been ingested                                      |
+| `vcp`                     | `Option<ExtractedVcp>`| Full Volume Coverage Pattern: number + ordered elevations with waveform/PRF/SAILS/MRLE flags  |
+| `expected_records`        | `Option<u32>`         | Predicted total records, derived from `vcp.elevations.len()`                                  |
+| `present_records`         | `u32`                 | Records actually ingested so far. Equals `expected_records` when complete                     |
+| `file_name`               | `Option<String>`      | Source archive file name (archive ingest only); `None` for real-time scans                    |
+| `total_size_bytes`        | `u64`                 | Sum of every sweep blob's size for this scan; drives `total_cache_size` and eviction          |
+| `updated_at`              | `UnixMillis`          | Last write time. Bumped by every `merge_chunk`                                                |
+| `last_accessed_at`        | `UnixMillis`          | Set at creation; not bumped by reads (see "Access-time tracking" below)                       |
+| `end_timestamp_secs`      | `Option<i64>`         | Latest radial collection time across all sweeps (Unix seconds); fills in after decode         |
+| `sweeps`                  | `Option<Vec<SweepMeta>>` | Per-sweep metadata: start/end times, elevation, `available_products`. Drives the timeline |
+| `has_precomputed_sweeps`  | `bool`                | True once at least one sweep blob is stored under this scan key                               |
+
+`SweepMeta` (each entry of `sweeps`):
+
+| Field                | Type        | Meaning                                                                          |
+| -------------------- | ----------- | -------------------------------------------------------------------------------- |
+| `start`, `end`       | `f64`       | Unix seconds, sub-second precision; earliest/latest radial collection time       |
+| `elevation`          | `f32`       | Elevation angle in degrees                                                       |
+| `elevation_number`   | `u8`        | 1-based index used in sweep storage keys                                         |
+| `start_azimuth`      | `f32`       | Azimuth (degrees) of the chronologically first radial — used for VCP forecasts   |
+| `available_products` | `Vec<String>` | Product strings (e.g. `"reflectivity"`) for which a sweep blob was successfully stored |
+
+`ExtractedVcp` and `ExtractedVcpElevation` carry the per-volume scan
+strategy (cuts, waveforms, azimuth rates) used by the timing model and
+forecast UI.
+
+## 3. Why two stores
 
 The split is driven by access patterns. Sweep blobs are large
 (megabytes) and read by exact key on the render hot path; they need
@@ -38,7 +124,7 @@ Co-locating them in a single store would force every timeline query to
 either drag blob data through memory, or maintain a parallel index
 anyway.
 
-## 3. Concurrency model
+## 4. Concurrency model
 
 ### 3a. Open coalescing
 
@@ -95,7 +181,7 @@ writer at a time. The invariant lives at the call site
 (`worker_api/ingest.rs`) where the developer can see it, rather than
 hidden inside the IDB module.
 
-## 4. Key-range queries
+## 5. Key-range queries
 
 Storage keys are pipe-delimited prefixes. The store exploits this so
 that single-site or single-scan operations don't have to scan the full
@@ -136,7 +222,7 @@ runs in Rust after the site-prefix range scan, so even pathological
 inputs would degrade to "read more entries than necessary," not
 "return wrong results."
 
-## 5. API surface
+## 6. API surface
 
 Construct with `IndexedDbStore::new()` (cheap — no I/O). Call `open()`
 once before use; subsequent calls are no-ops. All methods are `async`.
@@ -202,7 +288,7 @@ writing and returns `DataError::QuotaExceeded` when the blob batch
 plus 5 MB headroom would not fit, instead of letting IDB fail
 mid-transaction.
 
-## 6. Errors
+## 7. Errors
 
 `DataError` is an enum, not a string:
 
@@ -220,7 +306,7 @@ extracts `name`/`message` when the value looks like a `DOMException`,
 and falls back to `{:?}` otherwise. This gives readable strings like
 `"QuotaExceededError: ..."` instead of opaque `JsValue(...)` blobs.
 
-## 7. Data flow
+## 8. Data flow
 
 ```
   ┌────────────────────┐    raw bytes    ┌────────────────────┐
@@ -268,7 +354,7 @@ Two notable shapes:
   coexist in the cache when their `scan_start` keys differ; LRU
   eviction reclaims space over time.
 
-## 8. What lives outside this module
+## 9. What lives outside this module
 
 - `ScanIndexEntry::merge_chunk` and `seed_from_partial`
   ([`src/data/keys.rs`](../src/data/keys.rs)) — domain logic for how
