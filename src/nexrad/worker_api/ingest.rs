@@ -109,15 +109,8 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             extract_ms,
         );
 
-        // --- Phase 3: Store sweep blobs in IDB ---
+        // --- Phase 3: Atomically store sweep blobs + scan-index entry ---
         let t_store = web_time::Instant::now();
-        store.put_sweeps_batch(&sweep_blobs).await.map_err(|e| {
-            wasm_bindgen::JsValue::from_str(&format!("Failed to store sweeps batch: {}", e))
-        })?;
-        let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
-
-        // --- Phase 4: Store scan index entry ---
-        let t_index = web_time::Instant::now();
         let mut scan_entry = ScanIndexEntry::new(scan_key.clone());
         scan_entry.has_vcp = has_vcp;
         scan_entry.vcp = extracted_vcp.clone();
@@ -128,10 +121,14 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         scan_entry.sweeps = Some(sweeps.clone());
         scan_entry.has_precomputed_sweeps = true;
 
-        store.put_scan_entry(&scan_entry).await.map_err(|e| {
-            wasm_bindgen::JsValue::from_str(&format!("Failed to store scan index: {}", e))
-        })?;
-        let index_ms = t_index.elapsed().as_secs_f64() * 1000.0;
+        store
+            .put_scan(&scan_entry, &sweep_blobs)
+            .await
+            .map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!("Failed to store scan: {}", e))
+            })?;
+        let store_ms = t_store.elapsed().as_secs_f64() * 1000.0;
+        let index_ms = 0.0;
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
@@ -467,14 +464,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             sweeps_stored = sweep_blobs.len() as u32;
             new_sweep_metas = sweep_metas;
 
-            // Store sweep blobs
-            if !sweep_blobs.is_empty() {
-                store.put_sweeps_batch(&sweep_blobs).await.map_err(|e| {
-                    wasm_bindgen::JsValue::from_str(&format!("Failed to store sweeps: {}", e))
-                })?;
-            }
-
-            // Merge scan index entry
+            // Build the partial entry describing this flush.
             let partial_entry = CHUNK_ACCUM.with(|cell| {
                 let borrow = cell.borrow();
                 let accum = borrow.as_ref().unwrap();
@@ -496,10 +486,12 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 entry
             });
 
-            // Read-modify-write the scan-index entry. The two-tx pattern
-            // races in principle, but the worker pool serializes per-scan via
-            // the per-worker `CHUNK_ACCUM` thread-local, so there is no
-            // concurrent writer for this key in practice.
+            // Read-modify-write the scan-index entry, then atomically write
+            // the merged entry alongside this flush's sweep blobs in a single
+            // cross-store transaction. The read-then-write spans two
+            // transactions and is racy in principle, but the worker pool
+            // serializes per-scan via the per-worker `CHUNK_ACCUM`
+            // thread-local — only one writer for this key in practice.
             let new_records = newly_completed.len() as u32;
             let merged = match store
                 .scan_availability(&partial_entry.scan)
@@ -523,8 +515,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     &new_sweep_metas,
                 ),
             };
-            store.put_scan_entry(&merged).await.map_err(|e| {
-                wasm_bindgen::JsValue::from_str(&format!("Failed to write scan index: {}", e))
+            store.put_scan(&merged, &sweep_blobs).await.map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!("Failed to store scan: {}", e))
             })?;
         }
 

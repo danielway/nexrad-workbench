@@ -141,11 +141,24 @@ inputs would degrade to "read more entries than necessary," not
 Construct with `IndexedDbStore::new()` (cheap — no I/O). Call `open()`
 once before use; subsequent calls are no-ops. All methods are `async`.
 
+### Combined writes
+
+| Method                                                       | Purpose                                                                                |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `put_scan(&entry, &[(key, bytes)])`                          | Atomic write of a scan-index entry plus its sweep blobs in one cross-store transaction |
+
+`put_scan` is the canonical write path — the `sweeps` and `scan_index`
+stores hold tightly coupled state (an index entry's `total_size_bytes`
+and `sweeps` Vec describe what's in the blob store for that scan), so
+they're written together. A mid-write failure can't leave orphan
+blobs or a phantom entry. The browser-quota pre-check covers the blob
+batch; passing an empty `sweep_blobs` slice writes the entry alone
+(used by chunk-ingest flushes that don't produce new blobs).
+
 ### Sweep blobs
 
 | Method                                         | Purpose                                                        |
 | ---------------------------------------------- | -------------------------------------------------------------- |
-| `put_sweeps_batch(&[(key, bytes)])`            | Batched write inside one transaction; pre-checks browser quota |
 | `get_sweep(key) -> Option<ArrayBuffer>`        | Single-key read; returns the JS buffer directly (no Rust copy) |
 
 `get_sweep` deliberately does not deserialize. Sweeps are uploaded to
@@ -157,9 +170,13 @@ multi-MB copy on the render hot path.
 
 | Method                                                            | Purpose                                                  |
 | ----------------------------------------------------------------- | -------------------------------------------------------- |
-| `put_scan_entry(&entry)`                                          | Overwrite a full entry                                   |
 | `scan_availability(&ScanKey) -> Option<ScanIndexEntry>`           | Single-key read                                          |
 | `list_scans(site, start, end) -> Vec<ScanIndexEntry>`             | Site-prefix range, then time filter, sorted by start     |
+
+There is no entry-only writer: every index update goes through
+`put_scan` so the blobs and the metadata that describes them stay in
+lockstep. A `put_scan` call with an empty `sweep_blobs` slice covers
+the "metadata-only update" case.
 
 ### Cache management
 
@@ -180,8 +197,8 @@ hang while the worker holds its long-lived connection.
 | `IndexedDbStore::estimate_storage_quota() -> Option<…>`   | Wraps `navigator.storage.estimate()`; works in Window and Worker         |
 
 Returned as `StorageQuotaEstimate { quota, usage }` (bytes); call
-`.remaining()` for available space. `put_sweeps_batch` consults this
-before writing and returns `DataError::QuotaExceeded` when the batch
+`.remaining()` for available space. `put_scan` consults this before
+writing and returns `DataError::QuotaExceeded` when the blob batch
 plus 5 MB headroom would not fit, instead of letting IDB fail
 mid-transaction.
 
@@ -211,8 +228,7 @@ and falls back to `{:?}` otherwise. This gives readable strings like
   │ (main thread)      │  postMessage    │ decode + extract   │
   └────────────────────┘  (transferable) └─────────┬──────────┘
                                                    │
-                                       put_sweeps_batch
-                                       put_scan_entry
+                                       put_scan (atomic)
                                                    │
                                                    ▼
                                           ┌──────────────────┐
@@ -236,16 +252,19 @@ and falls back to `{:?}` otherwise. This gives readable strings like
 Two notable shapes:
 
 - **Per-chunk ingest** (`worker_ingest_chunk`) accumulates sweeps in a
-  thread-local until an elevation completes, then `scan_availability`
-  + `ScanIndexEntry::merge_chunk` + `put_scan_entry` updates the index
-  incrementally. Each chunk's writes happen in their own readwrite
-  transaction. The Start chunk reads any pre-existing entry for this
-  scan key and pre-populates `completed_elevations` so a resume doesn't
-  reprocess sweeps that are already cached.
+  thread-local until an elevation completes, then reads any existing
+  scan-index entry, runs `ScanIndexEntry::merge_chunk` in memory, and
+  hands the merged entry plus the new sweep blobs to `put_scan` for
+  one atomic write. The read-then-write spans two transactions and is
+  racy in principle, but the per-worker `CHUNK_ACCUM` thread-local
+  serializes per-scan so no concurrent writer exists in practice. The
+  Start chunk also reads any pre-existing entry for the scan key and
+  pre-populates `completed_elevations` so a resume doesn't reprocess
+  sweeps that are already cached.
 
 - **Archive ingest** (`worker_ingest`) decodes the entire volume, then
-  writes `put_sweeps_batch` + `put_scan_entry` in two transactions.
-  Archive and real-time entries for the same physical volume can
+  writes the scan-index entry + all sweep blobs in a single `put_scan`
+  call. Archive and real-time entries for the same physical volume can
   coexist in the cache when their `scan_start` keys differ; LRU
   eviction reclaims space over time.
 

@@ -285,45 +285,60 @@ impl IndexedDbStore {
     // Sweep operations
     // ========================================================================
 
-    /// Stores multiple pre-computed sweep blobs in a single IDB transaction.
+    /// Atomically writes a scan-index entry together with its sweep blobs.
     ///
-    /// Batches all writes into one readwrite transaction to avoid per-transaction
-    /// disk-flush overhead. The [`WriteTransaction`] closure guarantees no
+    /// Both stores are written in a single cross-store readwrite transaction,
+    /// so the cache cannot end up with orphan blobs (sweeps without an index
+    /// entry) or a phantom entry (index pointing at missing blobs) on a
+    /// mid-write failure. The [`WriteTransaction`] closure guarantees no
     /// `.await` between puts — IDB transactions auto-commit when the event
     /// loop yields in WASM.
     ///
     /// Checks browser storage quota before writing. If remaining quota is
-    /// insufficient for the batch, returns an error instead of silently failing.
-    pub async fn put_sweeps_batch(&self, items: &[(String, Vec<u8>)]) -> Result<(), DataError> {
-        if items.is_empty() {
-            return Ok(());
-        }
-
+    /// insufficient for the blob batch, returns an error instead of letting
+    /// IDB fail mid-transaction.
+    ///
+    /// `sweep_blobs` may be empty — in that case only the entry is written
+    /// (e.g. a chunk-ingest flush that updates merge state without producing
+    /// new sweep blobs).
+    pub async fn put_scan(
+        &self,
+        entry: &ScanIndexEntry,
+        sweep_blobs: &[(String, Vec<u8>)],
+    ) -> Result<(), DataError> {
         // Pre-write quota check: verify browser has enough storage remaining
-        let batch_size: u64 = items.iter().map(|(_, data)| data.len() as u64).sum();
-        if let Some(estimate) = estimate_browser_quota().await {
-            let remaining = estimate.remaining();
-            // Require the write size plus 5 MB headroom for IDB overhead/metadata
-            let required = batch_size + 5 * 1024 * 1024;
-            if remaining < required {
-                return Err(DataError::QuotaExceeded {
-                    available_mb: remaining as f64 / (1024.0 * 1024.0),
-                    required_mb: required as f64 / (1024.0 * 1024.0),
-                });
+        // for the blob batch. The scan-index entry itself is tiny (<1 KB).
+        let batch_size: u64 = sweep_blobs.iter().map(|(_, data)| data.len() as u64).sum();
+        if batch_size > 0 {
+            if let Some(estimate) = estimate_browser_quota().await {
+                let remaining = estimate.remaining();
+                // Require the write size plus 5 MB headroom for IDB overhead/metadata
+                let required = batch_size + 5 * 1024 * 1024;
+                if remaining < required {
+                    return Err(DataError::QuotaExceeded {
+                        available_mb: remaining as f64 / (1024.0 * 1024.0),
+                        required_mb: required as f64 / (1024.0 * 1024.0),
+                    });
+                }
             }
         }
 
         self.ensure_open().await?;
+        let entry_key = entry.storage_key();
+        let entry_value = to_js_value(entry)?;
 
-        self.write_tx(&[STORE_SWEEPS], |wtx| {
-            let store = wtx.object_store(STORE_SWEEPS)?;
-            for (key, data) in items {
+        self.write_tx(&[STORE_SWEEPS, STORE_SCAN_INDEX], |wtx| {
+            let sweeps = wtx.object_store(STORE_SWEEPS)?;
+            for (key, data) in sweep_blobs {
                 let array = Uint8Array::from(data.as_slice());
                 let buffer = array.buffer();
-                store
+                sweeps
                     .put_with_key(&buffer, &JsValue::from_str(key))
                     .map_err(|e| DataError::RequestFailed(js_err(e)))?;
             }
+            wtx.object_store(STORE_SCAN_INDEX)?
+                .put_with_key(&entry_value, &JsValue::from_str(&entry_key))
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
             Ok(())
         })
         .await
@@ -351,22 +366,6 @@ impl IndexedDbStore {
     // ========================================================================
     // Scan index operations
     // ========================================================================
-
-    /// Writes or updates a scan index entry.
-    pub async fn put_scan_entry(&self, entry: &ScanIndexEntry) -> Result<(), DataError> {
-        self.ensure_open().await?;
-        let storage_key = entry.storage_key();
-        let value = to_js_value(entry)?;
-
-        self.write_tx(&[STORE_SCAN_INDEX], |wtx| {
-            let store = wtx.object_store(STORE_SCAN_INDEX)?;
-            store
-                .put_with_key(&value, &JsValue::from_str(&storage_key))
-                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-            Ok(())
-        })
-        .await
-    }
 
     /// Gets scan availability information.
     pub async fn scan_availability(
