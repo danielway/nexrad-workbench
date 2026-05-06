@@ -116,13 +116,13 @@ pub(super) fn render_scan_track(
                 // neighboring blocks and time tick labels.
                 if width > 60.0 && scan.vcp > 0 {
                     let is_partial = matches!(
-                        (scan.present_records, scan.expected_records),
+                        (scan.cached_sweep_count, scan.planned_sweep_count),
                         (Some(p), Some(e)) if e > 0 && p < e
                     );
                     let label = if is_partial {
                         let (p, e) = (
-                            scan.present_records.unwrap(),
-                            scan.expected_records.unwrap(),
+                            scan.cached_sweep_count.unwrap(),
+                            scan.planned_sweep_count.unwrap(),
                         );
                         if width > 120.0 {
                             format!("VCP {} {}/{}", scan.vcp, p, e)

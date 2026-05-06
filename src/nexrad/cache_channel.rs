@@ -79,12 +79,12 @@ impl CacheLoadChannel {
                             key: entry.scan.clone(),
                             file_name: entry.file_name.clone().unwrap_or_default(),
                             file_size: entry.total_size_bytes,
-                            end_timestamp: entry.end_timestamp_secs,
+                            end_timestamp: entry.end_timestamp_secs(),
                             vcp: entry.vcp.clone(),
                             completeness: Some(entry.completeness()),
-                            present_records: Some(entry.present_records),
-                            expected_records: entry.expected_records,
-                            sweeps: entry.sweeps.clone(),
+                            cached_sweep_count: Some(entry.cached_sweep_count()),
+                            planned_sweep_count: entry.planned_sweep_count(),
+                            sweeps: Some(entry.cached_sweeps.clone()),
                         })
                         .collect();
 

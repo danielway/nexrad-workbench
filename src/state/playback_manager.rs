@@ -334,7 +334,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
         scan.sweeps
             .iter()
             .find(|s| s.elevation_number == elev_num)
-            .map(|s| s.available_products.clone())
+            .map(|s| s.cached_products.clone())
             .unwrap_or_default()
     };
 
@@ -353,7 +353,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
                         waveform: e.waveform.clone(),
                         is_sails: e.is_sails,
                         is_mrle: e.is_mrle,
-                        available_products: products_for(elevation_number),
+                        cached_products: products_for(elevation_number),
                     }
                 })
                 .collect();
@@ -374,7 +374,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
                     waveform: e.waveform.to_string(),
                     is_sails: false,
                     is_mrle: false,
-                    available_products: products_for(elevation_number),
+                    cached_products: products_for(elevation_number),
                 }
             })
             .collect();
@@ -389,13 +389,13 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
             waveform: String::new(),
             is_sails: false,
             is_mrle: false,
-            available_products: s.available_products.clone(),
+            cached_products: s.cached_products.clone(),
         })
         .collect()
 }
 
 /// Build an elevation list from a live VCP pattern (no completed scan
-/// yet). `available_products` is left empty; the right panel treats
+/// yet). `cached_products` is left empty; the right panel treats
 /// that as "unknown — allow" so all products are selectable until a
 /// completed sweep narrows it down.
 pub(crate) fn build_elevation_list_from_vcp(
@@ -410,7 +410,7 @@ pub(crate) fn build_elevation_list_from_vcp(
             waveform: e.waveform.clone(),
             is_sails: e.is_sails,
             is_mrle: e.is_mrle,
-            available_products: Vec::new(),
+            cached_products: Vec::new(),
         })
         .collect()
 }

@@ -96,7 +96,7 @@ pub(super) struct IngestResponse<'a> {
     pub extract_ms: f64,
     pub store_ms: f64,
     pub index_ms: f64,
-    pub sweeps: &'a [SweepMeta],
+    pub sweeps: &'a [CachedSweep],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vcp: Option<&'a ExtractedVcp>,
 }
@@ -137,7 +137,7 @@ pub(super) struct ChunkIngestResponse {
     pub scan_key: String,
     pub is_end: bool,
     pub total_ms: f64,
-    pub sweeps: Vec<SweepMeta>,
+    pub sweeps: Vec<CachedSweep>,
     pub elevations_completed: Vec<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vcp: Option<ExtractedVcp>,

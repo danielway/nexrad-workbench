@@ -169,7 +169,7 @@ pub struct LiveModeState {
     /// Actual sweep metadata (with real timestamps) for completed elevations
     /// in the current volume. Used for accurate sweep positioning on the timeline
     /// instead of even-distribution estimates.
-    pub completed_sweep_metas: Vec<crate::data::SweepMeta>,
+    pub completed_sweep_metas: Vec<crate::data::CachedSweep>,
 
     /// Per-elevation estimated sweep durations (seconds), computed from VCP
     /// azimuth rates using the weight = 1/rate method. Index corresponds to
@@ -550,7 +550,7 @@ impl LiveModeState {
     /// Update completed sweep metadata from the worker's ingest result.
     /// Replaces the full list each time since the worker returns all completed
     /// sweeps for the current volume.
-    pub fn update_sweep_metas(&mut self, metas: Vec<crate::data::SweepMeta>) {
+    pub fn update_sweep_metas(&mut self, metas: Vec<crate::data::CachedSweep>) {
         self.completed_sweep_metas = metas;
         self.fill_forecast_actuals();
     }

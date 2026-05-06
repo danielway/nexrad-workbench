@@ -61,7 +61,7 @@ pub struct Sweep {
     /// pre-computed sweep blob stored. Empty means "unknown" — typical for
     /// legacy index entries or placeholder sweeps — and callers should skip
     /// product-availability checks in that case.
-    pub available_products: Vec<String>,
+    pub cached_products: Vec<String>,
 }
 
 impl Sweep {
@@ -91,9 +91,9 @@ pub struct Scan {
     /// Completeness state for this scan (from cache metadata).
     pub completeness: Option<ScanCompleteness>,
     /// Number of records present (from cache metadata).
-    pub present_records: Option<u32>,
+    pub cached_sweep_count: Option<u32>,
     /// Expected number of records (from cache metadata).
-    pub expected_records: Option<u32>,
+    pub planned_sweep_count: Option<u32>,
 }
 
 impl Scan {
@@ -273,7 +273,7 @@ impl RadarTimeline {
                     elevation_number: (elev_idx + 1) as u8,
                     start_azimuth: radials.first().map(|r| r.azimuth).unwrap_or(0.0),
                     radials,
-                    available_products: Vec::new(),
+                    cached_products: Vec::new(),
                 });
 
                 sweep_time = sweep_end + 0.5; // Small gap between sweeps
@@ -288,8 +288,8 @@ impl RadarTimeline {
                 vcp_pattern: None,
                 sweeps,
                 completeness: Some(ScanCompleteness::Complete),
-                present_records: None,
-                expected_records: None,
+                cached_sweep_count: None,
+                planned_sweep_count: None,
             });
 
             // Next scan starts after the interval
@@ -462,7 +462,7 @@ impl RadarTimeline {
                         elevation_number: sm.elevation_number,
                         start_azimuth: sm.start_azimuth,
                         radials: Vec::new(),
-                        available_products: sm.available_products,
+                        cached_products: sm.cached_products,
                     })
                     .collect();
 
@@ -491,8 +491,8 @@ impl RadarTimeline {
                     vcp_pattern: meta.vcp,
                     sweeps,
                     completeness: meta.completeness,
-                    present_records: meta.present_records,
-                    expected_records: meta.expected_records,
+                    cached_sweep_count: meta.cached_sweep_count,
+                    planned_sweep_count: meta.planned_sweep_count,
                 }
             })
             .collect();
@@ -515,8 +515,8 @@ mod tests {
             vcp_pattern: None,
             sweeps: Vec::new(),
             completeness: None,
-            present_records: None,
-            expected_records: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
         }
     }
 
@@ -530,8 +530,8 @@ mod tests {
             vcp_pattern: None,
             sweeps,
             completeness: None,
-            present_records: None,
-            expected_records: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
         }
     }
 
@@ -543,7 +543,7 @@ mod tests {
             elevation_number: elev_num,
             start_azimuth: 0.0,
             radials: Vec::new(),
-            available_products: Vec::new(),
+            cached_products: Vec::new(),
         }
     }
 

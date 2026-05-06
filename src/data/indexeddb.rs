@@ -111,7 +111,7 @@ impl StorageQuotaEstimate {
 }
 
 /// Current database schema version.
-const DATABASE_VERSION: u32 = 4;
+const DATABASE_VERSION: u32 = 5;
 
 /// Database name.
 const DATABASE_NAME: &str = "nexrad-workbench";
@@ -299,43 +299,89 @@ impl IndexedDbStore {
     // Sweep operations
     // ========================================================================
 
-    /// Atomically writes a scan-index entry together with its sweep blobs.
+    /// Pre-write browser-quota check for a sweep-blob batch. Returns
+    /// `QuotaExceeded` when remaining quota is below `batch + 5 MB` headroom.
+    async fn check_quota(sweep_blobs: &[(String, Vec<u8>)]) -> Result<(), DataError> {
+        let batch_size: u64 = sweep_blobs.iter().map(|(_, data)| data.len() as u64).sum();
+        if batch_size == 0 {
+            return Ok(());
+        }
+        let Some(estimate) = estimate_browser_quota().await else {
+            return Ok(());
+        };
+        let remaining = estimate.remaining();
+        let required = batch_size + 5 * 1024 * 1024;
+        if remaining < required {
+            return Err(DataError::QuotaExceeded {
+                available_mb: remaining as f64 / (1024.0 * 1024.0),
+                required_mb: required as f64 / (1024.0 * 1024.0),
+            });
+        }
+        Ok(())
+    }
+
+    /// Atomically writes a *new* scan: blobs, scan-index entry, and an
+    /// initial `scan_touches` timestamp, all in one cross-store readwrite
+    /// transaction.
     ///
-    /// Both stores are written in a single cross-store readwrite transaction,
-    /// so the cache cannot end up with orphan blobs (sweeps without an index
-    /// entry) or a phantom entry (index pointing at missing blobs) on a
-    /// mid-write failure. The [`WriteTransaction`] closure guarantees no
-    /// `.await` between puts — IDB transactions auto-commit when the event
-    /// loop yields in WASM.
+    /// The initial touch is what gives a fresh scan its place in the LRU
+    /// order. If you call this for a scan key that already exists, the
+    /// existing `scan_touches` value is overwritten with `now` — fine when
+    /// the scan is genuinely being replaced (e.g. archive supersedes a prior
+    /// real-time entry under the same key), but the wrong choice for an
+    /// in-progress chunk-ingest merge: use [`put_scan`] for those.
+    pub async fn create_scan(
+        &self,
+        entry: &ScanIndexEntry,
+        sweep_blobs: &[(String, Vec<u8>)],
+    ) -> Result<(), DataError> {
+        Self::check_quota(sweep_blobs).await?;
+
+        self.ensure_open().await?;
+        let entry_key = entry.storage_key();
+        let entry_value = to_js_value(entry)?;
+        let touch_value = JsValue::from_f64(UnixMillis::now().0 as f64);
+
+        self.write_tx(
+            &[STORE_SWEEPS, STORE_SCAN_INDEX, STORE_SCAN_TOUCHES],
+            |wtx| {
+                let sweeps = wtx.object_store(STORE_SWEEPS)?;
+                for (key, data) in sweep_blobs {
+                    let array = Uint8Array::from(data.as_slice());
+                    let buffer = array.buffer();
+                    sweeps
+                        .put_with_key(&buffer, &JsValue::from_str(key))
+                        .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+                }
+                wtx.object_store(STORE_SCAN_INDEX)?
+                    .put_with_key(&entry_value, &JsValue::from_str(&entry_key))
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+                wtx.object_store(STORE_SCAN_TOUCHES)?
+                    .put_with_key(&touch_value, &JsValue::from_str(&entry_key))
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    /// Atomically updates an existing scan: blobs + scan-index entry, in one
+    /// cross-store readwrite transaction. Leaves `scan_touches` alone so a
+    /// chunk-ingest flush doesn't refresh the access timestamp on every
+    /// partial write.
     ///
-    /// Checks browser storage quota before writing. If remaining quota is
-    /// insufficient for the blob batch, returns an error instead of letting
-    /// IDB fail mid-transaction.
+    /// Empty `sweep_blobs` writes the entry alone (e.g. a chunk-ingest flush
+    /// that updates merge state without producing new blobs).
     ///
-    /// `sweep_blobs` may be empty — in that case only the entry is written
-    /// (e.g. a chunk-ingest flush that updates merge state without producing
-    /// new sweep blobs).
+    /// Use [`create_scan`] for first-time writes — calling `put_scan` for a
+    /// key that has no `scan_touches` entry leaves the scan with no LRU
+    /// placement and it'll be evicted on the next pass.
     pub async fn put_scan(
         &self,
         entry: &ScanIndexEntry,
         sweep_blobs: &[(String, Vec<u8>)],
     ) -> Result<(), DataError> {
-        // Pre-write quota check: verify browser has enough storage remaining
-        // for the blob batch. The scan-index entry itself is tiny (<1 KB).
-        let batch_size: u64 = sweep_blobs.iter().map(|(_, data)| data.len() as u64).sum();
-        if batch_size > 0 {
-            if let Some(estimate) = estimate_browser_quota().await {
-                let remaining = estimate.remaining();
-                // Require the write size plus 5 MB headroom for IDB overhead/metadata
-                let required = batch_size + 5 * 1024 * 1024;
-                if remaining < required {
-                    return Err(DataError::QuotaExceeded {
-                        available_mb: remaining as f64 / (1024.0 * 1024.0),
-                        required_mb: required as f64 / (1024.0 * 1024.0),
-                    });
-                }
-            }
-        }
+        Self::check_quota(sweep_blobs).await?;
 
         self.ensure_open().await?;
         let entry_key = entry.storage_key();
@@ -583,9 +629,12 @@ impl IndexedDbStore {
     /// Evicts scans (oldest access first) until total cache size is at or
     /// below `target_bytes`. Returns the number of scans evicted.
     ///
-    /// Sort key is the `scan_touches` timestamp when present (set by reads
-    /// via `touch_scan`), falling back to `entry.last_accessed_at` (set on
-    /// creation, never bumped) for scans never rendered.
+    /// Sort key is the `scan_touches` timestamp. `create_scan` writes an
+    /// initial touch at ingest time, and `touch_scan` (fired by `get_sweep`)
+    /// refreshes it on render. Entries with no touch — anomalous, but
+    /// possible if a scan was written via `put_scan` without a prior
+    /// `create_scan` — sort to position 0 and are evicted first, which
+    /// reclaims any stranded data.
     ///
     /// Reads all entries + touches once, sorts, and deletes one scan at a
     /// time until the running size estimate drops under target. Each delete
@@ -601,13 +650,7 @@ impl IndexedDbStore {
         }
 
         let touches = self.read_all_touches().await?;
-        entries.sort_by_key(|e| {
-            touches
-                .get(&e.scan)
-                .copied()
-                .unwrap_or(e.last_accessed_at)
-                .0
-        });
+        entries.sort_by_key(|e| touches.get(&e.scan).copied().unwrap_or(UnixMillis(0)).0);
 
         let mut evicted_count = 0u32;
         for entry in &entries {

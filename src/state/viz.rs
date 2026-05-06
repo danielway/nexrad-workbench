@@ -165,7 +165,7 @@ pub struct ElevationListEntry {
     pub is_mrle: bool,
     /// Product names (matching `SweepDataKey` / worker strings) available at
     /// this elevation. Empty means "unknown" — skip product-availability checks.
-    pub available_products: Vec<String>,
+    pub cached_products: Vec<String>,
 }
 
 /// Interpolation mode for radar rendering.

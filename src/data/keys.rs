@@ -393,14 +393,14 @@ pub enum ScanCompleteness {
 }
 
 impl ScanCompleteness {
-    /// Compute completeness from scan index entry.
-    pub fn from_counts(has_vcp: bool, present: u32, expected: Option<u32>) -> Self {
-        if present == 0 {
+    /// Compute completeness from cached vs planned sweep counts.
+    pub fn from_counts(has_vcp: bool, cached: u32, planned: Option<u32>) -> Self {
+        if cached == 0 {
             return Self::Missing;
         }
 
-        match expected {
-            Some(exp) if present >= exp => Self::Complete,
+        match planned {
+            Some(exp) if cached >= exp => Self::Complete,
             Some(_) if has_vcp => Self::PartialWithVcp,
             Some(_) => Self::PartialNoVcp,
             None if has_vcp => Self::PartialWithVcp,
@@ -409,9 +409,14 @@ impl ScanCompleteness {
     }
 }
 
-/// Lightweight sweep metadata persisted in the scan index.
+/// Per-sweep metadata for one cached sweep (the realized state of a single
+/// VCP cut). Stored in `ScanIndexEntry::cached_sweeps`.
+///
+/// The VCP describes the *plan* (angle, waveform, PRF rates); a `CachedSweep`
+/// describes what actually got ingested and stored — measured-from-radial
+/// timing plus the list of products whose blobs we successfully wrote.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SweepMeta {
+pub struct CachedSweep {
     /// ACTUAL category: sweep start time (Unix seconds, sub-second
     /// precision), derived from the earliest radial's collection
     /// timestamp. Authoritative — the canvas and timeline use this
@@ -428,11 +433,12 @@ pub struct SweepMeta {
     #[serde(default)]
     pub start_azimuth: f32,
     /// Product names (matching `SweepDataKey` product strings) for which a
-    /// sweep blob was successfully extracted and stored. Empty when loaded
-    /// from legacy index entries that predate product tracking — callers
-    /// should treat empty as "unknown" and skip product-availability checks.
+    /// sweep blob was successfully extracted and stored under this scan key.
+    /// Empty when loaded from legacy index entries that predate product
+    /// tracking — callers should treat empty as "unknown" and skip
+    /// product-availability checks.
     #[serde(default)]
-    pub available_products: Vec<String>,
+    pub cached_products: Vec<String>,
 }
 
 /// A single elevation cut extracted from a VCP message (Message Type 5).
@@ -563,128 +569,73 @@ impl ExtractedVcp {
 }
 
 /// Metadata for a scan stored in the scan index.
+///
+/// Two roles in this struct:
+///
+/// - **Plan**: `vcp` describes what the radar *intends* to scan (ordered
+///   elevation cuts with waveform/PRF/azimuth-rate metadata). Static, comes
+///   from the Message Type 5 record.
+/// - **Cached state**: `cached_sweeps` lists the sweeps we've actually
+///   ingested and stored — the realized subset of the VCP plan, with
+///   measured timing and the products whose blobs we successfully wrote.
+///
+/// These are correlated but neither derives from the other; the join key is
+/// `elevation_number`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanIndexEntry {
+    /// Storage key, kept in the value for self-description after `get_all`.
     pub scan: ScanKey,
-    /// Whether VCP metadata record (record 0) is present.
-    pub has_vcp: bool,
-    /// Full Volume Coverage Pattern extracted from the scan data.
+    /// Volume Coverage Pattern: the full ordered plan for the scan. `None`
+    /// until the Message Type 5 (volume header) record is decoded.
     #[serde(default)]
     pub vcp: Option<ExtractedVcp>,
-    /// Expected number of records if known from VCP.
-    pub expected_records: Option<u32>,
-    /// Number of records currently stored.
-    pub present_records: u32,
-    /// File name from archive (if downloaded from archive).
+    /// Source file name from archive ingest, or a synthetic
+    /// `live_<site>_<ts>.nexrad` for real-time. Used in user-facing labels.
     pub file_name: Option<String>,
-    /// Total size of all stored records in bytes.
+    /// Sweeps that have been ingested and stored under this scan key. Each
+    /// entry corresponds to one VCP cut whose data was successfully decoded
+    /// into a sweep blob.
+    #[serde(default)]
+    pub cached_sweeps: Vec<CachedSweep>,
+    /// Total size of all stored sweep blobs for this scan (bytes). Drives
+    /// `total_cache_size` and LRU eviction sizing.
     pub total_size_bytes: u64,
-    /// When this entry was last updated.
-    pub updated_at: UnixMillis,
-    /// When this entry was last accessed (for LRU eviction).
-    #[serde(default = "UnixMillis::now")]
-    pub last_accessed_at: UnixMillis,
-    /// Actual scan end timestamp (Unix seconds), populated after decode.
-    #[serde(default)]
-    pub end_timestamp_secs: Option<i64>,
-    /// Sweep metadata, populated after decode.
-    #[serde(default)]
-    pub sweeps: Option<Vec<SweepMeta>>,
-    /// Whether pre-computed sweep blobs are stored for this scan.
-    #[serde(default)]
-    pub has_precomputed_sweeps: bool,
 }
 
 impl ScanIndexEntry {
-    pub fn new(scan: ScanKey) -> Self {
-        let now = UnixMillis::now();
-        Self {
-            scan,
-            has_vcp: false,
-            vcp: None,
-            expected_records: None,
-            present_records: 0,
-            file_name: None,
-            total_size_bytes: 0,
-            updated_at: now,
-            last_accessed_at: now,
-            end_timestamp_secs: None,
-            sweeps: None,
-            has_precomputed_sweeps: false,
-        }
-    }
-
-    pub fn completeness(&self) -> ScanCompleteness {
-        ScanCompleteness::from_counts(self.has_vcp, self.present_records, self.expected_records)
-    }
-
     /// Convert to storage key string.
     pub fn storage_key(&self) -> String {
         self.scan.to_storage_key()
     }
 
-    /// Merge an incremental ingest chunk into this entry.
-    ///
-    /// Increments record counts, accumulates size, appends new sweep metadata,
-    /// promotes VCP/file_name from `partial` if not already set, and grows
-    /// `end_timestamp_secs` to the max of old and new.
-    pub fn merge_chunk(
-        &mut self,
-        partial: &ScanIndexEntry,
-        new_records: u32,
-        new_size_bytes: u64,
-        new_sweeps: &[SweepMeta],
-    ) {
-        self.present_records += new_records;
-        self.total_size_bytes += new_size_bytes;
-        self.updated_at = UnixMillis::now();
-        self.has_precomputed_sweeps = true;
-
-        if !self.has_vcp && partial.has_vcp {
-            self.has_vcp = true;
-            self.vcp = partial.vcp.clone();
-            if let Some(ref vcp) = self.vcp {
-                self.expected_records = Some(vcp.elevations.len() as u32);
-            }
-        }
-
-        if self.file_name.is_none() {
-            self.file_name = partial.file_name.clone();
-        }
-
-        if !new_sweeps.is_empty() {
-            self.sweeps
-                .get_or_insert_with(Vec::new)
-                .extend_from_slice(new_sweeps);
-        }
-
-        if let Some(new_end) = partial.end_timestamp_secs {
-            self.end_timestamp_secs = Some(
-                self.end_timestamp_secs
-                    .map(|old| old.max(new_end))
-                    .unwrap_or(new_end),
-            );
-        }
+    /// Whether the VCP metadata record has been ingested.
+    pub fn has_vcp(&self) -> bool {
+        self.vcp.is_some()
     }
 
-    /// Initialize this entry from a freshly-built `partial` (no existing state).
-    ///
-    /// Used by `merge_chunk`'s "no existing entry" path: the partial already
-    /// carries everything we know, we just need to seed counters and sweeps.
-    pub fn seed_from_partial(
-        partial: &ScanIndexEntry,
-        new_records: u32,
-        new_size_bytes: u64,
-        new_sweeps: &[SweepMeta],
-    ) -> Self {
-        let mut entry = partial.clone();
-        entry.present_records = new_records;
-        entry.total_size_bytes = new_size_bytes;
-        entry.has_precomputed_sweeps = true;
-        if !new_sweeps.is_empty() {
-            entry.sweeps = Some(new_sweeps.to_vec());
-        }
-        entry
+    /// Number of sweeps the VCP plans for this volume, or `None` if the VCP
+    /// hasn't been ingested yet.
+    pub fn planned_sweep_count(&self) -> Option<u32> {
+        self.vcp.as_ref().map(|v| v.elevations.len() as u32)
+    }
+
+    /// Number of sweeps actually stored.
+    pub fn cached_sweep_count(&self) -> u32 {
+        self.cached_sweeps.len() as u32
+    }
+
+    /// Latest radial collection timestamp (Unix seconds) across all cached
+    /// sweeps, or `None` if no sweeps have been ingested yet.
+    pub fn end_timestamp_secs(&self) -> Option<i64> {
+        self.cached_sweeps.iter().map(|s| s.end as i64).max()
+    }
+
+    pub fn completeness(&self) -> ScanCompleteness {
+        ScanCompleteness::from_counts(
+            self.has_vcp(),
+            self.cached_sweep_count(),
+            self.planned_sweep_count(),
+        )
     }
 }
 

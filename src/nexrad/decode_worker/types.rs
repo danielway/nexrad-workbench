@@ -35,7 +35,7 @@ pub(super) struct IngestResultMsg {
     #[serde(default)]
     pub index_ms: f64,
     #[serde(default)]
-    pub sweeps: Vec<crate::data::SweepMeta>,
+    pub sweeps: Vec<crate::data::CachedSweep>,
     #[serde(default)]
     pub vcp: Option<crate::data::keys::ExtractedVcp>,
 }
@@ -54,7 +54,7 @@ pub(super) struct ChunkIngestResultMsg {
     #[serde(default)]
     pub elevations_completed: Vec<u8>,
     #[serde(default)]
-    pub sweeps: Vec<crate::data::SweepMeta>,
+    pub sweeps: Vec<crate::data::CachedSweep>,
     #[serde(default)]
     pub vcp: Option<crate::data::keys::ExtractedVcp>,
     #[serde(default)]
@@ -279,7 +279,7 @@ pub struct IngestResult {
     /// Unique elevation numbers found across all records.
     pub elevation_numbers: Vec<u8>,
     /// Per-sweep metadata extracted from radials during ingest.
-    pub sweeps: Vec<crate::data::SweepMeta>,
+    pub sweeps: Vec<crate::data::CachedSweep>,
     /// Full extracted VCP pattern (from Message Type 5).
     /// Available for direct VCP inspection; primary propagation is via IDB metadata.
     #[allow(dead_code)]
@@ -321,7 +321,7 @@ pub struct ChunkIngestResult {
     /// Whether this was the final chunk in the volume.
     pub is_end: bool,
     /// Per-sweep metadata for all completed elevations so far.
-    pub sweeps: Vec<crate::data::SweepMeta>,
+    pub sweeps: Vec<crate::data::CachedSweep>,
     /// VCP pattern if extracted.
     pub vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Total processing time in worker (ms).

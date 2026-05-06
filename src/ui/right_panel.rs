@@ -139,12 +139,9 @@ pub(super) fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                                         if *elevation_number == entry.elevation_number
                                 );
 
-                                // Empty available_products means "unknown" — allow.
-                                let product_available = entry.available_products.is_empty()
-                                    || entry
-                                        .available_products
-                                        .iter()
-                                        .any(|p| p == selected_product);
+                                // Empty cached_products means "unknown" — allow.
+                                let product_available = entry.cached_products.is_empty()
+                                    || entry.cached_products.iter().any(|p| p == selected_product);
 
                                 ui.horizontal(|ui| {
                                     // Build the label text

@@ -514,7 +514,7 @@ fn draw_sweep_donut(
             format!("Elev {} {}", s.elevation_number, angle)
         });
 
-        // Previous sweep: last completed elevation, with timing from SweepMeta
+        // Previous sweep: last completed elevation, with timing from CachedSweep
         let prev_elev = model
             .volume
             .as_ref()

@@ -1019,12 +1019,12 @@ impl WorkbenchApp {
                             .find(|s| s.elevation_number == elevation_number);
                         let missing = match matching {
                             None => true,
-                            // Empty available_products means "unknown" (legacy
+                            // Empty cached_products means "unknown" (legacy
                             // index entries predating product tracking) — fall
                             // through to the worker rather than blanking.
                             Some(s) => {
-                                !s.available_products.is_empty()
-                                    && !s.available_products.iter().any(|p| p == &product)
+                                !s.cached_products.is_empty()
+                                    && !s.cached_products.iter().any(|p| p == &product)
                             }
                         };
                         if missing {
@@ -1839,7 +1839,7 @@ impl WorkbenchApp {
                         );
                     } else {
                         log::debug!(
-                            "{}: sweep stored elev={} (no SweepMeta) products={} vol_chunk={}",
+                            "{}: sweep stored elev={} (no CachedSweep) products={} vol_chunk={}",
                             source,
                             completed_elev,
                             result.sweeps_stored,

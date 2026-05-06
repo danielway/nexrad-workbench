@@ -114,7 +114,7 @@ impl VcpPositionModel {
     /// Build a position model from live streaming state.
     ///
     /// Centralizes the sweep-positioning cascade. Uses the priority:
-    /// 1. Complete + SweepMeta → Observed timing
+    /// 1. Complete + CachedSweep → Observed timing
     /// 2. InProgress + chunk data → Anchored timing
     /// 3. Library projection (ChunkProjectionInfo) → Projected timing
     /// 4. Fallback: VCP-weighted proportional distribution → Estimated timing
@@ -217,7 +217,7 @@ impl VcpPositionModel {
             // ── Determine sweep time bounds ────────────────────────────
 
             let (sw_start, sw_end, timing) = if is_complete {
-                // Priority 1: Completed sweep with actual SweepMeta timestamps.
+                // Priority 1: Completed sweep with actual CachedSweep timestamps.
                 if let Some(meta) = live
                     .completed_sweep_metas
                     .iter()

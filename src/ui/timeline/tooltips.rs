@@ -506,7 +506,7 @@ fn render_scan_tooltip_content(
         Some(ScanCompleteness::Missing) => "Missing",
         None => "Unknown",
     };
-    if let (Some(present), Some(expected)) = (scan.present_records, scan.expected_records) {
+    if let (Some(present), Some(expected)) = (scan.cached_sweep_count, scan.planned_sweep_count) {
         ui.label(format!(
             "Records: {}/{} ({})",
             present, expected, completeness_str

@@ -68,12 +68,12 @@ pub struct ScanMetadata {
     pub vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Completeness state for this scan.
     pub completeness: Option<crate::data::ScanCompleteness>,
-    /// Number of records currently present.
-    pub present_records: Option<u32>,
-    /// Expected number of records (from VCP).
-    pub expected_records: Option<u32>,
-    /// Sweep metadata from a previous decode, if available.
-    pub sweeps: Option<Vec<crate::data::SweepMeta>>,
+    /// Number of sweeps actually cached for this scan.
+    pub cached_sweep_count: Option<u32>,
+    /// Number of sweeps the VCP plans (`vcp.elevations.len()`).
+    pub planned_sweep_count: Option<u32>,
+    /// Cached sweep metadata, if any.
+    pub sweeps: Option<Vec<crate::data::CachedSweep>>,
 }
 
 /// Result of a download operation.

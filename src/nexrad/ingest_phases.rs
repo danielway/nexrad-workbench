@@ -116,7 +116,6 @@ pub(crate) struct DecodeResult {
     pub decode_ms: f64,
     pub compressed_count: u32,
     pub extracted_vcp: Option<ExtractedVcp>,
-    pub has_vcp: bool,
 }
 
 pub(crate) fn decompress_and_decode_records(
@@ -128,7 +127,6 @@ pub(crate) fn decompress_and_decode_records(
     let mut decode_only_ms = 0.0f64;
     let mut all_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
     let mut radial_metas: Vec<(i64, u8, f32, f32)> = Vec::new();
-    let mut has_vcp = false;
     let mut extracted_vcp: Option<ExtractedVcp> = None;
     let mut compressed_count = 0u32;
 
@@ -169,10 +167,6 @@ pub(crate) fn decompress_and_decode_records(
             r
         };
 
-        if record_id == 0 {
-            has_vcp = true;
-        }
-
         if !radials.is_empty() {
             for r in &radials {
                 radial_metas.push((
@@ -193,7 +187,6 @@ pub(crate) fn decompress_and_decode_records(
         decode_ms: decode_only_ms,
         compressed_count,
         extracted_vcp,
-        has_vcp,
     })
 }
 
@@ -448,22 +441,22 @@ pub(crate) fn build_flush_sweep_blobs(
     radial_metas: &[(i64, u8, f32, f32)],
     newly_completed: &[u8],
     scan_key: &ScanKey,
-) -> (Vec<(String, Vec<u8>)>, Vec<SweepMeta>) {
+) -> (Vec<(String, Vec<u8>)>, Vec<CachedSweep>) {
     use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
 
     let by_elevation = group_radials_by_elevation(all_radials);
 
     let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut metas: Vec<SweepMeta> = Vec::new();
+    let mut metas: Vec<CachedSweep> = Vec::new();
 
     for &elev_num in newly_completed {
         if let Some(sorted_radials) = by_elevation.get(&elev_num) {
-            let mut available_products: Vec<String> = Vec::new();
+            let mut cached_products: Vec<String> = Vec::new();
             for (product, product_name) in PRODUCTS {
                 if let Some(sweep) = extract_sweep_data_from_sorted(sorted_radials, *product) {
                     let key = SweepDataKey::new(scan_key.clone(), elev_num, *product_name);
                     blobs.push((key.to_storage_key(), sweep.to_bytes()));
-                    available_products.push((*product_name).to_string());
+                    cached_products.push((*product_name).to_string());
                 }
             }
 
@@ -481,13 +474,13 @@ pub(crate) fn build_flush_sweep_blobs(
                     .min_by_key(|(t, _, _, _)| *t)
                     .map(|(_, _, _, az)| *az)
                     .unwrap_or(0.0);
-                metas.push(SweepMeta {
+                metas.push(CachedSweep {
                     start: min_ts as f64 / 1000.0,
                     end: max_ts as f64 / 1000.0,
                     elevation: (angle_sum / count as f64) as f32,
                     elevation_number: elev_num,
                     start_azimuth: first_az,
-                    available_products,
+                    cached_products,
                 });
             }
         }
@@ -496,7 +489,7 @@ pub(crate) fn build_flush_sweep_blobs(
     (blobs, metas)
 }
 
-pub(crate) fn build_sweep_meta(radial_metas: &[(i64, u8, f32, f32)]) -> Vec<SweepMeta> {
+pub(crate) fn build_sweep_meta(radial_metas: &[(i64, u8, f32, f32)]) -> Vec<CachedSweep> {
     use std::collections::BTreeMap;
 
     struct Accum {
@@ -528,7 +521,7 @@ pub(crate) fn build_sweep_meta(radial_metas: &[(i64, u8, f32, f32)]) -> Vec<Swee
 
     groups
         .into_iter()
-        .map(|(elev_num, acc)| SweepMeta {
+        .map(|(elev_num, acc)| CachedSweep {
             start: acc.min_ts_ms as f64 / 1000.0,
             end: acc.max_ts_ms as f64 / 1000.0,
             elevation: (acc.angle_sum / acc.count as f64) as f32,
@@ -536,7 +529,7 @@ pub(crate) fn build_sweep_meta(radial_metas: &[(i64, u8, f32, f32)]) -> Vec<Swee
             start_azimuth: acc.first_azimuth,
             // Populated by the archive ingest caller after `extract_sweep_blobs`
             // reports which products were successfully extracted per elevation.
-            available_products: Vec::new(),
+            cached_products: Vec::new(),
         })
         .collect()
 }

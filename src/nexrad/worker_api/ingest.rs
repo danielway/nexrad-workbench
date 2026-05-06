@@ -59,16 +59,10 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let decode_only_ms = decoded.decode_ms;
         let compressed_count = decoded.compressed_count;
         let extracted_vcp = decoded.extracted_vcp;
-        let has_vcp = decoded.has_vcp;
         let phase1_ms = t_decode.elapsed().as_secs_f64() * 1000.0;
 
         let mut sweeps = crate::nexrad::ingest_phases::build_sweep_meta(&radial_metas);
         let elevation_numbers: Vec<u8> = sweeps.iter().map(|s| s.elevation_number).collect();
-        let end_timestamp_secs = sweeps
-            .iter()
-            .map(|s| s.end as i64)
-            .max()
-            .unwrap_or(timestamp_secs);
 
         log::debug!(
             "ingest: decompressed {} records, decoded {} radials across {} elevations in {:.1}ms (decompress: {:.1}ms, decode: {:.1}ms)",
@@ -91,7 +85,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let sweep_blobs = extracted.blobs;
         for meta in sweeps.iter_mut() {
             if let Some(prods) = extracted.products_by_elev.get(&meta.elevation_number) {
-                meta.available_products = prods.clone();
+                meta.cached_products = prods.clone();
             }
         }
         let extract_ms = t_extract.elapsed().as_secs_f64() * 1000.0;
@@ -111,18 +105,16 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // --- Phase 3: Atomically store sweep blobs + scan-index entry ---
         let t_store = web_time::Instant::now();
-        let mut scan_entry = ScanIndexEntry::new(scan_key.clone());
-        scan_entry.has_vcp = has_vcp;
-        scan_entry.vcp = extracted_vcp.clone();
-        scan_entry.present_records = records.len() as u32;
-        scan_entry.file_name = Some(file_name.clone());
-        scan_entry.total_size_bytes = total_sweep_bytes;
-        scan_entry.end_timestamp_secs = Some(end_timestamp_secs);
-        scan_entry.sweeps = Some(sweeps.clone());
-        scan_entry.has_precomputed_sweeps = true;
+        let scan_entry = ScanIndexEntry {
+            scan: scan_key.clone(),
+            vcp: extracted_vcp.clone(),
+            file_name: Some(file_name.clone()),
+            cached_sweeps: sweeps.clone(),
+            total_size_bytes: total_sweep_bytes,
+        };
 
         store
-            .put_scan(&scan_entry, &sweep_blobs)
+            .create_scan(&scan_entry, &sweep_blobs)
             .await
             .map_err(|e| {
                 wasm_bindgen::JsValue::from_str(&format!("Failed to store scan: {}", e))
@@ -180,7 +172,7 @@ pub(super) struct ChunkAccumulator {
     /// Elevation numbers that have been flushed to IDB.
     pub completed_elevations: std::collections::HashSet<u8>,
     /// Sweep metadata accumulated from flushed elevations (for response).
-    pub completed_sweep_metas: Vec<SweepMeta>,
+    pub completed_sweep_metas: Vec<CachedSweep>,
     pub vcp: Option<ExtractedVcp>,
     pub has_vcp: bool,
     pub total_chunks: u32,
@@ -240,10 +232,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             let mut pre_completed = std::collections::HashSet::new();
             let store = idb_store().await?;
             if let Ok(Some(entry)) = store.scan_availability(&scan_key).await {
-                if let Some(ref sweeps) = entry.sweeps {
-                    for s in sweeps {
-                        pre_completed.insert(s.elevation_number);
-                    }
+                for s in &entry.cached_sweeps {
+                    pre_completed.insert(s.elevation_number);
                 }
             }
             if !pre_completed.is_empty() {
@@ -420,7 +410,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // --- Flush completed elevations to IDB ---
         let mut sweeps_stored: u32 = 0;
-        let new_sweep_metas: Vec<SweepMeta>;
+        let new_sweep_metas: Vec<CachedSweep>;
         let new_size_bytes: u64;
 
         if !newly_completed.is_empty() {
@@ -464,60 +454,53 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             sweeps_stored = sweep_blobs.len() as u32;
             new_sweep_metas = sweep_metas;
 
-            // Build the partial entry describing this flush.
-            let partial_entry = CHUNK_ACCUM.with(|cell| {
+            // Snapshot the accumulator state we'll need to seed/merge with.
+            let (scan_key, accum_vcp, accum_file_name) = CHUNK_ACCUM.with(|cell| {
                 let borrow = cell.borrow();
                 let accum = borrow.as_ref().unwrap();
-
-                let end_ts = new_sweep_metas
-                    .iter()
-                    .map(|s| s.end as i64)
-                    .max()
-                    .unwrap_or(accum.timestamp_secs);
-
-                let mut entry = ScanIndexEntry::new(accum.scan_key.clone());
-                entry.has_vcp = accum.has_vcp;
-                entry.vcp = accum.vcp.clone();
-                entry.file_name = Some(accum.file_name.clone());
-                entry.end_timestamp_secs = Some(end_ts);
-                if let Some(ref vcp) = accum.vcp {
-                    entry.expected_records = Some(vcp.elevations.len() as u32);
-                }
-                entry
+                (
+                    accum.scan_key.clone(),
+                    accum.vcp.clone(),
+                    accum.file_name.clone(),
+                )
             });
 
-            // Read-modify-write the scan-index entry, then atomically write
-            // the merged entry alongside this flush's sweep blobs in a single
-            // cross-store transaction. The read-then-write spans two
-            // transactions and is racy in principle, but the worker pool
-            // serializes per-scan via the per-worker `CHUNK_ACCUM`
-            // thread-local — only one writer for this key in practice.
-            let new_records = newly_completed.len() as u32;
-            let merged = match store
-                .scan_availability(&partial_entry.scan)
-                .await
-                .map_err(|e| {
-                    wasm_bindgen::JsValue::from_str(&format!("Failed to read scan index: {}", e))
-                })? {
+            // Read-modify-write the scan-index entry. The read-then-write
+            // spans two transactions and is racy in principle, but the worker
+            // pool serializes per-scan via the per-worker `CHUNK_ACCUM`
+            // thread-local — only one writer for this key in practice. The
+            // matched branch chooses `put_scan` (preserves the existing
+            // `scan_touches` so chunk flushes don't refresh access time)
+            // versus `create_scan` (writes the initial touch).
+            match store.scan_availability(&scan_key).await.map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!("Failed to read scan index: {}", e))
+            })? {
                 Some(mut existing) => {
-                    existing.merge_chunk(
-                        &partial_entry,
-                        new_records,
-                        new_size_bytes,
-                        &new_sweep_metas,
-                    );
-                    existing
+                    if existing.vcp.is_none() {
+                        existing.vcp = accum_vcp;
+                    }
+                    if existing.file_name.is_none() {
+                        existing.file_name = Some(accum_file_name);
+                    }
+                    existing.cached_sweeps.extend_from_slice(&new_sweep_metas);
+                    existing.total_size_bytes += new_size_bytes;
+                    store.put_scan(&existing, &sweep_blobs).await.map_err(|e| {
+                        wasm_bindgen::JsValue::from_str(&format!("Failed to store scan: {}", e))
+                    })?;
                 }
-                None => ScanIndexEntry::seed_from_partial(
-                    &partial_entry,
-                    new_records,
-                    new_size_bytes,
-                    &new_sweep_metas,
-                ),
+                None => {
+                    let entry = ScanIndexEntry {
+                        scan: scan_key,
+                        vcp: accum_vcp,
+                        file_name: Some(accum_file_name),
+                        cached_sweeps: new_sweep_metas.clone(),
+                        total_size_bytes: new_size_bytes,
+                    };
+                    store.create_scan(&entry, &sweep_blobs).await.map_err(|e| {
+                        wasm_bindgen::JsValue::from_str(&format!("Failed to store scan: {}", e))
+                    })?;
+                }
             };
-            store.put_scan(&merged, &sweep_blobs).await.map_err(|e| {
-                wasm_bindgen::JsValue::from_str(&format!("Failed to store scan: {}", e))
-            })?;
         }
 
         // --- Build the scan key for response ---

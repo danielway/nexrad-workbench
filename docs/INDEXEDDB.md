@@ -13,14 +13,14 @@ so the same code compiles and runs in both contexts.
 
 ## 1. Schema
 
-Database `nexrad-workbench`, version `4`. Three object stores; all keyed
+Database `nexrad-workbench`, version `5`. Three object stores; all keyed
 by string.
 
 | Store          | Key format                          | Value                                                            |
 | -------------- | ----------------------------------- | ---------------------------------------------------------------- |
 | `sweeps`       | `SITE\|SCAN_MS\|ELEV_NUM\|PRODUCT`  | `ArrayBuffer` (raw gate values + 72-byte header — see §2a)       |
 | `scan_index`   | `SITE\|SCAN_MS`                     | `ScanIndexEntry` (structured-cloned via `serde-wasm-bindgen`)    |
-| `scan_touches` | `SITE\|SCAN_MS`                     | `i64` Unix-millisecond timestamp of the last render of any sweep in this scan |
+| `scan_touches` | `SITE\|SCAN_MS`                     | `i64` Unix-millisecond timestamp; seeded by `create_scan` and bumped on each render |
 
 Schema upgrades are **destructive**: `onupgradeneeded` deletes every
 existing object store and recreates them. The cache is treated as
@@ -82,32 +82,46 @@ filters on the GPU operate on raw values.
 
 A `Serialize`/`Deserialize` Rust struct. Round-trips through
 `serde-wasm-bindgen` (no JSON detour) and IDB stores the result via
-the structured-clone algorithm.
+the structured-clone algorithm. Six fields, two roles:
 
-| Field                     | Type                  | Meaning                                                                                       |
-| ------------------------- | --------------------- | --------------------------------------------------------------------------------------------- |
-| `scan`                    | `ScanKey`             | `{ site, scan_start: UnixMillis }` — the storage key, kept in the value for self-description  |
-| `has_vcp`                 | `bool`                | True once the volume header (record 0) has been ingested                                      |
-| `vcp`                     | `Option<ExtractedVcp>`| Full Volume Coverage Pattern: number + ordered elevations with waveform/PRF/SAILS/MRLE flags  |
-| `expected_records`        | `Option<u32>`         | Predicted total records, derived from `vcp.elevations.len()`                                  |
-| `present_records`         | `u32`                 | Records actually ingested so far. Equals `expected_records` when complete                     |
-| `file_name`               | `Option<String>`      | Source archive file name (archive ingest only); `None` for real-time scans                    |
-| `total_size_bytes`        | `u64`                 | Sum of every sweep blob's size for this scan; drives `total_cache_size` and eviction          |
-| `updated_at`              | `UnixMillis`          | Last write time. Bumped by every `merge_chunk`                                                |
-| `last_accessed_at`        | `UnixMillis`          | Set at creation; not bumped by reads (see "Access-time tracking" below)                       |
-| `end_timestamp_secs`      | `Option<i64>`         | Latest radial collection time across all sweeps (Unix seconds); fills in after decode         |
-| `sweeps`                  | `Option<Vec<SweepMeta>>` | Per-sweep metadata: start/end times, elevation, `available_products`. Drives the timeline |
-| `has_precomputed_sweeps`  | `bool`                | True once at least one sweep blob is stored under this scan key                               |
+- **Plan** (`vcp`): the full ordered elevation cuts the radar intends to
+  scan. Static — comes from the Message Type 5 record. Carries waveform,
+  PRF, azimuth-rate, and SAILS/MRLE/base-tilt flags per cut.
+- **Cached state** (`cached_sweeps`): the realized subset that has been
+  ingested and stored under this scan key. Each entry corresponds to one
+  VCP cut; carries measured-from-radial timing and the products whose
+  blobs were successfully written.
 
-`SweepMeta` (each entry of `sweeps`):
+The two columns are correlated but neither derives from the other —
+joined on `elevation_number`.
 
-| Field                | Type        | Meaning                                                                          |
-| -------------------- | ----------- | -------------------------------------------------------------------------------- |
-| `start`, `end`       | `f64`       | Unix seconds, sub-second precision; earliest/latest radial collection time       |
-| `elevation`          | `f32`       | Elevation angle in degrees                                                       |
-| `elevation_number`   | `u8`        | 1-based index used in sweep storage keys                                         |
-| `start_azimuth`      | `f32`       | Azimuth (degrees) of the chronologically first radial — used for VCP forecasts   |
-| `available_products` | `Vec<String>` | Product strings (e.g. `"reflectivity"`) for which a sweep blob was successfully stored |
+| Field               | Type                       | Meaning                                                                                          |
+| ------------------- | -------------------------- | ------------------------------------------------------------------------------------------------ |
+| `scan`              | `ScanKey`                  | `{ site, scan_start: UnixMillis }` — the storage key, kept in the value for self-description     |
+| `vcp`               | `Option<ExtractedVcp>`     | Full Volume Coverage Pattern. `None` until the volume header record is decoded                   |
+| `file_name`         | `Option<String>`           | Source archive file name (archive) or synthetic `live_<site>_<ts>.nexrad` (real-time)            |
+| `cached_sweeps`     | `Vec<CachedSweep>`         | The sweeps actually stored under this scan key. Drives the timeline + completeness               |
+| `total_size_bytes`  | `u64`                      | Sum of every sweep blob's size for this scan; drives `total_cache_size` and eviction sizing      |
+
+Derived (accessor methods, not stored):
+
+| Method                              | Definition                                                              |
+| ----------------------------------- | ----------------------------------------------------------------------- |
+| `has_vcp() -> bool`                 | `vcp.is_some()`                                                         |
+| `planned_sweep_count() -> Option<u32>` | `vcp.as_ref().map(|v| v.elevations.len() as u32)`                       |
+| `cached_sweep_count() -> u32`       | `cached_sweeps.len() as u32`                                            |
+| `end_timestamp_secs() -> Option<i64>` | `cached_sweeps.iter().map(|s| s.end as i64).max()`                      |
+| `completeness() -> ScanCompleteness` | `from_counts(has_vcp(), cached_sweep_count(), planned_sweep_count())`   |
+
+`CachedSweep` (each entry of `cached_sweeps`):
+
+| Field              | Type          | Meaning                                                                          |
+| ------------------ | ------------- | -------------------------------------------------------------------------------- |
+| `start`, `end`     | `f64`         | Unix seconds, sub-second precision; earliest/latest radial collection time       |
+| `elevation`        | `f32`         | Elevation angle in degrees                                                       |
+| `elevation_number` | `u8`          | 1-based index used in sweep storage keys; the join key against `vcp.elevations`  |
+| `start_azimuth`    | `f32`         | Azimuth (degrees) of the chronologically first radial — used for VCP forecasts   |
+| `cached_products`  | `Vec<String>` | Product strings (e.g. `"reflectivity"`) whose sweep blobs were successfully stored under this scan key |
 
 `ExtractedVcp` and `ExtractedVcpElevation` carry the per-volume scan
 strategy (cuts, waveforms, azimuth rates) used by the timing model and
@@ -115,10 +129,12 @@ forecast UI.
 
 ### 2c. `scan_touches` value: `i64`
 
-A bare Unix-millisecond timestamp. Written by `touch_scan` after a
-sweep render, joined by `evict_to_size` with `scan_index` to compute
-LRU order. See §10 for why access tracking lives in its own store
-rather than as a field on `ScanIndexEntry`.
+A bare Unix-millisecond timestamp. Owns LRU bookkeeping end-to-end:
+seeded by `create_scan` at ingest time so freshly-cached scans have a
+place in the order, and bumped by `touch_scan` after every sweep
+render. `evict_to_size` joins this store with `scan_index` and sorts
+by the touch value. See §10 for why access tracking lives in its own
+store rather than as a field on `ScanIndexEntry`.
 
 ## 3. Why three stores
 
@@ -239,17 +255,27 @@ once before use; subsequent calls are no-ops. All methods are `async`.
 
 ### Combined writes
 
-| Method                                                       | Purpose                                                                                |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `put_scan(&entry, &[(key, bytes)])`                          | Atomic write of a scan-index entry plus its sweep blobs in one cross-store transaction |
+| Method                                            | Purpose                                                                                                  |
+| ------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `create_scan(&entry, &[(key, bytes)])`            | Atomic first-time write: blobs + scan-index entry + initial `scan_touches` timestamp, in one transaction |
+| `put_scan(&entry, &[(key, bytes)])`               | Atomic update: blobs + scan-index entry. Leaves `scan_touches` alone                                     |
 
-`put_scan` is the canonical write path — the `sweeps` and `scan_index`
-stores hold tightly coupled state (an index entry's `total_size_bytes`
-and `sweeps` Vec describe what's in the blob store for that scan), so
-they're written together. A mid-write failure can't leave orphan
-blobs or a phantom entry. The browser-quota pre-check covers the blob
-batch; passing an empty `sweep_blobs` slice writes the entry alone
+The two-method split exists so chunk-ingest's repeated flushes don't
+keep refreshing `scan_touches` to "now" (which would conflate writes
+with reads and break LRU). Use `create_scan` for the first write of a
+scan key, `put_scan` for subsequent updates. The chunk-ingest path
+already branches on `scan_availability` returning `Some` vs `None`,
+which maps cleanly. Archive ingest always uses `create_scan`.
+
+Both write blobs + index atomically — a mid-write failure can't leave
+orphan blobs or a phantom entry. The browser-quota pre-check covers
+the blob batch; an empty `sweep_blobs` slice writes the entry alone
 (used by chunk-ingest flushes that don't produce new blobs).
+
+Calling `put_scan` for a key that has no `scan_touches` entry leaves
+the scan with no LRU placement and it gets evicted on the next pass.
+This is by design — it cleans up any stranded data — but it means
+"create then put" is a correctness-critical contract.
 
 ### Sweep blobs
 
@@ -272,16 +298,16 @@ of a stringified key lets the method extract the scan portion to fire
 | `list_scans(site, start, end) -> Vec<ScanIndexEntry>`             | Site-prefix range, then time filter, sorted by start     |
 
 There is no entry-only writer: every index update goes through
-`put_scan` so the blobs and the metadata that describes them stay in
-lockstep. A `put_scan` call with an empty `sweep_blobs` slice covers
-the "metadata-only update" case.
+`create_scan` or `put_scan` so the blobs and the metadata that
+describes them stay in lockstep. A `put_scan` call with an empty
+`sweep_blobs` slice covers the "metadata-only update" case.
 
 ### Cache management
 
 | Method                                | Purpose                                                                                          |
 | ------------------------------------- | ------------------------------------------------------------------------------------------------ |
 | `total_cache_size() -> u64`           | Sum of `total_size_bytes` across all `scan_index` entries                                        |
-| `evict_to_size(target_bytes) -> u32`  | Read entries + touches, sort by `scan_touches` (fallback: `last_accessed_at`), delete oldest first |
+| `evict_to_size(target_bytes) -> u32`  | Read entries + touches, sort by `scan_touches` (absent ⇒ evict-first), delete oldest first |
 | `clear_all()`                         | `IdbObjectStore::clear` on all three stores; preserves schema and version                        |
 
 `clear_all` does **not** call `deleteDatabase`. `deleteDatabase` blocks
@@ -368,11 +394,11 @@ Two notable shapes:
 
 ## 9. What lives outside this module
 
-- `ScanIndexEntry::merge_chunk` and `seed_from_partial`
-  ([`src/data/keys.rs`](../src/data/keys.rs)) — domain logic for how
-  one chunk's worth of state combines into the persisted scan entry.
-  The IDB module knows nothing about VCP precedence, sweep appending,
-  or end-timestamp handling.
+- The `ScanIndexEntry` struct shape and accessor methods
+  ([`src/data/keys.rs`](../src/data/keys.rs)) — `has_vcp()`,
+  `planned_sweep_count()`, `cached_sweep_count()`,
+  `end_timestamp_secs()`, `completeness()`. The IDB module stores and
+  retrieves entries but doesn't reason about their plan/cached split.
 
 - LRU policy decisions and browser-quota thresholds
   ([`src/data/facade.rs`](../src/data/facade.rs)) —
@@ -385,28 +411,40 @@ Two notable shapes:
 
 ## 10. Access-time tracking
 
-LRU eviction wants the order "least recently *rendered*," not "least
-recently written." The implementation is `touch_scan(&ScanKey)`,
-called fire-and-forget by `get_sweep` after returning the buffer.
+LRU eviction wants the order "least recently *used*," and `scan_touches`
+is the single source of truth for that. Two writers feed it:
 
-**Why a separate store rather than mutating
-`ScanIndexEntry.last_accessed_at`.** Chunk-ingest does a
-read-modify-write on the index entry to merge new chunk state in
-(`scan_availability` → `merge_chunk` → `put_scan`). If a touch did
-the same RMW dance against the same entry, the two could interleave:
+- `create_scan` seeds an entry with `now` at first ingest, so freshly
+  cached scans have a place in the LRU order before any render.
+- `touch_scan(&ScanKey)` (fired fire-and-forget by `get_sweep` after a
+  render) bumps the timestamp.
+
+**Why a separate store, not a field on `ScanIndexEntry`.**
+Chunk-ingest does a read-modify-write on the index entry to merge new
+chunk state in (`scan_availability` → mutate → `put_scan`). If a touch
+did the same RMW dance against the same entry, the two could
+interleave:
 
 ```
-T1  ingest reads entry (3 records)
-T2  touch  reads entry (3 records)
-T3  ingest writes (4 records, +new sweep meta)
-T4  touch  writes (3 records, last_accessed_at = now)   ← clobbers ingest
+T1  ingest reads entry (3 sweeps)
+T2  touch  reads entry (3 sweeps)
+T3  ingest writes (4 sweeps, +new sweep meta)
+T4  touch  writes (3 sweeps, last_accessed_at = now)   ← clobbers ingest
 ```
 
 The window is sub-millisecond and the race is rare, but when it
 happens it loses a chunk's worth of merge state. A dedicated
-single-field store (`scan_touches`) sidesteps the problem entirely —
+single-field store (`scan_touches`) sidesteps the problem entirely:
 the touch path never reads or writes `scan_index`, so it cannot
 collide with merges.
+
+**Why two write methods.** `put_scan` deliberately does *not* touch
+`scan_touches`. Otherwise every chunk-ingest flush during a streaming
+volume would refresh the access timestamp on each `put_scan`,
+re-conflating "last write" with "last access" — the exact problem
+the split was supposed to fix. Callers use `create_scan` for first
+writes (which seeds the touch) and `put_scan` for subsequent updates
+(which preserves it).
 
 **Throttle.** `IndexedDbStore` holds an in-memory
 `HashMap<ScanKey, UnixMillis>` of recent touches. A second touch for
@@ -422,16 +460,14 @@ it. Errors are logged at debug level. Worst case, a touch is lost and
 the next one (after the throttle expires) writes a slightly newer
 timestamp, which is still correct LRU behaviour.
 
-**Eviction join.** `evict_to_size` reads `scan_index` and
+**Eviction sort.** `evict_to_size` reads `scan_index` and
 `scan_touches` once each, then sorts:
 
 ```rust
-entries.sort_by_key(|e| {
-    touches.get(&e.scan).copied().unwrap_or(e.last_accessed_at).0
-});
+entries.sort_by_key(|e| touches.get(&e.scan).copied().unwrap_or(UnixMillis(0)).0);
 ```
 
-`ScanIndexEntry.last_accessed_at` is the fallback for scans that have
-never been rendered (e.g. archive-ingested but not yet looked at). It
-is set on creation and never bumped by reads, so it effectively means
-"created at" for evict-time purposes.
+A missing touch entry sorts to position 0 → evicted first. That's
+the intended cleanup path for any scan written via `put_scan` without
+a prior `create_scan` (a contract violation that strands data).
+Normal flows always seed the touch in `create_scan`.
