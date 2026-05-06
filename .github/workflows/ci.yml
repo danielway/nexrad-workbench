@@ -59,3 +59,28 @@ jobs:
 
       - name: Build
         run: cargo build --target wasm32-unknown-unknown --release
+
+  tests:
+    name: Pure-Rust logic tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-bindgen-cli
+        run: cargo install wasm-bindgen-cli --locked --version 0.2.114
+
+      # `cargo test` defers to wasm-bindgen-test-runner (configured in
+      # .cargo/config.toml). All #[wasm_bindgen_test] cases run in node,
+      # no browser needed. Functional IDB integration tests against a real
+      # browser will be a separate job (deferred).
+      - name: Run logic tests
+        run: cargo test

@@ -18,6 +18,13 @@ cargo clippy -- -D warnings
 # Format check
 cargo fmt -- --check
 
+# Pure-Rust unit tests (runs on wasm32 in node via wasm-bindgen-test).
+# Covers data/keys.rs types + the IDB layer's pure decision functions
+# (key range bounds, eviction order, throttle math, quota math,
+# time-window filter, ScanIndexEntry accessors).
+# Requires: `cargo install wasm-bindgen-cli --locked` and node.js installed.
+cargo test
+
 # Dev server with hot reload (requires: cargo install --locked trunk)
 trunk serve
 
@@ -25,7 +32,9 @@ trunk serve
 trunk build --release
 ```
 
-There are no Rust unit tests to run for the main crate (tests exist only in `data/keys.rs` but require wasm-bindgen-test infrastructure). Pre-commit hooks via cargo-husky enforce `cargo fmt` and `cargo clippy`.
+Pre-commit hooks via cargo-husky enforce `cargo fmt`, `cargo clippy`, and
+`cargo test`. Functional IDB integration tests against a real browser will
+live in a deferred `tests/idb.rs` suite (CI-only, not part of pre-commit).
 
 ## Commits
 
