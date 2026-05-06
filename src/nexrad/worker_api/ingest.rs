@@ -148,7 +148,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         scan_entry.sweeps = Some(sweeps.clone());
         scan_entry.has_precomputed_sweeps = true;
 
-        store.put_scan_index_entry(&scan_entry).await.map_err(|e| {
+        store.put_scan_entry(&scan_entry).await.map_err(|e| {
             wasm_bindgen::JsValue::from_str(&format!("Failed to store scan index: {}", e))
         })?;
         let index_ms = t_index.elapsed().as_secs_f64() * 1000.0;
@@ -551,17 +551,36 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 entry
             });
 
-            store
-                .merge_scan_index_entry(
-                    &partial_entry,
-                    newly_completed.len() as u32,
-                    new_size_bytes,
-                    &new_sweep_metas,
-                )
+            // Read-modify-write the scan-index entry. The two-tx pattern
+            // races in principle, but the worker pool serializes per-scan via
+            // the per-worker `CHUNK_ACCUM` thread-local, so there is no
+            // concurrent writer for this key in practice.
+            let new_records = newly_completed.len() as u32;
+            let merged = match store
+                .scan_availability(&partial_entry.scan)
                 .await
                 .map_err(|e| {
-                    wasm_bindgen::JsValue::from_str(&format!("Failed to merge scan index: {}", e))
-                })?;
+                    wasm_bindgen::JsValue::from_str(&format!("Failed to read scan index: {}", e))
+                })? {
+                Some(mut existing) => {
+                    existing.merge_chunk(
+                        &partial_entry,
+                        new_records,
+                        new_size_bytes,
+                        &new_sweep_metas,
+                    );
+                    existing
+                }
+                None => ScanIndexEntry::seed_from_partial(
+                    &partial_entry,
+                    new_records,
+                    new_size_bytes,
+                    &new_sweep_metas,
+                ),
+            };
+            store.put_scan_entry(&merged).await.map_err(|e| {
+                wasm_bindgen::JsValue::from_str(&format!("Failed to write scan index: {}", e))
+            })?;
         }
 
         // --- Build the scan key for response ---

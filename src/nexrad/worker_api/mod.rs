@@ -7,7 +7,7 @@ mod ingest;
 mod render;
 mod render_live;
 
-use crate::data::indexeddb::IndexedDbRecordStore;
+use crate::data::indexeddb::IndexedDbStore;
 use crate::data::keys::*;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
@@ -194,12 +194,12 @@ pub(super) struct VolumeRenderResponse {
 // Worker-side cached IDB connection
 // ---------------------------------------------------------------------------
 // WASM is single-threaded so thread_local! is safe. We keep a single
-// IndexedDbRecordStore alive for the lifetime of the worker so that
+// IndexedDbStore alive for the lifetime of the worker so that
 // subsequent ingest/render calls reuse the already-open IDB connection
 // instead of paying the ~60ms open+list overhead every time.
 
 thread_local! {
-    pub(super) static WORKER_IDB: IndexedDbRecordStore = IndexedDbRecordStore::new();
+    pub(super) static WORKER_IDB: IndexedDbStore = IndexedDbStore::new();
     static WORKER_LOGGER_INIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -217,8 +217,8 @@ pub(super) fn init_logger() {
 ///
 /// The store itself is eagerly constructed; `open()` is a no-op after the
 /// first successful call, and concurrent callers racing the first open
-/// coalesce inside `IndexedDbRecordStore::open`.
-pub(super) async fn idb_store() -> Result<IndexedDbRecordStore, wasm_bindgen::JsValue> {
+/// coalesce inside `IndexedDbStore::open`.
+pub(super) async fn idb_store() -> Result<IndexedDbStore, wasm_bindgen::JsValue> {
     let store = WORKER_IDB.with(|s| s.clone());
     store
         .open()

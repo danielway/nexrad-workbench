@@ -5,18 +5,35 @@
 //! 1. `sweeps` - Pre-computed sweep blobs (ArrayBuffer)
 //!    - Key: "SITE|SCAN_MS|ELEV_NUM|PRODUCT"
 //!
-//! 2. `scan_index` - Per-scan metadata for timeline (JSON)
+//! 2. `scan_index` - Per-scan metadata (`ScanIndexEntry`, structured-cloned)
 //!    - Key: "SITE|SCAN_START_MS"
+//!
+//! ## Concurrency
+//!
+//! - `open()` coalesces concurrent calls behind a single `indexedDB.open` via
+//!   an `OpenState` machine.
+//! - All writes go through `write_tx`, which hands the closure a synchronous
+//!   `WriteTransaction`. The closure is `FnOnce` (not `async`), so the
+//!   compiler rejects `.await` inside it — enforcing the WASM IDB rule that
+//!   readwrite transactions auto-commit when the event loop yields.
+//! - Cross-store transactions are supported by passing a multi-store slice.
+//! - Read-modify-write (e.g. merging into an existing scan-index entry) is
+//!   *not* atomic at the IDB layer: callers must ensure single-writer
+//!   serialization for a given key. The ingest pipeline does this via the
+//!   per-worker `CHUNK_ACCUM` thread-local.
 
 use crate::data::keys::*;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::cell::RefCell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
-use web_sys::{IdbDatabase, IdbObjectStore, IdbRequest, IdbTransaction, IdbTransactionMode};
+use web_sys::{
+    IdbDatabase, IdbKeyRange, IdbObjectStore, IdbRequest, IdbTransaction, IdbTransactionMode,
+};
 
 /// Structured error type for IndexedDB operations.
 #[derive(Debug)]
@@ -32,8 +49,8 @@ pub enum DataError {
     QuotaExceeded { available_mb: f64, required_mb: f64 },
     /// The requested key was not found.
     NotFound,
-    /// Deserialization of stored data failed.
-    DeserializationError(String),
+    /// (De)serialization of stored data failed.
+    SerdeError(String),
 }
 
 impl std::fmt::Display for DataError {
@@ -51,8 +68,28 @@ impl std::fmt::Display for DataError {
                 available_mb, required_mb
             ),
             DataError::NotFound => write!(f, "Not found"),
-            DataError::DeserializationError(msg) => write!(f, "Deserialization error: {}", msg),
+            DataError::SerdeError(msg) => write!(f, "Serde error: {}", msg),
         }
+    }
+}
+
+/// Format a `JsValue` error into a string. Tries to extract `name`/`message`
+/// when the JsValue is a DOMException-like object; falls back to `{:?}`.
+fn js_err(e: JsValue) -> String {
+    if let Some(s) = e.as_string() {
+        return s;
+    }
+    let name = js_sys::Reflect::get(&e, &JsValue::from_str("name"))
+        .ok()
+        .and_then(|v| v.as_string());
+    let msg = js_sys::Reflect::get(&e, &JsValue::from_str("message"))
+        .ok()
+        .and_then(|v| v.as_string());
+    match (name, msg) {
+        (Some(n), Some(m)) => format!("{}: {}", n, m),
+        (Some(n), None) => n,
+        (None, Some(m)) => m,
+        (None, None) => format!("{:?}", e),
     }
 }
 
@@ -82,6 +119,10 @@ const DATABASE_NAME: &str = "nexrad-workbench";
 const STORE_SWEEPS: &str = "sweeps";
 const STORE_SCAN_INDEX: &str = "scan_index";
 
+/// Sentinel character used as the upper bound of prefix key ranges.
+/// `\u{FFFF}` sorts after any reasonable storage-key character.
+const PREFIX_RANGE_UPPER: char = '\u{FFFF}';
+
 /// Open-state machine that coalesces concurrent `open()` calls into a single
 /// underlying `indexedDB.open(...)`. Without this, multiple `spawn_local`
 /// tasks racing on a fresh store would each run their own open (each logging
@@ -93,19 +134,19 @@ enum OpenState {
     Open(IdbDatabase),
 }
 
-/// IndexedDB sweep store.
+/// IndexedDB store for sweep blobs and scan-index metadata.
 #[derive(Clone)]
-pub struct IndexedDbRecordStore {
+pub struct IndexedDbStore {
     state: Rc<RefCell<OpenState>>,
 }
 
-impl Default for IndexedDbRecordStore {
+impl Default for IndexedDbStore {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl IndexedDbRecordStore {
+impl IndexedDbStore {
     pub fn new() -> Self {
         Self {
             state: Rc::new(RefCell::new(OpenState::Closed)),
@@ -191,75 +232,53 @@ impl IndexedDbRecordStore {
         }
     }
 
-    /// Executes a readwrite transaction on a single object store.
+    /// Executes a readwrite transaction over one or more object stores.
     ///
     /// The closure receives a [`WriteTransaction`] and runs synchronously — no
     /// `.await` is possible inside it, which enforces the IDB rule that
     /// readwrite transactions must not yield to the event loop.
-    async fn write_tx<F, T>(&self, store_name: &str, f: F) -> Result<T, DataError>
+    async fn write_tx<F, T>(&self, store_names: &[&str], f: F) -> Result<T, DataError>
     where
         F: FnOnce(&WriteTransaction) -> Result<T, DataError>,
     {
         let db = self.get_db()?;
-        let tx = db
-            .transaction_with_str_and_mode(store_name, IdbTransactionMode::Readwrite)
-            .map_err(|e| DataError::TransactionFailed(format!("{:?}", e)))?;
+        let tx = match store_names {
+            [] => {
+                return Err(DataError::TransactionFailed(
+                    "write_tx requires at least one store".to_string(),
+                ))
+            }
+            [single] => db
+                .transaction_with_str_and_mode(single, IdbTransactionMode::Readwrite)
+                .map_err(|e| DataError::TransactionFailed(js_err(e)))?,
+            many => {
+                let names = Array::new();
+                for name in many {
+                    names.push(&JsValue::from_str(name));
+                }
+                db.transaction_with_str_sequence_and_mode(&names, IdbTransactionMode::Readwrite)
+                    .map_err(|e| DataError::TransactionFailed(js_err(e)))?
+            }
+        };
         let result = f(&WriteTransaction::new(&tx))?;
         wait_for_transaction(&tx).await?;
         Ok(result)
     }
 
-    /// Executes a readwrite transaction spanning multiple object stores.
-    ///
-    /// Same safety guarantee as [`write_tx`]: the closure is synchronous,
-    /// preventing any `.await` inside the transaction scope.
-    async fn write_tx_multi<F, T>(&self, store_names: &[&str], f: F) -> Result<T, DataError>
+    /// Executes a readonly request on a single store and returns the raw JS result.
+    async fn read<F>(&self, store_name: &str, build_request: F) -> Result<JsValue, DataError>
     where
-        F: FnOnce(&WriteTransaction) -> Result<T, DataError>,
+        F: FnOnce(&IdbObjectStore) -> Result<IdbRequest, JsValue>,
     {
-        let db = self.get_db()?;
-        let names = Array::new();
-        for name in store_names {
-            names.push(&JsValue::from_str(name));
-        }
-        let tx = db
-            .transaction_with_str_sequence_and_mode(&names, IdbTransactionMode::Readwrite)
-            .map_err(|e| DataError::TransactionFailed(format!("{:?}", e)))?;
-        let result = f(&WriteTransaction::new(&tx))?;
-        wait_for_transaction(&tx).await?;
-        Ok(result)
-    }
-
-    /// Executes a readonly single-key get on an object store.
-    async fn read_one(&self, store_name: &str, key: &str) -> Result<JsValue, DataError> {
         let db = self.get_db()?;
         let tx = db
             .transaction_with_str_and_mode(store_name, IdbTransactionMode::Readonly)
-            .map_err(|e| DataError::TransactionFailed(format!("{:?}", e)))?;
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
         let store = tx
             .object_store(store_name)
-            .map_err(|e| DataError::TransactionFailed(format!("{:?}", e)))?;
-        let request = store
-            .get(&JsValue::from_str(key))
-            .map_err(|e| DataError::RequestFailed(format!("{:?}", e)))?;
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let request = build_request(&store).map_err(|e| DataError::RequestFailed(js_err(e)))?;
         wait_for_request(&request).await
-    }
-
-    /// Executes a readonly get_all and deserializes results into a Vec.
-    async fn read_all<T: DeserializeOwned>(&self, store_name: &str) -> Result<Vec<T>, DataError> {
-        let db = self.get_db()?;
-        let tx = db
-            .transaction_with_str_and_mode(store_name, IdbTransactionMode::Readonly)
-            .map_err(|e| DataError::TransactionFailed(format!("{:?}", e)))?;
-        let store = tx
-            .object_store(store_name)
-            .map_err(|e| DataError::TransactionFailed(format!("{:?}", e)))?;
-        let request = store
-            .get_all()
-            .map_err(|e| DataError::RequestFailed(format!("{:?}", e)))?;
-        let result = wait_for_request(&request).await?;
-        let array = Array::from(&result);
-        Ok(deserialize_js_array(&array))
     }
 
     // ========================================================================
@@ -296,14 +315,14 @@ impl IndexedDbRecordStore {
 
         self.ensure_open().await?;
 
-        self.write_tx(STORE_SWEEPS, |wtx| {
+        self.write_tx(&[STORE_SWEEPS], |wtx| {
             let store = wtx.object_store(STORE_SWEEPS)?;
             for (key, data) in items {
                 let array = Uint8Array::from(data.as_slice());
                 let buffer = array.buffer();
                 store
                     .put_with_key(&buffer, &JsValue::from_str(key))
-                    .map_err(|e| DataError::RequestFailed(format!("{:?}", e)))?;
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
             }
             Ok(())
         })
@@ -311,10 +330,13 @@ impl IndexedDbRecordStore {
     }
 
     /// Gets a pre-computed sweep blob by key, returning the raw JS ArrayBuffer.
-    /// Avoids the 5MB+ copy from JS to Rust that `get_sweep` performs.
-    pub async fn get_sweep_as_js(&self, key: &str) -> Result<Option<ArrayBuffer>, DataError> {
+    /// Returning the JS-side buffer avoids copying the (potentially several-MB)
+    /// blob through Rust memory before it is uploaded to the GPU.
+    pub async fn get_sweep(&self, key: &str) -> Result<Option<ArrayBuffer>, DataError> {
         self.ensure_open().await?;
-        let result = self.read_one(STORE_SWEEPS, key).await?;
+        let result = self
+            .read(STORE_SWEEPS, |store| store.get(&JsValue::from_str(key)))
+            .await?;
 
         if result.is_undefined() || result.is_null() {
             return Ok(None);
@@ -322,7 +344,7 @@ impl IndexedDbRecordStore {
 
         let buffer: ArrayBuffer = result
             .dyn_into()
-            .map_err(|_| DataError::DeserializationError("Expected ArrayBuffer".to_string()))?;
+            .map_err(|_| DataError::SerdeError("Expected ArrayBuffer".to_string()))?;
         Ok(Some(buffer))
     }
 
@@ -331,22 +353,16 @@ impl IndexedDbRecordStore {
     // ========================================================================
 
     /// Writes or updates a scan index entry.
-    pub async fn put_scan_index_entry(&self, entry: &ScanIndexEntry) -> Result<(), DataError> {
+    pub async fn put_scan_entry(&self, entry: &ScanIndexEntry) -> Result<(), DataError> {
         self.ensure_open().await?;
         let storage_key = entry.storage_key();
+        let value = to_js_value(entry)?;
 
-        // Serialize before entering the transaction scope to keep the closure
-        // as lean as possible.
-        let json = serde_json::to_string(entry)
-            .map_err(|e| DataError::DeserializationError(format!("{}", e)))?;
-        let js = js_sys::JSON::parse(&json)
-            .map_err(|e| DataError::DeserializationError(format!("{:?}", e)))?;
-
-        self.write_tx(STORE_SCAN_INDEX, |wtx| {
+        self.write_tx(&[STORE_SCAN_INDEX], |wtx| {
             let store = wtx.object_store(STORE_SCAN_INDEX)?;
             store
-                .put_with_key(&js, &JsValue::from_str(&storage_key))
-                .map_err(|e| DataError::RequestFailed(format!("{:?}", e)))?;
+                .put_with_key(&value, &JsValue::from_str(&storage_key))
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
             Ok(())
         })
         .await
@@ -359,11 +375,19 @@ impl IndexedDbRecordStore {
     ) -> Result<Option<ScanIndexEntry>, DataError> {
         self.ensure_open().await?;
         let storage_key = scan.to_storage_key();
-        let result = self.read_one(STORE_SCAN_INDEX, &storage_key).await?;
-        Ok(deserialize_js_value(&result))
+        let result = self
+            .read(STORE_SCAN_INDEX, |store| {
+                store.get(&JsValue::from_str(&storage_key))
+            })
+            .await?;
+        from_js_value_opt(&result)
     }
 
     /// Lists all scans for a site within a time window.
+    ///
+    /// Uses an IDB key range bounded by the site prefix (`"SITE|"`..),
+    /// reading only that site's entries rather than the entire store. The
+    /// time-window filter runs in Rust afterward.
     pub async fn list_scans(
         &self,
         site: &SiteId,
@@ -371,116 +395,98 @@ impl IndexedDbRecordStore {
         end: UnixMillis,
     ) -> Result<Vec<ScanIndexEntry>, DataError> {
         self.ensure_open().await?;
-        let entries: Vec<ScanIndexEntry> = self.read_all(STORE_SCAN_INDEX).await?;
+        let range = site_prefix_range(site)?;
+        let result = self
+            .read(STORE_SCAN_INDEX, |store| {
+                store.get_all_with_key(&range.into())
+            })
+            .await?;
+        let entries: Vec<ScanIndexEntry> = deserialize_js_array(&Array::from(&result));
 
         let mut scans: Vec<ScanIndexEntry> = entries
             .into_iter()
-            .filter(|entry| {
-                entry.scan.site.0 == site.0
-                    && entry.scan.scan_start >= start
-                    && entry.scan.scan_start <= end
-            })
+            .filter(|entry| entry.scan.scan_start >= start && entry.scan.scan_start <= end)
             .collect();
 
         scans.sort_by_key(|s| s.scan.scan_start.0);
         Ok(scans)
     }
 
+    /// Returns all scan-index entries (across all sites). Used by cache-wide
+    /// operations like total-size accounting and LRU eviction.
+    async fn read_all_scan_entries(&self) -> Result<Vec<ScanIndexEntry>, DataError> {
+        let result = self.read(STORE_SCAN_INDEX, |store| store.get_all()).await?;
+        Ok(deserialize_js_array(&Array::from(&result)))
+    }
+
     /// Gets total cache size across all scans.
     pub async fn total_cache_size(&self) -> Result<u64, DataError> {
         self.ensure_open().await?;
-        let entries: Vec<ScanIndexEntry> = self.read_all(STORE_SCAN_INDEX).await?;
-        let total: u64 = entries.iter().map(|e| e.total_size_bytes).sum();
-        Ok(total)
+        let entries = self.read_all_scan_entries().await?;
+        Ok(entries.iter().map(|e| e.total_size_bytes).sum())
     }
 
-    /// Gets scans sorted by last_accessed_at (oldest first) for LRU eviction.
-    pub async fn get_lru_scans(&self, limit: u32) -> Result<Vec<ScanIndexEntry>, DataError> {
-        self.ensure_open().await?;
-        let mut scans: Vec<ScanIndexEntry> = self.read_all(STORE_SCAN_INDEX).await?;
-        scans.sort_by_key(|s| s.last_accessed_at.0);
-        scans.truncate(limit as usize);
-        Ok(scans)
-    }
-
-    /// Deletes a scan and all its sweep blobs.
+    /// Deletes a scan and all its sweep blobs in one cross-store transaction.
     /// Returns the number of bytes freed.
+    ///
+    /// Sweeps are deleted via an IDB key range covering the prefix
+    /// `"SITE|SCAN_MS|"`, so this works regardless of which products were
+    /// stored.
     pub async fn delete_scan(&self, scan: &ScanKey) -> Result<u64, DataError> {
         self.ensure_open().await?;
 
         let scan_storage_key = scan.to_storage_key();
+        let bytes_freed = self
+            .scan_availability(scan)
+            .await?
+            .map(|e| e.total_size_bytes)
+            .unwrap_or(0);
 
-        // Get the scan entry to know its size and elevation structure
-        let scan_entry = self.scan_availability(scan).await?;
-        let bytes_freed = scan_entry.as_ref().map(|e| e.total_size_bytes).unwrap_or(0);
+        let sweeps_range = scan_prefix_range(scan)?;
 
-        // Build list of all possible sweep keys for this scan
-        let sweep_keys: Vec<String> = if let Some(ref entry) = scan_entry {
-            if let Some(ref sweeps) = entry.sweeps {
-                let mut keys = Vec::new();
-                for sweep in sweeps {
-                    for product in ALL_PRODUCTS {
-                        let key = SweepDataKey::new(scan.clone(), sweep.elevation_number, *product);
-                        keys.push(key.to_storage_key());
-                    }
-                }
-                keys
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
-
-        // Delete all sweep blobs and scan index entry in one transaction
-        self.write_tx_multi(&[STORE_SWEEPS, STORE_SCAN_INDEX], |wtx| {
-            let sweeps_store = wtx.object_store(STORE_SWEEPS)?;
-            let scan_store = wtx.object_store(STORE_SCAN_INDEX)?;
-
-            for key in &sweep_keys {
-                sweeps_store
-                    .delete(&JsValue::from_str(key))
-                    .map_err(|e| DataError::RequestFailed(format!("{:?}", e)))?;
-            }
-
-            scan_store
+        self.write_tx(&[STORE_SWEEPS, STORE_SCAN_INDEX], |wtx| {
+            wtx.object_store(STORE_SWEEPS)?
+                .delete(&sweeps_range.into())
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            wtx.object_store(STORE_SCAN_INDEX)?
                 .delete(&JsValue::from_str(&scan_storage_key))
-                .map_err(|e| DataError::RequestFailed(format!("{:?}", e)))?;
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
             Ok(())
         })
         .await?;
 
-        log::debug!(
-            "Deleted scan {} ({} sweep blobs, {} bytes freed)",
-            scan,
-            sweep_keys.len(),
-            bytes_freed
-        );
+        log::debug!("Deleted scan {} ({} bytes freed)", scan, bytes_freed);
         Ok(bytes_freed)
     }
 
-    /// Evicts scans until total cache size is below target_bytes.
-    /// Returns the number of scans evicted.
+    /// Evicts scans (oldest `last_accessed_at` first) until total cache size is
+    /// at or below `target_bytes`. Returns the number of scans evicted.
+    ///
+    /// Reads all entries once, sorts by LRU, and deletes one scan at a time
+    /// until the running size estimate drops under target. Each delete is its
+    /// own transaction (so a failure mid-eviction still leaves a consistent
+    /// store).
     pub async fn evict_to_size(&self, target_bytes: u64) -> Result<u32, DataError> {
-        let mut current_size = self.total_cache_size().await?;
+        self.ensure_open().await?;
+
+        let mut entries = self.read_all_scan_entries().await?;
+        let mut current_size: u64 = entries.iter().map(|e| e.total_size_bytes).sum();
+        if current_size <= target_bytes {
+            return Ok(0);
+        }
+        entries.sort_by_key(|e| e.last_accessed_at.0);
+
         let mut evicted_count = 0u32;
-
-        while current_size > target_bytes {
-            let lru_scans = self.get_lru_scans(1).await?;
-
-            if lru_scans.is_empty() {
+        for entry in &entries {
+            if current_size <= target_bytes {
                 break;
             }
-
-            let oldest = &lru_scans[0];
-            let bytes_freed = self.delete_scan(&oldest.scan).await?;
-
+            let bytes_freed = self.delete_scan(&entry.scan).await?;
             current_size = current_size.saturating_sub(bytes_freed);
             evicted_count += 1;
-
             log::debug!(
                 "Evicted scan {} (freed {} bytes, {} remaining)",
-                oldest.scan,
+                entry.scan,
                 bytes_freed,
                 current_size
             );
@@ -495,94 +501,6 @@ impl IndexedDbRecordStore {
         }
 
         Ok(evicted_count)
-    }
-
-    /// Merges incremental data into an existing scan index entry, or creates one
-    /// if it doesn't exist yet. Used by per-chunk ingest to build up scan metadata
-    /// incrementally as elevations complete.
-    ///
-    /// Two-transaction pattern: read in readonly first, then write the merged
-    /// result in a separate readwrite transaction (no await inside readwrite).
-    pub async fn merge_scan_index_entry(
-        &self,
-        partial: &ScanIndexEntry,
-        new_records: u32,
-        new_size_bytes: u64,
-        new_sweeps: &[SweepMeta],
-    ) -> Result<(), DataError> {
-        self.ensure_open().await?;
-        let storage_key = partial.storage_key();
-
-        // --- Readonly tx: read existing entry ---
-        let existing: Option<ScanIndexEntry> = {
-            let result = self.read_one(STORE_SCAN_INDEX, &storage_key).await?;
-            deserialize_js_value(&result)
-        };
-
-        // --- Merge in memory ---
-        let merged = if let Some(mut entry) = existing {
-            entry.present_records += new_records;
-            entry.total_size_bytes += new_size_bytes;
-            entry.updated_at = UnixMillis::now();
-            entry.has_precomputed_sweeps = true;
-
-            // Merge VCP if newly available
-            if !entry.has_vcp && partial.has_vcp {
-                entry.has_vcp = true;
-                entry.vcp = partial.vcp.clone();
-                if let Some(ref vcp) = entry.vcp {
-                    entry.expected_records = Some(vcp.elevations.len() as u32);
-                }
-            }
-
-            // Merge file_name if not set
-            if entry.file_name.is_none() {
-                entry.file_name = partial.file_name.clone();
-            }
-
-            // Append new sweeps
-            if !new_sweeps.is_empty() {
-                let sweeps = entry.sweeps.get_or_insert_with(Vec::new);
-                sweeps.extend_from_slice(new_sweeps);
-            }
-
-            // Update end timestamp to max
-            if let Some(new_end) = partial.end_timestamp_secs {
-                entry.end_timestamp_secs = Some(
-                    entry
-                        .end_timestamp_secs
-                        .map(|old| old.max(new_end))
-                        .unwrap_or(new_end),
-                );
-            }
-
-            entry
-        } else {
-            // No existing entry — create from partial
-            let mut entry = partial.clone();
-            entry.present_records = new_records;
-            entry.total_size_bytes = new_size_bytes;
-            entry.has_precomputed_sweeps = true;
-            if !new_sweeps.is_empty() {
-                entry.sweeps = Some(new_sweeps.to_vec());
-            }
-            entry
-        };
-
-        // --- Readwrite tx: write merged entry ---
-        let json = serde_json::to_string(&merged)
-            .map_err(|e| DataError::DeserializationError(format!("{}", e)))?;
-        let js = js_sys::JSON::parse(&json)
-            .map_err(|e| DataError::DeserializationError(format!("{:?}", e)))?;
-
-        self.write_tx(STORE_SCAN_INDEX, |wtx| {
-            let store = wtx.object_store(STORE_SCAN_INDEX)?;
-            store
-                .put_with_key(&js, &JsValue::from_str(&storage_key))
-                .map_err(|e| DataError::RequestFailed(format!("{:?}", e)))?;
-            Ok(())
-        })
-        .await
     }
 
     /// Deletes all existing scans for a site whose time range overlaps with the
@@ -600,15 +518,17 @@ impl IndexedDbRecordStore {
     ) -> Result<u32, DataError> {
         self.ensure_open().await?;
 
-        // Read all scan index entries
-        let all_entries: Vec<ScanIndexEntry> = self.read_all(STORE_SCAN_INDEX).await?;
+        // Read this site's scan entries via the site-prefix range.
+        let range = site_prefix_range(site)?;
+        let result = self
+            .read(STORE_SCAN_INDEX, |store| {
+                store.get_all_with_key(&range.into())
+            })
+            .await?;
+        let site_entries: Vec<ScanIndexEntry> = deserialize_js_array(&Array::from(&result));
 
-        // Find overlapping scans for this site
         let mut to_delete: Vec<ScanKey> = Vec::new();
-        for entry in &all_entries {
-            if entry.scan.site.0 != site.0 {
-                continue;
-            }
+        for entry in &site_entries {
             if entry.scan == *exclude_key {
                 continue;
             }
@@ -646,19 +566,19 @@ impl IndexedDbRecordStore {
     }
 
     /// Clears all data from all stores.
+    ///
+    /// Preserves schema and version — does not call `deleteDatabase`, which
+    /// would block until every other connection (e.g. the worker's) closed.
     pub async fn clear_all(&self) -> Result<(), DataError> {
-        // Clear each object store rather than deleting the database.
-        // deleteDatabase would hang if any other connection (e.g. the worker)
-        // is still open, because the delete is blocked until ALL connections close.
         self.ensure_open().await?;
 
-        self.write_tx_multi(&[STORE_SWEEPS, STORE_SCAN_INDEX], |wtx| {
+        self.write_tx(&[STORE_SWEEPS, STORE_SCAN_INDEX], |wtx| {
             wtx.object_store(STORE_SWEEPS)?
                 .clear()
-                .map_err(|e| DataError::RequestFailed(format!("{:?}", e)))?;
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
             wtx.object_store(STORE_SCAN_INDEX)?
                 .clear()
-                .map_err(|e| DataError::RequestFailed(format!("{:?}", e)))?;
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
             Ok(())
         })
         .await?;
@@ -675,9 +595,9 @@ impl IndexedDbRecordStore {
 /// A synchronous handle to an IDB readwrite transaction.
 ///
 /// `WriteTransaction` is the sole way to perform write operations. It is
-/// handed to a closure by [`IndexedDbRecordStore::write_tx`] /
-/// [`write_tx_multi`], and because the closure is `FnOnce` (not
-/// `async FnOnce`), the compiler rejects any `.await` inside it.
+/// handed to a closure by [`IndexedDbStore::write_tx`], and because the
+/// closure is `FnOnce` (not `async FnOnce`), the compiler rejects any
+/// `.await` inside it.
 ///
 /// The `PhantomData<*const ()>` marker makes the type `!Send`, which
 /// provides an additional safety net against accidental moves across
@@ -700,8 +620,31 @@ impl<'a> WriteTransaction<'a> {
     pub fn object_store(&self, name: &str) -> Result<IdbObjectStore, DataError> {
         self.tx
             .object_store(name)
-            .map_err(|e| DataError::TransactionFailed(format!("{:?}", e)))
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))
     }
+}
+
+// ============================================================================
+// Key range helpers
+// ============================================================================
+
+/// Range covering all keys starting with `"SITE|"`. Used to scope scan-index
+/// queries to a single site without scanning the whole store.
+fn site_prefix_range(site: &SiteId) -> Result<IdbKeyRange, DataError> {
+    let lower = format!("{}|", site.0);
+    let upper = format!("{}|{}", site.0, PREFIX_RANGE_UPPER);
+    IdbKeyRange::bound(&JsValue::from_str(&lower), &JsValue::from_str(&upper))
+        .map_err(|e| DataError::RequestFailed(js_err(e)))
+}
+
+/// Range covering all sweep keys belonging to a single scan
+/// (`"SITE|SCAN_MS|"...`). Used for prefix-deleting every elevation × product
+/// blob without enumerating product names.
+fn scan_prefix_range(scan: &ScanKey) -> Result<IdbKeyRange, DataError> {
+    let prefix = format!("{}|", scan.to_storage_key());
+    let upper = format!("{}{}", prefix, PREFIX_RANGE_UPPER);
+    IdbKeyRange::bound(&JsValue::from_str(&prefix), &JsValue::from_str(&upper))
+        .map_err(|e| DataError::RequestFailed(js_err(e)))
 }
 
 // ============================================================================
@@ -713,7 +656,7 @@ fn get_idb_factory() -> Result<web_sys::IdbFactory, DataError> {
     let global = js_sys::global();
     let idb = js_sys::Reflect::get(&global, &wasm_bindgen::JsValue::from_str("indexedDB"))
         .map_err(|e| {
-            DataError::TransactionFailed(format!("Failed to access indexedDB: {:?}", e))
+            DataError::TransactionFailed(format!("Failed to access indexedDB: {}", js_err(e)))
         })?;
     if idb.is_undefined() || idb.is_null() {
         return Err(DataError::TransactionFailed(
@@ -730,7 +673,9 @@ async fn open_database() -> Result<IdbDatabase, DataError> {
 
     let open_request = idb_factory
         .open_with_u32(DATABASE_NAME, DATABASE_VERSION)
-        .map_err(|e| DataError::TransactionFailed(format!("Failed to open database: {:?}", e)))?;
+        .map_err(|e| {
+            DataError::TransactionFailed(format!("Failed to open database: {}", js_err(e)))
+        })?;
 
     // Set up upgrade handler
     let onupgradeneeded = Closure::wrap(Box::new(move |event: web_sys::IdbVersionChangeEvent| {
@@ -861,22 +806,33 @@ async fn wait_for_transaction(tx: &IdbTransaction) -> Result<(), DataError> {
     result.map_err(DataError::TransactionFailed)
 }
 
-/// Deserializes a JsValue to a Rust type via JSON.
-fn deserialize_js_value<T: DeserializeOwned>(value: &JsValue) -> Option<T> {
+/// Convert a serializable Rust value to a `JsValue` for IDB storage via
+/// `serde-wasm-bindgen` — IDB stores it via the structured-clone algorithm.
+fn to_js_value<T: Serialize>(value: &T) -> Result<JsValue, DataError> {
+    serde_wasm_bindgen::to_value(value).map_err(|e| DataError::SerdeError(e.to_string()))
+}
+
+/// Convert a `JsValue` returned from IDB to a Rust value, treating
+/// undefined/null as `None`.
+fn from_js_value_opt<T: DeserializeOwned>(value: &JsValue) -> Result<Option<T>, DataError> {
     if value.is_undefined() || value.is_null() {
-        return None;
+        return Ok(None);
     }
-    let json_str = js_sys::JSON::stringify(value).ok()?;
-    let s = json_str.as_string()?;
-    serde_json::from_str(&s).ok()
+    serde_wasm_bindgen::from_value(value.clone())
+        .map(Some)
+        .map_err(|e| DataError::SerdeError(e.to_string()))
 }
 
 fn deserialize_js_array<T: DeserializeOwned>(array: &Array) -> Vec<T> {
-    let mut items = Vec::new();
+    let mut items = Vec::with_capacity(array.length() as usize);
     for i in 0..array.length() {
         let value = array.get(i);
-        if let Some(item) = deserialize_js_value(&value) {
-            items.push(item);
+        if value.is_undefined() || value.is_null() {
+            continue;
+        }
+        match serde_wasm_bindgen::from_value::<T>(value) {
+            Ok(item) => items.push(item),
+            Err(e) => log::warn!("Skipped malformed scan-index entry: {}", e),
         }
     }
     items

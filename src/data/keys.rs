@@ -622,17 +622,71 @@ impl ScanIndexEntry {
     pub fn storage_key(&self) -> String {
         self.scan.to_storage_key()
     }
-}
 
-/// All known radar products for sweep pre-computation.
-pub const ALL_PRODUCTS: &[&str] = &[
-    "reflectivity",
-    "velocity",
-    "spectrum_width",
-    "differential_reflectivity",
-    "correlation_coefficient",
-    "differential_phase",
-];
+    /// Merge an incremental ingest chunk into this entry.
+    ///
+    /// Increments record counts, accumulates size, appends new sweep metadata,
+    /// promotes VCP/file_name from `partial` if not already set, and grows
+    /// `end_timestamp_secs` to the max of old and new.
+    pub fn merge_chunk(
+        &mut self,
+        partial: &ScanIndexEntry,
+        new_records: u32,
+        new_size_bytes: u64,
+        new_sweeps: &[SweepMeta],
+    ) {
+        self.present_records += new_records;
+        self.total_size_bytes += new_size_bytes;
+        self.updated_at = UnixMillis::now();
+        self.has_precomputed_sweeps = true;
+
+        if !self.has_vcp && partial.has_vcp {
+            self.has_vcp = true;
+            self.vcp = partial.vcp.clone();
+            if let Some(ref vcp) = self.vcp {
+                self.expected_records = Some(vcp.elevations.len() as u32);
+            }
+        }
+
+        if self.file_name.is_none() {
+            self.file_name = partial.file_name.clone();
+        }
+
+        if !new_sweeps.is_empty() {
+            self.sweeps
+                .get_or_insert_with(Vec::new)
+                .extend_from_slice(new_sweeps);
+        }
+
+        if let Some(new_end) = partial.end_timestamp_secs {
+            self.end_timestamp_secs = Some(
+                self.end_timestamp_secs
+                    .map(|old| old.max(new_end))
+                    .unwrap_or(new_end),
+            );
+        }
+    }
+
+    /// Initialize this entry from a freshly-built `partial` (no existing state).
+    ///
+    /// Used by `merge_chunk`'s "no existing entry" path: the partial already
+    /// carries everything we know, we just need to seed counters and sweeps.
+    pub fn seed_from_partial(
+        partial: &ScanIndexEntry,
+        new_records: u32,
+        new_size_bytes: u64,
+        new_sweeps: &[SweepMeta],
+    ) -> Self {
+        let mut entry = partial.clone();
+        entry.present_records = new_records;
+        entry.total_size_bytes = new_size_bytes;
+        entry.has_precomputed_sweeps = true;
+        if !new_sweeps.is_empty() {
+            entry.sweeps = Some(new_sweeps.to_vec());
+        }
+        entry
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,8 +1,8 @@
 //! Data facade providing a unified interface for IndexedDB storage.
 //!
-//! Wraps `IndexedDbRecordStore` with cache eviction logic.
+//! Wraps `IndexedDbStore` with cache eviction logic.
 
-use crate::data::indexeddb::{DataError, IndexedDbRecordStore};
+use crate::data::indexeddb::{DataError, IndexedDbStore};
 use crate::data::keys::*;
 
 /// Result type for cache operations.
@@ -11,7 +11,7 @@ pub type CacheResult<T> = Result<T, DataError>;
 /// Data facade for accessing radar data in IndexedDB.
 #[derive(Clone)]
 pub struct DataFacade {
-    store: IndexedDbRecordStore,
+    store: IndexedDbStore,
 }
 
 impl Default for DataFacade {
@@ -23,7 +23,7 @@ impl Default for DataFacade {
 impl DataFacade {
     pub fn new() -> Self {
         Self {
-            store: IndexedDbRecordStore::new(),
+            store: IndexedDbStore::new(),
         }
     }
 
@@ -86,9 +86,7 @@ impl DataFacade {
         }
 
         // Browser-level quota check via navigator.storage.estimate()
-        let quota_warning = if let Some(estimate) =
-            IndexedDbRecordStore::estimate_storage_quota().await
-        {
+        let quota_warning = if let Some(estimate) = IndexedDbStore::estimate_storage_quota().await {
             let remaining = estimate.remaining();
             let threshold = estimate.quota / 10; // 10% of browser quota
 
