@@ -174,20 +174,72 @@ pub async fn sleep_duration(dur: Duration) {
     sleep_ms(ms).await;
 }
 
-/// Wait `ms` milliseconds via browser `setTimeout`.
-pub async fn sleep_ms(ms: u32) {
+/// Wait `ms` milliseconds via browser `setTimeout`, cancelling the underlying
+/// timer if the future is dropped before it fires. Necessary because a stale
+/// `setTimeout` would otherwise invoke a dropped wasm closure and throw
+/// "closure invoked recursively or after being dropped".
+pub fn sleep_ms(ms: u32) -> impl Future<Output = ()> {
+    use std::cell::Cell;
+    use std::pin::Pin;
+    use std::rc::Rc;
+    use std::task::{Context, Poll, Waker};
+
     #[wasm_bindgen]
     extern "C" {
         #[wasm_bindgen(js_name = setTimeout)]
         fn set_timeout(closure: &Closure<dyn FnMut()>, millis: u32) -> i32;
+        #[wasm_bindgen(js_name = clearTimeout)]
+        fn clear_timeout(id: i32);
     }
 
-    let (tx, rx) = futures_channel::oneshot::channel::<()>();
-    let closure = Closure::once(move || {
-        let _ = tx.send(());
-    });
-    set_timeout(&closure, ms);
-    let _ = rx.await;
+    struct Timer {
+        id: Cell<Option<i32>>,
+        fired: Rc<Cell<bool>>,
+        waker: Rc<Cell<Option<Waker>>>,
+        _closure: Closure<dyn FnMut()>,
+    }
+
+    impl Drop for Timer {
+        fn drop(&mut self) {
+            if let Some(id) = self.id.take() {
+                clear_timeout(id);
+            }
+        }
+    }
+
+    impl Future for Timer {
+        type Output = ();
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.fired.get() {
+                self.id.set(None);
+                Poll::Ready(())
+            } else {
+                self.waker.set(Some(cx.waker().clone()));
+                Poll::Pending
+            }
+        }
+    }
+
+    let fired = Rc::new(Cell::new(false));
+    let waker: Rc<Cell<Option<Waker>>> = Rc::new(Cell::new(None));
+
+    let fired_cb = fired.clone();
+    let waker_cb = waker.clone();
+    let closure = Closure::wrap(Box::new(move || {
+        fired_cb.set(true);
+        if let Some(w) = waker_cb.take() {
+            w.wake();
+        }
+    }) as Box<dyn FnMut()>);
+
+    let id = set_timeout(&closure, ms);
+
+    Timer {
+        id: Cell::new(Some(id)),
+        fired,
+        waker,
+        _closure: closure,
+    }
 }
 
 /// Parse an HTTP `Retry-After` header value.

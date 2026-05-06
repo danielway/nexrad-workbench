@@ -17,7 +17,7 @@ use eframe::egui;
 
 use crate::data::facade::DataFacade;
 use crate::net::retry::{
-    attempt_with_timeout, compute_delay, sleep_duration, Verdict, REALTIME_CHUNK_POLICY,
+    attempt_with_timeout, compute_delay, sleep_duration, sleep_ms, Verdict, REALTIME_CHUNK_POLICY,
 };
 
 /// User-driven filter applied to the real-time chunk stream.
@@ -1486,23 +1486,6 @@ fn current_timestamp() -> i64 {
 /// Unix seconds with millisecond precision — for diagnostics timestamps.
 fn current_timestamp_f64() -> f64 {
     js_sys::Date::now() / 1000.0
-}
-
-async fn sleep_ms(ms: u32) {
-    use wasm_bindgen::prelude::*;
-
-    #[wasm_bindgen]
-    extern "C" {
-        #[wasm_bindgen(js_name = setTimeout)]
-        fn set_timeout(closure: &Closure<dyn FnMut()>, millis: u32) -> i32;
-    }
-
-    let (tx, rx) = futures_channel::oneshot::channel::<()>();
-    let closure = Closure::once(move || {
-        let _ = tx.send(());
-    });
-    set_timeout(&closure, ms);
-    let _ = rx.await;
 }
 
 // ── Volume number cache ────────────────────────────────────────────────
