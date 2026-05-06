@@ -454,7 +454,7 @@ impl LiveModeState {
         &mut self,
         chunks_in_volume: u32,
         time_until_next: Option<Duration>,
-        is_volume_end: bool,
+        _is_volume_end: bool,
         now: f64,
         projected_volume_end_available_at_secs: Option<f64>,
         projected_volume_end_collection_secs: Option<f64>,
@@ -465,21 +465,18 @@ impl LiveModeState {
         self.projected_volume_end_collection_secs = projected_volume_end_collection_secs;
         self.chunk_projections = chunk_projections;
 
-        if is_volume_end {
-            // Volume complete - transition to Streaming briefly
-            self.phase = LivePhase::Streaming;
-            self.phase_started_at = Some(now);
-        } else if let Some(duration) = time_until_next {
-            // Waiting for next chunk
+        // Prefer the time_until_next estimate over is_volume_end so the
+        // user sees a countdown across volume boundaries (synthetic-end in
+        // filter mode, real End chunks otherwise) rather than a "receiving…"
+        // status that sits there with no network activity.
+        if let Some(duration) = time_until_next {
             self.phase = LivePhase::WaitingForChunk;
-            self.phase_started_at = Some(now);
             self.next_chunk_available_at_secs = Some(now + duration.as_secs_f64());
             self.chunk_interval_secs = duration.as_secs_f64();
         } else {
-            // Actively receiving
             self.phase = LivePhase::Streaming;
-            self.phase_started_at = Some(now);
         }
+        self.phase_started_at = Some(now);
     }
 
     /// Handle streaming started event.

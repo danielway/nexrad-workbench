@@ -1134,6 +1134,17 @@ async fn streaming_loop(
                 "streaming_loop: synthetic_volume_end emitted (filter={:?})",
                 active_filter
             );
+            // Estimate the wait until the user's elevation reappears so the
+            // status bar / timeline can show a countdown instead of a stale
+            // "receiving…". Without this, the synthetic-end emit hands a
+            // `time_until_next: None` to the UI and the phase sticks on
+            // Streaming for the whole inter-volume gap.
+            let synthetic_time_until_next = match active_filter {
+                StreamingFilter::Elevation(elev_n) => iter
+                    .time_until_next_filtered_chunk_across_volumes(elev_n)
+                    .or_else(|| iter.time_until_next().and_then(|d| d.to_std().ok())),
+                StreamingFilter::All => iter.time_until_next().and_then(|d| d.to_std().ok()),
+            };
             // Emit a UI-only ChunkReceived so the timeline knows the volume
             // boundary even though no actual End chunk was downloaded.
             chunks_in_volume += 1;
@@ -1141,7 +1152,7 @@ async fn streaming_loop(
                 let mut s = state.borrow_mut();
                 s.results.push(RealtimeResult::ChunkReceived {
                     chunks_in_volume,
-                    time_until_next: None,
+                    time_until_next: synthetic_time_until_next,
                     is_volume_end: true,
                     fetch_latency_ms: 0.0,
                     projected_volume_end_available_at_secs:
