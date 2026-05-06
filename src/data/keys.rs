@@ -46,7 +46,12 @@ pub struct UnixMillis(pub i64);
 
 impl UnixMillis {
     pub fn now() -> Self {
-        Self(js_sys::Date::now() as i64)
+        use web_time::{SystemTime, UNIX_EPOCH};
+        let ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        Self(ms)
     }
 
     pub fn from_secs(secs: i64) -> Self {
@@ -642,8 +647,9 @@ impl ScanIndexEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_scan_key_storage_format() {
         let key = ScanKey::new("KDMX", UnixMillis(1700000000000));
         assert_eq!(key.to_storage_key(), "KDMX|1700000000000");
@@ -652,21 +658,21 @@ mod tests {
         assert_eq!(parsed, key);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_scan_key_from_secs() {
         let key = ScanKey::from_secs("KDMX", 1700000000);
         assert_eq!(key.scan_start.0, 1700000000000);
         assert_eq!(key.to_storage_key(), "KDMX|1700000000000");
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_sweep_data_key_storage_format() {
         let scan = ScanKey::new("KDMX", UnixMillis(1700000000000));
         let key = SweepDataKey::new(scan, 1, "reflectivity");
         assert_eq!(key.to_storage_key(), "KDMX|1700000000000|1|reflectivity");
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_completeness_computation() {
         // Missing
         assert_eq!(
@@ -699,7 +705,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_scan_key_from_storage_key_invalid() {
         assert!(ScanKey::from_storage_key("").is_none());
         assert!(ScanKey::from_storage_key("KDMX").is_none());
@@ -707,7 +713,7 @@ mod tests {
         assert!(ScanKey::from_storage_key("A|B|C").is_none());
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_scan_key_roundtrip() {
         let key = ScanKey::new("KFWS", UnixMillis(1609459200000));
         let serialized = key.to_storage_key();
@@ -716,7 +722,7 @@ mod tests {
         assert_eq!(parsed.scan_start.0, 1609459200000);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_sweep_data_key_roundtrip() {
         let scan = ScanKey::new("KLOT", UnixMillis(1700000000000));
         let key = SweepDataKey::new(scan, 3, "velocity");
@@ -725,14 +731,14 @@ mod tests {
         assert_eq!(key.product, "velocity");
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_unix_millis_conversion() {
         let ms = UnixMillis::from_secs(1700000000);
         assert_eq!(ms.0, 1700000000000);
         assert_eq!(ms.as_secs(), 1700000000);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_site_id_from_conversions() {
         let s1: SiteId = "KDMX".into();
         let s2: SiteId = String::from("KDMX").into();
@@ -740,7 +746,7 @@ mod tests {
         assert_eq!(format!("{}", s1), "KDMX");
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_precomputed_sweep_header_roundtrip() {
         let radial_times: Vec<f64> = (0..720).map(|i| 1700000000.5 + i as f64 * 0.028).collect();
         let sweep = PrecomputedSweep {
@@ -781,7 +787,7 @@ mod tests {
         assert_eq!(header.gate_values_offset, 72 + 720 * 4 + 720 * 8);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_precomputed_sweep_legacy_no_radial_times() {
         let sweep = PrecomputedSweep {
             azimuth_count: 4,
@@ -808,19 +814,19 @@ mod tests {
         assert_eq!(header.gate_values_offset, 72 + 4 * 4);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_parse_sweep_header_too_small() {
         let data = vec![0u8; 50];
         assert!(parse_sweep_header(&data).is_err());
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_gate_values_word_size() {
         assert_eq!(GateValues::U8(vec![]).word_size(), 1);
         assert_eq!(GateValues::U16(vec![]).word_size(), 2);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn test_precomputed_sweep_u16_roundtrip() {
         let sweep = PrecomputedSweep {
             azimuth_count: 4,

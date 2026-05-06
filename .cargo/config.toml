@@ -2,3 +2,9 @@
 # This ensures rust-analyzer analyzes for wasm32, making web code visible.
 [build]
 target = "wasm32-unknown-unknown"
+
+# `cargo test` defers to wasm-bindgen-test-runner. Each test file's
+# `wasm_bindgen_test_configure!` macro chooses node (fast, pure-Rust logic
+# tests) vs browser (functional IDB tests). See tests/logic.rs.
+[target.wasm32-unknown-unknown]
+runner = "wasm-bindgen-test-runner"

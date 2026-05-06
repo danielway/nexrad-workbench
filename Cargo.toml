@@ -81,10 +81,13 @@ js-sys = "0.3"
 serde-wasm-bindgen = "0.6"
 egui-phosphor = { version = "0.11.0", features = ["regular"] }
 
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
 [dev-dependencies.cargo-husky]
 version = "1"
 default-features = false
-features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"]
+features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy", "user-hooks"]
 
 [profile.release]
 opt-level = "s"

@@ -1,0 +1,25 @@
+#!/bin/sh
+#
+# Pre-commit hook installed by cargo-husky (user-hooks feature).
+# Replicates the previous fmt + clippy gates and adds the pure-Rust
+# IDB-logic test suite.
+#
+# `cargo test` here runs every `#[cfg(test)] mod tests` block in the bin
+# crate. They use `#[wasm_bindgen_test]` and execute in node via the
+# wasm-bindgen-test-runner configured in .cargo/config.toml. No browser
+# needed; runs in a couple of seconds on warm caches.
+#
+# Browser-backed functional tests (real IndexedDB) live in a separate
+# tests/idb.rs integration crate that ships in a follow-up — those run
+# in CI only, not on commit.
+
+set -e
+
+echo '+cargo fmt -- --check'
+cargo fmt -- --check
+
+echo '+cargo clippy -- -D warnings'
+cargo clippy -- -D warnings
+
+echo '+cargo test'
+cargo test

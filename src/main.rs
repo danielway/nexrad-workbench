@@ -3242,3 +3242,12 @@ impl eframe::App for WorkbenchApp {
         ui::render_mping_modal(ctx, &mut self.state, &mut self.mping_modal_state);
     }
 }
+
+// `cargo test` compiles a single test binary from this bin crate that
+// includes every `#[cfg(test)] mod tests` block across `src/`.
+// `#[wasm_bindgen_test]` defaults to executing tests in node (no browser,
+// no real IndexedDB) — fast enough to run in the pre-commit hook.
+//
+// Functional IDB tests that need a real browser will live in a separate
+// `tests/idb.rs` integration crate (deferred) with
+// `wasm_bindgen_test_configure!(run_in_browser)`.
