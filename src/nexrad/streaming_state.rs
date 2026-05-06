@@ -8,8 +8,8 @@
 use super::timing::{
     estimate_chunk_availability_time, estimate_chunk_processing_diagnostics,
     estimate_chunk_processing_time_to_target, project_scan_timing, ChunkCharacteristics,
-    ChunkMetadata, ChunkTimingStats, ElevationChunkMapper, EstimatedChunkProcessing,
-    ScanTimingProjection,
+    ChunkMetadata, ChunkTimingModel, ChunkTimingStats, ElevationChunkMapper,
+    EstimatedChunkProcessing, ScanTimingProjection,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::debug;
@@ -472,6 +472,63 @@ impl StreamingState {
             Some(&self.timing_stats),
         )?;
         Some((target, diag))
+    }
+
+    /// Estimate the wait until the user's filter elevation reappears in the
+    /// next volume. Used by the filter-aware streaming path when the current
+    /// volume has no more matching chunks — without this, the loop would
+    /// poll immediately and exhaust the retry budget waiting for the next
+    /// volume's Start (and worse, the user-relevant chunk of that next
+    /// volume which can be nearly a full volume duration later).
+    ///
+    /// Walks: projected end-of-current-volume → inter-volume gap → next
+    /// volume's Start chunk → physics-summed hops to the first sequence
+    /// matching `elevation_number` → median availability lag. Assumes the
+    /// next volume uses the same VCP (true in practice; mid-stream VCP
+    /// changes are rare and the estimate just gets revised on the next
+    /// iteration when the new mapper takes over).
+    ///
+    /// Returns `None` when the projection isn't available yet (cold start)
+    /// or when `elevation_number` doesn't appear in the current VCP — the
+    /// caller should fall back to the legacy single-hop estimate in that
+    /// case.
+    pub fn time_until_next_filtered_chunk_across_volumes(
+        &self,
+        elevation_number: u8,
+    ) -> Option<std::time::Duration> {
+        let mapper = self.elevation_mapper.as_ref()?;
+        let final_seq = mapper.final_sequence();
+        let target = (2..=final_seq).find(|&seq| {
+            mapper
+                .get_chunk_metadata(seq)
+                .and_then(|m| m.elevation_number())
+                == Some(elevation_number as usize)
+        })?;
+
+        let projected_end_secs = self.projected_volume_end_collection_secs()?;
+        let inter_volume_gap = ChunkTimingModel::inter_volume_gap_secs();
+
+        let mut intra_volume_secs = 0.0;
+        if target > 1 {
+            intra_volume_secs += ChunkTimingModel::start_to_first_intermediate_gap_secs();
+            for seq in 2..target {
+                let prev_meta = mapper.get_chunk_metadata(seq)?;
+                let next_meta = mapper.get_chunk_metadata(seq + 1)?;
+                intra_volume_secs +=
+                    ChunkTimingModel::estimate_chunk_interval_breakdown(prev_meta, next_meta)
+                        .total_secs;
+            }
+        }
+
+        let lag_secs = self
+            .timing_stats
+            .median_availability_lag_secs()
+            .unwrap_or(5.0);
+        let target_avail_secs =
+            projected_end_secs + inter_volume_gap + intra_volume_secs + lag_secs;
+        let now_secs = Utc::now().timestamp_millis() as f64 / 1000.0;
+        let wait_secs = (target_avail_secs - now_secs).max(0.0);
+        Some(std::time::Duration::from_secs_f64(wait_secs))
     }
 
     /// Sequences in `[lower, upper]` matching `predicate`. Wraps the mapper

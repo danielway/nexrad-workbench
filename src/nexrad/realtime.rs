@@ -963,7 +963,7 @@ async fn streaming_loop(
         let is_first_iter_for_chunk = cur_predicted_at.is_none();
         let (time_until_next_opt, _target_sequence) = match active_filter {
             StreamingFilter::All => (iter.time_until_next().and_then(|d| d.to_std().ok()), None),
-            StreamingFilter::Elevation(_) => match iter.next_matching_chunk_diagnostics(
+            StreamingFilter::Elevation(elev_n) => match iter.next_matching_chunk_diagnostics(
                 // accept_end=false: synthesize the volume-boundary signal
                 // when the filter excludes the End chunk's elevation rather
                 // than wasting a download on data the worker would discard.
@@ -981,7 +981,28 @@ async fn streaming_loop(
                     }
                     (dur, Some(target))
                 }
-                None => (None, None),
+                None => {
+                    // Filter excludes every remaining sequence in this volume.
+                    // Without a wait estimate here the loop would burn its
+                    // retry budget polling for the next volume's Start before
+                    // the inter-volume gap (and the intra-volume time before
+                    // the user's elevation reappears) has passed. Estimate
+                    // the projected availability of the user's elevation in
+                    // the next volume; fall back to the legacy single-hop
+                    // estimate when projection data isn't available yet.
+                    let cross_volume = iter
+                        .time_until_next_filtered_chunk_across_volumes(elev_n)
+                        .or_else(|| iter.time_until_next().and_then(|d| d.to_std().ok()));
+                    if let Some(d) = cross_volume {
+                        log::debug!(
+                            "streaming_loop: no match remains in current volume for filter \
+                             elev {}, sleeping {:.1}s until next-volume target",
+                            elev_n,
+                            d.as_secs_f64(),
+                        );
+                    }
+                    (cross_volume, None)
+                }
             },
         };
         if is_first_iter_for_chunk {
