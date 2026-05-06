@@ -114,10 +114,10 @@ scan_index:  "KDMX|1715000000000"
 
 Two range helpers cover the common cases:
 
-| Range                 | Bounds                                | Used by                                           |
-| --------------------- | ------------------------------------- | ------------------------------------------------- |
-| `site_prefix_range`   | `"KDMX\|"` .. `"KDMX\|\u{FFFF}"`        | `list_scans`, `delete_overlapping_scans`          |
-| `scan_prefix_range`   | `"KDMX\|MS\|"` .. `"KDMX\|MS\|\u{FFFF}"` | `delete_scan` (sweep-blob prefix delete)          |
+| Range                 | Bounds                                  | Used by                                              |
+| --------------------- | --------------------------------------- | ---------------------------------------------------- |
+| `site_prefix_range`   | `"KDMX\|"` .. `"KDMX\|\u{FFFF}"`         | `list_scans`                                         |
+| `scan_prefix_range`   | `"KDMX\|MS\|"` .. `"KDMX\|MS\|\u{FFFF}"`  | crate-private `delete_scan` (sweep-blob prefix delete) |
 
 `\u{FFFF}` sorts after any character that appears in real keys, giving
 a tight inclusive upper bound. `delete_scan` issues a single
@@ -160,8 +160,6 @@ multi-MB copy on the render hot path.
 | `put_scan_entry(&entry)`                                          | Overwrite a full entry                                   |
 | `scan_availability(&ScanKey) -> Option<ScanIndexEntry>`           | Single-key read                                          |
 | `list_scans(site, start, end) -> Vec<ScanIndexEntry>`             | Site-prefix range, then time filter, sorted by start     |
-| `delete_scan(&ScanKey) -> u64`                                    | Cross-store delete (sweeps + index); returns bytes freed |
-| `delete_overlapping_scans(site, archive_start, archive_end, exclude_key)` | Replace real-time scans superseded by a fresh archive    |
 
 ### Cache management
 
@@ -214,7 +212,7 @@ and falls back to `{:?}` otherwise. This gives readable strings like
   └────────────────────┘  (transferable) └─────────┬──────────┘
                                                    │
                                        put_sweeps_batch
-                                       put_scan_entry / merge
+                                       put_scan_entry
                                                    │
                                                    ▼
                                           ┌──────────────────┐
@@ -241,13 +239,15 @@ Two notable shapes:
   thread-local until an elevation completes, then `scan_availability`
   + `ScanIndexEntry::merge_chunk` + `put_scan_entry` updates the index
   incrementally. Each chunk's writes happen in their own readwrite
-  transaction.
+  transaction. The Start chunk reads any pre-existing entry for this
+  scan key and pre-populates `completed_elevations` so a resume doesn't
+  reprocess sweeps that are already cached.
 
-- **Archive ingest** (`worker_ingest`) decodes the entire volume,
-  calls `delete_overlapping_scans` to evict any real-time scans the
-  archive supersedes, then `put_sweeps_batch` + `put_scan_entry` in
-  two transactions. The archive's data is canonical and replaces
-  whatever real-time data the cache happened to hold.
+- **Archive ingest** (`worker_ingest`) decodes the entire volume, then
+  writes `put_sweeps_batch` + `put_scan_entry` in two transactions.
+  Archive and real-time entries for the same physical volume can
+  coexist in the cache when their `scan_start` keys differ; LRU
+  eviction reclaims space over time.
 
 ## 8. What lives outside this module
 

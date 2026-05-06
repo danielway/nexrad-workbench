@@ -130,10 +130,6 @@ pub enum RealtimeResult {
         is_start: bool,
         is_end: bool,
         timestamp: i64,
-        /// When true, the worker should skip deleting overlapping scans on
-        /// is_start. Set when resuming a volume that already has cached data
-        /// in IDB, to avoid destroying previously-stored sweep blobs.
-        skip_overlap_delete: bool,
         /// Whether this chunk is the last chunk of its sweep, derived from
         /// the VCP mapper at emission time. The worker accumulator uses this
         /// to flush the in-progress elevation as soon as the last chunk is
@@ -447,7 +443,6 @@ async fn emit_backfill_chunks(
             is_start: false,
             is_end: false,
             timestamp,
-            skip_overlap_delete: false,
             is_last_in_sweep,
         });
         s.results.push(RealtimeResult::ChunkReceived {
@@ -699,7 +694,6 @@ async fn streaming_loop(
                 timestamp: current_scan_start_secs,
                 // Skip overlap deletion — we're only backfilling the current
                 // sweep, not replacing the full volume.
-                skip_overlap_delete: true,
                 // Start chunks are metadata-only and aren't part of any sweep.
                 is_last_in_sweep: Some(false),
             });
@@ -826,7 +820,6 @@ async fn streaming_loop(
                 is_start: false,
                 is_end: latest_is_end,
                 timestamp: current_scan_start_secs,
-                skip_overlap_delete: false,
                 is_last_in_sweep: latest_is_last_in_sweep,
             });
             s.results.push(RealtimeResult::ChunkReceived {
@@ -880,7 +873,6 @@ async fn streaming_loop(
                 is_start: latest_is_start,
                 is_end: latest_is_end,
                 timestamp: current_scan_start_secs,
-                skip_overlap_delete: false,
                 is_last_in_sweep: init_is_last_in_sweep,
             });
             s.results.push(RealtimeResult::ChunkReceived {
@@ -1308,7 +1300,6 @@ async fn streaming_loop(
                         is_start,
                         is_end,
                         timestamp: current_scan_start_secs,
-                        skip_overlap_delete: false,
                         is_last_in_sweep: chunk_is_last_in_sweep,
                     });
                     // Emit UI status update

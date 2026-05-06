@@ -432,7 +432,9 @@ impl IndexedDbStore {
     /// Sweeps are deleted via an IDB key range covering the prefix
     /// `"SITE|SCAN_MS|"`, so this works regardless of which products were
     /// stored.
-    pub async fn delete_scan(&self, scan: &ScanKey) -> Result<u64, DataError> {
+    ///
+    /// Crate-private: external callers should evict via `evict_to_size`.
+    pub(crate) async fn delete_scan(&self, scan: &ScanKey) -> Result<u64, DataError> {
         self.ensure_open().await?;
 
         let scan_storage_key = scan.to_storage_key();
@@ -501,60 +503,6 @@ impl IndexedDbStore {
         }
 
         Ok(evicted_count)
-    }
-
-    /// Deletes all existing scans for a site whose time range overlaps with the
-    /// given archive scan. Returns the number of scans deleted.
-    ///
-    /// A scan overlaps if its [start, end] range intersects the archive scan's
-    /// range. Scans without an end timestamp use start as the end.
-    /// The scan matching `exclude_key` (the archive scan itself) is skipped.
-    pub async fn delete_overlapping_scans(
-        &self,
-        site: &SiteId,
-        archive_start: UnixMillis,
-        archive_end_ms: i64,
-        exclude_key: &ScanKey,
-    ) -> Result<u32, DataError> {
-        self.ensure_open().await?;
-
-        // Read this site's scan entries via the site-prefix range.
-        let range = site_prefix_range(site)?;
-        let result = self
-            .read(STORE_SCAN_INDEX, |store| {
-                store.get_all_with_key(&range.into())
-            })
-            .await?;
-        let site_entries: Vec<ScanIndexEntry> = deserialize_js_array(&Array::from(&result));
-
-        let mut to_delete: Vec<ScanKey> = Vec::new();
-        for entry in &site_entries {
-            if entry.scan == *exclude_key {
-                continue;
-            }
-            let existing_start = entry.scan.scan_start.0;
-            let existing_end = entry
-                .end_timestamp_secs
-                .map(|s| s * 1000)
-                .unwrap_or(existing_start);
-
-            // Two ranges overlap if start_a <= end_b AND start_b <= end_a
-            if archive_start.0 <= existing_end && existing_start <= archive_end_ms {
-                to_delete.push(entry.scan.clone());
-            }
-        }
-
-        if to_delete.is_empty() {
-            return Ok(0);
-        }
-
-        let count = to_delete.len() as u32;
-        for scan in &to_delete {
-            log::debug!("Deleting overlapping scan {} (replaced by archive)", scan);
-            self.delete_scan(scan).await?;
-        }
-
-        Ok(count)
     }
 
     /// Queries the browser's storage quota via `navigator.storage.estimate()`.

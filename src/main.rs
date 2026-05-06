@@ -1143,7 +1143,6 @@ impl WorkbenchApp {
                 is_start,
                 is_end,
                 timestamp,
-                skip_overlap_delete,
                 is_last_in_sweep,
             } => {
                 log::debug!(
@@ -1204,7 +1203,6 @@ impl WorkbenchApp {
                     is_start,
                     is_end,
                     file_name,
-                    skip_overlap_delete,
                     is_last_in_sweep,
                 );
             }

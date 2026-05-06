@@ -216,7 +216,6 @@ pub(super) struct IngestChunkRequestMsg<'a> {
     pub is_start: bool,
     pub is_end: bool,
     pub file_name: &'a str,
-    pub skip_overlap_delete: bool,
     pub is_last_in_sweep: bool,
 }
 

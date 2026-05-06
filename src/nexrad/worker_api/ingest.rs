@@ -109,26 +109,6 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             extract_ms,
         );
 
-        // --- Phase 2.5: Delete any overlapping scans from IDB ---
-        let archive_end_ms = end_timestamp_secs * 1000;
-        let deleted = store
-            .delete_overlapping_scans(
-                &SiteId(site_id.clone()),
-                scan_key.scan_start,
-                archive_end_ms,
-                &scan_key,
-            )
-            .await
-            .map_err(|e| {
-                wasm_bindgen::JsValue::from_str(&format!(
-                    "Failed to delete overlapping scans: {}",
-                    e
-                ))
-            })?;
-        if deleted > 0 {
-            log::debug!("ingest: replaced {} overlapping scan(s)", deleted);
-        }
-
         // --- Phase 3: Store sweep blobs in IDB ---
         let t_store = web_time::Instant::now();
         store.put_sweeps_batch(&sweep_blobs).await.map_err(|e| {
@@ -241,7 +221,6 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let is_start = p.is_start;
         let is_end = p.is_end;
         let file_name = p.file_name;
-        let skip_overlap_delete = p.skip_overlap_delete;
         let is_last_in_sweep = p.is_last_in_sweep;
 
         let data_len = data.len();
@@ -258,57 +237,23 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
             let scan_key = ScanKey::new(site_id.as_str(), UnixMillis::from_secs(timestamp_secs));
 
-            // Pre-populate completed_elevations from IDB when resuming a
-            // volume that already has cached sweep data, so the accumulator
-            // won't overwrite existing complete sweeps with partial data.
+            // Pre-populate completed_elevations from any pre-existing IDB
+            // entry for this scan, so a resume doesn't reprocess already-
+            // cached sweeps. New scans return None here and start empty.
             let mut pre_completed = std::collections::HashSet::new();
-
-            if skip_overlap_delete {
-                log::debug!(
-                    "ingest_chunk: skipping overlap delete (resuming volume with cached data)"
-                );
-                let store = idb_store().await?;
-                if let Ok(Some(entry)) = store.scan_availability(&scan_key).await {
-                    if let Some(ref sweeps) = entry.sweeps {
-                        for s in sweeps {
-                            pre_completed.insert(s.elevation_number);
-                        }
+            let store = idb_store().await?;
+            if let Ok(Some(entry)) = store.scan_availability(&scan_key).await {
+                if let Some(ref sweeps) = entry.sweeps {
+                    for s in sweeps {
+                        pre_completed.insert(s.elevation_number);
                     }
                 }
-                if !pre_completed.is_empty() {
-                    log::debug!(
-                        "ingest_chunk: pre-populated {} completed elevations from IDB",
-                        pre_completed.len()
-                    );
-                }
-            } else {
-                // --- Delete any overlapping scans so we don't double-store ---
-                let overlap_start_secs = volume_header_time_secs
-                    .map(|t| t as i64)
-                    .unwrap_or(timestamp_secs);
-                let overlap_start_ms = overlap_start_secs * 1000;
-                let overlap_end_ms = (overlap_start_secs + 600) * 1000;
-                let store = idb_store().await?;
-                let deleted = store
-                    .delete_overlapping_scans(
-                        &SiteId(site_id.clone()),
-                        UnixMillis(overlap_start_ms),
-                        overlap_end_ms,
-                        &scan_key,
-                    )
-                    .await
-                    .map_err(|e| {
-                        wasm_bindgen::JsValue::from_str(&format!(
-                            "Failed to delete overlapping scans: {}",
-                            e
-                        ))
-                    })?;
-                if deleted > 0 {
-                    log::debug!(
-                        "ingest_chunk: replaced {} overlapping scan(s) before real-time ingest",
-                        deleted
-                    );
-                }
+            }
+            if !pre_completed.is_empty() {
+                log::debug!(
+                    "ingest_chunk: pre-populated {} completed elevations from IDB",
+                    pre_completed.len()
+                );
             }
 
             // --- Reset accumulator ---
