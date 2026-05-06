@@ -2573,12 +2573,24 @@ impl WorkbenchApp {
             self.streaming.stop_realtime();
         }
 
-        // Update live mode countdown from realtime channel
+        // Update live mode countdown from realtime channel. The streaming
+        // loop's interruptible_sleep pulses its remaining duration into the
+        // channel every 250ms; mirror it onto live_mode_state and flip the
+        // phase to WaitingForChunk if we're not already there. Without that
+        // phase flip the countdown plumbing computes the right number but
+        // every UI surface (top bar, timeline, tooltips) gates it behind
+        // `phase == WaitingForChunk` and falls back to "receiving…". This
+        // matters for filter mode where backfill emissions and synthetic
+        // ends leave the phase pointed at Streaming with no follow-up event
+        // to flip it.
         if self.state.live_mode_state.is_active() {
             if let Some(duration) = self.streaming.time_until_next() {
                 let now = js_sys::Date::now() / 1000.0;
                 self.state.live_mode_state.next_chunk_available_at_secs =
                     Some(now + duration.as_secs_f64());
+                if self.state.live_mode_state.phase == state::LivePhase::Streaming {
+                    self.state.live_mode_state.phase = state::LivePhase::WaitingForChunk;
+                }
             }
         }
     }
