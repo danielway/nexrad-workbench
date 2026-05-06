@@ -27,6 +27,7 @@ use js_sys::{Array, ArrayBuffer, Uint8Array};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
@@ -110,7 +111,7 @@ impl StorageQuotaEstimate {
 }
 
 /// Current database schema version.
-const DATABASE_VERSION: u32 = 3;
+const DATABASE_VERSION: u32 = 4;
 
 /// Database name.
 const DATABASE_NAME: &str = "nexrad-workbench";
@@ -118,10 +119,18 @@ const DATABASE_NAME: &str = "nexrad-workbench";
 /// Object store names.
 const STORE_SWEEPS: &str = "sweeps";
 const STORE_SCAN_INDEX: &str = "scan_index";
+/// Per-scan last-access timestamps for LRU eviction. Lives in its own
+/// store so that fire-and-forget access bumps from `get_sweep` don't
+/// race with chunk-ingest's read-modify-write of the scan-index entry.
+const STORE_SCAN_TOUCHES: &str = "scan_touches";
 
 /// Sentinel character used as the upper bound of prefix key ranges.
 /// `\u{FFFF}` sorts after any reasonable storage-key character.
 const PREFIX_RANGE_UPPER: char = '\u{FFFF}';
+
+/// Minimum interval between in-memory touch deduplications. Limits how often
+/// a single scan's `last_accessed_at` is rewritten to IDB during fast scrub.
+const TOUCH_THROTTLE_MS: i64 = 60_000;
 
 /// Open-state machine that coalesces concurrent `open()` calls into a single
 /// underlying `indexedDB.open(...)`. Without this, multiple `spawn_local`
@@ -138,6 +147,10 @@ enum OpenState {
 #[derive(Clone)]
 pub struct IndexedDbStore {
     state: Rc<RefCell<OpenState>>,
+    /// Per-scan in-memory throttle for touch writes. Maps scan key to the
+    /// last time `touch_scan` enqueued an IDB write for it. A second touch
+    /// inside `TOUCH_THROTTLE_MS` is a no-op.
+    recent_touches: Rc<RefCell<HashMap<ScanKey, UnixMillis>>>,
 }
 
 impl Default for IndexedDbStore {
@@ -150,6 +163,7 @@ impl IndexedDbStore {
     pub fn new() -> Self {
         Self {
             state: Rc::new(RefCell::new(OpenState::Closed)),
+            recent_touches: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
@@ -344,13 +358,19 @@ impl IndexedDbStore {
         .await
     }
 
-    /// Gets a pre-computed sweep blob by key, returning the raw JS ArrayBuffer.
+    /// Gets a pre-computed sweep blob, returning the raw JS ArrayBuffer.
     /// Returning the JS-side buffer avoids copying the (potentially several-MB)
     /// blob through Rust memory before it is uploaded to the GPU.
-    pub async fn get_sweep(&self, key: &str) -> Result<Option<ArrayBuffer>, DataError> {
+    ///
+    /// Fires a fire-and-forget `touch_scan` for the scan-key portion after
+    /// returning the buffer, so LRU eviction prefers recently-rendered scans.
+    pub async fn get_sweep(&self, key: &SweepDataKey) -> Result<Option<ArrayBuffer>, DataError> {
         self.ensure_open().await?;
+        let storage_key = key.to_storage_key();
         let result = self
-            .read(STORE_SWEEPS, |store| store.get(&JsValue::from_str(key)))
+            .read(STORE_SWEEPS, |store| {
+                store.get(&JsValue::from_str(&storage_key))
+            })
             .await?;
 
         if result.is_undefined() || result.is_null() {
@@ -360,7 +380,97 @@ impl IndexedDbStore {
         let buffer: ArrayBuffer = result
             .dyn_into()
             .map_err(|_| DataError::SerdeError("Expected ArrayBuffer".to_string()))?;
+
+        self.touch_scan(&key.scan);
         Ok(Some(buffer))
+    }
+
+    /// Bumps `last_accessed_at` for `scan` to now in the `scan_touches`
+    /// store. Fire-and-forget — the IDB write is spawned and not awaited so
+    /// the render hot path is unaffected. Throttled in-memory: a second
+    /// touch for the same scan within `TOUCH_THROTTLE_MS` is a no-op.
+    /// Errors are logged at debug level and otherwise swallowed.
+    ///
+    /// Lives in its own object store rather than mutating
+    /// `ScanIndexEntry.last_accessed_at` because chunk-ingest runs an
+    /// (intentionally non-atomic) read-modify-write on the entry to merge
+    /// in new chunk state. A racing touch RMW would clobber merge results.
+    /// A dedicated single-field store sidesteps that race.
+    fn touch_scan(&self, scan: &ScanKey) {
+        let now = UnixMillis::now();
+        {
+            let mut touches = self.recent_touches.borrow_mut();
+            if let Some(last) = touches.get(scan) {
+                if now.0 - last.0 < TOUCH_THROTTLE_MS {
+                    return;
+                }
+            }
+            touches.insert(scan.clone(), now);
+        }
+
+        let store = self.clone();
+        let scan = scan.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            if let Err(e) = store.write_touch(&scan, now).await {
+                log::debug!("touch_scan {} failed: {}", scan, e);
+            }
+        });
+    }
+
+    async fn write_touch(&self, scan: &ScanKey, time: UnixMillis) -> Result<(), DataError> {
+        self.ensure_open().await?;
+        let key = scan.to_storage_key();
+        let value = JsValue::from_f64(time.0 as f64);
+        self.write_tx(&[STORE_SCAN_TOUCHES], |wtx| {
+            wtx.object_store(STORE_SCAN_TOUCHES)?
+                .put_with_key(&value, &JsValue::from_str(&key))
+                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            Ok(())
+        })
+        .await
+    }
+
+    /// Reads every entry in the `scan_touches` store as a map. Used by
+    /// LRU eviction to join with `scan_index`.
+    async fn read_all_touches(&self) -> Result<HashMap<ScanKey, UnixMillis>, DataError> {
+        let db = self.get_db()?;
+        let tx = db
+            .transaction_with_str_and_mode(STORE_SCAN_TOUCHES, IdbTransactionMode::Readonly)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+        let store = tx
+            .object_store(STORE_SCAN_TOUCHES)
+            .map_err(|e| DataError::TransactionFailed(js_err(e)))?;
+
+        // Issue both requests synchronously so the transaction stays active
+        // across the awaits; they queue into the tx and resolve in order.
+        let keys_req = store
+            .get_all_keys()
+            .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+        let vals_req = store
+            .get_all()
+            .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+
+        let keys_result = wait_for_request(&keys_req).await?;
+        let vals_result = wait_for_request(&vals_req).await?;
+
+        let keys = Array::from(&keys_result);
+        let vals = Array::from(&vals_result);
+        let len = keys.length().min(vals.length());
+
+        let mut map = HashMap::with_capacity(len as usize);
+        for i in 0..len {
+            let Some(key_str) = keys.get(i).as_string() else {
+                continue;
+            };
+            let Some(scan) = ScanKey::from_storage_key(&key_str) else {
+                continue;
+            };
+            let Some(ms) = vals.get(i).as_f64() else {
+                continue;
+            };
+            map.insert(scan, UnixMillis(ms as i64));
+        }
+        Ok(map)
     }
 
     // ========================================================================
@@ -430,7 +540,7 @@ impl IndexedDbStore {
     ///
     /// Sweeps are deleted via an IDB key range covering the prefix
     /// `"SITE|SCAN_MS|"`, so this works regardless of which products were
-    /// stored.
+    /// stored. The scan's `scan_touches` entry is also dropped.
     ///
     /// Crate-private: external callers should evict via `evict_to_size`.
     pub(crate) async fn delete_scan(&self, scan: &ScanKey) -> Result<u64, DataError> {
@@ -445,28 +555,42 @@ impl IndexedDbStore {
 
         let sweeps_range = scan_prefix_range(scan)?;
 
-        self.write_tx(&[STORE_SWEEPS, STORE_SCAN_INDEX], |wtx| {
-            wtx.object_store(STORE_SWEEPS)?
-                .delete(&sweeps_range.into())
-                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-            wtx.object_store(STORE_SCAN_INDEX)?
-                .delete(&JsValue::from_str(&scan_storage_key))
-                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-            Ok(())
-        })
+        self.write_tx(
+            &[STORE_SWEEPS, STORE_SCAN_INDEX, STORE_SCAN_TOUCHES],
+            |wtx| {
+                wtx.object_store(STORE_SWEEPS)?
+                    .delete(&sweeps_range.into())
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+                wtx.object_store(STORE_SCAN_INDEX)?
+                    .delete(&JsValue::from_str(&scan_storage_key))
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+                wtx.object_store(STORE_SCAN_TOUCHES)?
+                    .delete(&JsValue::from_str(&scan_storage_key))
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+                Ok(())
+            },
+        )
         .await?;
+
+        // Drop the in-memory throttle entry so a subsequent re-ingest of the
+        // same scan key isn't suppressed.
+        self.recent_touches.borrow_mut().remove(scan);
 
         log::debug!("Deleted scan {} ({} bytes freed)", scan, bytes_freed);
         Ok(bytes_freed)
     }
 
-    /// Evicts scans (oldest `last_accessed_at` first) until total cache size is
-    /// at or below `target_bytes`. Returns the number of scans evicted.
+    /// Evicts scans (oldest access first) until total cache size is at or
+    /// below `target_bytes`. Returns the number of scans evicted.
     ///
-    /// Reads all entries once, sorts by LRU, and deletes one scan at a time
-    /// until the running size estimate drops under target. Each delete is its
-    /// own transaction (so a failure mid-eviction still leaves a consistent
-    /// store).
+    /// Sort key is the `scan_touches` timestamp when present (set by reads
+    /// via `touch_scan`), falling back to `entry.last_accessed_at` (set on
+    /// creation, never bumped) for scans never rendered.
+    ///
+    /// Reads all entries + touches once, sorts, and deletes one scan at a
+    /// time until the running size estimate drops under target. Each delete
+    /// is its own transaction (so a failure mid-eviction still leaves a
+    /// consistent store).
     pub async fn evict_to_size(&self, target_bytes: u64) -> Result<u32, DataError> {
         self.ensure_open().await?;
 
@@ -475,7 +599,15 @@ impl IndexedDbStore {
         if current_size <= target_bytes {
             return Ok(0);
         }
-        entries.sort_by_key(|e| e.last_accessed_at.0);
+
+        let touches = self.read_all_touches().await?;
+        entries.sort_by_key(|e| {
+            touches
+                .get(&e.scan)
+                .copied()
+                .unwrap_or(e.last_accessed_at)
+                .0
+        });
 
         let mut evicted_count = 0u32;
         for entry in &entries {
@@ -519,16 +651,24 @@ impl IndexedDbStore {
     pub async fn clear_all(&self) -> Result<(), DataError> {
         self.ensure_open().await?;
 
-        self.write_tx(&[STORE_SWEEPS, STORE_SCAN_INDEX], |wtx| {
-            wtx.object_store(STORE_SWEEPS)?
-                .clear()
-                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-            wtx.object_store(STORE_SCAN_INDEX)?
-                .clear()
-                .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-            Ok(())
-        })
+        self.write_tx(
+            &[STORE_SWEEPS, STORE_SCAN_INDEX, STORE_SCAN_TOUCHES],
+            |wtx| {
+                wtx.object_store(STORE_SWEEPS)?
+                    .clear()
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+                wtx.object_store(STORE_SCAN_INDEX)?
+                    .clear()
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+                wtx.object_store(STORE_SCAN_TOUCHES)?
+                    .clear()
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+                Ok(())
+            },
+        )
         .await?;
+
+        self.recent_touches.borrow_mut().clear();
 
         log::info!("Cleared all IndexedDB stores");
         Ok(())
@@ -644,7 +784,7 @@ async fn open_database() -> Result<IdbDatabase, DataError> {
         }
 
         // Create fresh stores
-        for store_name in [STORE_SWEEPS, STORE_SCAN_INDEX] {
+        for store_name in [STORE_SWEEPS, STORE_SCAN_INDEX, STORE_SCAN_TOUCHES] {
             db.create_object_store(store_name)
                 .expect("Failed to create object store");
             log::info!("Created IndexedDB store: {}", store_name);

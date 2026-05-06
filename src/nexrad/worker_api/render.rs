@@ -30,7 +30,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let t_fetch = web_time::Instant::now();
         let sweep_key = SweepDataKey::new(scan_key, elevation_number, &product_str);
         let blob_buffer = store
-            .get_sweep(&sweep_key.to_storage_key())
+            .get_sweep(&sweep_key)
             .await
             .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to fetch sweep: {}", e)))?
             .ok_or_else(|| {
@@ -203,7 +203,7 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         for &elev_num in &elevation_numbers {
             let sweep_key = SweepDataKey::new(scan_key.clone(), elev_num, &product_str);
-            let blob_buffer = match store.get_sweep(&sweep_key.to_storage_key()).await {
+            let blob_buffer = match store.get_sweep(&sweep_key).await {
                 Ok(Some(buf)) => buf,
                 _ => continue, // skip missing elevations
             };

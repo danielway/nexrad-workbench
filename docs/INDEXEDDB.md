@@ -13,13 +13,14 @@ so the same code compiles and runs in both contexts.
 
 ## 1. Schema
 
-Database `nexrad-workbench`, version `3`. Two object stores; both keyed
+Database `nexrad-workbench`, version `4`. Three object stores; all keyed
 by string.
 
-| Store        | Key format               | Value                                                          |
-| ------------ | ------------------------ | -------------------------------------------------------------- |
-| `sweeps`     | `SITE\|SCAN_MS\|ELEV_NUM\|PRODUCT` | `ArrayBuffer` (raw gate values + 72-byte header — see `keys.rs`) |
-| `scan_index` | `SITE\|SCAN_MS`            | `ScanIndexEntry` (structured-cloned via `serde-wasm-bindgen`)  |
+| Store          | Key format                          | Value                                                            |
+| -------------- | ----------------------------------- | ---------------------------------------------------------------- |
+| `sweeps`       | `SITE\|SCAN_MS\|ELEV_NUM\|PRODUCT`  | `ArrayBuffer` (raw gate values + 72-byte header — see §2a)       |
+| `scan_index`   | `SITE\|SCAN_MS`                     | `ScanIndexEntry` (structured-cloned via `serde-wasm-bindgen`)    |
+| `scan_touches` | `SITE\|SCAN_MS`                     | `i64` Unix-millisecond timestamp of the last render of any sweep in this scan |
 
 Schema upgrades are **destructive**: `onupgradeneeded` deletes every
 existing object store and recreates them. The cache is treated as
@@ -112,17 +113,26 @@ the structured-clone algorithm.
 strategy (cuts, waveforms, azimuth rates) used by the timing model and
 forecast UI.
 
-## 3. Why two stores
+### 2c. `scan_touches` value: `i64`
+
+A bare Unix-millisecond timestamp. Written by `touch_scan` after a
+sweep render, joined by `evict_to_size` with `scan_index` to compute
+LRU order. See §10 for why access tracking lives in its own store
+rather than as a field on `ScanIndexEntry`.
+
+## 3. Why three stores
 
 The split is driven by access patterns. Sweep blobs are large
 (megabytes) and read by exact key on the render hot path; they need
 zero-copy access from JS to GPU. Scan-index entries are tiny, queried
 in bulk for timeline and eviction work, and benefit from structured
 clone (so they round-trip Rust types without a JSON detour).
+`scan_touches` is split off because access bumps would otherwise race
+chunk-ingest's read-modify-write of the index entry — see §10.
 
-Co-locating them in a single store would force every timeline query to
-either drag blob data through memory, or maintain a parallel index
-anyway.
+Co-locating sweeps + index in a single store would force every
+timeline query to either drag blob data through memory, or maintain a
+parallel index anyway.
 
 ## 4. Concurrency model
 
@@ -243,14 +253,16 @@ batch; passing an empty `sweep_blobs` slice writes the entry alone
 
 ### Sweep blobs
 
-| Method                                         | Purpose                                                        |
-| ---------------------------------------------- | -------------------------------------------------------------- |
-| `get_sweep(key) -> Option<ArrayBuffer>`        | Single-key read; returns the JS buffer directly (no Rust copy) |
+| Method                                                 | Purpose                                                        |
+| ------------------------------------------------------ | -------------------------------------------------------------- |
+| `get_sweep(&SweepDataKey) -> Option<ArrayBuffer>`      | Single-key read; returns the JS buffer directly (no Rust copy) |
 
 `get_sweep` deliberately does not deserialize. Sweeps are uploaded to
 the GPU as `R32F` textures from a JS-side `ArrayBuffer`, and dragging
 the bytes through Rust memory before transferring them would add a
-multi-MB copy on the render hot path.
+multi-MB copy on the render hot path. Taking a `&SweepDataKey` instead
+of a stringified key lets the method extract the scan portion to fire
+`touch_scan` after the read (see §10).
 
 ### Scan index
 
@@ -266,11 +278,11 @@ the "metadata-only update" case.
 
 ### Cache management
 
-| Method                                | Purpose                                                                        |
-| ------------------------------------- | ------------------------------------------------------------------------------ |
-| `total_cache_size() -> u64`           | Sum of `total_size_bytes` across all `scan_index` entries                      |
-| `evict_to_size(target_bytes) -> u32`  | Read entries once, sort by `last_accessed_at`, delete oldest until at/below target |
-| `clear_all()`                         | `IdbObjectStore::clear` on both stores; preserves schema and version           |
+| Method                                | Purpose                                                                                          |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `total_cache_size() -> u64`           | Sum of `total_size_bytes` across all `scan_index` entries                                        |
+| `evict_to_size(target_bytes) -> u32`  | Read entries + touches, sort by `scan_touches` (fallback: `last_accessed_at`), delete oldest first |
+| `clear_all()`                         | `IdbObjectStore::clear` on all three stores; preserves schema and version                        |
 
 `clear_all` does **not** call `deleteDatabase`. `deleteDatabase` blocks
 until every connection (including the worker's) closes, which would
@@ -370,3 +382,56 @@ Two notable shapes:
 - Cross-tab coordination — none. Multiple tabs of the same site share
   the database but do not coordinate writes; ingest is idempotent at
   the scan-key level so concurrent tabs at worst duplicate work.
+
+## 10. Access-time tracking
+
+LRU eviction wants the order "least recently *rendered*," not "least
+recently written." The implementation is `touch_scan(&ScanKey)`,
+called fire-and-forget by `get_sweep` after returning the buffer.
+
+**Why a separate store rather than mutating
+`ScanIndexEntry.last_accessed_at`.** Chunk-ingest does a
+read-modify-write on the index entry to merge new chunk state in
+(`scan_availability` → `merge_chunk` → `put_scan`). If a touch did
+the same RMW dance against the same entry, the two could interleave:
+
+```
+T1  ingest reads entry (3 records)
+T2  touch  reads entry (3 records)
+T3  ingest writes (4 records, +new sweep meta)
+T4  touch  writes (3 records, last_accessed_at = now)   ← clobbers ingest
+```
+
+The window is sub-millisecond and the race is rare, but when it
+happens it loses a chunk's worth of merge state. A dedicated
+single-field store (`scan_touches`) sidesteps the problem entirely —
+the touch path never reads or writes `scan_index`, so it cannot
+collide with merges.
+
+**Throttle.** `IndexedDbStore` holds an in-memory
+`HashMap<ScanKey, UnixMillis>` of recent touches. A second touch for
+the same scan within 60 s is a no-op. This keeps fast scrubbing from
+queueing dozens of writes per second; LRU only needs minute-grain
+ordering anyway. The map is per-store, lost on tab close — that's
+fine, the IDB store has the persistent state.
+
+**Fire-and-forget.** `touch_scan` returns immediately after the
+throttle check. The IDB write is dispatched via
+`wasm_bindgen_futures::spawn_local` and the render path doesn't await
+it. Errors are logged at debug level. Worst case, a touch is lost and
+the next one (after the throttle expires) writes a slightly newer
+timestamp, which is still correct LRU behaviour.
+
+**Eviction join.** `evict_to_size` reads `scan_index` and
+`scan_touches` once each, then sorts:
+
+```rust
+entries.sort_by_key(|e| {
+    touches.get(&e.scan).copied().unwrap_or(e.last_accessed_at).0
+});
+```
+
+`ScanIndexEntry.last_accessed_at` is the fallback for scans that have
+never been rendered (e.g. archive-ingested but not yet looked at). It
+is set on creation and never bumped by reads, so it effectively means
+"created at" for evict-time purposes.
