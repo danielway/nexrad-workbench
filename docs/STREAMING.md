@@ -18,8 +18,7 @@ on top of those definitions and focuses on the operational flow.
 
 | Layer | Type | Role |
 | --- | --- | --- |
-| Main loop owner | [`StreamingManager`](../src/nexrad/streaming_manager.rs) | Façade the egui update loop talks to. Forwards filter changes and per-frame observations to the channel; drains results into events. |
-| Channel | [`RealtimeChannel`](../src/nexrad/realtime.rs) | Holds the shared state cell + spawns the streaming task. Provides `try_recv` for the UI and `record_*` setters for observations pushed in from `main.rs`. |
+| Channel | [`RealtimeChannel`](../src/nexrad/realtime.rs) | The single owner the egui update loop talks to. Holds the shared state cell, spawns the streaming task, and exposes the result queue + observation setters + filter sync. |
 | Async task | `streaming_loop` (in [`realtime.rs`](../src/nexrad/realtime.rs)) | The long-running future. One per active site. Owns the iteration, sleeping, polling, and emit. |
 | Iterator state | [`StreamingState`](../src/nexrad/streaming_state.rs) | Replaces `nexrad_data`'s `ChunkIterator`. Holds the current `ChunkIdentifier`, the VCP, the elevation/chunk mapper, and the rolling timing stats. |
 | Predictor | [`timing/`](../src/nexrad/timing/) | Pure functions over `(current_chunk, vcp, mapper, stats)` that return either a wait duration (scheduler) or a per-chunk projection (timeline). |
@@ -30,15 +29,15 @@ mailbox between it and the UI thread.
 ### Communication shape
 
 ```
-egui frame ──poll──▶ StreamingManager ──drain──▶ RealtimeChannel.results
-                                                       ▲
-                                                       │ push
-                                                 streaming_loop
-                                                       │
-                          predict ─ sleep ─ fetch ─ emit
-                                                       │
-                          observation ◀──pending_*──── main.rs
-                          (collection time, lag, filter)
+egui frame ──poll──▶ RealtimeChannel.results
+                              ▲
+                              │ push
+                        streaming_loop
+                              │
+                  predict ─ sleep ─ fetch ─ emit
+                              │
+                  observation ◀──pending_*──── main.rs
+                  (collection time, lag, filter)
 ```
 
 The `pending_*` setters on `RealtimeChannel` are mutate-and-forget — the
@@ -346,9 +345,10 @@ on "Streaming…" for the entire inter-volume gap because
 
 ### 5c. Filter changes mid-stream
 
-`StreamingManager::sync_filter` is called once per egui frame from the
-update loop. It diffs against `last_pushed_filter` and forwards only on
-real changes, calling `RealtimeChannel::set_filter`, which:
+`RealtimeChannel::sync_filter` is called once per egui frame from the
+update loop. It maps the user's `ElevationSelection` into a
+`StreamingFilter` and calls `set_filter`, which short-circuits on equal
+values; on a real change it:
 
 - Stores the new filter in `pending_filter`.
 - Bumps `filter_epoch` (wrapping `u64`).
@@ -473,8 +473,8 @@ the historical chunk list.
   samples yet for the Start chunk's bucket. Expected on cold start; if
   it persists across sessions, check `save_timing_stats`/
   `load_cached_timing_stats` for the site.
-- **Filter change does nothing** — `StreamingManager::sync_filter` has
-  it stuck behind a stale `last_pushed_filter`, or
+- **Filter change does nothing** — `RealtimeChannel::set_filter` is
+  short-circuiting against the existing `pending_filter`, or
   `interruptible_sleep` is not reading `filter_epoch`. Both checks are
   cheap; add a log to confirm `set_filter` is being called.
 - **Loop polls forever after a synthetic volume end** — the cross-

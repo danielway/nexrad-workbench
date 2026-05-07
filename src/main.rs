@@ -142,8 +142,9 @@ pub struct WorkbenchApp {
     /// Download pipeline: channels, queue, archive index, current scan.
     acquisition: nexrad::AcquisitionCoordinator,
 
-    /// Live streaming and backfill lifecycle manager.
-    streaming: nexrad::StreamingManager,
+    /// Live streaming channel: spawns the streaming loop, exposes the result
+    /// queue + observation setters + filter sync to the UI thread.
+    streaming: nexrad::RealtimeChannel,
 
     /// URL state, preferences, and site change detection.
     persistence: nexrad::PersistenceManager,
@@ -468,7 +469,7 @@ impl WorkbenchApp {
             },
             render: nexrad::RenderCoordinator::new(decode_worker),
             acquisition,
-            streaming: nexrad::StreamingManager::new(realtime_channel),
+            streaming: realtime_channel,
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             site_modal_state: {
                 let mut sms = ui::SiteModalState::default();
@@ -905,7 +906,7 @@ impl WorkbenchApp {
         self.streaming
             .sync_filter(&self.state.viz_state.elevation_selection);
         self.streaming
-            .start_live(ctx.clone(), site_id, self.acquisition.facade().clone());
+            .start(ctx.clone(), site_id, self.acquisition.facade().clone());
     }
 
     /// Find the best elevation number for the current elevation selection.
@@ -1060,7 +1061,7 @@ impl WorkbenchApp {
 
         self.state.live_mode_state.stop(reason);
         self.state.playback_state.time_model.disable_realtime_lock();
-        self.streaming.stop_realtime();
+        self.streaming.stop();
 
         // Halt playback unless the user is actively scrubbing/jogging — those
         // paths set the new position themselves. Without this, we leave
@@ -2557,18 +2558,14 @@ impl WorkbenchApp {
         self.streaming
             .sync_filter(&self.state.viz_state.elevation_selection);
 
-        for event in self.streaming.poll() {
-            match event {
-                nexrad::StreamingEvent::Realtime(result) => {
-                    self.handle_realtime_result(result, ctx);
-                }
-            }
+        for result in self.streaming.poll() {
+            self.handle_realtime_result(result, ctx);
         }
 
         // Stop realtime channel if live mode was stopped by UI
-        if !self.state.live_mode_state.is_active() && self.streaming.is_realtime_active() {
+        if !self.state.live_mode_state.is_active() && self.streaming.is_active() {
             log::debug!("Stopping realtime channel (live mode ended)");
-            self.streaming.stop_realtime();
+            self.streaming.stop();
         }
 
         // Update live mode countdown from realtime channel. The streaming

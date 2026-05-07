@@ -79,7 +79,7 @@ Sweep blobs are pre-computed during ingestion so that scrubbing and elevation ch
 
 - `src/main.rs` — App entry, update loop, coordination manager orchestration
 - `src/state/` — Centralized `AppState` with sub-states. UI actions emit `AppCommand` variants processed in the main loop.
-- `src/nexrad/` — Data pipeline: acquisition (`download.rs`, `realtime.rs`), worker communication (`decode_worker/`, `worker_api/`), GPU rendering (`gpu_renderer/`), real-time chunk timing (`timing/`), storm cell detection (`detection/`), national mosaic overlay (`national_mosaic.rs`), coordination managers (`acquisition_coordinator.rs`, `render_coordinator.rs`, `streaming_manager.rs`, `persistence_manager.rs`)
+- `src/nexrad/` — Data pipeline: acquisition (`download.rs`, `realtime.rs`), worker communication (`decode_worker/`, `worker_api/`), GPU rendering (`gpu_renderer/`), real-time chunk timing (`timing/`), storm cell detection (`detection/`), national mosaic overlay (`national_mosaic.rs`), coordination managers (`acquisition_coordinator.rs`, `render_coordinator.rs`, `persistence_manager.rs`)
 - `src/ui/` — egui panels, timeline (`timeline/`), canvas with overlays (`canvas_overlays/`), modals, shortcuts, mobile chrome (`mobile/`)
 - `src/geo/` — Map projection, camera (2D/globe), geographic feature rendering
 - `src/data/` — Site definitions, VCP definitions, storage key types (`ScanKey`, `SweepDataKey`), IndexedDB abstraction
@@ -104,7 +104,7 @@ WASM async spawning: `wasm_bindgen_futures::spawn_local()`.
 Recent refactoring consolidated scattered fields into focused owners:
 - `AcquisitionCoordinator` — download channel, archive index, cache loader, download queue
 - `RenderCoordinator` — decode worker, render request deduplication via `last_render_params`
-- `StreamingManager` — realtime + backfill channel lifecycle
+- `RealtimeChannel` — realtime streaming task lifecycle, result queue, observation drains, filter sync
 - `PersistenceManager` — URL state pushing (throttled), preference saving
 
 ### Worker Protocol

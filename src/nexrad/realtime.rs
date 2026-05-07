@@ -265,6 +265,22 @@ impl RealtimeChannel {
         state.pending_filter = filter;
         state.filter_epoch = state.filter_epoch.wrapping_add(1);
     }
+
+    /// Push the user's elevation selection down as a [`StreamingFilter`].
+    /// Called once per frame from the UI; the underlying [`Self::set_filter`]
+    /// no-ops on equal values, so this is cheap.
+    pub fn sync_filter(&self, selection: &crate::state::ElevationSelection) {
+        self.set_filter(StreamingFilter::from(selection));
+    }
+
+    /// Drain every pending result.
+    pub fn poll(&self) -> Vec<RealtimeResult> {
+        let mut out = Vec::new();
+        while let Some(result) = self.try_recv() {
+            out.push(result);
+        }
+        out
+    }
 }
 
 /// Outcome of `interruptible_sleep`. `Stopped` means the user requested stop;
