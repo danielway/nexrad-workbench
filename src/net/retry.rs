@@ -56,13 +56,21 @@ pub const DEFAULT_POLICY: RetryPolicy = RetryPolicy {
 
 /// Recovery policy for real-time chunk fetch when the timing-prediction-driven
 /// first attempt returns 404. Larger base delay (chunks land seconds late, not
-/// milliseconds), shorter per-attempt timeout (a 404 round-trip is fast),
-/// total budget sized to roughly match the prior 25×500ms+2.5s polling window.
+/// milliseconds), shorter per-attempt timeout (a 404 round-trip is fast).
+///
+/// Sized for robustness against prediction error rather than for the
+/// best-case path: an 8s cap lets a single backoff sleep span the upper tail
+/// of inter-volume gap variance (observed range 7–10s) without spinning
+/// through wasted 404s, and a 45s total budget leaves ~30s of *sleep* budget
+/// after subtracting worst-case per-attempt waits. The cost is that a stream
+/// against a genuinely failing endpoint takes longer to surface the error;
+/// for a real-time viewer that's the right trade — visual idleness already
+/// communicates the failure.
 pub const REALTIME_CHUNK_POLICY: RetryPolicy = RetryPolicy {
     base: Duration::from_millis(500),
-    cap: Duration::from_secs(4),
-    max_attempts: 6,
-    total_budget: Duration::from_secs(15),
+    cap: Duration::from_secs(8),
+    max_attempts: 8,
+    total_budget: Duration::from_secs(45),
     per_attempt_timeout: Duration::from_secs(5),
 };
 
