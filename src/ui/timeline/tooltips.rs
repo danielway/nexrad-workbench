@@ -517,7 +517,11 @@ fn render_scan_tooltip_content(
 
     // Live mode info if this scan matches the active volume
     if live_state.is_active() {
-        if let Some(vol_start) = live_state.current_volume_start {
+        if let Some(vol_start) = live_state
+            .current_volume
+            .as_ref()
+            .map(|a| a.best_start_secs())
+        {
             if (scan.start_time - vol_start).abs() < 30.0 {
                 ui.separator();
                 let received = live_state.elevations_received.len();

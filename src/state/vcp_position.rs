@@ -119,7 +119,7 @@ impl VcpPositionModel {
     /// 3. Library projection (ChunkProjectionInfo) → Projected timing
     /// 4. Fallback: VCP-weighted proportional distribution → Estimated timing
     pub fn from_live(live: &LiveModeState, _now_secs: f64) -> Option<Self> {
-        let vol_start = live.current_volume_start?;
+        let vol_start = live.current_volume.as_ref().map(|a| a.best_start_secs())?;
         let expected_count = live.expected_elevation_count.unwrap_or(0) as usize;
         if expected_count == 0 {
             return None;
@@ -438,7 +438,10 @@ impl VcpPositionModel {
             volume_start: vol_start,
             volume_end,
             complete: false,
-            scan_key: live.current_scan_key.clone(),
+            scan_key: live
+                .current_volume
+                .as_ref()
+                .map(|a| a.scan_key.to_storage_key()),
             sweeps,
             extrapolation,
         })

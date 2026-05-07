@@ -1687,24 +1687,26 @@ impl WorkbenchApp {
 
         // Only update live_mode_state when actually in live mode
         if is_live {
-            self.state.live_mode_state.current_scan_key = Some(result.scan_key.clone());
+            // Adopt the live volume anchor — provisional from the streaming
+            // loop's IDB key, confirmed (when present) from the radial-parsed
+            // header time. `set_or_confirm_volume` handles same-volume vs.
+            // new-volume internally and runs `try_capture_forecast` on the
+            // transition that first makes start time + VCP pattern both
+            // known.
+            let scan_key = data::ScanKey::from_secs(
+                &self.state.viz_state.site_id,
+                result.context.timestamp_secs,
+            );
+            self.state.live_mode_state.set_or_confirm_volume(
+                scan_key,
+                result.context.timestamp_secs as f64,
+                result.volume_header_time_secs,
+            );
 
             if !result.chunk_elev_spans.is_empty() {
                 self.state
                     .live_mode_state
                     .record_chunk_elev_spans(&result.chunk_elev_spans);
-            }
-
-            // Set the volume start time from the authoritative
-            // timestamp parsed directly from the NEXRAD message
-            // header (the first radial of the volume scan).
-            if let Some(header_time) = result.volume_header_time_secs {
-                self.state.live_mode_state.current_volume_start = Some(header_time);
-                // Retry the forecast snapshot in case the VCP pattern was
-                // already recorded before the volume-start timestamp arrived.
-                // `record_vcp` below also calls this, so the usual flow picks
-                // up regardless of which side arrives first.
-                self.state.live_mode_state.try_capture_forecast();
             }
 
             // Push the most recent chunk's collection-end time down to the
@@ -1750,14 +1752,9 @@ impl WorkbenchApp {
                     );
             }
             if !result.elevations_completed.is_empty() {
-                let vol_start_ts = self
-                    .state
-                    .live_mode_state
-                    .current_volume_start
-                    .unwrap_or(result.context.timestamp_secs as f64);
                 self.state
                     .live_mode_state
-                    .record_elevations(&result.elevations_completed, vol_start_ts);
+                    .record_elevations(&result.elevations_completed);
             }
             if let Some(ref vcp) = result.vcp {
                 // Snap the user's selected elevation angle to the closest

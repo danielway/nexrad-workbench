@@ -6,7 +6,7 @@
 //! # Timing model invariants
 //!
 //! Fields in `LiveModeState` are labelled by category in their doc comments:
-//! - ACTUAL — parsed from radial/message headers (`current_volume_start`,
+//! - ACTUAL — parsed from radial/message headers (`current_volume.confirmed`,
 //!   `completed_sweep_metas`, `last_radial_time_secs`, `chunk_elev_spans`).
 //!   Drives the radar canvas, the current-time indicator, and "Age" labels.
 //! - PROJECTED COLLECTION — derived from VCP physics anchored on an ACTUAL
@@ -147,12 +147,15 @@ pub struct LiveModeState {
     /// Duration of the last completed volume scan in seconds.
     pub last_volume_duration_secs: Option<f64>,
 
-    /// Start timestamp of the current in-progress volume (Unix seconds).
-    pub current_volume_start: Option<f64>,
-
-    /// Scan key of the current in-progress volume (e.g., "KDMX|1700000000000").
-    /// Used to identify and skip this scan in normal timeline rendering.
-    pub current_scan_key: Option<String>,
+    /// Identity + provisional/confirmed start time for the current
+    /// in-progress volume. `None` between volumes; populated when the first
+    /// chunk's `ChunkData` is received and the [`LiveVolumeAnchor::confirmed`]
+    /// field is filled in by `record_volume_header_time` once the worker
+    /// reports the radial-parsed value. UI surfaces should read
+    /// [`LiveVolumeAnchor::best_start_secs`] for display and
+    /// [`LiveVolumeAnchor::scan_key`] for IDB lookups; both stay correct
+    /// across the provisional → confirmed transition.
+    pub current_volume: Option<crate::data::LiveVolumeAnchor>,
 
     /// Elevation number of the sweep currently being accumulated (partial).
     pub current_in_progress_elevation: Option<u8>,
@@ -257,8 +260,7 @@ impl Default for LiveModeState {
             current_vcp_number: None,
             current_vcp_pattern: None,
             last_volume_duration_secs: None,
-            current_volume_start: None,
-            current_scan_key: None,
+            current_volume: None,
             current_in_progress_elevation: None,
             current_in_progress_radials: None,
             chunk_elev_spans: Vec::new(),
@@ -332,8 +334,7 @@ impl LiveModeState {
         self.next_chunk_available_at_secs = None;
         self.last_exit_reason = Some(reason);
         self.elevations_received.clear();
-        self.current_volume_start = None;
-        self.current_scan_key = None;
+        self.current_volume = None;
         self.current_in_progress_elevation = None;
         self.current_in_progress_radials = None;
         self.chunk_elev_spans.clear();
@@ -489,7 +490,7 @@ impl LiveModeState {
     /// Handle volume complete event — compute duration and reset elevation tracking.
     pub fn handle_volume_complete(&mut self, now: f64) {
         // Compute volume duration from the start we tracked
-        if let Some(start) = self.current_volume_start {
+        if let Some(start) = self.current_volume.as_ref().map(|v| v.best_start_secs()) {
             let dur = now - start;
             if dur > 0.0 && dur < 1200.0 {
                 self.last_volume_duration_secs = Some(dur);
@@ -512,8 +513,7 @@ impl LiveModeState {
         self.phase = LivePhase::Streaming;
         self.phase_started_at = Some(now);
         self.elevations_received.clear();
-        self.current_volume_start = None;
-        self.current_scan_key = None;
+        self.current_volume = None;
         self.current_in_progress_elevation = None;
         self.current_in_progress_radials = None;
         self.chunk_elev_spans.clear();
@@ -529,11 +529,48 @@ impl LiveModeState {
         self.chunk_projections = None;
     }
 
-    /// Record that new elevation cuts were received in the current volume.
-    pub fn record_elevations(&mut self, elevations: &[u8], volume_start: f64) {
-        if self.current_volume_start.is_none() {
-            self.current_volume_start = Some(volume_start);
+    /// Adopt or refresh the live volume anchor.
+    ///
+    /// When `scan_key` matches the current anchor this only fills in a
+    /// confirmed start time if one has just been parsed; otherwise it
+    /// replaces the anchor for a new volume. Either path triggers
+    /// `try_capture_forecast` so a snapshot lands as soon as both the
+    /// volume start and the VCP pattern are known, regardless of the order
+    /// they arrive.
+    pub fn set_or_confirm_volume(
+        &mut self,
+        scan_key: crate::data::ScanKey,
+        provisional_secs: f64,
+        confirmed_secs: Option<f64>,
+    ) {
+        use crate::data::{ConfirmedStart, LiveVolumeAnchor, ProvisionalStart};
+        let same_volume = matches!(
+            self.current_volume.as_ref(),
+            Some(a) if a.scan_key == scan_key
+        );
+        if same_volume {
+            if let Some(c) = confirmed_secs {
+                let anchor = self
+                    .current_volume
+                    .as_mut()
+                    .expect("same_volume implies Some");
+                if anchor.confirmed.is_none() {
+                    anchor.confirm(ConfirmedStart(c));
+                    self.try_capture_forecast();
+                }
+            }
+            return;
         }
+        let mut anchor = LiveVolumeAnchor::new(scan_key, ProvisionalStart(provisional_secs));
+        if let Some(c) = confirmed_secs {
+            anchor.confirm(ConfirmedStart(c));
+        }
+        self.current_volume = Some(anchor);
+        self.try_capture_forecast();
+    }
+
+    /// Record that new elevation cuts were received in the current volume.
+    pub fn record_elevations(&mut self, elevations: &[u8]) {
         for &e in elevations {
             if !self.elevations_received.contains(&e) {
                 self.elevations_received.push(e);
@@ -641,14 +678,14 @@ impl LiveModeState {
     /// Capture a cold-start forecast snapshot for the current volume, if the
     /// prerequisites are met and we don't already have one.
     ///
-    /// Called at the end of `record_vcp` and also from the main update loop
-    /// right after `current_volume_start` is first set — either one may run
-    /// first depending on the order chunks arrive.
+    /// Called at the end of `record_vcp` and also from
+    /// `set_or_confirm_volume` once a volume's start is known — either one
+    /// may run first depending on the order chunks arrive.
     pub fn try_capture_forecast(&mut self) {
         if self.current_volume_forecast.is_some() {
             return;
         }
-        let Some(vol_start) = self.current_volume_start else {
+        let Some(vol_start) = self.current_volume.as_ref().map(|a| a.best_start_secs()) else {
             return;
         };
         let Some(vcp) = self.current_vcp_pattern.as_ref() else {

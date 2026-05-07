@@ -130,6 +130,78 @@ impl fmt::Display for ScanKey {
     }
 }
 
+/// ACTUAL category: Unix-seconds volume collection start time, parsed from
+/// the volume header's first-radial collection time. Authoritative — only
+/// known once the worker has decoded at least one radial of the volume.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ConfirmedStart(pub f64);
+
+/// AVAILABILITY-derived category: Unix-seconds volume start estimate
+/// computed as `upload_date_time − median_availability_lag` from the Start
+/// chunk's S3 upload time. Lands within ~1s of the eventual confirmed value;
+/// used as the IDB key (chunks have to be written before any radial parse)
+/// and as the UI's display value until [`ConfirmedStart`] arrives.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProvisionalStart(pub f64);
+
+/// In-flight identity + timing for the current live volume.
+///
+/// Replaces the parallel `current_scan_key: String` and
+/// `current_volume_start: f64` fields that previously lived on
+/// `LiveModeState`. Holding both timestamp variants in one place makes the
+/// provisional → confirmed transition explicit — UI surfaces read
+/// [`Self::best_start_secs`] (which swaps to confirmed atomically when the
+/// worker reports the header time) and IDB code reads [`Self::scan_key`]
+/// (always derived from the provisional value, since that's what was
+/// written at first-chunk arrival).
+///
+/// `scan_key` doubles as the volume's stable identity for the lifetime of
+/// the volume: it's built once when the Start chunk is processed and never
+/// updated, so consumers can match on it without worrying about the
+/// timestamp underneath shifting. A future revision may switch identity to
+/// a synthetic `(site, NEXRAD volume_index)` pair without changing this
+/// type's surface.
+#[derive(Debug, Clone)]
+pub struct LiveVolumeAnchor {
+    pub scan_key: ScanKey,
+    pub provisional: ProvisionalStart,
+    pub confirmed: Option<ConfirmedStart>,
+}
+
+impl LiveVolumeAnchor {
+    /// Construct an anchor for a freshly-arrived volume. The `scan_key`
+    /// must already encode the provisional start (it's the IDB key the
+    /// streaming loop has been using all along — see
+    /// `realtime.rs::provisional_scan_start_secs`).
+    pub fn new(scan_key: ScanKey, provisional: ProvisionalStart) -> Self {
+        Self {
+            scan_key,
+            provisional,
+            confirmed: None,
+        }
+    }
+
+    /// Best-known volume start (Unix seconds). Confirmed when available,
+    /// otherwise the provisional estimate. Every UI surface should use this
+    /// for visual placement and timestamp comparisons.
+    pub fn best_start_secs(&self) -> f64 {
+        self.confirmed.map(|c| c.0).unwrap_or(self.provisional.0)
+    }
+
+    /// `true` once the worker has reported a confirmed start time. Useful
+    /// for diagnostics and for distinguishing "we're guessing" from "we
+    /// know" in debug overlays.
+    #[allow(dead_code)]
+    pub fn is_confirmed(&self) -> bool {
+        self.confirmed.is_some()
+    }
+
+    /// Record the confirmed (radial-parsed) start time. Idempotent.
+    pub fn confirm(&mut self, confirmed: ConfirmedStart) {
+        self.confirmed = Some(confirmed);
+    }
+}
+
 /// Identifies a pre-computed sweep blob in the `sweeps` IDB store.
 ///
 /// Key format: "SITE|SCAN_MS|ELEV_NUM|PRODUCT"

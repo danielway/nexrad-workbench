@@ -35,8 +35,11 @@ pub struct LiveRadarModel {
 /// Volume-level state for the in-progress scan.
 #[derive(Clone, Debug)]
 pub struct LiveVolumeModel {
-    /// Scan key ("SITE|TIMESTAMP_MS") for the in-progress volume.
-    pub scan_key: Option<String>,
+    /// Identity + provisional/confirmed timestamps for the in-progress
+    /// volume. Consumers should read [`crate::data::LiveVolumeAnchor::best_start_secs`]
+    /// (Unix seconds) for visual placement and timestamp comparisons rather
+    /// than parsing the IDB scan key string back to a float.
+    pub anchor: Option<crate::data::LiveVolumeAnchor>,
 
     /// VCP pattern for elevation angle lookups.
     pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
@@ -104,7 +107,7 @@ impl LiveModeState {
             .and_then(|p| p.estimated_azimuth_at(now_secs));
 
         let volume = Some(LiveVolumeModel {
-            scan_key: self.current_scan_key.clone(),
+            anchor: self.current_volume.clone(),
             vcp_pattern: self.current_vcp_pattern.clone(),
             elevations_complete: self.elevations_received.clone(),
             elevations_expected: self.expected_elevation_count,

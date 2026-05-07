@@ -358,18 +358,19 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     }
 
     // -- Render scan track --
-    // Extract the scan key timestamp (seconds) for the active real-time volume
-    // so we can skip it in normal timeline rendering.
-    let active_scan_key_ts: Option<f64> = state.live_radar_model.volume.as_ref().and_then(|v| {
-        v.scan_key.as_ref().and_then(|key| {
-            // Scan key format: "SITE|TIMESTAMP_MS"
-            key.split('|')
-                .nth(1)?
-                .parse::<i64>()
-                .ok()
-                .map(|ms| ms as f64 / 1000.0)
-        })
-    });
+    // Read the IDB scan-key timestamp (seconds) for the active real-time
+    // volume directly from the typed anchor — no string-parse-back-to-float.
+    // This is the *provisional* start (the IDB key) by design: historical
+    // scans on the timeline are positioned by their stored scan_start, which
+    // matches what the live overlay's anchor.scan_key encodes, so comparing
+    // against `provisional` avoids a half-second drift if the worker has
+    // already filled in `confirmed`.
+    let active_scan_key_ts: Option<f64> = state
+        .live_radar_model
+        .volume
+        .as_ref()
+        .and_then(|v| v.anchor.as_ref())
+        .map(|a| a.provisional.0);
     render_scan_track(
         &painter,
         &scan_rect,
