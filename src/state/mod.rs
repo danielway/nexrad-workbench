@@ -21,6 +21,7 @@ mod saved_events;
 mod settings;
 mod stats;
 pub(crate) mod theme;
+mod timeline_model;
 pub(crate) mod url_state;
 pub(crate) mod vcp;
 pub(crate) mod vcp_forecast;
@@ -50,6 +51,7 @@ pub use stats::{
 // Re-export the command type for ergonomic access.
 // AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
+pub use timeline_model::TimelineModel;
 pub use vcp::get_vcp_definition;
 pub use vcp_forecast::{
     BucketKey, ChunkArrivalStat, RateSource, SweepForecast, VolumeForecastSnapshot,

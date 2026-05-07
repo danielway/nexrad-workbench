@@ -343,13 +343,30 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         None
     };
 
+    // -- Build the per-frame TimelineModel --
+    // One reconciliation pass across every source the timeline draws: it
+    // owns the live-volume-vs-historical exact-equality match and the
+    // documented filename-vs-radial-time tolerance bands the ghost and
+    // shadow overlays previously inlined as magic numbers.
+    let live_anchor = state
+        .live_radar_model
+        .volume
+        .as_ref()
+        .and_then(|v| v.anchor.as_ref());
+    // Pass all stored scans (not the in-view subset): the ghost and shadow
+    // overlays dedup against scans that may sit just off-screen, and the
+    // model's historical_keys are i64 millis in a BTreeSet so the cost of
+    // including all of them is negligible.
+    let timeline_model =
+        crate::state::TimelineModel::build(live_anchor, state.radar_timeline.scans.iter());
+
     // -- Render shadow scan boundaries from archive index --
     if !state.shadow_scan_boundaries.is_empty() {
         render_shadow_boundaries(
             &painter,
             &scan_rect,
             &state.shadow_scan_boundaries,
-            &state.radar_timeline,
+            &timeline_model,
             view_start,
             view_end,
             zoom,
@@ -358,19 +375,6 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     }
 
     // -- Render scan track --
-    // Read the IDB scan-key timestamp (seconds) for the active real-time
-    // volume directly from the typed anchor — no string-parse-back-to-float.
-    // This is the *provisional* start (the IDB key) by design: historical
-    // scans on the timeline are positioned by their stored scan_start, which
-    // matches what the live overlay's anchor.scan_key encodes, so comparing
-    // against `provisional` avoids a half-second drift if the worker has
-    // already filled in `confirmed`.
-    let active_scan_key_ts: Option<f64> = state
-        .live_radar_model
-        .volume
-        .as_ref()
-        .and_then(|v| v.anchor.as_ref())
-        .map(|a| a.provisional.0);
     render_scan_track(
         &painter,
         &scan_rect,
@@ -379,7 +383,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
         view_end,
         zoom,
         detail_level,
-        active_scan_key_ts,
+        &timeline_model,
     );
 
     // -- Render sweep track (only at Sweeps detail) --
@@ -404,7 +408,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             zoom,
             active_sweep,
             state.viz_state.elevation_selection.elevation_number(),
-            active_scan_key_ts,
+            &timeline_model,
             prev_active_sweep,
         );
         render_connector_lines(
@@ -426,6 +430,7 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             &scan_rect,
             &state.download_progress,
             &state.radar_timeline,
+            &timeline_model,
             view_start,
             view_end,
             zoom,

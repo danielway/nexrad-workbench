@@ -1,6 +1,7 @@
 //! Sweep track rendering: sweep blocks (cool palette) and connector lines.
 
 use crate::state::radar_data::RadarTimeline;
+use crate::state::TimelineModel;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
 
@@ -15,19 +16,12 @@ pub(super) fn render_sweep_track(
     zoom: f64,
     active_sweep: Option<(i64, u8)>,
     selected_elevation_number: Option<u8>,
-    active_scan_key_ts: Option<f64>,
+    model: &TimelineModel<'_>,
     prev_active_sweep: Option<(i64, u8)>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    for scan in timeline.scans_in_range(view_start, view_end) {
-        // Skip the scan that corresponds to the active real-time volume —
-        // render_realtime_progress owns all sweeps for the in-progress volume.
-        if let Some(key_ts) = active_scan_key_ts {
-            if (scan.key_timestamp - key_ts).abs() < 0.5 {
-                continue;
-            }
-        }
+    for scan in model.historical_to_render(timeline.scans_in_range(view_start, view_end)) {
         if scan.sweeps.is_empty() {
             continue;
         }

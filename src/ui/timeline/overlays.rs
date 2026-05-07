@@ -3,7 +3,7 @@
 use super::strokes::{fill_diagonal_hatch, stroke_dashed_rect, DashedBorder, DashedEdges};
 use super::DetailLevel;
 use crate::state::radar_data::RadarTimeline;
-use crate::state::SavedEvents;
+use crate::state::{SavedEvents, TimelineModel};
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
 
@@ -20,6 +20,7 @@ pub(super) fn render_download_ghosts(
     rect: &Rect,
     progress: &crate::state::DownloadProgress,
     timeline: &RadarTimeline,
+    model: &TimelineModel<'_>,
     view_start: f64,
     view_end: f64,
     zoom: f64,
@@ -67,11 +68,15 @@ pub(super) fn render_download_ghosts(
             continue;
         }
         let flash_alpha = ((1.0 - age) * 80.0) as u8;
-        // Find this scan's end time from timeline
-        if let Some(scan) = timeline
-            .scans_in_range(scan_start as f64, scan_start as f64 + 600.0)
-            .find(|s| (s.start_time as i64 - scan_start).abs() < 30)
-        {
+        // Resolve the scan via TimelineModel's tighter completion-match
+        // tolerance, then look up its precise start/end on the timeline.
+        let matched_key_ms = model.match_completion(scan_start);
+        if let Some(scan) = matched_key_ms.and_then(|key_ms| {
+            let key_secs = key_ms as f64 / 1000.0;
+            timeline
+                .scans_in_range(key_secs - 1.0, key_secs + 1.0)
+                .find(|s| ((s.key_timestamp * 1000.0).round() as i64) == key_ms)
+        }) {
             let x_start = ts_to_x(scan.start_time).max(rect.left());
             let x_end = ts_to_x(scan.end_time).min(rect.right());
             if x_end > x_start {
@@ -96,11 +101,8 @@ pub(super) fn render_download_ghosts(
             return;
         }
 
-        // Skip if real data already covers this timestamp
-        if timeline
-            .scans_in_range(start_f64, end_f64)
-            .any(|s| s.start_time <= start_f64 + 30.0 && s.end_time >= start_f64 - 30.0)
-        {
+        // Skip if real data already covers this timestamp.
+        if model.is_covered_by_historical(scan_start) {
             return;
         }
 
