@@ -30,6 +30,28 @@ pub struct LiveRadarModel {
 
     /// Active sweep being received (present when an elevation is in progress).
     pub active_sweep: Option<LiveSweepModel>,
+
+    /// Frame-snapshotted derivations from `position` at the same `now_secs`
+    /// the model was built with. UI surfaces (e.g. the left panel) should
+    /// read these instead of calling `position.estimated_azimuth_at(now)`
+    /// with a fresh wall-clock read — that would drift by frame-render
+    /// duration and break the per-frame consistency `compute_model` exists
+    /// to provide.
+    pub frame_now: FrameDerivedPosition,
+}
+
+/// Derived values that need to be evaluated at "now" for live mode but
+/// must agree with the frame's canonical timestamp. Populated only when
+/// `position` is `Some` and live mode is active; otherwise all fields
+/// are `None`.
+#[derive(Clone, Debug, Default)]
+pub struct FrameDerivedPosition {
+    /// 0-based index of the sweep currently being received.
+    pub sweep_index: Option<usize>,
+    /// Elevation angle (degrees) of the sweep currently being received.
+    pub elevation_angle: Option<f32>,
+    /// Volume-scan progress at frame `now` (0.0 to 1.0).
+    pub progress: Option<f32>,
 }
 
 /// Volume-level state for the in-progress scan.
@@ -154,12 +176,24 @@ impl LiveModeState {
             }
         });
 
+        let frame_now = FrameDerivedPosition {
+            sweep_index: position
+                .as_ref()
+                .and_then(|p| p.elevation_index_at(now_secs)),
+            elevation_angle: position.as_ref().and_then(|p| {
+                p.elevation_index_at(now_secs)
+                    .and_then(|idx| p.sweeps.get(idx).map(|s| s.elevation_angle))
+            }),
+            progress: position.as_ref().map(|p| p.progress_at(now_secs)),
+        };
+
         LiveRadarModel {
             active,
             estimated_azimuth,
             position,
             volume,
             active_sweep,
+            frame_now,
         }
     }
 }

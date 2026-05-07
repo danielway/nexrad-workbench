@@ -130,21 +130,25 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
             }
         }
         None => {
-            // In live mode, use the unified VcpPositionModel for azimuth,
-            // elevation, and progress instead of reaching into LiveModeState.
+            // In live mode, read the frame-snapshotted derivations from
+            // LiveRadarModel rather than re-evaluating with a fresh
+            // js_sys::Date::now() — that would drift by ~frame-render
+            // duration against every other surface that consumed the same
+            // model.
             if let Some(ref position) = state.live_radar_model.position {
-                let now = js_sys::Date::now() / 1000.0;
+                let frame = &state.live_radar_model.frame_now;
                 let vcp = Some(position.vcp_number).filter(|&v| v > 0);
-                let azimuth = position.estimated_azimuth_at(now);
-                let sweep_index = position.elevation_index_at(now).or_else(|| {
+                let azimuth = state.live_radar_model.estimated_azimuth;
+                let sweep_index = frame.sweep_index.or_else(|| {
                     state
                         .live_mode_state
                         .current_in_progress_elevation
                         .map(|e| e.saturating_sub(1) as usize)
                 });
-                let scan_progress = Some(position.progress_at(now));
-                let elevation =
-                    sweep_index.and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_angle));
+                let scan_progress = frame.progress;
+                let elevation = frame.elevation_angle.or_else(|| {
+                    sweep_index.and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_angle))
+                });
 
                 RadarStateAtTimestamp {
                     azimuth,
