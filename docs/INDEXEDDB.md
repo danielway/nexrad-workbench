@@ -133,7 +133,7 @@ A bare Unix-millisecond timestamp. Owns LRU bookkeeping end-to-end:
 seeded by `create_scan` at ingest time so freshly-cached scans have a
 place in the order, and bumped by `touch_scan` after every sweep
 render. `evict_to_size` joins this store with `scan_index` and sorts
-by the touch value. See §10 for why access tracking lives in its own
+by the touch value. See §11 for why access tracking lives in its own
 store rather than as a field on `ScanIndexEntry`.
 
 ## 3. Why three stores
@@ -144,7 +144,7 @@ zero-copy access from JS to GPU. Scan-index entries are tiny, queried
 in bulk for timeline and eviction work, and benefit from structured
 clone (so they round-trip Rust types without a JSON detour).
 `scan_touches` is split off because access bumps would otherwise race
-chunk-ingest's read-modify-write of the index entry — see §10.
+chunk-ingest's read-modify-write of the index entry — see §11.
 
 Co-locating sweeps + index in a single store would force every
 timeline query to either drag blob data through memory, or maintain a
@@ -288,7 +288,7 @@ the GPU as `R32F` textures from a JS-side `ArrayBuffer`, and dragging
 the bytes through Rust memory before transferring them would add a
 multi-MB copy on the render hot path. Taking a `&SweepDataKey` instead
 of a stringified key lets the method extract the scan portion to fire
-`touch_scan` after the read (see §10).
+`touch_scan` after the read (see §11).
 
 ### Scan index
 
@@ -392,7 +392,44 @@ Two notable shapes:
   coexist in the cache when their `scan_start` keys differ; LRU
   eviction reclaims space over time.
 
-## 9. What lives outside this module
+## 9. Test coverage
+
+Two tiers, both wired into CI:
+
+**Pure-Rust unit tests** (`#[wasm_bindgen_test]` blocks in `src/`, run in
+node — no browser). Cover the decision math: key-range bound strings,
+eviction sort order, throttle decision boundaries, quota headroom math,
+time-window filter inclusivity, `ScanIndexEntry` accessor results
+including the SAILS/MRLE overshoot completeness case. ~50 ms total. Runs
+on every commit via the pre-commit hook (`cargo test --bin
+nexrad-workbench`) and in the `tests` CI job.
+
+**Browser-driven integration tests** (`tests/idb.rs`, `run_in_browser`,
+real IndexedDB in headless Chromium). Cover the orchestration that the
+pure-Rust mock can't model:
+
+- Cross-store atomicity: `create_scan` writes blobs + index +
+  `scan_touches` together; `delete_scan` clears all three; `clear_all`
+  empties everything.
+- Touch contract: `create_scan` seeds `scan_touches`; `put_scan` does
+  NOT (verified directly via the orphan-entry path); `get_sweep` bumps
+  it (verified by polling for the fire-and-forget write).
+- Eviction integration: oldest-touch-first ordering against a real DB,
+  and the "missing-touch evicts first" cleanup path that the
+  pure-Rust eviction-order test claims.
+- Round-trip fidelity: `ScanIndexEntry` with VCP, `CachedSweep`, and
+  `cached_products` survive structured-clone via `serde-wasm-bindgen`.
+
+Each test runs against a fresh, uniquely-named database (counter +
+high-resolution clock) so siblings don't collide. `IndexedDbStore`
+exposes `with_database_name` for this purpose. The `read_touch` method
+is `#[doc(hidden)] pub` for the same reason — production code never
+needs single-key touch reads.
+
+Runs in the `idb-integration` CI job (~30 s including chromium install).
+Not part of pre-commit.
+
+## 10. What lives outside this module
 
 - The `ScanIndexEntry` struct shape and accessor methods
   ([`src/data/keys.rs`](../src/data/keys.rs)) — `has_vcp()`,
@@ -409,7 +446,7 @@ Two notable shapes:
   the database but do not coordinate writes; ingest is idempotent at
   the scan-key level so concurrent tabs at worst duplicate work.
 
-## 10. Access-time tracking
+## 11. Access-time tracking
 
 LRU eviction wants the order "least recently *used*," and `scan_touches`
 is the single source of truth for that. Two writers feed it:

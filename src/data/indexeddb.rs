@@ -151,6 +151,9 @@ pub struct IndexedDbStore {
     /// last time `touch_scan` enqueued an IDB write for it. A second touch
     /// inside `TOUCH_THROTTLE_MS` is a no-op.
     recent_touches: Rc<RefCell<HashMap<ScanKey, UnixMillis>>>,
+    /// Database name. Production uses `DATABASE_NAME` (`"nexrad-workbench"`);
+    /// integration tests use unique per-test names so each test starts fresh.
+    database_name: String,
 }
 
 impl Default for IndexedDbStore {
@@ -160,10 +163,19 @@ impl Default for IndexedDbStore {
 }
 
 impl IndexedDbStore {
+    /// Construct a store backed by the production `nexrad-workbench` IDB.
     pub fn new() -> Self {
+        Self::with_database_name(DATABASE_NAME.to_string())
+    }
+
+    /// Construct a store backed by a custom-named IDB. Used by integration
+    /// tests to keep each test's state isolated from prod and from sibling
+    /// tests in the same browser tab.
+    pub fn with_database_name(database_name: String) -> Self {
         Self {
             state: Rc::new(RefCell::new(OpenState::Closed)),
             recent_touches: Rc::new(RefCell::new(HashMap::new())),
+            database_name,
         }
     }
 
@@ -202,7 +214,7 @@ impl IndexedDbStore {
                 .map_err(|_| DataError::TransactionFailed("open canceled".to_string()))
                 .and_then(|r| r.map_err(DataError::TransactionFailed)),
             Action::Drive => {
-                let result = open_database().await;
+                let result = open_database(&self.database_name).await;
                 // Concurrent callers may have pushed into the Opening vec while
                 // we were awaiting; take them here and notify.
                 let waiters = {
@@ -454,6 +466,29 @@ impl IndexedDbStore {
         });
     }
 
+    /// Reads the `scan_touches` timestamp for a single scan, if present.
+    /// Exposed for integration tests that verify the touch contract;
+    /// production code uses `read_all_touches` via `evict_to_size`.
+    ///
+    /// `allow(dead_code)`: only used from `tests/idb.rs`, which is a
+    /// separate crate from the bin; the bin's compilation unit doesn't
+    /// see those callers.
+    #[doc(hidden)]
+    #[allow(dead_code)]
+    pub async fn read_touch(&self, scan: &ScanKey) -> Result<Option<UnixMillis>, DataError> {
+        self.ensure_open().await?;
+        let storage_key = scan.to_storage_key();
+        let result = self
+            .read(STORE_SCAN_TOUCHES, |store| {
+                store.get(&JsValue::from_str(&storage_key))
+            })
+            .await?;
+        if result.is_undefined() || result.is_null() {
+            return Ok(None);
+        }
+        Ok(result.as_f64().map(|ms| UnixMillis(ms as i64)))
+    }
+
     async fn write_touch(&self, scan: &ScanKey, time: UnixMillis) -> Result<(), DataError> {
         self.ensure_open().await?;
         let key = scan.to_storage_key();
@@ -572,8 +607,10 @@ impl IndexedDbStore {
     /// `"SITE|SCAN_MS|"`, so this works regardless of which products were
     /// stored. The scan's `scan_touches` entry is also dropped.
     ///
-    /// Crate-private: external callers should evict via `evict_to_size`.
-    pub(crate) async fn delete_scan(&self, scan: &ScanKey) -> Result<u64, DataError> {
+    /// Production code should usually evict via [`Self::evict_to_size`];
+    /// this method is exposed publicly so integration tests can verify
+    /// per-scan deletion semantics directly.
+    pub async fn delete_scan(&self, scan: &ScanKey) -> Result<u64, DataError> {
         self.ensure_open().await?;
 
         let scan_storage_key = scan.to_storage_key();
@@ -778,11 +815,11 @@ fn get_idb_factory() -> Result<web_sys::IdbFactory, DataError> {
 }
 
 /// Opens the database, creating schema as needed.
-async fn open_database() -> Result<IdbDatabase, DataError> {
+async fn open_database(database_name: &str) -> Result<IdbDatabase, DataError> {
     let idb_factory = get_idb_factory()?;
 
     let open_request = idb_factory
-        .open_with_u32(DATABASE_NAME, DATABASE_VERSION)
+        .open_with_u32(database_name, DATABASE_VERSION)
         .map_err(|e| {
             DataError::TransactionFailed(format!("Failed to open database: {}", js_err(e)))
         })?;
@@ -823,7 +860,7 @@ async fn open_database() -> Result<IdbDatabase, DataError> {
         .dyn_into()
         .map_err(|_| DataError::TransactionFailed("Failed to cast to IdbDatabase".to_string()))?;
 
-    log::info!("Opened IndexedDB {} v{}", DATABASE_NAME, DATABASE_VERSION);
+    log::info!("Opened IndexedDB {} v{}", database_name, DATABASE_VERSION);
 
     Ok(db)
 }
@@ -1291,7 +1328,7 @@ mod logic {
             let e = entry("KDMX", 100, 0);
             let mut t = HashMap::new();
             t.insert(e.scan.clone(), UnixMillis(50));
-            let order = eviction_order(&[e.clone()], &t);
+            let order = eviction_order(std::slice::from_ref(&e), &t);
             assert_eq!(order, vec![e.scan]);
         }
 

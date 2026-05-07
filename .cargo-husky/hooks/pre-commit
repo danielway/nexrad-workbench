@@ -21,5 +21,9 @@ cargo fmt -- --check
 echo '+cargo clippy -- -D warnings'
 cargo clippy -- -D warnings
 
-echo '+cargo test'
-cargo test
+# `cargo test --bin nexrad-workbench` runs only the bin's inline
+# `#[wasm_bindgen_test]` tests (~50 ms, no browser). The integration
+# suite under `tests/idb.rs` requires Firefox + geckodriver and runs
+# in CI only, so it's intentionally excluded here.
+echo '+cargo test --bin nexrad-workbench'
+cargo test --bin nexrad-workbench

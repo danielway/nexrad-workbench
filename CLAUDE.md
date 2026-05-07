@@ -23,7 +23,13 @@ cargo fmt -- --check
 # (key range bounds, eviction order, throttle math, quota math,
 # time-window filter, ScanIndexEntry accessors).
 # Requires: `cargo install wasm-bindgen-cli --locked` and node.js installed.
-cargo test
+cargo test --bin nexrad-workbench
+
+# IDB orchestration tests (real IndexedDB in headless Chromium).
+# Covers cross-store atomicity, the create_scan/put_scan touch contract,
+# eviction order against a real DB, and full-entry round-tripping.
+# Requires chromium + chromedriver installed locally.
+CHROMEDRIVER=/usr/bin/chromedriver cargo test --test idb
 
 # Dev server with hot reload (requires: cargo install --locked trunk)
 trunk serve
@@ -32,9 +38,10 @@ trunk serve
 trunk build --release
 ```
 
-Pre-commit hooks via cargo-husky enforce `cargo fmt`, `cargo clippy`, and
-`cargo test`. Functional IDB integration tests against a real browser will
-live in a deferred `tests/idb.rs` suite (CI-only, not part of pre-commit).
+Pre-commit hooks via cargo-husky run `cargo fmt`, `cargo clippy`, and
+`cargo test --bin nexrad-workbench` (the fast logic suite — no browser
+needed). The browser-driven `tests/idb.rs` suite runs in CI only and
+requires Chromium + chromedriver.
 
 ## Commits
 
