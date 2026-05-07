@@ -14,7 +14,7 @@ impl DecodeWorker {
         &mut self,
         data: Vec<u8>,
         site_id: String,
-        timestamp_secs: i64,
+        timestamp_secs: f64,
         file_name: String,
         fetch_latency_ms: f64,
     ) {
@@ -121,7 +121,7 @@ impl DecodeWorker {
         &mut self,
         data: Vec<u8>,
         site_id: String,
-        timestamp_secs: i64,
+        timestamp_secs: f64,
         chunk_index: u32,
         is_start: bool,
         is_end: bool,
@@ -178,14 +178,14 @@ pub(super) fn send_ingest_request(
     id: u64,
     data: &[u8],
     site_id: &str,
-    timestamp_secs: i64,
+    timestamp_secs: f64,
     file_name: &str,
 ) {
     let request = IngestRequestMsg {
         msg_type: "ingest",
         id: id as f64,
         site_id,
-        timestamp_secs: timestamp_secs as f64,
+        timestamp_secs,
         file_name,
     };
     let msg = match serde_wasm_bindgen::to_value(&request) {
@@ -216,7 +216,7 @@ pub(super) fn send_ingest_chunk_request(
     id: u64,
     data: &[u8],
     site_id: &str,
-    timestamp_secs: i64,
+    timestamp_secs: f64,
     chunk_index: u32,
     is_start: bool,
     is_end: bool,
@@ -227,7 +227,7 @@ pub(super) fn send_ingest_chunk_request(
         msg_type: "ingest_chunk",
         id: id as f64,
         site_id,
-        timestamp_secs: timestamp_secs as f64,
+        timestamp_secs,
         chunk_index: chunk_index as f64,
         is_start,
         is_end,

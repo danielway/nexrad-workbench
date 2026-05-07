@@ -311,8 +311,10 @@ pub struct VizState {
     /// Contains (elevation_deg, start_time_secs, end_time_secs).
     pub prev_sweep_overlay: Option<(f32, f64, f64)>,
 
-    /// Scan timestamp of the previous sweep (for timeline secondary highlight).
-    pub prev_sweep_scan_timestamp: Option<i64>,
+    /// Scan timestamp of the previous sweep (Unix seconds, sub-second
+    /// precision) for the timeline secondary highlight. Sourced from the
+    /// IDB scan key's full-precision millis to round-trip without drift.
+    pub prev_sweep_scan_timestamp: Option<f64>,
 
     /// Elevation number of the previous sweep (for timeline secondary highlight).
     pub prev_sweep_elevation_number: Option<u8>,
@@ -347,8 +349,12 @@ pub struct VizState {
     /// Cached storm cell detection results (centroid lat, lon, max dBZ, area km2).
     pub detected_storm_cells: Vec<StormCellInfo>,
 
-    /// Timestamp of the currently displayed scan (seconds since epoch).
-    pub displayed_scan_timestamp: Option<i64>,
+    /// Timestamp of the currently displayed scan (Unix seconds, sub-second
+    /// precision). Sub-second resolution matters for the live path: the
+    /// IDB record is keyed under the volume's provisional `f64` start, so
+    /// truncating to integer here would break the lookup `find_scan_at_timestamp`
+    /// performs against `Scan::key_timestamp` (also `f64`).
+    pub displayed_scan_timestamp: Option<f64>,
 
     /// Elevation number of the currently displayed sweep.
     pub displayed_sweep_elevation_number: Option<u8>,

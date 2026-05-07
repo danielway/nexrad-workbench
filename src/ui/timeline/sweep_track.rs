@@ -14,10 +14,10 @@ pub(super) fn render_sweep_track(
     view_start: f64,
     view_end: f64,
     zoom: f64,
-    active_sweep: Option<(i64, u8)>,
+    active_sweep: Option<(f64, u8)>,
     selected_elevation_number: Option<u8>,
     model: &TimelineModel<'_>,
-    prev_active_sweep: Option<(i64, u8)>,
+    prev_active_sweep: Option<(f64, u8)>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
@@ -40,11 +40,11 @@ pub(super) fn render_sweep_track(
             let matches_elevation =
                 selected_elevation_number.is_none_or(|num| sweep.elevation_number == num);
             let is_active = active_sweep.is_some_and(|(scan_ts, elev_num)| {
-                scan.key_timestamp as i64 == scan_ts && sweep.elevation_number == elev_num
+                scan.key_timestamp == scan_ts && sweep.elevation_number == elev_num
             });
             let is_prev_active = !is_active
                 && prev_active_sweep.is_some_and(|(scan_ts, elev_num)| {
-                    scan.key_timestamp as i64 == scan_ts && sweep.elevation_number == elev_num
+                    scan.key_timestamp == scan_ts && sweep.elevation_number == elev_num
                 });
 
             let fill = tl_colors::sweep_fill(sweep.elevation, matches_elevation);

@@ -201,7 +201,7 @@ impl RenderCoordinator {
         &mut self,
         data: Vec<u8>,
         site_id: String,
-        timestamp: i64,
+        timestamp: f64,
         file_name: String,
         fetch_latency: f64,
     ) {
@@ -216,7 +216,7 @@ impl RenderCoordinator {
         &mut self,
         data: Vec<u8>,
         site_id: String,
-        timestamp: i64,
+        timestamp: f64,
         chunk_index: u32,
         is_start: bool,
         is_end: bool,

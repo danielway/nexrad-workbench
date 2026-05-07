@@ -220,8 +220,8 @@ pub(super) fn render_realtime_progress(
     _anim_time: f64,
     now_secs: f64,
     selected_elevation_number: Option<u8>,
-    active_sweep: Option<(i64, u8)>,
-    prev_active_sweep: Option<(i64, u8)>,
+    active_sweep: Option<(f64, u8)>,
+    prev_active_sweep: Option<(f64, u8)>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
     let now = now_secs;

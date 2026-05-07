@@ -188,7 +188,7 @@ struct ScrubCache {
     last_playback_ts: Option<f64>,
     last_elevation_selection: Option<state::ElevationSelection>,
     last_scan_count: usize,
-    last_displayed_scan_ts: Option<i64>,
+    last_displayed_scan_ts: Option<f64>,
 }
 
 // Embed shapefile data at compile time
@@ -1011,7 +1011,7 @@ impl WorkbenchApp {
                 if let Some(scan) = self
                     .state
                     .radar_timeline
-                    .find_scan_at_timestamp(displayed_ts as f64)
+                    .find_scan_at_timestamp(displayed_ts)
                 {
                     if !scan.sweeps.is_empty() {
                         let matching = scan
@@ -1165,7 +1165,11 @@ impl WorkbenchApp {
                             chunk_index,
                             is_start,
                             is_end,
-                            scan_timestamp: timestamp,
+                            // The Network-tab grouping key is per-volume,
+                            // not per-instant; truncating sub-second
+                            // precision here is fine because two distinct
+                            // volumes never share a wall-clock second.
+                            scan_timestamp: timestamp.round() as i64,
                         });
                 self.state.acquisition.mark_active(op_id);
                 self.state
@@ -1702,13 +1706,13 @@ impl WorkbenchApp {
             // new-volume internally and runs `try_capture_forecast` on the
             // transition that first makes start time + VCP pattern both
             // known.
-            let scan_key = data::ScanKey::from_secs(
+            let scan_key = data::ScanKey::from_secs_f64(
                 &self.state.viz_state.site_id,
                 result.context.timestamp_secs,
             );
             self.state.live_mode_state.set_or_confirm_volume(
                 scan_key,
-                result.context.timestamp_secs as f64,
+                result.context.timestamp_secs,
                 result.volume_header_time_secs,
             );
 
@@ -2096,12 +2100,15 @@ impl WorkbenchApp {
         // GPU upload complete.
         self.state.session_stats.pipeline.mark_render_done();
 
-        // Remove this scan from in-flight ghost tracking.
+        // Remove this scan from in-flight ghost tracking. The queue is keyed
+        // by archive-derived i64 seconds; truncate the displayed timestamp
+        // on this comparison boundary.
         if let Some(displayed_ts) = self.state.viz_state.displayed_scan_timestamp {
+            let displayed_i64 = displayed_ts.round() as i64;
             self.state
                 .download_progress
                 .in_flight_scans
-                .retain(|&(start, _)| start != displayed_ts);
+                .retain(|&(start, _)| start != displayed_i64);
         }
         // If no more in-flight or pending, fully clear progress.
         if self.state.download_progress.in_flight_scans.is_empty()
@@ -2296,7 +2303,7 @@ impl WorkbenchApp {
         &mut self,
         id: u64,
         message: String,
-        failed_scan_timestamp_secs: Option<i64>,
+        failed_scan_timestamp_secs: Option<f64>,
     ) {
         log::warn!("Worker error (request {}): {}", id, message);
         self.state.status_message = format!("Worker error: {}", message);
@@ -2317,10 +2324,15 @@ impl WorkbenchApp {
         let cleanup_ts =
             failed_scan_timestamp_secs.or(self.state.viz_state.displayed_scan_timestamp);
         if let Some(ts) = cleanup_ts {
+            // The in_flight_scans queue is keyed by archive-derived i64
+            // seconds; truncate the failure timestamp on this comparison
+            // boundary. Sub-second precision matters for live volumes but
+            // not for archive-style ghost removal.
+            let ts_i64 = ts.round() as i64;
             self.state
                 .download_progress
                 .in_flight_scans
-                .retain(|&(start, _)| start != ts);
+                .retain(|&(start, _)| start != ts_i64);
         }
         self.state.session_stats.pipeline.processing = false;
         self.state.session_stats.pipeline.rendering = false;
@@ -2377,8 +2389,11 @@ impl WorkbenchApp {
                 .push((scan_ts, scan_end));
 
             // Track which scan is being processed so error cleanup
-            // can remove the correct ghost.
-            self.state.viz_state.displayed_scan_timestamp = Some(scan_ts);
+            // can remove the correct ghost. Archive scans have
+            // second-resolution timestamps from filenames; cast to f64
+            // so the field stays compatible with the precision-preserving
+            // live path that may co-exist on the same screen.
+            self.state.viz_state.displayed_scan_timestamp = Some(scan_ts as f64);
 
             if is_cache_hit {
                 self.state.status_message = format!("Loaded from cache: {}", scan.file_name);
@@ -2425,7 +2440,7 @@ impl WorkbenchApp {
                 self.render.ingest(
                     scan.data.clone(),
                     scan.key.site.0.clone(),
-                    scan.key.scan_start.as_secs(),
+                    scan.key.scan_start.as_secs_f64(),
                     scan.file_name.clone(),
                     fetch_latency,
                 );
@@ -2695,7 +2710,7 @@ impl WorkbenchApp {
                     .radar_timeline
                     .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
                     .map(|scan| {
-                        let scan_ts = scan.key_timestamp as i64;
+                        let scan_ts: f64 = scan.key_timestamp;
                         let target_elev_num: Option<u8> =
                             match &self.state.viz_state.elevation_selection {
                                 crate::state::ElevationSelection::Fixed { .. } => {
@@ -2758,7 +2773,7 @@ impl WorkbenchApp {
                 {
                     if (needs_new_scan || needs_new_sweep) && self.render.has_worker() {
                         let scan_key =
-                            data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts);
+                            data::ScanKey::from_secs_f64(&self.state.viz_state.site_id, scan_ts);
                         self.render.set_scan_key(scan_key);
                         self.state.viz_state.displayed_scan_timestamp = Some(scan_ts);
                         if !elev_nums.is_empty() {
@@ -2944,7 +2959,7 @@ impl WorkbenchApp {
         self.state.viz_state.prev_sweep_elevation_number = Some(prev_elev_num);
 
         let prev_scan_key =
-            data::ScanKey::from_secs(&self.state.viz_state.site_id, prev_scan_key_ts)
+            data::ScanKey::from_secs_f64(&self.state.viz_state.site_id, prev_scan_key_ts)
                 .to_storage_key();
 
         // Get current GPU prev sweep ID for comparison

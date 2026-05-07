@@ -467,11 +467,11 @@ fn handle_error_message(
     } else if let Some(ctx) = pending_chunk_ingest.borrow_mut().remove(&e.id) {
         Some(ctx.timestamp_secs)
     } else if let Some(ctx) = pending_render.borrow_mut().remove(&e.id) {
-        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs())
+        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs_f64())
     } else if let Some(ctx) = pending_render_live.borrow_mut().remove(&e.id) {
-        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs())
+        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs_f64())
     } else if let Some(ctx) = pending_volume.borrow_mut().remove(&e.id) {
-        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs())
+        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs_f64())
     } else {
         None
     };

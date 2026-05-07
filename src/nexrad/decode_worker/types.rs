@@ -264,7 +264,9 @@ pub(super) type RequestId = u64;
 /// Context for an ingest request.
 #[allow(dead_code)]
 pub struct IngestContext {
-    pub timestamp_secs: i64,
+    /// Volume scan start (Unix seconds, sub-second precision). Round-trips
+    /// the value the caller handed `WorkerPool::ingest`.
+    pub timestamp_secs: f64,
     pub file_name: String,
     pub fetch_latency_ms: f64,
 }
@@ -304,7 +306,11 @@ pub struct IngestResult {
 #[allow(dead_code)]
 pub struct ChunkIngestContext {
     pub site_id: String,
-    pub timestamp_secs: i64,
+    /// Volume scan start (Unix seconds, sub-second precision). Set on the
+    /// streaming-loop side from the provisional start; the worker uses it
+    /// to construct the IDB scan key for every chunk in the volume, so all
+    /// chunks in one volume must agree on this value.
+    pub timestamp_secs: f64,
     pub chunk_index: u32,
     pub is_end: bool,
 }
@@ -442,11 +448,12 @@ pub enum WorkerOutcome {
     WorkerError {
         id: u64,
         message: String,
-        /// Volume start timestamp (Unix seconds) of the scan whose request
-        /// failed, if the id could be correlated with a pending ingest or
-        /// render. Lets callers clean up per-scan UI state (e.g. timeline
-        /// ghosts) without guessing from global state.
-        failed_scan_timestamp_secs: Option<i64>,
+        /// Volume start timestamp (Unix seconds, sub-second precision) of
+        /// the scan whose request failed, if the id could be correlated
+        /// with a pending ingest or render. Lets callers clean up
+        /// per-scan UI state (e.g. timeline ghosts) without guessing from
+        /// global state.
+        failed_scan_timestamp_secs: Option<f64>,
     },
 }
 

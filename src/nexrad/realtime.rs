@@ -129,7 +129,15 @@ pub enum RealtimeResult {
         chunk_index: u32,
         is_start: bool,
         is_end: bool,
-        timestamp: i64,
+        /// Volume scan start (Unix seconds, sub-second precision). Carries
+        /// the provisional value computed in the streaming loop; the
+        /// worker uses it as the IDB scan-key timestamp for every chunk
+        /// in the volume, so all chunks in one volume must agree on this
+        /// value. Sub-second precision matters: the IDB key is built via
+        /// `ScanKey::from_secs_f64`, and a truncating `i64` would round
+        /// distinct volumes onto the same key when they're within the
+        /// same wall-clock second.
+        timestamp: f64,
         /// Whether this chunk is the last chunk of its sweep, derived from
         /// the VCP mapper at emission time. The worker accumulator uses this
         /// to flush the in-progress elevation as soon as the last chunk is
@@ -353,7 +361,8 @@ fn get_projected_volume_end_available_at_secs(state: &StreamingState) -> Option<
 /// ScanKey lands near the eventual real value.
 const DEFAULT_PROVISIONAL_LAG_SECS: f64 = 5.0;
 
-/// Provisional scan-start timestamp (Unix seconds) for a new volume.
+/// Provisional scan-start timestamp (Unix seconds, sub-second precision)
+/// for a new volume.
 ///
 /// Uses the Start chunk's S3 upload time minus the current median
 /// availability lag from `ChunkTimingStats` (falling back to
@@ -361,19 +370,24 @@ const DEFAULT_PROVISIONAL_LAG_SECS: f64 = 5.0;
 /// header collection time — closer than the wall-clock receipt time it
 /// replaces — without needing to wait for the first M chunk's radial
 /// parse. If there is no upload time, fall back to wall clock.
+///
+/// Returns `f64` rather than `i64` so the IDB scan key preserves the
+/// volume's true sub-second start time end-to-end. Without this, two
+/// volumes whose true starts differ by less than a second would round to
+/// the same `i64` and risk colliding under `ScanKey::from_secs`.
 fn provisional_scan_start_secs(
     start_upload: Option<chrono::DateTime<chrono::Utc>>,
     iter: &StreamingState,
-) -> i64 {
+) -> f64 {
     let median_lag_secs = iter
         .timing_stats()
         .median_availability_lag_secs()
         .unwrap_or(DEFAULT_PROVISIONAL_LAG_SECS);
     if let Some(upload) = start_upload {
         let upload_secs = upload.timestamp_millis() as f64 / 1000.0;
-        return (upload_secs - median_lag_secs).round() as i64;
+        return upload_secs - median_lag_secs;
     }
-    current_timestamp()
+    current_timestamp() as f64
 }
 
 /// Elevation numbers already fully cached in IndexedDB for the given scan.
@@ -385,9 +399,9 @@ fn provisional_scan_start_secs(
 async fn cached_elevations_for_scan(
     facade: &DataFacade,
     site_id: &str,
-    scan_start_secs: i64,
+    scan_start_secs: f64,
 ) -> std::collections::HashSet<u8> {
-    let scan_key = crate::data::ScanKey::from_secs(site_id, scan_start_secs);
+    let scan_key = crate::data::ScanKey::from_secs_f64(site_id, scan_start_secs);
     match facade.scan_availability(&scan_key).await {
         Ok(Some(entry)) => entry
             .cached_sweeps
@@ -432,7 +446,7 @@ async fn emit_backfill_chunks(
     state: &Rc<RefCell<RealtimeState>>,
     ctx: &egui::Context,
     chunks_in_volume_start: u32,
-    timestamp: i64,
+    timestamp: f64,
     emitted_sequences_this_volume: &mut std::collections::HashSet<usize>,
 ) -> u32 {
     use nexrad_data::aws::realtime::download_chunk;
@@ -517,11 +531,11 @@ async fn run_mid_stream_backfill(
     filter: StreamingFilter,
     iter: &StreamingState,
     facade: &DataFacade,
-    scan_start_secs: i64,
+    scan_start_secs: f64,
     state: &Rc<RefCell<RealtimeState>>,
     ctx: &egui::Context,
     chunks_in_volume_start: u32,
-    timestamp: i64,
+    timestamp: f64,
     emitted_sequences_this_volume: &mut std::collections::HashSet<usize>,
 ) -> u32 {
     use nexrad_data::aws::realtime::list_chunks_in_volume;
@@ -717,7 +731,7 @@ async fn streaming_loop(
     ctx.request_repaint();
 
     let mut chunks_in_volume: u32;
-    let mut current_scan_start_secs: i64;
+    let mut current_scan_start_secs: f64;
     // Sequences emitted to the worker for the current volume (init backfill,
     // init latest, steady-state, and mid-stream backfill). The mid-stream
     // backfill consults this set to avoid re-downloading chunks the user has

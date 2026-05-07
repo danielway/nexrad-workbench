@@ -160,19 +160,22 @@ impl PlaybackManager {
     /// Determine what the previous sweep should be for sweep animation.
     ///
     /// Returns the prev sweep identity `(scan_key_ts, elev_num, elev_deg, start, end)`
-    /// or `None` if no previous sweep exists.
+    /// or `None` if no previous sweep exists. `scan_key_ts` is fractional
+    /// Unix seconds (preserving sub-second precision from the IDB key)
+    /// rather than truncated `i64` — the comparison sites in main.rs read
+    /// it against `displayed_scan_timestamp` which is also `f64`.
     pub fn find_prev_sweep(
         timeline: &RadarTimeline,
         playback_ts: f64,
         displayed_elev: u8,
         is_auto: bool,
         max_scan_age: f64,
-    ) -> Option<(i64, u8, f32, f64, f64)> {
+    ) -> Option<(f64, u8, f32, f64, f64)> {
         let current_scan = timeline.find_recent_scan(playback_ts, max_scan_age)?;
 
         let sweep_to_info = |scan_key_ts: f64, s: &Sweep| {
             (
-                scan_key_ts as i64,
+                scan_key_ts,
                 s.elevation_number,
                 s.elevation,
                 s.start_time,

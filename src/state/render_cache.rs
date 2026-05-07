@@ -83,5 +83,5 @@ pub struct RenderCache {
     /// Cached key + result for `PlaybackManager::find_prev_sweep`. Reused
     /// across frames while the inputs are unchanged.
     pub prev_sweep_cache_key: Option<PrevSweepCacheKey>,
-    pub prev_sweep_cache_value: Option<(i64, u8, f32, f64, f64)>,
+    pub prev_sweep_cache_value: Option<(f64, u8, f32, f64, f64)>,
 }

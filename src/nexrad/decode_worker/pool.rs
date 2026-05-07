@@ -71,7 +71,7 @@ impl WorkerPool {
         &mut self,
         data: Vec<u8>,
         site_id: String,
-        timestamp_secs: i64,
+        timestamp_secs: f64,
         file_name: String,
         fetch_latency_ms: f64,
     ) {
@@ -87,7 +87,7 @@ impl WorkerPool {
         &mut self,
         data: Vec<u8>,
         site_id: String,
-        timestamp_secs: i64,
+        timestamp_secs: f64,
         chunk_index: u32,
         is_start: bool,
         is_end: bool,

@@ -47,12 +47,12 @@ pub struct DecodeWorker {
 
 /// A request queued before the worker was ready.
 enum QueuedRequest {
-    Ingest(RequestId, Vec<u8>, String, i64, String),
+    Ingest(RequestId, Vec<u8>, String, f64, String),
     IngestChunk(
         RequestId,
         Vec<u8>,
         String,
-        i64,
+        f64,
         u32,
         bool,
         bool,

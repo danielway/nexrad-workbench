@@ -58,8 +58,22 @@ impl UnixMillis {
         Self(secs * 1000)
     }
 
+    /// Construct from sub-second-precision Unix seconds. Preserves the
+    /// fractional part as milliseconds (rounded), so a value parsed from a
+    /// volume header at 1700000000.789 lands at 1_700_000_000_789 rather
+    /// than the truncated 1_700_000_000_000.
+    pub fn from_secs_f64(secs: f64) -> Self {
+        Self((secs * 1000.0).round() as i64)
+    }
+
     pub fn as_secs(&self) -> i64 {
         self.0 / 1000
+    }
+
+    /// Convert back to fractional Unix seconds. Round-trips
+    /// `from_secs_f64` to within float precision.
+    pub fn as_secs_f64(&self) -> f64 {
+        self.0 as f64 / 1000.0
     }
 }
 
@@ -120,6 +134,17 @@ impl ScanKey {
         Self {
             site: SiteId(site_id.to_string()),
             scan_start: UnixMillis::from_secs(timestamp_secs),
+        }
+    }
+
+    /// Creates a ScanKey from a site ID and sub-second-precision Unix
+    /// seconds. Use this on the streaming-loop path where the provisional
+    /// or radial-parsed start is known to fractional precision; the
+    /// fractional part survives into the IDB key.
+    pub fn from_secs_f64(site_id: &str, timestamp_secs: f64) -> Self {
+        Self {
+            site: SiteId(site_id.to_string()),
+            scan_start: UnixMillis::from_secs_f64(timestamp_secs),
         }
     }
 }
@@ -735,6 +760,21 @@ mod tests {
         let key = ScanKey::from_secs("KDMX", 1700000000);
         assert_eq!(key.scan_start.0, 1700000000000);
         assert_eq!(key.to_storage_key(), "KDMX|1700000000000");
+    }
+
+    #[wasm_bindgen_test]
+    fn test_scan_key_from_secs_f64_preserves_subsecond() {
+        let key = ScanKey::from_secs_f64("KDMX", 1_700_000_000.789);
+        assert_eq!(key.scan_start.0, 1_700_000_000_789);
+        assert_eq!(key.to_storage_key(), "KDMX|1700000000789");
+    }
+
+    #[wasm_bindgen_test]
+    fn test_unix_millis_secs_f64_round_trip() {
+        let ms = UnixMillis::from_secs_f64(1_700_000_000.789);
+        assert_eq!(ms.0, 1_700_000_000_789);
+        let back = ms.as_secs_f64();
+        assert!((back - 1_700_000_000.789).abs() < 1e-6);
     }
 
     #[wasm_bindgen_test]
