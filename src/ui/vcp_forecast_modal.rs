@@ -904,7 +904,7 @@ fn compute_per_bucket_stats(arrivals: &[ChunkArrivalStat]) -> Vec<BucketRow> {
 fn scheduler_path_tally(arrivals: &[ChunkArrivalStat]) -> [(SchedulerPath, u32); 4] {
     let mut t = [
         (SchedulerPath::StartConstant, 0u32),
-        (SchedulerPath::Historical, 0),
+        (SchedulerPath::Blended, 0),
         (SchedulerPath::Physics, 0),
         (SchedulerPath::Legacy, 0),
     ];

@@ -1,4 +1,4 @@
-use super::{ChunkCharacteristics, ChunkTimingModel, ChunkTimingStats, ElevationChunkMapper};
+use super::{chunk_characteristics, estimate_interval, ChunkTimingStats, ElevationChunkMapper};
 use chrono::{DateTime, Duration, Utc};
 use nexrad_data::aws::realtime::{ChunkIdentifier, ChunkType, VolumeIndex};
 use nexrad_decode::messages::volume_coverage_pattern;
@@ -263,29 +263,12 @@ pub fn project_scan_timing(
     for seq in (anchor_sequence + 1)..=final_sequence {
         let next_metadata = mapper.get_chunk_metadata(seq)?;
 
-        // Compute interval using physics model
-        let mut interval_secs =
-            ChunkTimingModel::estimate_chunk_interval_secs(prev_metadata, next_metadata);
-
-        // Blend with historical data if available
-        if let Some(stats) = timing_stats {
-            if let Some(elev_num) = next_metadata.elevation_number() {
-                if let Some(elev_data) = _vcp.elevations().get(elev_num - 1) {
-                    let characteristics = ChunkCharacteristics {
-                        chunk_type: ChunkType::Intermediate,
-                        waveform_type: elev_data.waveform_type(),
-                        channel_configuration: elev_data.channel_configuration(),
-                        is_first_in_sweep: next_metadata.is_first_in_sweep(),
-                    };
-
-                    if let Some(avg_timing) = stats.get_average_timing(&characteristics) {
-                        let historical_secs = avg_timing.num_milliseconds() as f64 / 1000.0;
-                        // Blend: 70% physics, 30% historical
-                        interval_secs = interval_secs * 0.7 + historical_secs * 0.3;
-                    }
-                }
-            }
-        }
+        // Shared blended primitive (see `interval_estimate` module): pure
+        // physics when no stats, 70/30 physics/historical blend otherwise.
+        let bucket = chunk_characteristics(next_metadata, _vcp);
+        let estimate =
+            estimate_interval(prev_metadata, next_metadata, bucket.as_ref(), timing_stats);
+        let interval_secs = estimate.seconds;
 
         let interval_ms = (interval_secs * 1000.0) as i64;
         cumulative_offset_ms += interval_ms;

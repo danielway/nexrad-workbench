@@ -155,22 +155,28 @@ timeline UI uses the **projector** path. Both are detailed in
 1. **Start chunk** → constant 1.5 s (`START_TO_FIRST_INTERMEDIATE_GAP_SECS`).
    Tagged `SchedulerPath::StartConstant`. The Start chunk lands almost
    immediately, the first M chunk follows by a measured 1.5 s.
-2. **Have metadata for the next chunk + historical samples for its
-   characteristics bucket** → `avg_S3_delta + (avg_attempts − 1) seconds`.
-   Tagged `Historical`. The `(avg_attempts − 1)` term is a retry budget:
-   if past chunks of this bucket usually took 2 polls, allocate one
-   extra second so we are ready to retry without sleeping.
-3. **Have metadata, no historical samples** → physics breakdown
-   (`ChunkTimingModel::estimate_chunk_interval_breakdown`). Tagged
-   `Physics`.
-4. **No metadata** (very rare; e.g. malformed VCP) → static legacy table
+2. **Have metadata for both chunks** → call the shared
+   [`estimate_interval`](../src/nexrad/timing/interval_estimate.rs)
+   primitive, which returns a 70/30 physics/historical blend when stats
+   are available for the bucket and pure physics otherwise. The
+   scheduler then adds a `(avg_attempts − 1) seconds` retry budget when
+   stats are present (if past chunks of this bucket usually took 2
+   polls, allocate one extra second so we are ready to retry without
+   sleeping). Tagged `Blended` when stats contributed, `Physics`
+   otherwise.
+3. **No metadata** (very rare; e.g. malformed VCP) → static legacy table
    keyed by waveform/channel-config. Tagged `Legacy`.
 
-The lookup is keyed on the **arriving** chunk's characteristics, not the
-anchor's. Writes (`StreamingState::update_timing_stats`) record under
-the arriving chunk's bucket; reading under the anchor's would silently
-miss and fall back to physics. See `chunk_timing_stats.rs` and the
-fixed-bug commentary in TIMING.md §2.
+The bucket lookup is keyed on the **arriving** chunk's characteristics,
+not the anchor's. Writes (`StreamingState::update_timing_stats`) record
+under the arriving chunk's bucket; reading under the anchor's would
+silently miss and fall back to physics. See `chunk_timing_stats.rs` and
+the fixed-bug commentary in TIMING.md §2.
+
+The shared [`estimate_interval`](../src/nexrad/timing/interval_estimate.rs)
+primitive is also used by the projector (§3 below) and the multi-hop
+filter path (§3b), so all three predict-the-interval call sites apply
+the same blend formula and a regression in one is observable in all.
 
 ### 3b. Multi-hop diagnostics (filter mode)
 
@@ -179,17 +185,19 @@ is rarely sequence `current+1`. `next_matching_chunk_diagnostics`:
 
 1. Walks the mapper for the next sequence whose elevation matches the
    filter predicate.
-2. Sums `estimate_chunk_interval_breakdown(prev, next).total_secs` for
-   every hop from `current+1` up to `target−1` (pure physics).
-3. For the final hop, substitutes the historical bucket average if
-   available — so the prediction error for the chunk we are actually
-   waiting on is bounded by single-hop accuracy.
+2. Sums `estimate_interval(prev, next, bucket, stats).seconds` for
+   every hop from `current+1` up to `target` — every hop uses the same
+   blended primitive as the single-hop scheduler, so each step is
+   either pure physics (no stats yet) or a 70/30 physics/historical
+   blend.
+3. Adds `(avg_attempts − 1) seconds` retry budget on top, keyed on the
+   target chunk's bucket.
 4. Returns `(target_sequence, EstimatedChunkProcessing)` with `path =
-   Historical` if the final hop hit, else `Physics`.
+   Blended` when any hop pulled in historical samples, else `Physics`.
 
 This collapses what would otherwise be N successive predict-sleep-fetch
 cycles (for chunks the user does not want) into a single sleep of
-`Σ physics + final_hop_historical`.
+`Σ blended_intervals + retry_budget`.
 
 ### 3c. Cross-volume forecasting
 
@@ -481,12 +489,13 @@ the historical chunk list.
   volume estimate returned `None` and the loop fell through to the
   legacy single-hop. Check `projected_volume_end_collection_secs` —
   cold-start with no projection means the estimator can't run.
-- **`Historical` path never fires** — bucket lookup is keyed wrong.
+- **`Blended` path never fires** — bucket lookup is keyed wrong.
   `get_average_timing` keys on the **arriving** chunk's
   characteristics, and `update_timing_stats` writes under the same
   key. If a regression flips one of them to the anchor's
   characteristics, the lookup will silently miss every time. See the
-  comment block in `estimate_next_chunk_time.rs` line 130-136.
+  bucket-lookup comment in `estimate_next_chunk_time.rs` near the
+  `estimate_interval` call.
 - **Predictions are systematically early or late** — inspect the
   diagnostics modal for path mix and `physics_breakdown` per chunk.
   Systematic bias on a specific waveform transition usually means

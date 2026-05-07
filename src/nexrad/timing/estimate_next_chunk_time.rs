@@ -1,6 +1,6 @@
 use super::{
-    ChunkCharacteristics, ChunkTimingModel, ChunkTimingStats, ElevationChunkMapper,
-    PhysicsBreakdown,
+    chunk_characteristics, estimate_interval, ChunkCharacteristics, ChunkTimingModel,
+    ChunkTimingStats, ElevationChunkMapper, PhysicsBreakdown,
 };
 use chrono::Duration as ChronoDuration;
 use chrono::{DateTime, Utc};
@@ -15,9 +15,10 @@ use nexrad_decode::messages::volume_coverage_pattern;
 pub enum SchedulerPath {
     /// Constant Start→first-Intermediate gap (no prediction needed).
     StartConstant,
-    /// `ChunkTimingStats` has historical samples for this bucket; used the
-    /// rolling average + retry budget.
-    Historical,
+    /// `ChunkTimingStats` has samples for this bucket; the interval is a
+    /// 70/30 physics/historical blend plus an `(avg_attempts − 1)` retry
+    /// budget.
+    Blended,
     /// Fell back to the physics model — no historical samples for this bucket
     /// (cold start, new VCP, etc.).
     Physics,
@@ -29,7 +30,7 @@ impl SchedulerPath {
     pub fn short(&self) -> &'static str {
         match self {
             SchedulerPath::StartConstant => "start",
-            SchedulerPath::Historical => "hist",
+            SchedulerPath::Blended => "blend",
             SchedulerPath::Physics => "phys",
             SchedulerPath::Legacy => "legacy",
         }
@@ -46,11 +47,11 @@ pub struct EstimatedChunkProcessing {
     pub stats_n_at_prediction: usize,
     /// Physics decomposition for the next-chunk transition. `Some` whenever
     /// metadata for both the current and next chunk was available — this is
-    /// the case for `Historical` and `Physics` paths, never for `Legacy` or
+    /// the case for `Blended` and `Physics` paths, never for `Legacy` or
     /// `StartConstant`.
     pub physics_breakdown: Option<PhysicsBreakdown>,
     /// `ChunkCharacteristics` bucket key used by the estimator's lookup —
-    /// `Some` for `Historical` / `Physics` paths, `None` for `Legacy` /
+    /// `Some` for `Blended` / `Physics` paths, `None` for `Legacy` /
     /// `StartConstant`. Lets diagnostics display the same key the lookup
     /// hit (or missed) without re-deriving it from the chunk identifier.
     pub bucket: Option<ChunkCharacteristics>,
@@ -116,94 +117,58 @@ pub fn estimate_chunk_processing_diagnostics(
         });
     }
 
-    // Try to use the physics-based model via chunk metadata
-    if let Some(next_metadata) = elevation_chunk_mapper.get_chunk_metadata(chunk.sequence() + 1) {
-        let current_metadata = elevation_chunk_mapper.get_chunk_metadata(chunk.sequence());
+    // Physics + optional historical blend via the shared primitive.
+    //
+    // Bucket lookup keys on the *arriving* chunk's characteristics rather
+    // than the anchor's. Writes in `StreamingState::update_timing_stats`
+    // record each chunk's arrival under the arriving chunk's elevation,
+    // so reading under the anchor's elevation would silently miss.
+    if let (Some(current_metadata), Some(next_metadata)) = (
+        elevation_chunk_mapper.get_chunk_metadata(chunk.sequence()),
+        elevation_chunk_mapper.get_chunk_metadata(chunk.sequence() + 1),
+    ) {
+        let bucket = chunk_characteristics(next_metadata, vcp);
+        let estimate = estimate_interval(
+            current_metadata,
+            next_metadata,
+            bucket.as_ref(),
+            timing_stats,
+        );
 
-        // Compute the physics breakdown up-front so we can attach it to either
-        // the historical or physics path. The breakdown is purely descriptive;
-        // the historical path's wait time is unchanged.
-        let physics_breakdown = current_metadata
-            .map(|c| ChunkTimingModel::estimate_chunk_interval_breakdown(c, next_metadata));
-
-        // Check for historical timing data first.
-        //
-        // Key this lookup on the *arriving* chunk's (next_metadata) characteristics
-        // rather than the anchor's. Writes in `StreamingState::update_timing_stats`
-        // record each chunk's arrival duration under the arriving chunk's elevation,
-        // so reading under the anchor's elevation looks up the wrong bucket and
-        // silently falls back to pure physics. This cost us ~30% of the effective
-        // shift from the physics penalties on sweep transitions.
-        if let Some(elevation) = next_metadata
-            .elevation_number()
-            .and_then(|elevation_number| vcp.elevations().get(elevation_number - 1))
-        {
-            let characteristics = ChunkCharacteristics {
-                chunk_type: ChunkType::Intermediate,
-                waveform_type: elevation.waveform_type(),
-                channel_configuration: elevation.channel_configuration(),
-                is_first_in_sweep: next_metadata.is_first_in_sweep(),
-            };
-
-            let stats_n_at_prediction =
-                timing_stats.map_or(0, |s| s.sample_count(&characteristics));
-            let average_timing =
-                timing_stats.and_then(|stats| stats.get_average_timing(&characteristics));
-            let average_attempts =
-                timing_stats.and_then(|stats| stats.get_average_attempts(&characteristics));
-
-            if let (Some(avg_timing), Some(avg_attempts)) = (average_timing, average_attempts) {
-                let mut wait_time = avg_timing;
-                wait_time += chrono::Duration::seconds(avg_attempts as i64 - 1);
-
-                debug!(
-                    "Using historical average timing of {}ms and {} attempts for {}ms",
-                    avg_timing.num_milliseconds(),
-                    avg_attempts,
-                    wait_time.num_milliseconds()
-                );
-
-                return Some(EstimatedChunkProcessing {
-                    duration: wait_time,
-                    path: SchedulerPath::Historical,
-                    stats_n_at_prediction,
-                    physics_breakdown,
-                    bucket: Some(characteristics),
-                });
-            }
+        let mut wait_secs = estimate.seconds;
+        // Retry budget: when we have historical data we also have an
+        // attempts average — pad the wait by `(avg_attempts − 1)s` so the
+        // first poll lands near the typical success cycle.
+        let avg_attempts = bucket
+            .as_ref()
+            .zip(timing_stats)
+            .and_then(|(b, s)| s.get_average_attempts(b));
+        if let Some(att) = avg_attempts {
+            wait_secs += (att - 1.0).max(0.0);
         }
 
-        // Fall back to physics-based model. When we got here the bucket
-        // lookup either failed (no elevation) or had no samples — record
-        // whichever bucket we actually probed (if any) so diagnostics can
-        // still show why the fallback fired.
-        let probed_bucket = next_metadata
-            .elevation_number()
-            .and_then(|elevation_number| vcp.elevations().get(elevation_number - 1))
-            .map(|elevation| ChunkCharacteristics {
-                chunk_type: ChunkType::Intermediate,
-                waveform_type: elevation.waveform_type(),
-                channel_configuration: elevation.channel_configuration(),
-                is_first_in_sweep: next_metadata.is_first_in_sweep(),
-            });
-        if let Some(breakdown) = physics_breakdown {
-            let interval_ms = (breakdown.total_secs * 1000.0) as i64;
+        let path = if estimate.used_historical {
+            SchedulerPath::Blended
+        } else {
+            SchedulerPath::Physics
+        };
 
-            debug!(
-                "Using physics model: interval={}ms (az_rate={:.1} dps, first_in_sweep={})",
-                interval_ms,
-                next_metadata.azimuth_rate_dps(),
-                next_metadata.is_first_in_sweep()
-            );
+        debug!(
+            "Scheduler {}: interval={:.3}s (physics={:.3}s, used_hist={}, attempts_pad={:.3}s)",
+            path.short(),
+            estimate.seconds,
+            estimate.physics.total_secs,
+            estimate.used_historical,
+            avg_attempts.map(|a| (a - 1.0).max(0.0)).unwrap_or(0.0),
+        );
 
-            return Some(EstimatedChunkProcessing {
-                duration: ChronoDuration::milliseconds(interval_ms),
-                path: SchedulerPath::Physics,
-                stats_n_at_prediction: 0,
-                physics_breakdown: Some(breakdown),
-                bucket: probed_bucket,
-            });
-        }
+        return Some(EstimatedChunkProcessing {
+            duration: ChronoDuration::milliseconds((wait_secs * 1000.0) as i64),
+            path,
+            stats_n_at_prediction: estimate.stats_n,
+            physics_breakdown: Some(estimate.physics),
+            bucket,
+        });
     }
 
     // Final fallback: use old static estimation for edge cases where metadata is unavailable
@@ -236,14 +201,14 @@ pub fn estimate_chunk_processing_diagnostics(
 /// Multi-hop variant of [`estimate_chunk_processing_diagnostics`] used by the
 /// filter-aware streaming path.
 ///
-/// Sums the per-hop physics interval for every step from the current chunk's
+/// Sums the per-hop blended interval for every step from the current chunk's
 /// sequence up to (and including) the hop into `target_sequence`, so a
 /// streaming loop that's about to skip several chunks can sleep through the
 /// entire run in one shot. Returns `None` when sequence metadata is missing.
 ///
-/// The final hop substitutes the historical bucket average when one is
-/// available — this matches the single-hop diagnostic's behavior so a
-/// filter-disabled run is bit-identical to today.
+/// Each hop uses the same shared [`estimate_interval`] primitive as the
+/// single-hop scheduler and the projector, so a filter-disabled run remains
+/// in lock-step with the no-filter path.
 pub fn estimate_chunk_processing_time_to_target(
     current: &ChunkIdentifier,
     target_sequence: usize,
@@ -269,61 +234,54 @@ pub fn estimate_chunk_processing_time_to_target(
 
     let mut total_secs: f64 = 0.0;
     let mut last_breakdown: Option<PhysicsBreakdown> = None;
+    let mut any_hop_used_historical = false;
 
     // First hop: handle the Start-chunk special case (1.5s constant) before
-    // any physics math so the constant matches the single-hop StartConstant
+    // any interval math so the constant matches the single-hop StartConstant
     // path.
-    if current.chunk_type() == ChunkType::Start {
+    let first_hop_start = if current.chunk_type() == ChunkType::Start {
         total_secs += ChunkTimingModel::start_to_first_intermediate_gap_secs();
+        current_sequence + 1
     } else {
-        let prev_meta = elevation_chunk_mapper.get_chunk_metadata(current_sequence)?;
-        let next_meta = elevation_chunk_mapper.get_chunk_metadata(current_sequence + 1)?;
-        let breakdown = ChunkTimingModel::estimate_chunk_interval_breakdown(prev_meta, next_meta);
-        total_secs += breakdown.total_secs;
-        last_breakdown = Some(breakdown);
-    }
+        current_sequence
+    };
 
-    // Intermediate hops: pure physics summing.
-    for seq in (current_sequence + 1)..target_sequence {
+    // Sum every blended hop from `first_hop_start` to `target_sequence`.
+    for seq in first_hop_start..target_sequence {
         let prev_meta = elevation_chunk_mapper.get_chunk_metadata(seq)?;
         let next_meta = elevation_chunk_mapper.get_chunk_metadata(seq + 1)?;
-        let breakdown = ChunkTimingModel::estimate_chunk_interval_breakdown(prev_meta, next_meta);
-        total_secs += breakdown.total_secs;
-        last_breakdown = Some(breakdown);
-    }
-
-    // Final hop: substitute historical bucket if available so the prediction
-    // for the chunk we're actually waiting on lands as accurately as a
-    // single-hop estimate would.
-    let target_meta = elevation_chunk_mapper.get_chunk_metadata(target_sequence)?;
-    let target_bucket = target_meta
-        .elevation_number()
-        .and_then(|n| vcp.elevations().get(n - 1))
-        .map(|elevation| ChunkCharacteristics {
-            chunk_type: ChunkType::Intermediate,
-            waveform_type: elevation.waveform_type(),
-            channel_configuration: elevation.channel_configuration(),
-            is_first_in_sweep: target_meta.is_first_in_sweep(),
-        });
-
-    let mut path = SchedulerPath::Physics;
-    let mut stats_n_at_prediction = 0usize;
-
-    if let (Some(stats), Some(bucket)) = (timing_stats, target_bucket.as_ref()) {
-        stats_n_at_prediction = stats.sample_count(bucket);
-        if let (Some(avg_timing), Some(avg_attempts)) = (
-            stats.get_average_timing(bucket),
-            stats.get_average_attempts(bucket),
-        ) {
-            // Replace the last hop's physics with the historical average so
-            // arrival-time prediction error is bounded by single-hop accuracy.
-            let last_physics_secs = last_breakdown.as_ref().map(|b| b.total_secs).unwrap_or(0.0);
-            total_secs = total_secs - last_physics_secs
-                + avg_timing.num_milliseconds() as f64 / 1000.0
-                + (avg_attempts - 1.0).max(0.0);
-            path = SchedulerPath::Historical;
+        let bucket = chunk_characteristics(next_meta, vcp);
+        let estimate = estimate_interval(prev_meta, next_meta, bucket.as_ref(), timing_stats);
+        total_secs += estimate.seconds;
+        last_breakdown = Some(estimate.physics);
+        if estimate.used_historical {
+            any_hop_used_historical = true;
         }
     }
+
+    // Retry budget for the target chunk: pad by `(avg_attempts − 1)s` so the
+    // first poll on the chunk we're actually waiting for lands near the
+    // typical success cycle. Only fires when the target's bucket has stats.
+    let target_meta = elevation_chunk_mapper.get_chunk_metadata(target_sequence)?;
+    let target_bucket = chunk_characteristics(target_meta, vcp);
+    let stats_n_at_prediction = target_bucket
+        .as_ref()
+        .zip(timing_stats)
+        .map(|(b, s)| s.sample_count(b))
+        .unwrap_or(0);
+    let avg_attempts = target_bucket
+        .as_ref()
+        .zip(timing_stats)
+        .and_then(|(b, s)| s.get_average_attempts(b));
+    if let Some(att) = avg_attempts {
+        total_secs += (att - 1.0).max(0.0);
+    }
+
+    let path = if any_hop_used_historical {
+        SchedulerPath::Blended
+    } else {
+        SchedulerPath::Physics
+    };
 
     Some(EstimatedChunkProcessing {
         duration: ChronoDuration::milliseconds((total_secs * 1000.0) as i64),

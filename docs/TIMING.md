@@ -94,13 +94,17 @@ anchor_collection = latest_chunk_collection_end_secs           (preferred — cu
                  ?? (anchor.upload_time − 5s)                   (fallback when no lag stats yet)
 
 for seq in (anchor.sequence + 1)..=final:
-    physics_interval = ChunkTimingModel::estimate_chunk_interval_secs(prev_meta, next_meta)
-    interval         = 0.7 * physics_interval + 0.3 * historical_avg_for(next.characteristics)
-                       (only when ChunkTimingStats has a sample for the next chunk's bucket;
-                        else pure physics)
-    cumulative      += interval
+    interval        = estimate_interval(prev_meta, next_meta, bucket, stats).seconds
+                      (shared primitive; pure physics when no stats, else 70/30 blend)
+    cumulative     += interval
     projected_collection_time[seq] = anchor_collection + cumulative
 ```
+
+The `estimate_interval` primitive lives in
+[`interval_estimate.rs`](../src/nexrad/timing/interval_estimate.rs) and is
+shared with the scheduler (§3b) and the multi-hop filter path. All three
+prediction sites apply the same blend formula, so a regression in one is
+observable in all.
 
 ### The physics term — `ChunkTimingModel`
 
@@ -210,14 +214,15 @@ all** — driven by historical S3 deltas with physics fallback.
 if current chunk is Start:
     return START_TO_FIRST_INTERMEDIATE_GAP_SECS  (1.5 s)
 
-if ChunkTimingStats has samples for next_chunk.characteristics:
-    return historical_avg_S3_delta + (avg_attempts − 1) seconds
-                                    ↑ retry budget — if past chunks usually
-                                      took N polls, allocate N−1 extra seconds
-
-else if VCP physics is available:
-    return ChunkTimingModel::estimate_chunk_interval_secs(current, next)
-            (no historical blend in this path — pure physics fallback)
+if VCP metadata is available for current and next chunk:
+    interval = estimate_interval(prev, next, bucket, stats).seconds
+               (shared primitive — same 70/30 blend the projector uses)
+    if ChunkTimingStats has samples for next_chunk.characteristics:
+        interval += (avg_attempts − 1) seconds
+                    ↑ retry budget — if past chunks usually took N polls,
+                      allocate N−1 extra seconds
+    return interval
+            (path = Blended when stats contributed, else Physics)
 
 else:
     return legacy_static_table[waveform][channel_config]
@@ -359,11 +364,13 @@ on rounding direction.
    the right lag. The scheduler (3b) wins on per-chunk accuracy because
    it uses per-characteristics historical S3 deltas, so this hasn't been
    a problem in practice.
-3. **Scheduler still drives off `duration_ms` (S3 deltas), not the split
-   residuals.** A future change could switch the scheduler to
-   `physics + collection_residual + lag_delta` for cleaner attribution
-   when predictions go wrong, but the current empirically-tuned path
-   works well enough that a rewrite carries regression risk.
+3. **Scheduler still drives off `duration_ms` (S3 deltas), not split
+   residuals.** A future change could switch the historical input from
+   raw S3-upload-delta to `physics + collection_residual + lag_delta`
+   for cleaner attribution when predictions go wrong. The 70/30
+   physics/historical blend (now shared with the projector via
+   [`estimate_interval`](../src/nexrad/timing/interval_estimate.rs)) is
+   already a partial mitigation; the deeper split is still open.
 4. **No IDB rename to re-anchor `ScanKey.scan_start` on the parsed
    `volume_header_time` once the first M chunk arrives.** Currently the
    provisional scan-start (`upload − median_lag`) stays for the whole

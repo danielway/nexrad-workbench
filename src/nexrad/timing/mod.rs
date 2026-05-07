@@ -23,6 +23,7 @@ mod chunk_timing_model;
 mod chunk_timing_stats;
 mod elevation_chunk_mapper;
 mod estimate_next_chunk_time;
+mod interval_estimate;
 mod scan_timing_projection;
 
 pub use chunk_timing_model::{ChunkTimingModel, IntervalCase, PhysicsBreakdown};
@@ -33,6 +34,7 @@ pub use estimate_next_chunk_time::{
     estimate_chunk_processing_time, estimate_chunk_processing_time_to_target,
     EstimatedChunkProcessing, SchedulerPath,
 };
+pub use interval_estimate::{chunk_characteristics, estimate_interval, IntervalEstimate};
 pub use scan_timing_projection::{
     project_full_scan_timing, project_scan_timing, AnchorSource, ChunkProjection,
     ScanTimingProjection,
