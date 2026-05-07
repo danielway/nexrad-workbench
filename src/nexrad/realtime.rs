@@ -360,6 +360,28 @@ fn provisional_scan_start_secs(
     current_timestamp()
 }
 
+/// Elevation numbers already fully cached in IndexedDB for the given scan.
+///
+/// A "fully cached" sweep is one that's been flushed to the `cached_sweeps`
+/// list (via an `is_last_in_sweep` or end-of-volume flush). Partial sweeps
+/// don't appear here, so on resume we still re-download chunks for sweeps
+/// that were interrupted mid-flight.
+async fn cached_elevations_for_scan(
+    facade: &DataFacade,
+    site_id: &str,
+    scan_start_secs: i64,
+) -> std::collections::HashSet<u8> {
+    let scan_key = crate::data::ScanKey::from_secs(site_id, scan_start_secs);
+    match facade.scan_availability(&scan_key).await {
+        Ok(Some(entry)) => entry
+            .cached_sweeps
+            .iter()
+            .map(|s| s.elevation_number)
+            .collect(),
+        _ => std::collections::HashSet::new(),
+    }
+}
+
 /// Sequences in `[2, upper]` whose elevation matches `filter`, ordered by
 /// sequence. Used by both the init-time backfill and the mid-stream
 /// filter-change backfill to find already-published chunks of the user's
@@ -478,6 +500,8 @@ async fn run_mid_stream_backfill(
     site_id: &str,
     filter: StreamingFilter,
     iter: &StreamingState,
+    facade: &DataFacade,
+    scan_start_secs: i64,
     state: &Rc<RefCell<RealtimeState>>,
     ctx: &egui::Context,
     chunks_in_volume_start: u32,
@@ -494,10 +518,20 @@ async fn run_mid_stream_backfill(
         return 0;
     }
     let upper = current_seq.saturating_sub(1);
+    // Skip elevations already in the IDB cache. Same rationale as the init
+    // backfill: the worker treats their re-flushes as no-ops, so the
+    // download is pure waste.
+    let cached_elevs = cached_elevations_for_scan(facade, site_id, scan_start_secs).await;
     let candidate_seqs: Vec<usize> = iter
         .mapper_matching_sequences_in_range(2, upper, |elev| elev.is_some() && filter.accepts(elev))
         .into_iter()
         .filter(|seq| !emitted_sequences_this_volume.contains(seq))
+        .filter(|seq| {
+            iter.chunk_metadata(*seq)
+                .and_then(|m| m.elevation_number())
+                .map(|elev| !cached_elevs.contains(&(elev as u8)))
+                .unwrap_or(true)
+        })
         .collect();
 
     if candidate_seqs.is_empty() {
@@ -577,7 +611,7 @@ async fn streaming_loop(
     site_id: String,
     state: Rc<RefCell<RealtimeState>>,
     stats: NetworkStats,
-    _facade: DataFacade,
+    facade: DataFacade,
 ) {
     use nexrad_data::aws::realtime::{list_chunks_in_volume, ChunkType};
 
@@ -741,8 +775,29 @@ async fn streaming_loop(
             other => other,
         };
 
-        let backfill_seqs =
-            filter_backfill_sequences(&iter, backfill_filter, latest_seq.saturating_sub(1));
+        // Skip backfilling sweeps whose blobs are already cached in IDB
+        // (resume after a stop within the same volume). The worker's
+        // `pre_completed` set ignores re-flushes for these, so the network
+        // download is pure waste.
+        let cached_elevs =
+            cached_elevations_for_scan(&facade, &site_id, current_scan_start_secs).await;
+        if !cached_elevs.is_empty() {
+            log::debug!(
+                "Filter backfill (init): {} elevation(s) already cached, will skip them: {:?}",
+                cached_elevs.len(),
+                cached_elevs,
+            );
+        }
+        let backfill_seqs: Vec<usize> =
+            filter_backfill_sequences(&iter, backfill_filter, latest_seq.saturating_sub(1))
+                .into_iter()
+                .filter(|seq| {
+                    iter.chunk_metadata(*seq)
+                        .and_then(|m| m.elevation_number())
+                        .map(|elev| !cached_elevs.contains(&(elev as u8)))
+                        .unwrap_or(true)
+                })
+                .collect();
 
         if !backfill_seqs.is_empty() {
             match list_chunks_in_volume(&site_id, volume, 100).await {
@@ -799,8 +854,11 @@ async fn streaming_loop(
         let latest_type = init_result.latest_chunk.identifier.chunk_type();
         let latest_is_end = latest_type == ChunkType::End;
         let latest_matches = initial_filter.accepts(latest_elev);
+        let latest_already_cached = latest_elev
+            .map(|n| cached_elevs.contains(&(n as u8)))
+            .unwrap_or(false);
 
-        if latest_matches || latest_is_end {
+        if (latest_matches && !latest_already_cached) || latest_is_end {
             chunks_in_volume += 1;
             emitted_sequences_this_volume.insert(latest_seq);
             log::debug!(
@@ -936,6 +994,8 @@ async fn streaming_loop(
                 &site_id,
                 new_filter,
                 &iter,
+                &facade,
+                current_scan_start_secs,
                 &state,
                 &ctx,
                 chunks_in_volume,
