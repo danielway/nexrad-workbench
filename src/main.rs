@@ -1590,9 +1590,13 @@ impl WorkbenchApp {
             });
         }
 
-        // Track the scan for render requests
+        // Track the scan for render requests. Parse the storage key the worker
+        // emitted; round-trip from the same Rust struct that built it, so a
+        // failure here would mean worker corruption.
+        let parsed_scan_key = data::ScanKey::from_storage_key(&result.scan_key)
+            .expect("worker returned malformed scan_key");
         self.render
-            .set_scan(result.scan_key.clone(), result.elevation_numbers);
+            .set_scan(parsed_scan_key, result.elevation_numbers);
         self.state.viz_state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
         self.state.viz_state.displayed_sweep_elevation_number = None;
         // Refresh timeline to include the new scan
@@ -1677,8 +1681,13 @@ impl WorkbenchApp {
             result.total_ms,
         );
 
-        // Update scan key and available elevations
-        self.render.set_scan_key(result.scan_key.clone());
+        // Update scan key and available elevations. Parse the worker-emitted
+        // storage key back into a typed `ScanKey`; the worker built it from
+        // the same Rust-side struct, so a parse failure here would mean the
+        // worker corrupted it.
+        let parsed_scan_key = data::ScanKey::from_storage_key(&result.scan_key)
+            .expect("worker returned malformed scan_key");
+        self.render.set_scan_key(parsed_scan_key);
         let had_elevations = !self.render.available_elevations().is_empty();
         self.render.add_elevations(&result.elevations_completed);
 
@@ -2023,7 +2032,7 @@ impl WorkbenchApp {
         let is_current_scan = self
             .render
             .scan_key()
-            .is_some_and(|k| k == result.context.scan_key)
+            .is_some_and(|k| k.to_storage_key() == result.context.scan_key)
             && self
                 .state
                 .viz_state
@@ -2379,7 +2388,7 @@ impl WorkbenchApp {
                 self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
 
                 // Cache hit: records already in IDB. Send render request directly.
-                self.render.set_scan_key(scan.key.to_storage_key());
+                self.render.set_scan_key(scan.key.clone());
                 self.state.viz_state.displayed_sweep_elevation_number = None;
 
                 // Populate elevation numbers from timeline metadata if available
@@ -2750,7 +2759,7 @@ impl WorkbenchApp {
                     if (needs_new_scan || needs_new_sweep) && self.render.has_worker() {
                         let scan_key =
                             data::ScanKey::from_secs(&self.state.viz_state.site_id, scan_ts);
-                        self.render.set_scan_key(scan_key.to_storage_key());
+                        self.render.set_scan_key(scan_key);
                         self.state.viz_state.displayed_scan_timestamp = Some(scan_ts);
                         if !elev_nums.is_empty() {
                             self.render.set_elevations(elev_nums);
@@ -2831,9 +2840,7 @@ impl WorkbenchApp {
                             if self.state.viz_state.displayed_sweep_elevation_number
                                 != Some(next_en)
                             {
-                                if let Some(scan_key) =
-                                    self.render.scan_key().map(|s| s.to_string())
-                                {
+                                if let Some(scan_key) = self.render.scan_key().cloned() {
                                     let product =
                                         self.state.viz_state.product.to_worker_string().to_string();
                                     let prefetch_request = RenderRequest {
@@ -2848,7 +2855,7 @@ impl WorkbenchApp {
                                         time_to_end,
                                     );
                                     self.render.set_last_render(prefetch_request);
-                                    self.render.render_direct(scan_key, next_en, product);
+                                    self.render.render_direct(&scan_key, next_en, product);
                                 }
                             }
                         }
@@ -2998,8 +3005,10 @@ impl WorkbenchApp {
                         r.clear_previous_data();
                     }
                 }
+                let parsed = data::ScanKey::from_storage_key(&scan_key)
+                    .expect("PrevSweepAction emitted malformed scan_key");
                 self.render
-                    .render_direct(scan_key, elevation_number, product);
+                    .render_direct(&parsed, elevation_number, product);
             }
             PrevSweepAction::Clear => {
                 if let Some(ref renderer) = self.gpu.gpu {

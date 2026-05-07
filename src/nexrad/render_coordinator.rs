@@ -5,6 +5,7 @@
 
 use super::decode_worker::{default_pool_size, WorkerOutcome, WorkerPool};
 use super::render_request::{RenderRequest, VolumeRenderRequest};
+use crate::data::ScanKey;
 
 /// Coordinates render requests to a pool of decode workers, deduplicating
 /// identical requests and owning the current scan/elevation state.
@@ -15,8 +16,11 @@ use super::render_request::{RenderRequest, VolumeRenderRequest};
 pub struct RenderCoordinator {
     /// Pool of Web Workers for offloading expensive NEXRAD operations.
     worker: Option<WorkerPool>,
-    /// Scan key of the currently displayed scan ("SITE|TIMESTAMP_MS").
-    current_scan_key: Option<String>,
+    /// Identity of the currently displayed scan. Stored as the typed
+    /// [`ScanKey`] rather than its serialized form so callers compare by
+    /// value, not by string formatting; the storage-key string is built at
+    /// the worker boundary via [`ScanKey::to_storage_key`].
+    current_scan_key: Option<ScanKey>,
     /// Available elevation numbers for the current scan (from ingest).
     available_elevations: Vec<u8>,
     /// Previous render parameters for change detection.
@@ -42,8 +46,8 @@ impl RenderCoordinator {
     }
 
     /// Current scan key, if any.
-    pub fn scan_key(&self) -> Option<&str> {
-        self.current_scan_key.as_deref()
+    pub fn scan_key(&self) -> Option<&ScanKey> {
+        self.current_scan_key.as_ref()
     }
 
     /// Available elevation numbers for the current scan.
@@ -52,13 +56,13 @@ impl RenderCoordinator {
     }
 
     /// Set the current scan key and available elevations (after ingest).
-    pub fn set_scan(&mut self, key: String, elevations: Vec<u8>) {
+    pub fn set_scan(&mut self, key: ScanKey, elevations: Vec<u8>) {
         self.current_scan_key = Some(key);
         self.available_elevations = elevations;
     }
 
     /// Set just the scan key (e.g. during scrub or chunk ingest).
-    pub fn set_scan_key(&mut self, key: String) {
+    pub fn set_scan_key(&mut self, key: ScanKey) {
         self.current_scan_key = Some(key);
     }
 
@@ -141,9 +145,9 @@ impl RenderCoordinator {
             product,
         );
 
-        let scan_key = scan_key.clone();
+        let storage_key = scan_key.to_storage_key();
         self.last_render = Some(request);
-        worker.render(scan_key, elevation_number, product.to_string());
+        worker.render(storage_key, elevation_number, product.to_string());
         true
     }
 
@@ -178,10 +182,10 @@ impl RenderCoordinator {
             self.available_elevations,
         );
 
-        let scan_key = scan_key.clone();
+        let storage_key = scan_key.to_storage_key();
         let elev_nums = self.available_elevations.clone();
         self.last_volume_render = Some(request);
-        worker.render_volume(scan_key, product.to_string(), elev_nums);
+        worker.render_volume(storage_key, product.to_string(), elev_nums);
         true
     }
 
@@ -234,9 +238,9 @@ impl RenderCoordinator {
     }
 
     /// Send a direct render request (used by prefetch/prev-sweep, bypasses dedup).
-    pub fn render_direct(&mut self, scan_key: String, elevation_number: u8, product: String) {
+    pub fn render_direct(&mut self, scan_key: &ScanKey, elevation_number: u8, product: String) {
         if let Some(ref mut worker) = self.worker {
-            worker.render(scan_key, elevation_number, product);
+            worker.render(scan_key.to_storage_key(), elevation_number, product);
         }
     }
 
