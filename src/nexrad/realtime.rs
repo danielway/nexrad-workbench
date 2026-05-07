@@ -641,7 +641,10 @@ async fn streaming_loop(
 
     // Pad added to the first poll wait per chunk; collapses the "fire a hair
     // early → empty poll → backoff → fire" path on chunks whose predictions
-    // are tight. Retry waits are governed by `REALTIME_CHUNK_POLICY`.
+    // are tight. Retry waits are governed by `REALTIME_CHUNK_POLICY`. The
+    // value lives on the timing primitive
+    // (`IntervalEstimate::POLL_BIAS_SECS`) so projector / scheduler / UI all
+    // agree on it.
     //
     // Sized from observed availability-space prediction error: across all
     // buckets in a representative VCP 212 volume, scheduler predictions ran
@@ -652,7 +655,8 @@ async fn streaming_loop(
     // 750 ms covers the typical case while leaving outliers (one-chunk lag
     // spikes) to the existing retry path. The deeper fix is per-bucket lag
     // in the projector and an EWMA on lag history.
-    const POLL_DELAY_AFTER_PREDICTED_MS: u32 = 750;
+    let poll_delay_after_predicted_ms: u32 =
+        (super::timing::IntervalEstimate::POLL_BIAS_SECS * 1000.0) as u32;
 
     let init_future = acquire_streaming_state(&site_id);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
@@ -1090,7 +1094,7 @@ async fn streaming_loop(
             // empty poll come through the `REALTIME_CHUNK_POLICY` backoff
             // loop below, not here, so the pad applies exactly once per chunk.
             if is_first_iter_for_chunk && wait_ms > 0 {
-                wait_ms = wait_ms.saturating_add(POLL_DELAY_AFTER_PREDICTED_MS);
+                wait_ms = wait_ms.saturating_add(poll_delay_after_predicted_ms);
             }
             if wait_ms > 0 {
                 match interruptible_sleep(&state, &ctx, wait_ms, active_filter_epoch).await {

@@ -117,7 +117,9 @@ pub fn estimate_chunk_processing_diagnostics(
         });
     }
 
-    // Physics + optional historical blend via the shared primitive.
+    // Physics + optional historical blend via the shared primitive. The
+    // primitive carries the retry budget (`(avg_attempts − 1).max(0)` for
+    // the target bucket) so we don't redo the lookup here.
     //
     // Bucket lookup keys on the *arriving* chunk's characteristics rather
     // than the anchor's. Writes in `StreamingState::update_timing_stats`
@@ -135,17 +137,10 @@ pub fn estimate_chunk_processing_diagnostics(
             timing_stats,
         );
 
-        let mut wait_secs = estimate.seconds;
-        // Retry budget: when we have historical data we also have an
-        // attempts average — pad the wait by `(avg_attempts − 1)s` so the
-        // first poll lands near the typical success cycle.
-        let avg_attempts = bucket
-            .as_ref()
-            .zip(timing_stats)
-            .and_then(|(b, s)| s.get_average_attempts(b));
-        if let Some(att) = avg_attempts {
-            wait_secs += (att - 1.0).max(0.0);
-        }
+        // Wait until the chunk is expected to be available *and* a typical
+        // retry budget has elapsed. Poll bias is applied separately by the
+        // streaming loop via `IntervalEstimate::POLL_BIAS_SECS`.
+        let wait_secs = estimate.seconds + estimate.retry_budget_secs;
 
         let path = if estimate.used_historical {
             SchedulerPath::Blended
@@ -159,7 +154,7 @@ pub fn estimate_chunk_processing_diagnostics(
             estimate.seconds,
             estimate.physics.total_secs,
             estimate.used_historical,
-            avg_attempts.map(|a| (a - 1.0).max(0.0)).unwrap_or(0.0),
+            estimate.retry_budget_secs,
         );
 
         return Some(EstimatedChunkProcessing {
@@ -259,23 +254,21 @@ pub fn estimate_chunk_processing_time_to_target(
         }
     }
 
-    // Retry budget for the target chunk: pad by `(avg_attempts − 1)s` so the
-    // first poll on the chunk we're actually waiting for lands near the
-    // typical success cycle. Only fires when the target's bucket has stats.
+    // Retry budget for the target chunk: re-derive a single `IntervalEstimate`
+    // ending at `target_sequence` so the budget comes from the same primitive
+    // the per-hop interval math used. The hop value matches one already summed
+    // above, so this lookup is just for `retry_budget_secs` / `stats_n`.
     let target_meta = elevation_chunk_mapper.get_chunk_metadata(target_sequence)?;
     let target_bucket = chunk_characteristics(target_meta, vcp);
-    let stats_n_at_prediction = target_bucket
-        .as_ref()
-        .zip(timing_stats)
-        .map(|(b, s)| s.sample_count(b))
-        .unwrap_or(0);
-    let avg_attempts = target_bucket
-        .as_ref()
-        .zip(timing_stats)
-        .and_then(|(b, s)| s.get_average_attempts(b));
-    if let Some(att) = avg_attempts {
-        total_secs += (att - 1.0).max(0.0);
-    }
+    let target_prev_meta = elevation_chunk_mapper.get_chunk_metadata(target_sequence - 1)?;
+    let target_estimate = estimate_interval(
+        target_prev_meta,
+        target_meta,
+        target_bucket.as_ref(),
+        timing_stats,
+    );
+    let stats_n_at_prediction = target_estimate.stats_n;
+    total_secs += target_estimate.retry_budget_secs;
 
     let path = if any_hop_used_historical {
         SchedulerPath::Blended

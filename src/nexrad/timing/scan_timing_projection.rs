@@ -138,8 +138,13 @@ pub struct ChunkProjection {
     /// future sweeps and chunks.
     projected_collection_time_secs: f64,
     /// AVAILABILITY category: projected time this chunk becomes available
-    /// in S3. Drives the download scheduler and "next in Xs" UI language.
+    /// in S3 (`collection_at + lag`). Drives "next in Xs" countdown labels.
     projected_available_at: DateTime<Utc>,
+    /// POLL category: projected time the scheduler will fire its first
+    /// download poll (`available_at + retry_budget + POLL_BIAS`). Surfaced
+    /// so a debug overlay can show poll fire vs. expected availability
+    /// without re-deriving the math.
+    projected_poll_at: DateTime<Utc>,
     /// Duration from the anchor to this chunk's projected availability.
     offset_from_anchor: Duration,
     /// Duration from the previous chunk to this chunk.
@@ -168,6 +173,12 @@ impl ChunkProjection {
     /// in S3.
     pub fn projected_available_at(&self) -> DateTime<Utc> {
         self.projected_available_at
+    }
+
+    /// POLL category: projected time the scheduler will fire its first
+    /// download poll for this chunk.
+    pub fn projected_poll_at(&self) -> DateTime<Utc> {
+        self.projected_poll_at
     }
 
     /// COLLECTION category: projected Unix-seconds time the radar physically
@@ -259,42 +270,47 @@ pub fn project_scan_timing(
     let mut projections = Vec::new();
     let mut cumulative_offset_ms: i64 = 0;
     let mut prev_metadata = anchor_metadata;
+    let mut prev_collection_secs = anchor_collection_secs;
 
     for seq in (anchor_sequence + 1)..=final_sequence {
         let next_metadata = mapper.get_chunk_metadata(seq)?;
 
         // Shared blended primitive (see `interval_estimate` module): pure
         // physics when no stats, 70/30 physics/historical blend otherwise.
+        // `project_times` derives the three time axes (collection /
+        // availability / poll) from one calculation so the scheduler and the
+        // UI stay in lock-step.
         let bucket = chunk_characteristics(next_metadata, _vcp);
         let estimate =
             estimate_interval(prev_metadata, next_metadata, bucket.as_ref(), timing_stats);
-        let interval_secs = estimate.seconds;
+        let times = estimate.project_times(prev_collection_secs, availability_lag_secs);
 
-        let interval_ms = (interval_secs * 1000.0) as i64;
+        let interval_ms = (estimate.seconds * 1000.0) as i64;
         cumulative_offset_ms += interval_ms;
-
         let interval_duration = Duration::milliseconds(interval_ms);
         let offset_duration = Duration::milliseconds(cumulative_offset_ms);
-        let offset_secs = cumulative_offset_ms as f64 / 1000.0;
 
-        let projected_collection_time_secs = anchor_collection_secs + offset_secs;
-        let projected_available_at_secs = projected_collection_time_secs + availability_lag_secs;
         let projected_available_at =
-            DateTime::<Utc>::from_timestamp_millis((projected_available_at_secs * 1000.0) as i64)
+            DateTime::<Utc>::from_timestamp_millis((times.available_at_secs * 1000.0) as i64)
                 .unwrap_or(anchor_available_at);
+        let projected_poll_at =
+            DateTime::<Utc>::from_timestamp_millis((times.poll_at_secs * 1000.0) as i64)
+                .unwrap_or(projected_available_at);
 
         projections.push(ChunkProjection {
             sequence: seq,
             elevation_number: next_metadata.elevation_number(),
             elevation_angle_deg: next_metadata.elevation_angle_deg(),
-            projected_collection_time_secs,
+            projected_collection_time_secs: times.collection_at_secs,
             projected_available_at,
+            projected_poll_at,
             offset_from_anchor: offset_duration,
             interval_from_previous: interval_duration,
             starts_new_sweep: next_metadata.is_first_in_sweep(),
         });
 
         prev_metadata = next_metadata;
+        prev_collection_secs = times.collection_at_secs;
     }
 
     let volume_end_available_at = projections

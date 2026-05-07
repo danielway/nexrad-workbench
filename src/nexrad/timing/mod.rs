@@ -34,7 +34,9 @@ pub use estimate_next_chunk_time::{
     estimate_chunk_processing_time, estimate_chunk_processing_time_to_target,
     EstimatedChunkProcessing, SchedulerPath,
 };
-pub use interval_estimate::{chunk_characteristics, estimate_interval, IntervalEstimate};
+pub use interval_estimate::{
+    chunk_characteristics, estimate_interval, IntervalEstimate, ProjectedTimes,
+};
 pub use scan_timing_projection::{
     project_full_scan_timing, project_scan_timing, AnchorSource, ChunkProjection,
     ScanTimingProjection,
