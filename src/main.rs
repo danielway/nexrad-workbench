@@ -121,8 +121,8 @@ pub struct GpuResources {
 }
 
 use nexrad::download_queue::{QueueAction, QueueItem};
-use nexrad::RenderRequest;
 use state::playback_manager::{sweep_cache_key, CachedSweepData, PlaybackManager, PrevSweepAction};
+use state::SweepIdentity;
 use state::MAX_RECENT_NETWORK_REQUESTS;
 
 /// Main application state and logic.
@@ -2893,18 +2893,17 @@ impl WorkbenchApp {
                                 if let Some(scan_key) = self.render.scan_key().cloned() {
                                     let product =
                                         self.state.viz_state.product.to_worker_string().to_string();
-                                    let prefetch_request = RenderRequest {
-                                        scan_key: scan_key.clone(),
-                                        elevation_number: next_en,
-                                        product: product.clone(),
-                                        is_auto: self.state.viz_state.elevation_selection.is_auto(),
-                                    };
+                                    let prefetch_identity = SweepIdentity::new(
+                                        scan_key.clone(),
+                                        next_en,
+                                        product.clone(),
+                                    );
                                     log::debug!(
                                         "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
                                         next_en,
                                         time_to_end,
                                     );
-                                    self.render.set_last_render(prefetch_request);
+                                    self.render.set_last_render(prefetch_identity);
                                     self.render.render_direct(&scan_key, next_en, product);
                                 }
                             }

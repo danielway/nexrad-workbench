@@ -50,7 +50,6 @@ pub use network_monitor::{
 pub use persistence_manager::PersistenceManager;
 pub use realtime::{ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
 pub use render_coordinator::RenderCoordinator;
-pub use render_request::RenderRequest;
 pub use types::{DownloadResult, ScanMetadata};
 pub use volume_ray_renderer::VolumeRayRenderer;
 

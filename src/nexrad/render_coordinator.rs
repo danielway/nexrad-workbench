@@ -4,8 +4,9 @@
 //! WorkbenchApp and Renderers into a single owner.
 
 use super::decode_worker::{default_pool_size, WorkerOutcome, WorkerPool};
-use super::render_request::{RenderRequest, VolumeRenderRequest};
+use super::render_request::VolumeRenderRequest;
 use crate::data::ScanKey;
+use crate::state::SweepIdentity;
 
 /// Coordinates render requests to a pool of decode workers, deduplicating
 /// identical requests and owning the current scan/elevation state.
@@ -28,8 +29,10 @@ pub struct RenderCoordinator {
     /// in-progress *live* volume's observation roster — different scope,
     /// different lifecycle. Don't mix the two.
     available_elevations: Vec<u8>,
-    /// Previous render parameters for change detection.
-    last_render: Option<RenderRequest>,
+    /// Identity of the last single-elevation render request, for dedup.
+    /// Compared structurally — equal identities mean the same on-disk sweep
+    /// and the request is suppressed.
+    last_render: Option<SweepIdentity>,
     /// Previous volume render parameters for change detection.
     last_volume_render: Option<VolumeRenderRequest>,
 }
@@ -119,35 +122,42 @@ impl RenderCoordinator {
 
     /// Send a render request to the worker. Returns true if the request was
     /// actually sent (false if deduplicated or no worker/scan key).
-    pub fn request_render(&mut self, elevation_number: u8, product: &str, is_auto: bool) -> bool {
-        let Some(ref scan_key) = self.current_scan_key else {
+    ///
+    /// Thin shim over [`Self::request_render_for`] that builds the
+    /// [`SweepIdentity`] from the current scan key. Migrating callers to
+    /// pass an identity directly (resolved upstream) is part of Phase 5.
+    pub fn request_render(&mut self, elevation_number: u8, product: &str, _is_auto: bool) -> bool {
+        let Some(scan_key) = self.current_scan_key.clone() else {
             return false;
         };
+        let identity = SweepIdentity::new(scan_key, elevation_number, product);
+        self.request_render_for(identity)
+    }
+
+    /// Send a render request for an explicit sweep identity. Returns true
+    /// if the request was actually sent (false if deduplicated or no
+    /// worker).
+    pub fn request_render_for(&mut self, identity: SweepIdentity) -> bool {
         let Some(ref mut worker) = self.worker else {
             return false;
         };
 
-        let request = RenderRequest {
-            scan_key: scan_key.clone(),
-            elevation_number,
-            product: product.to_string(),
-            is_auto,
-        };
-
-        if self.last_render.as_ref() == Some(&request) {
+        if self.last_render.as_ref() == Some(&identity) {
             return false;
         }
 
         log::debug!(
             "Requesting worker decode: {} elev={} product={}",
-            scan_key,
-            elevation_number,
-            product,
+            identity.scan_key,
+            identity.elevation_number,
+            identity.product,
         );
 
-        let scan_key_typed = scan_key.clone();
-        self.last_render = Some(request);
-        worker.render(scan_key_typed, elevation_number, product.to_string());
+        let scan_key = identity.scan_key.clone();
+        let elevation_number = identity.elevation_number;
+        let product = identity.product.clone();
+        self.last_render = Some(identity);
+        worker.render(scan_key, elevation_number, product);
         true
     }
 
@@ -267,9 +277,9 @@ impl RenderCoordinator {
         }
     }
 
-    /// Store a prefetch render request in the dedup cache (to prevent
+    /// Store a prefetch render identity in the dedup cache (to prevent
     /// re-sending the same prefetch request).
-    pub fn set_last_render(&mut self, request: RenderRequest) {
-        self.last_render = Some(request);
+    pub fn set_last_render(&mut self, identity: SweepIdentity) {
+        self.last_render = Some(identity);
     }
 }
