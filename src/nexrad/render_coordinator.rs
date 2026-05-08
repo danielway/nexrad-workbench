@@ -71,11 +71,6 @@ impl RenderCoordinator {
         self.current_scan_key = Some(key);
     }
 
-    /// Set the full elevation list (replacing, not merging).
-    pub fn set_elevations(&mut self, elevations: Vec<u8>) {
-        self.available_elevations = elevations;
-    }
-
     /// Add newly-completed elevations (used during chunk ingest).
     pub fn add_elevations(&mut self, new: &[u8]) {
         for &elev in new {

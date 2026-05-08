@@ -1325,6 +1325,10 @@ impl WorkbenchApp {
                 }
             }
             self.playback_manager.clear_cache();
+            // `clear_for_site_change` is broader than `clear_active_scan`:
+            // it also wipes `available_elevations` and the per-render
+            // dedup cache. Pair it with the displayed-timestamp wipe so
+            // the active-scan invariant still holds after site change.
             self.render.clear_for_site_change();
             self.state.viz_state.displayed_scan_timestamp = None;
             self.state.viz_state.displayed_sweep_elevation_number = None;
@@ -1558,6 +1562,38 @@ impl WorkbenchApp {
         }
     }
 
+    /// Set the active scan for rendering. Updates
+    /// `render.current_scan_key`, `render.available_elevations`, and
+    /// `viz_state.displayed_scan_timestamp` atomically — these three
+    /// together represent "what the canvas is showing" and must never
+    /// drift. Call sites should go through this rather than touching the
+    /// underlying fields directly.
+    fn set_active_scan(&mut self, scan_key: data::ScanKey, elevations: Vec<u8>, displayed_ts: f64) {
+        self.render.set_scan(scan_key, elevations);
+        self.state.viz_state.displayed_scan_timestamp = Some(displayed_ts);
+    }
+
+    /// Like [`Self::set_active_scan`] but for the live chunk-by-chunk
+    /// path where the elevation list grows incrementally.
+    fn advance_active_scan_chunk(
+        &mut self,
+        scan_key: data::ScanKey,
+        new_elevations: &[u8],
+        displayed_ts: f64,
+    ) {
+        self.render.set_scan_key(scan_key);
+        self.render.add_elevations(new_elevations);
+        self.state.viz_state.displayed_scan_timestamp = Some(displayed_ts);
+    }
+
+    /// Clear the active scan. Used when no scan is in range, on site
+    /// change, and on error paths. Pairs with [`Self::set_active_scan`]
+    /// to keep render-state and viz-state in lock-step.
+    fn clear_active_scan(&mut self) {
+        self.render.clear_scan_key();
+        self.state.viz_state.displayed_scan_timestamp = None;
+    }
+
     fn handle_ingested_outcome(&mut self, result: nexrad::IngestResult) {
         // Processing stays active through decode — don't mark done yet.
         // Transition to decoding phase. Don't remove the ghost
@@ -1596,9 +1632,11 @@ impl WorkbenchApp {
 
         // Worker now returns the typed scan_key on the result (sourced from
         // the dispatch-time context); no parse step.
-        self.render
-            .set_scan(result.scan_key.clone(), result.elevation_numbers);
-        self.state.viz_state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
+        self.set_active_scan(
+            result.scan_key.clone(),
+            result.elevation_numbers,
+            result.context.timestamp_secs,
+        );
         self.state.viz_state.displayed_sweep_elevation_number = None;
         // Refresh timeline to include the new scan
         self.state.push_command(state::AppCommand::RefreshTimeline {
@@ -1682,14 +1720,14 @@ impl WorkbenchApp {
             result.total_ms,
         );
 
-        // Update scan key and available elevations. The worker echoes the
-        // typed scan_key sourced from the dispatch-time context; no parse.
-        self.render.set_scan_key(result.scan_key.clone());
+        // Update scan key, growing elevation list, and displayed timestamp
+        // through the single owner so they can never drift.
         let had_elevations = !self.render.available_elevations().is_empty();
-        self.render.add_elevations(&result.elevations_completed);
-
-        // Update displayed timestamp
-        self.state.viz_state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
+        self.advance_active_scan_chunk(
+            result.scan_key.clone(),
+            &result.elevations_completed,
+            result.context.timestamp_secs,
+        );
 
         // Only update live_mode_state when actually in live mode
         if is_live {
@@ -2395,24 +2433,25 @@ impl WorkbenchApp {
                 // Ghost stays until timeline refresh shows the real scan.
                 self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
 
-                // Cache hit: records already in IDB. Send render request directly.
-                self.render.set_scan_key(scan.key.clone());
                 self.state.viz_state.displayed_sweep_elevation_number = None;
 
-                // Populate elevation numbers from timeline metadata if available
-                if let Some(tl_scan) = self
+                // Cache hit: records already in IDB. Resolve elevation list
+                // from timeline metadata (when available) and route both the
+                // scan key and elevation list through the single-owner
+                // helper.
+                let elev_nums: Vec<u8> = self
                     .state
                     .radar_timeline
                     .find_recent_scan(scan_ts as f64, 1.0)
-                {
-                    let mut elev_nums: Vec<u8> =
-                        tl_scan.sweeps.iter().map(|s| s.elevation_number).collect();
-                    elev_nums.sort_unstable();
-                    elev_nums.dedup();
-                    if !elev_nums.is_empty() {
-                        self.render.set_elevations(elev_nums);
-                    }
-                }
+                    .map(|tl_scan| {
+                        let mut nums: Vec<u8> =
+                            tl_scan.sweeps.iter().map(|s| s.elevation_number).collect();
+                        nums.sort_unstable();
+                        nums.dedup();
+                        nums
+                    })
+                    .unwrap_or_default();
+                self.set_active_scan(scan.key.clone(), elev_nums, scan_ts as f64);
 
                 self.render.force_fresh_render();
                 self.request_worker_render();
@@ -2438,8 +2477,6 @@ impl WorkbenchApp {
                     fetch_latency,
                 );
             }
-
-            self.acquisition.current_scan = Some(scan.clone());
 
             // Refresh timeline to show the new/loaded scan
             self.state.push_command(state::AppCommand::RefreshTimeline {
@@ -2767,10 +2804,15 @@ impl WorkbenchApp {
                     if (needs_new_scan || needs_new_sweep) && self.render.has_worker() {
                         let scan_key =
                             data::ScanKey::from_secs_f64(&self.state.viz_state.site_id, scan_ts);
-                        self.render.set_scan_key(scan_key);
-                        self.state.viz_state.displayed_scan_timestamp = Some(scan_ts);
+                        // Route through the single owner. Replace the
+                        // elevation list when we have one (scrub onto a
+                        // new scan); fall back to leaving it alone via
+                        // the chunk-style helper when the new list is
+                        // empty.
                         if !elev_nums.is_empty() {
-                            self.render.set_elevations(elev_nums);
+                            self.set_active_scan(scan_key, elev_nums, scan_ts);
+                        } else {
+                            self.advance_active_scan_chunk(scan_key, &[], scan_ts);
                         }
                         if let Some(entries) = new_elev_list {
                             self.state
@@ -3033,9 +3075,8 @@ impl WorkbenchApp {
                 r.clear_data();
             }
         }
-        self.state.viz_state.displayed_scan_timestamp = None;
+        self.clear_active_scan();
         self.state.viz_state.displayed_sweep_elevation_number = None;
-        self.render.clear_scan_key();
         self.state.viz_state.data_staleness_secs = None;
         self.state.viz_state.rendered_sweep_end_secs = None;
         self.state.viz_state.timestamp = "--:--:-- UTC".to_string();

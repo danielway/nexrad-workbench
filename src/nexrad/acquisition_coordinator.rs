@@ -8,7 +8,7 @@ use crate::nexrad::archive_index::ArchiveIndex;
 use crate::nexrad::cache_channel::{CacheLoadChannel, CacheLoadResult};
 use crate::nexrad::download::{DownloadChannel, NetworkStats};
 use crate::nexrad::download_queue::DownloadQueueManager;
-use crate::nexrad::types::{CachedScan, DownloadResult};
+use crate::nexrad::types::DownloadResult;
 use crate::nexrad::ListingResult;
 use crate::nexrad::ScanBoundary;
 
@@ -22,7 +22,7 @@ pub(crate) struct PendingDownload {
     pub refetched_dates: std::collections::HashSet<chrono::NaiveDate>,
 }
 
-/// Owns the download pipeline: channels, queue, archive index, and current scan.
+/// Owns the download pipeline: channels, queue, archive index.
 pub struct AcquisitionCoordinator {
     /// Channel for async NEXRAD download operations.
     pub(crate) download_channel: DownloadChannel,
@@ -32,8 +32,6 @@ pub struct AcquisitionCoordinator {
     pub(crate) download_queue: DownloadQueueManager,
     /// Cache for archive file listings (by site/date).
     pub(crate) archive_index: ArchiveIndex,
-    /// Currently loaded NEXRAD scan.
-    pub(crate) current_scan: Option<CachedScan>,
     /// Record-based data facade.
     pub(crate) data_facade: DataFacade,
     /// A download waiting for archive listings before it can build its queue.
@@ -53,7 +51,6 @@ impl AcquisitionCoordinator {
             cache_load_channel,
             download_queue: DownloadQueueManager::new(),
             archive_index: ArchiveIndex::new(),
-            current_scan: None,
             data_facade,
             pending_download: None,
         }
@@ -104,11 +101,6 @@ impl AcquisitionCoordinator {
     /// Get the data facade (for worker ingest, downloads, etc.).
     pub fn facade(&self) -> &DataFacade {
         &self.data_facade
-    }
-
-    /// Store the current scan.
-    pub fn set_current_scan(&mut self, scan: CachedScan) {
-        self.current_scan = Some(scan);
     }
 
     /// Get all scan boundaries for a site from the archive index.
