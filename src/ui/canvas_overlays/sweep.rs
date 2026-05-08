@@ -534,7 +534,11 @@ fn draw_sweep_donut(
     } else {
         // Cached playback
         let playback_ts = state.playback_state.playback_position();
-        let displayed_elev = state.viz_state.displayed_sweep_elevation_number;
+        let displayed_elev = state
+            .viz_state
+            .displayed
+            .as_ref()
+            .map(|d| d.identity.elevation_number);
 
         // Look up current sweep from timeline
         let current_sweep_info = state
@@ -558,14 +562,15 @@ fn draw_sweep_donut(
         cur_meta =
             current_sweep_info.map(|(en, angle, _, _)| format!("Elev {} {:.1}\u{00B0}", en, angle));
 
-        // Previous sweep times
-        let prev_overlay = state.viz_state.prev_sweep_overlay;
-        prev_edge_time = prev_overlay.map(|(_, _, prev_end)| fmt_time(prev_end));
-        prev_meta = state.viz_state.prev_sweep_elevation_number.map(|pe| {
-            let angle = prev_overlay
-                .map(|(elev_deg, _, _)| format!("{:.1}\u{00B0}", elev_deg))
-                .unwrap_or_default();
-            format!("Elev {} {}", pe, angle)
+        // Previous sweep times — read from the on-GPU prior `displayed`
+        // snapshot so labels track real pixel state.
+        let prev = state.viz_state.previous_displayed.as_ref();
+        prev_edge_time = prev.map(|p| fmt_time(p.end_time));
+        prev_meta = prev.map(|p| {
+            format!(
+                "Elev {} {:.1}\u{00B0}",
+                p.identity.elevation_number, p.elevation_deg
+            )
         });
 
         // Also compute prev time at data edge for the data-edge boundary label
@@ -594,9 +599,9 @@ fn draw_sweep_donut(
             None
         }
     } else {
-        state.viz_state.prev_sweep_overlay.map(|(_, ps, pe)| {
+        state.viz_state.previous_displayed.as_ref().map(|p| {
             let frac = (swept_arc_deg / 360.0).clamp(0.0, 1.0) as f64;
-            fmt_time(ps + frac * (pe - ps))
+            fmt_time(p.start_time + frac * (p.end_time - p.start_time))
         })
     };
 

@@ -18,7 +18,7 @@ use super::super::canvas::{
 };
 
 pub(crate) fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
-    let has_prev = state.viz_state.prev_sweep_overlay.is_some();
+    let has_prev = state.viz_state.previous_displayed.is_some();
     let is_live = state.live_radar_model.active;
     let overlay_pos = rect.left_top() + Vec2::new(10.0, 10.0);
     let overlay_height = if has_prev { 170.0 } else { 105.0 };
@@ -59,7 +59,11 @@ pub(crate) fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState
             draw_sweep_section(
                 ui,
                 "Current",
-                state.viz_state.displayed_sweep_elevation_number,
+                state
+                    .viz_state
+                    .displayed
+                    .as_ref()
+                    .map(|d| d.identity.elevation_number),
                 &state.viz_state.elevation,
                 &state.viz_state.timestamp,
                 state.viz_state.data_staleness_secs,
@@ -86,23 +90,22 @@ pub(crate) fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState
             );
 
             // ── Previous sweep section ───────────────────────────────
-            if let Some((prev_elev_deg, prev_start, prev_end)) = state.viz_state.prev_sweep_overlay
-            {
+            if let Some(prev) = state.viz_state.previous_displayed.as_ref() {
                 ui.add_space(2.0);
                 let now = js_sys::Date::now() / 1000.0;
-                let prev_age_end = now - prev_end;
-                let prev_age_start = now - prev_start;
+                let prev_age_end = now - prev.end_time;
+                let prev_age_start = now - prev.start_time;
 
-                let prev_elev_str = format!("{:.1}\u{00B0}", prev_elev_deg);
+                let prev_elev_str = format!("{:.1}\u{00B0}", prev.elevation_deg);
                 let prev_time = format_unix_timestamp_with_date(
-                    (prev_start + prev_end) / 2.0,
+                    (prev.start_time + prev.end_time) / 2.0,
                     state.use_local_time,
                 );
 
                 draw_sweep_section(
                     ui,
                     "Previous",
-                    state.viz_state.prev_sweep_elevation_number,
+                    Some(prev.identity.elevation_number),
                     &prev_elev_str,
                     &prev_time,
                     if prev_age_end >= 0.0 {

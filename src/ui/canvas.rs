@@ -476,7 +476,11 @@ fn compute_gpu_sweep_state(
             .radar_timeline
             .find_recent_scan(playback_ts, 15.0 * 60.0)
             .and_then(|scan| {
-                let displayed_elev = state.viz_state.displayed_sweep_elevation_number;
+                let displayed_elev = state
+                    .viz_state
+                    .displayed
+                    .as_ref()
+                    .map(|d| d.identity.elevation_number);
                 scan.sweeps
                     .iter()
                     .filter(|s| Some(s.elevation_number) == displayed_elev)

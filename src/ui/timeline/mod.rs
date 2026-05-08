@@ -331,14 +331,17 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     // Use scan_rect for ts_to_x since it spans the full width
     let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
 
+    // Active border tracks the on-GPU sweep — `displayed` is set only after
+    // a successful update_data() in handle_decoded_outcome, so the highlight
+    // matches the pixels the user is actually looking at (not the resolver's
+    // intent, which may have a render in flight).
     let active_sweep = if detail_level == DetailLevel::Sweeps {
-        match (
-            state.viz_state.displayed_scan_timestamp,
-            state.viz_state.displayed_sweep_elevation_number,
-        ) {
-            (Some(ts), Some(en)) => Some((ts, en)),
-            _ => None,
-        }
+        state.viz_state.displayed.as_ref().map(|d| {
+            (
+                d.identity.scan_timestamp_secs(),
+                d.identity.elevation_number,
+            )
+        })
     } else {
         None
     };
@@ -387,14 +390,16 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
     );
 
     // -- Render sweep track (only at Sweeps detail) --
+    // Previous border tracks the prior on-GPU sweep — snapshotted from
+    // `displayed` at the moment a new sweep is uploaded, so it flips
+    // atomically with `active_sweep`.
     let prev_active_sweep = if state.effective_sweep_animation() {
-        match (
-            state.viz_state.prev_sweep_scan_timestamp,
-            state.viz_state.prev_sweep_elevation_number,
-        ) {
-            (Some(ts), Some(en)) => Some((ts, en)),
-            _ => None,
-        }
+        state.viz_state.previous_displayed.as_ref().map(|d| {
+            (
+                d.identity.scan_timestamp_secs(),
+                d.identity.elevation_number,
+            )
+        })
     } else {
         None
     };
