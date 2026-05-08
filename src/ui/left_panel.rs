@@ -410,7 +410,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
             Stroke::new(2.5, Color32::from_rgb(100, 255, 100)),
         );
 
-        ui.label(RichText::new(format!("{:.1}\u{00B0}", elev)).small());
+        ui.label(RichText::new(format!("{:.2}\u{00B0}", elev)).small());
     } else {
         ui.label(RichText::new("--").small().color(Color32::GRAY));
     }
@@ -643,7 +643,7 @@ fn render_elevation_grid(ui: &mut egui::Ui, rows: &[ElevRow]) {
                 // Elevation number + angle
                 ui.label(
                     RichText::new(format!(
-                        "{:<2}{:>5.1}\u{00B0}",
+                        "{:<2}{:>6.2}\u{00B0}",
                         row.elevation_number, row.elevation_angle
                     ))
                     .color(text_color)

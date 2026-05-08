@@ -464,7 +464,7 @@ impl VizState {
         elevation_deg: f32,
         use_local_time: bool,
     ) {
-        self.elevation = format!("{:.1}\u{00B0}", elevation_deg);
+        self.elevation = format!("{:.2}\u{00B0}", elevation_deg);
 
         // Format midpoint timestamp with full date and time
         let mid_ms = ((start + end) / 2.0) * 1000.0;

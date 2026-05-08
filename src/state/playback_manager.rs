@@ -343,14 +343,13 @@ pub(crate) fn resolve_active_sweep_target(
 }
 
 /// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
+///
+/// The displayed `angle` always comes from the measured sweep metadata when a
+/// matching sweep exists, so the right panel and the timeline never disagree on
+/// the value of a given elevation. VCP data only contributes structural fields
+/// (waveform, SAILS, MRLE) that aren't recoverable from the sweep alone.
 pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationListEntry> {
-    let products_for = |elev_num: u8| -> Vec<String> {
-        scan.sweeps
-            .iter()
-            .find(|s| s.elevation_number == elev_num)
-            .map(|s| s.cached_products.clone())
-            .unwrap_or_default()
-    };
+    let sweep_for = |elev_num: u8| scan.sweeps.iter().find(|s| s.elevation_number == elev_num);
 
     // 1. Prefer extracted VCP pattern (has waveform, SAILS, MRLE info)
     if let Some(ref pattern) = scan.vcp_pattern {
@@ -361,13 +360,16 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
                 .enumerate()
                 .map(|(i, e)| {
                     let elevation_number = (i + 1) as u8;
+                    let sweep = sweep_for(elevation_number);
                     crate::state::ElevationListEntry {
                         elevation_number,
-                        angle: e.angle,
+                        angle: sweep.map(|s| s.elevation).unwrap_or(e.angle),
                         waveform: e.waveform.clone(),
                         is_sails: e.is_sails,
                         is_mrle: e.is_mrle,
-                        cached_products: products_for(elevation_number),
+                        cached_products: sweep
+                            .map(|s| s.cached_products.clone())
+                            .unwrap_or_default(),
                     }
                 })
                 .collect();
@@ -382,13 +384,14 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
             .enumerate()
             .map(|(i, e)| {
                 let elevation_number = (i + 1) as u8;
+                let sweep = sweep_for(elevation_number);
                 crate::state::ElevationListEntry {
                     elevation_number,
-                    angle: e.angle,
+                    angle: sweep.map(|s| s.elevation).unwrap_or(e.angle),
                     waveform: e.waveform.to_string(),
                     is_sails: false,
                     is_mrle: false,
-                    cached_products: products_for(elevation_number),
+                    cached_products: sweep.map(|s| s.cached_products.clone()).unwrap_or_default(),
                 }
             })
             .collect();

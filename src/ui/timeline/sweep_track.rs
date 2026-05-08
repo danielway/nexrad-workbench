@@ -85,9 +85,9 @@ pub(super) fn render_sweep_track(
             // Elevation + product labels
             if width > 25.0 {
                 let mut label = if width > 60.0 {
-                    format!("E{} {:.1}\u{00B0}", sweep.elevation_number, sweep.elevation)
+                    format!("E{} {:.2}\u{00B0}", sweep.elevation_number, sweep.elevation)
                 } else {
-                    format!("{:.1}", sweep.elevation)
+                    format!("{:.2}", sweep.elevation)
                 };
 
                 if width > 80.0 {

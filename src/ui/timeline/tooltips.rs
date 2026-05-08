@@ -117,12 +117,12 @@ fn render_sweep_tooltip_content(
         .unwrap_or(0);
     if sweep_count > 0 {
         ui.label(format!(
-            "Elevation: {:.1}\u{00B0} (cut #{} of {})",
+            "Elevation: {:.2}\u{00B0} (cut #{} of {})",
             sweep.elevation, sweep.elevation_number, sweep_count
         ));
     } else {
         ui.label(format!(
-            "Elevation: {:.1}\u{00B0} (cut #{})",
+            "Elevation: {:.2}\u{00B0} (cut #{})",
             sweep.elevation, sweep.elevation_number
         ));
     }
@@ -266,7 +266,7 @@ fn render_realtime_volume_tooltip(
             );
             ui.label(
                 RichText::new(format!(
-                    "{:.1}\u{00B0} (cut #{} of {})",
+                    "{:.2}\u{00B0} (cut #{} of {})",
                     sp.elevation_angle, elev_num, expected_count
                 ))
                 .size(10.0)
