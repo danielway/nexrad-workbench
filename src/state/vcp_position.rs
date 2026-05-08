@@ -120,7 +120,8 @@ impl VcpPositionModel {
     /// 4. Fallback: VCP-weighted proportional distribution → Estimated timing
     pub fn from_live(live: &LiveModeState, _now_secs: f64) -> Option<Self> {
         let vol_start = live.current_volume.as_ref().map(|a| a.best_start_secs())?;
-        let expected_count = live.expected_elevation_count.unwrap_or(0) as usize;
+        let roster = live.elevation_roster();
+        let expected_count = roster.expected_count().unwrap_or(0);
         if expected_count == 0 {
             return None;
         }
@@ -206,7 +207,7 @@ impl VcpPositionModel {
 
         for elev_idx in 0..expected_count {
             let elev_num = (elev_idx + 1) as u8;
-            let is_complete = live.elevations_received.contains(&elev_num);
+            let is_complete = roster.is_received(elev_num);
             let is_in_progress =
                 !is_complete && live.current_in_progress_elevation == Some(elev_num);
             let this_sweep_dur = weighted_durations[elev_idx];

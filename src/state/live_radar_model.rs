@@ -66,12 +66,11 @@ pub struct LiveVolumeModel {
     /// VCP pattern for elevation angle lookups.
     pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
 
-    /// Elevation numbers that have completed in this volume.
-    pub elevations_complete: Vec<u8>,
-
-    /// Expected total elevation count from the VCP.
-    #[allow(dead_code)]
-    pub elevations_expected: Option<u8>,
+    /// Combined expected/received view for the volume's elevations.
+    /// Replaces parallel `elevations_complete` + `elevations_expected`
+    /// fields so consumers read one place — see
+    /// [`crate::state::VolumeElevationRoster`] for the divergence helpers.
+    pub roster: crate::state::VolumeElevationRoster,
 }
 
 /// Active sweep state: the elevation currently being collected.
@@ -131,8 +130,7 @@ impl LiveModeState {
         let volume = Some(LiveVolumeModel {
             anchor: self.current_volume.clone(),
             vcp_pattern: self.current_vcp_pattern.clone(),
-            elevations_complete: self.elevations_received.clone(),
-            elevations_expected: self.expected_elevation_count,
+            roster: self.elevation_roster(),
         });
 
         let active_sweep = self.current_in_progress_elevation.map(|elev| {

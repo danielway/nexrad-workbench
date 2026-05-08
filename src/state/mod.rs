@@ -27,6 +27,7 @@ pub(crate) mod vcp;
 pub(crate) mod vcp_forecast;
 mod vcp_position;
 mod viz;
+mod volume_elevation_roster;
 
 pub use crate::geo::camera::CameraMode;
 pub use acquisition::{
@@ -61,6 +62,7 @@ pub use viz::{
     ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct, RenderProcessing,
     StormCellInfo, ViewMode, VizState,
 };
+pub use volume_elevation_roster::VolumeElevationRoster;
 
 /// Cap on the recent-network-requests ring used by the UI log.
 pub const MAX_RECENT_NETWORK_REQUESTS: usize = 100;

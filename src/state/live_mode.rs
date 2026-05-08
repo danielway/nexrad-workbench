@@ -579,6 +579,18 @@ impl LiveModeState {
         self.elevations_received.sort_unstable();
     }
 
+    /// Combined view of expected (per VCP) vs received (per chunk radial
+    /// headers) elevations for the in-progress volume. UI surfaces should
+    /// read this rather than the underlying `expected_elevation_count` /
+    /// `elevations_received` fields directly so split-cut VCPs and rare
+    /// observed-not-in-VCP cases are explicit.
+    pub fn elevation_roster(&self) -> crate::state::VolumeElevationRoster {
+        crate::state::VolumeElevationRoster::new(
+            self.expected_elevation_count.map(|c| c as usize),
+            self.elevations_received.clone(),
+        )
+    }
+
     /// Record a chunk's per-elevation time spans (from radial collection timestamps).
     pub fn record_chunk_elev_spans(&mut self, spans: &[(u8, f64, f64, u32)]) {
         self.chunk_elev_spans.extend_from_slice(spans);

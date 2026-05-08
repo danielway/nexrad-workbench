@@ -518,7 +518,7 @@ fn draw_sweep_donut(
         let prev_elev = model
             .volume
             .as_ref()
-            .and_then(|v| v.elevations_complete.last().copied());
+            .and_then(|v| v.roster.received.last().copied());
         let prev_sweep_meta = prev_elev.and_then(|pe| {
             state
                 .live_mode_state
@@ -579,7 +579,7 @@ fn draw_sweep_donut(
             .live_radar_model
             .volume
             .as_ref()
-            .and_then(|v| v.elevations_complete.last().copied())
+            .and_then(|v| v.roster.received.last().copied())
             .and_then(|pe| {
                 state
                     .live_mode_state

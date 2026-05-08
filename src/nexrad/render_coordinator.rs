@@ -21,7 +21,12 @@ pub struct RenderCoordinator {
     /// value, not by string formatting; the storage-key string is built at
     /// the worker boundary via [`ScanKey::to_storage_key`].
     current_scan_key: Option<ScanKey>,
-    /// Available elevation numbers for the current scan (from ingest).
+    /// Elevations the GPU can render right now for the *currently
+    /// displayed* scan, populated from worker ingest results in either the
+    /// live or archive flow. Distinct from
+    /// [`crate::state::VolumeElevationRoster::received`], which is the
+    /// in-progress *live* volume's observation roster — different scope,
+    /// different lifecycle. Don't mix the two.
     available_elevations: Vec<u8>,
     /// Previous render parameters for change detection.
     last_render: Option<RenderRequest>,
