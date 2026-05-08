@@ -136,7 +136,6 @@ pub struct DisplayedSweep {
     pub elevation_deg: f32,
 }
 
-#[allow(dead_code)] // Wired up incrementally; consumers land in subsequent phases.
 impl SweepIdentity {
     pub fn new(scan_key: ScanKey, elevation_number: u8, product: impl Into<String>) -> Self {
         Self {
@@ -154,6 +153,7 @@ impl SweepIdentity {
         self.scan_key.scan_start.as_secs_f64()
     }
 
+    #[allow(dead_code)] // Read by tests and reserved for cross-site checks.
     pub fn site_id(&self) -> &str {
         &self.scan_key.site.0
     }
@@ -358,30 +358,12 @@ pub struct VizState {
     pub center_lon: f64,
 
     /// Staleness of the most recent radial (sweep end) in seconds.
+    /// Recomputed every frame from `displayed.end_time` against wall clock.
     pub data_staleness_secs: Option<f64>,
 
     /// Staleness of the oldest radial (sweep start) in seconds.
+    /// Recomputed every frame from `displayed.start_time` against wall clock.
     pub data_staleness_start_secs: Option<f64>,
-
-    /// Start timestamp (Unix seconds) of the currently rendered sweep.
-    /// Used to recompute `data_staleness_start_secs` every frame.
-    pub rendered_sweep_start_secs: Option<f64>,
-
-    /// End timestamp (Unix seconds) of the currently rendered sweep.
-    /// Used to recompute `data_staleness_secs` every frame so the age counter ticks.
-    pub rendered_sweep_end_secs: Option<f64>,
-
-    /// Previous sweep info for overlay display during sweep animation.
-    /// Contains (elevation_deg, start_time_secs, end_time_secs).
-    pub prev_sweep_overlay: Option<(f32, f64, f64)>,
-
-    /// Scan timestamp of the previous sweep (Unix seconds, sub-second
-    /// precision) for the timeline secondary highlight. Sourced from the
-    /// IDB scan key's full-precision millis to round-trip without drift.
-    pub prev_sweep_scan_timestamp: Option<f64>,
-
-    /// Elevation number of the previous sweep (for timeline secondary highlight).
-    pub prev_sweep_elevation_number: Option<u8>,
 
     /// Cached last sweep line position (azimuth, start_azimuth) for between-sweep display.
     pub last_sweep_line_cache: Option<(f32, f32)>,
@@ -413,16 +395,6 @@ pub struct VizState {
     /// Cached storm cell detection results (centroid lat, lon, max dBZ, area km2).
     pub detected_storm_cells: Vec<StormCellInfo>,
 
-    /// Timestamp of the currently displayed scan (Unix seconds, sub-second
-    /// precision). Sub-second resolution matters for the live path: the
-    /// IDB record is keyed under the volume's provisional `f64` start, so
-    /// truncating to integer here would break the lookup `find_scan_at_timestamp`
-    /// performs against `Scan::key_timestamp` (also `f64`).
-    pub displayed_scan_timestamp: Option<f64>,
-
-    /// Elevation number of the currently displayed sweep.
-    pub displayed_sweep_elevation_number: Option<u8>,
-
     /// Last observed visible map bounds in 2D mode, as
     /// `(min_lon, min_lat, max_lon, max_lat)`. Updated each frame by the
     /// canvas renderer and consumed by top-bar / modal logic that needs
@@ -430,18 +402,20 @@ pub struct VizState {
     /// canvas rect. `None` while in 3D globe mode.
     pub last_visible_bounds: Option<(f64, f64, f64, f64)>,
 
-    /// What is actually on the GPU canvas right now. Set only when a
-    /// successful `update_data()` has uploaded a sweep's gate values to
-    /// the primary radar texture, cleared (set to `None`) when the
-    /// canvas blanks. Drives the timeline active border, overlay text,
-    /// and staleness counters in subsequent phases.
+    /// What is actually on the GPU main-slot texture right now. Set only
+    /// after a successful `update_data()` in `handle_decoded_outcome` /
+    /// `handle_live_decoded_outcome`; cleared when the canvas blanks.
+    /// Single source of truth for the timeline active border, canvas
+    /// overlay text, and staleness counters.
     pub displayed: Option<DisplayedSweep>,
 
-    /// Snapshot of `displayed` taken at the moment `displayed` last
-    /// changed — i.e., the previous on-GPU sweep. Drives the timeline
-    /// secondary (prev) border and the prev-sweep animation overlay,
-    /// replacing the legacy `prev_sweep_*` triplet (kept alongside in
-    /// this phase; consumers migrate in Phase 4).
+    /// What is on the GPU prev-sweep texture (the under-layer for sweep
+    /// animation). Written by `sync_prev_sweep_texture` in archive mode
+    /// and by the `should_promote` branch in
+    /// `handle_live_decoded_outcome` for live mode — both reflect what
+    /// the prev-sweep slot actually holds, NOT the prior main upload.
+    /// Drives the timeline secondary border and the prev-sweep overlay
+    /// panel.
     pub previous_displayed: Option<DisplayedSweep>,
 }
 
@@ -462,11 +436,6 @@ impl Default for VizState {
             center_lon: -93.7229,
             data_staleness_secs: None,
             data_staleness_start_secs: None,
-            rendered_sweep_start_secs: None,
-            rendered_sweep_end_secs: None,
-            prev_sweep_overlay: None,
-            prev_sweep_scan_timestamp: None,
-            prev_sweep_elevation_number: None,
             last_sweep_line_cache: None,
             volume_3d_enabled: false,
             volume_density_cutoff: 5.0,
@@ -477,8 +446,6 @@ impl Default for VizState {
             storm_cells_visible: false,
             storm_cell_threshold_dbz: 35.0,
             detected_storm_cells: Vec::new(),
-            displayed_scan_timestamp: None,
-            displayed_sweep_elevation_number: None,
             last_visible_bounds: None,
             displayed: None,
             previous_displayed: None,
@@ -488,6 +455,8 @@ impl Default for VizState {
 
 impl VizState {
     /// Update the canvas overlay text with sweep timing and elevation info.
+    /// Sweep start/end times are stored on `displayed` (set by the decode
+    /// handler); staleness is recomputed each frame from there.
     pub fn update_overlay(
         &mut self,
         start: f64,
@@ -524,22 +493,12 @@ impl VizState {
             );
         }
 
-        // Store sweep start/end times so staleness can be recomputed each frame
-        self.rendered_sweep_start_secs = Some(start);
-        self.rendered_sweep_end_secs = Some(end);
-        // Staleness is recomputed per-frame in update(); seed it here for immediate display
+        // Seed staleness for immediate display; the per-frame recompute
+        // in `update()` keeps it ticking from `displayed`.
         let now = js_sys::Date::now() / 1000.0;
         let staleness_end = now - end;
         let staleness_start = now - start;
-        self.data_staleness_secs = if staleness_end >= 0.0 {
-            Some(staleness_end)
-        } else {
-            None
-        };
-        self.data_staleness_start_secs = if staleness_start >= 0.0 {
-            Some(staleness_start)
-        } else {
-            None
-        };
+        self.data_staleness_secs = (staleness_end >= 0.0).then_some(staleness_end);
+        self.data_staleness_start_secs = (staleness_start >= 0.0).then_some(staleness_start);
     }
 }

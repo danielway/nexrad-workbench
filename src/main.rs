@@ -188,7 +188,10 @@ struct ScrubCache {
     last_playback_ts: Option<f64>,
     last_elevation_selection: Option<state::ElevationSelection>,
     last_scan_count: usize,
-    last_displayed_scan_ts: Option<f64>,
+    /// Active scan timestamp (sub-second Unix seconds) from
+    /// `RenderCoordinator::scan_key`. Detects ingest-driven scan changes
+    /// so the scrub block re-runs even when playback hasn't moved.
+    last_active_scan_ts: Option<f64>,
 }
 
 // Embed shapefile data at compile time
@@ -909,37 +912,6 @@ impl WorkbenchApp {
             .start(ctx.clone(), site_id, self.acquisition.facade().clone());
     }
 
-    /// Find the best elevation number for a scan given the playback position.
-    /// Returns None when no sweep in the scan matches the user's fixed selection
-    /// (so callers can clear display instead of issuing a doomed render).
-    fn best_elevation_at_playback(
-        &self,
-        scan: &crate::state::radar_data::Scan,
-        playback_ts: f64,
-    ) -> Option<u8> {
-        state::playback_manager::best_elevation_at_playback(
-            &self.state.viz_state.elevation_selection,
-            scan,
-            playback_ts,
-            self.render.available_elevations(),
-        )
-    }
-
-    /// Find the most recent sweep (any elevation) at or before the playback position.
-    fn most_recent_sweep_elevation(
-        &self,
-        scan: &crate::state::radar_data::Scan,
-        playback_ts: f64,
-    ) -> u8 {
-        let fallback = self
-            .render
-            .available_elevations()
-            .first()
-            .copied()
-            .unwrap_or(1);
-        state::playback_manager::most_recent_sweep_elevation(scan, playback_ts, fallback)
-    }
-
     /// Build the elevation list from a scan's VCP data.
     fn build_elevation_list(
         scan: &crate::state::radar_data::Scan,
@@ -1206,24 +1178,13 @@ impl WorkbenchApp {
         // Recompute data staleness every frame against wall-clock time.
         // This ensures archive data correctly shows its true age (days/years)
         // rather than a misleading "few minutes" relative to playback position.
-        {
+        if let Some(displayed) = self.state.viz_state.displayed.as_ref() {
             let now = js_sys::Date::now() / 1000.0;
-            if let Some(sweep_end) = self.state.viz_state.rendered_sweep_end_secs {
-                let staleness = now - sweep_end;
-                self.state.viz_state.data_staleness_secs = if staleness >= 0.0 {
-                    Some(staleness)
-                } else {
-                    None
-                };
-            }
-            if let Some(sweep_start) = self.state.viz_state.rendered_sweep_start_secs {
-                let staleness = now - sweep_start;
-                self.state.viz_state.data_staleness_start_secs = if staleness >= 0.0 {
-                    Some(staleness)
-                } else {
-                    None
-                };
-            }
+            let end_age = now - displayed.end_time;
+            let start_age = now - displayed.start_time;
+            self.state.viz_state.data_staleness_secs = (end_age >= 0.0).then_some(end_age);
+            self.state.viz_state.data_staleness_start_secs =
+                (start_age >= 0.0).then_some(start_age);
         }
 
         // Ensure continuous repainting for time-dependent UI elements (the "now"
@@ -1268,11 +1229,11 @@ impl WorkbenchApp {
             self.playback_manager.clear_cache();
             // `clear_for_site_change` is broader than `clear_active_scan`:
             // it also wipes `available_elevations` and the per-render
-            // dedup cache. Pair it with the displayed-timestamp wipe so
-            // the active-scan invariant still holds after site change.
+            // dedup cache. Pair it with the on-GPU `displayed` wipe so
+            // the timeline/canvas don't keep highlighting the old site.
             self.render.clear_for_site_change();
-            self.state.viz_state.displayed_scan_timestamp = None;
-            self.state.viz_state.displayed_sweep_elevation_number = None;
+            self.state.viz_state.displayed = None;
+            self.state.viz_state.previous_displayed = None;
             self.state.shadow_scan_boundaries.clear();
         }
     }
@@ -1503,15 +1464,17 @@ impl WorkbenchApp {
         }
     }
 
-    /// Set the active scan for rendering. Updates
-    /// `render.current_scan_key`, `render.available_elevations`, and
-    /// `viz_state.displayed_scan_timestamp` atomically — these three
-    /// together represent "what the canvas is showing" and must never
-    /// drift. Call sites should go through this rather than touching the
-    /// underlying fields directly.
-    fn set_active_scan(&mut self, scan_key: data::ScanKey, elevations: Vec<u8>, displayed_ts: f64) {
+    /// Set the active scan for rendering — the scan key + elevation list
+    /// owned by `RenderCoordinator`. The on-GPU `viz_state.displayed`
+    /// slot is updated separately by the decode-result handlers once
+    /// the worker actually delivers pixels for the requested sweep.
+    fn set_active_scan(
+        &mut self,
+        scan_key: data::ScanKey,
+        elevations: Vec<u8>,
+        _displayed_ts: f64,
+    ) {
         self.render.set_scan(scan_key, elevations);
-        self.state.viz_state.displayed_scan_timestamp = Some(displayed_ts);
     }
 
     /// Like [`Self::set_active_scan`] but for the live chunk-by-chunk
@@ -1520,19 +1483,16 @@ impl WorkbenchApp {
         &mut self,
         scan_key: data::ScanKey,
         new_elevations: &[u8],
-        displayed_ts: f64,
+        _displayed_ts: f64,
     ) {
         self.render.set_scan_key(scan_key);
         self.render.add_elevations(new_elevations);
-        self.state.viz_state.displayed_scan_timestamp = Some(displayed_ts);
     }
 
     /// Clear the active scan. Used when no scan is in range, on site
-    /// change, and on error paths. Pairs with [`Self::set_active_scan`]
-    /// to keep render-state and viz-state in lock-step.
+    /// change, and on error paths.
     fn clear_active_scan(&mut self) {
         self.render.clear_scan_key();
-        self.state.viz_state.displayed_scan_timestamp = None;
     }
 
     fn handle_ingested_outcome(&mut self, result: nexrad::IngestResult) {
@@ -1578,7 +1538,6 @@ impl WorkbenchApp {
             result.elevation_numbers,
             result.context.timestamp_secs,
         );
-        self.state.viz_state.displayed_sweep_elevation_number = None;
         // Refresh timeline to include the new scan
         self.state.push_command(state::AppCommand::RefreshTimeline {
             auto_position: false,
@@ -1929,7 +1888,6 @@ impl WorkbenchApp {
             self.state.push_command(state::AppCommand::CheckEviction);
             self.state.session_stats.pipeline.mark_processing_done();
 
-            self.state.viz_state.displayed_sweep_elevation_number = None;
             self.render.force_fresh_render();
             if !is_live {
                 self.request_worker_render();
@@ -2005,15 +1963,27 @@ impl WorkbenchApp {
         // same elevation number. Without the elevation check, SAILS
         // VCPs (duplicate 0.5° at elev 1 and 2) cause oscillation
         // where prefetch/sync requests fight the main render path.
-        let is_current_scan = self
-            .render
-            .scan_key()
-            .is_some_and(|k| k == &result.context.scan_key)
-            && self
-                .state
-                .viz_state
-                .displayed_sweep_elevation_number
-                .is_some_and(|e| e == result.context.elevation_number);
+        //
+        // Re-run the resolver against current playback state and compare
+        // identities: the result is for the main slot iff its identity
+        // exactly matches what the resolver would request right now.
+        // Stale results from rapid clicks or in-flight prefetches fail
+        // this check and stay cached (for prev-sweep upload) without
+        // clobbering the main GPU texture.
+        let result_identity = state::SweepIdentity::new(
+            result.context.scan_key.clone(),
+            result.context.elevation_number,
+            result.product.clone(),
+        );
+        let current_target = state::playback_manager::resolve_active_sweep_target(
+            &self.state.viz_state.site_id,
+            self.state.playback_state.playback_position(),
+            &self.state.viz_state.elevation_selection,
+            self.state.viz_state.product,
+            &self.state.radar_timeline,
+            MAX_SCAN_AGE_SECS,
+        );
+        let is_current_scan = current_target.as_ref() == Some(&result_identity);
         if self.state.effective_sweep_animation() && !is_current_scan {
             log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id);
             // Clear pending tracker so sync_prev_sweep_texture can load from cache
@@ -2061,22 +2031,20 @@ impl WorkbenchApp {
         }
         let gpu_upload_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
 
-        // Capture the new on-GPU sweep identity. Snapshot the prior
-        // `displayed` into `previous_displayed` atomically so the
-        // timeline's active and previous borders flip together.
+        // Capture the new on-GPU main-slot sweep identity. The
+        // *previous-slot* identity is owned by `sync_prev_sweep_texture`
+        // (archive) or `handle_live_decoded_outcome`'s promote branch
+        // (live) — those represent what's in the prev-sweep GPU texture,
+        // which is the time-ordered prior sweep, NOT the prior main upload.
+        // Don't conflate the two: scrubbing across non-adjacent times
+        // would otherwise mis-mark the timeline previous border.
         if gpu_upload_succeeded {
-            let new_displayed = state::DisplayedSweep {
-                identity: SweepIdentity::new(
-                    result.context.scan_key.clone(),
-                    result.context.elevation_number,
-                    result.product.clone(),
-                ),
+            self.state.viz_state.displayed = Some(state::DisplayedSweep {
+                identity: result_identity.clone(),
                 start_time: result.sweep_start_secs,
                 end_time: result.sweep_end_secs,
                 elevation_deg: result.mean_elevation,
-            };
-            let prior = self.state.viz_state.displayed.replace(new_displayed);
-            self.state.viz_state.previous_displayed = prior;
+            });
         }
 
         // Store detailed render timing for the detail modal (dev mode only).
@@ -2092,16 +2060,14 @@ impl WorkbenchApp {
         // GPU upload complete.
         self.state.session_stats.pipeline.mark_render_done();
 
-        // Remove this scan from in-flight ghost tracking. The queue is keyed
-        // by archive-derived i64 seconds; truncate the displayed timestamp
-        // on this comparison boundary.
-        if let Some(displayed_ts) = self.state.viz_state.displayed_scan_timestamp {
-            let displayed_i64 = displayed_ts.round() as i64;
-            self.state
-                .download_progress
-                .in_flight_scans
-                .retain(|&(start, _)| start != displayed_i64);
-        }
+        // Remove this scan from in-flight ghost tracking. The queue is
+        // keyed by archive-derived i64 seconds; truncate the result's
+        // scan-start (millis) at the same boundary.
+        let result_scan_start_i64 = result.context.scan_key.scan_start.as_secs();
+        self.state
+            .download_progress
+            .in_flight_scans
+            .retain(|&(start, _)| start != result_scan_start_i64);
         // If no more in-flight or pending, fully clear progress.
         if self.state.download_progress.in_flight_scans.is_empty()
             && self.state.download_progress.pending_scans.is_empty()
@@ -2137,31 +2103,14 @@ impl WorkbenchApp {
                 let live_sweep_id = format!("live|{}", live_elev);
 
                 // If the current texture has data from a different sweep
-                // (complete or different live elevation), promote it to previous
-                // so it becomes the background for compositing partial data.
+                // (complete or different live elevation), promote it to
+                // previous so it becomes the background for compositing
+                // partial data. The `should_promote` branch below
+                // (post-update_data) snapshots `displayed` into
+                // `previous_displayed`, which is the canonical source for
+                // overlay/timeline prev info.
                 let should_promote = r.current_sweep_id().is_some_and(|id| id != live_sweep_id);
                 if should_promote {
-                    // Capture the current sweep's metadata before promoting it to
-                    // "previous" — this drives the overlay info panel and donut labels.
-                    let prev_elev_deg =
-                        self.state.viz_state.rendered_sweep_end_secs.and_then(|_| {
-                            self.state
-                                .viz_state
-                                .elevation
-                                .trim_end_matches('\u{00B0}')
-                                .parse::<f32>()
-                                .ok()
-                        });
-                    let prev_elev_num = self.state.viz_state.displayed_sweep_elevation_number;
-                    if let (Some(start), Some(end), Some(elev)) = (
-                        self.state.viz_state.rendered_sweep_start_secs,
-                        self.state.viz_state.rendered_sweep_end_secs,
-                        prev_elev_deg,
-                    ) {
-                        self.state.viz_state.prev_sweep_overlay = Some((elev, start, end));
-                        self.state.viz_state.prev_sweep_elevation_number = prev_elev_num;
-                    }
-
                     r.promote_current_to_previous(gl);
                 }
 
@@ -2335,9 +2284,9 @@ impl WorkbenchApp {
         // Clean up the "processing" timeline ghost for the failed scan.
         // Prefer the scan attributed to the failing worker request so the
         // right ghost is removed even after the user scrolled away and
-        // displayed_scan_timestamp now points elsewhere.
-        let cleanup_ts =
-            failed_scan_timestamp_secs.or(self.state.viz_state.displayed_scan_timestamp);
+        // the active scan key now points elsewhere.
+        let cleanup_ts = failed_scan_timestamp_secs
+            .or_else(|| self.render.scan_key().map(|k| k.scan_start.as_secs_f64()));
         if let Some(ts) = cleanup_ts {
             // The in_flight_scans queue is keyed by archive-derived i64
             // seconds; truncate the failure timestamp on this comparison
@@ -2403,21 +2352,12 @@ impl WorkbenchApp {
                 .in_flight_scans
                 .push((scan_ts, scan_end));
 
-            // Track which scan is being processed so error cleanup
-            // can remove the correct ghost. Archive scans have
-            // second-resolution timestamps from filenames; cast to f64
-            // so the field stays compatible with the precision-preserving
-            // live path that may co-exist on the same screen.
-            self.state.viz_state.displayed_scan_timestamp = Some(scan_ts as f64);
-
             if is_cache_hit {
                 self.state.status_message = format!("Loaded from cache: {}", scan.file_name);
 
                 // Cache hit: skip ingest, go straight to decode.
                 // Ghost stays until timeline refresh shows the real scan.
                 self.state.download_progress.phase = crate::state::DownloadPhase::Decoding;
-
-                self.state.viz_state.displayed_sweep_elevation_number = None;
 
                 // Cache hit: records already in IDB. Resolve elevation list
                 // from timeline metadata (when available) and route both the
@@ -2700,10 +2640,10 @@ impl WorkbenchApp {
             // the idle case cost only a few comparisons.
             let scan_count = self.state.radar_timeline.scans.len();
             let elev_sel = &self.state.viz_state.elevation_selection;
-            let displayed_ts = self.state.viz_state.displayed_scan_timestamp;
+            let active_ts = self.render.scan_key().map(|k| k.scan_start.as_secs_f64());
             let scrub_cache_hit = self.scrub_cache.last_playback_ts == Some(playback_ts)
                 && self.scrub_cache.last_scan_count == scan_count
-                && self.scrub_cache.last_displayed_scan_ts == displayed_ts
+                && self.scrub_cache.last_active_scan_ts == active_ts
                 && self
                     .scrub_cache
                     .last_elevation_selection
@@ -2713,123 +2653,64 @@ impl WorkbenchApp {
             if !scrub_cache_hit {
                 self.scrub_cache.last_playback_ts = Some(playback_ts);
                 self.scrub_cache.last_scan_count = scan_count;
-                self.scrub_cache.last_displayed_scan_ts = displayed_ts;
+                self.scrub_cache.last_active_scan_ts = active_ts;
                 self.scrub_cache.last_elevation_selection = Some(elev_sel.clone());
             }
 
             if !scrub_cache_hit {
-                // Extract scrub decision data from the immutable borrow of radar_timeline
+                // Identify the scan covering the playback position. The
+                // resolver in `request_worker_render` then decides which
+                // sweep within it to actually fetch — advance_playback's
+                // job is just to keep `RenderCoordinator.current_scan_key`
+                // (and the elevation list / VCP-resolution) in sync.
                 let scrub_action = self
                     .state
                     .radar_timeline
                     .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
                     .map(|scan| {
                         let scan_ts: f64 = scan.key_timestamp;
-                        let target_elev_num: Option<u8> =
-                            match &self.state.viz_state.elevation_selection {
-                                crate::state::ElevationSelection::Fixed { .. } => {
-                                    self.best_elevation_at_playback(scan, playback_ts)
-                                }
-                                crate::state::ElevationSelection::Latest => {
-                                    Some(self.most_recent_sweep_elevation(scan, playback_ts))
-                                }
-                            };
-
-                        let needs_new_scan = match self.state.viz_state.displayed_scan_timestamp {
-                            Some(displayed) => displayed != scan_ts,
-                            None => true,
-                        };
-                        let needs_new_sweep = !needs_new_scan
-                            && self.state.viz_state.displayed_sweep_elevation_number
-                                != target_elev_num;
-
-                        // Capture overlay data from the matching sweep (if any)
-                        let sweep_overlay = target_elev_num.and_then(|num| {
-                            scan.sweeps
-                                .iter()
-                                .find(|s| s.elevation_number == num)
-                                .map(|s| (s.start_time, s.end_time, s.elevation))
-                        });
-
-                        // Extract all elevation numbers for volume rendering
                         let mut elev_nums: Vec<u8> =
                             scan.sweeps.iter().map(|s| s.elevation_number).collect();
                         elev_nums.sort_unstable();
                         elev_nums.dedup();
-
-                        // Build elevation list for new scans
-                        let new_elev_list = if needs_new_scan {
-                            Some(Self::build_elevation_list(scan))
-                        } else {
-                            None
-                        };
-
-                        (
-                            scan_ts,
-                            target_elev_num,
-                            needs_new_scan,
-                            needs_new_sweep,
-                            sweep_overlay,
-                            elev_nums,
-                            new_elev_list,
-                        )
+                        let elev_list = Self::build_elevation_list(scan);
+                        (scan_ts, elev_nums, elev_list)
                     });
 
-                if let Some((
-                    scan_ts,
-                    target_elev_num,
-                    needs_new_scan,
-                    needs_new_sweep,
-                    sweep_overlay,
-                    elev_nums,
-                    new_elev_list,
-                )) = scrub_action
-                {
-                    if (needs_new_scan || needs_new_sweep) && self.render.has_worker() {
-                        let scan_key =
-                            data::ScanKey::from_secs_f64(&self.state.viz_state.site_id, scan_ts);
-                        // Route through the single owner. Replace the
-                        // elevation list when we have one (scrub onto a
-                        // new scan); fall back to leaving it alone via
-                        // the chunk-style helper when the new list is
-                        // empty.
-                        if !elev_nums.is_empty() {
-                            self.set_active_scan(scan_key, elev_nums, scan_ts);
-                        } else {
-                            self.advance_active_scan_chunk(scan_key, &[], scan_ts);
-                        }
-                        if let Some(entries) = new_elev_list {
-                            self.state
-                                .viz_state
-                                .elevation_selection
-                                .resolve_for_vcp(&entries);
-                        }
-
-                        match target_elev_num {
-                            Some(num) => {
-                                if let Some((start, end, elev)) = sweep_overlay {
-                                    self.update_overlay_from_sweep(start, end, elev);
+                match scrub_action {
+                    Some((scan_ts, elev_nums, elev_list)) => {
+                        if self.render.has_worker() {
+                            let scan_key = data::ScanKey::from_secs_f64(
+                                &self.state.viz_state.site_id,
+                                scan_ts,
+                            );
+                            let scan_changed = active_ts != Some(scan_ts);
+                            if scan_changed {
+                                if !elev_nums.is_empty() {
+                                    self.set_active_scan(scan_key, elev_nums, scan_ts);
+                                } else {
+                                    self.advance_active_scan_chunk(scan_key, &[], scan_ts);
                                 }
-                                self.state.viz_state.displayed_sweep_elevation_number = Some(num);
+                                self.state
+                                    .viz_state
+                                    .elevation_selection
+                                    .resolve_for_vcp(&elev_list);
                                 self.render.force_fresh_render();
-                                self.request_worker_render();
-                                if self.state.viz_state.volume_3d_enabled {
-                                    self.request_worker_render_volume();
-                                }
+                                // Active scan moved — refresh the cache snapshot.
+                                self.scrub_cache.last_active_scan_ts =
+                                    self.render.scan_key().map(|k| k.scan_start.as_secs_f64());
                             }
-                            None => {
-                                // Scan exists but the selected fixed elevation has no sweep.
-                                // Clear the stale sweep so the canvas matches the timeline.
-                                self.clear_display_no_sweep();
+                            self.request_worker_render();
+                            if self.state.viz_state.volume_3d_enabled {
+                                self.request_worker_render_volume();
                             }
                         }
-                        // The side-effects above change displayed_scan_timestamp,
-                        // so refresh the cache snapshot now to keep it in sync.
-                        self.scrub_cache.last_displayed_scan_ts =
-                            self.state.viz_state.displayed_scan_timestamp;
                     }
-                } else if self.state.viz_state.displayed_scan_timestamp.is_some() {
-                    self.clear_display_no_scan();
+                    None => {
+                        if active_ts.is_some() {
+                            self.clear_display_no_scan();
+                        }
+                    }
                 }
             }
         }
@@ -2871,9 +2752,13 @@ impl WorkbenchApp {
                         };
 
                         if let Some(next_en) = next_elev_num {
-                            if self.state.viz_state.displayed_sweep_elevation_number
-                                != Some(next_en)
-                            {
+                            let cur_elev = self
+                                .state
+                                .viz_state
+                                .displayed
+                                .as_ref()
+                                .map(|d| d.identity.elevation_number);
+                            if cur_elev != Some(next_en) {
                                 if let Some(scan_key) = self.render.scan_key().cloned() {
                                     let product =
                                         self.state.viz_state.product.to_worker_string().to_string();
@@ -2914,15 +2799,22 @@ impl WorkbenchApp {
         }
 
         if !self.state.effective_sweep_animation() {
-            self.state.viz_state.prev_sweep_overlay = None;
-            self.state.viz_state.prev_sweep_scan_timestamp = None;
-            self.state.viz_state.prev_sweep_elevation_number = None;
+            self.state.viz_state.previous_displayed = None;
             self.state.viz_state.last_sweep_line_cache = None;
             return;
         }
 
         let playback_ts = self.state.playback_state.playback_position();
-        let displayed_elev = match self.state.viz_state.displayed_sweep_elevation_number {
+        // Anchor "previous" to the on-GPU main slot (i.e., what's
+        // actually on screen), not the resolver's intent — otherwise
+        // the prev-sweep upload races ahead of the main upload.
+        let displayed_elev = match self
+            .state
+            .viz_state
+            .displayed
+            .as_ref()
+            .map(|d| d.identity.elevation_number)
+        {
             Some(e) => e,
             None => return,
         };
@@ -2958,9 +2850,7 @@ impl WorkbenchApp {
         {
             Some(info) => info,
             None => {
-                self.state.viz_state.prev_sweep_overlay = None;
-                self.state.viz_state.prev_sweep_scan_timestamp = None;
-                self.state.viz_state.prev_sweep_elevation_number = None;
+                self.state.viz_state.previous_displayed = None;
                 // Clear GPU previous sweep so shader composites against black
                 if let Some(ref renderer) = self.gpu.gpu {
                     if let Ok(mut r) = renderer.lock() {
@@ -2971,13 +2861,21 @@ impl WorkbenchApp {
             }
         };
 
-        // Store previous sweep metadata for canvas overlay and timeline highlight
-        self.state.viz_state.prev_sweep_overlay = Some((prev_elev_deg, prev_start, prev_end));
-        self.state.viz_state.prev_sweep_scan_timestamp = Some(prev_scan_key_ts);
-        self.state.viz_state.prev_sweep_elevation_number = Some(prev_elev_num);
-
         let prev_scan_key =
             data::ScanKey::from_secs_f64(&self.state.viz_state.site_id, prev_scan_key_ts);
+
+        // Mirror the prev-sweep slot into viz_state so the timeline's
+        // secondary border and the prev-sweep overlay panel reflect what
+        // we're driving into the prev-sweep GPU texture. Product matches
+        // the current main-slot product (prev animation only makes sense
+        // within a single product channel).
+        let prev_product = self.state.viz_state.product.to_worker_string().to_string();
+        self.state.viz_state.previous_displayed = Some(state::DisplayedSweep {
+            identity: state::SweepIdentity::new(prev_scan_key.clone(), prev_elev_num, prev_product),
+            start_time: prev_start,
+            end_time: prev_end,
+            elevation_deg: prev_elev_deg,
+        });
 
         // Get current GPU prev sweep ID for comparison
         let current_gpu_prev_id = self.gpu.gpu.as_ref().and_then(|renderer| {
@@ -3059,20 +2957,16 @@ impl WorkbenchApp {
             }
         }
         self.clear_active_scan();
-        self.state.viz_state.displayed_sweep_elevation_number = None;
         self.state.viz_state.data_staleness_secs = None;
-        self.state.viz_state.rendered_sweep_end_secs = None;
+        self.state.viz_state.data_staleness_start_secs = None;
         self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
         self.state.viz_state.elevation = "-- deg".to_string();
-        // clear_data() drops both GPU textures; match the prev-sweep metadata
+        // clear_data() drops both GPU textures; match the prev-sweep state
         // so the timeline highlight and canvas overlay don't point at state
         // that no longer has backing pixels.
-        self.state.viz_state.prev_sweep_scan_timestamp = None;
-        self.state.viz_state.prev_sweep_elevation_number = None;
-        self.state.viz_state.prev_sweep_overlay = None;
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
-        self.scrub_cache.last_displayed_scan_ts = None;
+        self.scrub_cache.last_active_scan_ts = None;
     }
 
     /// Clear the on-canvas sweep when the selected (elevation, product) isn't
@@ -3084,21 +2978,15 @@ impl WorkbenchApp {
                 r.clear_data();
             }
         }
-        self.state.viz_state.displayed_sweep_elevation_number = None;
         self.state.viz_state.data_staleness_secs = None;
-        self.state.viz_state.rendered_sweep_end_secs = None;
+        self.state.viz_state.data_staleness_start_secs = None;
         self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
         self.state.viz_state.elevation = "-- deg".to_string();
         // clear_data() drops both GPU textures. sync_prev_sweep_texture
-        // early-returns while displayed_sweep_elevation_number is None, so
-        // clear prev metadata here to prevent a stale timeline/overlay hint.
-        self.state.viz_state.prev_sweep_scan_timestamp = None;
-        self.state.viz_state.prev_sweep_elevation_number = None;
-        self.state.viz_state.prev_sweep_overlay = None;
-        // Snapshot the prior `displayed` into `previous_displayed` so the
-        // timeline's prev border still indicates the last on-GPU sweep
-        // until something new is uploaded.
-        self.state.viz_state.previous_displayed = self.state.viz_state.displayed.take();
+        // early-returns while `displayed` is None, so clearing it here
+        // also keeps the prev slot from drifting until a new sweep lands.
+        self.state.viz_state.displayed = None;
+        self.state.viz_state.previous_displayed = None;
         self.render.clear_last_render();
     }
 

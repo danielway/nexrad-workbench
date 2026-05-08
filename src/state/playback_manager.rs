@@ -279,45 +279,6 @@ impl PlaybackManager {
 // Free functions (elevation helpers)
 // ---------------------------------------------------------------------------
 
-/// Find the best elevation number for a scan given the playback position.
-///
-/// In Fixed mode, filters by exact elevation_number match (no angle tolerance),
-/// then picks the most recent sweep that has started. This eliminates
-/// SAILS/MRLE ambiguity where CS and CD sweeps share the same angle.
-pub(crate) fn best_elevation_at_playback(
-    elevation_selection: &crate::state::ElevationSelection,
-    scan: &Scan,
-    playback_ts: f64,
-    available_elevations: &[u8],
-) -> Option<u8> {
-    match elevation_selection {
-        crate::state::ElevationSelection::Fixed {
-            elevation_number, ..
-        } => {
-            // Filter sweeps by exact elevation_number match
-            // then filter to those that have started (start_time <= playback_ts)
-            // pick the one with the latest start_time (most recent instance).
-            // Returns None when the selected elevation has no sweep in this scan,
-            // so callers can clear display rather than send a doomed render.
-            scan.sweeps
-                .iter()
-                .filter(|s| s.elevation_number == *elevation_number)
-                .filter(|s| s.start_time <= playback_ts)
-                .max_by(|a, b| {
-                    a.start_time
-                        .partial_cmp(&b.start_time)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|s| s.elevation_number)
-        }
-        crate::state::ElevationSelection::Latest => Some(most_recent_sweep_elevation(
-            scan,
-            playback_ts,
-            available_elevations.first().copied().unwrap_or(1),
-        )),
-    }
-}
-
 /// Resolve the user's intent against the timeline into a fully-qualified
 /// sweep identity, or `None` if the requested sweep is not available.
 ///
@@ -333,7 +294,6 @@ pub(crate) fn best_elevation_at_playback(
 /// list the requested product; empty `cached_products` means "unknown —
 /// allow" (legacy index entries / placeholders), matching the right-panel
 /// availability logic.
-#[allow(dead_code)]
 pub(crate) fn resolve_active_sweep_target(
     site_id: &str,
     playback_position: f64,
@@ -380,23 +340,6 @@ pub(crate) fn resolve_active_sweep_target(
         sweep.elevation_number,
         product_str,
     ))
-}
-
-/// Find the most recent sweep (any elevation) at or before the playback position.
-///
-/// Used by MostRecent render mode to always show the latest available data
-/// regardless of elevation.
-pub(crate) fn most_recent_sweep_elevation(scan: &Scan, playback_ts: f64, fallback: u8) -> u8 {
-    scan.sweeps
-        .iter()
-        .filter(|s| s.start_time <= playback_ts)
-        .max_by(|a, b| {
-            a.start_time
-                .partial_cmp(&b.start_time)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|s| s.elevation_number)
-        .unwrap_or(fallback)
 }
 
 /// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
