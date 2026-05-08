@@ -1594,13 +1594,10 @@ impl WorkbenchApp {
             });
         }
 
-        // Track the scan for render requests. Parse the storage key the worker
-        // emitted; round-trip from the same Rust struct that built it, so a
-        // failure here would mean worker corruption.
-        let parsed_scan_key = data::ScanKey::from_storage_key(&result.scan_key)
-            .expect("worker returned malformed scan_key");
+        // Worker now returns the typed scan_key on the result (sourced from
+        // the dispatch-time context); no parse step.
         self.render
-            .set_scan(parsed_scan_key, result.elevation_numbers);
+            .set_scan(result.scan_key.clone(), result.elevation_numbers);
         self.state.viz_state.displayed_scan_timestamp = Some(result.context.timestamp_secs);
         self.state.viz_state.displayed_sweep_elevation_number = None;
         // Refresh timeline to include the new scan
@@ -1685,13 +1682,9 @@ impl WorkbenchApp {
             result.total_ms,
         );
 
-        // Update scan key and available elevations. Parse the worker-emitted
-        // storage key back into a typed `ScanKey`; the worker built it from
-        // the same Rust-side struct, so a parse failure here would mean the
-        // worker corrupted it.
-        let parsed_scan_key = data::ScanKey::from_storage_key(&result.scan_key)
-            .expect("worker returned malformed scan_key");
-        self.render.set_scan_key(parsed_scan_key);
+        // Update scan key and available elevations. The worker echoes the
+        // typed scan_key sourced from the dispatch-time context; no parse.
+        self.render.set_scan_key(result.scan_key.clone());
         let had_elevations = !self.render.available_elevations().is_empty();
         self.render.add_elevations(&result.elevations_completed);
 
@@ -2000,7 +1993,7 @@ impl WorkbenchApp {
 
         // Cache decoded data for stateless sweep animation
         let result_sweep_id = sweep_cache_key(
-            &result.context.scan_key,
+            &result.context.scan_key.to_storage_key(),
             result.context.elevation_number,
             &result.product,
         );
@@ -2036,7 +2029,7 @@ impl WorkbenchApp {
         let is_current_scan = self
             .render
             .scan_key()
-            .is_some_and(|k| k.to_storage_key() == result.context.scan_key)
+            .is_some_and(|k| k == &result.context.scan_key)
             && self
                 .state
                 .viz_state
@@ -2959,8 +2952,7 @@ impl WorkbenchApp {
         self.state.viz_state.prev_sweep_elevation_number = Some(prev_elev_num);
 
         let prev_scan_key =
-            data::ScanKey::from_secs_f64(&self.state.viz_state.site_id, prev_scan_key_ts)
-                .to_storage_key();
+            data::ScanKey::from_secs_f64(&self.state.viz_state.site_id, prev_scan_key_ts);
 
         // Get current GPU prev sweep ID for comparison
         let current_gpu_prev_id = self.gpu.gpu.as_ref().and_then(|renderer| {
@@ -3020,10 +3012,8 @@ impl WorkbenchApp {
                         r.clear_previous_data();
                     }
                 }
-                let parsed = data::ScanKey::from_storage_key(&scan_key)
-                    .expect("PrevSweepAction emitted malformed scan_key");
                 self.render
-                    .render_direct(&parsed, elevation_number, product);
+                    .render_direct(&scan_key, elevation_number, product);
             }
             PrevSweepAction::Clear => {
                 if let Some(ref renderer) = self.gpu.gpu {

@@ -145,9 +145,9 @@ impl RenderCoordinator {
             product,
         );
 
-        let storage_key = scan_key.to_storage_key();
+        let scan_key_typed = scan_key.clone();
         self.last_render = Some(request);
-        worker.render(storage_key, elevation_number, product.to_string());
+        worker.render(scan_key_typed, elevation_number, product.to_string());
         true
     }
 
@@ -182,10 +182,10 @@ impl RenderCoordinator {
             self.available_elevations,
         );
 
-        let storage_key = scan_key.to_storage_key();
+        let scan_key_typed = scan_key.clone();
         let elev_nums = self.available_elevations.clone();
         self.last_volume_render = Some(request);
-        worker.render_volume(storage_key, product.to_string(), elev_nums);
+        worker.render_volume(scan_key_typed, product.to_string(), elev_nums);
         true
     }
 
@@ -240,7 +240,7 @@ impl RenderCoordinator {
     /// Send a direct render request (used by prefetch/prev-sweep, bypasses dedup).
     pub fn render_direct(&mut self, scan_key: &ScanKey, elevation_number: u8, product: String) {
         if let Some(ref mut worker) = self.worker {
-            worker.render(scan_key.to_storage_key(), elevation_number, product);
+            worker.render(scan_key.clone(), elevation_number, product);
         }
     }
 

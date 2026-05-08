@@ -731,7 +731,11 @@ async fn streaming_loop(
     ctx.request_repaint();
 
     let mut chunks_in_volume: u32;
-    let mut current_scan_start_secs: f64;
+    // Provisional scan start for the in-progress volume. Newtype-wrapped so
+    // a bare `f64` can't be substituted from a different time axis (wall
+    // clock, radial-confirmed time, etc.) by mistake. Helpers downstream
+    // still take `f64` — unwrap with `.0` at those call sites.
+    let mut current_scan_start_secs: crate::data::ProvisionalStart;
     // Sequences emitted to the worker for the current volume (init backfill,
     // init latest, steady-state, and mid-stream backfill). The mid-stream
     // backfill consults this set to avoid re-downloading chunks the user has
@@ -745,8 +749,10 @@ async fn streaming_loop(
     if let Some(start_chunk) = init_result.start_chunk {
         // Joined mid-volume: emit the start chunk + current sweep's chunks only.
         let start_data = start_chunk.chunk.data().to_vec();
-        current_scan_start_secs =
-            provisional_scan_start_secs(start_chunk.identifier.upload_date_time(), &iter);
+        current_scan_start_secs = crate::data::ProvisionalStart(provisional_scan_start_secs(
+            start_chunk.identifier.upload_date_time(),
+            &iter,
+        ));
 
         log::debug!(
             "Init: emitting start_chunk ({} bytes) for mid-volume join",
@@ -759,7 +765,7 @@ async fn streaming_loop(
                 chunk_index: 0,
                 is_start: true,
                 is_end: false,
-                timestamp: current_scan_start_secs,
+                timestamp: current_scan_start_secs.0,
                 // Skip overlap deletion — we're only backfilling the current
                 // sweep, not replacing the full volume.
                 // Start chunks are metadata-only and aren't part of any sweep.
@@ -814,7 +820,7 @@ async fn streaming_loop(
         // `pre_completed` set ignores re-flushes for these, so the network
         // download is pure waste.
         let cached_elevs =
-            cached_elevations_for_scan(&facade, &site_id, current_scan_start_secs).await;
+            cached_elevations_for_scan(&facade, &site_id, current_scan_start_secs.0).await;
         if !cached_elevs.is_empty() {
             log::debug!(
                 "Filter backfill (init): {} elevation(s) already cached, will skip them: {:?}",
@@ -856,7 +862,7 @@ async fn streaming_loop(
                         &state,
                         &ctx,
                         chunks_in_volume,
-                        current_scan_start_secs,
+                        current_scan_start_secs.0,
                         &mut emitted_sequences_this_volume,
                     )
                     .await;
@@ -911,7 +917,7 @@ async fn streaming_loop(
                 chunk_index: chunks_in_volume - 1,
                 is_start: false,
                 is_end: latest_is_end,
-                timestamp: current_scan_start_secs,
+                timestamp: current_scan_start_secs.0,
                 is_last_in_sweep: latest_is_last_in_sweep,
             });
             s.results.push(RealtimeResult::ChunkReceived {
@@ -942,10 +948,10 @@ async fn streaming_loop(
         let latest_type = init_result.latest_chunk.identifier.chunk_type();
         let latest_is_start = latest_type == ChunkType::Start;
         let latest_is_end = latest_type == ChunkType::End;
-        current_scan_start_secs = provisional_scan_start_secs(
+        current_scan_start_secs = crate::data::ProvisionalStart(provisional_scan_start_secs(
             init_result.latest_chunk.identifier.upload_date_time(),
             &iter,
-        );
+        ));
         chunks_in_volume = 1;
         emitted_sequences_this_volume.insert(init_result.latest_chunk.identifier.sequence());
         cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
@@ -964,7 +970,7 @@ async fn streaming_loop(
                 chunk_index: 0,
                 is_start: latest_is_start,
                 is_end: latest_is_end,
-                timestamp: current_scan_start_secs,
+                timestamp: current_scan_start_secs.0,
                 is_last_in_sweep: init_is_last_in_sweep,
             });
             s.results.push(RealtimeResult::ChunkReceived {
@@ -1029,11 +1035,11 @@ async fn streaming_loop(
                 new_filter,
                 &iter,
                 &facade,
-                current_scan_start_secs,
+                current_scan_start_secs.0,
                 &state,
                 &ctx,
                 chunks_in_volume,
-                current_scan_start_secs,
+                current_scan_start_secs.0,
                 &mut emitted_sequences_this_volume,
             )
             .await;
@@ -1273,8 +1279,9 @@ async fn streaming_loop(
                 // Reset counters on new volume
                 if is_start {
                     chunks_in_volume = 0;
-                    current_scan_start_secs =
-                        provisional_scan_start_secs(chunk.identifier.upload_date_time(), &iter);
+                    current_scan_start_secs = crate::data::ProvisionalStart(
+                        provisional_scan_start_secs(chunk.identifier.upload_date_time(), &iter),
+                    );
                     cache_volume_number(&site_id, *chunk.identifier.volume());
                     emitted_sequences_this_volume.clear();
                 }
@@ -1393,7 +1400,7 @@ async fn streaming_loop(
                         chunk_index: chunks_in_volume - 1,
                         is_start,
                         is_end,
-                        timestamp: current_scan_start_secs,
+                        timestamp: current_scan_start_secs.0,
                         is_last_in_sweep: chunk_is_last_in_sweep,
                     });
                     // Emit UI status update

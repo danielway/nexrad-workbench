@@ -9,7 +9,6 @@ use wasm_bindgen::JsCast;
 use web_sys::MessageEvent;
 
 use super::types::*;
-use crate::data::keys::ScanKey;
 
 // ---------------------------------------------------------------------------
 // onmessage callback setup (called from DecodeWorker::new)
@@ -208,11 +207,14 @@ fn handle_ingested_message(
         r.total_ms,
     );
 
+    // Populate the typed scan_key from the context — same value the worker
+    // serialized in `r.scan_key`, but no parse step needed.
+    let scan_key = context.scan_key.clone();
     results
         .borrow_mut()
         .push(WorkerOutcome::Ingested(IngestResult {
             context,
-            scan_key: r.scan_key,
+            scan_key,
             records_stored: r.records_stored,
             elevation_numbers: r.elevation_numbers,
             sweeps: r.sweeps,
@@ -267,11 +269,12 @@ fn handle_chunk_ingested_message(
         );
     }
 
+    let scan_key = context.scan_key.clone();
     results
         .borrow_mut()
         .push(WorkerOutcome::ChunkIngested(ChunkIngestResult {
             context,
-            scan_key: r.scan_key,
+            scan_key,
             elevations_completed: r.elevations_completed,
             sweeps_stored: r.sweeps_stored,
             is_end: r.is_end,
@@ -467,11 +470,11 @@ fn handle_error_message(
     } else if let Some(ctx) = pending_chunk_ingest.borrow_mut().remove(&e.id) {
         Some(ctx.timestamp_secs)
     } else if let Some(ctx) = pending_render.borrow_mut().remove(&e.id) {
-        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs_f64())
+        Some(ctx.scan_key.scan_start.as_secs_f64())
     } else if let Some(ctx) = pending_render_live.borrow_mut().remove(&e.id) {
-        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs_f64())
+        Some(ctx.scan_key.scan_start.as_secs_f64())
     } else if let Some(ctx) = pending_volume.borrow_mut().remove(&e.id) {
-        ScanKey::from_storage_key(&ctx.scan_key).map(|k| k.scan_start.as_secs_f64())
+        Some(ctx.scan_key.scan_start.as_secs_f64())
     } else {
         None
     };

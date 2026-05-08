@@ -97,7 +97,7 @@ pub(crate) enum PrevSweepAction {
     UploadFromCache(String),
     /// Request a decode from the worker.
     FetchFromWorker {
-        scan_key: String,
+        scan_key: crate::data::ScanKey,
         elevation_number: u8,
         product: String,
     },
@@ -225,26 +225,30 @@ impl PlaybackManager {
     /// previous-sweep slot (from `renderer.prev_sweep_id()`).
     pub fn resolve_prev_sweep(
         &mut self,
-        prev_scan_key: &str,
+        prev_scan_key: &crate::data::ScanKey,
         prev_elev_num: u8,
         current_gpu_prev_id: Option<&str>,
         product: &str,
     ) -> PrevSweepAction {
+        // The composite cache id is still string-shaped (it embeds elev +
+        // product); serialize the typed key once at the top.
+        let prev_scan_key_storage = prev_scan_key.to_storage_key();
+
         // Fast path: if the identity hasn't changed, nothing to do
         let new_identity = (
-            prev_scan_key.to_string(),
+            prev_scan_key_storage.clone(),
             prev_elev_num,
             product.to_string(),
         );
         if self.cached_prev_identity.as_ref() == Some(&new_identity) {
-            let desired_prev_id = sweep_cache_key(prev_scan_key, prev_elev_num, product);
+            let desired_prev_id = sweep_cache_key(&prev_scan_key_storage, prev_elev_num, product);
             if current_gpu_prev_id == Some(desired_prev_id.as_str()) {
                 return PrevSweepAction::AlreadyLoaded;
             }
         }
         self.cached_prev_identity = Some(new_identity);
 
-        let desired_prev_id = sweep_cache_key(prev_scan_key, prev_elev_num, product);
+        let desired_prev_id = sweep_cache_key(&prev_scan_key_storage, prev_elev_num, product);
 
         // Check if the GPU already has the right data
         if current_gpu_prev_id == Some(desired_prev_id.as_str()) {
@@ -264,7 +268,7 @@ impl PlaybackManager {
 
         self.pending_prev_sweep_key = Some(desired_prev_id);
         PrevSweepAction::FetchFromWorker {
-            scan_key: prev_scan_key.to_string(),
+            scan_key: prev_scan_key.clone(),
             elevation_number: prev_elev_num,
             product: product.to_string(),
         }

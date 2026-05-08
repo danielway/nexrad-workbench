@@ -107,7 +107,12 @@ impl WorkerPool {
     }
 
     /// Submit an archive render — round-robined across workers.
-    pub fn render(&mut self, scan_key: String, elevation_number: u8, product: String) {
+    pub fn render(
+        &mut self,
+        scan_key: crate::data::ScanKey,
+        elevation_number: u8,
+        product: String,
+    ) {
         let idx = self.next_render_index();
         self.workers[idx].render(scan_key, elevation_number, product);
     }
@@ -119,7 +124,12 @@ impl WorkerPool {
     }
 
     /// Submit a volume render — round-robined across workers.
-    pub fn render_volume(&mut self, scan_key: String, product: String, elevation_numbers: Vec<u8>) {
+    pub fn render_volume(
+        &mut self,
+        scan_key: crate::data::ScanKey,
+        product: String,
+        elevation_numbers: Vec<u8>,
+    ) {
         let idx = self.next_render_index();
         self.workers[idx].render_volume(scan_key, product, elevation_numbers);
     }

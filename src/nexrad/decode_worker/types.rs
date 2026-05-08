@@ -40,11 +40,12 @@ pub(super) struct IngestResultMsg {
     pub vcp: Option<crate::data::keys::ExtractedVcp>,
 }
 
-/// Chunk ingest result payload from the worker.
+/// Chunk ingest result payload from the worker. Note: the worker also
+/// echoes a `scanKey` field in the JSON, but we read the typed key from
+/// the dispatch context instead — `serde` ignores the extra field.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ChunkIngestResultMsg {
-    pub scan_key: String,
     #[serde(default)]
     pub sweeps_stored: u32,
     #[serde(default)]
@@ -264,8 +265,13 @@ pub(super) type RequestId = u64;
 /// Context for an ingest request.
 #[allow(dead_code)]
 pub struct IngestContext {
-    /// Volume scan start (Unix seconds, sub-second precision). Round-trips
-    /// the value the caller handed `WorkerPool::ingest`.
+    /// Typed identifier for the volume being ingested. Built once at
+    /// dispatch (in `WorkerPool::ingest`) so the worker round-trip
+    /// doesn't re-parse the storage-key string — the JS side and the
+    /// Rust side ultimately produce the same key from the same inputs.
+    pub scan_key: crate::data::ScanKey,
+    /// Volume scan start (Unix seconds, sub-second precision). Same value
+    /// `scan_key` was built from; kept for diagnostics.
     pub timestamp_secs: f64,
     pub file_name: String,
     pub fetch_latency_ms: f64,
@@ -274,8 +280,10 @@ pub struct IngestContext {
 /// Successful ingest result from the worker.
 pub struct IngestResult {
     pub context: IngestContext,
-    /// Scan storage key (e.g., "KDMX|1700000000000")
-    pub scan_key: String,
+    /// Typed identifier for the ingested scan. Read from
+    /// `context.scan_key` rather than the wire-format string the worker
+    /// echoes — same value, no parse step.
+    pub scan_key: crate::data::ScanKey,
     /// Number of records stored in IDB.
     pub records_stored: u32,
     /// Unique elevation numbers found across all records.
@@ -306,10 +314,13 @@ pub struct IngestResult {
 #[allow(dead_code)]
 pub struct ChunkIngestContext {
     pub site_id: String,
-    /// Volume scan start (Unix seconds, sub-second precision). Set on the
-    /// streaming-loop side from the provisional start; the worker uses it
-    /// to construct the IDB scan key for every chunk in the volume, so all
-    /// chunks in one volume must agree on this value.
+    /// Typed identifier for the in-progress volume. Built once at dispatch
+    /// from `(site_id, timestamp_secs)`; every chunk of the volume shares
+    /// the same value. Consumers should read this rather than re-parsing
+    /// the storage-key string the worker emits on the response.
+    pub scan_key: crate::data::ScanKey,
+    /// Volume scan start (Unix seconds, sub-second precision). Same value
+    /// `scan_key` was built from; kept for diagnostics and lag math.
     pub timestamp_secs: f64,
     pub chunk_index: u32,
     pub is_end: bool,
@@ -318,8 +329,9 @@ pub struct ChunkIngestContext {
 /// Successful per-chunk ingest result from the worker.
 pub struct ChunkIngestResult {
     pub context: ChunkIngestContext,
-    /// Scan storage key (e.g., "KDMX|1700000000000")
-    pub scan_key: String,
+    /// Typed identifier for the in-progress volume. Same value as
+    /// `context.scan_key`; surfaced separately for ergonomic access.
+    pub scan_key: crate::data::ScanKey,
     /// Elevation numbers that became complete with this chunk.
     pub elevations_completed: Vec<u8>,
     /// Number of sweep blobs written to IDB.
@@ -360,8 +372,9 @@ pub struct ChunkIngestResult {
 /// Context for a render/decode request.
 #[allow(dead_code)]
 pub struct RenderContext {
-    /// Scan storage key.
-    pub scan_key: String,
+    /// Typed identifier for the scan being rendered. The wire-protocol
+    /// uses `to_storage_key()` once at dispatch.
+    pub scan_key: crate::data::ScanKey,
     /// Elevation number being rendered.
     pub elevation_number: u8,
 }
@@ -460,5 +473,5 @@ pub enum WorkerOutcome {
 /// Context for a volume render request.
 #[allow(dead_code)]
 pub struct VolumeRenderContext {
-    pub scan_key: String,
+    pub scan_key: crate::data::ScanKey,
 }

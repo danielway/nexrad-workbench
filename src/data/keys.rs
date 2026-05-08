@@ -777,6 +777,23 @@ mod tests {
         assert!((back - 1_700_000_000.789).abs() < 1e-6);
     }
 
+    /// Pin the property the worker boundary now relies on: the dispatch
+    /// site builds a typed `ScanKey` from `(site, secs_f64)`, and any
+    /// code that wants to compare against the worker's storage-key string
+    /// must get an identical result via `to_storage_key()`. Without this,
+    /// the dropped `from_storage_key().expect()` parse in
+    /// `handle_chunk_ingested_outcome` could silently disagree with
+    /// itself across the wire.
+    #[wasm_bindgen_test]
+    fn test_scan_key_storage_key_round_trip_via_typed_dispatch() {
+        let secs_f64 = 1_700_000_000.789;
+        let typed = ScanKey::from_secs_f64("KDMX", secs_f64);
+        let storage = typed.to_storage_key();
+        let parsed = ScanKey::from_storage_key(&storage).unwrap();
+        assert_eq!(typed, parsed);
+        assert_eq!(parsed.scan_start.as_secs_f64(), secs_f64);
+    }
+
     #[wasm_bindgen_test]
     fn test_sweep_data_key_storage_format() {
         let scan = ScanKey::new("KDMX", UnixMillis(1700000000000));

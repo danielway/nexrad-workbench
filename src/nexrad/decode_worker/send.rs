@@ -19,9 +19,14 @@ impl DecodeWorker {
         fetch_latency_ms: f64,
     ) {
         let id = self.next_request_id();
+        // Build the typed scan-key once at dispatch; the response path
+        // reads it from this context instead of parsing the storage-key
+        // string the worker echoes back.
+        let scan_key = crate::data::ScanKey::from_secs_f64(&site_id, timestamp_secs);
         self.pending_ingest.borrow_mut().insert(
             id,
             IngestContext {
+                scan_key,
                 timestamp_secs,
                 file_name: file_name.clone(),
                 fetch_latency_ms,
@@ -49,22 +54,28 @@ impl DecodeWorker {
     }
 
     /// Submit a decode request: fetch records from IDB, decode target elevation, return raw data.
-    pub fn render(&mut self, scan_key: String, elevation_number: u8, product: String) {
+    pub fn render(
+        &mut self,
+        scan_key: crate::data::ScanKey,
+        elevation_number: u8,
+        product: String,
+    ) {
         let id = self.next_request_id();
+        let storage_key = scan_key.to_storage_key();
         self.pending_render.borrow_mut().insert(
             id,
             RenderContext {
-                scan_key: scan_key.clone(),
+                scan_key,
                 elevation_number,
             },
         );
 
         if *self.ready.borrow() {
-            send_render_request(&self.worker, id, &scan_key, elevation_number, &product);
+            send_render_request(&self.worker, id, &storage_key, elevation_number, &product);
         } else {
             self.queue.push(super::QueuedRequest::Render(
                 id,
-                scan_key,
+                storage_key,
                 elevation_number,
                 product,
             ));
@@ -74,10 +85,16 @@ impl DecodeWorker {
     /// Submit a live (partial sweep) render request: reads from in-memory accumulator.
     pub fn render_live(&mut self, elevation_number: u8, product: String) {
         let id = self.next_request_id();
+        // Live renders aren't bound to a stored scan; supply a sentinel
+        // ScanKey for the context (the receive path doesn't read it for
+        // LiveDecoded, only for the error path, where it surfaces as the
+        // failed scan timestamp).
+        let scan_key =
+            crate::data::ScanKey::new(crate::data::SiteId::new(""), crate::data::UnixMillis(0));
         self.pending_render_live.borrow_mut().insert(
             id,
             RenderContext {
-                scan_key: String::new(), // Not used for live renders
+                scan_key,
                 elevation_number,
             },
         );
@@ -94,21 +111,30 @@ impl DecodeWorker {
     }
 
     /// Submit a volume render request: fetch all elevations, pack for ray marching.
-    pub fn render_volume(&mut self, scan_key: String, product: String, elevation_numbers: Vec<u8>) {
+    pub fn render_volume(
+        &mut self,
+        scan_key: crate::data::ScanKey,
+        product: String,
+        elevation_numbers: Vec<u8>,
+    ) {
         let id = self.next_request_id();
-        self.pending_volume.borrow_mut().insert(
-            id,
-            VolumeRenderContext {
-                scan_key: scan_key.clone(),
-            },
-        );
+        let storage_key = scan_key.to_storage_key();
+        self.pending_volume
+            .borrow_mut()
+            .insert(id, VolumeRenderContext { scan_key });
 
         if *self.ready.borrow() {
-            send_render_volume_request(&self.worker, id, &scan_key, &product, &elevation_numbers);
+            send_render_volume_request(
+                &self.worker,
+                id,
+                &storage_key,
+                &product,
+                &elevation_numbers,
+            );
         } else {
             self.queue.push(super::QueuedRequest::RenderVolume(
                 id,
-                scan_key,
+                storage_key,
                 product,
                 elevation_numbers,
             ));
@@ -129,10 +155,12 @@ impl DecodeWorker {
         is_last_in_sweep: bool,
     ) {
         let id = self.next_request_id();
+        let scan_key = crate::data::ScanKey::from_secs_f64(&site_id, timestamp_secs);
         self.pending_chunk_ingest.borrow_mut().insert(
             id,
             ChunkIngestContext {
                 site_id: site_id.clone(),
+                scan_key,
                 timestamp_secs,
                 chunk_index,
                 is_end,
