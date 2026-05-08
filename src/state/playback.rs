@@ -551,7 +551,7 @@ impl PlaybackState {
     }
 
     /// Snap playback position to the current macro frame's timestamp.
-    fn snap_playback_to_macro_frame(&mut self) {
+    pub fn snap_playback_to_macro_frame(&mut self) {
         if let Some(&ts) = self
             .macro_playback
             .sweep_frames

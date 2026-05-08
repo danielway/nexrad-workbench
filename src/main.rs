@@ -2578,9 +2578,9 @@ impl WorkbenchApp {
             let bounds = self.state.playback_state.time_model.playback_bounds;
             let scan_count = self.state.radar_timeline.scans.len();
 
-            let dirty = mp.cached_elevation_selection != elev_sel
-                || mp.cached_bounds != bounds
-                || mp.cached_scan_count != scan_count;
+            let elev_changed = mp.cached_elevation_selection != elev_sel;
+            let dirty =
+                elev_changed || mp.cached_bounds != bounds || mp.cached_scan_count != scan_count;
 
             if dirty {
                 let frames = match &elev_sel {
@@ -2602,6 +2602,18 @@ impl WorkbenchApp {
                 self.state.playback_state.macro_playback.cached_bounds = bounds;
                 self.state.playback_state.macro_playback.cached_scan_count = scan_count;
                 self.state.playback_state.sync_macro_frame_index();
+                // When the elevation filter changes, snap playback_position
+                // to the resolved frame so the canvas resolver picks a sweep
+                // at the new elevation. Frames are sweep end-times and a
+                // higher elevation's sweep starts after the previous one
+                // ends — without snapping, the resolver's
+                // `start_time <= playback_position` filter rejects every
+                // sweep at the new elevation in the current scan, blanking
+                // the canvas. Skip on bounds/scan_count changes so
+                // streaming and selection edits don't teleport the cursor.
+                if elev_changed {
+                    self.state.playback_state.snap_playback_to_macro_frame();
+                }
             }
 
             // Detect manual seek: if playback position changed externally
