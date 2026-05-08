@@ -504,6 +504,7 @@ impl RadarTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
 
     /// Helper to create a minimal Scan for testing (no sweeps).
     fn scan(start: f64, end: f64) -> Scan {
@@ -549,13 +550,13 @@ mod tests {
 
     // --- TimeRange tests ---
 
-    #[test]
+    #[wasm_bindgen_test]
     fn time_range_duration() {
         let r = TimeRange::new(100.0, 400.0);
         assert_eq!(r.duration(), 300.0);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn time_range_contains() {
         let r = TimeRange::new(100.0, 200.0);
         assert!(r.contains(100.0)); // start inclusive
@@ -567,7 +568,7 @@ mod tests {
 
     // --- Scan tests ---
 
-    #[test]
+    #[wasm_bindgen_test]
     fn scan_progress_at_timestamp() {
         let s = scan(1000.0, 1100.0);
         assert_eq!(s.progress_at_timestamp(1000.0), Some(0.0));
@@ -577,13 +578,13 @@ mod tests {
         assert_eq!(s.progress_at_timestamp(1101.0), None);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn scan_progress_zero_duration() {
         let s = scan(1000.0, 1000.0);
         assert_eq!(s.progress_at_timestamp(1000.0), Some(0.0));
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn scan_find_sweep_at_timestamp() {
         let s = scan_with_sweeps(
             1000.0,
@@ -607,13 +608,13 @@ mod tests {
 
     // --- RadarTimeline tests ---
 
-    #[test]
+    #[wasm_bindgen_test]
     fn time_ranges_empty() {
         let tl = RadarTimeline { scans: vec![] };
         assert!(tl.time_ranges().is_empty());
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn time_ranges_single_scan() {
         let tl = RadarTimeline {
             scans: vec![scan(1000.0, 1300.0)],
@@ -624,7 +625,7 @@ mod tests {
         assert_eq!(ranges[0].end, 1300.0);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn time_ranges_contiguous_scans() {
         // Scans 5 minutes apart — should be one range
         let tl = RadarTimeline {
@@ -640,7 +641,7 @@ mod tests {
         assert_eq!(ranges[0].end, 1900.0);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn time_ranges_with_gap() {
         // Two groups separated by more than MAX_CONTIGUOUS_GAP_SECS (15 min = 900s)
         let tl = RadarTimeline {
@@ -659,7 +660,7 @@ mod tests {
         assert_eq!(ranges[1].end, 2900.0);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn overall_time_range() {
         let tl = RadarTimeline {
             scans: vec![scan(1000.0, 1300.0), scan(5000.0, 5300.0)],
@@ -667,13 +668,13 @@ mod tests {
         assert_eq!(tl.overall_time_range(), Some((1000.0, 5300.0)));
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn overall_time_range_empty() {
         let tl = RadarTimeline { scans: vec![] };
         assert_eq!(tl.overall_time_range(), None);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn find_scan_at_timestamp() {
         let tl = RadarTimeline {
             scans: vec![scan(1000.0, 1300.0), scan(1300.0, 1600.0)],
@@ -688,7 +689,7 @@ mod tests {
         assert!(tl.find_scan_at_timestamp(1601.0).is_none());
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn find_recent_scan() {
         let tl = RadarTimeline {
             scans: vec![scan(1000.0, 1300.0), scan(1300.0, 1600.0)],
@@ -701,7 +702,7 @@ mod tests {
         assert!(tl.find_recent_scan(2500.0, 600.0).is_none());
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn next_matching_sweep_end_by_number() {
         let tl = RadarTimeline {
             scans: vec![scan_with_sweeps(
@@ -733,7 +734,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn prev_matching_sweep_end_by_number() {
         let tl = RadarTimeline {
             scans: vec![scan_with_sweeps(
@@ -759,7 +760,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn matching_sweep_end_times_by_number_basic() {
         let tl = RadarTimeline {
             scans: vec![
@@ -789,7 +790,7 @@ mod tests {
         assert_eq!(times, vec![1020.0, 1320.0]);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn matching_sweep_end_times_by_number_with_bounds() {
         let tl = RadarTimeline {
             scans: vec![scan_with_sweeps(
@@ -808,7 +809,7 @@ mod tests {
         assert_eq!(times, vec![1010.0]);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn all_sweep_end_times_basic() {
         let tl = RadarTimeline {
             scans: vec![
@@ -834,14 +835,14 @@ mod tests {
         assert_eq!(times, vec![1010.0, 1020.0, 1030.0, 1040.0, 1310.0, 1320.0]);
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn matching_sweep_end_times_empty() {
         let tl = RadarTimeline { scans: vec![] };
         let times = tl.matching_sweep_end_times_by_number(1, None);
         assert!(times.is_empty());
     }
 
-    #[test]
+    #[wasm_bindgen_test]
     fn scans_in_range() {
         let tl = RadarTimeline {
             scans: vec![
