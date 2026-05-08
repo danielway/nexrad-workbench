@@ -2085,6 +2085,7 @@ impl WorkbenchApp {
         // uploads so completed-elevation IDB renders don't overwrite
         // the current partial sweep.
         let skip_gpu_upload = self.state.live_mode_state.is_active();
+        let mut gpu_upload_succeeded = false;
         if is_current_scan && !skip_gpu_upload {
             if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
                 if let Ok(mut r) = renderer.lock() {
@@ -2104,6 +2105,7 @@ impl WorkbenchApp {
                     );
                     r.set_current_sweep_id(Some(result_sweep_id));
                     r.update_color_table(gl, &result.product);
+                    gpu_upload_succeeded = true;
 
                     // Run storm cell detection if enabled
                     if self.state.viz_state.storm_cells_visible {
@@ -2117,6 +2119,24 @@ impl WorkbenchApp {
             }
         }
         let gpu_upload_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
+
+        // Capture the new on-GPU sweep identity. Snapshot the prior
+        // `displayed` into `previous_displayed` atomically so the
+        // timeline's active and previous borders flip together.
+        if gpu_upload_succeeded {
+            let new_displayed = state::DisplayedSweep {
+                identity: SweepIdentity::new(
+                    result.context.scan_key.clone(),
+                    result.context.elevation_number,
+                    result.product.clone(),
+                ),
+                start_time: result.sweep_start_secs,
+                end_time: result.sweep_end_secs,
+                elevation_deg: result.mean_elevation,
+            };
+            let prior = self.state.viz_state.displayed.replace(new_displayed);
+            self.state.viz_state.previous_displayed = prior;
+        }
 
         // Store detailed render timing for the detail modal (dev mode only).
         if self.state.dev_mode {
@@ -2220,6 +2240,29 @@ impl WorkbenchApp {
                 );
                 r.set_current_sweep_id(Some(live_sweep_id));
                 r.update_color_table(gl, &result.product);
+
+                // Capture the live on-GPU identity. `should_promote` flags
+                // an elevation transition within the live volume — only at
+                // those boundaries is the prior `displayed` semantically a
+                // *different* sweep, so we only roll it into
+                // `previous_displayed` then. Repeated partial-sweep uploads
+                // for the *same* elevation overwrite `displayed` in place.
+                let new_displayed = state::DisplayedSweep {
+                    identity: SweepIdentity::new(
+                        result.context.scan_key.clone(),
+                        result.context.elevation_number,
+                        result.product.clone(),
+                    ),
+                    start_time: result.sweep_start_secs,
+                    end_time: result.sweep_end_secs,
+                    elevation_deg: result.mean_elevation,
+                };
+                if should_promote {
+                    let prior = self.state.viz_state.displayed.replace(new_displayed);
+                    self.state.viz_state.previous_displayed = prior;
+                } else {
+                    self.state.viz_state.displayed = Some(new_displayed);
+                }
 
                 // Re-run storm cell detection on the freshly-uploaded live
                 // sweep so the overlay tracks the incoming chunks rather
@@ -3086,6 +3129,8 @@ impl WorkbenchApp {
         self.state.viz_state.prev_sweep_scan_timestamp = None;
         self.state.viz_state.prev_sweep_elevation_number = None;
         self.state.viz_state.prev_sweep_overlay = None;
+        self.state.viz_state.displayed = None;
+        self.state.viz_state.previous_displayed = None;
         self.scrub_cache.last_displayed_scan_ts = None;
     }
 
@@ -3109,6 +3154,10 @@ impl WorkbenchApp {
         self.state.viz_state.prev_sweep_scan_timestamp = None;
         self.state.viz_state.prev_sweep_elevation_number = None;
         self.state.viz_state.prev_sweep_overlay = None;
+        // Snapshot the prior `displayed` into `previous_displayed` so the
+        // timeline's prev border still indicates the last on-GPU sweep
+        // until something new is uploaded.
+        self.state.viz_state.previous_displayed = self.state.viz_state.displayed.take();
         self.render.clear_last_render();
     }
 

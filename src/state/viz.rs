@@ -113,6 +113,29 @@ pub struct SweepIdentity {
     pub product: String,
 }
 
+/// What is currently on the GPU canvas.
+///
+/// Populated only after a successful `update_data()` call in
+/// `handle_decoded_outcome` / `handle_live_decoded_outcome`. Consumed by
+/// the timeline (active border), canvas overlay (timestamp, elevation
+/// text), and staleness counters.
+///
+/// This is the "displayed" half of the intent-vs-displayed split: user
+/// intent lives in `elevation_selection`, the resolver produces a
+/// target, the worker fulfils it, and only then does this slot move.
+/// Reading this field is therefore safe to interpret as "what the user
+/// is actually looking at right now."
+#[derive(Clone, PartialEq, Debug)]
+pub struct DisplayedSweep {
+    pub identity: SweepIdentity,
+    /// Sweep start time (Unix seconds, sub-second precision).
+    pub start_time: f64,
+    /// Sweep end time (Unix seconds, sub-second precision).
+    pub end_time: f64,
+    /// Physical elevation angle in degrees, for overlay text.
+    pub elevation_deg: f32,
+}
+
 #[allow(dead_code)] // Wired up incrementally; consumers land in subsequent phases.
 impl SweepIdentity {
     pub fn new(scan_key: ScanKey, elevation_number: u8, product: impl Into<String>) -> Self {
@@ -406,6 +429,20 @@ pub struct VizState {
     /// to know what area the user is looking at without access to the
     /// canvas rect. `None` while in 3D globe mode.
     pub last_visible_bounds: Option<(f64, f64, f64, f64)>,
+
+    /// What is actually on the GPU canvas right now. Set only when a
+    /// successful `update_data()` has uploaded a sweep's gate values to
+    /// the primary radar texture, cleared (set to `None`) when the
+    /// canvas blanks. Drives the timeline active border, overlay text,
+    /// and staleness counters in subsequent phases.
+    pub displayed: Option<DisplayedSweep>,
+
+    /// Snapshot of `displayed` taken at the moment `displayed` last
+    /// changed — i.e., the previous on-GPU sweep. Drives the timeline
+    /// secondary (prev) border and the prev-sweep animation overlay,
+    /// replacing the legacy `prev_sweep_*` triplet (kept alongside in
+    /// this phase; consumers migrate in Phase 4).
+    pub previous_displayed: Option<DisplayedSweep>,
 }
 
 impl Default for VizState {
@@ -443,6 +480,8 @@ impl Default for VizState {
             displayed_scan_timestamp: None,
             displayed_sweep_elevation_number: None,
             last_visible_bounds: None,
+            displayed: None,
+            previous_displayed: None,
         }
     }
 }
