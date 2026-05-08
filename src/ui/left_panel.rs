@@ -79,7 +79,24 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
 
     match scan {
         Some(scan) => {
-            let sweep_data = scan.find_sweep_at_timestamp(ts);
+            // Time-window match: drives the rotating-azimuth animation,
+            // which is only meaningful while the cursor is inside a
+            // sweep's [start, end] interval.
+            let sweep_at_ts = scan.find_sweep_at_timestamp(ts);
+            // Highlight match: when the cursor sits in a gap between
+            // sweeps, the canvas keeps showing the last decoded sweep —
+            // mirror that here so the VCP highlight tracks what's
+            // actually on screen instead of blanking out.
+            let sweep_for_highlight = sweep_at_ts.or_else(|| {
+                let displayed = state.viz_state.displayed.as_ref()?;
+                if (scan.key_timestamp - displayed.identity.scan_timestamp_secs()).abs() >= 0.001 {
+                    return None;
+                }
+                scan.sweeps
+                    .iter()
+                    .enumerate()
+                    .find(|(_, s)| s.elevation_number == displayed.identity.elevation_number)
+            });
 
             // At high playback speeds (>30 s/s), freeze all animated radar state
             // (azimuth, elevation, sweep indicator, progress) to prevent violent flashing.
@@ -93,7 +110,7 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
             let azimuth = if is_fast {
                 None
             } else {
-                sweep_data.and_then(|(_, sweep)| {
+                sweep_at_ts.and_then(|(_, sweep)| {
                     let dur = sweep.end_time - sweep.start_time;
                     if dur <= 0.0 {
                         return None;
@@ -105,12 +122,12 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
             let elevation = if is_fast {
                 None
             } else {
-                sweep_data.map(|(_, s)| scan.display_angle(s))
+                sweep_for_highlight.map(|(_, s)| scan.display_angle(s))
             };
             let sweep_index = if is_fast {
                 None
             } else {
-                sweep_data.map(|(idx, _)| idx)
+                sweep_for_highlight.map(|(idx, _)| idx)
             };
             let scan_progress = if is_fast {
                 None
