@@ -909,30 +909,6 @@ impl WorkbenchApp {
             .start(ctx.clone(), site_id, self.acquisition.facade().clone());
     }
 
-    /// Find the best elevation number for the current elevation selection.
-    fn best_elevation_number(&self) -> u8 {
-        match &self.state.viz_state.elevation_selection {
-            crate::state::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => *elevation_number,
-            crate::state::ElevationSelection::Latest => {
-                let playback_ts = self.state.playback_state.playback_position();
-                if let Some(scan) = self
-                    .state
-                    .radar_timeline
-                    .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
-                {
-                    return self.most_recent_sweep_elevation(scan, playback_ts);
-                }
-                self.render
-                    .available_elevations()
-                    .first()
-                    .copied()
-                    .unwrap_or(1)
-            }
-        }
-    }
-
     /// Find the best elevation number for a scan given the playback position.
     /// Returns None when no sweep in the scan matches the user's fixed selection
     /// (so callers can clear display instead of issuing a doomed render).
@@ -979,70 +955,35 @@ impl WorkbenchApp {
     }
 
     /// Send a render request to the worker for the current scan/elevation/product.
+    ///
+    /// Honours the user's intent exactly: the resolver returns either an
+    /// exact-match [`SweepIdentity`] (sweep present in the scan covering
+    /// `playback_position`, with the selected product available) or `None`
+    /// (blank the canvas). No fuzzy elevation fallback in any mode — if the
+    /// user picks elevation 5° and the resolved scan only has 1°/3°/7°, the
+    /// canvas blanks rather than snapping to a neighbor.
     fn request_worker_render(&mut self) {
-        let mut elevation_number = self
-            .state
-            .viz_state
-            .displayed_sweep_elevation_number
-            .unwrap_or_else(|| self.best_elevation_number());
+        let target = state::playback_manager::resolve_active_sweep_target(
+            &self.state.viz_state.site_id,
+            self.state.playback_state.playback_position(),
+            &self.state.viz_state.elevation_selection,
+            self.state.viz_state.product,
+            &self.state.radar_timeline,
+            MAX_SCAN_AGE_SECS,
+        );
 
-        // During real-time streaming, constrain to what's actually available.
-        if self.state.live_mode_state.is_active()
-            && !self.render.available_elevations().is_empty()
-            && !self
-                .render
-                .available_elevations()
-                .contains(&elevation_number)
-        {
-            elevation_number = self.render.best_available_elevation(elevation_number);
-        }
-
-        let product = self.state.viz_state.product.to_worker_string().to_string();
-
-        // Preemptive availability gate (archive/scrub path only — live-mode
-        // scans may have more elevations than radar_timeline yet knows about).
-        // If the displayed scan exists in radar_timeline but has no sweep at
-        // this elevation — or has a sweep that doesn't carry the selected
-        // product (e.g. reflectivity-only split cuts when viewing velocity) —
-        // clear the canvas rather than issuing a request the worker will
-        // reject with "No pre-computed sweep".
-        if !self.state.live_mode_state.is_active() {
-            if let Some(displayed_ts) = self.state.viz_state.displayed_scan_timestamp {
-                if let Some(scan) = self
-                    .state
-                    .radar_timeline
-                    .find_scan_at_timestamp(displayed_ts)
-                {
-                    if !scan.sweeps.is_empty() {
-                        let matching = scan
-                            .sweeps
-                            .iter()
-                            .find(|s| s.elevation_number == elevation_number);
-                        let missing = match matching {
-                            None => true,
-                            // Empty cached_products means "unknown" (legacy
-                            // index entries predating product tracking) — fall
-                            // through to the worker rather than blanking.
-                            Some(s) => {
-                                !s.cached_products.is_empty()
-                                    && !s.cached_products.iter().any(|p| p == &product)
-                            }
-                        };
-                        if missing {
-                            self.clear_display_no_sweep();
-                            return;
-                        }
-                    }
-                }
+        let Some(identity) = target else {
+            // No sweep matches the intent. Live mode may legitimately have
+            // partial in-progress data on the GPU (driven by
+            // `handle_live_decoded_outcome`); leave it untouched. Archive
+            // mode has no other producer, so blank the canvas.
+            if !self.state.live_mode_state.is_active() {
+                self.clear_display_no_sweep();
             }
-        }
+            return;
+        };
 
-        let is_auto = self.state.viz_state.elevation_selection.is_auto();
-
-        if self
-            .render
-            .request_render(elevation_number, &product, is_auto)
-            && !self.state.session_stats.pipeline.processing
+        if self.render.request_render_for(identity) && !self.state.session_stats.pipeline.processing
         {
             self.state.session_stats.pipeline.processing = true;
         }

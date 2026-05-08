@@ -111,29 +111,6 @@ impl RenderCoordinator {
         self.last_render = None;
     }
 
-    /// Pick the closest available elevation to the requested one.
-    pub fn best_available_elevation(&self, requested: u8) -> u8 {
-        self.available_elevations
-            .iter()
-            .copied()
-            .min_by_key(|&e| (e as i16 - requested as i16).unsigned_abs())
-            .unwrap_or(requested)
-    }
-
-    /// Send a render request to the worker. Returns true if the request was
-    /// actually sent (false if deduplicated or no worker/scan key).
-    ///
-    /// Thin shim over [`Self::request_render_for`] that builds the
-    /// [`SweepIdentity`] from the current scan key. Migrating callers to
-    /// pass an identity directly (resolved upstream) is part of Phase 5.
-    pub fn request_render(&mut self, elevation_number: u8, product: &str, _is_auto: bool) -> bool {
-        let Some(scan_key) = self.current_scan_key.clone() else {
-            return false;
-        };
-        let identity = SweepIdentity::new(scan_key, elevation_number, product);
-        self.request_render_for(identity)
-    }
-
     /// Send a render request for an explicit sweep identity. Returns true
     /// if the request was actually sent (false if deduplicated or no
     /// worker).
