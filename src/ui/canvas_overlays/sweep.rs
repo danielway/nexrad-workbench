@@ -254,7 +254,7 @@ pub(crate) fn render_radar_sweep(
                                     .and_then(|vcp| {
                                         vcp.elevations
                                             .get(s.elevation_number.saturating_sub(1) as usize)
-                                            .map(|el| format!("{:.2}\u{00B0}", el.angle))
+                                            .map(|el| format!("{:.1}\u{00B0}", el.angle))
                                     })
                                     .unwrap_or_default();
                                 format!("NOW \u{00B7} Elev {} {}", s.elevation_number, angle)
@@ -479,7 +479,7 @@ fn draw_sweep_donut(
         vcp.and_then(|v| {
             v.elevations
                 .get(elev_num.saturating_sub(1) as usize)
-                .map(|el| format!("{:.2}\u{00B0}", el.angle))
+                .map(|el| format!("{:.1}\u{00B0}", el.angle))
         })
         .unwrap_or_default()
     };
@@ -540,7 +540,9 @@ fn draw_sweep_donut(
             .as_ref()
             .map(|d| d.identity.elevation_number);
 
-        // Look up current sweep from timeline
+        // Look up current sweep from timeline. Display the VCP target
+        // angle (the cut's identity) rather than the encoder's
+        // measured average — see `Scan::display_angle`.
         let current_sweep_info = state
             .radar_timeline
             .find_recent_scan(playback_ts, 15.0 * 60.0)
@@ -554,13 +556,20 @@ fn draw_sweep_donut(
                             .iter()
                             .find(|s| Some(s.elevation_number) == displayed_elev)
                     })
-                    .map(|s| (s.elevation_number, s.elevation, s.start_time, s.end_time))
+                    .map(|s| {
+                        (
+                            s.elevation_number,
+                            scan.display_angle(s),
+                            s.start_time,
+                            s.end_time,
+                        )
+                    })
             });
 
         cur_edge_time = Some(fmt_time(playback_ts));
         cur_start_time = current_sweep_info.map(|(_, _, start, _)| fmt_time(start));
         cur_meta =
-            current_sweep_info.map(|(en, angle, _, _)| format!("Elev {} {:.2}\u{00B0}", en, angle));
+            current_sweep_info.map(|(en, angle, _, _)| format!("Elev {} {:.1}\u{00B0}", en, angle));
 
         // Previous sweep times — read from the on-GPU prior `displayed`
         // snapshot so labels track real pixel state.
@@ -568,7 +577,7 @@ fn draw_sweep_donut(
         prev_edge_time = prev.map(|p| fmt_time(p.end_time));
         prev_meta = prev.map(|p| {
             format!(
-                "Elev {} {:.2}\u{00B0}",
+                "Elev {} {:.1}\u{00B0}",
                 p.identity.elevation_number, p.elevation_deg
             )
         });

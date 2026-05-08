@@ -649,9 +649,9 @@ pub(super) fn render_realtime_progress(
         // Elevation label (for all states, when wide enough)
         if width > 25.0 && !is_downloading {
             let label = if width > 50.0 {
-                format!("{:.2}\u{00B0}", elev_angle)
+                format!("{:.1}\u{00B0}", elev_angle)
             } else {
-                format!("{:.2}", elev_angle)
+                format!("{:.1}", elev_angle)
             };
             let label_alpha = if is_complete { 180u8 } else { 100 };
             painter.text(

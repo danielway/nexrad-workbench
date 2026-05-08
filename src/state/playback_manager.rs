@@ -173,11 +173,11 @@ impl PlaybackManager {
     ) -> Option<(f64, u8, f32, f64, f64)> {
         let current_scan = timeline.find_recent_scan(playback_ts, max_scan_age)?;
 
-        let sweep_to_info = |scan_key_ts: f64, s: &Sweep| {
+        let sweep_to_info = |scan: &Scan, s: &Sweep| {
             (
-                scan_key_ts,
+                scan.key_timestamp,
                 s.elevation_number,
-                s.elevation,
+                scan.display_angle(s),
                 s.start_time,
                 s.end_time,
             )
@@ -190,7 +190,7 @@ impl PlaybackManager {
                 ps.sweeps
                     .iter()
                     .find(|s| s.elevation_number == displayed_elev)
-                    .map(|s| sweep_to_info(ps.key_timestamp, s))
+                    .map(|s| sweep_to_info(ps, s))
             })
         } else {
             // Latest: previous sweep in time order within the same scan
@@ -201,13 +201,12 @@ impl PlaybackManager {
             match sweep_idx {
                 Some(idx) if idx > 0 => {
                     let prev = &current_scan.sweeps[idx - 1];
-                    Some(sweep_to_info(current_scan.key_timestamp, prev))
+                    Some(sweep_to_info(current_scan, prev))
                 }
                 _ => {
                     // First sweep in scan (or not found) — previous scan's last sweep
                     let prev_scan = timeline.find_previous_scan(playback_ts, max_scan_age);
-                    prev_scan
-                        .and_then(|ps| ps.sweeps.last().map(|s| sweep_to_info(ps.key_timestamp, s)))
+                    prev_scan.and_then(|ps| ps.sweeps.last().map(|s| sweep_to_info(ps, s)))
                 }
             }
         }
@@ -344,12 +343,18 @@ pub(crate) fn resolve_active_sweep_target(
 
 /// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
 ///
-/// The displayed `angle` always comes from the measured sweep metadata when a
-/// matching sweep exists, so the right panel and the timeline never disagree on
-/// the value of a given elevation. VCP data only contributes structural fields
-/// (waveform, SAILS, MRLE) that aren't recoverable from the sweep alone.
+/// The displayed `angle` is the VCP target (commanded) angle — the cut's
+/// identity (e.g. "0.5°") — not the encoder's measured average, which
+/// wobbles a few hundredths of a degree per sweep. We only fall back to
+/// the measured value when no VCP info is available at all.
 pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationListEntry> {
-    let sweep_for = |elev_num: u8| scan.sweeps.iter().find(|s| s.elevation_number == elev_num);
+    let products_for = |elev_num: u8| -> Vec<String> {
+        scan.sweeps
+            .iter()
+            .find(|s| s.elevation_number == elev_num)
+            .map(|s| s.cached_products.clone())
+            .unwrap_or_default()
+    };
 
     // 1. Prefer extracted VCP pattern (has waveform, SAILS, MRLE info)
     if let Some(ref pattern) = scan.vcp_pattern {
@@ -360,16 +365,13 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
                 .enumerate()
                 .map(|(i, e)| {
                     let elevation_number = (i + 1) as u8;
-                    let sweep = sweep_for(elevation_number);
                     crate::state::ElevationListEntry {
                         elevation_number,
-                        angle: sweep.map(|s| s.elevation).unwrap_or(e.angle),
+                        angle: e.angle,
                         waveform: e.waveform.clone(),
                         is_sails: e.is_sails,
                         is_mrle: e.is_mrle,
-                        cached_products: sweep
-                            .map(|s| s.cached_products.clone())
-                            .unwrap_or_default(),
+                        cached_products: products_for(elevation_number),
                     }
                 })
                 .collect();
@@ -384,20 +386,19 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
             .enumerate()
             .map(|(i, e)| {
                 let elevation_number = (i + 1) as u8;
-                let sweep = sweep_for(elevation_number);
                 crate::state::ElevationListEntry {
                     elevation_number,
-                    angle: sweep.map(|s| s.elevation).unwrap_or(e.angle),
+                    angle: e.angle,
                     waveform: e.waveform.to_string(),
                     is_sails: false,
                     is_mrle: false,
-                    cached_products: sweep.map(|s| s.cached_products.clone()).unwrap_or_default(),
+                    cached_products: products_for(elevation_number),
                 }
             })
             .collect();
     }
 
-    // 3. Fall back to sweep metadata
+    // 3. Fall back to sweep metadata (no VCP available)
     scan.sweeps
         .iter()
         .map(|s| crate::state::ElevationListEntry {

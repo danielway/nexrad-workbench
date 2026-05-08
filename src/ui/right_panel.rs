@@ -146,7 +146,7 @@ pub(super) fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
                                 ui.horizontal(|ui| {
                                     // Build the label text
                                     let num_str = format!(
-                                        "{:<3} {:.2}\u{00B0}",
+                                        "{:<3} {:.1}\u{00B0}",
                                         entry.elevation_number, entry.angle
                                     );
 

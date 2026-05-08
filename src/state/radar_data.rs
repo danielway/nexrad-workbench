@@ -102,6 +102,35 @@ impl Scan {
         self.end_time - self.start_time
     }
 
+    /// VCP-defined target ("commanded") angle for the given elevation number,
+    /// looking through the extracted pattern first then the static VCP table.
+    /// Returns `None` only when neither source has an entry — callers should
+    /// fall back to `Sweep::elevation` (the per-sweep measured average from
+    /// the antenna encoder) for display.
+    pub fn target_elevation_angle(&self, elevation_number: u8) -> Option<f32> {
+        let idx = elevation_number.saturating_sub(1) as usize;
+        if let Some(ref pattern) = self.vcp_pattern {
+            if let Some(elev) = pattern.elevations.get(idx) {
+                return Some(elev.angle);
+            }
+        }
+        if let Some(def) = crate::state::get_vcp_definition(self.vcp) {
+            if let Some(elev) = def.elevations.get(idx) {
+                return Some(elev.angle);
+            }
+        }
+        None
+    }
+
+    /// Display angle for a sweep — VCP target if available, else the
+    /// measured average. Use this everywhere we render an elevation cut to
+    /// the user; it keeps every surface anchored to the commanded angle
+    /// (the cut's identity) instead of the encoder's noisy reading.
+    pub fn display_angle(&self, sweep: &Sweep) -> f32 {
+        self.target_elevation_angle(sweep.elevation_number)
+            .unwrap_or(sweep.elevation)
+    }
+
     /// Find the sweep containing the given timestamp
     pub fn find_sweep_at_timestamp(&self, ts: f64) -> Option<(usize, &Sweep)> {
         self.sweeps

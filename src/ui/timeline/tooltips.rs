@@ -115,15 +115,18 @@ fn render_sweep_tooltip_content(
         .and_then(|s| s.vcp_pattern.as_ref().map(|v| v.elevations.len()))
         .or_else(|| parent_scan.map(|s| s.sweeps.len()))
         .unwrap_or(0);
+    let display_angle = parent_scan
+        .map(|s| s.display_angle(sweep))
+        .unwrap_or(sweep.elevation);
     if sweep_count > 0 {
         ui.label(format!(
-            "Elevation: {:.2}\u{00B0} (cut #{} of {})",
-            sweep.elevation, sweep.elevation_number, sweep_count
+            "Elevation: {:.1}\u{00B0} (cut #{} of {})",
+            display_angle, sweep.elevation_number, sweep_count
         ));
     } else {
         ui.label(format!(
-            "Elevation: {:.2}\u{00B0} (cut #{})",
-            sweep.elevation, sweep.elevation_number
+            "Elevation: {:.1}\u{00B0} (cut #{})",
+            display_angle, sweep.elevation_number
         ));
     }
 
@@ -266,7 +269,7 @@ fn render_realtime_volume_tooltip(
             );
             ui.label(
                 RichText::new(format!(
-                    "{:.2}\u{00B0} (cut #{} of {})",
+                    "{:.1}\u{00B0} (cut #{} of {})",
                     sp.elevation_angle, elev_num, expected_count
                 ))
                 .size(10.0)

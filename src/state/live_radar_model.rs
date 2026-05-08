@@ -73,6 +73,19 @@ pub struct LiveVolumeModel {
     pub roster: crate::state::VolumeElevationRoster,
 }
 
+impl LiveVolumeModel {
+    /// VCP-defined target angle for this elevation cut. Returns `None`
+    /// if no VCP pattern is attached yet — callers fall back to the
+    /// measured average from the decode result.
+    pub fn target_elevation_angle(&self, elevation_number: u8) -> Option<f32> {
+        self.vcp_pattern.as_ref().and_then(|vcp| {
+            vcp.elevations
+                .get(elevation_number.saturating_sub(1) as usize)
+                .map(|e| e.angle)
+        })
+    }
+}
+
 /// Active sweep state: the elevation currently being collected.
 #[derive(Clone, Debug)]
 pub struct LiveSweepModel {

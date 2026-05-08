@@ -82,12 +82,15 @@ pub(super) fn render_sweep_track(
                 );
             }
 
-            // Elevation + product labels
+            // Elevation + product labels — show the VCP target angle so the
+            // label reads as the cut's identity (e.g. 0.5°), not the
+            // encoder average that drifts a few hundredths per spin.
             if width > 25.0 {
+                let display_angle = scan.display_angle(sweep);
                 let mut label = if width > 60.0 {
-                    format!("E{} {:.2}\u{00B0}", sweep.elevation_number, sweep.elevation)
+                    format!("E{} {:.1}\u{00B0}", sweep.elevation_number, display_angle)
                 } else {
-                    format!("{:.2}", sweep.elevation)
+                    format!("{:.1}", display_angle)
                 };
 
                 if width > 80.0 {

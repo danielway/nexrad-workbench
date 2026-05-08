@@ -105,7 +105,7 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
             let elevation = if is_fast {
                 None
             } else {
-                sweep_data.map(|(_, s)| s.elevation)
+                sweep_data.map(|(_, s)| scan.display_angle(s))
             };
             let sweep_index = if is_fast {
                 None
@@ -410,7 +410,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
             Stroke::new(2.5, Color32::from_rgb(100, 255, 100)),
         );
 
-        ui.label(RichText::new(format!("{:.2}\u{00B0}", elev)).small());
+        ui.label(RichText::new(format!("{:.1}\u{00B0}", elev)).small());
     } else {
         ui.label(RichText::new("--").small().color(Color32::GRAY));
     }
@@ -538,14 +538,15 @@ fn build_elevation_rows<'a>(
             .enumerate()
             .map(|(idx, sweep)| {
                 let (start_offset_secs, timing_estimated) = timing_for(idx);
+                let target_angle = scan.display_angle(sweep);
                 let meta = vcp_def.and_then(|def| {
                     def.elevations
                         .iter()
-                        .find(|e| (e.angle - sweep.elevation).abs() < 0.1)
+                        .find(|e| (e.angle - target_angle).abs() < 0.1)
                 });
                 ElevRow {
                     elevation_number: (idx + 1) as u8,
-                    elevation_angle: sweep.elevation,
+                    elevation_angle: target_angle,
                     is_current: sweep_index == Some(idx),
                     waveform: meta.map(|m| m.waveform).unwrap_or("--"),
                     waveform_raw: meta
@@ -643,7 +644,7 @@ fn render_elevation_grid(ui: &mut egui::Ui, rows: &[ElevRow]) {
                 // Elevation number + angle
                 ui.label(
                     RichText::new(format!(
-                        "{:<2}{:>6.2}\u{00B0}",
+                        "{:<2}{:>5.1}\u{00B0}",
                         row.elevation_number, row.elevation_angle
                     ))
                     .color(text_color)

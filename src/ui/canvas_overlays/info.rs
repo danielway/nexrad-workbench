@@ -96,7 +96,7 @@ pub(crate) fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState
                 let prev_age_end = now - prev.end_time;
                 let prev_age_start = now - prev.start_time;
 
-                let prev_elev_str = format!("{:.2}\u{00B0}", prev.elevation_deg);
+                let prev_elev_str = format!("{:.1}\u{00B0}", prev.elevation_deg);
                 let prev_time = format_unix_timestamp_with_date(
                     (prev.start_time + prev.end_time) / 2.0,
                     state.use_local_time,

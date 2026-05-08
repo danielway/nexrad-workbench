@@ -2038,12 +2038,22 @@ impl WorkbenchApp {
         // which is the time-ordered prior sweep, NOT the prior main upload.
         // Don't conflate the two: scrubbing across non-adjacent times
         // would otherwise mis-mark the timeline previous border.
+        // Display angle for the cut: prefer the VCP target ("commanded")
+        // angle so labels read 0.5° rather than 0.44° (the encoder
+        // average wobbles a few hundredths of a degree per spin).
+        let display_angle = self
+            .state
+            .radar_timeline
+            .find_scan_at_timestamp(result.context.scan_key.scan_start.as_secs_f64())
+            .and_then(|scan| scan.target_elevation_angle(result.context.elevation_number))
+            .unwrap_or(result.mean_elevation);
+
         if gpu_upload_succeeded {
             self.state.viz_state.displayed = Some(state::DisplayedSweep {
                 identity: result_identity.clone(),
                 start_time: result.sweep_start_secs,
                 end_time: result.sweep_end_secs,
-                elevation_deg: result.mean_elevation,
+                elevation_deg: display_angle,
             });
         }
 
@@ -2081,7 +2091,7 @@ impl WorkbenchApp {
             self.update_overlay_from_sweep(
                 result.sweep_start_secs,
                 result.sweep_end_secs,
-                result.mean_elevation,
+                display_angle,
             );
         }
     }
@@ -2095,6 +2105,15 @@ impl WorkbenchApp {
             result.product,
             result.total_ms,
         );
+
+        // VCP target angle for the cut (mirrors archived path).
+        let display_angle = self
+            .state
+            .live_radar_model
+            .volume
+            .as_ref()
+            .and_then(|v| v.target_elevation_angle(result.context.elevation_number))
+            .unwrap_or(result.mean_elevation);
 
         if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
             if let Ok(mut r) = renderer.lock() {
@@ -2145,7 +2164,7 @@ impl WorkbenchApp {
                     ),
                     start_time: result.sweep_start_secs,
                     end_time: result.sweep_end_secs,
-                    elevation_deg: result.mean_elevation,
+                    elevation_deg: display_angle,
                 };
                 if should_promote {
                     let prior = self.state.viz_state.displayed.replace(new_displayed);
@@ -2173,7 +2192,7 @@ impl WorkbenchApp {
             self.update_overlay_from_sweep(
                 result.sweep_start_secs,
                 result.sweep_end_secs,
-                result.mean_elevation,
+                display_angle,
             );
         }
 
