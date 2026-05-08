@@ -318,6 +318,70 @@ pub(crate) fn best_elevation_at_playback(
     }
 }
 
+/// Resolve the user's intent against the timeline into a fully-qualified
+/// sweep identity, or `None` if the requested sweep is not available.
+///
+/// **No fuzzy fallback**: in `Fixed` mode, only an exact `elevation_number`
+/// match qualifies; if the selected elevation has no started sweep in the
+/// resolved scan, this returns `None`. Callers must blank the canvas
+/// rather than fall back to a different elevation.
+///
+/// In `Latest` mode, the most recent started sweep at or before the
+/// playback position is selected (any elevation).
+///
+/// Product availability: a sweep with non-empty `cached_products` must
+/// list the requested product; empty `cached_products` means "unknown —
+/// allow" (legacy index entries / placeholders), matching the right-panel
+/// availability logic.
+#[allow(dead_code)]
+pub(crate) fn resolve_active_sweep_target(
+    site_id: &str,
+    playback_position: f64,
+    elevation_selection: &crate::state::ElevationSelection,
+    product: crate::state::RadarProduct,
+    timeline: &RadarTimeline,
+    max_scan_age_secs: f64,
+) -> Option<crate::state::SweepIdentity> {
+    let scan = timeline.find_recent_scan(playback_position, max_scan_age_secs)?;
+    let product_str = product.to_worker_string();
+
+    let sweep = match elevation_selection {
+        crate::state::ElevationSelection::Fixed {
+            elevation_number, ..
+        } => scan
+            .sweeps
+            .iter()
+            .filter(|s| s.elevation_number == *elevation_number)
+            .filter(|s| s.start_time <= playback_position)
+            .max_by(|a, b| {
+                a.start_time
+                    .partial_cmp(&b.start_time)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })?,
+        crate::state::ElevationSelection::Latest => scan
+            .sweeps
+            .iter()
+            .filter(|s| s.start_time <= playback_position)
+            .max_by(|a, b| {
+                a.start_time
+                    .partial_cmp(&b.start_time)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })?,
+    };
+
+    // Empty cached_products means "unknown — allow"; otherwise require an exact match.
+    if !sweep.cached_products.is_empty() && !sweep.cached_products.iter().any(|p| p == product_str)
+    {
+        return None;
+    }
+
+    Some(crate::state::SweepIdentity::new(
+        crate::data::ScanKey::from_secs_f64(site_id, scan.key_timestamp),
+        sweep.elevation_number,
+        product_str,
+    ))
+}
+
 /// Find the most recent sweep (any elevation) at or before the playback position.
 ///
 /// Used by MostRecent render mode to always show the latest available data
@@ -420,4 +484,274 @@ pub(crate) fn build_elevation_list_from_vcp(
             cached_products: Vec::new(),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::radar_data::{Radial, Scan, Sweep};
+    use crate::state::{ElevationSelection, RadarProduct};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const MAX_AGE: f64 = 15.0 * 60.0;
+
+    fn sweep_with(
+        start: f64,
+        end: f64,
+        elev: f32,
+        elev_num: u8,
+        cached_products: Vec<&str>,
+    ) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation: elev,
+            elevation_number: elev_num,
+            start_azimuth: 0.0,
+            radials: Vec::<Radial>::new(),
+            cached_products: cached_products.into_iter().map(String::from).collect(),
+        }
+    }
+
+    fn scan_with(start: f64, end: f64, key_ts: f64, sweeps: Vec<Sweep>) -> Scan {
+        Scan {
+            start_time: start,
+            end_time: end,
+            key_timestamp: key_ts,
+            vcp: 215,
+            vcp_pattern: None,
+            sweeps,
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    fn timeline_with(scans: Vec<Scan>) -> RadarTimeline {
+        RadarTimeline { scans }
+    }
+
+    fn fixed(elev_num: u8) -> ElevationSelection {
+        ElevationSelection::Fixed {
+            elevation_number: elev_num,
+            angle: 0.5,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_returns_exact_match_when_elevation_present() {
+        let tl = timeline_with(vec![scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            vec![
+                sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"]),
+                sweep_with(1010.0, 1020.0, 0.9, 2, vec!["reflectivity"]),
+            ],
+        )]);
+        let id = resolve_active_sweep_target(
+            "KDMX",
+            1015.0,
+            &fixed(2),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+        )
+        .expect("expected Some");
+        assert_eq!(id.elevation_number, 2);
+        assert_eq!(id.product, "reflectivity");
+        assert_eq!(id.site_id(), "KDMX");
+        assert!((id.scan_timestamp_secs() - 1000.0).abs() < 1e-3);
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_returns_none_when_elevation_missing() {
+        let tl = timeline_with(vec![scan_with(
+            1000.0,
+            1020.0,
+            1000.0,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        )]);
+        let id = resolve_active_sweep_target(
+            "KDMX",
+            1015.0,
+            &fixed(5),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+        );
+        assert!(id.is_none(), "elevation 5 not in scan: should be None");
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_returns_none_when_product_unavailable() {
+        let tl = timeline_with(vec![scan_with(
+            1000.0,
+            1020.0,
+            1000.0,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        )]);
+        let id = resolve_active_sweep_target(
+            "KDMX",
+            1005.0,
+            &fixed(1),
+            RadarProduct::Velocity,
+            &tl,
+            MAX_AGE,
+        );
+        assert!(
+            id.is_none(),
+            "velocity not in cached_products: should be None"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_allows_unknown_product_availability() {
+        // Empty cached_products means "unknown — allow".
+        let tl = timeline_with(vec![scan_with(
+            1000.0,
+            1020.0,
+            1000.0,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec![])],
+        )]);
+        let id = resolve_active_sweep_target(
+            "KDMX",
+            1005.0,
+            &fixed(1),
+            RadarProduct::Velocity,
+            &tl,
+            MAX_AGE,
+        )
+        .expect("empty cached_products should permit any product");
+        assert_eq!(id.elevation_number, 1);
+        assert_eq!(id.product, "velocity");
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_returns_none_before_sweep_starts() {
+        // Sweep 1 starts at 1000; playback at 999.999 — before any started sweep.
+        let tl = timeline_with(vec![scan_with(
+            999.0,
+            1020.0,
+            999.0,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        )]);
+        let id = resolve_active_sweep_target(
+            "KDMX",
+            999.999,
+            &fixed(1),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+        );
+        assert!(id.is_none(), "no sweep started yet: should be None");
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_latest_picks_most_recent_started_sweep() {
+        let tl = timeline_with(vec![scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            vec![
+                sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"]),
+                sweep_with(1010.0, 1020.0, 0.9, 2, vec!["reflectivity"]),
+                sweep_with(1020.0, 1030.0, 1.3, 3, vec!["reflectivity"]),
+            ],
+        )]);
+        let id = resolve_active_sweep_target(
+            "KDMX",
+            1015.0,
+            &ElevationSelection::Latest,
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+        )
+        .expect("expected Some");
+        // Sweep 2 (elev_num=2) is the most recent that has started by ts=1015.
+        assert_eq!(id.elevation_number, 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_returns_none_when_no_scan_in_window() {
+        let tl = timeline_with(vec![scan_with(
+            1000.0,
+            1020.0,
+            1000.0,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        )]);
+        // Playback at 5000 — far beyond MAX_AGE from scan start at 1000.
+        let id = resolve_active_sweep_target(
+            "KDMX",
+            5000.0,
+            &fixed(1),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+        );
+        assert!(id.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_picks_most_recent_when_elevation_repeats_in_scan() {
+        // SAILS-style: two sweeps at the same elevation_number? Not possible —
+        // elevation_number is unique per scan. But a low-level rescan at a
+        // *different* elevation_number with the same angle is the SAILS case.
+        // Here we verify Fixed mode picks the most recent matching number.
+        let tl = timeline_with(vec![scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            vec![
+                sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"]),
+                sweep_with(1010.0, 1020.0, 0.9, 2, vec!["reflectivity"]),
+                sweep_with(1020.0, 1030.0, 0.5, 3, vec!["reflectivity"]),
+            ],
+        )]);
+        // Selecting elev_num=1 — only one sweep matches; it must be returned.
+        let id = resolve_active_sweep_target(
+            "KDMX",
+            1025.0,
+            &fixed(1),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+        )
+        .expect("expected Some");
+        assert_eq!(id.elevation_number, 1);
+        // Selecting elev_num=3 (the SAILS rescan at the same angle) — distinct number.
+        let id = resolve_active_sweep_target(
+            "KDMX",
+            1025.0,
+            &fixed(3),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+        )
+        .expect("expected Some");
+        assert_eq!(id.elevation_number, 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_uses_scan_key_timestamp_not_start_time() {
+        // key_timestamp is the canonical scan identity (matches IDB key);
+        // the resolver must encode that, not the (possibly-adjusted) start_time.
+        let tl = timeline_with(vec![scan_with(
+            999.5, // start_time adjusted earlier than key
+            1020.0,
+            1000.123, // sub-second key timestamp
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        )]);
+        let id = resolve_active_sweep_target(
+            "KDMX",
+            1005.0,
+            &fixed(1),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+        )
+        .expect("expected Some");
+        // ScanKey round-trips through UnixMillis (ms precision).
+        assert!((id.scan_timestamp_secs() - 1000.123).abs() < 1e-3);
+    }
 }

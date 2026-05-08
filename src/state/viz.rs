@@ -1,5 +1,6 @@
 //! Visualization state (canvas, zoom/pan, product selection).
 
+use crate::data::ScanKey;
 use crate::geo::GlobeCamera;
 use eframe::egui::Vec2;
 
@@ -92,6 +93,46 @@ impl RadarProduct {
             RadarProduct::DifferentialPhase => "differential_phase",
             RadarProduct::ClutterFilterPower => "reflectivity", // fallback
         }
+    }
+}
+
+/// Fully-qualified identity of a single sweep — site, scan, elevation, product.
+///
+/// The single canonical "which sweep" identifier shared by the render
+/// coordinator's dedup cache, the on-GPU `displayed` slot, and the
+/// resolver that maps user intent to a concrete render target. By
+/// construction, two `SweepIdentity` values compare equal iff they
+/// reference the same on-disk sweep blob in IndexedDB.
+///
+/// `product` is the worker-string form (matches `SweepDataKey` and
+/// `RadarProduct::to_worker_string`).
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct SweepIdentity {
+    pub scan_key: ScanKey,
+    pub elevation_number: u8,
+    pub product: String,
+}
+
+#[allow(dead_code)] // Wired up incrementally; consumers land in subsequent phases.
+impl SweepIdentity {
+    pub fn new(scan_key: ScanKey, elevation_number: u8, product: impl Into<String>) -> Self {
+        Self {
+            scan_key,
+            elevation_number,
+            product: product.into(),
+        }
+    }
+
+    /// Sub-second Unix-seconds form of the scan key.
+    ///
+    /// Used by the timeline to compare against `Scan::key_timestamp` (also
+    /// `f64` with sub-second precision); round-trips through `UnixMillis`.
+    pub fn scan_timestamp_secs(&self) -> f64 {
+        self.scan_key.scan_start.as_secs_f64()
+    }
+
+    pub fn site_id(&self) -> &str {
+        &self.scan_key.site.0
     }
 }
 
