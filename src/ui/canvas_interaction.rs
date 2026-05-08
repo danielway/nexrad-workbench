@@ -154,10 +154,21 @@ pub(crate) fn handle_canvas_interaction(
         }
     } else if response.clicked() {
         if let Some(click_pos) = response.interact_pointer_pos() {
-            // Alert hit-testing first: when the alerts overlay is on, a click
-            // inside an alert polygon opens that alert's detail modal.
+            // Point-like markers (sites, mPING) sit visually on top of alert
+            // polygons, so they hit-test first; alerts catch the rest.
             let mut handled = false;
-            if state.layer_state.geo.alerts {
+            if let Some((site_id, lat, lon)) = pick_site_at(click_pos, projection, state) {
+                apply_site_selection(state, site_id, lat, lon);
+                handled = true;
+            }
+            if !handled && state.layer_state.geo.mping {
+                if let Some(id) = pick_mping_report_at(click_pos, projection, &state.mping.reports)
+                {
+                    state.mping.selected_report_id = Some(id);
+                    handled = true;
+                }
+            }
+            if !handled && state.layer_state.geo.alerts {
                 let geo = projection.screen_to_geo(click_pos);
                 let bounds = projection.visible_bounds();
                 let mut best: Option<(u8, String)> = None;
@@ -174,21 +185,6 @@ pub(crate) fn handle_canvas_interaction(
                 }
                 if let Some((_, id)) = best {
                     state.push_command(crate::state::AppCommand::OpenAlert(id));
-                    handled = true;
-                }
-            }
-            // mPING marker click: open detail popover.
-            if !handled && state.layer_state.geo.mping {
-                if let Some(id) = pick_mping_report_at(click_pos, projection, &state.mping.reports)
-                {
-                    state.mping.selected_report_id = Some(id);
-                    handled = true;
-                }
-            }
-            // Fall through to site-marker click selection.
-            if !handled {
-                if let Some((site_id, lat, lon)) = pick_site_at(click_pos, projection, state) {
-                    apply_site_selection(state, site_id, lat, lon);
                     handled = true;
                 }
             }
