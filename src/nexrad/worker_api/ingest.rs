@@ -20,7 +20,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let p: IngestParams = serde_wasm_bindgen::from_value(params)
             .map_err(|e| JsValue::from_str(&format!("Invalid ingest params: {}", e)))?;
         let site_id = p.site_id;
-        let timestamp_secs = p.timestamp_secs as i64;
+        let timestamp_secs = p.timestamp_secs;
         let file_name = p.file_name;
 
         log::debug!(
@@ -48,7 +48,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
 
         let store = idb_store().await?;
-        let scan_key = ScanKey::new(site_id.as_str(), UnixMillis::from_secs(timestamp_secs));
+        let scan_key = ScanKey::new(site_id.as_str(), UnixMillis::from_secs_f64(timestamp_secs));
 
         // --- Phase 1: Decompress + decode all records into radials ---
         let t_decode = web_time::Instant::now();
@@ -178,7 +178,9 @@ pub(super) struct ChunkAccumulator {
     pub total_chunks: u32,
     pub total_size_bytes: u64,
     pub file_name: String,
-    pub timestamp_secs: i64,
+    /// Volume scan start (Unix seconds, sub-second precision). Same value
+    /// for every chunk in a volume; used to construct the IDB scan key.
+    pub timestamp_secs: f64,
 }
 
 thread_local! {
@@ -205,7 +207,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let p: IngestChunkParams = serde_wasm_bindgen::from_value(params)
             .map_err(|e| JsValue::from_str(&format!("Invalid ingest_chunk params: {}", e)))?;
         let site_id = p.site_id;
-        let timestamp_secs = p.timestamp_secs as i64;
+        let timestamp_secs = p.timestamp_secs;
         let chunk_index = p.chunk_index;
         let is_start = p.is_start;
         let is_end = p.is_end;
@@ -224,7 +226,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             chunk_has_vcp = result.chunk_has_vcp;
             volume_header_time_secs = result.volume_header_time_secs;
 
-            let scan_key = ScanKey::new(site_id.as_str(), UnixMillis::from_secs(timestamp_secs));
+            let scan_key =
+                ScanKey::new(site_id.as_str(), UnixMillis::from_secs_f64(timestamp_secs));
 
             // Pre-populate completed_elevations from any pre-existing IDB
             // entry for this scan, so a resume doesn't reprocess already-
