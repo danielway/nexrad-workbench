@@ -318,13 +318,13 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
         }
     }
 
-    // "Now" button — jump to current wall-clock time
+    // "Now" button — jump to current wall-clock time. Available even in
+    // Idle so the user can reorient the cursor before data is loaded.
     if show_forward_seek
         && ui
-            .add_enabled(
-                interactive,
-                egui::Button::new(RichText::new(egui_phosphor::regular::CROSSHAIR).size(14.0)),
-            )
+            .add(egui::Button::new(
+                RichText::new(egui_phosphor::regular::CROSSHAIR).size(14.0),
+            ))
             .on_hover_text("Jump to current time")
             .clicked()
     {
