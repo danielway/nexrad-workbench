@@ -12,8 +12,10 @@ struct RadarStateAtTimestamp<'a> {
     elevation: Option<f32>,
     /// Current VCP number
     vcp: Option<u16>,
-    /// Index of the current sweep within the scan
-    sweep_index: Option<usize>,
+    /// Elevation number (1-based VCP cut ordinal) of the sweep currently on
+    /// the canvas. The VCP-row highlight is keyed off this so it stays in
+    /// sync with the displayed cut even when the scan is missing elevations.
+    current_elevation_number: Option<u8>,
     /// Scan progress as a percentage (0.0-1.0)
     scan_progress: Option<f32>,
     /// Reference to the current scan (for elevation list)
@@ -124,10 +126,10 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
             } else {
                 sweep_for_highlight.map(|(_, s)| scan.display_angle(s))
             };
-            let sweep_index = if is_fast {
+            let current_elevation_number = if is_fast {
                 None
             } else {
-                sweep_for_highlight.map(|(idx, _)| idx)
+                sweep_for_highlight.map(|(_, s)| s.elevation_number)
             };
             let scan_progress = if is_fast {
                 None
@@ -139,7 +141,7 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                 azimuth,
                 elevation,
                 vcp: Some(scan.vcp),
-                sweep_index,
+                current_elevation_number,
                 scan_progress,
                 scan: Some(scan),
                 live_vcp_pattern: None,
@@ -166,12 +168,15 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                 let elevation = frame.elevation_angle.or_else(|| {
                     sweep_index.and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_angle))
                 });
+                let current_elevation_number = sweep_index
+                    .and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_number))
+                    .or(state.live_mode_state.current_in_progress_elevation);
 
                 RadarStateAtTimestamp {
                     azimuth,
                     elevation,
                     vcp,
-                    sweep_index,
+                    current_elevation_number,
                     scan_progress,
                     scan: None,
                     live_vcp_pattern: state.live_mode_state.current_vcp_pattern.as_ref(),
@@ -182,7 +187,7 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                     azimuth: None,
                     elevation: None,
                     vcp: None,
-                    sweep_index: None,
+                    current_elevation_number: None,
                     scan_progress: None,
                     scan: None,
                     live_vcp_pattern: None,
@@ -467,7 +472,7 @@ fn render_vcp_breakdown(ui: &mut egui::Ui, radar_state: &RadarStateAtTimestamp) 
                 extracted_pattern,
                 vcp_def,
                 radar_state.position.as_ref(),
-                radar_state.sweep_index,
+                radar_state.current_elevation_number,
             );
 
             if rows.is_empty() {
@@ -510,7 +515,7 @@ fn build_elevation_rows<'a>(
     extracted_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
     vcp_def: Option<&'a crate::state::vcp::VcpDefinition>,
     position: Option<&crate::state::VcpPositionModel>,
-    sweep_index: Option<usize>,
+    current_elevation_number: Option<u8>,
 ) -> Vec<ElevRow<'a>> {
     // Helper to get sweep start offset (from volume start) for a given index.
     let timing_for = |idx: usize| -> (Option<f64>, bool) {
@@ -531,10 +536,11 @@ fn build_elevation_rows<'a>(
             .enumerate()
             .map(|(idx, elev)| {
                 let (start_offset_secs, timing_estimated) = timing_for(idx);
+                let elevation_number = (idx + 1) as u8;
                 ElevRow {
-                    elevation_number: (idx + 1) as u8,
+                    elevation_number,
                     elevation_angle: elev.angle,
-                    is_current: sweep_index == Some(idx),
+                    is_current: current_elevation_number == Some(elevation_number),
                     waveform: match elev.waveform.as_str() {
                         "CS" => "CS",
                         "CDW" | "CDWO" => "CD",
@@ -562,9 +568,9 @@ fn build_elevation_rows<'a>(
                         .find(|e| (e.angle - target_angle).abs() < 0.1)
                 });
                 ElevRow {
-                    elevation_number: (idx + 1) as u8,
+                    elevation_number: sweep.elevation_number,
                     elevation_angle: target_angle,
-                    is_current: sweep_index == Some(idx),
+                    is_current: current_elevation_number == Some(sweep.elevation_number),
                     waveform: meta.map(|m| m.waveform).unwrap_or("--"),
                     waveform_raw: meta
                         .map(|m| match m.waveform {
@@ -594,10 +600,11 @@ fn build_elevation_rows<'a>(
             .enumerate()
             .map(|(idx, elev)| {
                 let (start_offset_secs, timing_estimated) = timing_for(idx);
+                let elevation_number = (idx + 1) as u8;
                 ElevRow {
-                    elevation_number: (idx + 1) as u8,
+                    elevation_number,
                     elevation_angle: elev.angle,
-                    is_current: sweep_index == Some(idx),
+                    is_current: current_elevation_number == Some(elevation_number),
                     waveform: elev.waveform,
                     waveform_raw: match elev.waveform {
                         "CS" => "CS",
