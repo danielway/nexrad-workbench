@@ -222,28 +222,46 @@ pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
             ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
             ui.checkbox(&mut state.layer_state.geo.cities, "Cities");
+            let live = crate::state::recency::data_is_live(state);
+            let stale_tip = "Live overlays are disabled while viewing archive data \
+                             (more than 15 minutes behind real-time). Return to live to re-enable.";
+
             if advanced {
                 ui.checkbox(&mut state.layer_state.geo.labels, "Labels");
-                ui.checkbox(
-                    &mut state.layer_state.geo.national_mosaic,
-                    "National Mosaic",
-                )
-                .on_hover_text(
-                    "Overlay the CONUS base-reflectivity composite (Iowa State Mesonet, ~2 min refresh)",
-                );
+                ui.add_enabled_ui(live, |ui| {
+                    let resp = ui.checkbox(
+                        &mut state.layer_state.geo.national_mosaic,
+                        "National Mosaic",
+                    );
+                    if live {
+                        resp.on_hover_text(
+                            "Overlay the CONUS base-reflectivity composite (Iowa State Mesonet, ~2 min refresh)",
+                        );
+                    } else {
+                        resp.on_hover_text(stale_tip);
+                    }
+                });
             }
-            ui.checkbox(&mut state.layer_state.geo.alerts, "Weather Alerts")
-                .on_hover_text(
-                    "Show active NWS alert polygons on the 2D map (click polygon for details)",
-                );
+            ui.add_enabled_ui(live, |ui| {
+                let resp = ui.checkbox(&mut state.layer_state.geo.alerts, "Weather Alerts");
+                if live {
+                    resp.on_hover_text(
+                        "Show active NWS alert polygons on the 2D map (click polygon for details)",
+                    );
+                } else {
+                    resp.on_hover_text(stale_tip);
+                }
+            });
 
             if advanced {
                 ui.horizontal(|ui| {
                     let has_key = state.mping.api_key.is_some();
-                    ui.add_enabled_ui(has_key, |ui| {
+                    ui.add_enabled_ui(live && has_key, |ui| {
                         let resp =
                             ui.checkbox(&mut state.layer_state.geo.mping, "Storm Reports (mPING)");
-                        if has_key {
+                        if !live {
+                            resp.on_hover_text(stale_tip);
+                        } else if has_key {
                             resp.on_hover_text(
                                 "Show crowd-sourced mPING storm reports near the active radar \
                                  (\u{00B1}30 min of the playback time, ~300 km radius)",
@@ -260,22 +278,6 @@ pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                         state.mping.settings_modal_open = true;
                     }
                 });
-            }
-
-            let any_live_toggle_on = state.layer_state.geo.alerts
-                || state.layer_state.geo.mping
-                || state.layer_state.geo.national_mosaic;
-            if any_live_toggle_on && !crate::state::recency::data_is_live(state) {
-                ui.label(
-                    RichText::new("Live overlays hidden \u{2014} viewing archive data")
-                        .small()
-                        .weak(),
-                )
-                .on_hover_text(
-                    "NWS warnings, mPING reports, and the national mosaic reflect \
-                     current conditions and are hidden when scrubbed more than 15 \
-                     minutes behind wall-clock. Return to live to restore them.",
-                );
             }
         });
 }
