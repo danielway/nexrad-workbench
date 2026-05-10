@@ -229,28 +229,22 @@ pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
             if advanced {
                 ui.checkbox(&mut state.layer_state.geo.labels, "Labels");
                 ui.add_enabled_ui(live, |ui| {
-                    let resp = ui.checkbox(
+                    ui.checkbox(
                         &mut state.layer_state.geo.national_mosaic,
                         "National Mosaic",
-                    );
-                    if live {
-                        resp.on_hover_text(
-                            "Overlay the CONUS base-reflectivity composite (Iowa State Mesonet, ~2 min refresh)",
-                        );
-                    } else {
-                        resp.on_hover_text(stale_tip);
-                    }
+                    )
+                    .on_hover_text(
+                        "Overlay the CONUS base-reflectivity composite (Iowa State Mesonet, ~2 min refresh)",
+                    )
+                    .on_disabled_hover_text(stale_tip);
                 });
             }
             ui.add_enabled_ui(live, |ui| {
-                let resp = ui.checkbox(&mut state.layer_state.geo.alerts, "Weather Alerts");
-                if live {
-                    resp.on_hover_text(
+                ui.checkbox(&mut state.layer_state.geo.alerts, "Weather Alerts")
+                    .on_hover_text(
                         "Show active NWS alert polygons on the 2D map (click polygon for details)",
-                    );
-                } else {
-                    resp.on_hover_text(stale_tip);
-                }
+                    )
+                    .on_disabled_hover_text(stale_tip);
             });
 
             if advanced {
@@ -258,16 +252,17 @@ pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                     let has_key = state.mping.api_key.is_some();
                     ui.add_enabled_ui(live && has_key, |ui| {
                         let resp =
-                            ui.checkbox(&mut state.layer_state.geo.mping, "Storm Reports (mPING)");
+                            ui.checkbox(&mut state.layer_state.geo.mping, "Storm Reports (mPING)")
+                                .on_hover_text(
+                                    "Show crowd-sourced mPING storm reports near the active radar \
+                                     (\u{00B1}30 min of the playback time, ~300 km radius)",
+                                );
                         if !live {
-                            resp.on_hover_text(stale_tip);
-                        } else if has_key {
-                            resp.on_hover_text(
-                                "Show crowd-sourced mPING storm reports near the active radar \
-                                 (\u{00B1}30 min of the playback time, ~300 km radius)",
+                            resp.on_disabled_hover_text(stale_tip);
+                        } else if !has_key {
+                            resp.on_disabled_hover_text(
+                                "Configure your mPING API key first \u{2192}",
                             );
-                        } else {
-                            resp.on_hover_text("Configure your mPING API key first \u{2192}");
                         }
                     });
                     if ui
