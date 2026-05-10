@@ -10,6 +10,7 @@ use super::canvas_overlays::{
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::RadarGpuRenderer;
+use crate::state::recency::data_is_live;
 use crate::state::{AppState, RenderProcessing, ViewMode};
 use eframe::egui::{self, Color32, Rect, Sense, Stroke};
 use geo_types::Coord;
@@ -127,7 +128,7 @@ pub fn render_canvas_with_geo(
                     Some(RadarCutout { center, radius })
                 });
 
-                if state.layer_state.geo.national_mosaic {
+                if state.layer_state.geo.national_mosaic && data_is_live(state) {
                     draw_national_mosaic(
                         &painter,
                         &projection,
@@ -212,11 +213,17 @@ pub fn render_canvas_with_geo(
                     }
                 }
 
-                if state.layer_state.geo.alerts && !state.alerts.alerts.is_empty() {
+                if state.layer_state.geo.alerts
+                    && data_is_live(state)
+                    && !state.alerts.alerts.is_empty()
+                {
                     render_alerts(&painter, &projection, &state.alerts.alerts);
                 }
 
-                if state.layer_state.geo.mping && !state.mping.reports.is_empty() {
+                if state.layer_state.geo.mping
+                    && data_is_live(state)
+                    && !state.mping.reports.is_empty()
+                {
                     render_mping_reports(
                         &painter,
                         &projection,
@@ -307,7 +314,10 @@ pub fn render_canvas_with_geo(
                     }
                 }
 
-                if state.layer_state.geo.mping && state.mping.selected_report_id.is_some() {
+                if state.layer_state.geo.mping
+                    && data_is_live(state)
+                    && state.mping.selected_report_id.is_some()
+                {
                     render_mping_detail(
                         &painter,
                         rect,

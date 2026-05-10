@@ -261,6 +261,22 @@ pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                     }
                 });
             }
+
+            let any_live_toggle_on = state.layer_state.geo.alerts
+                || state.layer_state.geo.mping
+                || state.layer_state.geo.national_mosaic;
+            if any_live_toggle_on && !crate::state::recency::data_is_live(state) {
+                ui.label(
+                    RichText::new("Live overlays hidden \u{2014} viewing archive data")
+                        .small()
+                        .weak(),
+                )
+                .on_hover_text(
+                    "NWS warnings, mPING reports, and the national mosaic reflect \
+                     current conditions and are hidden when scrubbed more than 15 \
+                     minutes behind wall-clock. Return to live to restore them.",
+                );
+            }
         });
 }
 

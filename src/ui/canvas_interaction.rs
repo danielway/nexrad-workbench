@@ -6,6 +6,7 @@
 use crate::data::NEXRAD_SITES;
 use crate::geo::MapProjection;
 use crate::mping::StormReport;
+use crate::state::recency::data_is_live;
 use crate::state::AppState;
 use eframe::egui::{self, Rect, Vec2};
 use geo_types::Coord;
@@ -161,14 +162,14 @@ pub(crate) fn handle_canvas_interaction(
                 apply_site_selection(state, site_id, lat, lon);
                 handled = true;
             }
-            if !handled && state.layer_state.geo.mping {
+            if !handled && state.layer_state.geo.mping && data_is_live(state) {
                 if let Some(id) = pick_mping_report_at(click_pos, projection, &state.mping.reports)
                 {
                     state.mping.selected_report_id = Some(id);
                     handled = true;
                 }
             }
-            if !handled && state.layer_state.geo.alerts {
+            if !handled && state.layer_state.geo.alerts && data_is_live(state) {
                 let geo = projection.screen_to_geo(click_pos);
                 let bounds = projection.visible_bounds();
                 let mut best: Option<(u8, String)> = None;

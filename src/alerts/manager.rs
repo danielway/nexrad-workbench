@@ -55,6 +55,12 @@ impl AlertsManager {
             state.alerts.alerts.retain(|a| !a.is_expired(now));
         }
 
+        // While viewing archive data far behind wall-clock, the alerts overlay
+        // is hidden — don't burn requests fetching warnings the user can't see.
+        if !crate::state::recency::data_is_live(state) {
+            return;
+        }
+
         // Was a manual refresh requested?
         let manual_refresh = std::mem::take(&mut state.alerts.refresh_requested);
 

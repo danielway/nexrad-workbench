@@ -56,8 +56,10 @@ impl MpingManager {
             self.apply_event(state, event);
         }
 
-        // Bail early if the layer is off or no key has been configured.
-        if !state.layer_state.geo.mping {
+        // Bail early if the layer is off, the user is viewing archive data far
+        // behind wall-clock (the overlay is hidden then — see `state::recency`),
+        // or no key has been configured.
+        if !state.layer_state.geo.mping || !crate::state::recency::data_is_live(state) {
             return;
         }
         let api_key = match state.mping.api_key.as_deref() {

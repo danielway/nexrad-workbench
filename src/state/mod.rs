@@ -16,6 +16,7 @@ mod playback;
 pub(crate) mod playback_manager;
 mod preferences;
 pub(crate) mod radar_data;
+pub mod recency;
 pub(crate) mod render_cache;
 mod saved_events;
 mod settings;

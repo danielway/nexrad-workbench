@@ -3126,9 +3126,11 @@ impl eframe::App for WorkbenchApp {
         self.handle_worker_results(ctx);
         self.pump_download_queue(ctx, dl_sel, dl_pos, pump);
         self.handle_streaming_results(ctx);
-        self.state
-            .national_mosaic
-            .poll_tick(ctx, self.state.layer_state.geo.national_mosaic);
+        self.state.national_mosaic.poll_tick(
+            ctx,
+            self.state.layer_state.geo.national_mosaic
+                && crate::state::recency::data_is_live(&self.state),
+        );
         self.advance_playback();
         self.sync_prev_sweep_texture();
         self.request_render_if_needed();
