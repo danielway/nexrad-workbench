@@ -85,19 +85,20 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
             // which is only meaningful while the cursor is inside a
             // sweep's [start, end] interval.
             let sweep_at_ts = scan.find_sweep_at_timestamp(ts);
-            // Highlight match: when the cursor sits in a gap between
-            // sweeps, the canvas keeps showing the last decoded sweep —
-            // mirror that here so the VCP highlight tracks what's
-            // actually on screen instead of blanking out.
+            // Highlight match: when the cursor sits in a gap between sweeps,
+            // show the most-recently-completed sweep. Sweeps are stored in
+            // elevation order, not time order (SAILS-style VCPs revisit the
+            // lowest cut), so pick by max end_time rather than Vec position.
             let sweep_for_highlight = sweep_at_ts.or_else(|| {
-                let displayed = state.viz_state.displayed.as_ref()?;
-                if (scan.key_timestamp - displayed.identity.scan_timestamp_secs()).abs() >= 0.001 {
-                    return None;
-                }
                 scan.sweeps
                     .iter()
                     .enumerate()
-                    .find(|(_, s)| s.elevation_number == displayed.identity.elevation_number)
+                    .filter(|(_, s)| s.end_time <= ts)
+                    .max_by(|(_, a), (_, b)| {
+                        a.end_time
+                            .partial_cmp(&b.end_time)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
             });
 
             // At high playback speeds (>30 s/s), freeze all animated radar state
