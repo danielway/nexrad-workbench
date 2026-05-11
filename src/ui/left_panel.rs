@@ -103,11 +103,12 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
             // At high playback speeds (>30 s/s), freeze all animated radar state
             // (azimuth, elevation, sweep indicator, progress) to prevent violent flashing.
             // Static VCP info (number, name, elevation list) still renders.
-            let is_fast = state
-                .playback_state
-                .speed
-                .timeline_seconds_per_real_second()
-                > 30.0;
+            let is_fast = state.playback_state.playing
+                && state
+                    .playback_state
+                    .speed
+                    .timeline_seconds_per_real_second()
+                    > 30.0;
 
             let azimuth = if is_fast {
                 None
