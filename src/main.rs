@@ -1014,6 +1014,7 @@ impl WorkbenchApp {
                 projected_volume_end_available_at_secs,
                 projected_volume_end_collection_secs,
                 chunk_projections,
+                next_volume_chunk_projections,
                 arrival_stat,
             } => {
                 if self.state.dev_mode {
@@ -1037,6 +1038,7 @@ impl WorkbenchApp {
                     projected_volume_end_available_at_secs,
                     projected_volume_end_collection_secs,
                     chunk_projections,
+                    next_volume_chunk_projections,
                 );
 
                 if let Some(stat) = arrival_stat {

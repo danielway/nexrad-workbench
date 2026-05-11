@@ -29,6 +29,13 @@ pub struct VcpPositionModel {
     pub sweeps: Vec<SweepPosition>,
     /// Extrapolation state for live azimuth estimation.
     pub extrapolation: Option<ExtrapolationState>,
+    /// Projected next volume, present only when the next download target is
+    /// expected to fall in the next volume (the active elevation filter has
+    /// no remaining matches in the current volume). All sweeps inside have
+    /// `status = Future` and `timing = Estimated`. The timeline renders this
+    /// as a faded "ghost" of the next scan so the user can see where their
+    /// target sweep lands relative to the current scan.
+    pub next_volume_ghost: Option<Box<VcpPositionModel>>,
 }
 
 /// Position and state of a single elevation sweep within a volume.
@@ -434,6 +441,12 @@ impl VcpPositionModel {
             _ => None,
         };
 
+        let next_volume_ghost = live
+            .next_volume_chunk_projections
+            .as_deref()
+            .and_then(|projs| Self::ghost_from_projections(projs, vcp_number, live))
+            .map(Box::new);
+
         Some(VcpPositionModel {
             vcp_number,
             volume_start: vol_start,
@@ -445,6 +458,102 @@ impl VcpPositionModel {
                 .map(|a| a.scan_key.to_storage_key()),
             sweeps,
             extrapolation,
+            next_volume_ghost,
+        })
+    }
+
+    /// Build a faded "ghost" model for the projected next volume from the
+    /// chained chunk projections. All sweeps are `Future` / `Estimated` —
+    /// we have no observed radials for the next volume yet, just physics
+    /// projections.
+    fn ghost_from_projections(
+        projections: &[crate::nexrad::ChunkProjectionInfo],
+        vcp_number: u16,
+        live: &LiveModeState,
+    ) -> Option<VcpPositionModel> {
+        if projections.is_empty() {
+            return None;
+        }
+
+        // Group projected collection times by elevation number.
+        let mut per_elev: std::collections::BTreeMap<u8, (f64, f64, u32, f64)> =
+            std::collections::BTreeMap::new();
+        let mut vol_start = f64::MAX;
+        let mut vol_end = f64::MIN;
+        for chunk in projections {
+            let Some(t) = chunk.projected_collection_time_secs else {
+                continue;
+            };
+            vol_start = vol_start.min(t);
+            vol_end = vol_end.max(t);
+            if let Some(e) = chunk.elevation_number {
+                let entry = per_elev.entry(e as u8).or_insert((
+                    f64::MAX,
+                    f64::MIN,
+                    0u32,
+                    chunk.azimuth_rate_dps,
+                ));
+                entry.0 = entry.0.min(t);
+                entry.1 = entry.1.max(t);
+                entry.2 += 1;
+                if entry.3 <= 0.0 {
+                    entry.3 = chunk.azimuth_rate_dps;
+                }
+            }
+        }
+
+        if vol_start >= vol_end {
+            return None;
+        }
+
+        let vcp_def = crate::state::get_vcp_definition(vcp_number);
+        let elev_angle_for = |elev_num: u8| -> f32 {
+            if let Some(ref vcp) = live.current_vcp_pattern {
+                if let Some(e) = vcp.elevations.get(elev_num.saturating_sub(1) as usize) {
+                    return e.angle;
+                }
+            }
+            vcp_def
+                .and_then(|d| d.elevations.get(elev_num.saturating_sub(1) as usize))
+                .map(|e| e.angle)
+                .unwrap_or(0.5 * elev_num as f32)
+        };
+
+        let mut sweeps: Vec<SweepPosition> = per_elev
+            .into_iter()
+            .map(|(elev_num, (min_t, max_t, _chunk_count, rate))| {
+                // Estimate sweep end from azimuth rate when only one chunk
+                // bracketed it (min == max), same as the current-volume
+                // projected-bounds fallback.
+                let end = if max_t > min_t {
+                    max_t
+                } else if rate > 0.0 {
+                    min_t + (360.0 / rate - 0.67)
+                } else {
+                    min_t
+                };
+                SweepPosition {
+                    elevation_number: elev_num,
+                    elevation_angle: elev_angle_for(elev_num),
+                    start: min_t,
+                    end,
+                    timing: SweepTiming::Estimated,
+                    status: SweepStatus::Future,
+                    chunks: Vec::new(),
+                }
+            })
+            .collect();
+        sweeps.sort_by_key(|s| s.elevation_number);
+
+        Some(VcpPositionModel {
+            vcp_number,
+            volume_start: vol_start,
+            volume_end: vol_end,
+            complete: false,
+            scan_key: None,
+            sweeps,
+            extrapolation: None,
+            next_volume_ghost: None,
         })
     }
 
@@ -472,6 +581,7 @@ impl VcpPositionModel {
             scan_key: None,
             sweeps,
             extrapolation: None,
+            next_volume_ghost: None,
         }
     }
 }

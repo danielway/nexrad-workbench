@@ -663,6 +663,138 @@ pub(super) fn render_realtime_progress(
             );
         }
     }
+
+    // ===================================================================
+    // NEXT-SCAN GHOST -- projected next volume, drawn faded
+    // ===================================================================
+    //
+    // Present only when an elevation filter is active and the target has no
+    // remaining matches in the current volume — so the user's next download
+    // will land in the next volume. Rendered with a reduced-alpha treatment
+    // so it reads as "projected" without competing with the live scan.
+    if let Some(ghost) = model.next_volume_ghost.as_deref() {
+        render_ghost_volume_overlay(
+            painter,
+            scan_rect,
+            sweep_rect,
+            ghost,
+            view_start,
+            view_end,
+            zoom,
+            selected_elevation_number,
+        );
+    }
+}
+
+/// Render the projected next-volume ghost: a faded scan block and a row of
+/// dashed-outlined future sweeps. The matching target sweep (if the user
+/// has an elevation filter active) is rendered with the same target tint as
+/// in the current scan, just at lower alpha.
+#[allow(clippy::too_many_arguments)]
+fn render_ghost_volume_overlay(
+    painter: &Painter,
+    scan_rect: &Rect,
+    sweep_rect: &Rect,
+    ghost: &crate::state::VcpPositionModel,
+    view_start: f64,
+    view_end: f64,
+    zoom: f64,
+    selected_elevation_number: Option<u8>,
+) {
+    let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
+    let vol_start = ghost.volume_start;
+    let vol_end = ghost.volume_end;
+    if vol_end <= vol_start || vol_end < view_start || vol_start > view_end {
+        return;
+    }
+    let x_start = ts_to_x(vol_start).max(scan_rect.left());
+    let x_end = ts_to_x(vol_end).min(scan_rect.right());
+    if x_end - x_start < 2.0 {
+        return;
+    }
+
+    // Scan-track ghost block: faded VCP color with a dashed outline so it
+    // visibly reads as "projected, not live."
+    let (vr, vg, vb) = tl_colors::vcp_base_rgb(ghost.vcp_number);
+    let block = Rect::from_min_max(
+        Pos2::new(x_start, scan_rect.top() + 2.0),
+        Pos2::new(x_end, scan_rect.bottom() - 2.0),
+    );
+    painter.rect_filled(block, 2.0, Color32::from_rgba_unmultiplied(vr, vg, vb, 28));
+    let dash_color = Color32::from_rgba_unmultiplied(vr, vg, vb, 70);
+    stroke_dashed_rect(
+        painter,
+        block,
+        DashedBorder::rect(Stroke::new(1.0, dash_color), 4.0, 8.0, 4.0, 8.0),
+    );
+
+    if (x_end - x_start) > 60.0 {
+        painter.text(
+            block.center(),
+            egui::Align2::CENTER_CENTER,
+            format!("next VCP {}", ghost.vcp_number),
+            egui::FontId::monospace(8.0),
+            Color32::from_rgba_unmultiplied(220, 240, 220, 90),
+        );
+    }
+
+    // Sweep-track ghost row: dashed outline per future sweep, with the
+    // user-selected target highlighted.
+    for sweep_pos in &ghost.sweeps {
+        let elev_num = sweep_pos.elevation_number;
+        let sw_start = sweep_pos.start;
+        let sw_end = sweep_pos.end;
+        let x_a = ts_to_x(sw_start).max(sweep_rect.left());
+        let x_b = ts_to_x(sw_end).min(sweep_rect.right());
+        if x_b - x_a < 1.0 || sw_end < view_start || sw_start > view_end {
+            continue;
+        }
+        let block = Rect::from_min_max(
+            Pos2::new(x_a, sweep_rect.top() + 2.0),
+            Pos2::new(x_b, sweep_rect.bottom() - 2.0),
+        );
+        let elev_angle = sweep_pos.elevation_angle;
+        let matches_target = selected_elevation_number.is_none_or(|num| elev_num == num);
+
+        // Faded fill + dashed outline. When the user's target lives in this
+        // sweep, tint it with the same target color used in the current
+        // scan, just at lower alpha so it still reads as "ghost."
+        if matches_target && selected_elevation_number.is_some() {
+            let fill = tl_colors::sweep_fill(elev_angle, true);
+            let mut fill = fill;
+            fill = Color32::from_rgba_unmultiplied(fill.r(), fill.g(), fill.b(), fill.a() / 2);
+            painter.rect_filled(block, 1.0, fill);
+        }
+        let dash_color = tl_colors::rt_pending_sweep_border();
+        let dash_color = Color32::from_rgba_unmultiplied(
+            dash_color.r(),
+            dash_color.g(),
+            dash_color.b(),
+            dash_color.a() / 2,
+        );
+        stroke_dashed_rect(
+            painter,
+            block,
+            DashedBorder::rect(Stroke::new(0.5, dash_color), 4.0, 8.0, 3.0, 6.0),
+        );
+
+        // Elevation label (faded)
+        let width = x_b - x_a;
+        if width > 25.0 {
+            let label = if width > 50.0 {
+                format!("{:.1}\u{00B0}", elev_angle)
+            } else {
+                format!("{:.1}", elev_angle)
+            };
+            painter.text(
+                block.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::monospace(8.0),
+                Color32::from_rgba_unmultiplied(220, 230, 255, 70),
+            );
+        }
+    }
 }
 
 /// Render saved event overlays on the timeline.

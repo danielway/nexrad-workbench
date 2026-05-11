@@ -47,6 +47,18 @@ impl StreamingFilter {
     }
 }
 
+/// Translate a [`StreamingFilter`] into the elevation number that the
+/// projector cares about. `None` means "no filter" (project the current
+/// volume only); `Some(n)` means "only elevation `n` matters" — which
+/// `StreamingState::project_remaining_scan` uses to decide whether to extend
+/// the projection into the next volume.
+fn filter_target_elevation(filter: StreamingFilter) -> Option<u8> {
+    match filter {
+        StreamingFilter::All => None,
+        StreamingFilter::Elevation(n) => Some(n),
+    }
+}
+
 impl From<&crate::state::ElevationSelection> for StreamingFilter {
     fn from(selection: &crate::state::ElevationSelection) -> Self {
         match selection {
@@ -89,6 +101,12 @@ pub struct ChunkProjectionInfo {
     pub chunk_index_in_sweep: usize,
     /// Total chunks in this sweep (3 for standard, 6 for super-res).
     pub chunks_in_sweep: usize,
+    /// Which volume this projection belongs to, relative to the in-progress
+    /// volume: 0 = current, 1 = next (produced by the chained projection
+    /// when the active filter has no remaining matches in the current
+    /// volume). `sequence` alone is NOT unique when `volume_offset > 0` —
+    /// key by `(volume_offset, sequence)` if uniqueness is needed.
+    pub volume_offset: u8,
 }
 
 /// Result type for realtime streaming events.
@@ -116,9 +134,16 @@ pub enum RealtimeResult {
         /// physically scanning the final chunk of the current volume. Drives
         /// the timeline's projected end-of-volume marker.
         projected_volume_end_collection_secs: Option<f64>,
-        /// Per-chunk projection info for the entire volume.
+        /// Per-chunk projection info for the entire current volume.
         /// Structural metadata is present for all chunks; projected times only for future chunks.
         chunk_projections: Option<Vec<ChunkProjectionInfo>>,
+        /// Per-chunk projection info for the *next* volume, present only when
+        /// an elevation filter is active and the target has no remaining
+        /// matches in the current volume — so the next download will land in
+        /// the next volume. Drives the timeline's "ghost next-scan" render.
+        /// Entries reuse the current VCP's structure under the assumption
+        /// the VCP doesn't change between volumes.
+        next_volume_chunk_projections: Option<Vec<ChunkProjectionInfo>>,
         /// Arrival diagnostics (empty-poll counts, predicted vs. actual time).
         /// `None` on synthetic emissions such as the resume-from-cache path.
         arrival_stat: Option<crate::state::ChunkArrivalStat>,
@@ -304,48 +329,63 @@ pub enum SleepOutcome {
 
 /// Build projection info from the streaming state's current position.
 ///
-/// Combines structural metadata (all chunks) with projected timing (future chunks only).
-fn build_chunk_projections(state: &StreamingState) -> Option<Vec<ChunkProjectionInfo>> {
-    let all_meta = state.all_chunk_metadata()?;
+/// Returns `(current_volume_projections, next_volume_projections)` where the
+/// second element is `Some` only when the projection has been chained into
+/// the next volume (filter has no remaining matches in the current volume —
+/// see [`StreamingState::project_remaining_scan`]).
+///
+/// Splitting keeps existing consumers of `chunk_projections` working with
+/// current-volume-only semantics; the optional next-volume slice drives the
+/// timeline's "ghost next-scan" rendering.
+fn build_chunk_projections(
+    state: &StreamingState,
+) -> (
+    Option<Vec<ChunkProjectionInfo>>,
+    Option<Vec<ChunkProjectionInfo>>,
+) {
+    let Some(all_meta) = state.all_chunk_metadata() else {
+        return (None, None);
+    };
     let projection = state.project_remaining_scan();
 
-    // Build lookups from sequence → {collection, availability} times.
-    let (projected_collection_by_seq, projected_available_at_by_seq): (
-        std::collections::HashMap<usize, f64>,
-        std::collections::HashMap<usize, f64>,
-    ) = projection
-        .as_ref()
-        .map(|p| {
-            let mut collection = std::collections::HashMap::new();
-            let mut available = std::collections::HashMap::new();
-            for c in p.chunks() {
-                collection.insert(c.sequence(), c.projected_collection_time_secs());
-                available.insert(c.sequence(), c.projected_available_at().timestamp() as f64);
+    // Build per-volume-offset lookups so pass-2 entries don't overwrite
+    // pass-1 entries that share a sequence number.
+    let mut collection_by: std::collections::HashMap<(u8, usize), f64> =
+        std::collections::HashMap::new();
+    let mut available_by: std::collections::HashMap<(u8, usize), f64> =
+        std::collections::HashMap::new();
+    let mut has_next_volume = false;
+    if let Some(p) = projection.as_ref() {
+        for c in p.chunks() {
+            let key = (c.volume_offset(), c.sequence());
+            collection_by.insert(key, c.projected_collection_time_secs());
+            available_by.insert(key, c.projected_available_at().timestamp() as f64);
+            if c.volume_offset() == 1 {
+                has_next_volume = true;
             }
-            (collection, available)
-        })
-        .unwrap_or_default();
+        }
+    }
 
-    Some(
-        all_meta
-            .iter()
-            .map(|meta| ChunkProjectionInfo {
-                sequence: meta.sequence(),
-                elevation_number: meta.elevation_number(),
-                elevation_angle_deg: meta.elevation_angle_deg(),
-                azimuth_rate_dps: meta.azimuth_rate_dps(),
-                projected_collection_time_secs: projected_collection_by_seq
-                    .get(&meta.sequence())
-                    .copied(),
-                projected_available_at_secs: projected_available_at_by_seq
-                    .get(&meta.sequence())
-                    .copied(),
-                starts_new_sweep: meta.is_first_in_sweep(),
-                chunk_index_in_sweep: meta.chunk_index_in_sweep(),
-                chunks_in_sweep: meta.chunks_in_sweep(),
-            })
-            .collect(),
-    )
+    let make_info = |meta: &super::timing::ChunkMetadata, volume_offset: u8| ChunkProjectionInfo {
+        sequence: meta.sequence(),
+        elevation_number: meta.elevation_number(),
+        elevation_angle_deg: meta.elevation_angle_deg(),
+        azimuth_rate_dps: meta.azimuth_rate_dps(),
+        projected_collection_time_secs: collection_by
+            .get(&(volume_offset, meta.sequence()))
+            .copied(),
+        projected_available_at_secs: available_by.get(&(volume_offset, meta.sequence())).copied(),
+        starts_new_sweep: meta.is_first_in_sweep(),
+        chunk_index_in_sweep: meta.chunk_index_in_sweep(),
+        chunks_in_sweep: meta.chunks_in_sweep(),
+        volume_offset,
+    };
+
+    let current: Vec<ChunkProjectionInfo> = all_meta.iter().map(|m| make_info(m, 0)).collect();
+    let next = has_next_volume
+        // Same mapper / metadata — only the timing lookup differs by offset.
+        .then(|| all_meta.iter().map(|m| make_info(m, 1)).collect());
+    (Some(current), next)
 }
 
 /// Get the projected S3-availability time of the current volume's final
@@ -497,6 +537,7 @@ async fn emit_backfill_chunks(
             timestamp,
             is_last_in_sweep,
         });
+        let (cp, ncp) = build_chunk_projections(iter);
         s.results.push(RealtimeResult::ChunkReceived {
             chunks_in_volume: chunks_in_volume_start + emitted,
             time_until_next: None,
@@ -506,7 +547,8 @@ async fn emit_backfill_chunks(
                 iter,
             ),
             projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
-            chunk_projections: build_chunk_projections(iter),
+            chunk_projections: cp,
+            next_volume_chunk_projections: ncp,
             arrival_stat: None,
         });
         drop(s);
@@ -708,6 +750,7 @@ async fn streaming_loop(
     };
 
     let mut iter = init_result.state;
+    iter.set_target_elevation_filter(filter_target_elevation(state.borrow().pending_filter));
     if let Some(cached) = load_cached_timing_stats(&site_id) {
         iter.preload_timing_stats(cached);
         log::debug!("Loaded cached timing stats for {}", site_id);
@@ -776,6 +819,7 @@ async fn streaming_loop(
             // that updates it on the main thread, so without this push the
             // resumed sweep's chunks reach the worker with stale/None
             // projections and finalize only on the next sweep's first chunk.
+            let (cp, ncp) = build_chunk_projections(&iter);
             s.results.push(RealtimeResult::ChunkReceived {
                 chunks_in_volume: 1,
                 time_until_next: None,
@@ -785,7 +829,8 @@ async fn streaming_loop(
                     &iter,
                 ),
                 projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
-                chunk_projections: build_chunk_projections(&iter),
+                chunk_projections: cp,
+                next_volume_chunk_projections: ncp,
                 arrival_stat: None,
             });
         }
@@ -920,6 +965,7 @@ async fn streaming_loop(
                 timestamp: current_scan_start_secs.0,
                 is_last_in_sweep: latest_is_last_in_sweep,
             });
+            let (cp, ncp) = build_chunk_projections(&iter);
             s.results.push(RealtimeResult::ChunkReceived {
                 chunks_in_volume,
                 time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
@@ -929,7 +975,8 @@ async fn streaming_loop(
                     &iter,
                 ),
                 projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
-                chunk_projections: build_chunk_projections(&iter),
+                chunk_projections: cp,
+                next_volume_chunk_projections: ncp,
                 arrival_stat: None,
             });
             drop(s);
@@ -973,6 +1020,7 @@ async fn streaming_loop(
                 timestamp: current_scan_start_secs.0,
                 is_last_in_sweep: init_is_last_in_sweep,
             });
+            let (cp, ncp) = build_chunk_projections(&iter);
             s.results.push(RealtimeResult::ChunkReceived {
                 chunks_in_volume,
                 time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
@@ -982,7 +1030,8 @@ async fn streaming_loop(
                     &iter,
                 ),
                 projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
-                chunk_projections: build_chunk_projections(&iter),
+                chunk_projections: cp,
+                next_volume_chunk_projections: ncp,
                 arrival_stat: None,
             });
         }
@@ -1046,6 +1095,7 @@ async fn streaming_loop(
             chunks_in_volume += emitted;
             active_filter = new_filter;
             active_filter_epoch = live_epoch;
+            iter.set_target_elevation_filter(filter_target_elevation(active_filter));
         }
 
         // Wait for expected chunk time. Only capture the prediction on the
@@ -1241,6 +1291,7 @@ async fn streaming_loop(
             // boundary even though no actual End chunk was downloaded.
             chunks_in_volume += 1;
             {
+                let (cp, ncp) = build_chunk_projections(&iter);
                 let mut s = state.borrow_mut();
                 s.results.push(RealtimeResult::ChunkReceived {
                     chunks_in_volume,
@@ -1251,7 +1302,8 @@ async fn streaming_loop(
                         get_projected_volume_end_available_at_secs(&iter),
                     projected_volume_end_collection_secs: iter
                         .projected_volume_end_collection_secs(),
-                    chunk_projections: build_chunk_projections(&iter),
+                    chunk_projections: cp,
+                    next_volume_chunk_projections: ncp,
                     arrival_stat: None,
                 });
             }
@@ -1320,7 +1372,8 @@ async fn streaming_loop(
                 // Look up this chunk's entry in the library's projection list
                 // so we can attach elevation_number and chunk-within-sweep
                 // position to the arrival stat.
-                let chunk_projections = build_chunk_projections(&iter);
+                let (chunk_projections, next_volume_chunk_projections) =
+                    build_chunk_projections(&iter);
                 let (elevation_number, chunk_index_in_sweep, chunks_in_sweep) =
                     match chunk_projections.as_ref().and_then(|projs| {
                         projs.iter().find(|p| p.sequence as u32 == chunks_in_volume)
@@ -1414,6 +1467,7 @@ async fn streaming_loop(
                         projected_volume_end_collection_secs: iter
                             .projected_volume_end_collection_secs(),
                         chunk_projections,
+                        next_volume_chunk_projections,
                         arrival_stat: Some(arrival_stat),
                     });
                 }

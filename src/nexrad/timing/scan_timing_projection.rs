@@ -151,6 +151,12 @@ pub struct ChunkProjection {
     interval_from_previous: Duration,
     /// Whether this chunk starts a new sweep (useful for UI grouping).
     starts_new_sweep: bool,
+    /// Which volume this projection belongs to, relative to the anchor:
+    /// 0 = current volume, 1 = next volume (only emitted by
+    /// [`project_scan_timing_with_next`] when chained projection is requested).
+    /// `sequence` is NOT unique on its own when `volume_offset > 0`; key by
+    /// `(volume_offset, sequence)` when uniqueness is required.
+    volume_offset: u8,
 }
 
 impl ChunkProjection {
@@ -201,6 +207,13 @@ impl ChunkProjection {
     pub fn starts_new_sweep(&self) -> bool {
         self.starts_new_sweep
     }
+
+    /// Which volume this projection belongs to, relative to the anchor.
+    /// `0` = current volume; `1` = next volume (produced by chained
+    /// projection in [`project_scan_timing_with_next`]).
+    pub fn volume_offset(&self) -> u8 {
+        self.volume_offset
+    }
 }
 
 /// Build a timing projection for all remaining chunks in the current volume.
@@ -220,17 +233,54 @@ impl ChunkProjection {
 pub fn project_scan_timing(
     anchor_chunk: &ChunkIdentifier,
     anchor_collection_time_secs: Option<f64>,
+    vcp: &volume_coverage_pattern::Message,
+    mapper: &ElevationChunkMapper,
+    timing_stats: Option<&ChunkTimingStats>,
+) -> Option<ScanTimingProjection> {
+    project_scan_timing_with_next(
+        anchor_chunk,
+        anchor_collection_time_secs,
+        vcp,
+        mapper,
+        timing_stats,
+        false,
+    )
+}
+
+/// Like [`project_scan_timing`], but when `include_next_volume` is true,
+/// chains a second pass through `mapper` after the current volume's final
+/// sequence — projecting one full additional volume assuming the VCP is
+/// unchanged.
+///
+/// The chained pass tags every emitted [`ChunkProjection`] with
+/// `volume_offset = 1`. The transition between the last chunk of the current
+/// volume and the first chunk (Start) of the next is automatically handled
+/// by the physics model's `InterVolume` case (8.5 s gap).
+///
+/// Useful for the streaming timeline's "ghost next-scan" rendering, when the
+/// user has filtered to an elevation that no longer appears in the current
+/// volume and the next download target falls in the next volume.
+///
+/// Note: `volume_end_available_at` and `remaining_duration` describe the
+/// LAST chunk in `chunks` — which is the end of the next volume when chained.
+/// Consumers wanting current-volume-only bounds should filter `chunks` by
+/// `volume_offset == 0`.
+pub fn project_scan_timing_with_next(
+    anchor_chunk: &ChunkIdentifier,
+    anchor_collection_time_secs: Option<f64>,
     _vcp: &volume_coverage_pattern::Message,
     mapper: &ElevationChunkMapper,
     timing_stats: Option<&ChunkTimingStats>,
+    include_next_volume: bool,
 ) -> Option<ScanTimingProjection> {
     let anchor_sequence = anchor_chunk.sequence();
     let anchor_available_at = anchor_chunk.upload_date_time().unwrap_or_else(Utc::now);
     let anchor_available_at_secs = anchor_available_at.timestamp_millis() as f64 / 1000.0;
     let final_sequence = mapper.final_sequence();
 
-    // Nothing to project if we're at or past the final chunk
-    if anchor_sequence >= final_sequence {
+    // If we're at/past the final chunk of the current volume and the caller
+    // doesn't want a next-volume pass, there's nothing to project.
+    if anchor_sequence >= final_sequence && !include_next_volume {
         return None;
     }
 
@@ -272,7 +322,19 @@ pub fn project_scan_timing(
     let mut prev_metadata = anchor_metadata;
     let mut prev_collection_secs = anchor_collection_secs;
 
-    for seq in (anchor_sequence + 1)..=final_sequence {
+    // Chain the current-volume pass (volume_offset=0) with an optional
+    // next-volume pass (volume_offset=1) that reuses the same mapper under
+    // the assumption the VCP doesn't change. At the volume boundary, the
+    // first hop's `next_metadata` is the next volume's Start chunk, so the
+    // physics model's `InterVolume` case fires automatically and applies the
+    // 8.5 s inter-volume gap.
+    let pass1 = ((anchor_sequence + 1)..=final_sequence).map(|s| (s, 0u8));
+    let pass2 = include_next_volume
+        .then(|| (1..=final_sequence).map(|s| (s, 1u8)))
+        .into_iter()
+        .flatten();
+
+    for (seq, volume_offset) in pass1.chain(pass2) {
         let next_metadata = mapper.get_chunk_metadata(seq)?;
 
         // Shared blended primitive (see `interval_estimate` module): pure
@@ -307,6 +369,7 @@ pub fn project_scan_timing(
             offset_from_anchor: offset_duration,
             interval_from_previous: interval_duration,
             starts_new_sweep: next_metadata.is_first_in_sweep(),
+            volume_offset,
         });
 
         prev_metadata = next_metadata;

@@ -7,7 +7,7 @@
 
 use super::timing::{
     estimate_chunk_availability_time, estimate_chunk_processing_diagnostics,
-    estimate_chunk_processing_time_to_target, project_scan_timing, ChunkCharacteristics,
+    estimate_chunk_processing_time_to_target, project_scan_timing_with_next, ChunkCharacteristics,
     ChunkMetadata, ChunkTimingModel, ChunkTimingStats, ElevationChunkMapper,
     EstimatedChunkProcessing, ScanTimingProjection,
 };
@@ -61,6 +61,14 @@ pub struct StreamingState {
     /// inter-chunk physics intervals to this to place future chunks on
     /// the timeline.
     latest_chunk_collection_end_secs: Option<f64>,
+    /// Active elevation filter, mirrored from the realtime loop's
+    /// `StreamingFilter`. `None` means "no filter" (download every chunk);
+    /// `Some(n)` restricts downloads to elevation `n`. Used by
+    /// [`StreamingState::project_remaining_scan`] to decide whether to
+    /// extend the projection into the next volume — relevant when the
+    /// filter's target elevation has no remaining matches in the current
+    /// volume, so the next download will land in the next volume.
+    target_elevation_filter: Option<u8>,
     requests_made: usize,
     bytes_downloaded: u64,
 }
@@ -128,6 +136,7 @@ impl StreamingState {
             timing_stats: ChunkTimingStats::new(),
             last_chunk_time,
             latest_chunk_collection_end_secs: None,
+            target_elevation_filter: None,
             requests_made,
             bytes_downloaded,
         };
@@ -587,13 +596,53 @@ impl StreamingState {
     pub fn project_remaining_scan(&self) -> Option<ScanTimingProjection> {
         let vcp = self.vcp.as_ref()?;
         let mapper = self.elevation_mapper.as_ref()?;
-        project_scan_timing(
+
+        // Extend the projection into the next volume only when an elevation
+        // filter is active AND the target elevation has no remaining matching
+        // chunks in the current volume (the next download will land in the
+        // next volume). The projector reuses the same mapper under the
+        // assumption the VCP doesn't change; if it does, the mapper is
+        // rebuilt from the real next-volume Start chunk and a fresh
+        // projection takes over.
+        let include_next_volume = match self.target_elevation_filter {
+            Some(target_elev) => !self.has_remaining_match_for_elevation(mapper, target_elev),
+            None => false,
+        };
+
+        project_scan_timing_with_next(
             &self.current,
             self.latest_chunk_collection_end_secs,
             vcp,
             mapper,
             Some(&self.timing_stats),
+            include_next_volume,
         )
+    }
+
+    /// Whether any sequence strictly after the current anchor in the current
+    /// volume's mapper carries `target_elevation`. Cheap O(remaining-chunks)
+    /// scan used to gate next-volume projection extension.
+    fn has_remaining_match_for_elevation(
+        &self,
+        mapper: &ElevationChunkMapper,
+        target_elevation: u8,
+    ) -> bool {
+        let target = target_elevation as usize;
+        let start = self.current.sequence() + 1;
+        let end = mapper.final_sequence();
+        (start..=end).any(|seq| {
+            mapper
+                .get_chunk_metadata(seq)
+                .and_then(|m| m.elevation_number())
+                == Some(target)
+        })
+    }
+
+    /// Push the streaming-loop's currently-active elevation filter into the
+    /// state so projections can be filter-aware. `None` means "no filter
+    /// active" (download everything); `Some(n)` is `StreamingFilter::Elevation(n)`.
+    pub fn set_target_elevation_filter(&mut self, target_elevation: Option<u8>) {
+        self.target_elevation_filter = target_elevation;
     }
 
     /// AVAILABILITY category: projected S3-availability time of the final

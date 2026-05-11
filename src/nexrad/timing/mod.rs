@@ -38,6 +38,6 @@ pub use interval_estimate::{
     chunk_characteristics, estimate_interval, IntervalEstimate, ProjectedTimes,
 };
 pub use scan_timing_projection::{
-    project_full_scan_timing, project_scan_timing, AnchorSource, ChunkProjection,
-    ScanTimingProjection,
+    project_full_scan_timing, project_scan_timing, project_scan_timing_with_next, AnchorSource,
+    ChunkProjection, ScanTimingProjection,
 };

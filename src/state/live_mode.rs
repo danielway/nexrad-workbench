@@ -216,6 +216,12 @@ pub struct LiveModeState {
     /// Updated each time a new chunk arrives.
     pub chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
 
+    /// Per-chunk projection info for the *next* volume, present only when
+    /// an elevation filter is active and the target has no remaining matches
+    /// in the current volume. Drives the timeline's "ghost next-scan"
+    /// rendering — every entry carries `volume_offset == 1`.
+    pub next_volume_chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
+
     /// Diagnostic snapshot of the current live volume's forecast vs. actuals.
     /// Populated at volume start (when both VCP pattern and volume_start are
     /// known) by `try_capture_forecast`. Used by the VCP forecast diagnostics
@@ -274,6 +280,7 @@ impl Default for LiveModeState {
             projected_volume_end_available_at_secs: None,
             projected_volume_end_collection_secs: None,
             chunk_projections: None,
+            next_volume_chunk_projections: None,
             current_volume_forecast: None,
             last_volume_forecast: None,
             previous_volume_end_secs: None,
@@ -460,11 +467,13 @@ impl LiveModeState {
         projected_volume_end_available_at_secs: Option<f64>,
         projected_volume_end_collection_secs: Option<f64>,
         chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
+        next_volume_chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
     ) {
         self.chunks_received = chunks_in_volume;
         self.projected_volume_end_available_at_secs = projected_volume_end_available_at_secs;
         self.projected_volume_end_collection_secs = projected_volume_end_collection_secs;
         self.chunk_projections = chunk_projections;
+        self.next_volume_chunk_projections = next_volume_chunk_projections;
 
         // Prefer the time_until_next estimate over is_volume_end so the
         // user sees a countdown across volume boundaries (synthetic-end in
@@ -527,6 +536,7 @@ impl LiveModeState {
         self.projected_volume_end_available_at_secs = None;
         self.projected_volume_end_collection_secs = None;
         self.chunk_projections = None;
+        self.next_volume_chunk_projections = None;
     }
 
     /// Adopt or refresh the live volume anchor.
