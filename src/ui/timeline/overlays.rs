@@ -186,10 +186,9 @@ pub(super) fn render_download_ghosts(
 }
 
 /// Non-model fields needed for realtime overlay rendering that don't belong in
-/// the position model (UI animation state, countdown, chunk interval).
+/// the position model (UI animation state, countdown).
 pub(super) struct LiveOverlayContext {
     pub countdown_secs: Option<f64>,
-    pub chunk_interval_secs: f64,
     pub in_progress_radials: u32,
     pub elevations_received: Vec<u8>,
     pub in_progress_elevation: Option<u8>,
@@ -569,20 +568,11 @@ pub(super) fn render_realtime_progress(
 
             if is_first_future {
                 // -- Next-chunk placeholder on the first future sweep --
-                // Sized to one estimated chunk slot (sweep width / chunks_expected).
-                let future_exp_n = match &sweep_pos.status {
-                    crate::state::SweepStatus::Future => {
-                        // Use same formula as InProgress: estimate from sweep duration
-                        let dur = sweep_pos.duration();
-                        if dur > 0.0 && ctx.chunk_interval_secs > 0.0 {
-                            (dur / ctx.chunk_interval_secs).ceil() as u32
-                        } else {
-                            3
-                        }
-                    }
-                    _ => 3,
-                }
-                .max(1);
+                // Sized to one estimated chunk slot. Standard sweeps are 3
+                // chunks; super-res are 6. Without per-sweep projection we
+                // default to 3 — the slot is a placeholder, not a precise
+                // count.
+                let future_exp_n: u32 = 3;
                 let slot_width = block.width() / future_exp_n as f32;
                 let nc_end_x = (block.min.x + slot_width.max(8.0)).min(block.max.x);
                 let nc_rect = Rect::from_min_max(

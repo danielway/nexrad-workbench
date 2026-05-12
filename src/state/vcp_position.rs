@@ -141,7 +141,9 @@ impl VcpPositionModel {
         // chunk uploads.
         let expected_dur = live.last_volume_duration_secs.unwrap_or(300.0);
         let volume_end = live
-            .projected_volume_end_collection_secs
+            .plan
+            .as_ref()
+            .and_then(|p| p.current_volume_end_collection_secs)
             .unwrap_or(vol_start + expected_dur);
 
         // ── Build projected sweep bounds from library projections ──────
@@ -149,10 +151,10 @@ impl VcpPositionModel {
         // scan), so timeline placeholders line up with the in-progress
         // sweep's own collection-time axis.
         let projected_sweeps: Option<std::collections::BTreeMap<u8, ProjectedSweepBounds>> =
-            live.chunk_projections.as_ref().map(|projections| {
+            live.plan.as_ref().map(|plan| {
                 let mut map: std::collections::BTreeMap<u8, ProjectedSweepBounds> =
                     std::collections::BTreeMap::new();
-                for chunk in projections {
+                for chunk in &plan.current_volume_chunks {
                     if let Some(elev) = chunk.elevation_number {
                         let elev_u8 = elev as u8;
                         let entry = map.entry(elev_u8).or_insert(ProjectedSweepBounds {
@@ -352,14 +354,10 @@ impl VcpPositionModel {
                     chunks_for_elev.iter().map(|&&(_, _, _, r)| r).sum::<u32>()
                         + live.current_in_progress_radials.unwrap_or(0);
 
-                // Prefer projection chunk count, fall back to interval-based estimate.
-                let chunks_expected = proj_sweep.map(|ps| ps.chunk_count).or_else(|| {
-                    if this_sweep_dur > 0.0 && live.chunk_interval_secs > 0.0 {
-                        Some((this_sweep_dur / live.chunk_interval_secs).ceil() as u32)
-                    } else {
-                        None
-                    }
-                });
+                // Plan-derived chunk count. Without a plan we leave it
+                // unknown — the timeline renders the sweep block without
+                // chunk subdivisions until a projection lands.
+                let chunks_expected = proj_sweep.map(|ps| ps.chunk_count);
 
                 SweepStatus::InProgress {
                     radials_received: total_radials,
@@ -442,8 +440,9 @@ impl VcpPositionModel {
         };
 
         let next_volume_ghost = live
-            .next_volume_chunk_projections
-            .as_deref()
+            .plan
+            .as_ref()
+            .and_then(|p| p.next_volume_chunks.as_deref())
             .and_then(|projs| Self::ghost_from_projections(projs, vcp_number, live))
             .map(Box::new);
 

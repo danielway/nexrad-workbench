@@ -5,19 +5,19 @@
 //!
 //! # Timing model invariants
 //!
-//! Fields in `LiveModeState` are labelled by category in their doc comments:
-//! - ACTUAL — parsed from radial/message headers (`current_volume.confirmed`,
-//!   `completed_sweep_metas`, `last_radial_time_secs`, `chunk_elev_spans`).
-//!   Drives the radar canvas, the current-time indicator, and "Age" labels.
-//! - PROJECTED COLLECTION — derived from VCP physics anchored on an ACTUAL
-//!   reference (`projected_volume_end_collection_secs`, `chunk_projections`
-//!   via `projected_collection_time_secs`). Drives timeline placeholders
-//!   for future sweeps and chunks.
-//! - PROJECTED AVAILABILITY — empirical S3-upload estimates
-//!   (`projected_volume_end_available_at_secs`,
-//!   `next_chunk_available_at_secs`, `chunk_projections` via
-//!   `projected_available_at_secs`). Drives the scheduler and the
-//!   "next in Xs" countdown language.
+//! Two field categories survive on `LiveModeState`:
+//!
+//! - **ACTUAL** — parsed from radial/message headers
+//!   (`current_volume.confirmed`, `completed_sweep_metas`,
+//!   `last_radial_time_secs`, `chunk_elev_spans`). Drives the radar canvas,
+//!   the current-time indicator, and "Age" labels.
+//! - **PROJECTED** — folded into [`crate::nexrad::StreamingPlan`] (stored on
+//!   `plan: Option<StreamingPlan>`). The plan carries per-chunk COLLECTION /
+//!   AVAILABILITY / POLL times, the immediate `next_target`, and the
+//!   current-volume end markers. The streaming loop's sleep target, the
+//!   timeline countdown, the in-progress sweep rendering, the next-scan
+//!   ghost, and the VCP forecast panel all read from the same plan object
+//!   so they can't drift from each other.
 //!
 //! Live playhead (`TimeModel::playback_position` when `realtime_lock`
 //! is on) deliberately tracks wall clock rather than clamping to the
@@ -25,8 +25,6 @@
 //! each chunk boundary; the canvas already resolves whichever sweep has
 //! `end ≤ playback_position`, so wall-clock tracking satisfies principle
 //! 1 (canvas shows ACTUAL data) without the stutter.
-
-use std::time::Duration;
 
 /// Live mode phase - current state in the streaming state machine.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -108,12 +106,14 @@ pub struct LiveModeState {
     /// Timestamp when the current phase started (Unix seconds)
     pub phase_started_at: Option<f64>,
 
-    /// Typical interval between chunks in seconds (~12s)
-    pub chunk_interval_secs: f64,
-
-    /// AVAILABILITY category: projected Unix-seconds arrival time of the
-    /// next chunk in S3. Drives the "next in Xs" countdown.
-    pub next_chunk_available_at_secs: Option<f64>,
+    /// Canonical forward-looking projection of the stream (next download
+    /// target, future-chunk timing, current-volume end markers, and the
+    /// optional next-volume ghost). Computed once per streaming-loop
+    /// iteration in [`crate::nexrad::StreamingState::build_plan`] and sent
+    /// over [`crate::nexrad::RealtimeResult::ChunkReceived`]. All UI surfaces
+    /// (timeline countdown, in-progress sweep, ghost next-scan, VCP panel)
+    /// read from this object so they can't drift from the loop's sleep target.
+    pub plan: Option<crate::nexrad::StreamingPlan>,
 
     /// Error message if in Error phase
     pub error_message: Option<String>,
@@ -200,28 +200,6 @@ pub struct LiveModeState {
     /// `last_radial_azimuth`, allows linear extrapolation of sweep line.
     pub last_radial_time_secs: Option<f64>,
 
-    /// AVAILABILITY category: projected Unix-seconds S3-arrival time of the
-    /// final chunk in the current volume. From nexrad-data's physics-based
-    /// model (sweep_duration = 360/rate - 0.67s).
-    pub projected_volume_end_available_at_secs: Option<f64>,
-
-    /// COLLECTION category: projected Unix-seconds time the radar finishes
-    /// physically scanning the final chunk of the current volume. Drives
-    /// timeline placeholders for future-chunk positioning, whereas
-    /// `projected_volume_end_available_at_secs` drives countdown language.
-    pub projected_volume_end_collection_secs: Option<f64>,
-
-    /// Per-chunk projection info from the library's physics model.
-    /// Structural metadata covers all chunks; projected times only for future chunks.
-    /// Updated each time a new chunk arrives.
-    pub chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
-
-    /// Per-chunk projection info for the *next* volume, present only when
-    /// an elevation filter is active and the target has no remaining matches
-    /// in the current volume. Drives the timeline's "ghost next-scan"
-    /// rendering — every entry carries `volume_offset == 1`.
-    pub next_volume_chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
-
     /// Diagnostic snapshot of the current live volume's forecast vs. actuals.
     /// Populated at volume start (when both VCP pattern and volume_start are
     /// known) by `try_capture_forecast`. Used by the VCP forecast diagnostics
@@ -254,8 +232,7 @@ impl Default for LiveModeState {
         Self {
             phase: LivePhase::Idle,
             phase_started_at: None,
-            chunk_interval_secs: 12.0,
-            next_chunk_available_at_secs: None,
+            plan: None,
             error_message: None,
             last_exit_reason: None,
             chunks_received: 0,
@@ -277,10 +254,6 @@ impl Default for LiveModeState {
             live_data_azimuth_range: None,
             last_radial_azimuth: None,
             last_radial_time_secs: None,
-            projected_volume_end_available_at_secs: None,
-            projected_volume_end_collection_secs: None,
-            chunk_projections: None,
-            next_volume_chunk_projections: None,
             current_volume_forecast: None,
             last_volume_forecast: None,
             previous_volume_end_secs: None,
@@ -310,7 +283,8 @@ impl LiveModeState {
             }
             LivePhase::WaitingForChunk => {
                 state.chunks_received = 10;
-                state.next_chunk_available_at_secs = Some(now + 8.0); // 8 seconds remaining
+                // Demo state — no real plan; the WaitingForChunk arm in
+                // tests inspects only `phase`, not the countdown timing.
             }
             LivePhase::AcquiringLock => {
                 // Just acquiring, no chunks yet
@@ -338,7 +312,7 @@ impl LiveModeState {
     pub fn stop(&mut self, reason: LiveExitReason) {
         self.phase = LivePhase::Idle;
         self.phase_started_at = None;
-        self.next_chunk_available_at_secs = None;
+        self.plan = None;
         self.last_exit_reason = Some(reason);
         self.elevations_received.clear();
         self.current_volume = None;
@@ -352,9 +326,6 @@ impl LiveModeState {
         self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
-        self.projected_volume_end_available_at_secs = None;
-        self.projected_volume_end_collection_secs = None;
-        self.chunk_projections = None;
         self.current_volume_forecast = None;
         self.last_volume_forecast = None;
         self.previous_volume_end_secs = None;
@@ -376,12 +347,12 @@ impl LiveModeState {
         self.phase_started_at = Some(now);
     }
 
-    /// Transition to WaitingForChunk phase with expected next chunk time.
+    /// Transition to WaitingForChunk phase. The countdown displayed
+    /// downstream is driven by `self.plan.next_target` if present.
     #[allow(dead_code)]
     pub fn wait_for_next_chunk(&mut self, now: f64) {
         self.phase = LivePhase::WaitingForChunk;
         self.phase_started_at = Some(now);
-        self.next_chunk_available_at_secs = Some(now + self.chunk_interval_secs);
         self.chunks_received += 1;
     }
 
@@ -403,8 +374,9 @@ impl LiveModeState {
     /// Get remaining countdown for WaitingForChunk phase.
     pub fn countdown_remaining_secs(&self, now: f64) -> Option<f64> {
         if self.phase == LivePhase::WaitingForChunk {
-            self.next_chunk_available_at_secs
-                .map(|expected| (expected - now).max(0.0))
+            self.plan
+                .as_ref()
+                .and_then(|p| p.next_available_in_secs(now))
         } else {
             None
         }
@@ -457,32 +429,22 @@ impl LiveModeState {
     ///
     /// This is the main integration point between the RealtimeChannel and
     /// the live mode state machine.
-    #[allow(clippy::too_many_arguments)]
     pub fn handle_realtime_chunk(
         &mut self,
         chunks_in_volume: u32,
-        time_until_next: Option<Duration>,
         _is_volume_end: bool,
         now: f64,
-        projected_volume_end_available_at_secs: Option<f64>,
-        projected_volume_end_collection_secs: Option<f64>,
-        chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
-        next_volume_chunk_projections: Option<Vec<crate::nexrad::ChunkProjectionInfo>>,
+        plan: Option<crate::nexrad::StreamingPlan>,
     ) {
         self.chunks_received = chunks_in_volume;
-        self.projected_volume_end_available_at_secs = projected_volume_end_available_at_secs;
-        self.projected_volume_end_collection_secs = projected_volume_end_collection_secs;
-        self.chunk_projections = chunk_projections;
-        self.next_volume_chunk_projections = next_volume_chunk_projections;
-
-        // Prefer the time_until_next estimate over is_volume_end so the
-        // user sees a countdown across volume boundaries (synthetic-end in
-        // filter mode, real End chunks otherwise) rather than a "receiving…"
-        // status that sits there with no network activity.
-        if let Some(duration) = time_until_next {
+        // Phase is gated by whether the plan has a `next_target`: when it
+        // does, we're waiting for a known future chunk (the timeline shows
+        // a countdown derived from the same plan); when it doesn't, we're
+        // mid-receipt and the UI shows "receiving…".
+        let has_target = plan.as_ref().and_then(|p| p.next_target.as_ref()).is_some();
+        self.plan = plan;
+        if has_target {
             self.phase = LivePhase::WaitingForChunk;
-            self.next_chunk_available_at_secs = Some(now + duration.as_secs_f64());
-            self.chunk_interval_secs = duration.as_secs_f64();
         } else {
             self.phase = LivePhase::Streaming;
         }
@@ -533,10 +495,7 @@ impl LiveModeState {
         self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
-        self.projected_volume_end_available_at_secs = None;
-        self.projected_volume_end_collection_secs = None;
-        self.chunk_projections = None;
-        self.next_volume_chunk_projections = None;
+        self.plan = None;
     }
 
     /// Adopt or refresh the live volume anchor.
@@ -646,7 +605,7 @@ impl LiveModeState {
             // Only compute hand-rolled estimates when the library projection isn't available.
             // The library's physics model is more accurate (includes inter-sweep gaps and
             // the -0.67s correction), so prefer it when we have it.
-            if self.chunk_projections.is_none() {
+            if self.plan.is_none() {
                 // Seed volume duration from VCP azimuth rates if we haven't measured one yet.
                 if self.last_volume_duration_secs.is_none() {
                     if let Some(estimated) = vcp.estimated_volume_duration() {
@@ -726,20 +685,23 @@ impl LiveModeState {
         // the final chunk — not its S3 availability. Timeline placeholders
         // reflect when the radar finishes physically scanning.
         let predicted_volume_end = self
-            .projected_volume_end_collection_secs
+            .plan
+            .as_ref()
+            .and_then(|p| p.current_volume_end_collection_secs)
             .unwrap_or(vol_start + total_vol_dur);
         let sweep_durations = vcp.sweep_durations(total_vol_dur);
 
-        // Group chunk_projections by elevation for per-sweep predictions.
-        // Uses projected COLLECTION times so future-sweep bounds on the
-        // timeline reflect when the radar will scan, not when chunks upload.
-        let chunk_projections_available = self.chunk_projections.is_some();
+        // Group the current-volume plan chunks by elevation for per-sweep
+        // predictions. Uses projected COLLECTION times so future-sweep bounds
+        // on the timeline reflect when the radar will scan, not when chunks
+        // upload.
+        let chunk_projections_available = self.plan.is_some();
         let projected_per_elev: Option<
             std::collections::BTreeMap<u8, (f64, f64, u32, f64)>, // (min_time, max_time, chunk_count, rate)
-        > = self.chunk_projections.as_ref().map(|projs| {
+        > = self.plan.as_ref().map(|plan| {
             let mut map: std::collections::BTreeMap<u8, (f64, f64, u32, f64)> =
                 std::collections::BTreeMap::new();
-            for chunk in projs {
+            for chunk in &plan.current_volume_chunks {
                 if let Some(e) = chunk.elevation_number {
                     let entry = map.entry(e as u8).or_insert((
                         f64::MAX,
@@ -932,10 +894,10 @@ impl LiveModeState {
             return;
         }
 
-        if let Some(ref projs) = self.chunk_projections {
+        if let Some(ref plan) = self.plan {
             let mut min_t = f64::MAX;
             let mut max_t = f64::MIN;
-            for chunk in projs {
+            for chunk in &plan.current_volume_chunks {
                 if chunk.elevation_number == Some(elev as usize) {
                     // COLLECTION time — elevation bounds on the timeline
                     // represent when the radar will physically scan, not

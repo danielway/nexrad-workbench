@@ -1,4 +1,7 @@
-use super::{chunk_characteristics, estimate_interval, ChunkTimingStats, ElevationChunkMapper};
+use super::{
+    chunk_characteristics, estimate_interval, ChunkCharacteristics, ChunkTimingStats,
+    ElevationChunkMapper, PhysicsBreakdown,
+};
 use chrono::{DateTime, Duration, Utc};
 use nexrad_data::aws::realtime::{ChunkIdentifier, ChunkType, VolumeIndex};
 use nexrad_decode::messages::volume_coverage_pattern;
@@ -157,6 +160,26 @@ pub struct ChunkProjection {
     /// `sequence` is NOT unique on its own when `volume_offset > 0`; key by
     /// `(volume_offset, sequence)` when uniqueness is required.
     volume_offset: u8,
+    /// Physics decomposition for the hop into this chunk (azimuth gap,
+    /// inter-sweep transition, inter-volume gap). Surfaced so the
+    /// diagnostics modal can attribute a prediction error to a specific
+    /// component without re-deriving the math.
+    physics_breakdown: PhysicsBreakdown,
+    /// Bucket sample count consulted at projection time. `0` when no
+    /// bucket / no stats were available (cold start, new VCP).
+    stats_n: usize,
+    /// Whether historical bucket samples contributed to the blended
+    /// interval used for this chunk's projected time.
+    used_historical: bool,
+    /// `(avg_attempts − 1).max(0)` for the bucket — typical retry-poll
+    /// overhead added between expected availability and the scheduler's
+    /// first poll. Already folded into `projected_poll_at` (via
+    /// [`IntervalEstimate::project_times`]); exposed so consumers can
+    /// display the budget separately.
+    retry_budget_secs: f64,
+    /// The bucket key the lookup hit (or missed). `None` when no
+    /// elevation was resolvable (Start chunk).
+    bucket: Option<ChunkCharacteristics>,
 }
 
 impl ChunkProjection {
@@ -213,6 +236,33 @@ impl ChunkProjection {
     /// projection in [`project_scan_timing_with_next`]).
     pub fn volume_offset(&self) -> u8 {
         self.volume_offset
+    }
+
+    /// Physics decomposition for the hop into this chunk.
+    pub fn physics_breakdown(&self) -> PhysicsBreakdown {
+        self.physics_breakdown
+    }
+
+    /// Bucket sample count at projection time. `0` when no historical
+    /// samples were available for this chunk's bucket.
+    pub fn stats_n(&self) -> usize {
+        self.stats_n
+    }
+
+    /// Whether historical samples contributed to the projected interval.
+    pub fn used_historical(&self) -> bool {
+        self.used_historical
+    }
+
+    /// Typical retry-poll overhead `(avg_attempts − 1).max(0)` for this
+    /// chunk's bucket. Already folded into `projected_poll_at`.
+    pub fn retry_budget_secs(&self) -> f64 {
+        self.retry_budget_secs
+    }
+
+    /// The bucket key this chunk's projection consulted.
+    pub fn bucket(&self) -> Option<&ChunkCharacteristics> {
+        self.bucket.as_ref()
     }
 }
 
@@ -370,6 +420,11 @@ pub fn project_scan_timing_with_next(
             interval_from_previous: interval_duration,
             starts_new_sweep: next_metadata.is_first_in_sweep(),
             volume_offset,
+            physics_breakdown: estimate.physics,
+            stats_n: estimate.stats_n,
+            used_historical: estimate.used_historical,
+            retry_budget_secs: estimate.retry_budget_secs,
+            bucket,
         });
 
         prev_metadata = next_metadata;

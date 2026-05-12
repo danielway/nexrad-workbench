@@ -5,11 +5,10 @@
 //! `try_next`, and timing/metadata accessors. Volume discovery itself is
 //! delegated to `nexrad_data::aws::realtime::get_latest_volume`.
 
+use super::streaming_plan::StreamingPlan;
 use super::timing::{
-    estimate_chunk_availability_time, estimate_chunk_processing_diagnostics,
-    estimate_chunk_processing_time_to_target, project_scan_timing_with_next, ChunkCharacteristics,
-    ChunkMetadata, ChunkTimingModel, ChunkTimingStats, ElevationChunkMapper,
-    EstimatedChunkProcessing, ScanTimingProjection,
+    project_scan_timing_with_next, ChunkCharacteristics, ChunkMetadata, ChunkTimingStats,
+    ElevationChunkMapper, ScanTimingProjection,
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use log::debug;
@@ -430,116 +429,6 @@ impl StreamingState {
         self.timing_stats = stats;
     }
 
-    pub fn next_expected_time(&self) -> Option<DateTime<Utc>> {
-        let vcp = self.vcp.as_ref()?;
-        let mapper = self.elevation_mapper.as_ref()?;
-        estimate_chunk_availability_time(&self.current, vcp, mapper, Some(&self.timing_stats))
-    }
-
-    pub fn time_until_next(&self) -> Option<ChronoDuration> {
-        let expected = self.next_expected_time()?;
-        let now = Utc::now();
-        if expected <= now {
-            None
-        } else {
-            Some(expected - now)
-        }
-    }
-
-    /// Diagnostic counterpart to [`time_until_next`] — returns the path the
-    /// scheduler took, the bucket sample count at prediction time, and the
-    /// physics decomposition (when applicable) so callers can attach them
-    /// to per-chunk arrival records.
-    pub fn next_chunk_processing_diagnostics(&self) -> Option<EstimatedChunkProcessing> {
-        let vcp = self.vcp.as_ref()?;
-        let mapper = self.elevation_mapper.as_ref()?;
-        estimate_chunk_processing_diagnostics(&self.current, vcp, mapper, Some(&self.timing_stats))
-    }
-
-    /// Multi-hop diagnostic for the filter-aware streaming path: estimates the
-    /// time to the next chunk whose elevation matches `predicate`, summing
-    /// physics interval predictions across every hop in between. Returns
-    /// `(target_sequence, estimate)` or `None` if every remaining sequence in
-    /// the volume is filtered out.
-    pub fn next_matching_chunk_diagnostics(
-        &self,
-        accept_end: bool,
-        mut predicate: impl FnMut(Option<usize>) -> bool,
-    ) -> Option<(usize, EstimatedChunkProcessing)> {
-        let vcp = self.vcp.as_ref()?;
-        let mapper = self.elevation_mapper.as_ref()?;
-        let target = mapper.next_matching_sequence_after(
-            self.current.sequence(),
-            accept_end,
-            &mut predicate,
-        )?;
-        let diag = estimate_chunk_processing_time_to_target(
-            &self.current,
-            target,
-            vcp,
-            mapper,
-            Some(&self.timing_stats),
-        )?;
-        Some((target, diag))
-    }
-
-    /// Estimate the wait until the user's filter elevation reappears in the
-    /// next volume. Used by the filter-aware streaming path when the current
-    /// volume has no more matching chunks — without this, the loop would
-    /// poll immediately and exhaust the retry budget waiting for the next
-    /// volume's Start (and worse, the user-relevant chunk of that next
-    /// volume which can be nearly a full volume duration later).
-    ///
-    /// Walks: projected end-of-current-volume → inter-volume gap → next
-    /// volume's Start chunk → physics-summed hops to the first sequence
-    /// matching `elevation_number` → median availability lag. Assumes the
-    /// next volume uses the same VCP (true in practice; mid-stream VCP
-    /// changes are rare and the estimate just gets revised on the next
-    /// iteration when the new mapper takes over).
-    ///
-    /// Returns `None` when the projection isn't available yet (cold start)
-    /// or when `elevation_number` doesn't appear in the current VCP — the
-    /// caller should fall back to the legacy single-hop estimate in that
-    /// case.
-    pub fn time_until_next_filtered_chunk_across_volumes(
-        &self,
-        elevation_number: u8,
-    ) -> Option<std::time::Duration> {
-        let mapper = self.elevation_mapper.as_ref()?;
-        let final_seq = mapper.final_sequence();
-        let target = (2..=final_seq).find(|&seq| {
-            mapper
-                .get_chunk_metadata(seq)
-                .and_then(|m| m.elevation_number())
-                == Some(elevation_number as usize)
-        })?;
-
-        let projected_end_secs = self.projected_volume_end_collection_secs()?;
-        let inter_volume_gap = ChunkTimingModel::inter_volume_gap_secs();
-
-        let mut intra_volume_secs = 0.0;
-        if target > 1 {
-            intra_volume_secs += ChunkTimingModel::start_to_first_intermediate_gap_secs();
-            for seq in 2..target {
-                let prev_meta = mapper.get_chunk_metadata(seq)?;
-                let next_meta = mapper.get_chunk_metadata(seq + 1)?;
-                intra_volume_secs +=
-                    ChunkTimingModel::estimate_chunk_interval_breakdown(prev_meta, next_meta)
-                        .total_secs;
-            }
-        }
-
-        let lag_secs = self
-            .timing_stats
-            .median_availability_lag_secs()
-            .unwrap_or(5.0);
-        let target_avail_secs =
-            projected_end_secs + inter_volume_gap + intra_volume_secs + lag_secs;
-        let now_secs = Utc::now().timestamp_millis() as f64 / 1000.0;
-        let wait_secs = (target_avail_secs - now_secs).max(0.0);
-        Some(std::time::Duration::from_secs_f64(wait_secs))
-    }
-
     /// Sequences in `[lower, upper]` matching `predicate`. Wraps the mapper
     /// helper so the streaming loop can compute filter-aware backfill targets
     /// without exposing the mapper itself.
@@ -587,23 +476,35 @@ impl StreamingState {
             .and_then(|m| m.get_chunk_metadata(sequence))
     }
 
-    pub fn all_chunk_metadata(&self) -> Option<&[ChunkMetadata]> {
-        self.elevation_mapper
-            .as_ref()
-            .map(|m| m.all_chunk_metadata())
+    /// Build a [`StreamingPlan`] — the canonical forward-looking model used
+    /// by the streaming loop's sleep target, the timeline UI, and per-chunk
+    /// arrival diagnostics. Computed once per loop iteration; every
+    /// downstream consumer reads from the returned object so they can't
+    /// disagree.
+    ///
+    /// Returns `None` only when the iterator is in a cold state (no VCP /
+    /// no mapper yet) — every other path produces a plan, possibly with
+    /// `next_target = None` if there's nothing left to project.
+    pub fn build_plan(&self) -> Option<StreamingPlan> {
+        let mapper = self.elevation_mapper.as_ref()?;
+        let projection = self.project_remaining_scan_internal()?;
+        let chunk_meta = mapper.all_chunk_metadata();
+        Some(StreamingPlan::from_projection(
+            projection,
+            self.target_elevation_filter,
+            chunk_meta,
+        ))
     }
 
-    pub fn project_remaining_scan(&self) -> Option<ScanTimingProjection> {
+    /// Internal projection builder. The only call site for
+    /// [`project_scan_timing_with_next`] in this crate — all forward-looking
+    /// timing flows through here. Extends into the next volume when the
+    /// active filter has no remaining match in the current volume (so the
+    /// scheduler and UI both see the cross-volume hop in one object).
+    fn project_remaining_scan_internal(&self) -> Option<ScanTimingProjection> {
         let vcp = self.vcp.as_ref()?;
         let mapper = self.elevation_mapper.as_ref()?;
 
-        // Extend the projection into the next volume only when an elevation
-        // filter is active AND the target elevation has no remaining matching
-        // chunks in the current volume (the next download will land in the
-        // next volume). The projector reuses the same mapper under the
-        // assumption the VCP doesn't change; if it does, the mapper is
-        // rebuilt from the real next-volume Start chunk and a fresh
-        // projection takes over.
         let include_next_volume = match self.target_elevation_filter {
             Some(target_elev) => !self.has_remaining_match_for_elevation(mapper, target_elev),
             None => false,
@@ -643,24 +544,6 @@ impl StreamingState {
     /// active" (download everything); `Some(n)` is `StreamingFilter::Elevation(n)`.
     pub fn set_target_elevation_filter(&mut self, target_elevation: Option<u8>) {
         self.target_elevation_filter = target_elevation;
-    }
-
-    /// AVAILABILITY category: projected S3-availability time of the final
-    /// chunk of the current volume.
-    pub fn projected_volume_end_available_at(&self) -> Option<DateTime<Utc>> {
-        self.project_remaining_scan()
-            .map(|p| p.volume_end_available_at())
-    }
-
-    /// COLLECTION category: projected Unix-seconds time the radar finishes
-    /// physically scanning the final chunk of the current volume. Drives
-    /// the timeline's right-edge marker for the in-progress volume.
-    pub fn projected_volume_end_collection_secs(&self) -> Option<f64> {
-        let projection = self.project_remaining_scan()?;
-        projection
-            .chunks()
-            .last()
-            .map(|c| c.projected_collection_time_secs())
     }
 
     pub fn requests_made(&self) -> usize {

@@ -27,6 +27,7 @@ mod realtime;
 pub(crate) mod record_decode;
 pub(crate) mod render_coordinator;
 pub(crate) mod render_request;
+mod streaming_plan;
 mod streaming_state;
 pub(crate) mod timing;
 mod types;
@@ -50,6 +51,7 @@ pub use network_monitor::{
 pub use persistence_manager::PersistenceManager;
 pub use realtime::{ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
 pub use render_coordinator::RenderCoordinator;
+pub use streaming_plan::{NextChunkTarget, StreamingPlan};
 pub use types::{DownloadResult, ScanMetadata};
 pub use volume_ray_renderer::VolumeRayRenderer;
 

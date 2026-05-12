@@ -11,7 +11,6 @@ use super::streaming_state::StreamingState;
 use futures_util::future::join_all;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
 
 use eframe::egui;
 
@@ -120,30 +119,20 @@ pub struct ChunkProjectionInfo {
 pub enum RealtimeResult {
     /// Iterator initialized, streaming started
     Started { site_id: String },
-    /// Chunk received from the stream (UI status update)
+    /// Chunk received from the stream (UI status update).
+    ///
+    /// `plan` is the canonical forward-looking projection consumed by the
+    /// timeline countdown, the in-progress sweep rendering, the next-scan
+    /// ghost, and any caller that wants to know "when does the next chunk
+    /// arrive." Replaces the older bag of `time_until_next` +
+    /// `projected_volume_end_*` + `chunk_projections` +
+    /// `next_volume_chunk_projections` fields that drifted apart and
+    /// caused mismatches between the UI countdown and the loop's sleep.
     ChunkReceived {
         chunks_in_volume: u32,
-        time_until_next: Option<Duration>,
         is_volume_end: bool,
         fetch_latency_ms: f64,
-        /// AVAILABILITY category: projected Unix-seconds time the final chunk
-        /// of the current volume becomes available in S3, from the library's
-        /// physics model.
-        projected_volume_end_available_at_secs: Option<f64>,
-        /// COLLECTION category: projected Unix-seconds time the radar finishes
-        /// physically scanning the final chunk of the current volume. Drives
-        /// the timeline's projected end-of-volume marker.
-        projected_volume_end_collection_secs: Option<f64>,
-        /// Per-chunk projection info for the entire current volume.
-        /// Structural metadata is present for all chunks; projected times only for future chunks.
-        chunk_projections: Option<Vec<ChunkProjectionInfo>>,
-        /// Per-chunk projection info for the *next* volume, present only when
-        /// an elevation filter is active and the target has no remaining
-        /// matches in the current volume — so the next download will land in
-        /// the next volume. Drives the timeline's "ghost next-scan" render.
-        /// Entries reuse the current VCP's structure under the assumption
-        /// the VCP doesn't change between volumes.
-        next_volume_chunk_projections: Option<Vec<ChunkProjectionInfo>>,
+        plan: Option<super::StreamingPlan>,
         /// Arrival diagnostics (empty-poll counts, predicted vs. actual time).
         /// `None` on synthetic emissions such as the resume-from-cache path.
         arrival_stat: Option<crate::state::ChunkArrivalStat>,
@@ -181,7 +170,6 @@ pub enum RealtimeResult {
 struct RealtimeState {
     results: Vec<RealtimeResult>,
     active: bool,
-    time_until_next: Option<Duration>,
     stop_requested: bool,
     /// ACTUAL category: latest radial collection time (Unix seconds) of
     /// the most recently ingested chunk. Pushed in from `main.rs` after
@@ -235,17 +223,12 @@ impl RealtimeChannel {
         self.state.borrow().active
     }
 
-    pub fn time_until_next(&self) -> Option<Duration> {
-        self.state.borrow().time_until_next
-    }
-
     pub fn start(&self, ctx: egui::Context, site_id: String, facade: DataFacade) {
         {
             let mut state = self.state.borrow_mut();
             state.active = true;
             state.stop_requested = false;
             state.results.clear();
-            state.time_until_next = None;
         }
 
         let state = self.state.clone();
@@ -325,75 +308,6 @@ pub enum SleepOutcome {
     Completed,
     Stopped,
     FilterChanged,
-}
-
-/// Build projection info from the streaming state's current position.
-///
-/// Returns `(current_volume_projections, next_volume_projections)` where the
-/// second element is `Some` only when the projection has been chained into
-/// the next volume (filter has no remaining matches in the current volume —
-/// see [`StreamingState::project_remaining_scan`]).
-///
-/// Splitting keeps existing consumers of `chunk_projections` working with
-/// current-volume-only semantics; the optional next-volume slice drives the
-/// timeline's "ghost next-scan" rendering.
-fn build_chunk_projections(
-    state: &StreamingState,
-) -> (
-    Option<Vec<ChunkProjectionInfo>>,
-    Option<Vec<ChunkProjectionInfo>>,
-) {
-    let Some(all_meta) = state.all_chunk_metadata() else {
-        return (None, None);
-    };
-    let projection = state.project_remaining_scan();
-
-    // Build per-volume-offset lookups so pass-2 entries don't overwrite
-    // pass-1 entries that share a sequence number.
-    let mut collection_by: std::collections::HashMap<(u8, usize), f64> =
-        std::collections::HashMap::new();
-    let mut available_by: std::collections::HashMap<(u8, usize), f64> =
-        std::collections::HashMap::new();
-    let mut has_next_volume = false;
-    if let Some(p) = projection.as_ref() {
-        for c in p.chunks() {
-            let key = (c.volume_offset(), c.sequence());
-            collection_by.insert(key, c.projected_collection_time_secs());
-            available_by.insert(key, c.projected_available_at().timestamp() as f64);
-            if c.volume_offset() == 1 {
-                has_next_volume = true;
-            }
-        }
-    }
-
-    let make_info = |meta: &super::timing::ChunkMetadata, volume_offset: u8| ChunkProjectionInfo {
-        sequence: meta.sequence(),
-        elevation_number: meta.elevation_number(),
-        elevation_angle_deg: meta.elevation_angle_deg(),
-        azimuth_rate_dps: meta.azimuth_rate_dps(),
-        projected_collection_time_secs: collection_by
-            .get(&(volume_offset, meta.sequence()))
-            .copied(),
-        projected_available_at_secs: available_by.get(&(volume_offset, meta.sequence())).copied(),
-        starts_new_sweep: meta.is_first_in_sweep(),
-        chunk_index_in_sweep: meta.chunk_index_in_sweep(),
-        chunks_in_sweep: meta.chunks_in_sweep(),
-        volume_offset,
-    };
-
-    let current: Vec<ChunkProjectionInfo> = all_meta.iter().map(|m| make_info(m, 0)).collect();
-    let next = has_next_volume
-        // Same mapper / metadata — only the timing lookup differs by offset.
-        .then(|| all_meta.iter().map(|m| make_info(m, 1)).collect());
-    (Some(current), next)
-}
-
-/// Get the projected S3-availability time of the current volume's final
-/// chunk (Unix seconds).
-fn get_projected_volume_end_available_at_secs(state: &StreamingState) -> Option<f64> {
-    state
-        .projected_volume_end_available_at()
-        .map(|dt| dt.timestamp() as f64)
 }
 
 /// Default provisional lag applied when we have no observed median lag
@@ -537,18 +451,11 @@ async fn emit_backfill_chunks(
             timestamp,
             is_last_in_sweep,
         });
-        let (cp, ncp) = build_chunk_projections(iter);
         s.results.push(RealtimeResult::ChunkReceived {
             chunks_in_volume: chunks_in_volume_start + emitted,
-            time_until_next: None,
             is_volume_end: false,
             fetch_latency_ms: 0.0,
-            projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
-                iter,
-            ),
-            projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
-            chunk_projections: cp,
-            next_volume_chunk_projections: ncp,
+            plan: iter.build_plan(),
             arrival_stat: None,
         });
         drop(s);
@@ -695,25 +602,6 @@ async fn streaming_loop(
     // in-flight HTTP request futures and cancels them.
     const ACQUIRE_TIMEOUT_SECS: u32 = 10;
 
-    // Pad added to the first poll wait per chunk; collapses the "fire a hair
-    // early → empty poll → backoff → fire" path on chunks whose predictions
-    // are tight. Retry waits are governed by `REALTIME_CHUNK_POLICY`. The
-    // value lives on the timing primitive
-    // (`IntervalEstimate::POLL_BIAS_SECS`) so projector / scheduler / UI all
-    // agree on it.
-    //
-    // Sized from observed availability-space prediction error: across all
-    // buckets in a representative VCP 212 volume, scheduler predictions ran
-    // ~900 ms early in availability-space (collection-space prediction is
-    // accurate; the residual is S3-availability lag the projector under-
-    // estimates). `wait_after_last_empty_ms` clusters tightly at ~670 ms,
-    // confirming that when we fire early we miss by roughly one poll cycle.
-    // 750 ms covers the typical case while leaving outliers (one-chunk lag
-    // spikes) to the existing retry path. The deeper fix is per-bucket lag
-    // in the projector and an EWMA on lag history.
-    let poll_delay_after_predicted_ms: u32 =
-        (super::timing::IntervalEstimate::POLL_BIAS_SECS * 1000.0) as u32;
-
     let init_future = acquire_streaming_state(&site_id);
     let timeout_future = sleep_ms(ACQUIRE_TIMEOUT_SECS * 1000);
 
@@ -819,18 +707,11 @@ async fn streaming_loop(
             // that updates it on the main thread, so without this push the
             // resumed sweep's chunks reach the worker with stale/None
             // projections and finalize only on the next sweep's first chunk.
-            let (cp, ncp) = build_chunk_projections(&iter);
             s.results.push(RealtimeResult::ChunkReceived {
                 chunks_in_volume: 1,
-                time_until_next: None,
                 is_volume_end: false,
                 fetch_latency_ms: 0.0,
-                projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
-                    &iter,
-                ),
-                projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
-                chunk_projections: cp,
-                next_volume_chunk_projections: ncp,
+                plan: iter.build_plan(),
                 arrival_stat: None,
             });
         }
@@ -965,18 +846,11 @@ async fn streaming_loop(
                 timestamp: current_scan_start_secs.0,
                 is_last_in_sweep: latest_is_last_in_sweep,
             });
-            let (cp, ncp) = build_chunk_projections(&iter);
             s.results.push(RealtimeResult::ChunkReceived {
                 chunks_in_volume,
-                time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
-                projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
-                    &iter,
-                ),
-                projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
-                chunk_projections: cp,
-                next_volume_chunk_projections: ncp,
+                plan: iter.build_plan(),
                 arrival_stat: None,
             });
             drop(s);
@@ -1020,18 +894,11 @@ async fn streaming_loop(
                 timestamp: current_scan_start_secs.0,
                 is_last_in_sweep: init_is_last_in_sweep,
             });
-            let (cp, ncp) = build_chunk_projections(&iter);
             s.results.push(RealtimeResult::ChunkReceived {
                 chunks_in_volume,
-                time_until_next: iter.time_until_next().and_then(|td| td.to_std().ok()),
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
-                projected_volume_end_available_at_secs: get_projected_volume_end_available_at_secs(
-                    &iter,
-                ),
-                projected_volume_end_collection_secs: iter.projected_volume_end_collection_secs(),
-                chunk_projections: cp,
-                next_volume_chunk_projections: ncp,
+                plan: iter.build_plan(),
                 arrival_stat: None,
             });
         }
@@ -1044,7 +911,8 @@ async fn streaming_loop(
     let mut none_retries: u32 = 0;
     let mut cur_predicted_at: Option<f64> = None; // absolute Unix seconds
     let mut cur_last_empty_at: Option<f64> = None;
-    let mut cur_diagnostics: Option<super::timing::EstimatedChunkProcessing> = None;
+    let mut cur_diagnostics: Option<super::NextChunkTarget> = None;
+    let mut cur_predicted_wait_secs: Option<f64> = None;
     // Track filter changes across iterations so we can run a mid-stream
     // backfill exactly once per change, and so the in-flight predicted-at
     // diagnostic doesn't outlive its target sequence.
@@ -1078,6 +946,7 @@ async fn streaming_loop(
             cur_predicted_at = None;
             cur_last_empty_at = None;
             cur_diagnostics = None;
+            cur_predicted_wait_secs = None;
             none_retries = 0;
             let emitted = run_mid_stream_backfill(
                 &site_id,
@@ -1098,74 +967,38 @@ async fn streaming_loop(
             iter.set_target_elevation_filter(filter_target_elevation(active_filter));
         }
 
-        // Wait for expected chunk time. Only capture the prediction on the
-        // first iteration for a given chunk — subsequent retry iterations
-        // re-enter here with a near-zero wait, which would overwrite the
-        // original estimate.
+        // Build the canonical plan once per iteration. Every consumer of
+        // forward-looking timing — sleep target here, UI countdown over the
+        // wire, the per-chunk arrival diagnostic — reads from this object,
+        // so the loop's behavior can't drift from what the UI displays.
+        let plan = iter.build_plan();
+        let now_secs = current_timestamp_f64();
+
+        // Sleep target: poll-time of the immediate next download. POLL_BIAS
+        // and the bucket's retry budget are already folded into
+        // `projected_poll_at_secs` by the projector — no additional padding
+        // needed (compare to the old explicit `poll_delay_after_predicted_ms`).
+        let time_until_next_opt = plan.as_ref().and_then(|p| {
+            p.next_target.as_ref().map(|t| {
+                std::time::Duration::from_secs_f64((t.projected_poll_at_secs - now_secs).max(0.0))
+            })
+        });
+
+        // Capture the prediction once per chunk so retry iterations don't
+        // overwrite it with a near-zero "wait" after a 404.
         let is_first_iter_for_chunk = cur_predicted_at.is_none();
-        let (time_until_next_opt, _target_sequence) = match active_filter {
-            StreamingFilter::All => (iter.time_until_next().and_then(|d| d.to_std().ok()), None),
-            StreamingFilter::Elevation(elev_n) => match iter.next_matching_chunk_diagnostics(
-                // accept_end=false: synthesize the volume-boundary signal
-                // when the filter excludes the End chunk's elevation rather
-                // than wasting a download on data the worker would discard.
-                false,
-                |elev| active_filter.accepts(elev),
-            ) {
-                Some((target, diag)) => {
-                    let dur = if diag.duration.num_milliseconds() > 0 {
-                        diag.duration.to_std().ok()
-                    } else {
-                        None
-                    };
-                    if is_first_iter_for_chunk {
-                        cur_diagnostics = Some(diag);
-                    }
-                    (dur, Some(target))
-                }
-                None => {
-                    // Filter excludes every remaining sequence in this volume.
-                    // Without a wait estimate here the loop would burn its
-                    // retry budget polling for the next volume's Start before
-                    // the inter-volume gap (and the intra-volume time before
-                    // the user's elevation reappears) has passed. Estimate
-                    // the projected availability of the user's elevation in
-                    // the next volume; fall back to the legacy single-hop
-                    // estimate when projection data isn't available yet.
-                    let cross_volume = iter
-                        .time_until_next_filtered_chunk_across_volumes(elev_n)
-                        .or_else(|| iter.time_until_next().and_then(|d| d.to_std().ok()));
-                    if let Some(d) = cross_volume {
-                        log::debug!(
-                            "streaming_loop: no match remains in current volume for filter \
-                             elev {}, sleeping {:.1}s until next-volume target",
-                            elev_n,
-                            d.as_secs_f64(),
-                        );
-                    }
-                    (cross_volume, None)
-                }
-            },
-        };
         if is_first_iter_for_chunk {
-            if let Some(d) = time_until_next_opt {
-                cur_predicted_at = Some(current_timestamp_f64() + d.as_secs_f64());
-            }
-            // Capture single-hop diagnostics for the no-filter path (the
-            // multi-hop path already captured above).
-            if matches!(active_filter, StreamingFilter::All) {
-                cur_diagnostics = iter.next_chunk_processing_diagnostics();
+            if let Some(target) = plan.as_ref().and_then(|p| p.next_target.as_ref()) {
+                cur_predicted_at = Some(target.projected_available_at_secs);
+                cur_predicted_wait_secs = Some(target.projected_poll_at_secs - now_secs);
+                cur_diagnostics = Some(target.clone());
             }
         }
         if let Some(wait_duration) = time_until_next_opt {
-            let mut wait_ms = wait_duration.as_millis() as u32;
-            // Pad the first (prediction-driven) wait per chunk so we fire
-            // slightly after `predicted_available_at`. Retry waits after an
-            // empty poll come through the `REALTIME_CHUNK_POLICY` backoff
-            // loop below, not here, so the pad applies exactly once per chunk.
-            if is_first_iter_for_chunk && wait_ms > 0 {
-                wait_ms = wait_ms.saturating_add(poll_delay_after_predicted_ms);
-            }
+            let wait_ms = wait_duration.as_millis() as u32;
+            // POLL_BIAS and the bucket retry budget are already folded into
+            // `projected_poll_at_secs` upstream, so we sleep directly to
+            // that target without additional padding here.
             if wait_ms > 0 {
                 match interruptible_sleep(&state, &ctx, wait_ms, active_filter_epoch).await {
                     SleepOutcome::Stopped => {
@@ -1276,34 +1109,21 @@ async fn streaming_loop(
                 "streaming_loop: synthetic_volume_end emitted (filter={:?})",
                 active_filter
             );
-            // Estimate the wait until the user's elevation reappears so the
-            // status bar / timeline can show a countdown instead of a stale
-            // "receiving…". Without this, the synthetic-end emit hands a
-            // `time_until_next: None` to the UI and the phase sticks on
-            // Streaming for the whole inter-volume gap.
-            let synthetic_time_until_next = match active_filter {
-                StreamingFilter::Elevation(elev_n) => iter
-                    .time_until_next_filtered_chunk_across_volumes(elev_n)
-                    .or_else(|| iter.time_until_next().and_then(|d| d.to_std().ok())),
-                StreamingFilter::All => iter.time_until_next().and_then(|d| d.to_std().ok()),
-            };
             // Emit a UI-only ChunkReceived so the timeline knows the volume
-            // boundary even though no actual End chunk was downloaded.
+            // boundary even though no actual End chunk was downloaded. The
+            // plan's `next_target` (which, under an elevation filter with
+            // no current-volume match, points at the next volume's matching
+            // chunk via the chained projection) is the single source for
+            // the cross-volume countdown.
             chunks_in_volume += 1;
             {
-                let (cp, ncp) = build_chunk_projections(&iter);
+                let plan = iter.build_plan();
                 let mut s = state.borrow_mut();
                 s.results.push(RealtimeResult::ChunkReceived {
                     chunks_in_volume,
-                    time_until_next: synthetic_time_until_next,
                     is_volume_end: true,
                     fetch_latency_ms: 0.0,
-                    projected_volume_end_available_at_secs:
-                        get_projected_volume_end_available_at_secs(&iter),
-                    projected_volume_end_collection_secs: iter
-                        .projected_volume_end_collection_secs(),
-                    chunk_projections: cp,
-                    next_volume_chunk_projections: ncp,
+                    plan,
                     arrival_stat: None,
                 });
             }
@@ -1314,6 +1134,7 @@ async fn streaming_loop(
             cur_predicted_at = None;
             cur_last_empty_at = None;
             cur_diagnostics = None;
+            cur_predicted_wait_secs = None;
             continue;
         }
 
@@ -1369,22 +1190,29 @@ async fn streaming_loop(
                     );
                 }
 
-                // Look up this chunk's entry in the library's projection list
-                // so we can attach elevation_number and chunk-within-sweep
-                // position to the arrival stat.
-                let (chunk_projections, next_volume_chunk_projections) =
-                    build_chunk_projections(&iter);
-                let (elevation_number, chunk_index_in_sweep, chunks_in_sweep) =
-                    match chunk_projections.as_ref().and_then(|projs| {
-                        projs.iter().find(|p| p.sequence as u32 == chunks_in_volume)
-                    }) {
-                        Some(p) => (
-                            p.elevation_number.map(|e| e as u8),
-                            Some(p.chunk_index_in_sweep as u32),
-                            Some(p.chunks_in_sweep as u32),
-                        ),
-                        None => (None, None, None),
-                    };
+                // Build the fresh plan *after* try_next advances `iter.current`,
+                // so it describes the NEXT download from this point. Same
+                // object feeds both the UI and the next loop iteration's
+                // sleep target — keeping them in lock-step.
+                let post_plan = iter.build_plan();
+
+                // Attach structural metadata for the chunk that just arrived
+                // by looking it up in the fresh plan's current-volume slice.
+                let (elevation_number, chunk_index_in_sweep, chunks_in_sweep) = post_plan
+                    .as_ref()
+                    .and_then(|p| {
+                        p.current_volume_chunks
+                            .iter()
+                            .find(|c| c.sequence as u32 == chunks_in_volume)
+                    })
+                    .map(|c| {
+                        (
+                            c.elevation_number.map(|e| e as u8),
+                            Some(c.chunk_index_in_sweep as u32),
+                            Some(c.chunks_in_sweep as u32),
+                        )
+                    })
+                    .unwrap_or((None, None, None));
 
                 // Anchor source the projector was using for the *previous*
                 // chunk — i.e. the one whose arrival we're recording.
@@ -1394,24 +1222,22 @@ async fn streaming_loop(
                 // chunk is "current".
                 let anchor_source = Some(iter.current_anchor_source());
 
-                let (
-                    bucket_key,
-                    stats_n_at_prediction,
-                    scheduler_path,
-                    physics_breakdown,
-                    predicted_wait_secs,
-                ) = match cur_diagnostics.as_ref() {
-                    Some(d) => (
-                        d.bucket
-                            .as_ref()
-                            .map(crate::state::BucketKey::from_characteristics),
-                        d.stats_n_at_prediction,
-                        Some(d.path),
-                        d.physics_breakdown,
-                        Some(d.duration.num_milliseconds() as f64 / 1000.0),
-                    ),
-                    None => (None, 0, None, None, None),
-                };
+                // The forecast that produced this chunk's sleep target was
+                // captured into `cur_diagnostics` on the chunk's first
+                // iteration. Map its fields into the arrival stat so the
+                // diagnostics modal can compare predicted vs. observed.
+                let (bucket_key, stats_n_at_prediction, scheduler_path, physics_breakdown) =
+                    match cur_diagnostics.as_ref() {
+                        Some(t) => (
+                            t.bucket
+                                .as_ref()
+                                .map(crate::state::BucketKey::from_characteristics),
+                            t.stats_n_at_prediction,
+                            Some(t.scheduler_path),
+                            Some(t.physics_breakdown),
+                        ),
+                        None => (None, 0, None, None),
+                    };
 
                 let arrival_stat = crate::state::ChunkArrivalStat {
                     sequence: chunks_in_volume,
@@ -1431,7 +1257,7 @@ async fn streaming_loop(
                     anchor_source,
                     availability_lag_ms: None,
                     collection_time_secs: None,
-                    predicted_wait_secs,
+                    predicted_wait_secs: cur_predicted_wait_secs,
                 };
 
                 // Reset tracking state for the next chunk
@@ -1439,8 +1265,7 @@ async fn streaming_loop(
                 cur_predicted_at = None;
                 cur_last_empty_at = None;
                 cur_diagnostics = None;
-
-                let time_until_next = iter.time_until_next().and_then(|td| td.to_std().ok());
+                cur_predicted_wait_secs = None;
                 let chunk_is_last_in_sweep = iter
                     .chunk_metadata(chunk.identifier.sequence())
                     .map(|m| m.is_last_in_sweep());
@@ -1459,15 +1284,9 @@ async fn streaming_loop(
                     // Emit UI status update
                     s.results.push(RealtimeResult::ChunkReceived {
                         chunks_in_volume,
-                        time_until_next,
                         is_volume_end: is_end,
                         fetch_latency_ms: chunk_fetch_ms,
-                        projected_volume_end_available_at_secs:
-                            get_projected_volume_end_available_at_secs(&iter),
-                        projected_volume_end_collection_secs: iter
-                            .projected_volume_end_collection_secs(),
-                        chunk_projections,
-                        next_volume_chunk_projections,
+                        plan: post_plan,
                         arrival_stat: Some(arrival_stat),
                     });
                 }
@@ -1576,8 +1395,6 @@ async fn interruptible_sleep(
             }
         }
 
-        state.borrow_mut().time_until_next =
-            Some(std::time::Duration::from_millis(remaining as u64));
         ctx.request_repaint();
 
         let sleep_time = INCREMENT.min(remaining);
@@ -1585,7 +1402,6 @@ async fn interruptible_sleep(
         remaining = remaining.saturating_sub(INCREMENT);
     }
 
-    state.borrow_mut().time_until_next = None;
     if state.borrow().stop_requested {
         SleepOutcome::Stopped
     } else if state.borrow().filter_epoch != wake_epoch {

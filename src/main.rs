@@ -1008,13 +1008,9 @@ impl WorkbenchApp {
             }
             nexrad::RealtimeResult::ChunkReceived {
                 chunks_in_volume,
-                time_until_next,
                 is_volume_end,
                 fetch_latency_ms,
-                projected_volume_end_available_at_secs,
-                projected_volume_end_collection_secs,
-                chunk_projections,
-                next_volume_chunk_projections,
+                plan,
                 arrival_stat,
             } => {
                 if self.state.dev_mode {
@@ -1023,22 +1019,17 @@ impl WorkbenchApp {
                         .record_fetch_latency(fetch_latency_ms);
                 }
                 log::debug!(
-                    "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?} proj_end={:?}",
+                    "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?}",
                     chunks_in_volume,
                     is_volume_end,
                     fetch_latency_ms,
-                    time_until_next,
-                    projected_volume_end_available_at_secs,
+                    plan.as_ref().and_then(|p| p.next_available_in_secs(now)),
                 );
                 self.state.live_mode_state.handle_realtime_chunk(
                     chunks_in_volume,
-                    time_until_next,
                     is_volume_end,
                     now,
-                    projected_volume_end_available_at_secs,
-                    projected_volume_end_collection_secs,
-                    chunk_projections,
-                    next_volume_chunk_projections,
+                    plan,
                 );
 
                 if let Some(stat) = arrival_stat {
@@ -1590,16 +1581,19 @@ impl WorkbenchApp {
         let (chunk_in_sweep_str, remaining_str) = self
             .state
             .live_mode_state
-            .chunk_projections
+            .plan
             .as_ref()
-            .and_then(|projs| {
-                projs.iter().find(|c| c.sequence == sequence).map(|c| {
-                    let in_sweep = format!("{}/{}", c.chunk_index_in_sweep + 1, c.chunks_in_sweep);
-                    // Count remaining chunks in this sweep after this one
-                    let remaining_in_sweep =
-                        c.chunks_in_sweep.saturating_sub(c.chunk_index_in_sweep + 1);
-                    (in_sweep, format!("{}", remaining_in_sweep))
-                })
+            .and_then(|plan| {
+                plan.current_volume_chunks
+                    .iter()
+                    .find(|c| c.sequence == sequence)
+                    .map(|c| {
+                        let in_sweep =
+                            format!("{}/{}", c.chunk_index_in_sweep + 1, c.chunks_in_sweep);
+                        let remaining_in_sweep =
+                            c.chunks_in_sweep.saturating_sub(c.chunk_index_in_sweep + 1);
+                        (in_sweep, format!("{}", remaining_in_sweep))
+                    })
             })
             .unwrap_or_else(|| ("?/?".to_string(), "?".to_string()));
 
@@ -2564,26 +2558,11 @@ impl WorkbenchApp {
             self.streaming.stop();
         }
 
-        // Update live mode countdown from realtime channel. The streaming
-        // loop's interruptible_sleep pulses its remaining duration into the
-        // channel every 250ms; mirror it onto live_mode_state and flip the
-        // phase to WaitingForChunk if we're not already there. Without that
-        // phase flip the countdown plumbing computes the right number but
-        // every UI surface (top bar, timeline, tooltips) gates it behind
-        // `phase == WaitingForChunk` and falls back to "receiving…". This
-        // matters for filter mode where backfill emissions and synthetic
-        // ends leave the phase pointed at Streaming with no follow-up event
-        // to flip it.
-        if self.state.live_mode_state.is_active() {
-            if let Some(duration) = self.streaming.time_until_next() {
-                let now = js_sys::Date::now() / 1000.0;
-                self.state.live_mode_state.next_chunk_available_at_secs =
-                    Some(now + duration.as_secs_f64());
-                if self.state.live_mode_state.phase == state::LivePhase::Streaming {
-                    self.state.live_mode_state.phase = state::LivePhase::WaitingForChunk;
-                }
-            }
-        }
+        // The plan's per-chunk `projected_available_at_secs` is an absolute
+        // timestamp, so the countdown advances frame-by-frame off `now`
+        // without needing a separate heartbeat to mirror the loop's sleep.
+        // Phase flips happen at ChunkReceived time in
+        // `LiveModeState::handle_realtime_chunk` based on plan.next_target.
     }
 
     /// Auto-load scans when scrubbing the timeline and prefetch upcoming sweeps.

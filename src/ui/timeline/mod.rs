@@ -455,7 +455,6 @@ pub(super) fn render_timeline(ui: &mut egui::Ui, state: &mut AppState) {
             countdown_secs: state
                 .live_mode_state
                 .countdown_remaining_secs(frame_now_secs),
-            chunk_interval_secs: state.live_mode_state.chunk_interval_secs,
             in_progress_radials: state
                 .live_mode_state
                 .current_in_progress_radials
