@@ -289,10 +289,11 @@ impl PlaybackManager {
 /// In `Latest` mode, the most recent started sweep at or before the
 /// playback position is selected (any elevation).
 ///
-/// Product availability: a sweep with non-empty `cached_products` must
-/// list the requested product; empty `cached_products` means "unknown —
-/// allow" (legacy index entries / placeholders), matching the right-panel
-/// availability logic.
+/// Product availability: the sweep's `cached_products` must list the
+/// requested product. Empty `cached_products` is treated as "nothing
+/// available" — current ingest never writes such an entry, and old IDB
+/// data that still contains them is intentionally rejected here rather
+/// than driving a worker render that's guaranteed to fail.
 pub(crate) fn resolve_active_sweep_target(
     site_id: &str,
     playback_position: f64,
@@ -328,9 +329,10 @@ pub(crate) fn resolve_active_sweep_target(
             })?,
     };
 
-    // Empty cached_products means "unknown — allow"; otherwise require an exact match.
-    if !sweep.cached_products.is_empty() && !sweep.cached_products.iter().any(|p| p == product_str)
-    {
+    // Require an exact product match. Empty `cached_products` is treated as
+    // "nothing stored for this sweep" — reject rather than optimistically
+    // ask the worker for a blob the index never claimed.
+    if !sweep.cached_products.iter().any(|p| p == product_str) {
         return None;
     }
 
@@ -553,8 +555,11 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn resolve_allows_unknown_product_availability() {
-        // Empty cached_products means "unknown — allow".
+    fn resolve_rejects_sweep_with_empty_cached_products() {
+        // Empty `cached_products` means "no blobs stored for this sweep" —
+        // resolver must NOT optimistically ask the worker for one. Prior
+        // behaviour treated empty as "unknown — allow", which drove an
+        // infinite worker-render retry loop on phantom legacy entries.
         let tl = timeline_with(vec![scan_with(
             1000.0,
             1020.0,
@@ -568,10 +573,11 @@ mod tests {
             RadarProduct::Velocity,
             &tl,
             MAX_AGE,
-        )
-        .expect("empty cached_products should permit any product");
-        assert_eq!(id.elevation_number, 1);
-        assert_eq!(id.product, "velocity");
+        );
+        assert!(
+            id.is_none(),
+            "empty cached_products must be rejected, not silently allowed",
+        );
     }
 
     #[wasm_bindgen_test]

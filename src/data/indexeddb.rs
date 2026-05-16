@@ -17,10 +17,11 @@
 //!   compiler rejects `.await` inside it — enforcing the WASM IDB rule that
 //!   readwrite transactions auto-commit when the event loop yields.
 //! - Cross-store transactions are supported by passing a multi-store slice.
-//! - Read-modify-write (e.g. merging into an existing scan-index entry) is
-//!   *not* atomic at the IDB layer: callers must ensure single-writer
-//!   serialization for a given key. The ingest pipeline does this via the
-//!   per-worker `CHUNK_ACCUM` thread-local.
+//! - `upsert_scan` does a readonly `scan_availability` lookup before its
+//!   readwrite transaction to decide create-vs-merge. The split is *not*
+//!   atomic, so callers must ensure single-writer serialization for a given
+//!   scan key. The ingest pipeline does this via the per-worker
+//!   `CHUNK_ACCUM` thread-local.
 
 use crate::data::keys::*;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
@@ -324,76 +325,107 @@ impl IndexedDbStore {
         logic::decide_quota(batch_size, estimate)
     }
 
-    /// Atomically writes a *new* scan: blobs, scan-index entry, and an
-    /// initial `scan_touches` timestamp, all in one cross-store readwrite
-    /// transaction.
+    /// Atomically writes blobs + scan-index entry for a scan, creating the
+    /// entry on first call and merging on subsequent calls.
     ///
-    /// The initial touch is what gives a fresh scan its place in the LRU
-    /// order. If you call this for a scan key that already exists, the
-    /// existing `scan_touches` value is overwritten with `now` — fine when
-    /// the scan is genuinely being replaced (e.g. archive supersedes a prior
-    /// real-time entry under the same key), but the wrong choice for an
-    /// in-progress chunk-ingest merge: use [`put_scan`] for those.
-    pub async fn create_scan(
+    /// Dispatches internally on `scan_availability`:
+    ///
+    /// - **First write** (no existing entry): derive a fresh `ScanIndexEntry`
+    ///   from `header` and the uploads, then write blobs + index + an initial
+    ///   `scan_touches=now` in one cross-store readwrite transaction. The
+    ///   initial touch is what gives the scan its place in the LRU order.
+    /// - **Merge** (entry exists): fill in `header.vcp` / `header.file_name`
+    ///   only if currently `None`, append derived `CachedSweep`s to
+    ///   `existing.cached_sweeps`, and add to `existing.total_size_bytes`.
+    ///   `scan_touches` is preserved so a chunk-ingest flush doesn't refresh
+    ///   the access timestamp on every partial write.
+    ///
+    /// `ElevationUpload`s with empty `blobs` are dropped silently — the
+    /// manifest is derived from the blobs that are actually being written, so
+    /// no `CachedSweep` can claim a sweep that doesn't exist in storage.
+    ///
+    /// Empty `elevations` is permitted: the entry is written (or its header
+    /// fields merged) without any blob writes.
+    ///
+    /// Read-modify-write is *not* atomic across the readonly and readwrite
+    /// transactions, so the caller must ensure single-writer serialization
+    /// for a given scan key. The ingest pipeline does this via the
+    /// per-worker `CHUNK_ACCUM` thread-local.
+    pub async fn upsert_scan(
         &self,
-        entry: &ScanIndexEntry,
-        sweep_blobs: &[(String, Vec<u8>)],
+        header: &ScanHeader,
+        elevations: &[ElevationUpload],
     ) -> Result<(), DataError> {
-        Self::check_quota(sweep_blobs).await?;
+        // Drop phantom elevations at the boundary. Everything downstream
+        // (manifest derivation, blob writes, size accounting) operates on
+        // the filtered list, so the manifest can never claim a sweep that
+        // wasn't written.
+        let kept: Vec<&ElevationUpload> =
+            elevations.iter().filter(|e| !e.blobs.is_empty()).collect();
 
+        // Materialize the blob (key, bytes) pairs once so we can both
+        // size-check and write them without redundant key formatting.
+        let sweep_blobs: Vec<(String, Vec<u8>)> = kept
+            .iter()
+            .flat_map(|elev| {
+                elev.blobs.iter().map(move |blob| {
+                    let key =
+                        SweepDataKey::new(header.scan.clone(), elev.elevation_number, blob.product);
+                    (key.to_storage_key(), blob.bytes.clone())
+                })
+            })
+            .collect();
+
+        Self::check_quota(&sweep_blobs).await?;
         self.ensure_open().await?;
-        let entry_key = entry.storage_key();
-        let entry_value = to_js_value(entry)?;
-        let touch_value = JsValue::from_f64(UnixMillis::now().0 as f64);
 
-        self.write_tx(
-            &[STORE_SWEEPS, STORE_SCAN_INDEX, STORE_SCAN_TOUCHES],
-            |wtx| {
-                let sweeps = wtx.object_store(STORE_SWEEPS)?;
-                for (key, data) in sweep_blobs {
-                    let array = Uint8Array::from(data.as_slice());
-                    let buffer = array.buffer();
-                    sweeps
-                        .put_with_key(&buffer, &JsValue::from_str(key))
-                        .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+        let entry_key = header.scan.to_storage_key();
+        let existing = self.scan_availability(&header.scan).await?;
+        let batch_bytes: u64 = sweep_blobs.iter().map(|(_, b)| b.len() as u64).sum();
+
+        let (entry, seed_touch) = match existing {
+            Some(mut existing) => {
+                if existing.vcp.is_none() {
+                    existing.vcp = header.vcp.clone();
                 }
-                wtx.object_store(STORE_SCAN_INDEX)?
-                    .put_with_key(&entry_value, &JsValue::from_str(&entry_key))
-                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-                wtx.object_store(STORE_SCAN_TOUCHES)?
-                    .put_with_key(&touch_value, &JsValue::from_str(&entry_key))
-                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
-                Ok(())
-            },
-        )
-        .await
-    }
+                if existing.file_name.is_none() {
+                    existing.file_name = header.file_name.clone();
+                }
+                existing
+                    .cached_sweeps
+                    .extend(kept.iter().map(|e| e.to_cached_sweep()));
+                existing.total_size_bytes += batch_bytes;
+                (existing, false)
+            }
+            None => {
+                let cached_sweeps = kept.iter().map(|e| e.to_cached_sweep()).collect();
+                let entry = ScanIndexEntry {
+                    scan: header.scan.clone(),
+                    vcp: header.vcp.clone(),
+                    file_name: header.file_name.clone(),
+                    cached_sweeps,
+                    total_size_bytes: batch_bytes,
+                };
+                (entry, true)
+            }
+        };
 
-    /// Atomically updates an existing scan: blobs + scan-index entry, in one
-    /// cross-store readwrite transaction. Leaves `scan_touches` alone so a
-    /// chunk-ingest flush doesn't refresh the access timestamp on every
-    /// partial write.
-    ///
-    /// Empty `sweep_blobs` writes the entry alone (e.g. a chunk-ingest flush
-    /// that updates merge state without producing new blobs).
-    ///
-    /// Use [`create_scan`] for first-time writes — calling `put_scan` for a
-    /// key that has no `scan_touches` entry leaves the scan with no LRU
-    /// placement and it'll be evicted on the next pass.
-    pub async fn put_scan(
-        &self,
-        entry: &ScanIndexEntry,
-        sweep_blobs: &[(String, Vec<u8>)],
-    ) -> Result<(), DataError> {
-        Self::check_quota(sweep_blobs).await?;
+        let entry_value = to_js_value(&entry)?;
+        let touch_value = if seed_touch {
+            Some(JsValue::from_f64(UnixMillis::now().0 as f64))
+        } else {
+            None
+        };
 
-        self.ensure_open().await?;
-        let entry_key = entry.storage_key();
-        let entry_value = to_js_value(entry)?;
+        let stores: &[&str] = if seed_touch {
+            &[STORE_SWEEPS, STORE_SCAN_INDEX, STORE_SCAN_TOUCHES]
+        } else {
+            &[STORE_SWEEPS, STORE_SCAN_INDEX]
+        };
 
-        self.write_tx(&[STORE_SWEEPS, STORE_SCAN_INDEX], |wtx| {
+        self.write_tx(stores, |wtx| {
             let sweeps = wtx.object_store(STORE_SWEEPS)?;
-            for (key, data) in sweep_blobs {
+            for (key, data) in &sweep_blobs {
                 let array = Uint8Array::from(data.as_slice());
                 let buffer = array.buffer();
                 sweeps
@@ -403,6 +435,11 @@ impl IndexedDbStore {
             wtx.object_store(STORE_SCAN_INDEX)?
                 .put_with_key(&entry_value, &JsValue::from_str(&entry_key))
                 .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            if let Some(ref touch) = touch_value {
+                wtx.object_store(STORE_SCAN_TOUCHES)?
+                    .put_with_key(touch, &JsValue::from_str(&entry_key))
+                    .map_err(|e| DataError::RequestFailed(js_err(e)))?;
+            }
             Ok(())
         })
         .await
@@ -650,12 +687,11 @@ impl IndexedDbStore {
     /// Evicts scans (oldest access first) until total cache size is at or
     /// below `target_bytes`. Returns the number of scans evicted.
     ///
-    /// Sort key is the `scan_touches` timestamp. `create_scan` writes an
-    /// initial touch at ingest time, and `touch_scan` (fired by `get_sweep`)
-    /// refreshes it on render. Entries with no touch — anomalous, but
-    /// possible if a scan was written via `put_scan` without a prior
-    /// `create_scan` — sort to position 0 and are evicted first, which
-    /// reclaims any stranded data.
+    /// Sort key is the `scan_touches` timestamp. `upsert_scan` seeds a
+    /// touch on the first write for a given scan key, and `touch_scan`
+    /// (fired by `get_sweep`) refreshes it on render. Entries with no touch
+    /// — anomalous, but possible on a fresh upgrade or after a corrupted
+    /// commit — sort to position 0 and are evicted first.
     ///
     /// Reads all entries + touches once, sorts, and deletes one scan at a
     /// time until the running size estimate drops under target. Each delete
@@ -1106,8 +1142,8 @@ mod logic {
 
     /// Eviction order: oldest `scan_touches` first. Entries with no touch
     /// entry sort to position 0 (treated as `UnixMillis(0)`) so they are
-    /// evicted ahead of any touched scan — this is the cleanup path for
-    /// data stranded by a `put_scan` without a prior `create_scan`.
+    /// evicted ahead of any touched scan — the cleanup path for any scan
+    /// whose touch is missing.
     pub(super) fn eviction_order(
         entries: &[ScanIndexEntry],
         touches: &HashMap<ScanKey, UnixMillis>,

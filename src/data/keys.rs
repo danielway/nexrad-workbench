@@ -543,6 +543,73 @@ pub struct CachedSweep {
     pub cached_products: Vec<String>,
 }
 
+/// Timing metadata for a single elevation cut. Used as input to
+/// `IndexedDbStore::upsert_scan`, which derives the persisted
+/// [`CachedSweep`] from it.
+#[derive(Debug, Clone)]
+pub struct SweepTiming {
+    /// Sweep start time (Unix seconds, sub-second precision).
+    pub start_secs: f64,
+    /// Sweep end time (Unix seconds, sub-second precision).
+    pub end_secs: f64,
+    /// Mean elevation angle in degrees across the sweep's radials.
+    pub elevation_angle: f32,
+    /// Azimuth angle (degrees) of the chronologically first radial.
+    pub start_azimuth: f32,
+}
+
+/// One product's pre-computed sweep blob, paired with its product name.
+/// The IDB layer derives the storage key from the surrounding context
+/// (`ScanKey` + `elevation_number` + this product).
+#[derive(Debug, Clone)]
+pub struct ProductBlob {
+    /// Product name string (matches the `&str` constants in
+    /// `ingest_phases::PRODUCTS`, e.g. `"reflectivity"`).
+    pub product: &'static str,
+    /// Raw sweep bytes (`PrecomputedSweep::to_bytes()` output).
+    pub bytes: Vec<u8>,
+}
+
+/// One elevation's contribution to an upsert: the timing the IDB layer
+/// needs to derive a [`CachedSweep`], plus the per-product blobs whose
+/// storage keys it derives. An `ElevationUpload` with `blobs.is_empty()`
+/// is dropped by the IDB layer — phantom manifest entries become
+/// structurally impossible.
+#[derive(Debug, Clone)]
+pub struct ElevationUpload {
+    pub elevation_number: u8,
+    pub timing: SweepTiming,
+    pub blobs: Vec<ProductBlob>,
+}
+
+impl ElevationUpload {
+    /// Derive the `CachedSweep` manifest entry the IDB layer will persist
+    /// for this upload. Exposed so callers can build a response payload
+    /// (e.g. the worker's `IngestResponse.sweeps` field) using the same
+    /// derivation the IDB layer uses internally — single source of truth.
+    pub fn to_cached_sweep(&self) -> CachedSweep {
+        CachedSweep {
+            start: self.timing.start_secs,
+            end: self.timing.end_secs,
+            elevation: self.timing.elevation_angle,
+            elevation_number: self.elevation_number,
+            start_azimuth: self.timing.start_azimuth,
+            cached_products: self.blobs.iter().map(|b| b.product.to_string()).collect(),
+        }
+    }
+}
+
+/// Everything a caller knows or has just learned about a scan in a single
+/// `upsert_scan` call. `vcp` and `file_name` are interpreted as
+/// "set on first write, fill-in-if-`None` on merge" — callers pass what
+/// they currently know without branching on whether the scan exists.
+#[derive(Debug, Clone)]
+pub struct ScanHeader {
+    pub scan: ScanKey,
+    pub vcp: Option<ExtractedVcp>,
+    pub file_name: Option<String>,
+}
+
 /// A single elevation cut extracted from a VCP message (Message Type 5).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractedVcpElevation {
@@ -705,11 +772,6 @@ pub struct ScanIndexEntry {
 }
 
 impl ScanIndexEntry {
-    /// Convert to storage key string.
-    pub fn storage_key(&self) -> String {
-        self.scan.to_storage_key()
-    }
-
     /// Whether the VCP metadata record has been ingested.
     pub fn has_vcp(&self) -> bool {
         self.vcp.is_some()

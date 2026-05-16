@@ -210,38 +210,91 @@ pub(crate) fn group_radials_by_elevation(
     by_elevation
 }
 
-pub(crate) struct ExtractedSweepBlobs {
-    pub blobs: Vec<(String, Vec<u8>)>,
-    pub products_by_elev: HashMap<u8, Vec<String>>,
+/// Aggregate per-elevation timing (start/end Unix-secs, mean angle, first
+/// azimuth) from a flat list of radial metadata. Returns `None` for
+/// elevations with no entries.
+fn timing_for_elevation(radial_metas: &[(i64, u8, f32, f32)], elev_num: u8) -> Option<SweepTiming> {
+    let mut min_ts_ms = i64::MAX;
+    let mut max_ts_ms = i64::MIN;
+    let mut angle_sum: f64 = 0.0;
+    let mut count: u32 = 0;
+    let mut first_az_at_min_ts: f32 = 0.0;
+
+    for &(ts_ms, en, elev_angle, azimuth) in radial_metas {
+        if en != elev_num {
+            continue;
+        }
+        if ts_ms < min_ts_ms {
+            min_ts_ms = ts_ms;
+            first_az_at_min_ts = azimuth;
+        }
+        if ts_ms > max_ts_ms {
+            max_ts_ms = ts_ms;
+        }
+        angle_sum += elev_angle as f64;
+        count += 1;
+    }
+
+    if count == 0 {
+        return None;
+    }
+    Some(SweepTiming {
+        start_secs: min_ts_ms as f64 / 1000.0,
+        end_secs: max_ts_ms as f64 / 1000.0,
+        elevation_angle: (angle_sum / count as f64) as f32,
+        start_azimuth: first_az_at_min_ts,
+    })
 }
 
-pub(crate) fn extract_sweep_blobs(
-    by_elevation: &HashMap<u8, Vec<&::nexrad::model::data::Radial>>,
-    elevation_numbers: &[u8],
-    scan_key: &ScanKey,
-) -> ExtractedSweepBlobs {
+/// Build an `ElevationUpload` for one elevation: extract a blob per
+/// product that has data, attach timing. Returns `None` when no product
+/// extracted (the elevation contributes nothing storable) — this is the
+/// drop point that prevents phantom manifest entries from being passed
+/// down to the IDB layer.
+fn elevation_upload_for(
+    sorted_radials: &[&::nexrad::model::data::Radial],
+    radial_metas: &[(i64, u8, f32, f32)],
+    elev_num: u8,
+) -> Option<ElevationUpload> {
     use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
 
-    let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut products_by_elev: HashMap<u8, Vec<String>> = HashMap::new();
-    for &elev_num in elevation_numbers {
-        if let Some(sorted_radials) = by_elevation.get(&elev_num) {
-            for (product, product_name) in PRODUCTS {
-                if let Some(sweep) = extract_sweep_data_from_sorted(sorted_radials, *product) {
-                    let key = SweepDataKey::new(scan_key.clone(), elev_num, *product_name);
-                    blobs.push((key.to_storage_key(), sweep.to_bytes()));
-                    products_by_elev
-                        .entry(elev_num)
-                        .or_default()
-                        .push((*product_name).to_string());
-                }
-            }
+    let mut blobs: Vec<ProductBlob> = Vec::new();
+    for (product, product_name) in PRODUCTS {
+        if let Some(sweep) = extract_sweep_data_from_sorted(sorted_radials, *product) {
+            blobs.push(ProductBlob {
+                product: product_name,
+                bytes: sweep.to_bytes(),
+            });
         }
     }
-    ExtractedSweepBlobs {
-        blobs,
-        products_by_elev,
+    if blobs.is_empty() {
+        return None;
     }
+
+    let timing = timing_for_elevation(radial_metas, elev_num)?;
+    Some(ElevationUpload {
+        elevation_number: elev_num,
+        timing,
+        blobs,
+    })
+}
+
+/// Build an `ElevationUpload` per elevation present in `by_elevation`.
+/// Elevations with no extractable product yield no upload — the manifest
+/// the IDB layer derives from this list is guaranteed to describe blobs
+/// that will actually be written.
+pub(crate) fn build_elevation_uploads(
+    by_elevation: &HashMap<u8, Vec<&::nexrad::model::data::Radial>>,
+    radial_metas: &[(i64, u8, f32, f32)],
+) -> Vec<ElevationUpload> {
+    let mut uploads: Vec<ElevationUpload> = by_elevation
+        .iter()
+        .filter_map(|(&elev_num, sorted_radials)| {
+            elevation_upload_for(sorted_radials, radial_metas, elev_num)
+        })
+        .collect();
+    uploads.sort_by_key(|u| u.elevation_number);
+    uploads
 }
 
 pub(crate) struct ChunkDecodeResult {
@@ -436,100 +489,21 @@ pub(crate) fn compute_chunk_time_spans(
     }
 }
 
-pub(crate) fn build_flush_sweep_blobs(
+/// Build an `ElevationUpload` for each newly-completed elevation in a
+/// chunk flush. Same drop-on-no-extracted-product semantics as
+/// `build_elevation_uploads`.
+pub(crate) fn build_elevation_uploads_for_flush(
     all_radials: &[::nexrad::model::data::Radial],
     radial_metas: &[(i64, u8, f32, f32)],
     newly_completed: &[u8],
-    scan_key: &ScanKey,
-) -> (Vec<(String, Vec<u8>)>, Vec<CachedSweep>) {
-    use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
-
+) -> Vec<ElevationUpload> {
     let by_elevation = group_radials_by_elevation(all_radials);
 
-    let mut blobs: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut metas: Vec<CachedSweep> = Vec::new();
-
-    for &elev_num in newly_completed {
-        if let Some(sorted_radials) = by_elevation.get(&elev_num) {
-            let mut cached_products: Vec<String> = Vec::new();
-            for (product, product_name) in PRODUCTS {
-                if let Some(sweep) = extract_sweep_data_from_sorted(sorted_radials, *product) {
-                    let key = SweepDataKey::new(scan_key.clone(), elev_num, *product_name);
-                    blobs.push((key.to_storage_key(), sweep.to_bytes()));
-                    cached_products.push((*product_name).to_string());
-                }
-            }
-
-            let elev_metas: Vec<&(i64, u8, f32, f32)> = radial_metas
-                .iter()
-                .filter(|(_, en, _, _)| *en == elev_num)
-                .collect();
-            if !elev_metas.is_empty() {
-                let min_ts = elev_metas.iter().map(|(t, _, _, _)| *t).min().unwrap();
-                let max_ts = elev_metas.iter().map(|(t, _, _, _)| *t).max().unwrap();
-                let angle_sum: f64 = elev_metas.iter().map(|(_, _, a, _)| *a as f64).sum();
-                let count = elev_metas.len();
-                let first_az = elev_metas
-                    .iter()
-                    .min_by_key(|(t, _, _, _)| *t)
-                    .map(|(_, _, _, az)| *az)
-                    .unwrap_or(0.0);
-                metas.push(CachedSweep {
-                    start: min_ts as f64 / 1000.0,
-                    end: max_ts as f64 / 1000.0,
-                    elevation: (angle_sum / count as f64) as f32,
-                    elevation_number: elev_num,
-                    start_azimuth: first_az,
-                    cached_products,
-                });
-            }
-        }
-    }
-
-    (blobs, metas)
-}
-
-pub(crate) fn build_sweep_meta(radial_metas: &[(i64, u8, f32, f32)]) -> Vec<CachedSweep> {
-    use std::collections::BTreeMap;
-
-    struct Accum {
-        min_ts_ms: i64,
-        max_ts_ms: i64,
-        angle_sum: f64,
-        count: u32,
-        first_azimuth: f32,
-    }
-
-    let mut groups: BTreeMap<u8, Accum> = BTreeMap::new();
-
-    for &(ts_ms, elev_num, elev_angle, azimuth) in radial_metas {
-        let entry = groups.entry(elev_num).or_insert(Accum {
-            min_ts_ms: ts_ms,
-            max_ts_ms: ts_ms,
-            angle_sum: 0.0,
-            count: 0,
-            first_azimuth: azimuth,
-        });
-        if ts_ms < entry.min_ts_ms {
-            entry.min_ts_ms = ts_ms;
-            entry.first_azimuth = azimuth;
-        }
-        entry.max_ts_ms = entry.max_ts_ms.max(ts_ms);
-        entry.angle_sum += elev_angle as f64;
-        entry.count += 1;
-    }
-
-    groups
-        .into_iter()
-        .map(|(elev_num, acc)| CachedSweep {
-            start: acc.min_ts_ms as f64 / 1000.0,
-            end: acc.max_ts_ms as f64 / 1000.0,
-            elevation: (acc.angle_sum / acc.count as f64) as f32,
-            elevation_number: elev_num,
-            start_azimuth: acc.first_azimuth,
-            // Populated by the archive ingest caller after `extract_sweep_blobs`
-            // reports which products were successfully extracted per elevation.
-            cached_products: Vec::new(),
+    newly_completed
+        .iter()
+        .filter_map(|&elev_num| {
+            let sorted_radials = by_elevation.get(&elev_num)?;
+            elevation_upload_for(sorted_radials, radial_metas, elev_num)
         })
         .collect()
 }

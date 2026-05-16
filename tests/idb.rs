@@ -4,12 +4,18 @@
 //! orchestration / consistency invariants that the pure-Rust unit tests in
 //! `mod logic` cannot model — most importantly:
 //!
-//! - **Cross-store atomicity**: `create_scan`, `put_scan`, `delete_scan`,
-//!   and `clear_all` each touch multiple object stores; the tests verify
-//!   the right stores end up in the right state.
-//! - **Touch contract**: `create_scan` must seed `scan_touches`, `put_scan`
-//!   must NOT, `get_sweep` must bump it. This is the contract the create vs
-//!   put split exists to enforce.
+//! - **Cross-store atomicity**: `upsert_scan`, `delete_scan`, and
+//!   `clear_all` each touch multiple object stores; the tests verify the
+//!   right stores end up in the right state.
+//! - **Touch contract**: the first `upsert_scan` for a scan key must seed
+//!   `scan_touches`; subsequent merges must preserve it; `get_sweep` must
+//!   bump it.
+//! - **Phantom-entry prevention**: `ElevationUpload`s with empty blobs are
+//!   dropped by the IDB layer so the manifest can't claim sweeps that
+//!   weren't written.
+//! - **Manifest/blob agreement across incremental flushes**: chunk ingest
+//!   builds the index entry across multiple `upsert_scan` calls; each call
+//!   must leave the manifest consistent with the blobs actually in storage.
 //! - **Eviction**: ordering by `scan_touches`, missing-touch sorts first.
 //!
 //! Each test runs in its own IndexedDB database (via
@@ -28,7 +34,8 @@
 
 use nexrad_workbench::data::indexeddb::IndexedDbStore;
 use nexrad_workbench::data::keys::{
-    CachedSweep, ExtractedVcp, ScanIndexEntry, ScanKey, SiteId, SweepDataKey, UnixMillis,
+    ElevationUpload, ExtractedVcp, ProductBlob, ScanHeader, ScanKey, SiteId, SweepDataKey,
+    SweepTiming, UnixMillis,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
@@ -63,20 +70,43 @@ fn scan_key(site: &str, ms: i64) -> ScanKey {
     ScanKey::new(site, UnixMillis(ms))
 }
 
-/// A minimal `ScanIndexEntry` with no VCP and the given byte size.
-fn entry_for(scan: ScanKey, size_bytes: u64) -> ScanIndexEntry {
-    ScanIndexEntry {
+fn header(scan: ScanKey) -> ScanHeader {
+    ScanHeader {
         scan,
         vcp: None,
         file_name: None,
-        cached_sweeps: Vec::new(),
-        total_size_bytes: size_bytes,
     }
 }
 
-fn sweep_blob(scan: &ScanKey, elev: u8, product: &str, bytes: usize) -> (String, Vec<u8>) {
-    let key = SweepDataKey::new(scan.clone(), elev, product);
-    (key.to_storage_key(), vec![0u8; bytes])
+fn header_named(scan: ScanKey, file_name: &str) -> ScanHeader {
+    ScanHeader {
+        scan,
+        vcp: None,
+        file_name: Some(file_name.to_string()),
+    }
+}
+
+fn timing() -> SweepTiming {
+    SweepTiming {
+        start_secs: 1700000000.5,
+        end_secs: 1700000020.5,
+        elevation_angle: 0.5,
+        start_azimuth: 12.3,
+    }
+}
+
+fn upload(elev: u8, products: &[(&'static str, usize)]) -> ElevationUpload {
+    ElevationUpload {
+        elevation_number: elev,
+        timing: timing(),
+        blobs: products
+            .iter()
+            .map(|(name, bytes)| ProductBlob {
+                product: name,
+                bytes: vec![0u8; *bytes],
+            })
+            .collect(),
+    }
 }
 
 fn sweep_key(scan: &ScanKey, elev: u8, product: &str) -> SweepDataKey {
@@ -84,20 +114,20 @@ fn sweep_key(scan: &ScanKey, elev: u8, product: &str) -> SweepDataKey {
 }
 
 // ---------------------------------------------------------------------------
-// create_scan / put_scan / delete_scan / clear_all
+// upsert_scan — first write
 // ---------------------------------------------------------------------------
 
 #[wasm_bindgen_test]
-async fn create_scan_writes_blob_index_and_touch_atomically() {
+async fn upsert_first_write_atomic() {
     let store = fresh_store();
     let scan = scan_key("KDMX", 1700000000000);
-    let mut entry = entry_for(scan.clone(), 100);
-    entry.file_name = Some("KDMX-2023.nexrad".to_string());
-    let blob = sweep_blob(&scan, 1, "reflectivity", 100);
 
     let before = UnixMillis::now();
     store
-        .create_scan(&entry, std::slice::from_ref(&blob))
+        .upsert_scan(
+            &header_named(scan.clone(), "KDMX-2023.nexrad"),
+            &[upload(1, &[("reflectivity", 100)])],
+        )
         .await
         .unwrap();
     let after = UnixMillis::now();
@@ -110,7 +140,7 @@ async fn create_scan_writes_blob_index_and_touch_atomically() {
         .expect("sweep blob should be present");
     assert_eq!(buf.byte_length(), 100);
 
-    // Index entry round-trips.
+    // Index entry round-trips with the derived manifest.
     let read = store
         .scan_availability(&scan)
         .await
@@ -118,8 +148,14 @@ async fn create_scan_writes_blob_index_and_touch_atomically() {
         .expect("scan-index entry should be present");
     assert_eq!(read.file_name, Some("KDMX-2023.nexrad".to_string()));
     assert_eq!(read.total_size_bytes, 100);
+    assert_eq!(read.cached_sweeps.len(), 1);
+    assert_eq!(read.cached_sweeps[0].elevation_number, 1);
+    assert_eq!(
+        read.cached_sweeps[0].cached_products,
+        vec!["reflectivity".to_string()]
+    );
 
-    // scan_touches was seeded with a timestamp around the create_scan window.
+    // scan_touches was seeded with a timestamp around the upsert window.
     // ±25 ms slop accommodates Date.now() rounding under Chromium's Spectre
     // mitigations — the JS clock isn't strictly monotonic at sub-millisecond
     // resolution from Rust's perspective.
@@ -127,7 +163,7 @@ async fn create_scan_writes_blob_index_and_touch_atomically() {
         .read_touch(&scan)
         .await
         .unwrap()
-        .expect("create_scan should seed scan_touches");
+        .expect("first upsert should seed scan_touches");
     let slop_ms = 25;
     assert!(
         touch.0 >= before.0 - slop_ms && touch.0 <= after.0 + slop_ms,
@@ -140,69 +176,233 @@ async fn create_scan_writes_blob_index_and_touch_atomically() {
 }
 
 #[wasm_bindgen_test]
-async fn put_scan_does_not_seed_touch_for_orphan_entry() {
-    // The "stranded data" path: put_scan called without a prior create_scan.
-    // The contract is that scan_touches is left alone, which means the entry
-    // sorts to position 0 in eviction (and gets reclaimed first). This test
-    // verifies the touch is NOT created.
+async fn upsert_first_write_with_no_uploads_still_seeds_touch() {
+    // The empty-uploads case (e.g. an early chunk flush that hasn't produced
+    // any complete sweeps yet) must still seed the touch so the entry has an
+    // LRU placement. Otherwise the orphan-eviction logic would reclaim it
+    // before any blobs land.
     let store = fresh_store();
     let scan = scan_key("KDMX", 1700000000000);
-    let entry = entry_for(scan.clone(), 50);
+    store.upsert_scan(&header(scan.clone()), &[]).await.unwrap();
 
-    store.put_scan(&entry, &[]).await.unwrap();
-
-    // Index entry exists.
     assert!(store.scan_availability(&scan).await.unwrap().is_some());
-    // No touch was written.
-    assert_eq!(store.read_touch(&scan).await.unwrap(), None);
+    assert!(
+        store.read_touch(&scan).await.unwrap().is_some(),
+        "even an empty-uploads first write must seed scan_touches"
+    );
 }
 
+// ---------------------------------------------------------------------------
+// upsert_scan — merge semantics
+// ---------------------------------------------------------------------------
+
 #[wasm_bindgen_test]
-async fn put_scan_preserves_existing_touch() {
+async fn upsert_merge_preserves_existing_touch() {
     let store = fresh_store();
     let scan = scan_key("KDMX", 1700000000000);
-    let entry = entry_for(scan.clone(), 100);
 
-    // First write seeds the touch.
-    store.create_scan(&entry, &[]).await.unwrap();
+    store
+        .upsert_scan(
+            &header(scan.clone()),
+            &[upload(1, &[("reflectivity", 100)])],
+        )
+        .await
+        .unwrap();
     let initial = store
         .read_touch(&scan)
         .await
         .unwrap()
-        .expect("create_scan should have seeded scan_touches");
+        .expect("first upsert should seed scan_touches");
 
-    // Sleep ~25 ms so any put-induced touch would be observably later.
+    // Sleep ~25 ms so any inadvertent re-seed would shift the timestamp.
     gloo_timers::future::TimeoutFuture::new(25).await;
 
-    // Subsequent put_scan must NOT update scan_touches.
-    let mut updated = entry.clone();
-    updated.total_size_bytes = 500;
-    store.put_scan(&updated, &[]).await.unwrap();
+    store
+        .upsert_scan(&header(scan.clone()), &[upload(2, &[("reflectivity", 50)])])
+        .await
+        .unwrap();
 
     let after = store
         .read_touch(&scan)
         .await
         .unwrap()
         .expect("touch still present");
-    assert_eq!(initial, after, "put_scan must not modify scan_touches");
+    assert_eq!(initial, after, "merge upsert must not modify scan_touches");
 
-    // The entry itself was updated.
-    let read_entry = store.scan_availability(&scan).await.unwrap().unwrap();
-    assert_eq!(read_entry.total_size_bytes, 500);
+    // Both sweeps are present.
+    let entry = store.scan_availability(&scan).await.unwrap().unwrap();
+    assert_eq!(entry.cached_sweeps.len(), 2);
+    assert_eq!(entry.total_size_bytes, 150);
 }
+
+#[wasm_bindgen_test]
+async fn upsert_merge_fills_header_only_if_currently_none() {
+    let store = fresh_store();
+    let scan = scan_key("KDMX", 1700000000000);
+
+    // First upsert sets neither vcp nor file_name.
+    store.upsert_scan(&header(scan.clone()), &[]).await.unwrap();
+
+    // Merge supplies both — they should land.
+    let mut h2 = header(scan.clone());
+    h2.vcp = Some(ExtractedVcp {
+        number: 215,
+        elevations: Vec::new(),
+    });
+    h2.file_name = Some("source.nexrad".to_string());
+    store.upsert_scan(&h2, &[]).await.unwrap();
+
+    let entry = store.scan_availability(&scan).await.unwrap().unwrap();
+    assert_eq!(entry.vcp.as_ref().map(|v| v.number), Some(215));
+    assert_eq!(entry.file_name, Some("source.nexrad".to_string()));
+
+    // A later merge with different values must NOT overwrite — fields are
+    // fill-in-if-None, not replace.
+    let mut h3 = header(scan.clone());
+    h3.vcp = Some(ExtractedVcp {
+        number: 999,
+        elevations: Vec::new(),
+    });
+    h3.file_name = Some("different.nexrad".to_string());
+    store.upsert_scan(&h3, &[]).await.unwrap();
+
+    let entry = store.scan_availability(&scan).await.unwrap().unwrap();
+    assert_eq!(
+        entry.vcp.as_ref().map(|v| v.number),
+        Some(215),
+        "vcp must not be overwritten on merge"
+    );
+    assert_eq!(
+        entry.file_name,
+        Some("source.nexrad".to_string()),
+        "file_name must not be overwritten on merge"
+    );
+}
+
+#[wasm_bindgen_test]
+async fn upsert_incremental_keeps_manifest_and_blobs_in_agreement() {
+    // The chunk-ingest pattern: each flush calls upsert_scan with the new
+    // elevation's blobs. The persisted manifest must accumulate, and every
+    // claimed (elev, product) must have a matching blob in STORE_SWEEPS.
+    let store = fresh_store();
+    let scan = scan_key("KDMX", 1700000000000);
+
+    let flushes = [
+        upload(1, &[("reflectivity", 100), ("velocity", 80)]),
+        upload(2, &[("reflectivity", 110)]),
+        upload(3, &[("reflectivity", 90), ("velocity", 70)]),
+    ];
+
+    for flush in &flushes {
+        store
+            .upsert_scan(&header(scan.clone()), std::slice::from_ref(flush))
+            .await
+            .unwrap();
+    }
+
+    let entry = store.scan_availability(&scan).await.unwrap().unwrap();
+    assert_eq!(entry.cached_sweeps.len(), 3);
+    assert_eq!(entry.total_size_bytes, 100 + 80 + 110 + 90 + 70);
+
+    // Every claim resolves to a real blob.
+    for sweep in &entry.cached_sweeps {
+        for product in &sweep.cached_products {
+            let buf = store
+                .get_sweep(&sweep_key(&scan, sweep.elevation_number, product))
+                .await
+                .unwrap();
+            assert!(
+                buf.is_some(),
+                "manifest claims ({}, {}) but no blob found",
+                sweep.elevation_number,
+                product
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// upsert_scan — phantom-entry prevention
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen_test]
+async fn upsert_drops_elevation_with_no_blobs() {
+    // ElevationUpload with empty `blobs` is the structural analogue of the
+    // bug we hit: caller "saw radials" but extracted nothing usable. The
+    // IDB layer must drop the upload silently — never write a phantom
+    // CachedSweep that the resolver would later request and the worker
+    // would fail on.
+    let store = fresh_store();
+    let scan = scan_key("KDMX", 1778602368000);
+    let phantom = ElevationUpload {
+        elevation_number: 1,
+        timing: timing(),
+        blobs: Vec::new(),
+    };
+
+    store
+        .upsert_scan(&header(scan.clone()), &[phantom])
+        .await
+        .unwrap();
+
+    let entry = store
+        .scan_availability(&scan)
+        .await
+        .unwrap()
+        .expect("header still writes even with no uploads");
+    assert!(
+        entry.cached_sweeps.is_empty(),
+        "phantom elevation must not produce a CachedSweep"
+    );
+    assert_eq!(entry.total_size_bytes, 0);
+}
+
+#[wasm_bindgen_test]
+async fn upsert_drops_phantom_alongside_real_uploads() {
+    let store = fresh_store();
+    let scan = scan_key("KDMX", 1700000000000);
+    let phantom = ElevationUpload {
+        elevation_number: 7,
+        timing: timing(),
+        blobs: Vec::new(),
+    };
+    let real = upload(1, &[("reflectivity", 50)]);
+
+    store
+        .upsert_scan(&header(scan.clone()), &[phantom, real])
+        .await
+        .unwrap();
+
+    let entry = store.scan_availability(&scan).await.unwrap().unwrap();
+    assert_eq!(entry.cached_sweeps.len(), 1);
+    assert_eq!(entry.cached_sweeps[0].elevation_number, 1);
+    assert!(
+        store
+            .get_sweep(&sweep_key(&scan, 7, "reflectivity"))
+            .await
+            .unwrap()
+            .is_none(),
+        "phantom elevation must not have written any blob"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// delete_scan / clear_all
+// ---------------------------------------------------------------------------
 
 #[wasm_bindgen_test]
 async fn delete_scan_clears_blobs_index_and_touch() {
     let store = fresh_store();
     let scan = scan_key("KDMX", 1700000000000);
-    let entry = entry_for(scan.clone(), 200);
-    let blobs = vec![
-        sweep_blob(&scan, 1, "reflectivity", 100),
-        sweep_blob(&scan, 1, "velocity", 100),
-        sweep_blob(&scan, 3, "reflectivity", 0),
+    let uploads = [
+        upload(1, &[("reflectivity", 100), ("velocity", 100)]),
+        upload(3, &[("reflectivity", 1)]),
     ];
 
-    store.create_scan(&entry, &blobs).await.unwrap();
+    store
+        .upsert_scan(&header(scan.clone()), &uploads)
+        .await
+        .unwrap();
     assert!(store
         .get_sweep(&sweep_key(&scan, 1, "reflectivity"))
         .await
@@ -212,9 +412,8 @@ async fn delete_scan_clears_blobs_index_and_touch() {
     assert!(store.read_touch(&scan).await.unwrap().is_some());
 
     let bytes_freed = store.delete_scan(&scan).await.unwrap();
-    assert_eq!(bytes_freed, 200);
+    assert_eq!(bytes_freed, 100 + 100 + 1);
 
-    // All three stores cleared for this scan.
     for (elev, product) in [(1, "reflectivity"), (1, "velocity"), (3, "reflectivity")] {
         assert!(
             store
@@ -238,23 +437,16 @@ async fn delete_scan_does_not_affect_other_scans() {
     let drop = scan_key("KDMX", 1700000060000);
 
     store
-        .create_scan(
-            &entry_for(keep.clone(), 50),
-            &[sweep_blob(&keep, 1, "reflectivity", 50)],
-        )
+        .upsert_scan(&header(keep.clone()), &[upload(1, &[("reflectivity", 50)])])
         .await
         .unwrap();
     store
-        .create_scan(
-            &entry_for(drop.clone(), 50),
-            &[sweep_blob(&drop, 1, "reflectivity", 50)],
-        )
+        .upsert_scan(&header(drop.clone()), &[upload(1, &[("reflectivity", 50)])])
         .await
         .unwrap();
 
     store.delete_scan(&drop).await.unwrap();
 
-    // Surviving scan untouched.
     assert!(store.scan_availability(&keep).await.unwrap().is_some());
     assert!(store
         .get_sweep(&sweep_key(&keep, 1, "reflectivity"))
@@ -262,7 +454,6 @@ async fn delete_scan_does_not_affect_other_scans() {
         .unwrap()
         .is_some());
     assert!(store.read_touch(&keep).await.unwrap().is_some());
-    // Target scan gone.
     assert!(store.scan_availability(&drop).await.unwrap().is_none());
 }
 
@@ -276,10 +467,7 @@ async fn clear_all_empties_every_store() {
     ];
     for s in &scans {
         store
-            .create_scan(
-                &entry_for(s.clone(), 10),
-                &[sweep_blob(s, 1, "reflectivity", 10)],
-            )
+            .upsert_scan(&header(s.clone()), &[upload(1, &[("reflectivity", 10)])])
             .await
             .unwrap();
     }
@@ -316,9 +504,9 @@ async fn get_sweep_returns_none_for_missing_key() {
 #[wasm_bindgen_test]
 async fn get_sweep_bumps_touch() {
     // Production's `touch_scan` has a 60 s in-memory throttle, so a `get_sweep`
-    // immediately after `create_scan` would be a no-op. To exercise the
+    // immediately after `upsert_scan` would be a no-op. To exercise the
     // bump path, we use *two* stores backed by the same database: the first
-    // does the create (and seeds the touch), the second reads (and its
+    // does the upsert (and seeds the touch), the second reads (and its
     // throttle map is empty, so the touch fires).
     let db_name = fresh_db_name();
     let writer = IndexedDbStore::with_database_name(db_name.clone());
@@ -326,9 +514,9 @@ async fn get_sweep_bumps_touch() {
     let scan = scan_key("KDMX", 1700000000000);
 
     writer
-        .create_scan(
-            &entry_for(scan.clone(), 100),
-            &[sweep_blob(&scan, 1, "reflectivity", 100)],
+        .upsert_scan(
+            &header(scan.clone()),
+            &[upload(1, &[("reflectivity", 100)])],
         )
         .await
         .unwrap();
@@ -356,31 +544,24 @@ async fn get_sweep_bumps_touch() {
 async fn scan_availability_round_trips_full_entry() {
     let store = fresh_store();
     let scan = scan_key("KDMX", 1700000000000);
-    let entry = ScanIndexEntry {
-        scan: scan.clone(),
-        vcp: Some(ExtractedVcp {
-            number: 215,
-            elevations: Vec::new(),
-        }),
-        file_name: Some("source.nexrad".to_string()),
-        cached_sweeps: vec![CachedSweep {
-            start: 1700000000.5,
-            end: 1700000020.5,
-            elevation: 0.5,
-            elevation_number: 1,
-            start_azimuth: 12.3,
-            cached_products: vec!["reflectivity".to_string()],
-        }],
-        total_size_bytes: 100,
-    };
+    let mut h = header_named(scan.clone(), "source.nexrad");
+    h.vcp = Some(ExtractedVcp {
+        number: 215,
+        elevations: Vec::new(),
+    });
 
-    store.create_scan(&entry, &[]).await.unwrap();
+    store
+        .upsert_scan(&h, &[upload(1, &[("reflectivity", 100)])])
+        .await
+        .unwrap();
+
     let read = store.scan_availability(&scan).await.unwrap().unwrap();
     assert_eq!(read.file_name, Some("source.nexrad".to_string()));
     assert_eq!(read.cached_sweeps.len(), 1);
     assert_eq!(read.cached_sweeps[0].elevation_number, 1);
     assert_eq!(read.cached_sweeps[0].cached_products, vec!["reflectivity"]);
     assert_eq!(read.vcp.as_ref().map(|v| v.number), Some(215));
+    assert_eq!(read.total_size_bytes, 100);
 }
 
 #[wasm_bindgen_test]
@@ -392,12 +573,12 @@ async fn list_scans_filters_by_site_and_window() {
 
     for ms in kdmx_in.iter().chain(kdmx_out.iter()) {
         store
-            .create_scan(&entry_for(scan_key("KDMX", *ms), 10), &[])
+            .upsert_scan(&header(scan_key("KDMX", *ms)), &[])
             .await
             .unwrap();
     }
     store
-        .create_scan(&entry_for(scan_key("KTLX", ktlx_in_window), 10), &[])
+        .upsert_scan(&header(scan_key("KTLX", ktlx_in_window)), &[])
         .await
         .unwrap();
 
@@ -417,12 +598,13 @@ async fn list_scans_filters_by_site_and_window() {
 #[wasm_bindgen_test]
 async fn total_cache_size_sums_all_entries() {
     let store = fresh_store();
-    for (i, size) in [(100u64, 100u64), (200, 200), (300, 300)]
-        .iter()
-        .enumerate()
-    {
+    let sizes = [100, 200, 300];
+    for (i, size) in sizes.iter().enumerate() {
         let s = scan_key("KDMX", 1700000000000 + i as i64);
-        store.create_scan(&entry_for(s, size.0), &[]).await.unwrap();
+        store
+            .upsert_scan(&header(s), &[upload(1, &[("reflectivity", *size)])])
+            .await
+            .unwrap();
     }
     assert_eq!(store.total_cache_size().await.unwrap(), 600);
 }
@@ -438,19 +620,28 @@ async fn evict_to_size_removes_oldest_touched_first() {
     let middle = scan_key("KDMX", 1700000060000);
     let newest = scan_key("KDMX", 1700000120000);
 
-    // Sequence the creates so each scan_touches is monotonic and distinct.
+    // Sequence the upserts so each scan_touches is monotonic and distinct.
     store
-        .create_scan(&entry_for(oldest.clone(), 100), &[])
+        .upsert_scan(
+            &header(oldest.clone()),
+            &[upload(1, &[("reflectivity", 100)])],
+        )
         .await
         .unwrap();
     gloo_timers::future::TimeoutFuture::new(15).await;
     store
-        .create_scan(&entry_for(middle.clone(), 100), &[])
+        .upsert_scan(
+            &header(middle.clone()),
+            &[upload(1, &[("reflectivity", 100)])],
+        )
         .await
         .unwrap();
     gloo_timers::future::TimeoutFuture::new(15).await;
     store
-        .create_scan(&entry_for(newest.clone(), 100), &[])
+        .upsert_scan(
+            &header(newest.clone()),
+            &[upload(1, &[("reflectivity", 100)])],
+        )
         .await
         .unwrap();
 
@@ -463,40 +654,14 @@ async fn evict_to_size_removes_oldest_touched_first() {
 }
 
 #[wasm_bindgen_test]
-async fn evict_to_size_evicts_orphan_entries_first() {
-    // A scan written via put_scan WITHOUT a prior create_scan has no
-    // scan_touches entry — the cleanup path is to evict it first regardless
-    // of its size or insertion order.
-    let store = fresh_store();
-    let touched = scan_key("KDMX", 1700000000000);
-    let orphan = scan_key("KDMX", 1700000060000);
-
-    // Create the touched entry first (gets a scan_touches timestamp).
-    store
-        .create_scan(&entry_for(touched.clone(), 100), &[])
-        .await
-        .unwrap();
-    gloo_timers::future::TimeoutFuture::new(10).await;
-    // Use put_scan for the orphan — never creates a touch, by contract.
-    store
-        .put_scan(&entry_for(orphan.clone(), 100), &[])
-        .await
-        .unwrap();
-
-    // Evict to 150 → only one scan needs to go. Despite being newer in
-    // insertion order, the orphan must go first.
-    let evicted = store.evict_to_size(150).await.unwrap();
-    assert_eq!(evicted, 1);
-    assert!(store.scan_availability(&orphan).await.unwrap().is_none());
-    assert!(store.scan_availability(&touched).await.unwrap().is_some());
-}
-
-#[wasm_bindgen_test]
 async fn evict_to_size_no_op_when_already_under_target() {
     let store = fresh_store();
     let scan = scan_key("KDMX", 1700000000000);
     store
-        .create_scan(&entry_for(scan.clone(), 100), &[])
+        .upsert_scan(
+            &header(scan.clone()),
+            &[upload(1, &[("reflectivity", 100)])],
+        )
         .await
         .unwrap();
     let evicted = store.evict_to_size(1_000_000).await.unwrap();
