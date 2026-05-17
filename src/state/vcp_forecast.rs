@@ -414,6 +414,15 @@ pub struct ChunkArrivalStat {
     /// `collection_time_secs` to compute the per-chunk interval prediction
     /// error in collection space.
     pub predicted_wait_secs: Option<f64>,
+    /// Revision number of the [`crate::nexrad::StreamingPlan`] that
+    /// produced this chunk's prediction. Bumped monotonically by the
+    /// projector on each `build_plan` call. Lets the diagnostics modal
+    /// distinguish "model wrong" from "stale prediction" and trace which
+    /// plan version was active when each arrival's forecast was captured.
+    /// `None` when the prediction was captured from a path that didn't
+    /// snapshot the plan revision (e.g. resume-from-cache emissions).
+    #[allow(dead_code)] // Wired to display in the diagnostics modal in a follow-up.
+    pub predicted_with_plan_revision: Option<u64>,
 }
 
 /// Compact serialisable bucket key. Mirrors `ChunkCharacteristics` but

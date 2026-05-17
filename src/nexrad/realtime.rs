@@ -388,7 +388,7 @@ fn filter_backfill_sequences(
 async fn emit_backfill_chunks(
     site_id: &str,
     targets: &[nexrad_data::aws::realtime::ChunkIdentifier],
-    iter: &StreamingState,
+    iter: &mut StreamingState,
     state: &Rc<RefCell<RealtimeState>>,
     ctx: &egui::Context,
     chunks_in_volume_start: u32,
@@ -470,7 +470,7 @@ async fn emit_backfill_chunks(
 async fn run_mid_stream_backfill(
     site_id: &str,
     filter: StreamingFilter,
-    iter: &StreamingState,
+    iter: &mut StreamingState,
     facade: &DataFacade,
     scan_start_secs: f64,
     state: &Rc<RefCell<RealtimeState>>,
@@ -772,7 +772,7 @@ async fn streaming_loop(
                     let emitted = emit_backfill_chunks(
                         &site_id,
                         &to_download,
-                        &iter,
+                        &mut iter,
                         &state,
                         &ctx,
                         chunks_in_volume,
@@ -904,6 +904,11 @@ async fn streaming_loop(
     // projection. Read at success time into the per-chunk arrival stat.
     let mut cur_forecast: Option<super::ChunkForecast> = None;
     let mut cur_predicted_wait_secs: Option<f64> = None;
+    // Revision of the plan that produced cur_forecast, captured at the
+    // same moment so the per-chunk arrival stat can record which plan
+    // version made the prediction. Diagnostics use this to tell
+    // "model wrong" from "model superseded by a fresh observation."
+    let mut cur_plan_revision: Option<u64> = None;
     // Track filter changes across iterations so we can run a mid-stream
     // backfill exactly once per change, and so the in-flight predicted-at
     // diagnostic doesn't outlive its target sequence.
@@ -938,11 +943,12 @@ async fn streaming_loop(
             cur_last_empty_at = None;
             cur_forecast = None;
             cur_predicted_wait_secs = None;
+            cur_plan_revision = None;
             none_retries = 0;
             let emitted = run_mid_stream_backfill(
                 &site_id,
                 new_filter,
-                &iter,
+                &mut iter,
                 &facade,
                 current_scan_start_secs.0,
                 &state,
@@ -980,14 +986,13 @@ async fn streaming_loop(
         // overwrite it with a near-zero "wait" after a 404.
         let is_first_iter_for_chunk = cur_predicted_at.is_none();
         if is_first_iter_for_chunk {
-            if let Some(forecast) = plan
-                .as_ref()
-                .and_then(|p| p.next_target())
-                .and_then(|t| t.forecast.as_ref())
-            {
-                cur_predicted_at = Some(forecast.available_at_secs);
-                cur_predicted_wait_secs = Some(forecast.poll_at_secs - now_secs);
-                cur_forecast = Some(forecast.clone());
+            if let Some(plan_ref) = plan.as_ref() {
+                if let Some(forecast) = plan_ref.next_target().and_then(|t| t.forecast.as_ref()) {
+                    cur_predicted_at = Some(forecast.available_at_secs);
+                    cur_predicted_wait_secs = Some(forecast.poll_at_secs - now_secs);
+                    cur_forecast = Some(forecast.clone());
+                    cur_plan_revision = Some(plan_ref.revision);
+                }
             }
         }
         if let Some(wait_duration) = time_until_next_opt {
@@ -1131,6 +1136,7 @@ async fn streaming_loop(
             cur_last_empty_at = None;
             cur_forecast = None;
             cur_predicted_wait_secs = None;
+            cur_plan_revision = None;
             continue;
         }
 
@@ -1254,6 +1260,7 @@ async fn streaming_loop(
                     availability_lag_ms: None,
                     collection_time_secs: None,
                     predicted_wait_secs: cur_predicted_wait_secs,
+                    predicted_with_plan_revision: cur_plan_revision,
                 };
 
                 // Reset tracking state for the next chunk
@@ -1262,6 +1269,7 @@ async fn streaming_loop(
                 cur_last_empty_at = None;
                 cur_forecast = None;
                 cur_predicted_wait_secs = None;
+                cur_plan_revision = None;
                 let chunk_is_last_in_sweep = iter
                     .chunk_metadata(chunk.identifier.sequence())
                     .map(|m| m.is_last_in_sweep());

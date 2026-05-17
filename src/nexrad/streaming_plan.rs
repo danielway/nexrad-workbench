@@ -41,8 +41,13 @@ pub struct StreamingPlan {
     /// Wall-clock time (Unix seconds) the plan was built. Lets consumers
     /// reason about plan staleness without threading `now` through every
     /// derivation.
-    #[allow(dead_code)] // Diagnostic field; consumed once the revision counter lands.
+    #[allow(dead_code)] // Read alongside `revision` for diagnostic display.
     pub built_at_secs: f64,
+    /// Monotonically-incrementing per-projector counter, bumped on every
+    /// [`super::projector::Projector::build_plan`] call. Lets diagnostics
+    /// attribute a prediction to a specific plan revision and lets UI
+    /// skip redraws when the plan hasn't changed since the last frame.
+    pub revision: u64,
     /// Per-chunk info for the current in-progress volume. Carries
     /// structural metadata for every chunk and (via `forecast`) projected
     /// times + diagnostics for chunks still in the future.
@@ -82,6 +87,7 @@ impl StreamingPlan {
         filter: StreamingFilter,
         current_volume_chunk_meta: &[super::timing::ChunkMetadata],
         now_secs: f64,
+        revision: u64,
     ) -> Self {
         use std::collections::HashMap;
 
@@ -159,6 +165,7 @@ impl StreamingPlan {
         StreamingPlan {
             filter,
             built_at_secs: now_secs,
+            revision,
             current_volume_chunks,
             next_volume_chunks,
             current_volume_end_collection_secs,

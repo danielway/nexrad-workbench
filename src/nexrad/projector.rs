@@ -64,6 +64,12 @@ pub struct Projector {
     /// chunks on the timeline.
     latest_chunk_collection_end_secs: Option<f64>,
     filter: StreamingFilter,
+    /// Monotonically-incrementing per-projector revision counter, bumped
+    /// on every [`Projector::build_plan`] call. The bumped value is
+    /// stamped onto the plan's `revision` field so consumers can
+    /// attribute predictions to a specific plan version (diagnostics)
+    /// and short-circuit redraws when the plan hasn't changed (UI).
+    next_revision: u64,
 }
 
 impl Projector {
@@ -87,12 +93,13 @@ impl Projector {
 
     /// Build a [`StreamingPlan`] anchored at `anchor_chunk` (the most
     /// recently observed chunk). `now_secs` is recorded on the plan as
-    /// `built_at_secs` for staleness reasoning.
+    /// `built_at_secs` for staleness reasoning. Bumps the internal
+    /// revision counter and stamps it onto the plan's `revision` field.
     ///
     /// Returns `None` only when the projector is in a cold state (no VCP
-    /// / no mapper yet).
+    /// / no mapper yet); the revision counter is NOT bumped in that case.
     pub fn build_plan(
-        &self,
+        &mut self,
         anchor_chunk: &ChunkIdentifier,
         now_secs: f64,
     ) -> Option<StreamingPlan> {
@@ -114,12 +121,14 @@ impl Projector {
             include_next_volume,
         )?;
 
+        self.next_revision = self.next_revision.wrapping_add(1);
         let chunk_meta = mapper.all_chunk_metadata();
         Some(StreamingPlan::from_projection(
             projection,
             self.filter,
             chunk_meta,
             now_secs,
+            self.next_revision,
         ))
     }
 

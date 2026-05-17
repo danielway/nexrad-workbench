@@ -394,9 +394,13 @@ impl StreamingState {
     }
 
     /// Build a [`StreamingPlan`] anchored at the current chunk. See
-    /// [`Projector::build_plan`] for the contract.
-    pub fn build_plan(&self, now_secs: f64) -> Option<StreamingPlan> {
-        self.projector.build_plan(&self.current, now_secs)
+    /// [`Projector::build_plan`] for the contract — bumps the projector's
+    /// revision counter and stamps it onto the plan.
+    pub fn build_plan(&mut self, now_secs: f64) -> Option<StreamingPlan> {
+        // Clone the anchor identifier so the borrow checker doesn't tie
+        // up `&mut self` while &self.current is in flight.
+        let anchor = self.current.clone();
+        self.projector.build_plan(&anchor, now_secs)
     }
 
     pub fn set_filter(&mut self, filter: StreamingFilter) {
