@@ -144,9 +144,6 @@ pub struct LiveModeState {
     /// Full extracted VCP pattern from Message Type 5 (for live panel display).
     pub current_vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
 
-    /// Duration of the last completed volume scan in seconds.
-    pub last_volume_duration_secs: Option<f64>,
-
     /// Identity + provisional/confirmed start time for the current
     /// in-progress volume. `None` between volumes; populated when the first
     /// chunk's `ChunkData` is received and the [`LiveVolumeAnchor::confirmed`]
@@ -173,11 +170,6 @@ pub struct LiveModeState {
     /// in the current volume. Used for accurate sweep positioning on the timeline
     /// instead of even-distribution estimates.
     pub completed_sweep_metas: Vec<crate::data::CachedSweep>,
-
-    /// Per-elevation estimated sweep durations (seconds), computed from VCP
-    /// azimuth rates using the weight = 1/rate method. Index corresponds to
-    /// elevation index (0-based). Populated when VCP data is received.
-    pub estimated_sweep_durations: Vec<f64>,
 
     /// Per-chunk azimuth ranges for the current in-progress elevation.
     /// Each entry: (first_az, last_az, radial_count). Reset on elevation change.
@@ -249,13 +241,11 @@ impl Default for LiveModeState {
             expected_elevation_count: None,
             current_vcp_number: None,
             current_vcp_pattern: None,
-            last_volume_duration_secs: None,
             current_volume: None,
             current_in_progress_elevation: None,
             current_in_progress_radials: None,
             chunk_elev_spans: Vec::new(),
             completed_sweep_metas: Vec::new(),
-            estimated_sweep_durations: Vec::new(),
             current_elev_chunks: Vec::new(),
             sweep_start_azimuth: None,
             live_data_azimuth_range: None,
@@ -327,7 +317,6 @@ impl LiveModeState {
         self.current_in_progress_radials = None;
         self.chunk_elev_spans.clear();
         self.completed_sweep_metas.clear();
-        self.estimated_sweep_durations.clear();
         self.current_elev_chunks.clear();
         self.sweep_start_azimuth = None;
         self.live_data_azimuth_range = None;
@@ -499,14 +488,7 @@ impl LiveModeState {
 
     /// Handle volume complete event — compute duration and reset elevation tracking.
     pub fn handle_volume_complete(&mut self, now: f64) {
-        // Compute volume duration from the start we tracked
         let volume_start_secs = self.current_volume.as_ref().map(|v| v.best_start_secs());
-        if let Some(start) = volume_start_secs {
-            let dur = now - start;
-            if dur > 0.0 && dur < 1200.0 {
-                self.last_volume_duration_secs = Some(dur);
-            }
-        }
 
         // Package the just-completed volume's inputs into a record so the
         // diagnostics modal can derive a forecast snapshot for it after
@@ -555,7 +537,6 @@ impl LiveModeState {
         self.current_in_progress_radials = None;
         self.chunk_elev_spans.clear();
         self.completed_sweep_metas.clear();
-        self.estimated_sweep_durations.clear();
         self.current_elev_chunks.clear();
         self.sweep_start_azimuth = None;
         self.live_data_azimuth_range = None;
@@ -660,21 +641,6 @@ impl LiveModeState {
         self.expected_elevation_count = Some(vcp.elevations.len() as u8);
         if !vcp.elevations.is_empty() {
             self.current_vcp_pattern = Some(vcp.clone());
-
-            // Only compute hand-rolled estimates when the library projection isn't available.
-            // The library's physics model is more accurate (includes inter-sweep gaps and
-            // the -0.67s correction), so prefer it when we have it.
-            if self.plan.is_none() {
-                // Seed volume duration from VCP azimuth rates if we haven't measured one yet.
-                if self.last_volume_duration_secs.is_none() {
-                    if let Some(estimated) = vcp.estimated_volume_duration() {
-                        self.last_volume_duration_secs = Some(estimated);
-                    }
-                }
-
-                let vol_dur = self.last_volume_duration_secs.unwrap_or(300.0);
-                self.estimated_sweep_durations = vcp.sweep_durations(vol_dur);
-            }
         }
         self.try_capture_volume_start_plan();
     }
@@ -713,6 +679,44 @@ impl LiveModeState {
         if let Some(t) = time_secs {
             self.last_radial_time_secs = Some(t);
         }
+    }
+
+    /// Duration of the most recently completed volume scan, in seconds.
+    /// Derived from the last completed volume's start/end. Falls back to
+    /// the VCP's own `estimated_volume_duration()` before any volume has
+    /// completed, so consumers always get a usable value once a VCP is
+    /// parsed. `None` only when both are unavailable.
+    pub fn last_volume_duration_secs(&self) -> Option<f64> {
+        self.last_completed_volume
+            .as_ref()
+            .map(|r| r.volume_end_secs - r.volume_start_secs)
+            .filter(|&d| d > 0.0 && d < 1200.0)
+            .or_else(|| {
+                self.current_vcp_pattern
+                    .as_ref()
+                    .and_then(|v| v.estimated_volume_duration())
+            })
+    }
+
+    /// Per-elevation sweep durations (seconds) computed from the current
+    /// VCP pattern's azimuth rates. Returned only when no library
+    /// projection (`plan`) is available — the library's physics model is
+    /// more accurate (includes inter-sweep gaps and the -0.67s
+    /// correction), so consumers should prefer plan-derived bounds when a
+    /// plan exists. Empty when no VCP / no elevations / a plan is
+    /// present.
+    pub fn fallback_sweep_durations(&self) -> Vec<f64> {
+        if self.plan.is_some() {
+            return Vec::new();
+        }
+        let Some(vcp) = self.current_vcp_pattern.as_ref() else {
+            return Vec::new();
+        };
+        if vcp.elevations.is_empty() {
+            return Vec::new();
+        }
+        let vol_dur = self.last_volume_duration_secs().unwrap_or(300.0);
+        vcp.sweep_durations(vol_dur)
     }
 
     /// Derive a forecast snapshot for the current in-progress volume from

@@ -139,7 +139,7 @@ impl VcpPositionModel {
         // COLLECTION time — right edge of the in-progress volume on the
         // timeline is when the radar finishes scanning, not when the final
         // chunk uploads.
-        let expected_dur = live.last_volume_duration_secs.unwrap_or(300.0);
+        let expected_dur = live.last_volume_duration_secs().unwrap_or(300.0);
         let volume_end = live
             .plan
             .as_ref()
@@ -174,10 +174,11 @@ impl VcpPositionModel {
             });
 
         // ── Fallback: VCP-weighted durations ──────────────────────────
-        let weighted_durations: Vec<f64> = if !live.estimated_sweep_durations.is_empty() {
-            let total_weight: f64 = live.estimated_sweep_durations.iter().sum();
+        let fallback_durs = live.fallback_sweep_durations();
+        let weighted_durations: Vec<f64> = if !fallback_durs.is_empty() {
+            let total_weight: f64 = fallback_durs.iter().sum();
             if total_weight > 0.0 {
-                live.estimated_sweep_durations
+                fallback_durs
                     .iter()
                     .map(|d| (d / total_weight) * expected_dur)
                     .collect()
