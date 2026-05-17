@@ -36,12 +36,11 @@ impl From<&crate::state::ElevationSelection> for StreamingFilter {
 ///
 /// Present iff the parent [`ChunkProjectionInfo`] describes a chunk that
 /// hasn't been observed yet — past chunks have `forecast: None`. Carries
-/// the full diagnostic bundle the projector computed for this chunk so
+/// the diagnostic bundle the projector computed for this chunk so
 /// downstream surfaces (per-sweep confidence display, prediction-error
 /// attribution, the diagnostics modal) can read attribution data per chunk
 /// rather than only for the immediate next download target.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Forecast/diagnostic surface — fields are part of the contract.
 pub struct ChunkForecast {
     /// COLLECTION category: projected Unix-seconds time the radar physically
     /// emits/receives for this chunk.
@@ -50,22 +49,18 @@ pub struct ChunkForecast {
     /// becomes available in S3 (`collection_at + lag`).
     pub available_at_secs: f64,
     /// POLL category: projected time the scheduler will fire its first
-    /// download poll (`available_at + retry_budget + POLL_BIAS`).
+    /// download poll (`available_at + retry_budget + POLL_BIAS`). The
+    /// retry budget is already folded in; the streaming loop sleeps
+    /// directly to this target without additional padding.
     pub poll_at_secs: f64,
-    /// Typical retry-poll overhead `(avg_attempts − 1).max(0)` for this
-    /// chunk's bucket. Already folded into `poll_at_secs`.
-    pub retry_budget_secs: f64,
     /// Physics decomposition for the hop into this chunk (azimuth gap,
     /// inter-sweep transition, inter-volume gap).
     pub physics_breakdown: super::timing::PhysicsBreakdown,
     /// Bucket sample count consulted at projection time. `0` when no
     /// historical samples were available.
     pub stats_n: usize,
-    /// Whether historical samples contributed to the projected interval.
-    pub used_historical: bool,
     /// Which projector branch supplied the interval: `Blended` when
-    /// historical samples contributed, `Physics` otherwise. Derived from
-    /// `used_historical` but cached so consumers don't need to.
+    /// historical samples contributed, `Physics` otherwise.
     pub scheduler_path: super::timing::SchedulerPath,
     /// The bucket key the lookup hit (or missed). `None` when no
     /// elevation was resolvable (Start chunk).
@@ -79,28 +74,17 @@ pub struct ChunkForecast {
 /// that's present iff the chunk is in the future from the streaming loop's
 /// anchor. Past chunks carry only structural fields.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Forecast/diagnostic surface — fields are part of the contract.
 pub struct ChunkProjectionInfo {
     /// 1-based sequence number in the volume.
     pub sequence: usize,
     /// Elevation number (1-based), None for the Start chunk.
     pub elevation_number: Option<usize>,
-    /// Elevation angle in degrees.
-    pub elevation_angle_deg: f64,
     /// Azimuth rotation rate in degrees/second from the VCP.
     pub azimuth_rate_dps: f64,
-    /// Whether this chunk starts a new sweep.
-    pub starts_new_sweep: bool,
     /// 0-based index of this chunk within its sweep.
     pub chunk_index_in_sweep: usize,
     /// Total chunks in this sweep (3 for standard, 6 for super-res).
     pub chunks_in_sweep: usize,
-    /// Which volume this projection belongs to, relative to the in-progress
-    /// volume: 0 = current, 1 = next (produced by the chained projection
-    /// when the active filter has no remaining matches in the current
-    /// volume). `sequence` alone is NOT unique when `volume_offset > 0` —
-    /// key by `(volume_offset, sequence)` if uniqueness is needed.
-    pub volume_offset: u8,
     /// Projected timing & projector diagnostics. `Some` iff this chunk is
     /// in the future (the projector emitted a [`super::timing::ChunkProjection`]
     /// for it); `None` for past chunks.
@@ -454,7 +438,7 @@ async fn emit_backfill_chunks(
             chunks_in_volume: chunks_in_volume_start + emitted,
             is_volume_end: false,
             fetch_latency_ms: 0.0,
-            plan: iter.build_plan(),
+            plan: iter.build_plan(current_timestamp_f64()),
             arrival_stat: None,
         });
         drop(s);
@@ -710,7 +694,7 @@ async fn streaming_loop(
                 chunks_in_volume: 1,
                 is_volume_end: false,
                 fetch_latency_ms: 0.0,
-                plan: iter.build_plan(),
+                plan: iter.build_plan(current_timestamp_f64()),
                 arrival_stat: None,
             });
         }
@@ -849,7 +833,7 @@ async fn streaming_loop(
                 chunks_in_volume,
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
-                plan: iter.build_plan(),
+                plan: iter.build_plan(current_timestamp_f64()),
                 arrival_stat: None,
             });
             drop(s);
@@ -897,7 +881,7 @@ async fn streaming_loop(
                 chunks_in_volume,
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
-                plan: iter.build_plan(),
+                plan: iter.build_plan(current_timestamp_f64()),
                 arrival_stat: None,
             });
         }
@@ -973,8 +957,8 @@ async fn streaming_loop(
         // forward-looking timing — sleep target here, UI countdown over the
         // wire, the per-chunk arrival diagnostic — reads from this object,
         // so the loop's behavior can't drift from what the UI displays.
-        let plan = iter.build_plan();
         let now_secs = current_timestamp_f64();
+        let plan = iter.build_plan(now_secs);
 
         // Sleep target: poll-time of the immediate next download. POLL_BIAS
         // and the bucket's retry budget are already folded into the
@@ -1124,7 +1108,7 @@ async fn streaming_loop(
             // the cross-volume countdown.
             chunks_in_volume += 1;
             {
-                let plan = iter.build_plan();
+                let plan = iter.build_plan(current_timestamp_f64());
                 let mut s = state.borrow_mut();
                 s.results.push(RealtimeResult::ChunkReceived {
                     chunks_in_volume,
@@ -1201,7 +1185,7 @@ async fn streaming_loop(
                 // so it describes the NEXT download from this point. Same
                 // object feeds both the UI and the next loop iteration's
                 // sleep target — keeping them in lock-step.
-                let post_plan = iter.build_plan();
+                let post_plan = iter.build_plan(current_timestamp_f64());
 
                 // Attach structural metadata for the chunk that just arrived
                 // by looking it up in the fresh plan's current-volume slice.

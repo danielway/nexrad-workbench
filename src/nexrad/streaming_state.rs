@@ -482,10 +482,15 @@ impl StreamingState {
     /// downstream consumer reads from the returned object so they can't
     /// disagree.
     ///
+    /// `now_secs` is recorded on the plan as `built_at_secs` so consumers
+    /// can reason about plan staleness. The caller passes its own wall
+    /// clock rather than this method reading it directly, so projection
+    /// remains side-effect-free.
+    ///
     /// Returns `None` only when the iterator is in a cold state (no VCP /
     /// no mapper yet) — every other path produces a plan, possibly with
     /// `next_target = None` if there's nothing left to project.
-    pub fn build_plan(&self) -> Option<StreamingPlan> {
+    pub fn build_plan(&self, now_secs: f64) -> Option<StreamingPlan> {
         let mapper = self.elevation_mapper.as_ref()?;
         let projection = self.project_remaining_scan_internal()?;
         let chunk_meta = mapper.all_chunk_metadata();
@@ -493,6 +498,7 @@ impl StreamingState {
             projection,
             self.filter,
             chunk_meta,
+            now_secs,
         ))
     }
 

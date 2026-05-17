@@ -31,10 +31,18 @@ use super::{ChunkForecast, ChunkProjectionInfo};
 /// needs to know "what comes next" — the loop's sleep target, the timeline's
 /// countdown, the VCP forecast panel — reads from this object.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Forecast/diagnostic surface — fields are part of the contract.
 pub struct StreamingPlan {
-    /// Active filter at plan-build time.
+    /// Active filter at plan-build time. Diagnostic only — consumers
+    /// already know the active filter via the streaming channel; this
+    /// is preserved so a captured plan (e.g. for a per-chunk arrival
+    /// stat) carries enough context to be interpreted standalone.
+    #[allow(dead_code)] // Diagnostic context for captured plans.
     pub filter: StreamingFilter,
+    /// Wall-clock time (Unix seconds) the plan was built. Lets consumers
+    /// reason about plan staleness without threading `now` through every
+    /// derivation.
+    #[allow(dead_code)] // Diagnostic field; consumed once the revision counter lands.
+    pub built_at_secs: f64,
     /// Per-chunk info for the current in-progress volume. Carries
     /// structural metadata for every chunk and (via `forecast`) projected
     /// times + diagnostics for chunks still in the future.
@@ -51,8 +59,6 @@ pub struct StreamingPlan {
     /// the plan extends into the next volume — drives the timeline's
     /// projected end-of-volume marker.
     pub current_volume_end_collection_secs: Option<f64>,
-    /// AVAILABILITY time the current volume's final chunk lands on S3.
-    pub current_volume_end_available_at_secs: Option<f64>,
     /// `(volume_offset, sequence)` key of the immediate next download —
     /// the first projection chunk the filter accepts. Resolved into the
     /// matching [`ChunkProjectionInfo`] via [`StreamingPlan::next_target`].
@@ -75,6 +81,7 @@ impl StreamingPlan {
         projection: ScanTimingProjection,
         filter: StreamingFilter,
         current_volume_chunk_meta: &[super::timing::ChunkMetadata],
+        now_secs: f64,
     ) -> Self {
         use std::collections::HashMap;
 
@@ -97,10 +104,8 @@ impl StreamingPlan {
                     available_at_secs: c.projected_available_at().timestamp_millis() as f64
                         / 1000.0,
                     poll_at_secs: c.projected_poll_at().timestamp_millis() as f64 / 1000.0,
-                    retry_budget_secs: c.retry_budget_secs(),
                     physics_breakdown: c.physics_breakdown(),
                     stats_n: c.stats_n(),
-                    used_historical: c.used_historical(),
                     scheduler_path,
                     bucket: c.bucket().cloned(),
                 },
@@ -114,12 +119,9 @@ impl StreamingPlan {
             |meta: &super::timing::ChunkMetadata, volume_offset: u8| ChunkProjectionInfo {
                 sequence: meta.sequence(),
                 elevation_number: meta.elevation_number(),
-                elevation_angle_deg: meta.elevation_angle_deg(),
                 azimuth_rate_dps: meta.azimuth_rate_dps(),
-                starts_new_sweep: meta.is_first_in_sweep(),
                 chunk_index_in_sweep: meta.chunk_index_in_sweep(),
                 chunks_in_sweep: meta.chunks_in_sweep(),
-                volume_offset,
                 forecast: forecasts.remove(&(volume_offset, meta.sequence())),
             };
 
@@ -141,10 +143,6 @@ impl StreamingPlan {
             .iter()
             .rev()
             .find_map(|c| c.forecast.as_ref().map(|f| f.collection_time_secs));
-        let current_volume_end_available_at_secs = current_volume_chunks
-            .iter()
-            .rev()
-            .find_map(|c| c.forecast.as_ref().map(|f| f.available_at_secs));
 
         // Immediate next download: first projection chunk the filter accepts.
         // Start chunks (no elevation) are always accepted. Stored as a
@@ -160,10 +158,10 @@ impl StreamingPlan {
 
         StreamingPlan {
             filter,
+            built_at_secs: now_secs,
             current_volume_chunks,
             next_volume_chunks,
             current_volume_end_collection_secs,
-            current_volume_end_available_at_secs,
             next_target_key,
         }
     }
