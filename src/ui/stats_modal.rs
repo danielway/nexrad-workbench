@@ -266,8 +266,8 @@ pub fn render_stats_modal(ctx: &egui::Context, state: &mut AppState) {
                     .color(heading_color),
             );
             ui.indent("diag_section", |ui| {
-                let has_forecast = state.live_mode_state.current_volume_forecast.is_some()
-                    || state.live_mode_state.last_volume_forecast.is_some();
+                let has_forecast = state.live_mode_state.volume_start_plan.is_some()
+                    || state.live_mode_state.last_completed_volume.is_some();
                 if ui
                     .add_enabled(
                         has_forecast,

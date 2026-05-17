@@ -37,16 +37,20 @@ pub fn render_vcp_forecast_modal(ctx: &egui::Context, state: &mut AppState) {
     let site_id = state.viz_state.site_id.clone();
     let (snap_opt, arrivals) = {
         let live = &state.live_mode_state;
-        if live.current_volume_forecast.is_some() {
-            (
-                live.current_volume_forecast.clone(),
-                live.chunk_arrivals.clone(),
-            )
-        } else if live.last_volume_forecast.is_some() {
-            (
-                live.last_volume_forecast.clone(),
-                live.last_chunk_arrivals.clone(),
-            )
+        if let Some(snap) = live.derive_current_volume_forecast() {
+            (Some(snap), live.chunk_arrivals.clone())
+        } else if let Some(record) = live.last_completed_volume.as_ref() {
+            let snap = crate::state::derive_volume_forecast(
+                &record.vcp,
+                &record.volume_start_plan,
+                record.volume_start_secs,
+                &record.completed_sweep_metas,
+                &record.chunk_elev_spans,
+                record.previous_volume_end_secs,
+                &record.chunk_arrivals,
+                Some(record.volume_end_secs),
+            );
+            (Some(snap), record.chunk_arrivals.clone())
         } else {
             (None, Vec::new())
         }

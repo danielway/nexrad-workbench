@@ -56,7 +56,8 @@ pub use theme::ThemeMode;
 pub use timeline_model::TimelineModel;
 pub use vcp::get_vcp_definition;
 pub use vcp_forecast::{
-    BucketKey, ChunkArrivalStat, RateSource, SweepForecast, VolumeForecastSnapshot,
+    derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord, SweepForecast,
+    VolumeForecastSnapshot,
 };
 pub use vcp_position::{SweepPosition, SweepStatus, SweepTiming, VcpPositionModel};
 pub use viz::{
