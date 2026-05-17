@@ -505,12 +505,11 @@ impl StreamingState {
         let vcp = self.vcp.as_ref()?;
         let mapper = self.elevation_mapper.as_ref()?;
 
-        let include_next_volume = match self.filter {
-            StreamingFilter::Elevation(target_elev) => {
-                !self.has_remaining_match_for_elevation(mapper, target_elev)
-            }
-            StreamingFilter::All => false,
-        };
+        // Extend into the next volume iff the active filter has no remaining
+        // match in this volume. `has_remaining_match` returns `true` for
+        // `StreamingFilter::All` whenever chunks remain, so the All branch
+        // naturally never triggers an extension.
+        let include_next_volume = !mapper.has_remaining_match(self.filter, self.current.sequence());
 
         project_scan_timing_with_next(
             &self.current,
@@ -520,25 +519,6 @@ impl StreamingState {
             Some(&self.timing_stats),
             include_next_volume,
         )
-    }
-
-    /// Whether any sequence strictly after the current anchor in the current
-    /// volume's mapper carries `target_elevation`. Cheap O(remaining-chunks)
-    /// scan used to gate next-volume projection extension.
-    fn has_remaining_match_for_elevation(
-        &self,
-        mapper: &ElevationChunkMapper,
-        target_elevation: u8,
-    ) -> bool {
-        let target = target_elevation as usize;
-        let start = self.current.sequence() + 1;
-        let end = mapper.final_sequence();
-        (start..=end).any(|seq| {
-            mapper
-                .get_chunk_metadata(seq)
-                .and_then(|m| m.elevation_number())
-                == Some(target)
-        })
     }
 
     /// Push the streaming-loop's currently-active filter into the state so

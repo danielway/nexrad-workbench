@@ -1,3 +1,4 @@
+use super::super::streaming_filter::StreamingFilter;
 use nexrad_decode::messages::volume_coverage_pattern::{self, WaveformType};
 
 /// Metadata describing a chunk's position within the volume scan.
@@ -221,6 +222,23 @@ impl ElevationChunkMapper {
             }
         }
         None
+    }
+
+    /// Whether any sequence strictly after `after_seq` carries a chunk the
+    /// filter accepts. Used by the projector to decide whether to extend
+    /// projection into the next volume — when the active filter has no
+    /// remaining match in the current volume, the next download lands in
+    /// the next volume's chunks, and projected times for that hop need to
+    /// be available to the scheduler and UI.
+    ///
+    /// For [`StreamingFilter::All`] this returns `true` whenever any chunk
+    /// remains (Start chunks are always accepted), so the projector won't
+    /// extend — the streaming loop's next fetch naturally rolls over via
+    /// the existing `try_fetch_volume_start` path without needing
+    /// chained projection.
+    pub fn has_remaining_match(&self, filter: StreamingFilter, after_seq: usize) -> bool {
+        self.next_matching_sequence_after(after_seq, false, |elev| filter.accepts(elev))
+            .is_some()
     }
 
     /// Sequences in the volume that match the predicate, restricted to the
