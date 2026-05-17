@@ -19,44 +19,7 @@ use crate::net::retry::{
     attempt_with_timeout, compute_delay, sleep_duration, sleep_ms, Verdict, REALTIME_CHUNK_POLICY,
 };
 
-/// User-driven filter applied to the real-time chunk stream.
-///
-/// `All` is the default and downloads every chunk in the volume — required for
-/// `ElevationSelection::Latest` because the renderer chooses whichever
-/// elevation completed most recently. `Elevation(n)` restricts the loop to
-/// the Start chunk plus chunks belonging to elevation `n`; the loop uses the
-/// VCP's `ElevationChunkMapper` and the physics-based timing model to wait
-/// through chunks that don't match.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum StreamingFilter {
-    #[default]
-    All,
-    Elevation(u8),
-}
-
-impl StreamingFilter {
-    /// Whether the filter accepts a chunk for the given elevation number.
-    /// `None` (Start chunk) is always accepted.
-    pub fn accepts(self, elevation_number: Option<usize>) -> bool {
-        match (self, elevation_number) {
-            (StreamingFilter::All, _) => true,
-            (StreamingFilter::Elevation(_), None) => true,
-            (StreamingFilter::Elevation(target), Some(elev)) => elev as u8 == target,
-        }
-    }
-}
-
-/// Translate a [`StreamingFilter`] into the elevation number that the
-/// projector cares about. `None` means "no filter" (project the current
-/// volume only); `Some(n)` means "only elevation `n` matters" — which
-/// `StreamingState::project_remaining_scan` uses to decide whether to extend
-/// the projection into the next volume.
-fn filter_target_elevation(filter: StreamingFilter) -> Option<u8> {
-    match filter {
-        StreamingFilter::All => None,
-        StreamingFilter::Elevation(n) => Some(n),
-    }
-}
+use super::streaming_filter::StreamingFilter;
 
 impl From<&crate::state::ElevationSelection> for StreamingFilter {
     fn from(selection: &crate::state::ElevationSelection) -> Self {
@@ -674,7 +637,7 @@ async fn streaming_loop(
     };
 
     let mut iter = init_result.state;
-    iter.set_target_elevation_filter(filter_target_elevation(state.borrow().pending_filter));
+    iter.set_filter(state.borrow().pending_filter);
     if let Some(cached) = load_cached_timing_stats(&site_id) {
         iter.preload_timing_stats(cached);
         log::debug!("Loaded cached timing stats for {}", site_id);
@@ -1003,7 +966,7 @@ async fn streaming_loop(
             chunks_in_volume += emitted;
             active_filter = new_filter;
             active_filter_epoch = live_epoch;
-            iter.set_target_elevation_filter(filter_target_elevation(active_filter));
+            iter.set_filter(active_filter);
         }
 
         // Build the canonical plan once per iteration. Every consumer of

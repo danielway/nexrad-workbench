@@ -20,6 +20,7 @@
 //! All times are Unix seconds (sub-second precision) unless documented
 //! otherwise.
 
+use super::streaming_filter::StreamingFilter;
 use super::timing::{ScanTimingProjection, SchedulerPath};
 use super::{ChunkForecast, ChunkProjectionInfo};
 
@@ -32,9 +33,8 @@ use super::{ChunkForecast, ChunkProjectionInfo};
 #[derive(Clone, Debug)]
 #[allow(dead_code)] // Forecast/diagnostic surface — fields are part of the contract.
 pub struct StreamingPlan {
-    /// Active elevation filter at plan-build time. `None` = no filter;
-    /// `Some(n)` = only chunks for elevation `n` will be downloaded.
-    pub filter: Option<u8>,
+    /// Active filter at plan-build time.
+    pub filter: StreamingFilter,
     /// Per-chunk info for the current in-progress volume. Carries
     /// structural metadata for every chunk and (via `forecast`) projected
     /// times + diagnostics for chunks still in the future.
@@ -73,7 +73,7 @@ impl StreamingPlan {
     /// pass-2 entries don't collide.
     pub(super) fn from_projection(
         projection: ScanTimingProjection,
-        filter: Option<u8>,
+        filter: StreamingFilter,
         current_volume_chunk_meta: &[super::timing::ChunkMetadata],
     ) -> Self {
         use std::collections::HashMap;
@@ -155,11 +155,7 @@ impl StreamingPlan {
         let next_target_key = projection
             .chunks()
             .iter()
-            .find(|c| match (filter, c.elevation_number()) {
-                (None, _) => true,
-                (Some(_), None) => true,
-                (Some(f), Some(elev)) => elev as u8 == f,
-            })
+            .find(|c| filter.accepts(c.elevation_number()))
             .map(|c| (c.volume_offset(), c.sequence()));
 
         StreamingPlan {

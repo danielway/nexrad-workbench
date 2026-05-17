@@ -5,6 +5,7 @@
 //! `try_next`, and timing/metadata accessors. Volume discovery itself is
 //! delegated to `nexrad_data::aws::realtime::get_latest_volume`.
 
+use super::streaming_filter::StreamingFilter;
 use super::streaming_plan::StreamingPlan;
 use super::timing::{
     project_scan_timing_with_next, ChunkCharacteristics, ChunkMetadata, ChunkTimingStats,
@@ -60,14 +61,13 @@ pub struct StreamingState {
     /// inter-chunk physics intervals to this to place future chunks on
     /// the timeline.
     latest_chunk_collection_end_secs: Option<f64>,
-    /// Active elevation filter, mirrored from the realtime loop's
-    /// `StreamingFilter`. `None` means "no filter" (download every chunk);
-    /// `Some(n)` restricts downloads to elevation `n`. Used by
-    /// [`StreamingState::project_remaining_scan`] to decide whether to
-    /// extend the projection into the next volume — relevant when the
-    /// filter's target elevation has no remaining matches in the current
-    /// volume, so the next download will land in the next volume.
-    target_elevation_filter: Option<u8>,
+    /// Active filter mirrored from the realtime loop. Used by
+    /// [`StreamingState::project_remaining_scan_internal`] to decide
+    /// whether to extend the projection into the next volume — relevant
+    /// when the filter's target elevation has no remaining matches in
+    /// the current volume, so the next download will land in the next
+    /// volume.
+    filter: StreamingFilter,
     requests_made: usize,
     bytes_downloaded: u64,
 }
@@ -135,7 +135,7 @@ impl StreamingState {
             timing_stats: ChunkTimingStats::new(),
             last_chunk_time,
             latest_chunk_collection_end_secs: None,
-            target_elevation_filter: None,
+            filter: StreamingFilter::default(),
             requests_made,
             bytes_downloaded,
         };
@@ -491,7 +491,7 @@ impl StreamingState {
         let chunk_meta = mapper.all_chunk_metadata();
         Some(StreamingPlan::from_projection(
             projection,
-            self.target_elevation_filter,
+            self.filter,
             chunk_meta,
         ))
     }
@@ -505,9 +505,11 @@ impl StreamingState {
         let vcp = self.vcp.as_ref()?;
         let mapper = self.elevation_mapper.as_ref()?;
 
-        let include_next_volume = match self.target_elevation_filter {
-            Some(target_elev) => !self.has_remaining_match_for_elevation(mapper, target_elev),
-            None => false,
+        let include_next_volume = match self.filter {
+            StreamingFilter::Elevation(target_elev) => {
+                !self.has_remaining_match_for_elevation(mapper, target_elev)
+            }
+            StreamingFilter::All => false,
         };
 
         project_scan_timing_with_next(
@@ -539,11 +541,10 @@ impl StreamingState {
         })
     }
 
-    /// Push the streaming-loop's currently-active elevation filter into the
-    /// state so projections can be filter-aware. `None` means "no filter
-    /// active" (download everything); `Some(n)` is `StreamingFilter::Elevation(n)`.
-    pub fn set_target_elevation_filter(&mut self, target_elevation: Option<u8>) {
-        self.target_elevation_filter = target_elevation;
+    /// Push the streaming-loop's currently-active filter into the state so
+    /// projections can be filter-aware.
+    pub fn set_filter(&mut self, filter: StreamingFilter) {
+        self.filter = filter;
     }
 
     pub fn requests_made(&self) -> usize {

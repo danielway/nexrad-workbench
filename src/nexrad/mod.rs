@@ -27,6 +27,7 @@ mod realtime;
 pub(crate) mod record_decode;
 pub(crate) mod render_coordinator;
 pub(crate) mod render_request;
+mod streaming_filter;
 mod streaming_plan;
 mod streaming_state;
 pub(crate) mod timing;
