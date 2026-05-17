@@ -441,7 +441,7 @@ impl LiveModeState {
         // does, we're waiting for a known future chunk (the timeline shows
         // a countdown derived from the same plan); when it doesn't, we're
         // mid-receipt and the UI shows "receiving…".
-        let has_target = plan.as_ref().and_then(|p| p.next_target.as_ref()).is_some();
+        let has_target = plan.as_ref().and_then(|p| p.next_target()).is_some();
         self.plan = plan;
         if has_target {
             self.phase = LivePhase::WaitingForChunk;
@@ -710,7 +710,7 @@ impl LiveModeState {
                         chunk.azimuth_rate_dps,
                     ));
                     entry.2 += 1;
-                    if let Some(t) = chunk.projected_collection_time_secs {
+                    if let Some(t) = chunk.forecast.as_ref().map(|f| f.collection_time_secs) {
                         entry.0 = entry.0.min(t);
                         entry.1 = entry.1.max(t);
                     }
@@ -902,7 +902,7 @@ impl LiveModeState {
                     // COLLECTION time — elevation bounds on the timeline
                     // represent when the radar will physically scan, not
                     // when chunks will upload.
-                    if let Some(t) = chunk.projected_collection_time_secs {
+                    if let Some(t) = chunk.forecast.as_ref().map(|f| f.collection_time_secs) {
                         min_t = min_t.min(t);
                         max_t = max_t.max(t);
                     }

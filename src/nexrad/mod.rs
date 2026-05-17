@@ -49,9 +49,9 @@ pub use network_monitor::{
     is_cross_origin_isolated, NetworkAggregate, NetworkMonitor, NetworkRequest,
 };
 pub use persistence_manager::PersistenceManager;
-pub use realtime::{ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
+pub use realtime::{ChunkForecast, ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
 pub use render_coordinator::RenderCoordinator;
-pub use streaming_plan::{NextChunkTarget, StreamingPlan};
+pub use streaming_plan::StreamingPlan;
 pub use types::{DownloadResult, ScanMetadata};
 pub use volume_ray_renderer::VolumeRayRenderer;
 

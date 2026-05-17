@@ -69,13 +69,54 @@ impl From<&crate::state::ElevationSelection> for StreamingFilter {
     }
 }
 
+/// Projected timing & diagnostics for a single future chunk.
+///
+/// Present iff the parent [`ChunkProjectionInfo`] describes a chunk that
+/// hasn't been observed yet — past chunks have `forecast: None`. Carries
+/// the full diagnostic bundle the projector computed for this chunk so
+/// downstream surfaces (per-sweep confidence display, prediction-error
+/// attribution, the diagnostics modal) can read attribution data per chunk
+/// rather than only for the immediate next download target.
+#[derive(Clone, Debug)]
+#[allow(dead_code)] // Forecast/diagnostic surface — fields are part of the contract.
+pub struct ChunkForecast {
+    /// COLLECTION category: projected Unix-seconds time the radar physically
+    /// emits/receives for this chunk.
+    pub collection_time_secs: f64,
+    /// AVAILABILITY category: projected Unix-seconds time this chunk
+    /// becomes available in S3 (`collection_at + lag`).
+    pub available_at_secs: f64,
+    /// POLL category: projected time the scheduler will fire its first
+    /// download poll (`available_at + retry_budget + POLL_BIAS`).
+    pub poll_at_secs: f64,
+    /// Typical retry-poll overhead `(avg_attempts − 1).max(0)` for this
+    /// chunk's bucket. Already folded into `poll_at_secs`.
+    pub retry_budget_secs: f64,
+    /// Physics decomposition for the hop into this chunk (azimuth gap,
+    /// inter-sweep transition, inter-volume gap).
+    pub physics_breakdown: super::timing::PhysicsBreakdown,
+    /// Bucket sample count consulted at projection time. `0` when no
+    /// historical samples were available.
+    pub stats_n: usize,
+    /// Whether historical samples contributed to the projected interval.
+    pub used_historical: bool,
+    /// Which projector branch supplied the interval: `Blended` when
+    /// historical samples contributed, `Physics` otherwise. Derived from
+    /// `used_historical` but cached so consumers don't need to.
+    pub scheduler_path: super::timing::SchedulerPath,
+    /// The bucket key the lookup hit (or missed). `None` when no
+    /// elevation was resolvable (Start chunk).
+    pub bucket: Option<super::timing::ChunkCharacteristics>,
+}
+
 /// Projected timing and structural info for a single chunk in the volume.
 ///
-/// Combines structural metadata from `ChunkMetadata` (available for all chunks)
-/// with projected timing from `ChunkProjection` (available for future chunks).
-/// This decouples the UI layer from the nexrad-data library types.
+/// Combines structural metadata from `ChunkMetadata` (available for every
+/// chunk in the volume) with an optional `forecast` ([`ChunkForecast`])
+/// that's present iff the chunk is in the future from the streaming loop's
+/// anchor. Past chunks carry only structural fields.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Forecast/diagnostic surface — fields are part of the contract.
 pub struct ChunkProjectionInfo {
     /// 1-based sequence number in the volume.
     pub sequence: usize,
@@ -85,15 +126,6 @@ pub struct ChunkProjectionInfo {
     pub elevation_angle_deg: f64,
     /// Azimuth rotation rate in degrees/second from the VCP.
     pub azimuth_rate_dps: f64,
-    /// COLLECTION category: projected Unix-seconds time the radar physically
-    /// emits/receives for this chunk. `Some` for future chunks (from
-    /// ScanTimingProjection), `None` for past chunks. Drives timeline
-    /// placeholders for future sweeps.
-    pub projected_collection_time_secs: Option<f64>,
-    /// AVAILABILITY category: projected Unix-seconds time this chunk becomes
-    /// available in S3. `Some` for future chunks (from ScanTimingProjection),
-    /// `None` for past chunks.
-    pub projected_available_at_secs: Option<f64>,
     /// Whether this chunk starts a new sweep.
     pub starts_new_sweep: bool,
     /// 0-based index of this chunk within its sweep.
@@ -106,6 +138,10 @@ pub struct ChunkProjectionInfo {
     /// volume). `sequence` alone is NOT unique when `volume_offset > 0` —
     /// key by `(volume_offset, sequence)` if uniqueness is needed.
     pub volume_offset: u8,
+    /// Projected timing & projector diagnostics. `Some` iff this chunk is
+    /// in the future (the projector emitted a [`super::timing::ChunkProjection`]
+    /// for it); `None` for past chunks.
+    pub forecast: Option<ChunkForecast>,
 }
 
 /// Result type for realtime streaming events.
@@ -911,7 +947,10 @@ async fn streaming_loop(
     let mut none_retries: u32 = 0;
     let mut cur_predicted_at: Option<f64> = None; // absolute Unix seconds
     let mut cur_last_empty_at: Option<f64> = None;
-    let mut cur_diagnostics: Option<super::NextChunkTarget> = None;
+    // Captures `target.forecast.clone()` on a chunk's first attempt so retry
+    // iterations don't overwrite it with a fresh (post-anchor-advance)
+    // projection. Read at success time into the per-chunk arrival stat.
+    let mut cur_forecast: Option<super::ChunkForecast> = None;
     let mut cur_predicted_wait_secs: Option<f64> = None;
     // Track filter changes across iterations so we can run a mid-stream
     // backfill exactly once per change, and so the in-flight predicted-at
@@ -945,7 +984,7 @@ async fn streaming_loop(
             );
             cur_predicted_at = None;
             cur_last_empty_at = None;
-            cur_diagnostics = None;
+            cur_forecast = None;
             cur_predicted_wait_secs = None;
             none_retries = 0;
             let emitted = run_mid_stream_backfill(
@@ -975,23 +1014,28 @@ async fn streaming_loop(
         let now_secs = current_timestamp_f64();
 
         // Sleep target: poll-time of the immediate next download. POLL_BIAS
-        // and the bucket's retry budget are already folded into
-        // `projected_poll_at_secs` by the projector — no additional padding
-        // needed (compare to the old explicit `poll_delay_after_predicted_ms`).
-        let time_until_next_opt = plan.as_ref().and_then(|p| {
-            p.next_target.as_ref().map(|t| {
-                std::time::Duration::from_secs_f64((t.projected_poll_at_secs - now_secs).max(0.0))
-            })
-        });
+        // and the bucket's retry budget are already folded into the
+        // forecast's `poll_at_secs` by the projector — no additional
+        // padding needed (compare to the old explicit
+        // `poll_delay_after_predicted_ms`).
+        let time_until_next_opt = plan
+            .as_ref()
+            .and_then(|p| p.next_target())
+            .and_then(|t| t.forecast.as_ref())
+            .map(|f| std::time::Duration::from_secs_f64((f.poll_at_secs - now_secs).max(0.0)));
 
         // Capture the prediction once per chunk so retry iterations don't
         // overwrite it with a near-zero "wait" after a 404.
         let is_first_iter_for_chunk = cur_predicted_at.is_none();
         if is_first_iter_for_chunk {
-            if let Some(target) = plan.as_ref().and_then(|p| p.next_target.as_ref()) {
-                cur_predicted_at = Some(target.projected_available_at_secs);
-                cur_predicted_wait_secs = Some(target.projected_poll_at_secs - now_secs);
-                cur_diagnostics = Some(target.clone());
+            if let Some(forecast) = plan
+                .as_ref()
+                .and_then(|p| p.next_target())
+                .and_then(|t| t.forecast.as_ref())
+            {
+                cur_predicted_at = Some(forecast.available_at_secs);
+                cur_predicted_wait_secs = Some(forecast.poll_at_secs - now_secs);
+                cur_forecast = Some(forecast.clone());
             }
         }
         if let Some(wait_duration) = time_until_next_opt {
@@ -1133,7 +1177,7 @@ async fn streaming_loop(
             none_retries = 0;
             cur_predicted_at = None;
             cur_last_empty_at = None;
-            cur_diagnostics = None;
+            cur_forecast = None;
             cur_predicted_wait_secs = None;
             continue;
         }
@@ -1223,18 +1267,18 @@ async fn streaming_loop(
                 let anchor_source = Some(iter.current_anchor_source());
 
                 // The forecast that produced this chunk's sleep target was
-                // captured into `cur_diagnostics` on the chunk's first
+                // captured into `cur_forecast` on the chunk's first
                 // iteration. Map its fields into the arrival stat so the
                 // diagnostics modal can compare predicted vs. observed.
                 let (bucket_key, stats_n_at_prediction, scheduler_path, physics_breakdown) =
-                    match cur_diagnostics.as_ref() {
-                        Some(t) => (
-                            t.bucket
+                    match cur_forecast.as_ref() {
+                        Some(f) => (
+                            f.bucket
                                 .as_ref()
                                 .map(crate::state::BucketKey::from_characteristics),
-                            t.stats_n_at_prediction,
-                            Some(t.scheduler_path),
-                            Some(t.physics_breakdown),
+                            f.stats_n,
+                            Some(f.scheduler_path),
+                            Some(f.physics_breakdown),
                         ),
                         None => (None, 0, None, None),
                     };
@@ -1264,7 +1308,7 @@ async fn streaming_loop(
                 none_retries = 0;
                 cur_predicted_at = None;
                 cur_last_empty_at = None;
-                cur_diagnostics = None;
+                cur_forecast = None;
                 cur_predicted_wait_secs = None;
                 let chunk_is_last_in_sweep = iter
                     .chunk_metadata(chunk.identifier.sequence())

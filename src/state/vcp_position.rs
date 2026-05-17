@@ -164,7 +164,7 @@ impl VcpPositionModel {
                             chunk_count: 0,
                         });
                         entry.chunk_count += 1;
-                        if let Some(t) = chunk.projected_collection_time_secs {
+                        if let Some(t) = chunk.forecast.as_ref().map(|f| f.collection_time_secs) {
                             entry.min_time = entry.min_time.min(t);
                             entry.max_time = entry.max_time.max(t);
                         }
@@ -480,7 +480,7 @@ impl VcpPositionModel {
         let mut vol_start = f64::MAX;
         let mut vol_end = f64::MIN;
         for chunk in projections {
-            let Some(t) = chunk.projected_collection_time_secs else {
+            let Some(t) = chunk.forecast.as_ref().map(|f| f.collection_time_secs) else {
                 continue;
             };
             vol_start = vol_start.min(t);
