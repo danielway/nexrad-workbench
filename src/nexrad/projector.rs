@@ -1,0 +1,210 @@
+//! Projection state and plan construction.
+//!
+//! Owns the inputs that feed the forward-looking [`StreamingPlan`]: the
+//! current volume's VCP, its derived [`ElevationChunkMapper`], rolling
+//! [`ChunkTimingStats`], the active [`StreamingFilter`], and the most
+//! recently observed chunk collection-end timestamp (the projection
+//! anchor). [`Projector::build_plan`] composes these into a plan.
+//!
+//! Extracted from [`super::streaming_state::StreamingState`] so the
+//! projection concern stands alone. Today [`StreamingState`] still owns
+//! the projector (delegating projection-related methods to it); a later
+//! commit moves ownership to the main thread so observations from the
+//! worker pipeline can feed projection without an async round-trip.
+
+use super::streaming_filter::StreamingFilter;
+use super::streaming_plan::StreamingPlan;
+use super::timing::{
+    project_scan_timing_with_next, AnchorSource, ChunkCharacteristics, ChunkMetadata,
+    ChunkTimingStats, ElevationChunkMapper,
+};
+use chrono::Duration as ChronoDuration;
+use nexrad_data::aws::realtime::ChunkIdentifier;
+use nexrad_decode::messages::volume_coverage_pattern;
+
+/// All state needed to project future chunks for the in-progress volume.
+///
+/// Fed by chunk-arrival observations (collection-end times, inter-chunk
+/// durations, availability lags) and the current volume's VCP. Produces
+/// a [`StreamingPlan`] anchored at a caller-supplied chunk.
+#[derive(Debug, Default)]
+pub struct Projector {
+    vcp: Option<volume_coverage_pattern::Message<'static>>,
+    elevation_mapper: Option<ElevationChunkMapper>,
+    timing_stats: ChunkTimingStats,
+    /// ACTUAL category: collection-end time (Unix seconds) of the most
+    /// recently ingested chunk, parsed by the worker as the latest radial
+    /// timestamp in the chunk. Reset on volume boundary. Used as the
+    /// anchor for projected COLLECTION times — the projector adds
+    /// cumulative inter-chunk physics intervals to this to place future
+    /// chunks on the timeline.
+    latest_chunk_collection_end_secs: Option<f64>,
+    filter: StreamingFilter,
+}
+
+impl Projector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Install (or replace) the VCP for the in-progress volume. The
+    /// derived [`ElevationChunkMapper`] is rebuilt automatically. Called
+    /// on every Start-chunk arrival.
+    pub fn set_vcp(&mut self, vcp: volume_coverage_pattern::Message<'static>) {
+        self.elevation_mapper = Some(ElevationChunkMapper::new(&vcp));
+        self.vcp = Some(vcp);
+    }
+
+    /// Borrow the current VCP's chunk mapper. `None` before the first
+    /// Start chunk is parsed.
+    pub fn mapper(&self) -> Option<&ElevationChunkMapper> {
+        self.elevation_mapper.as_ref()
+    }
+
+    /// Build a [`StreamingPlan`] anchored at `anchor_chunk` (the most
+    /// recently observed chunk). `now_secs` is recorded on the plan as
+    /// `built_at_secs` for staleness reasoning.
+    ///
+    /// Returns `None` only when the projector is in a cold state (no VCP
+    /// / no mapper yet).
+    pub fn build_plan(
+        &self,
+        anchor_chunk: &ChunkIdentifier,
+        now_secs: f64,
+    ) -> Option<StreamingPlan> {
+        let mapper = self.elevation_mapper.as_ref()?;
+        let vcp = self.vcp.as_ref()?;
+
+        // Extend into the next volume iff the active filter has no
+        // remaining match in this volume. `has_remaining_match` returns
+        // `true` for `StreamingFilter::All` whenever chunks remain, so
+        // the All branch naturally never triggers an extension.
+        let include_next_volume = !mapper.has_remaining_match(self.filter, anchor_chunk.sequence());
+
+        let projection = project_scan_timing_with_next(
+            anchor_chunk,
+            self.latest_chunk_collection_end_secs,
+            vcp,
+            mapper,
+            Some(&self.timing_stats),
+            include_next_volume,
+        )?;
+
+        let chunk_meta = mapper.all_chunk_metadata();
+        Some(StreamingPlan::from_projection(
+            projection,
+            self.filter,
+            chunk_meta,
+            now_secs,
+        ))
+    }
+
+    pub fn set_filter(&mut self, filter: StreamingFilter) {
+        self.filter = filter;
+    }
+
+    pub fn record_chunk_collection_end_secs(&mut self, secs: f64) {
+        self.latest_chunk_collection_end_secs = Some(secs);
+    }
+
+    /// Reset the collection-end anchor — used at volume boundaries when
+    /// the previous volume's last-radial time no longer applies.
+    pub fn reset_collection_anchor(&mut self) {
+        self.latest_chunk_collection_end_secs = None;
+    }
+
+    pub fn latest_chunk_collection_end_secs(&self) -> Option<f64> {
+        self.latest_chunk_collection_end_secs
+    }
+
+    /// Attach an observed availability-lag (S3 upload − ACTUAL collection
+    /// time) sample to the most recent timing stat recorded for `current`.
+    pub fn record_availability_lag_for(&mut self, current: &ChunkIdentifier, lag_secs: f64) {
+        let Some(characteristics) = self.characteristics_for_sequence(current) else {
+            return;
+        };
+        self.timing_stats.attach_availability_lag(
+            &characteristics,
+            ChronoDuration::milliseconds((lag_secs * 1000.0) as i64),
+        );
+    }
+
+    /// Anchor source the plan would use right now — `ObservedCollection`
+    /// when an ACTUAL collection-end time is available, `UploadMinusMedian`
+    /// when only the rolling median S3 lag is, or `UploadMinusDefault`
+    /// otherwise. Captured per-chunk so the diagnostics modal can spot
+    /// degraded projections.
+    pub fn current_anchor_source(&self) -> AnchorSource {
+        if self.latest_chunk_collection_end_secs.is_some() {
+            AnchorSource::ObservedCollection
+        } else if self.timing_stats.median_availability_lag_secs().is_some() {
+            AnchorSource::UploadMinusMedian
+        } else {
+            AnchorSource::UploadMinusDefault
+        }
+    }
+
+    /// Replace the rolling timing statistics with a previously-persisted
+    /// snapshot. Called once on stream start when localStorage has cached
+    /// stats for the site.
+    pub fn preload_timing_stats(&mut self, stats: ChunkTimingStats) {
+        self.timing_stats = stats;
+    }
+
+    pub fn timing_stats(&self) -> &ChunkTimingStats {
+        &self.timing_stats
+    }
+
+    pub fn chunk_metadata(&self, sequence: usize) -> Option<&ChunkMetadata> {
+        self.elevation_mapper
+            .as_ref()
+            .and_then(|m| m.get_chunk_metadata(sequence))
+    }
+
+    pub fn mapper_matching_sequences_in_range(
+        &self,
+        lower: usize,
+        upper: usize,
+        predicate: impl FnMut(Option<usize>) -> bool,
+    ) -> Vec<usize> {
+        self.elevation_mapper
+            .as_ref()
+            .map(|m| m.matching_sequences_in_range(lower, upper, predicate))
+            .unwrap_or_default()
+    }
+
+    /// Record an inter-chunk arrival sample for `chunk_id`'s bucket.
+    /// Called by the streaming loop after each successful download with
+    /// the wall-clock duration since the previous chunk landed.
+    pub fn record_inter_chunk_duration(
+        &mut self,
+        chunk_id: &ChunkIdentifier,
+        duration: ChronoDuration,
+        attempts: usize,
+    ) {
+        if let Some(characteristics) = self.characteristics_for_sequence(chunk_id) {
+            self.timing_stats
+                .add_timing(characteristics, duration, None, attempts);
+        }
+    }
+
+    fn characteristics_for_sequence(
+        &self,
+        chunk_id: &ChunkIdentifier,
+    ) -> Option<ChunkCharacteristics> {
+        let vcp = self.vcp.as_ref()?;
+        let mapper = self.elevation_mapper.as_ref()?;
+        let elevation = mapper
+            .get_sequence_elevation_number(chunk_id.sequence())
+            .and_then(|n| vcp.elevations().get(n - 1))?;
+        let is_first_in_sweep = mapper
+            .get_chunk_metadata(chunk_id.sequence())
+            .is_some_and(|m| m.is_first_in_sweep());
+        Some(ChunkCharacteristics {
+            chunk_type: chunk_id.chunk_type(),
+            waveform_type: elevation.waveform_type(),
+            channel_configuration: elevation.channel_configuration(),
+            is_first_in_sweep,
+        })
+    }
+}
