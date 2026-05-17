@@ -1581,19 +1581,11 @@ impl WorkbenchApp {
         let (chunk_in_sweep_str, remaining_str) = self
             .state
             .live_mode_state
-            .plan
-            .as_ref()
-            .and_then(|plan| {
-                plan.current_volume_chunks
-                    .iter()
-                    .find(|c| c.sequence == sequence)
-                    .map(|c| {
-                        let in_sweep =
-                            format!("{}/{}", c.chunk_index_in_sweep + 1, c.chunks_in_sweep);
-                        let remaining_in_sweep =
-                            c.chunks_in_sweep.saturating_sub(c.chunk_index_in_sweep + 1);
-                        (in_sweep, format!("{}", remaining_in_sweep))
-                    })
+            .chunk_position_in_sweep(sequence)
+            .map(|(idx, total)| {
+                let in_sweep = format!("{}/{}", idx + 1, total);
+                let remaining_in_sweep = total.saturating_sub(idx + 1);
+                (in_sweep, format!("{}", remaining_in_sweep))
             })
             .unwrap_or_else(|| ("?/?".to_string(), "?".to_string()));
 

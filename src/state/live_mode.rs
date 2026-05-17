@@ -25,6 +25,29 @@
 //! each chunk boundary; the canvas already resolves whichever sweep has
 //! `end ≤ playback_position`, so wall-clock tracking satisfies principle
 //! 1 (canvas shows ACTUAL data) without the stutter.
+//!
+//! # UI consumption convention
+//!
+//! Code outside this module and [`crate::state::live_radar_model`] must
+//! NOT reach into `self.plan.current_volume_chunks` (or other plan
+//! internals) directly. Use one of:
+//!
+//! - [`LiveModeState::countdown_remaining_secs`] for the "next chunk in Xs"
+//!   countdown.
+//! - [`LiveModeState::chunk_position_in_sweep`] for chunk-in-sweep lookups
+//!   keyed by sequence.
+//! - [`LiveModeState::derive_current_volume_forecast`] / the
+//!   [`crate::state::derive_volume_forecast`] free function for snapshot
+//!   derivations.
+//! - [`crate::state::live_radar_model::LiveRadarModel`] accessors for
+//!   anything frame-cached (the timeline ghost, VCP panel position, the
+//!   in-progress sweep). The model is rebuilt once per UI frame in
+//!   [`crate::state::AppState::refresh_live_model`] so multiple read sites
+//!   in the same frame see consistent data.
+//!
+//! Direct plan-field access from UI code defeats the frame-caching and
+//! also makes consumers brittle to projector changes — adding an
+//! accessor here keeps the substitution painless.
 
 /// Live mode phase - current state in the streaming state machine.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -679,6 +702,21 @@ impl LiveModeState {
         if let Some(t) = time_secs {
             self.last_radial_time_secs = Some(t);
         }
+    }
+
+    /// Structural metadata for the chunk at the given 1-based sequence,
+    /// as `(chunk_index_in_sweep, chunks_in_sweep)`. Returns `None` when
+    /// the plan doesn't know about the sequence. The single accessor
+    /// callers outside this module should use instead of reaching into
+    /// `self.plan.current_volume_chunks` — see the module docstring's
+    /// note on UI consumption.
+    pub fn chunk_position_in_sweep(&self, sequence: usize) -> Option<(usize, usize)> {
+        self.plan
+            .as_ref()?
+            .current_volume_chunks
+            .iter()
+            .find(|c| c.sequence == sequence)
+            .map(|c| (c.chunk_index_in_sweep, c.chunks_in_sweep))
     }
 
     /// Duration of the most recently completed volume scan, in seconds.
