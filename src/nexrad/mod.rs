@@ -51,6 +51,7 @@ pub use network_monitor::{
     is_cross_origin_isolated, NetworkAggregate, NetworkMonitor, NetworkRequest,
 };
 pub use persistence_manager::PersistenceManager;
+pub use projector::ProjectorObservation;
 pub use realtime::{ChunkForecast, ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
 pub use render_coordinator::RenderCoordinator;
 pub use streaming_plan::StreamingPlan;

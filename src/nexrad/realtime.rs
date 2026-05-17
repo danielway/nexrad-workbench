@@ -154,20 +154,20 @@ struct RealtimeState {
     results: Vec<RealtimeResult>,
     active: bool,
     stop_requested: bool,
-    /// ACTUAL category: latest radial collection time (Unix seconds) of
-    /// the most recently ingested chunk. Pushed in from `main.rs` after
-    /// each ingest response and drained by the streaming loop into
-    /// `StreamingState` so projections anchor on the current chunk's true
-    /// collection time rather than the volume's start.
-    pending_chunk_collection_end_secs: Option<f64>,
-    /// Empirical availability lag (seconds) for the most recently ingested
-    /// chunk, computed in `main.rs` as `s3_last_modified - chunk_max_time`.
-    /// Drained by the streaming loop and attached to the latest
-    /// `ChunkTimingStats` sample.
-    pending_availability_lag_secs: Option<f64>,
+    /// Projector observations queued from the main thread (worker ingest
+    /// results, etc.) for the streaming loop to drain and apply to its
+    /// `StreamingState`. See [`super::ProjectorObservation`] for the
+    /// vocabulary; adding new observation kinds is mechanical (one
+    /// enum variant + one drain match arm).
+    pending_observations: Vec<super::ProjectorObservation>,
     /// Active filter on the chunk stream. Updated from the UI thread via
     /// `RealtimeChannel::set_filter`; the streaming loop snapshots this on
     /// each iteration and uses it to skip chunks that don't match.
+    ///
+    /// Filter changes are not routed through `pending_observations`
+    /// because they have additional sleep-interruption semantics (see
+    /// `filter_epoch` below) and a re-entry path in the loop that other
+    /// observations don't need.
     pending_filter: StreamingFilter,
     /// Bumped by `set_filter` on every change so a sleeping loop can detect
     /// "the filter just changed" via epoch comparison and wake up to
@@ -237,20 +237,29 @@ impl RealtimeChannel {
         }
     }
 
+    /// Enqueue a projector observation to be applied on the next
+    /// streaming-loop iteration. Adding new observation kinds is purely
+    /// a matter of extending [`super::ProjectorObservation`] and the
+    /// drain dispatch — no new state field or new channel method needed.
+    pub fn observe(&self, observation: super::ProjectorObservation) {
+        self.state
+            .borrow_mut()
+            .pending_observations
+            .push(observation);
+    }
+
     /// Push the latest radial collection time (Unix seconds) parsed from
-    /// the chunk that was just ingested. The streaming loop drains this
-    /// and stamps it onto `StreamingState` so the next projection anchors
-    /// on the current chunk's actual collection time.
+    /// the chunk that was just ingested. Convenience wrapper over
+    /// [`Self::observe`].
     pub fn record_chunk_collection_end_secs(&self, secs: f64) {
-        self.state.borrow_mut().pending_chunk_collection_end_secs = Some(secs);
+        self.observe(super::ProjectorObservation::CollectionEndSecs(secs));
     }
 
     /// Push an empirical availability lag (S3 upload − ACTUAL chunk
-    /// collection time, seconds) for the chunk just ingested. The streaming
-    /// loop attaches it to the most recent `ChunkTimingStats` sample so
-    /// future projections can use a median lag rather than a hard default.
+    /// collection time, seconds) for the chunk just ingested. Convenience
+    /// wrapper over [`Self::observe`].
     pub fn record_availability_lag_secs(&self, lag_secs: f64) {
-        self.state.borrow_mut().pending_availability_lag_secs = Some(lag_secs);
+        self.observe(super::ProjectorObservation::AvailabilityLagSecs(lag_secs));
     }
 
     /// Update the active streaming filter. Bumps the filter epoch so a
@@ -537,34 +546,30 @@ async fn run_mid_stream_backfill(
     .await
 }
 
-/// Drain anything pushed in from `main.rs` after a worker ingest and stamp
-/// it onto the `StreamingState`: the ACTUAL volume header time (anchors
-/// collection-time projections) and the empirical per-chunk availability
-/// lag (feeds `ChunkTimingStats`).
-fn drain_pending_ingest_observations(
-    state_cell: &Rc<RefCell<RealtimeState>>,
-    iter: &mut StreamingState,
-) {
-    let (pending_collection_end, pending_lag) = {
-        let mut s = state_cell.borrow_mut();
-        (
-            s.pending_chunk_collection_end_secs.take(),
-            s.pending_availability_lag_secs.take(),
-        )
-    };
-    if let Some(secs) = pending_collection_end {
-        let prior = iter.latest_chunk_collection_end_secs();
-        iter.record_chunk_collection_end_secs(secs);
-        if prior != Some(secs) {
-            log::debug!(
-                "chunk_collection_end: updated to {:.3}s (prior={:?})",
-                secs,
-                prior
-            );
+/// Drain projector observations queued from `main.rs` (after worker
+/// ingest) and apply each to the `StreamingState`'s projector. The
+/// dispatch shape — match on [`super::ProjectorObservation`] variant,
+/// call the matching projector method — is intentionally explicit so
+/// adding a new observation kind is just one new arm here.
+fn drain_pending_observations(state_cell: &Rc<RefCell<RealtimeState>>, iter: &mut StreamingState) {
+    let observations = std::mem::take(&mut state_cell.borrow_mut().pending_observations);
+    for obs in observations {
+        match obs {
+            super::ProjectorObservation::CollectionEndSecs(secs) => {
+                let prior = iter.latest_chunk_collection_end_secs();
+                iter.record_chunk_collection_end_secs(secs);
+                if prior != Some(secs) {
+                    log::debug!(
+                        "chunk_collection_end: updated to {:.3}s (prior={:?})",
+                        secs,
+                        prior
+                    );
+                }
+            }
+            super::ProjectorObservation::AvailabilityLagSecs(lag_secs) => {
+                iter.record_availability_lag_for_current(lag_secs);
+            }
         }
-    }
-    if let Some(lag_secs) = pending_lag {
-        iter.record_availability_lag_for_current(lag_secs);
     }
 }
 
@@ -914,7 +919,7 @@ async fn streaming_loop(
         // Ingest any volume header time + availability lag the worker
         // produced from the most recent chunk's radials so projections and
         // stats in this iteration see them.
-        drain_pending_ingest_observations(&state, &mut iter);
+        drain_pending_observations(&state, &mut iter);
 
         // Filter-change detection: if the user toggled to a new filter
         // (FilterChanged sleep wake or first iteration after a `set_filter`
