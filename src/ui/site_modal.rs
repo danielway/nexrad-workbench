@@ -30,7 +30,7 @@ pub enum SiteModalMode {
 }
 
 /// A location result delivered by an async operation (geolocation or zip).
-pub enum LocationResult {
+pub(crate) enum LocationResult {
     /// Successfully resolved to a lat/lon.
     Success(f64, f64),
     /// The operation failed with an error message.
@@ -109,7 +109,7 @@ pub(super) fn apply_site_selection(state: &mut AppState, site_id: &str, lat: f64
 }
 
 /// Start browser geolocation lookup.
-fn start_geolocation(results: Rc<RefCell<Vec<LocationResult>>>, ctx: egui::Context) {
+pub(crate) fn start_geolocation(results: Rc<RefCell<Vec<LocationResult>>>, ctx: egui::Context) {
     let window = match web_sys::window() {
         Some(w) => w,
         None => {

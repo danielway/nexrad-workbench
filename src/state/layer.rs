@@ -30,6 +30,9 @@ pub struct GeoLayerVisibility {
     pub alerts: bool,
     /// Show mPING crowd-sourced storm reports
     pub mping: bool,
+    /// Show the user's current GPS location as a dot on the map.
+    /// Per-session only — not persisted to UserPreferences.
+    pub gps_location: bool,
 }
 
 impl Default for GeoLayerVisibility {
@@ -45,6 +48,7 @@ impl Default for GeoLayerVisibility {
             national_mosaic: false,
             alerts: false,
             mping: false,
+            gps_location: false,
         }
     }
 }

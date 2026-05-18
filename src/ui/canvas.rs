@@ -4,8 +4,8 @@ use super::canvas_inspector::{render_distance_measurement, render_inspector, ren
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
     draw_color_scale, draw_compass, draw_globe, draw_national_mosaic, draw_overlay_info,
-    draw_scale_bar, render_alerts, render_mping_detail, render_mping_reports, render_nexrad_sites,
-    render_radar_sweep, RadarCutout,
+    draw_scale_bar, render_alerts, render_gps_location, render_mping_detail, render_mping_reports,
+    render_nexrad_sites, render_radar_sweep, RadarCutout,
 };
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
@@ -268,6 +268,12 @@ pub fn render_canvas_with_geo(
                         &state.viz_state.detected_storm_cells,
                         dark,
                     );
+                }
+
+                if state.layer_state.geo.gps_location {
+                    if let Some(coords) = state.gps_state.coords {
+                        render_gps_location(&painter, &projection, coords);
+                    }
                 }
 
                 // Show sweep line when actively revealing, between sweeps, or during live streaming.

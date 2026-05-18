@@ -3129,6 +3129,30 @@ impl eframe::App for WorkbenchApp {
         // Resolve mobile/desktop layout for this frame before panels render.
         self.state.refresh_mobile_mode(ctx);
 
+        // Drain GPS-overlay async results before panels render so the
+        // "My Location" checkbox sees coords/error on the same frame the
+        // geolocation callback fires.
+        let drained_gps: Vec<_> = self
+            .state
+            .gps_state
+            .results
+            .borrow_mut()
+            .drain(..)
+            .collect();
+        for r in drained_gps {
+            match r {
+                ui::LocationResult::Success(lat, lon) => {
+                    self.state.gps_state.coords = Some((lat, lon));
+                    self.state.gps_state.error = None;
+                }
+                ui::LocationResult::Error(msg) => {
+                    self.state.gps_state.error = Some(msg);
+                    self.state.gps_state.coords = None;
+                    self.state.layer_state.geo.gps_location = false;
+                }
+            }
+        }
+
         // Recolor the favicon if the AppMode changed this frame.
         self.sync_favicon_to_mode();
 

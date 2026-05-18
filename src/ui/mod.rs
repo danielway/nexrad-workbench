@@ -44,6 +44,7 @@ pub use network_panel::render_network_log;
 pub use right_panel::render_right_panel;
 pub use shortcuts::{handle_shortcuts, render_shortcuts_help};
 pub use site_modal::{render_site_modal, trigger_geolocation, SiteModalState};
+pub(crate) use site_modal::{start_geolocation, LocationResult};
 pub use stats_modal::render_stats_modal;
 pub use top_bar::render_top_bar;
 pub use vcp_forecast_modal::render_vcp_forecast_modal;

@@ -8,6 +8,7 @@
 pub(crate) mod acquisition;
 mod alerts;
 mod app_mode;
+mod gps;
 mod layer;
 mod live_mode;
 mod live_radar_model;
@@ -37,6 +38,7 @@ pub use acquisition::{
 };
 pub use alerts::AlertsState;
 pub use app_mode::AppMode;
+pub use gps::GpsState;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
@@ -264,6 +266,10 @@ pub struct AppState {
 
     /// mPING storm reports + related modal state.
     pub mping: MpingState,
+
+    /// Transient GPS-location state backing the "My Location" map overlay.
+    /// Per-session only — not persisted across reloads.
+    pub gps_state: GpsState,
 
     /// Resolved mobile mode for the current frame. Computed by
     /// [`AppState::refresh_mobile_mode`] from viewport width and touch history.

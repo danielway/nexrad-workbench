@@ -247,6 +247,28 @@ pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                     .on_disabled_hover_text(stale_tip);
             });
 
+            let was_gps_on = state.layer_state.geo.gps_location;
+            let gps_resp = ui
+                .checkbox(&mut state.layer_state.geo.gps_location, "My Location")
+                .on_hover_text(
+                    "Show your device's GPS location as a dot on the map \
+                     (one-shot lookup; requires browser permission)",
+                );
+            if !was_gps_on && state.layer_state.geo.gps_location {
+                state.gps_state.coords = None;
+                state.gps_state.error = None;
+                crate::ui::start_geolocation(
+                    state.gps_state.results.clone(),
+                    gps_resp.ctx.clone(),
+                );
+            } else if was_gps_on && !state.layer_state.geo.gps_location {
+                state.gps_state.coords = None;
+                state.gps_state.error = None;
+            }
+            if let Some(err) = state.gps_state.error.clone() {
+                ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
+            }
+
             if advanced {
                 ui.horizontal(|ui| {
                     let has_key = state.mping.api_key.is_some();
