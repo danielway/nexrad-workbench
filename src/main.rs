@@ -2991,7 +2991,10 @@ impl WorkbenchApp {
         // also keeps the prev slot from drifting until a new sweep lands.
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
-        self.render.clear_last_render();
+        // Keep `last_render` set to the failed identity. A "no pre-computed
+        // sweep" answer is permanent for that exact (scan, elev, product), so
+        // the dedup must suppress the next frame's identical request — clearing
+        // it would re-fire the failing render every frame.
     }
 
     /// Re-render when the user changes elevation, product, or view mode.
