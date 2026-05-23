@@ -34,10 +34,13 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             .await
             .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to fetch sweep: {}", e)))?
             .ok_or_else(|| {
-                wasm_bindgen::JsValue::from_str(&format!(
-                    "No pre-computed sweep for elev={} product={}",
-                    elevation_number, product_str
-                ))
+                worker_error(
+                    "not_found",
+                    format!(
+                        "No pre-computed sweep for elev={} product={}",
+                        elevation_number, product_str,
+                    ),
+                )
             })?;
         let fetch_ms = t_fetch.elapsed().as_secs_f64() * 1000.0;
         let blob_len = blob_buffer.byte_length();

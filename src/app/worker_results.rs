@@ -36,10 +36,11 @@ impl WorkbenchApp {
                 }
                 nexrad::WorkerOutcome::WorkerError {
                     id,
+                    kind,
                     message,
                     failed_scan_timestamp_secs,
                 } => {
-                    self.handle_worker_error_outcome(id, message, failed_scan_timestamp_secs);
+                    self.handle_worker_error_outcome(id, kind, message, failed_scan_timestamp_secs);
                 }
             }
         }
@@ -923,18 +924,24 @@ impl WorkbenchApp {
     fn handle_worker_error_outcome(
         &mut self,
         id: u64,
+        kind: nexrad::WorkerErrorKind,
         message: String,
         failed_scan_timestamp_secs: Option<f64>,
     ) {
-        log::warn!("Worker error (request {}): {}", id, message);
+        log::warn!(
+            "Worker error (request {}, kind {:?}): {}",
+            id,
+            kind,
+            message
+        );
         self.state.status_message = format!("Worker error: {}", message);
 
         // When the worker reports that the requested (elevation, product) has
         // no pre-computed sweep, clear the stale canvas so the user sees what
         // the timeline already knows — nothing matches their current filter.
-        // Narrowed to this specific message so transient errors (worker
-        // disconnect, IDB failure) keep the last-good view instead of blanking.
-        if message.starts_with("No pre-computed sweep") {
+        // Dispatch on the typed kind so transient errors (worker disconnect,
+        // IDB failure) keep the last-good view instead of blanking.
+        if kind == nexrad::WorkerErrorKind::NotFound {
             self.clear_display_no_sweep();
         }
 

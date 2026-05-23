@@ -213,7 +213,8 @@ fn build_decode_result(
 ///
 /// Called after the pending-context entry has already been removed — the
 /// caller would otherwise see a silent drop and never learn the request
-/// failed.
+/// failed. Tagged with [`WorkerErrorKind::InvalidData`] since the wire
+/// payload itself was the source of the failure.
 fn push_payload_parse_error(
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
     id: RequestId,
@@ -225,6 +226,7 @@ fn push_payload_parse_error(
     log::error!("{} (request {})", message, id);
     results.borrow_mut().push(WorkerOutcome::WorkerError {
         id,
+        kind: WorkerErrorKind::InvalidData,
         message,
         failed_scan_timestamp_secs,
     });
@@ -569,7 +571,12 @@ fn handle_error_message(
         }
     };
 
-    log::warn!("Worker error (request {}): {}", e.id, e.message);
+    log::warn!(
+        "Worker error (request {}, kind {:?}): {}",
+        e.id,
+        e.kind,
+        e.message
+    );
 
     let failed_scan_timestamp_secs = cleanup_pending_by_id(
         e.id,
@@ -582,6 +589,7 @@ fn handle_error_message(
 
     results.borrow_mut().push(WorkerOutcome::WorkerError {
         id: e.id,
+        kind: e.kind,
         message: e.message,
         failed_scan_timestamp_secs,
     });

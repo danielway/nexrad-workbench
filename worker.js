@@ -42,6 +42,46 @@
 
 let wasm = null;
 
+// Classify a caught exception into a structured { kind, message } pair so
+// the Rust receive path can dispatch on the kind instead of regex-matching
+// the message. Rust code that throws can opt into a specific kind by
+// throwing an object with `kind` and `message` fields; otherwise we map
+// known DOMException names to kinds. New kinds must be added to
+// `WorkerErrorKind` in src/nexrad/decode_worker/types.rs and pinned by the
+// `worker_error_kind_deserializes_known_strings` test.
+function classifyError(err) {
+    if (err && typeof err === 'object' && typeof err.kind === 'string') {
+        return { kind: err.kind, message: String(err.message || err.kind) };
+    }
+    if (!err) {
+        return { kind: 'unknown', message: 'Unknown error' };
+    }
+    const name = err.name || '';
+    const message = err.message ? String(err.message) : String(err);
+    if (name === 'QuotaExceededError') {
+        return { kind: 'quota_exceeded', message };
+    }
+    if (name === 'NotFoundError') {
+        return { kind: 'not_found', message };
+    }
+    if (
+        name === 'DataError' ||
+        name === 'InvalidStateError' ||
+        name === 'TransactionInactiveError' ||
+        name === 'ConstraintError' ||
+        name === 'AbortError'
+    ) {
+        return { kind: 'idb_failure', message };
+    }
+    return { kind: 'unknown', message };
+}
+
+function postError(id, err, prefix) {
+    const cls = classifyError(err);
+    const message = prefix ? prefix + cls.message : cls.message;
+    self.postMessage({ type: 'error', id, kind: cls.kind, message });
+}
+
 self.onmessage = async function (e) {
     const msg = e.data;
 
@@ -54,13 +94,23 @@ self.onmessage = async function (e) {
             wasm = mod;
             self.postMessage({ type: 'ready' });
         } catch (err) {
-            self.postMessage({ type: 'error', id: 0, message: 'Worker init failed: ' + String(err) });
+            self.postMessage({
+                type: 'error',
+                id: 0,
+                kind: 'init_failed',
+                message: 'Worker init failed: ' + (err && err.message ? err.message : String(err)),
+            });
         }
         return;
     }
 
     if (!wasm) {
-        self.postMessage({ type: 'error', id: msg.id, message: 'Worker not initialized' });
+        self.postMessage({
+            type: 'error',
+            id: msg.id,
+            kind: 'init_failed',
+            message: 'Worker not initialized',
+        });
         return;
     }
 
@@ -78,7 +128,7 @@ self.onmessage = async function (e) {
 
             self.postMessage({ type: 'ingested', id: msg.id, result: result });
         } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+            postError(msg.id, err);
         }
         return;
     }
@@ -97,7 +147,7 @@ self.onmessage = async function (e) {
             });
             self.postMessage({ type: 'chunk_ingested', id: msg.id, result: result });
         } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+            postError(msg.id, err);
         }
         return;
     }
@@ -118,7 +168,7 @@ self.onmessage = async function (e) {
             });
             self.postMessage(payload, transferList);
         } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+            postError(msg.id, err);
         }
         return;
     }
@@ -143,7 +193,7 @@ self.onmessage = async function (e) {
             });
             self.postMessage(payload, transferList);
         } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+            postError(msg.id, err);
         }
         return;
     }
@@ -164,7 +214,7 @@ self.onmessage = async function (e) {
             });
             self.postMessage(payload, transferList);
         } catch (err) {
-            self.postMessage({ type: 'error', id: msg.id, message: String(err) });
+            postError(msg.id, err);
         }
         return;
     }

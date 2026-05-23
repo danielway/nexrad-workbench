@@ -170,7 +170,7 @@ Each catalog item is independently shippable as its own PR. Per-item verificatio
 |----|-------|--------|
 | C1 | Typed postMessage protocol | done |
 | A2 | AppCommand dispatch consistency | done |
-| D1 | Unified typed error model | not started |
+| D1 | Unified typed error model | partial (worker boundary done; app-side ErrorContext aggregation deferred) |
 | E3 | Modal state pattern unification | not started |
 | E4 | Mobile/desktop chrome unification | not started |
 | A1 | Consolidate `WorkbenchApp` managers | not started |

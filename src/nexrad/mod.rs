@@ -41,7 +41,7 @@ pub use archive_index::ScanBoundary;
 pub use cache_channel::CacheLoadResult;
 pub use decode_worker::{
     default_pool_size, ChunkIngestResult, DecodeResult, IngestResult, VolumeData, VolumeSweepMeta,
-    WorkerOutcome, WorkerPool,
+    WorkerErrorKind, WorkerOutcome, WorkerPool,
 };
 pub use download::{ListingResult, NetworkStats};
 pub use globe_radar_renderer::GlobeRadarRenderer;

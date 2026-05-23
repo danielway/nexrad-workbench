@@ -81,6 +81,33 @@ impl ResponseType {
     }
 }
 
+/// Classification of a worker error.
+///
+/// Carried across the worker boundary as a snake_case JSON tag so callers
+/// can dispatch on the error category (prompt the user, retry silently,
+/// offer to free space) instead of doing brittle string checks on the
+/// `message` field.
+///
+/// The wire format is owned by `worker.js`'s `classifyError` and pinned by
+/// `tests::worker_error_kind_deserializes_known_strings` below.
+#[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerErrorKind {
+    /// Browser storage quota exceeded — user must free space.
+    QuotaExceeded,
+    /// IDB read/write failure (transient or DB corruption).
+    IdbFailure,
+    /// Requested sweep/scan not found in the cache.
+    NotFound,
+    /// Decoded data malformed or version-mismatched.
+    InvalidData,
+    /// Worker WASM initialization failed.
+    InitFailed,
+    /// Unclassified failure (default when no kind is supplied).
+    #[serde(other)]
+    Unknown,
+}
+
 // ---------------------------------------------------------------------------
 // Internal message types (serde-wasm-bindgen deserialization)
 // ---------------------------------------------------------------------------
@@ -261,15 +288,25 @@ fn default_word_size() -> u8 {
 }
 
 /// Error message from the worker.
+///
+/// `kind` is the structured category set by `worker.js`'s `classifyError`
+/// (or by Rust code that throws an object with a `kind` field). Defaults
+/// to [`WorkerErrorKind::Unknown`] when the worker shipped only a message.
 #[derive(Deserialize)]
 pub(super) struct ErrorMsg {
     pub id: u64,
     #[serde(default = "default_error_message")]
     pub message: String,
+    #[serde(default = "default_error_kind")]
+    pub kind: WorkerErrorKind,
 }
 
 fn default_error_message() -> String {
     "Unknown worker error".to_string()
+}
+
+fn default_error_kind() -> WorkerErrorKind {
+    WorkerErrorKind::Unknown
 }
 
 // ---------------------------------------------------------------------------
@@ -546,6 +583,9 @@ pub enum WorkerOutcome {
     /// Error from any operation.
     WorkerError {
         id: u64,
+        /// Structured category — callers should dispatch on this rather
+        /// than parsing `message`. See [`WorkerErrorKind`].
+        kind: WorkerErrorKind,
         message: String,
         /// Volume start timestamp (Unix seconds, sub-second precision) of
         /// the scan whose request failed, if the id could be correlated
@@ -605,5 +645,36 @@ mod tests {
         assert_eq!(RequestType::Render.as_str(), "render");
         assert_eq!(RequestType::RenderLive.as_str(), "render_live");
         assert_eq!(RequestType::RenderVolume.as_str(), "render_volume");
+    }
+
+    #[wasm_bindgen_test]
+    fn worker_error_kind_deserializes_known_strings() {
+        // Pin the wire format that `worker.js` produces via classifyError.
+        // Adding a new variant here REQUIRES a parallel addition in
+        // worker.js (so the matching `err.name` branch sends the right
+        // tag).
+        let cases = [
+            ("quota_exceeded", WorkerErrorKind::QuotaExceeded),
+            ("idb_failure", WorkerErrorKind::IdbFailure),
+            ("not_found", WorkerErrorKind::NotFound),
+            ("invalid_data", WorkerErrorKind::InvalidData),
+            ("init_failed", WorkerErrorKind::InitFailed),
+            ("unknown", WorkerErrorKind::Unknown),
+        ];
+        for (s, expected) in cases {
+            let v = serde_wasm_bindgen::to_value(s).unwrap();
+            let parsed: WorkerErrorKind = serde_wasm_bindgen::from_value(v).unwrap();
+            assert_eq!(parsed, expected, "round-trip failed for {:?}", s);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn worker_error_kind_unknown_tag_falls_back_to_unknown() {
+        // serde `#[serde(other)]` on `Unknown` ensures forward-compat:
+        // a future kind worker.js learns to emit won't fail deserialization
+        // on older clients — it just degrades to `Unknown`.
+        let v = serde_wasm_bindgen::to_value("some_future_kind").unwrap();
+        let parsed: WorkerErrorKind = serde_wasm_bindgen::from_value(v).unwrap();
+        assert_eq!(parsed, WorkerErrorKind::Unknown);
     }
 }

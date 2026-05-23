@@ -71,6 +71,21 @@ pub(super) fn default_product() -> String {
     "reflectivity".to_string()
 }
 
+/// Throw a structured error from a worker_api function.
+///
+/// The returned `JsValue` is a JS object `{ kind, message }` so that
+/// `worker.js`'s `classifyError` keeps the structured kind end-to-end
+/// (instead of collapsing every Rust error to `unknown`). `kind` must be
+/// one of the snake_case tags in `WorkerErrorKind` in
+/// `src/nexrad/decode_worker/types.rs` — adding a new kind requires a
+/// matching variant there.
+pub(super) fn worker_error(kind: &str, message: impl AsRef<str>) -> JsValue {
+    let obj = js_sys::Object::new();
+    js_sys::Reflect::set(&obj, &"kind".into(), &kind.into()).ok();
+    js_sys::Reflect::set(&obj, &"message".into(), &message.as_ref().into()).ok();
+    obj.into()
+}
+
 /// Extract the `data` ArrayBuffer field from a JS object as `Vec<u8>`.
 pub(super) fn extract_data_bytes(obj: &JsValue) -> Result<Vec<u8>, JsValue> {
     let val = js_sys::Reflect::get(obj, &"data".into())
