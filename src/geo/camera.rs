@@ -769,3 +769,121 @@ impl GlobeCamera {
         self.mode = new_mode;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn cam() -> GlobeCamera {
+        GlobeCamera::centered_on(39.0, -98.0)
+    }
+
+    #[wasm_bindgen_test]
+    fn geo_to_world_unit_length() {
+        let v = GlobeCamera::geo_to_world(39.0, -98.0);
+        let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+        assert!((len - 1.0).abs() < 1e-5);
+    }
+
+    #[wasm_bindgen_test]
+    fn geo_to_world_north_pole_is_y_up() {
+        let v = GlobeCamera::geo_to_world(90.0, 0.0);
+        assert!(v.x.abs() < 1e-5);
+        assert!((v.y - 1.0).abs() < 1e-5);
+        assert!(v.z.abs() < 1e-5);
+    }
+
+    #[wasm_bindgen_test]
+    fn geo_to_world_equator_prime_meridian_is_pos_z() {
+        let v = GlobeCamera::geo_to_world(0.0, 0.0);
+        assert!(v.x.abs() < 1e-5);
+        assert!(v.y.abs() < 1e-5);
+        assert!((v.z - 1.0).abs() < 1e-5);
+    }
+
+    #[wasm_bindgen_test]
+    fn geo_to_world_round_trip_via_atan2() {
+        // The screen_to_geo conversion uses asin(y) and atan2(x, z); the
+        // inverse of geo_to_world should give the same lat/lon back.
+        for (lat, lon) in [(0.0, 0.0), (39.0, -98.0), (-30.0, 120.0), (45.0, 45.0)] {
+            let v = GlobeCamera::geo_to_world(lat, lon);
+            let lat_back = v.y.asin().to_degrees() as f64;
+            let lon_back = v.x.atan2(v.z).to_degrees() as f64;
+            assert!((lat_back - lat).abs() < 1e-3, "lat {} -> {}", lat, lat_back);
+            assert!((lon_back - lon).abs() < 1e-3, "lon {} -> {}", lon, lon_back);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_in_decreases_distance() {
+        let mut c = cam();
+        let before = c.distance;
+        c.zoom(100.0);
+        assert!(c.distance < before);
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_out_increases_distance() {
+        let mut c = cam();
+        let before = c.distance;
+        c.zoom(-100.0);
+        assert!(c.distance > before);
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_clamps_to_min_max() {
+        let mut c = cam();
+        // Many ticks in one direction must not overshoot the bounds.
+        for _ in 0..1000 {
+            c.zoom(1000.0);
+        }
+        assert!(c.distance >= 1.001);
+        for _ in 0..2000 {
+            c.zoom(-1000.0);
+        }
+        assert!(c.distance <= 20.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_is_symmetric_in_log_space_away_from_clamps() {
+        // Start from the middle of the log-distance range to avoid hitting
+        // MIN_DISTANCE/MAX_DISTANCE clamps mid-test.
+        let mut c = cam();
+        c.distance = (1.001_f32.ln() + 20.0_f32.ln()).exp().sqrt();
+        let start = c.distance;
+        c.zoom(50.0);
+        c.zoom(-50.0);
+        assert!(
+            ((c.distance - start) / start).abs() < 1e-4,
+            "expected ~{}, got {}",
+            start,
+            c.distance
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn center_on_updates_site_and_resets_view() {
+        let mut c = cam();
+        c.zoom(500.0);
+        c.center_on(45.0, -100.0);
+        assert!((c.site_lat - 45.0).abs() < 1e-5);
+        assert!((c.site_lon - (-100.0)).abs() < 1e-5);
+        // Distance and orbit angles get reset.
+        assert!((c.orbit_bearing - 180.0).abs() < 1e-5);
+        assert!((c.orbit_elevation - 45.0).abs() < 1e-5);
+    }
+
+    #[wasm_bindgen_test]
+    fn switch_mode_changes_mode_field() {
+        let mut c = cam();
+        let initial = c.mode;
+        let other = if initial == CameraMode::PlanetOrbit {
+            CameraMode::SiteOrbit
+        } else {
+            CameraMode::PlanetOrbit
+        };
+        c.switch_mode(other);
+        assert!(c.mode == other);
+    }
+}

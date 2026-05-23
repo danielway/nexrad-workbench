@@ -184,3 +184,121 @@ pub struct ProjectionFingerprint {
     rect_max_x: u32,
     rect_max_y: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn proj(center_lat: f64, center_lon: f64) -> MapProjection {
+        let mut p = MapProjection::new(center_lat, center_lon);
+        p.update(
+            1.0,
+            Vec2::ZERO,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)),
+        );
+        p
+    }
+
+    #[wasm_bindgen_test]
+    fn center_coord_maps_to_screen_center() {
+        let p = proj(39.0, -98.0);
+        let screen = p.geo_to_screen(Coord { x: -98.0, y: 39.0 });
+        let center = p.screen_rect.center();
+        assert!((screen.x - center.x).abs() < 1e-3);
+        assert!((screen.y - center.y).abs() < 1e-3);
+    }
+
+    #[wasm_bindgen_test]
+    fn geo_screen_geo_round_trip_at_center() {
+        let p = proj(39.0, -98.0);
+        let original = Coord { x: -98.0, y: 39.0 };
+        let screen = p.geo_to_screen(original);
+        let back = p.screen_to_geo(screen);
+        assert!((back.x - original.x).abs() < 1e-9);
+        assert!((back.y - original.y).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn geo_screen_geo_round_trip_off_center() {
+        let p = proj(39.0, -98.0);
+        let original = Coord { x: -97.0, y: 39.5 };
+        let screen = p.geo_to_screen(original);
+        let back = p.screen_to_geo(screen);
+        assert!((back.x - original.x).abs() < 1e-6);
+        assert!((back.y - original.y).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn screen_to_geo_round_trip_at_arbitrary_pixel() {
+        let p = proj(39.0, -98.0);
+        let original = Pos2::new(500.0, 200.0);
+        let geo = p.screen_to_geo(original);
+        let back = p.geo_to_screen(geo);
+        assert!((back.x - original.x).abs() < 1e-3);
+        assert!((back.y - original.y).abs() < 1e-3);
+    }
+
+    #[wasm_bindgen_test]
+    fn higher_zoom_shrinks_visible_bounds() {
+        let mut p = proj(39.0, -98.0);
+        let (min_lon1, min_lat1, max_lon1, max_lat1) = p.visible_bounds();
+        p.update(4.0, Vec2::ZERO, p.screen_rect);
+        let (min_lon4, min_lat4, max_lon4, max_lat4) = p.visible_bounds();
+        let span1_lon = max_lon1 - min_lon1;
+        let span4_lon = max_lon4 - min_lon4;
+        let span1_lat = max_lat1 - min_lat1;
+        let span4_lat = max_lat4 - min_lat4;
+        assert!(span4_lon < span1_lon);
+        assert!(span4_lat < span1_lat);
+        // Doubling zoom halves the visible span; 4x zoom should be ~4x smaller.
+        assert!((span1_lon / span4_lon - 4.0).abs() < 0.01);
+    }
+
+    #[wasm_bindgen_test]
+    fn visible_bounds_min_le_max() {
+        let p = proj(39.0, -98.0);
+        let (min_lon, min_lat, max_lon, max_lat) = p.visible_bounds();
+        assert!(min_lon <= max_lon);
+        assert!(min_lat <= max_lat);
+    }
+
+    #[wasm_bindgen_test]
+    fn is_visible_includes_center_excludes_far_point() {
+        let p = proj(39.0, -98.0);
+        assert!(p.is_visible(Coord { x: -98.0, y: 39.0 }, 0.0));
+        assert!(!p.is_visible(Coord { x: 0.0, y: 0.0 }, 0.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn fingerprint_stable_when_inputs_unchanged() {
+        let p = proj(39.0, -98.0);
+        assert_eq!(p.fingerprint(), p.fingerprint());
+    }
+
+    #[wasm_bindgen_test]
+    fn fingerprint_changes_when_zoom_changes() {
+        let mut p = proj(39.0, -98.0);
+        let f0 = p.fingerprint();
+        p.update(2.0, p.pan_offset, p.screen_rect);
+        assert_ne!(f0, p.fingerprint());
+    }
+
+    #[wasm_bindgen_test]
+    fn fingerprint_changes_when_center_changes() {
+        let f0 = proj(39.0, -98.0).fingerprint();
+        let f1 = proj(40.0, -98.0).fingerprint();
+        assert_ne!(f0, f1);
+    }
+
+    #[wasm_bindgen_test]
+    fn pan_offset_translates_screen_position() {
+        let p = proj(39.0, -98.0);
+        let s0 = p.geo_to_screen(Coord { x: -98.0, y: 39.0 });
+        let mut p2 = proj(39.0, -98.0);
+        p2.update(1.0, Vec2::new(50.0, 30.0), p2.screen_rect);
+        let s1 = p2.geo_to_screen(Coord { x: -98.0, y: 39.0 });
+        assert!((s1.x - s0.x - 50.0).abs() < 1e-3);
+        assert!((s1.y - s0.y - 30.0).abs() < 1e-3);
+    }
+}

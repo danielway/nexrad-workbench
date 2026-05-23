@@ -158,3 +158,62 @@ pub fn chunk_characteristics(
         is_first_in_sweep: meta.is_first_in_sweep(),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn estimate(seconds: f64, retry_budget_secs: f64) -> IntervalEstimate {
+        IntervalEstimate {
+            seconds,
+            physics: PhysicsBreakdown {
+                case: super::super::chunk_timing_model::IntervalCase::IntraSweep,
+                total_secs: seconds,
+                chunk_duration_secs: None,
+                inter_sweep_gap_secs: None,
+                waveform_penalty_secs: None,
+            },
+            stats_n: 0,
+            used_historical: false,
+            retry_budget_secs,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn project_times_collection_is_anchor_plus_interval() {
+        let est = estimate(3.0, 0.0);
+        let t = est.project_times(1000.0, 0.5);
+        assert!((t.collection_at_secs - 1003.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn project_times_available_includes_lag() {
+        let est = estimate(3.0, 0.0);
+        let t = est.project_times(1000.0, 0.5);
+        assert!((t.available_at_secs - 1003.5).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn project_times_poll_includes_retry_budget_and_bias() {
+        let est = estimate(3.0, 1.25);
+        let t = est.project_times(1000.0, 0.5);
+        let expected = 1003.5 + 1.25 + IntervalEstimate::POLL_BIAS_SECS;
+        assert!((t.poll_at_secs - expected).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn project_times_zero_retry_budget_only_adds_bias() {
+        let est = estimate(2.0, 0.0);
+        let t = est.project_times(0.0, 0.0);
+        assert!((t.poll_at_secs - (2.0 + IntervalEstimate::POLL_BIAS_SECS)).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn project_times_axes_are_monotonic() {
+        let est = estimate(5.0, 0.75);
+        let t = est.project_times(2000.0, 0.4);
+        assert!(t.collection_at_secs <= t.available_at_secs);
+        assert!(t.available_at_secs <= t.poll_at_secs);
+    }
+}
