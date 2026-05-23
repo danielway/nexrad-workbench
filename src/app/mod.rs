@@ -7,3 +7,4 @@
 
 pub(crate) mod command_dispatch;
 pub(crate) mod frame_setup;
+pub(crate) mod worker_results;
