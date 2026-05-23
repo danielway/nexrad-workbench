@@ -150,10 +150,10 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let result = serde_wasm_bindgen::to_value(&response)
             .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))?;
         // ArrayBuffer fields must be set directly (not serializable via serde)
-        js_sys::Reflect::set(&result, &"azimuths".into(), &az_buf).ok();
-        js_sys::Reflect::set(&result, &"gateValues".into(), &val_buf).ok();
+        attach_buffer_field(&result, "azimuths", &az_buf);
+        attach_buffer_field(&result, "gateValues", &val_buf);
         if let Some(rt) = rt_buf {
-            js_sys::Reflect::set(&result, &"radialTimes".into(), &rt).ok();
+            attach_buffer_field(&result, "radialTimes", &rt);
         }
         Ok(result)
     })
@@ -313,7 +313,7 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // ArrayBuffer must be set directly for zero-copy transfer
         let packed_u8 = js_sys::Uint8Array::from(&packed_data[..]);
         let packed_buffer = packed_u8.buffer();
-        js_sys::Reflect::set(&result, &"buffer".into(), &packed_buffer).ok();
+        attach_buffer_field(&result, "buffer", &packed_buffer);
 
         Ok(result)
     })

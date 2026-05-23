@@ -78,6 +78,15 @@ pub(super) fn extract_data_bytes(obj: &JsValue) -> Result<Vec<u8>, JsValue> {
     Ok(js_sys::Uint8Array::new(&val).to_vec())
 }
 
+/// Attach a typed-array field to a JS response object.
+///
+/// Scalar response fields go through serde; typed-array fields (`Float32Array`,
+/// `Uint8Array`, …) are attached separately for zero-copy transfer. Callers
+/// should pass the already-constructed typed-array buffer.
+pub(super) fn attach_buffer_field(obj: &JsValue, field: &str, buffer: &JsValue) {
+    js_sys::Reflect::set(obj, &field.into(), buffer).ok();
+}
+
 // ---------------------------------------------------------------------------
 // Typed response structs — serialized to JS objects via serde-wasm-bindgen
 // ---------------------------------------------------------------------------

@@ -21,23 +21,15 @@ struct RenderLiveParams {
 /// Parameters (JS object): `{ product: string, elevationNumber?: number }`
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsValue> {
+    use crate::nexrad::color_table::product_from_str;
     use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
-    use nexrad_render::Product;
 
     let t_total = web_time::Instant::now();
 
     let p: RenderLiveParams = serde_wasm_bindgen::from_value(params)
         .map_err(|e| JsValue::from_str(&format!("Invalid render_live params: {}", e)))?;
 
-    let product = match p.product.as_str() {
-        "velocity" => Product::Velocity,
-        "spectrum_width" => Product::SpectrumWidth,
-        "differential_reflectivity" => Product::DifferentialReflectivity,
-        "differential_phase" => Product::DifferentialPhase,
-        "correlation_coefficient" => Product::CorrelationCoefficient,
-        "clutter_filter_power" => Product::ClutterFilterPower,
-        _ => Product::Reflectivity,
-    };
+    let product = product_from_str(&p.product);
 
     CHUNK_ACCUM.with(|cell| {
         let borrow = cell.borrow();
@@ -159,9 +151,9 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
         };
         let result = serde_wasm_bindgen::to_value(&response)
             .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))?;
-        js_sys::Reflect::set(&result, &"azimuths".into(), &az_buf).ok();
-        js_sys::Reflect::set(&result, &"gateValues".into(), &val_buf).ok();
-        js_sys::Reflect::set(&result, &"radialTimes".into(), &rt_buf).ok();
+        attach_buffer_field(&result, "azimuths", &az_buf);
+        attach_buffer_field(&result, "gateValues", &val_buf);
+        attach_buffer_field(&result, "radialTimes", &rt_buf);
         Ok(result)
     })
 }
