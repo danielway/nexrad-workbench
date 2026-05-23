@@ -1,295 +1,22 @@
-//! Real-time NEXRAD streaming channel.
+//! Streaming-loop implementation and private helpers for `RealtimeChannel`.
 //!
-//! Provides a channel-based interface for real-time NEXRAD data streaming
-//! from AWS. Resolves the current volume via `nexrad_data`'s upstream
-//! `get_latest_volume` and then drives the stream through our own
-//! [`super::streaming_state::StreamingState`] (a slimmed replacement for the
-//! library's `ChunkIterator`).
+//! This module contains the long-running `streaming_loop` async task that
+//! polls AWS for new chunks, applies the projector, and dispatches results
+//! back through the channel. All other functions here are helpers called
+//! from `streaming_loop` (or from `super::mod`'s `RealtimeChannel::start`).
 
-use super::download::NetworkStats;
-use super::streaming_state::StreamingState;
-use futures_util::future::join_all;
-use std::cell::RefCell;
-use std::rc::Rc;
-
-use eframe::egui;
-
+use super::{RealtimeResult, RealtimeState};
 use crate::data::facade::DataFacade;
 use crate::net::retry::{
     attempt_with_timeout, compute_delay, sleep_duration, sleep_ms, Verdict, REALTIME_CHUNK_POLICY,
 };
-
-use super::streaming_filter::StreamingFilter;
-
-impl From<&crate::state::ElevationSelection> for StreamingFilter {
-    fn from(selection: &crate::state::ElevationSelection) -> Self {
-        match selection {
-            crate::state::ElevationSelection::Latest => StreamingFilter::All,
-            crate::state::ElevationSelection::Fixed {
-                elevation_number, ..
-            } => StreamingFilter::Elevation(*elevation_number),
-        }
-    }
-}
-
-/// Projected timing & diagnostics for a single future chunk.
-///
-/// Present iff the parent [`ChunkProjectionInfo`] describes a chunk that
-/// hasn't been observed yet — past chunks have `forecast: None`. Carries
-/// the diagnostic bundle the projector computed for this chunk so
-/// downstream surfaces (per-sweep confidence display, prediction-error
-/// attribution, the diagnostics modal) can read attribution data per chunk
-/// rather than only for the immediate next download target.
-#[derive(Clone, Debug)]
-pub struct ChunkForecast {
-    /// COLLECTION category: projected Unix-seconds time the radar physically
-    /// emits/receives for this chunk.
-    pub collection_time_secs: f64,
-    /// AVAILABILITY category: projected Unix-seconds time this chunk
-    /// becomes available in S3 (`collection_at + lag`).
-    pub available_at_secs: f64,
-    /// POLL category: projected time the scheduler will fire its first
-    /// download poll (`available_at + retry_budget + POLL_BIAS`). The
-    /// retry budget is already folded in; the streaming loop sleeps
-    /// directly to this target without additional padding.
-    pub poll_at_secs: f64,
-    /// Physics decomposition for the hop into this chunk (azimuth gap,
-    /// inter-sweep transition, inter-volume gap).
-    pub physics_breakdown: super::timing::PhysicsBreakdown,
-    /// Bucket sample count consulted at projection time. `0` when no
-    /// historical samples were available.
-    pub stats_n: usize,
-    /// Which projector branch supplied the interval: `Blended` when
-    /// historical samples contributed, `Physics` otherwise.
-    pub scheduler_path: super::timing::SchedulerPath,
-    /// The bucket key the lookup hit (or missed). `None` when no
-    /// elevation was resolvable (Start chunk).
-    pub bucket: Option<super::timing::ChunkCharacteristics>,
-}
-
-/// Projected timing and structural info for a single chunk in the volume.
-///
-/// Combines structural metadata from `ChunkMetadata` (available for every
-/// chunk in the volume) with an optional `forecast` ([`ChunkForecast`])
-/// that's present iff the chunk is in the future from the streaming loop's
-/// anchor. Past chunks carry only structural fields.
-#[derive(Clone, Debug)]
-pub struct ChunkProjectionInfo {
-    /// 1-based sequence number in the volume.
-    pub sequence: usize,
-    /// Elevation number (1-based), None for the Start chunk.
-    pub elevation_number: Option<usize>,
-    /// Azimuth rotation rate in degrees/second from the VCP.
-    pub azimuth_rate_dps: f64,
-    /// 0-based index of this chunk within its sweep.
-    pub chunk_index_in_sweep: usize,
-    /// Total chunks in this sweep (3 for standard, 6 for super-res).
-    pub chunks_in_sweep: usize,
-    /// Projected timing & projector diagnostics. `Some` iff this chunk is
-    /// in the future (the projector emitted a [`super::timing::ChunkProjection`]
-    /// for it); `None` for past chunks.
-    pub forecast: Option<ChunkForecast>,
-}
-
-/// Result type for realtime streaming events.
-///
-/// `ChunkReceived` is significantly larger than the other variants because it
-/// carries the per-chunk diagnostic bundle (`arrival_stat`) used by the VCP
-/// forecast modal. Boxing it would add an allocation per chunk for no gain —
-/// these values are produced and consumed within the same frame.
-#[derive(Clone, Debug)]
-#[allow(clippy::large_enum_variant)]
-pub enum RealtimeResult {
-    /// Iterator initialized, streaming started
-    Started { site_id: String },
-    /// Chunk received from the stream (UI status update).
-    ///
-    /// `plan` is the canonical forward-looking projection consumed by the
-    /// timeline countdown, the in-progress sweep rendering, the next-scan
-    /// ghost, and any caller that wants to know "when does the next chunk
-    /// arrive." Replaces the older bag of `time_until_next` +
-    /// `projected_volume_end_*` + `chunk_projections` +
-    /// `next_volume_chunk_projections` fields that drifted apart and
-    /// caused mismatches between the UI countdown and the loop's sleep.
-    ChunkReceived {
-        chunks_in_volume: u32,
-        is_volume_end: bool,
-        fetch_latency_ms: f64,
-        plan: Option<super::StreamingPlan>,
-        /// Arrival diagnostics (empty-poll counts, predicted vs. actual time).
-        /// `None` on synthetic emissions such as the resume-from-cache path.
-        arrival_stat: Option<crate::state::ChunkArrivalStat>,
-    },
-    /// Raw chunk data for incremental ingest
-    ChunkData {
-        data: Vec<u8>,
-        chunk_index: u32,
-        is_start: bool,
-        is_end: bool,
-        /// Volume scan start (Unix seconds, sub-second precision). Carries
-        /// the provisional value computed in the streaming loop; the
-        /// worker uses it as the IDB scan-key timestamp for every chunk
-        /// in the volume, so all chunks in one volume must agree on this
-        /// value. Sub-second precision matters: the IDB key is built via
-        /// `ScanKey::from_secs_f64`, and a truncating `i64` would round
-        /// distinct volumes onto the same key when they're within the
-        /// same wall-clock second.
-        timestamp: f64,
-        /// Whether this chunk is the last chunk of its sweep, derived from
-        /// the VCP mapper at emission time. The worker accumulator uses this
-        /// to flush the in-progress elevation as soon as the last chunk is
-        /// ingested rather than waiting for the next elevation's first chunk
-        /// — important under filter mode where the next-elevation chunk may
-        /// never arrive in this volume. `None` means the projection didn't
-        /// resolve (rare; e.g. for the Start chunk).
-        is_last_in_sweep: Option<bool>,
-    },
-    /// Error occurred during streaming
-    Error(String),
-}
-
-/// Internal state for the realtime streaming channel.
-#[derive(Default)]
-struct RealtimeState {
-    results: Vec<RealtimeResult>,
-    active: bool,
-    stop_requested: bool,
-    /// Projector observations queued from the main thread (worker ingest
-    /// results, etc.) for the streaming loop to drain and apply to its
-    /// `StreamingState`. See [`super::ProjectorObservation`] for the
-    /// vocabulary; adding new observation kinds is mechanical (one
-    /// enum variant + one drain match arm).
-    pending_observations: Vec<super::ProjectorObservation>,
-    /// Active filter on the chunk stream. Updated from the UI thread via
-    /// `RealtimeChannel::set_filter`; the streaming loop snapshots this on
-    /// each iteration and uses it to skip chunks that don't match.
-    ///
-    /// Filter changes are not routed through `pending_observations`
-    /// because they have additional sleep-interruption semantics (see
-    /// `filter_epoch` below) and a re-entry path in the loop that other
-    /// observations don't need.
-    pending_filter: StreamingFilter,
-    /// Bumped by `set_filter` on every change so a sleeping loop can detect
-    /// "the filter just changed" via epoch comparison and wake up to
-    /// re-target without polling the filter value itself for equality.
-    filter_epoch: u64,
-}
-
-/// Channel for real-time NEXRAD streaming.
-pub struct RealtimeChannel {
-    state: Rc<RefCell<RealtimeState>>,
-    stats: NetworkStats,
-}
-
-impl Default for RealtimeChannel {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl RealtimeChannel {
-    pub fn new() -> Self {
-        Self {
-            state: Rc::new(RefCell::new(RealtimeState::default())),
-            stats: NetworkStats::new(),
-        }
-    }
-
-    pub fn with_stats(stats: NetworkStats) -> Self {
-        Self {
-            state: Rc::new(RefCell::new(RealtimeState::default())),
-            stats,
-        }
-    }
-
-    pub fn is_active(&self) -> bool {
-        self.state.borrow().active
-    }
-
-    pub fn start(&self, ctx: egui::Context, site_id: String, facade: DataFacade) {
-        {
-            let mut state = self.state.borrow_mut();
-            state.active = true;
-            state.stop_requested = false;
-            state.results.clear();
-        }
-
-        let state = self.state.clone();
-        let stats = self.stats.clone();
-
-        wasm_bindgen_futures::spawn_local(async move {
-            streaming_loop(ctx, site_id, state, stats, facade).await;
-        });
-    }
-
-    pub fn stop(&self) {
-        let mut state = self.state.borrow_mut();
-        state.stop_requested = true;
-        state.active = false;
-    }
-
-    pub fn try_recv(&self) -> Option<RealtimeResult> {
-        let mut state = self.state.borrow_mut();
-        if state.results.is_empty() {
-            None
-        } else {
-            Some(state.results.remove(0))
-        }
-    }
-
-    /// Enqueue a projector observation to be applied on the next
-    /// streaming-loop iteration. Adding new observation kinds is purely
-    /// a matter of extending [`super::ProjectorObservation`] and the
-    /// drain dispatch — no new state field or new channel method needed.
-    pub fn observe(&self, observation: super::ProjectorObservation) {
-        self.state
-            .borrow_mut()
-            .pending_observations
-            .push(observation);
-    }
-
-    /// Push the latest radial collection time (Unix seconds) parsed from
-    /// the chunk that was just ingested. Convenience wrapper over
-    /// [`Self::observe`].
-    pub fn record_chunk_collection_end_secs(&self, secs: f64) {
-        self.observe(super::ProjectorObservation::CollectionEndSecs(secs));
-    }
-
-    /// Push an empirical availability lag (S3 upload − ACTUAL chunk
-    /// collection time, seconds) for the chunk just ingested. Convenience
-    /// wrapper over [`Self::observe`].
-    pub fn record_availability_lag_secs(&self, lag_secs: f64) {
-        self.observe(super::ProjectorObservation::AvailabilityLagSecs(lag_secs));
-    }
-
-    /// Update the active streaming filter. Bumps the filter epoch so a
-    /// sleeping `streaming_loop` wakes within ~250 ms and re-targets.
-    /// Setting the same value the loop already has is a no-op.
-    pub fn set_filter(&self, filter: StreamingFilter) {
-        let mut state = self.state.borrow_mut();
-        if state.pending_filter == filter {
-            return;
-        }
-        state.pending_filter = filter;
-        state.filter_epoch = state.filter_epoch.wrapping_add(1);
-    }
-
-    /// Push the user's elevation selection down as a [`StreamingFilter`].
-    /// Called once per frame from the UI; the underlying [`Self::set_filter`]
-    /// no-ops on equal values, so this is cheap.
-    pub fn sync_filter(&self, selection: &crate::state::ElevationSelection) {
-        self.set_filter(StreamingFilter::from(selection));
-    }
-
-    /// Drain every pending result.
-    pub fn poll(&self) -> Vec<RealtimeResult> {
-        let mut out = Vec::new();
-        while let Some(result) = self.try_recv() {
-            out.push(result);
-        }
-        out
-    }
-}
+use crate::nexrad::download::NetworkStats;
+use crate::nexrad::streaming_filter::StreamingFilter;
+use crate::nexrad::streaming_state::StreamingState;
+use eframe::egui;
+use futures_util::future::join_all;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Outcome of `interruptible_sleep`. `Stopped` means the user requested stop;
 /// `FilterChanged` means the active filter changed mid-sleep so the caller
@@ -548,14 +275,14 @@ async fn run_mid_stream_backfill(
 
 /// Drain projector observations queued from `main.rs` (after worker
 /// ingest) and apply each to the `StreamingState`'s projector. The
-/// dispatch shape — match on [`super::ProjectorObservation`] variant,
+/// dispatch shape — match on [`crate::nexrad::ProjectorObservation`] variant,
 /// call the matching projector method — is intentionally explicit so
 /// adding a new observation kind is just one new arm here.
 fn drain_pending_observations(state_cell: &Rc<RefCell<RealtimeState>>, iter: &mut StreamingState) {
     let observations = std::mem::take(&mut state_cell.borrow_mut().pending_observations);
     for obs in observations {
         match obs {
-            super::ProjectorObservation::CollectionEndSecs(secs) => {
+            crate::nexrad::ProjectorObservation::CollectionEndSecs(secs) => {
                 let prior = iter.latest_chunk_collection_end_secs();
                 iter.record_chunk_collection_end_secs(secs);
                 if prior != Some(secs) {
@@ -566,14 +293,14 @@ fn drain_pending_observations(state_cell: &Rc<RefCell<RealtimeState>>, iter: &mu
                     );
                 }
             }
-            super::ProjectorObservation::AvailabilityLagSecs(lag_secs) => {
+            crate::nexrad::ProjectorObservation::AvailabilityLagSecs(lag_secs) => {
                 iter.record_availability_lag_for_current(lag_secs);
             }
         }
     }
 }
 
-async fn streaming_loop(
+pub(super) async fn streaming_loop(
     ctx: egui::Context,
     site_id: String,
     state: Rc<RefCell<RealtimeState>>,
@@ -1322,15 +1049,15 @@ enum FilterFetchResult {
     SyntheticEnd,
 }
 
-/// Map a [`super::streaming_state::TryNextOutcome`] to a retry [`Verdict`]
+/// Map a [`crate::nexrad::streaming_state::TryNextOutcome`] to a retry [`Verdict`]
 /// for the filter-aware fetch path. Mirrors [`classify_chunk_result`] for
 /// the unfiltered path; the only new case is `SyntheticVolumeEnd`, which is
 /// not a retry — it's a terminal-for-this-iteration outcome the loop turns
 /// into a synthetic `is_volume_end` signal.
 fn classify_filter_outcome(
-    result: nexrad_data::result::Result<super::streaming_state::TryNextOutcome>,
+    result: nexrad_data::result::Result<crate::nexrad::streaming_state::TryNextOutcome>,
 ) -> Verdict<FilterFetchResult> {
-    use super::streaming_state::TryNextOutcome;
+    use crate::nexrad::streaming_state::TryNextOutcome;
     use nexrad_data::result::aws::AWSError;
     use nexrad_data::result::Error;
     match result {
@@ -1494,7 +1221,7 @@ fn timing_stats_key(site_id: &str) -> String {
 
 /// Persist the site's rolling chunk-timing statistics to localStorage so the
 /// next session starts warm instead of cold-starting from pure physics.
-fn save_timing_stats(site_id: &str, stats: &super::timing::ChunkTimingStats) {
+fn save_timing_stats(site_id: &str, stats: &crate::nexrad::timing::ChunkTimingStats) {
     let Some(json) = stats.to_json() else {
         return;
     };
@@ -1508,11 +1235,11 @@ fn save_timing_stats(site_id: &str, stats: &super::timing::ChunkTimingStats) {
 }
 
 /// Read a previously-persisted timing stats snapshot for the site, if any.
-fn load_cached_timing_stats(site_id: &str) -> Option<super::timing::ChunkTimingStats> {
+fn load_cached_timing_stats(site_id: &str) -> Option<crate::nexrad::timing::ChunkTimingStats> {
     let window = web_sys::window()?;
     let storage = window.local_storage().ok()??;
     let raw = storage.get_item(&timing_stats_key(site_id)).ok()??;
-    super::timing::ChunkTimingStats::from_json(&raw)
+    crate::nexrad::timing::ChunkTimingStats::from_json(&raw)
 }
 
 /// Run `nexrad_data`'s upstream `get_latest_volume` then initialize a
@@ -1524,7 +1251,7 @@ fn load_cached_timing_stats(site_id: &str) -> Option<super::timing::ChunkTimingS
 /// a follow-up.
 async fn acquire_streaming_state(
     site_id: &str,
-) -> nexrad_data::result::Result<super::streaming_state::StreamingInit> {
+) -> nexrad_data::result::Result<crate::nexrad::streaming_state::StreamingInit> {
     let result = nexrad_data::aws::realtime::get_latest_volume(site_id).await?;
     let volume = result.volume.ok_or(nexrad_data::result::Error::AWS(
         nexrad_data::result::aws::AWSError::LatestVolumeNotFound,
