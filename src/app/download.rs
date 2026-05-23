@@ -6,7 +6,9 @@
 //! (`process_selection_download`). Also drains queued realtime streaming
 //! results (`handle_streaming_results`).
 
-use crate::{nexrad, state, WorkbenchApp, FALLBACK_SCAN_DURATION_SECS};
+use crate::{
+    app::command_dispatch::CommandOutcome, nexrad, state, WorkbenchApp, FALLBACK_SCAN_DURATION_SECS,
+};
 use eframe::egui;
 
 impl WorkbenchApp {
@@ -204,25 +206,27 @@ impl WorkbenchApp {
     }
 
     /// Kick off or continue selection/position downloads.
-    pub(crate) fn pump_download_queue(
-        &mut self,
-        ctx: &egui::Context,
-        do_download_selection: bool,
-        do_download_at_position: bool,
-        do_pump_queue: bool,
-    ) {
+    ///
+    /// Reads the deferred-fan-out flags from the per-frame
+    /// [`CommandOutcome`] produced by [`Self::dispatch_commands`] and
+    /// drives whichever of the three paths apply (single-position
+    /// download, selection-range download, or just pumping the
+    /// in-progress queue).
+    pub(crate) fn pump_download_queue(&mut self, ctx: &egui::Context, outcome: &CommandOutcome) {
+        let download_type = if outcome.download_at_position {
+            Some(true)
+        } else if outcome.download_selection {
+            Some(false)
+        } else {
+            None // Just pumping existing queue, or nothing to do
+        };
+        let queue_has_work = self.acquisition.download_queue.has_work();
+        if outcome.download_selection
+            || outcome.download_at_position
+            || outcome.pump_queue
+            || queue_has_work
         {
-            let download_type = if do_download_at_position {
-                Some(true)
-            } else if do_download_selection {
-                Some(false)
-            } else {
-                None // Just pumping existing queue, or nothing to do
-            };
-            let queue_has_work = self.acquisition.download_queue.has_work();
-            if do_download_selection || do_download_at_position || do_pump_queue || queue_has_work {
-                self.process_selection_download(ctx, download_type);
-            }
+            self.process_selection_download(ctx, download_type);
         }
     }
 

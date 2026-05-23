@@ -600,7 +600,9 @@ impl eframe::App for WorkbenchApp {
     //
     // Invariants worth preserving:
     //   - (2) dispatch_commands must precede (4) pump_download_queue because
-    //     commands set the dl_sel/dl_pos/pump flags it consumes.
+    //     it returns the CommandOutcome the pump consumes. The pump waits
+    //     until AFTER (3) handle_worker_results so newly-decoded sweeps are
+    //     visible before download decisions are made.
     //   - (3) handle_worker_results applies decoded-sweep state that
     //     (10) sync_prev_sweep_texture and (11) request_render_if_needed
     //     read this same frame — running results first avoids one-frame lag.
@@ -620,9 +622,9 @@ impl eframe::App for WorkbenchApp {
 
         // 2-5. INTAKE: drain user commands, worker responses, the
         // download queue, and realtime streaming results.
-        let (dl_sel, dl_pos, pump) = self.dispatch_commands(ctx);
+        let command_outcome = self.dispatch_commands(ctx);
         self.handle_worker_results(ctx);
-        self.pump_download_queue(ctx, dl_sel, dl_pos, pump);
+        self.pump_download_queue(ctx, &command_outcome);
         self.handle_streaming_results(ctx);
         // 6-8. BACKGROUND TICKS: independent periodic work.
         self.state.national_mosaic.poll_tick(
