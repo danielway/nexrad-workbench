@@ -168,9 +168,45 @@ pub(super) struct ChunkAccumulator {
     pub timestamp_secs: f64,
 }
 
+// Per-worker chunk accumulator.
+//
+// ## Safety invariant: no `.await` inside accumulator access
+//
+// `CHUNK_ACCUM` is a per-worker thread-local, mutated incrementally as
+// chunks arrive. The streaming-loop and ingest paths share a single
+// worker, so accumulator state is single-threaded; the only concurrency
+// comes from `.await` points yielding back to the worker scheduler.
+//
+// If a borrow of the cell is held across an `.await`, two failure modes
+// open:
+//   1. A re-entrant future scheduled on the same worker tries to borrow
+//      the cell and panics (`already borrowed`).
+//   2. The borrowed-from accumulator state is observed mid-mutation by
+//      another task before the original closure completes.
+//
+// Prefer the [`with_chunk_accum`] / [`with_chunk_accum_mut`] helpers
+// below for new code: they take a synchronous `FnOnce` and drop the
+// borrow before returning, so awaiting on the result is fine.
 thread_local! {
     pub(super) static CHUNK_ACCUM: std::cell::RefCell<Option<ChunkAccumulator>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with shared (read-only) access to the chunk accumulator.
+///
+/// `f` receives `None` when no accumulator is active. The borrow guard
+/// is dropped before this helper returns, so awaiting on the return value
+/// is safe; awaiting *inside* `f` is impossible (it's a synchronous
+/// `FnOnce`).
+#[allow(dead_code)]
+pub(super) fn with_chunk_accum<R>(f: impl FnOnce(Option<&ChunkAccumulator>) -> R) -> R {
+    CHUNK_ACCUM.with(|cell| f(cell.borrow().as_ref()))
+}
+
+/// Like [`with_chunk_accum`] but gives `f` exclusive access.
+#[allow(dead_code)]
+pub(super) fn with_chunk_accum_mut<R>(f: impl FnOnce(Option<&mut ChunkAccumulator>) -> R) -> R {
+    CHUNK_ACCUM.with(|cell| f(cell.borrow_mut().as_mut()))
 }
 
 /// Ingest a single real-time chunk: decompress, decode, and store completed
