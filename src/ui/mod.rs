@@ -29,6 +29,7 @@ mod stats_modal;
 mod timeline;
 mod top_bar;
 mod vcp_forecast_modal;
+mod vcp_forecast_serialize;
 mod wipe_modal;
 
 pub use alerts_modal::render_alerts_modals;
