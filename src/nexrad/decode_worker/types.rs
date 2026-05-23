@@ -3,13 +3,99 @@
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// Wire protocol: message-type tag strings (Rust ↔ JS)
+//
+// `worker.js` reads the `type` field of every request and writes the same
+// field on every response. These two enums are the single Rust-side source
+// of truth for those strings; the JS side must use the exact same literals,
+// listed in the comment header at the top of `worker.js`. The round-trip
+// invariant is pinned by `tests::request_type_strings_roundtrip` and
+// `tests::response_type_strings_roundtrip` below.
+// ---------------------------------------------------------------------------
+
+/// Request message types (main thread → worker).
+///
+/// Strings appear as the `type` field on every outgoing message and must
+/// stay in sync with the dispatch table in `worker.js`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum RequestType {
+    Init,
+    Ingest,
+    IngestChunk,
+    Render,
+    RenderLive,
+    RenderVolume,
+}
+
+impl RequestType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Init => "init",
+            Self::Ingest => "ingest",
+            Self::IngestChunk => "ingest_chunk",
+            Self::Render => "render",
+            Self::RenderLive => "render_live",
+            Self::RenderVolume => "render_volume",
+        }
+    }
+}
+
+/// Response message types (worker → main thread).
+///
+/// `id` accompanies every response except [`ResponseType::Ready`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum ResponseType {
+    Ready,
+    Ingested,
+    ChunkIngested,
+    Decoded,
+    LiveDecoded,
+    VolumeDecoded,
+    Error,
+}
+
+impl ResponseType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Ingested => "ingested",
+            Self::ChunkIngested => "chunk_ingested",
+            Self::Decoded => "decoded",
+            Self::LiveDecoded => "live_decoded",
+            Self::VolumeDecoded => "volume_decoded",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "ready" => Self::Ready,
+            "ingested" => Self::Ingested,
+            "chunk_ingested" => Self::ChunkIngested,
+            "decoded" => Self::Decoded,
+            "live_decoded" => Self::LiveDecoded,
+            "volume_decoded" => Self::VolumeDecoded,
+            "error" => Self::Error,
+            _ => return None,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Internal message types (serde-wasm-bindgen deserialization)
 // ---------------------------------------------------------------------------
 
-/// Envelope for all worker response messages (type + id).
+/// Header fields parsed from every worker response.
+///
+/// Always read first so the dispatch can tag the message and correlate it
+/// with a pending request. `id` is `None` for the initial `ready` message
+/// (which has no request) and `Some` for every other response type.
 #[derive(Deserialize)]
-pub(super) struct MessageEnvelope {
-    pub id: u64,
+pub(super) struct ResponseHeader {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    #[serde(default)]
+    pub id: Option<u64>,
 }
 
 /// Ingest result payload from the worker.
@@ -474,4 +560,50 @@ pub enum WorkerOutcome {
 #[allow(dead_code)]
 pub struct VolumeRenderContext {
     pub scan_key: crate::data::ScanKey,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn response_type_strings_roundtrip() {
+        for variant in [
+            ResponseType::Ready,
+            ResponseType::Ingested,
+            ResponseType::ChunkIngested,
+            ResponseType::Decoded,
+            ResponseType::LiveDecoded,
+            ResponseType::VolumeDecoded,
+            ResponseType::Error,
+        ] {
+            assert_eq!(
+                ResponseType::parse(variant.as_str()),
+                Some(variant),
+                "round-trip failed for {:?}",
+                variant
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn response_type_unknown_string() {
+        assert_eq!(ResponseType::parse(""), None);
+        assert_eq!(ResponseType::parse("not_a_real_type"), None);
+        // Case-sensitive, the JS wire format is snake_case lowercase.
+        assert_eq!(ResponseType::parse("Ready"), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn request_type_strings_are_snake_case() {
+        // Pin the exact wire format that worker.js depends on. Any change
+        // here must be reflected in worker.js's dispatch.
+        assert_eq!(RequestType::Init.as_str(), "init");
+        assert_eq!(RequestType::Ingest.as_str(), "ingest");
+        assert_eq!(RequestType::IngestChunk.as_str(), "ingest_chunk");
+        assert_eq!(RequestType::Render.as_str(), "render");
+        assert_eq!(RequestType::RenderLive.as_str(), "render_live");
+        assert_eq!(RequestType::RenderVolume.as_str(), "render_volume");
+    }
 }

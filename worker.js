@@ -32,6 +32,13 @@
 //
 //   Errors:
 //     Worker → Main:  { type: 'error', id, message }
+//
+// CONTRACT: every `type` string above MUST match the corresponding variant
+// in `RequestType` / `ResponseType` (src/nexrad/decode_worker/types.rs).
+// Those enums are the Rust-side single source of truth; the round-trip is
+// pinned by `request_type_strings_are_snake_case` and
+// `response_type_strings_roundtrip` unit tests. Adding a new message type
+// requires changes in BOTH places.
 
 let wasm = null;
 

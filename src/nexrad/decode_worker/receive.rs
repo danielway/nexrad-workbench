@@ -1,4 +1,11 @@
 //! Worker message reception: onmessage callback setup and result deserialization.
+//!
+//! Every incoming message is first parsed as a [`ResponseHeader`] to extract
+//! the message type and request id. Dispatch then matches a typed
+//! [`ResponseType`] (not a magic string) and removes the pending-context
+//! entry by id. If the body fails to parse after that point, the caller is
+//! informed via [`WorkerOutcome::WorkerError`] rather than silently leaving
+//! a zombie entry in the pending map.
 #![allow(clippy::too_many_arguments)]
 
 use std::cell::RefCell;
@@ -34,59 +41,84 @@ pub(super) fn setup_onmessage(
     let pending_render_c = pending_render.clone();
     let pending_render_live_c = pending_render_live.clone();
     let pending_volume_c = pending_volume.clone();
-    let pending_ingest_err = pending_ingest.clone();
-    let pending_chunk_ingest_err = pending_chunk_ingest.clone();
-    let pending_render_err = pending_render.clone();
-    let pending_render_live_err = pending_render_live.clone();
-    let pending_volume_err = pending_volume.clone();
     let results_c = results.clone();
     let ctx_c = ctx.clone();
 
     let onmessage = Closure::<dyn Fn(MessageEvent)>::new(move |event: MessageEvent| {
         let data = event.data();
-        let msg_type = js_sys::Reflect::get(&data, &"type".into())
-            .ok()
-            .and_then(|v| v.as_string());
 
-        match msg_type.as_deref() {
-            Some("ready") => {
+        // Step 1: parse the header (type + id). This MUST succeed —
+        // anything else is a protocol violation we can't correlate, so
+        // there's no caller to notify.
+        let header: ResponseHeader = match serde_wasm_bindgen::from_value(data.clone()) {
+            Ok(h) => h,
+            Err(e) => {
+                log::error!("Failed to parse worker response header: {}", e);
+                return;
+            }
+        };
+
+        // Step 2: tag the message via the typed enum.
+        let kind = match ResponseType::parse(&header.msg_type) {
+            Some(k) => k,
+            None => {
+                log::error!("Unknown worker response type: {:?}", header.msg_type);
+                return;
+            }
+        };
+        let kind_str = kind.as_str();
+
+        // Step 3: dispatch. Handlers that need an id receive it from the
+        // header so they don't reparse the envelope.
+        match kind {
+            ResponseType::Ready => {
                 *ready_c.borrow_mut() = true;
                 log::debug!("Decode worker ready");
             }
-            Some("ingested") => {
-                handle_ingested_message(&data, &pending_ingest_c, &results_c);
-                ctx_c.request_repaint();
+            ResponseType::Ingested => {
+                if let Some(id) = require_id(&header, kind_str) {
+                    handle_ingested_message(id, &data, &pending_ingest_c, &results_c);
+                    ctx_c.request_repaint();
+                }
             }
-            Some("chunk_ingested") => {
-                handle_chunk_ingested_message(&data, &pending_chunk_ingest_c, &results_c);
-                ctx_c.request_repaint();
+            ResponseType::ChunkIngested => {
+                if let Some(id) = require_id(&header, kind_str) {
+                    handle_chunk_ingested_message(id, &data, &pending_chunk_ingest_c, &results_c);
+                    ctx_c.request_repaint();
+                }
             }
-            Some("decoded") => {
-                handle_decoded_message(&data, &pending_render_c, &results_c);
-                ctx_c.request_repaint();
+            ResponseType::Decoded => {
+                if let Some(id) = require_id(&header, kind_str) {
+                    handle_decoded_message(id, &data, &pending_render_c, &results_c);
+                    ctx_c.request_repaint();
+                }
             }
-            Some("live_decoded") => {
-                handle_live_decoded_message(&data, &pending_render_live_c, &results_c);
-                ctx_c.request_repaint();
+            ResponseType::LiveDecoded => {
+                if let Some(id) = require_id(&header, kind_str) {
+                    handle_live_decoded_message(id, &data, &pending_render_live_c, &results_c);
+                    ctx_c.request_repaint();
+                }
             }
-            Some("volume_decoded") => {
-                handle_volume_decoded_message(&data, &pending_volume_c, &results_c);
-                ctx_c.request_repaint();
+            ResponseType::VolumeDecoded => {
+                if let Some(id) = require_id(&header, kind_str) {
+                    handle_volume_decoded_message(id, &data, &pending_volume_c, &results_c);
+                    ctx_c.request_repaint();
+                }
             }
-            Some("error") => {
-                handle_error_message(
-                    &data,
-                    &pending_ingest_err,
-                    &pending_chunk_ingest_err,
-                    &pending_render_err,
-                    &pending_render_live_err,
-                    &pending_volume_err,
-                    &results_c,
-                );
-                ctx_c.request_repaint();
-            }
-            other => {
-                log::warn!("Unknown worker message type: {:?}", other);
+            ResponseType::Error => {
+                if let Some(id) = require_id(&header, kind_str) {
+                    handle_error_message(
+                        id,
+                        &data,
+                        &pending_ingest_c,
+                        &pending_chunk_ingest_c,
+                        &pending_render_c,
+                        &pending_render_live_c,
+                        &pending_volume_c,
+                        &results_c,
+                    );
+                    ctx_c.request_repaint();
+                }
             }
         }
     });
@@ -99,20 +131,26 @@ pub(super) fn setup_onmessage(
 // Shared deserialization helpers
 // ---------------------------------------------------------------------------
 
-fn extract_pending_context<C>(
-    data: &JsValue,
+/// Require an `id` field on a response that isn't `ready`. Logs and
+/// returns `None` if the worker shipped a correlated message with no id.
+fn require_id(header: &ResponseHeader, msg_type: &str) -> Option<RequestId> {
+    match header.id {
+        Some(id) => Some(id),
+        None => {
+            log::error!("Worker '{}' response missing id field", msg_type);
+            None
+        }
+    }
+}
+
+/// Remove a pending context entry by id. Returns `None` (with a warning)
+/// if the id isn't tracked — typically a duplicate response or a stale
+/// request that was already cancelled.
+fn take_pending_context<C>(
+    id: RequestId,
     msg_type: &str,
     pending: &Rc<RefCell<HashMap<RequestId, C>>>,
 ) -> Option<C> {
-    let envelope: MessageEnvelope = match serde_wasm_bindgen::from_value(data.clone()) {
-        Ok(e) => e,
-        Err(e) => {
-            log::warn!("Failed to parse {} envelope: {}", msg_type, e);
-            return None;
-        }
-    };
-    let id = envelope.id;
-
     match pending.borrow_mut().remove(&id) {
         Some(ctx) => Some(ctx),
         None => {
@@ -171,16 +209,38 @@ fn build_decode_result(
     }
 }
 
+/// Push a `WorkerError` outcome for a request whose body failed to parse.
+///
+/// Called after the pending-context entry has already been removed — the
+/// caller would otherwise see a silent drop and never learn the request
+/// failed.
+fn push_payload_parse_error(
+    results: &Rc<RefCell<Vec<WorkerOutcome>>>,
+    id: RequestId,
+    msg_type: &str,
+    err: impl std::fmt::Display,
+    failed_scan_timestamp_secs: Option<f64>,
+) {
+    let message = format!("Failed to parse {} payload: {}", msg_type, err);
+    log::error!("{} (request {})", message, id);
+    results.borrow_mut().push(WorkerOutcome::WorkerError {
+        id,
+        message,
+        failed_scan_timestamp_secs,
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Per-message-type handlers
 // ---------------------------------------------------------------------------
 
 fn handle_ingested_message(
+    id: RequestId,
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let context = match extract_pending_context(data, "ingested", pending) {
+    let context = match take_pending_context(id, "ingested", pending) {
         Some(ctx) => ctx,
         None => return,
     };
@@ -189,7 +249,7 @@ fn handle_ingested_message(
     let r: IngestResultMsg = match serde_wasm_bindgen::from_value(result_obj) {
         Ok(r) => r,
         Err(e) => {
-            log::error!("Failed to parse ingest result: {}", e);
+            push_payload_parse_error(results, id, "ingested", e, Some(context.timestamp_secs));
             return;
         }
     };
@@ -230,11 +290,12 @@ fn handle_ingested_message(
 }
 
 fn handle_chunk_ingested_message(
+    id: RequestId,
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let context = match extract_pending_context(data, "chunk_ingested", pending) {
+    let context = match take_pending_context(id, "chunk_ingested", pending) {
         Some(ctx) => ctx,
         None => return,
     };
@@ -243,7 +304,13 @@ fn handle_chunk_ingested_message(
     let r: ChunkIngestResultMsg = match serde_wasm_bindgen::from_value(result_obj) {
         Ok(r) => r,
         Err(e) => {
-            log::error!("Failed to parse chunk ingest result: {}", e);
+            push_payload_parse_error(
+                results,
+                id,
+                "chunk_ingested",
+                e,
+                Some(context.timestamp_secs),
+            );
             return;
         }
     };
@@ -294,11 +361,12 @@ fn handle_chunk_ingested_message(
 }
 
 fn handle_decoded_message(
+    id: RequestId,
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let context = match extract_pending_context(data, "decoded", pending) {
+    let context = match take_pending_context(id, "decoded", pending) {
         Some(ctx) => ctx,
         None => return,
     };
@@ -308,7 +376,13 @@ fn handle_decoded_message(
     let r: DecodedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
         Ok(r) => r,
         Err(e) => {
-            log::error!("Failed to parse decoded result: {}", e);
+            push_payload_parse_error(
+                results,
+                id,
+                "decoded",
+                e,
+                Some(context.scan_key.scan_start.as_secs_f64()),
+            );
             return;
         }
     };
@@ -336,11 +410,12 @@ fn handle_decoded_message(
 }
 
 fn handle_live_decoded_message(
+    id: RequestId,
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let context = match extract_pending_context(data, "live_decoded", pending) {
+    let context = match take_pending_context(id, "live_decoded", pending) {
         Some(ctx) => ctx,
         None => return,
     };
@@ -350,7 +425,13 @@ fn handle_live_decoded_message(
     let r: DecodedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
         Ok(r) => r,
         Err(e) => {
-            log::error!("Failed to parse live_decoded result: {}", e);
+            push_payload_parse_error(
+                results,
+                id,
+                "live_decoded",
+                e,
+                Some(context.scan_key.scan_start.as_secs_f64()),
+            );
             return;
         }
     };
@@ -376,11 +457,12 @@ fn handle_live_decoded_message(
 }
 
 fn handle_volume_decoded_message(
+    id: RequestId,
     data: &JsValue,
     pending: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
     results: &Rc<RefCell<Vec<WorkerOutcome>>>,
 ) {
-    let _volume_ctx = match extract_pending_context(data, "volume_decoded", pending) {
+    let volume_ctx = match take_pending_context(id, "volume_decoded", pending) {
         Some(ctx) => ctx,
         None => return,
     };
@@ -388,7 +470,13 @@ fn handle_volume_decoded_message(
     let r: VolumeDecodedResultMsg = match serde_wasm_bindgen::from_value(data.clone()) {
         Ok(r) => r,
         Err(e) => {
-            log::error!("Failed to parse volume decoded result: {}", e);
+            push_payload_parse_error(
+                results,
+                id,
+                "volume_decoded",
+                e,
+                Some(volume_ctx.scan_key.scan_start.as_secs_f64()),
+            );
             return;
         }
     };
@@ -439,14 +527,16 @@ fn handle_volume_decoded_message(
 
 /// Handle an "error" message from the worker.
 ///
-/// Looks up the failing request id across all pending maps and removes it —
-/// otherwise a failed ingest would leak its context indefinitely. When the
-/// request can be correlated, the associated scan's start timestamp is
-/// surfaced on the outcome so the main loop can reset per-scan UI state
-/// (e.g. the timeline "processing" ghost) for the correct scan rather than
-/// guessing from `displayed_scan_timestamp`.
+/// The id has already been extracted from the response header. Looks up
+/// the failing request across all pending maps and removes it — otherwise
+/// a failed ingest would leak its context indefinitely. When the request
+/// can be correlated, the associated scan's start timestamp is surfaced
+/// on the outcome so the main loop can reset per-scan UI state (e.g. the
+/// timeline "processing" ghost) for the correct scan rather than guessing
+/// from `displayed_scan_timestamp`.
 #[allow(clippy::too_many_arguments)]
 fn handle_error_message(
+    id: RequestId,
     data: &JsValue,
     pending_ingest: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
     pending_chunk_ingest: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
@@ -458,30 +548,67 @@ fn handle_error_message(
     let e: ErrorMsg = match serde_wasm_bindgen::from_value(data.clone()) {
         Ok(e) => e,
         Err(err) => {
-            log::error!("Failed to parse error message: {}", err);
+            // Even when the body fails to parse, the id from the header
+            // is still authoritative — clean up whatever pending entry
+            // matches so it doesn't leak.
+            push_payload_parse_error(
+                results,
+                id,
+                "error",
+                err,
+                cleanup_pending_by_id(
+                    id,
+                    pending_ingest,
+                    pending_chunk_ingest,
+                    pending_render,
+                    pending_render_live,
+                    pending_volume,
+                ),
+            );
             return;
         }
     };
 
     log::warn!("Worker error (request {}): {}", e.id, e.message);
 
-    let failed_scan_timestamp_secs = if let Some(ctx) = pending_ingest.borrow_mut().remove(&e.id) {
-        Some(ctx.timestamp_secs)
-    } else if let Some(ctx) = pending_chunk_ingest.borrow_mut().remove(&e.id) {
-        Some(ctx.timestamp_secs)
-    } else if let Some(ctx) = pending_render.borrow_mut().remove(&e.id) {
-        Some(ctx.scan_key.scan_start.as_secs_f64())
-    } else if let Some(ctx) = pending_render_live.borrow_mut().remove(&e.id) {
-        Some(ctx.scan_key.scan_start.as_secs_f64())
-    } else if let Some(ctx) = pending_volume.borrow_mut().remove(&e.id) {
-        Some(ctx.scan_key.scan_start.as_secs_f64())
-    } else {
-        None
-    };
+    let failed_scan_timestamp_secs = cleanup_pending_by_id(
+        e.id,
+        pending_ingest,
+        pending_chunk_ingest,
+        pending_render,
+        pending_render_live,
+        pending_volume,
+    );
 
     results.borrow_mut().push(WorkerOutcome::WorkerError {
         id: e.id,
         message: e.message,
         failed_scan_timestamp_secs,
     });
+}
+
+/// Remove a pending entry across every pending-context map (whichever one
+/// owns it). Returns the failing scan's start timestamp when it could be
+/// correlated, so callers can reset per-scan UI state.
+fn cleanup_pending_by_id(
+    id: RequestId,
+    pending_ingest: &Rc<RefCell<HashMap<RequestId, IngestContext>>>,
+    pending_chunk_ingest: &Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
+    pending_render: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_render_live: &Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+    pending_volume: &Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
+) -> Option<f64> {
+    if let Some(ctx) = pending_ingest.borrow_mut().remove(&id) {
+        Some(ctx.timestamp_secs)
+    } else if let Some(ctx) = pending_chunk_ingest.borrow_mut().remove(&id) {
+        Some(ctx.timestamp_secs)
+    } else if let Some(ctx) = pending_render.borrow_mut().remove(&id) {
+        Some(ctx.scan_key.scan_start.as_secs_f64())
+    } else if let Some(ctx) = pending_render_live.borrow_mut().remove(&id) {
+        Some(ctx.scan_key.scan_start.as_secs_f64())
+    } else if let Some(ctx) = pending_volume.borrow_mut().remove(&id) {
+        Some(ctx.scan_key.scan_start.as_secs_f64())
+    } else {
+        None
+    }
 }

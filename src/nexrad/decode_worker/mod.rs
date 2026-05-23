@@ -135,7 +135,12 @@ impl DecodeWorker {
 
         // Send init message with the WASM/JS URLs
         let init_msg = js_sys::Object::new();
-        js_sys::Reflect::set(&init_msg, &"type".into(), &"init".into()).ok();
+        js_sys::Reflect::set(
+            &init_msg,
+            &"type".into(),
+            &types::RequestType::Init.as_str().into(),
+        )
+        .ok();
         js_sys::Reflect::set(&init_msg, &"jsUrl".into(), &js_url.into()).ok();
         js_sys::Reflect::set(&init_msg, &"wasmUrl".into(), &wasm_url.into()).ok();
 

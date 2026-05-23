@@ -210,7 +210,7 @@ pub(super) fn send_ingest_request(
     file_name: &str,
 ) {
     let request = IngestRequestMsg {
-        msg_type: "ingest",
+        msg_type: RequestType::Ingest.as_str(),
         id: id as f64,
         site_id,
         timestamp_secs,
@@ -252,7 +252,7 @@ pub(super) fn send_ingest_chunk_request(
     is_last_in_sweep: bool,
 ) {
     let request = IngestChunkRequestMsg {
-        msg_type: "ingest_chunk",
+        msg_type: RequestType::IngestChunk.as_str(),
         id: id as f64,
         site_id,
         timestamp_secs,
@@ -292,7 +292,7 @@ pub(super) fn send_render_request(
     product: &str,
 ) {
     let request = RenderRequestMsg {
-        msg_type: "render",
+        msg_type: RequestType::Render.as_str(),
         id: id as f64,
         scan_key,
         elevation_number,
@@ -319,7 +319,7 @@ pub(super) fn send_render_live_request(
     product: &str,
 ) {
     let request = RenderLiveRequestMsg {
-        msg_type: "render_live",
+        msg_type: RequestType::RenderLive.as_str(),
         id: id as f64,
         elevation_number,
         product,
@@ -346,7 +346,7 @@ pub(super) fn send_render_volume_request(
     elevation_numbers: &[u8],
 ) {
     let request = RenderVolumeRequestMsg {
-        msg_type: "render_volume",
+        msg_type: RequestType::RenderVolume.as_str(),
         id: id as f64,
         scan_key,
         product,
