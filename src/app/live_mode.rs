@@ -1,0 +1,277 @@
+//! Live-mode lifecycle, render-request helpers, and realtime result handling.
+//!
+//! Groups the methods that drive a live streaming session (`start_live_mode`,
+//! `stop_live_mode`, `handle_realtime_result`) alongside the render-request
+//! helpers (`request_worker_render`, `request_worker_render_volume`,
+//! `update_overlay_from_sweep`, `build_elevation_list`) that both the live
+//! and archive paths use.
+
+use crate::{nexrad, state, WorkbenchApp, MAX_SCAN_AGE_SECS};
+use eframe::egui;
+
+impl WorkbenchApp {
+    pub(crate) fn start_live_mode(&mut self, ctx: &egui::Context) {
+        let site_id = self.state.viz_state.site_id.clone();
+        log::info!("Starting live mode for site: {}", site_id);
+
+        // Get current time
+        let now = js_sys::Date::now() / 1000.0;
+
+        // Initialize live mode state
+        self.state.live_mode_state.start(now);
+        self.state.playback_state.set_playback_position(now);
+        self.state.playback_state.time_model.enable_realtime_lock();
+        self.state.playback_state.playing = true;
+
+        // Ensure the timeline is zoomed in far enough to show individual sweeps
+        // and chunks. Live mode enforces micro-mode as the widest allowed zoom.
+        const LIVE_DEFAULT_ZOOM: f64 = 2.0;
+        if self.state.playback_state.timeline_zoom < LIVE_DEFAULT_ZOOM {
+            self.state.playback_state.timeline_zoom = LIVE_DEFAULT_ZOOM;
+            self.state.playback_state.center_view_on(now);
+        }
+
+        self.state.status_message = "Connecting to live stream...".to_string();
+
+        // Push the current elevation filter into the channel before starting
+        // so the streaming loop's init-time backfill targets the user's
+        // selected elevation rather than a default.
+        self.streaming
+            .sync_filter(&self.state.viz_state.elevation_selection);
+        self.streaming
+            .start(ctx.clone(), site_id, self.acquisition.facade().clone());
+    }
+
+    /// Build the elevation list from a scan's VCP data.
+    pub(crate) fn build_elevation_list(
+        scan: &crate::state::radar_data::Scan,
+    ) -> Vec<crate::state::ElevationListEntry> {
+        state::playback_manager::build_elevation_list(scan)
+    }
+
+    /// Update the canvas overlay text with sweep timing and elevation info.
+    pub(crate) fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
+        self.state
+            .viz_state
+            .update_overlay(start, end, elevation_deg, self.state.use_local_time);
+    }
+
+    /// Send a render request to the worker for the current scan/elevation/product.
+    ///
+    /// Honours the user's intent exactly: the resolver returns either an
+    /// exact-match [`SweepIdentity`] (sweep present in the scan covering
+    /// `playback_position`, with the selected product available) or `None`
+    /// (blank the canvas). No fuzzy elevation fallback in any mode — if the
+    /// user picks elevation 5° and the resolved scan only has 1°/3°/7°, the
+    /// canvas blanks rather than snapping to a neighbor.
+    pub(crate) fn request_worker_render(&mut self) {
+        let target = state::playback_manager::resolve_active_sweep_target(
+            &self.state.viz_state.site_id,
+            self.state.playback_state.playback_position(),
+            &self.state.viz_state.elevation_selection,
+            self.state.viz_state.product,
+            &self.state.radar_timeline,
+            MAX_SCAN_AGE_SECS,
+        );
+
+        let Some(identity) = target else {
+            // No sweep matches the intent. Live mode may legitimately have
+            // partial in-progress data on the GPU (driven by
+            // `handle_live_decoded_outcome`); leave it untouched. Archive
+            // mode has no other producer, so blank the canvas.
+            if !self.state.live_mode_state.is_active() {
+                self.clear_display_no_sweep();
+            }
+            return;
+        };
+
+        if self.render.request_render_for(identity) && !self.state.session_stats.pipeline.processing
+        {
+            self.state.session_stats.pipeline.processing = true;
+        }
+    }
+
+    /// Request volume render (all elevations for ray marching).
+    pub(crate) fn request_worker_render_volume(&mut self) {
+        let product = self.state.viz_state.product.to_worker_string().to_string();
+        self.render.request_volume_render(&product);
+    }
+
+    /// Stop live mode streaming.
+    #[allow(dead_code)] // Called from UI when user stops live mode
+    pub(crate) fn stop_live_mode(&mut self, reason: state::LiveExitReason) {
+        log::info!("Stopping live mode: {:?}", reason);
+
+        self.state.live_mode_state.stop(reason);
+        self.state.playback_state.time_model.disable_realtime_lock();
+        self.streaming.stop();
+
+        // Halt playback unless the user is actively scrubbing/jogging — those
+        // paths set the new position themselves. Without this, we leave
+        // playing=true at Realtime speed and position=wall-clock, so the
+        // cursor keeps pace with "now" and mimics still being locked.
+        if !matches!(
+            reason,
+            state::LiveExitReason::UserSeeked | state::LiveExitReason::UserJogged
+        ) {
+            self.state.playback_state.playing = false;
+        }
+
+        self.state.status_message = self
+            .state
+            .live_mode_state
+            .last_exit_reason
+            .map(|r| r.message().to_string())
+            .unwrap_or_default();
+    }
+
+    /// Handle a realtime streaming result.
+    pub(crate) fn handle_realtime_result(
+        &mut self,
+        result: nexrad::RealtimeResult,
+        _ctx: &egui::Context,
+    ) {
+        // Get current time
+        let now = js_sys::Date::now() / 1000.0;
+
+        match result {
+            nexrad::RealtimeResult::Started { site_id } => {
+                log::debug!("Realtime streaming started for site: {}", site_id);
+                self.state.live_mode_state.handle_streaming_started(now);
+                self.state.status_message = format!("Live: connected to {}", site_id);
+            }
+            nexrad::RealtimeResult::ChunkReceived {
+                chunks_in_volume,
+                is_volume_end,
+                fetch_latency_ms,
+                plan,
+                arrival_stat,
+            } => {
+                if self.state.dev_mode {
+                    self.state
+                        .session_stats
+                        .record_fetch_latency(fetch_latency_ms);
+                }
+                log::debug!(
+                    "Realtime status: chunks_in_volume={} is_end={} latency={:.0}ms next_in={:?}",
+                    chunks_in_volume,
+                    is_volume_end,
+                    fetch_latency_ms,
+                    plan.as_ref().and_then(|p| p.next_available_in_secs(now)),
+                );
+                self.state.live_mode_state.handle_realtime_chunk(
+                    chunks_in_volume,
+                    is_volume_end,
+                    now,
+                    plan,
+                );
+
+                if let Some(stat) = arrival_stat {
+                    self.state.live_mode_state.record_chunk_arrival(stat);
+                }
+
+                // Record chunk latency for the acquisition drawer
+                self.state.acquisition.record_chunk_latency(
+                    chunks_in_volume,
+                    fetch_latency_ms,
+                    None, // radial timestamps populated after ingest
+                    None,
+                );
+            }
+            nexrad::RealtimeResult::ChunkData {
+                data,
+                chunk_index,
+                is_start,
+                is_end,
+                timestamp,
+                is_last_in_sweep,
+            } => {
+                log::debug!(
+                    "Realtime chunk received: index={} is_start={} is_end={} size={} bytes ts={}",
+                    chunk_index,
+                    is_start,
+                    is_end,
+                    data.len(),
+                    timestamp,
+                );
+
+                // Track realtime chunk as an acquisition operation
+                let rt_site_id = self.state.viz_state.site_id.clone();
+                let op_id =
+                    self.state
+                        .acquisition
+                        .create_operation(state::OperationKind::RealtimeChunk {
+                            site_id: rt_site_id,
+                            chunk_index,
+                            is_start,
+                            is_end,
+                            // The Network-tab grouping key is per-volume,
+                            // not per-instant; truncating sub-second
+                            // precision here is fine because two distinct
+                            // volumes never share a wall-clock second.
+                            scan_timestamp: timestamp.round() as i64,
+                        });
+                self.state.acquisition.mark_active(op_id);
+                self.state
+                    .acquisition
+                    .mark_completed(op_id, data.len() as u64);
+
+                if is_start {
+                    self.state.status_message = "Live: receiving new volume...".to_string();
+                    log::debug!("Realtime: new volume started, forwarding start chunk to worker");
+                }
+
+                // Forward chunk to worker for incremental ingest
+                let site_id = self.state.viz_state.site_id.clone();
+                let file_name = format!("live_{}_{}.nexrad", site_id, timestamp);
+                if is_start {
+                    self.state.session_stats.pipeline.processing = true;
+                }
+
+                // The streaming loop derives `is_last_in_sweep` from the VCP
+                // mapper at emission time (so it's correct even under filter
+                // mode where chunk_index no longer maps 1:1 to sequence).
+                let is_last_in_sweep = is_last_in_sweep.unwrap_or(false);
+
+                log::debug!(
+                    "Realtime: forwarding chunk {} to worker for ingest (site={}, ts={}, last_in_sweep={})",
+                    chunk_index,
+                    site_id,
+                    timestamp,
+                    is_last_in_sweep,
+                );
+                self.render.ingest_chunk(
+                    data,
+                    site_id,
+                    timestamp,
+                    chunk_index,
+                    is_start,
+                    is_end,
+                    file_name,
+                    is_last_in_sweep,
+                );
+            }
+            nexrad::RealtimeResult::Error(msg) => {
+                log::error!("Realtime streaming error: {}", msg);
+                self.stop_live_mode(state::LiveExitReason::ConnectionError);
+                // Preserve error message (stop_live_mode clears it)
+                self.state.live_mode_state.error_message = Some(msg.clone());
+                self.state.status_message = format!("Live error: {}", msg);
+
+                // Track error as a failed acquisition operation
+                let err_site_id = self.state.viz_state.site_id.clone();
+                let op_id =
+                    self.state
+                        .acquisition
+                        .create_operation(state::OperationKind::RealtimeChunk {
+                            site_id: err_site_id,
+                            chunk_index: 0,
+                            is_start: false,
+                            is_end: false,
+                            scan_timestamp: 0,
+                        });
+                self.state.acquisition.mark_failed(op_id, msg);
+            }
+        }
+    }
+}
