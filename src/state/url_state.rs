@@ -71,6 +71,39 @@ pub struct ViewState {
     pub rt: Option<bool>,
 }
 
+impl From<&super::AppState> for ViewState {
+    fn from(state: &super::AppState) -> Self {
+        let cam = &state.viz_state.camera;
+        Self {
+            mz: Some(state.viz_state.zoom),
+            tz: Some(state.playback_state.timeline_zoom),
+            vm: Some(match state.viz_state.view_mode {
+                super::ViewMode::Flat2D => 0,
+                super::ViewMode::Globe3D => 1,
+            }),
+            cm: Some(match cam.mode {
+                super::CameraMode::PlanetOrbit => 0,
+                super::CameraMode::SiteOrbit => 1,
+                super::CameraMode::FreeLook => 2,
+            }),
+            cd: Some(cam.distance),
+            clat: Some(cam.center_lat),
+            clon: Some(cam.center_lon),
+            ct: Some(cam.tilt),
+            cr: Some(cam.rotation),
+            ob: Some(cam.orbit_bearing),
+            oe: Some(cam.orbit_elevation),
+            fp: Some([cam.free_pos.x, cam.free_pos.y, cam.free_pos.z]),
+            fy: Some(cam.free_yaw),
+            fpt: Some(cam.free_pitch),
+            fs: Some(cam.free_speed),
+            v3d: Some(state.viz_state.volume_3d_enabled),
+            vdc: Some(state.viz_state.volume_density_cutoff),
+            rt: state.live_mode_state.is_active().then_some(true),
+        }
+    }
+}
+
 /// Parsed URL parameters.
 pub struct UrlParams {
     pub site: Option<String>,
