@@ -3096,37 +3096,67 @@ impl WorkbenchApp {
 }
 
 impl eframe::App for WorkbenchApp {
+    // Frame orchestration. The sequence below is load-bearing; reordering
+    // steps can cause one-frame lag, dropped renders, or UI reading stale
+    // state. Stages are grouped as:
+    //
+    //   PER-FRAME SETUP    1
+    //   INTAKE             2..=5      drain user/worker/network inputs
+    //   BACKGROUND TICKS   6..=8      independent periodic work
+    //   COMPUTE            9..=13     advance playback, request next render
+    //   FRAME SNAPSHOT     14..=18    materialize state UI will read
+    //   RENDER             19..=21    egui panels, canvas, overlays
+    //
+    // Invariants worth preserving:
+    //   - (2) dispatch_commands must precede (4) pump_download_queue because
+    //     commands set the dl_sel/dl_pos/pump flags it consumes.
+    //   - (3) handle_worker_results applies decoded-sweep state that
+    //     (10) sync_prev_sweep_texture and (11) request_render_if_needed
+    //     read this same frame — running results first avoids one-frame lag.
+    //   - (9) advance_playback must precede (11) request_render_if_needed so
+    //     a new playback position can trigger a render in the same frame.
+    //   - (14) refresh_live_model and (15) refresh_mobile_mode produce the
+    //     per-frame snapshots UI panels (19) read — they must run before
+    //     panel render.
+    //   - (16) gps drain must precede UI render so the "My Location"
+    //     checkbox reflects the geolocation callback on the same frame.
+    //   - (19) side/top/bottom panels must render before the CentralPanel
+    //     (canvas in step 20); this is an egui layout requirement.
+    //   - (21) modal overlays render last so they layer above the canvas.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 1. PER-FRAME SETUP: theme, staleness, site-change cleanup.
         self.apply_frame_setup(ctx);
+
+        // 2-5. INTAKE: drain user commands, worker responses, the
+        // download queue, and realtime streaming results.
         let (dl_sel, dl_pos, pump) = self.dispatch_commands(ctx);
         self.handle_worker_results(ctx);
         self.pump_download_queue(ctx, dl_sel, dl_pos, pump);
         self.handle_streaming_results(ctx);
+        // 6-8. BACKGROUND TICKS: independent periodic work.
         self.state.national_mosaic.poll_tick(
             ctx,
             self.state.layer_state.geo.national_mosaic
                 && crate::state::recency::data_is_live(&self.state),
         );
+        // NWS alerts and mPING storm reports — polled if due.
+        self.alerts_manager.tick(ctx, &mut self.state);
+        if std::mem::take(&mut self.state.mping.invalidate_requested) {
+            self.mping_manager.invalidate();
+        }
+        self.mping_manager.tick(ctx, &mut self.state);
+
+        // 9-13. COMPUTE: advance playback, sync GPU state, decide whether
+        // to issue the next render, then capture network stats and persist.
         self.advance_playback();
         self.sync_prev_sweep_texture();
         self.request_render_if_needed();
         self.update_network_stats();
         self.persist_url_state();
 
-        // Poll the NWS alerts feed if due; drain any completed fetches.
-        self.alerts_manager.tick(ctx, &mut self.state);
-
-        // Poll mPING storm reports if due; drain completed fetches.
-        if std::mem::take(&mut self.state.mping.invalidate_requested) {
-            self.mping_manager.invalidate();
-        }
-        self.mping_manager.tick(ctx, &mut self.state);
-
-        // Compute the live radar model snapshot for this frame so all UI
-        // consumers see consistent state from the same `now` timestamp.
+        // 14-17. FRAME SNAPSHOT: materialize the per-frame state UI reads.
+        // refresh_live_model captures a consistent `now` for every consumer.
         self.state.refresh_live_model();
-
-        // Resolve mobile/desktop layout for this frame before panels render.
         self.state.refresh_mobile_mode(ctx);
 
         // Drain GPS-overlay async results before panels render so the
@@ -3153,13 +3183,13 @@ impl eframe::App for WorkbenchApp {
             }
         }
 
-        // Recolor the favicon if the AppMode changed this frame.
+        // 18. Recolor the favicon if the AppMode changed this frame.
         self.sync_favicon_to_mode();
 
-        // Render UI panels in the correct order for egui layout.
-        // Side and top/bottom panels must be rendered before CentralPanel.
-        // On mobile, the tabbed chrome replaces both the desktop top bar and
-        // bottom panel; the left/right side panels early-return internally.
+        // 19. RENDER (panels). egui requires side and top/bottom panels
+        // to be rendered before CentralPanel. On mobile, the tabbed chrome
+        // replaces both the desktop top bar and bottom panel; the
+        // left/right side panels early-return internally.
         if self.state.is_mobile {
             // Consume any deferred geolocation request raised by the mobile
             // action bar. Handled here because the site-modal state lives
@@ -3182,13 +3212,13 @@ impl eframe::App for WorkbenchApp {
             ui::render_right_panel(ctx, &mut self.state);
         }
 
-        // Render canvas with GPU-based radar rendering
+        // 20. RENDER (canvas): GPU-based radar rendering in the CentralPanel.
         ui::render_canvas_with_geo(ctx, &mut self.state, Some(&self.geo_layers), &self.gpu);
 
-        // Process keyboard shortcuts
+        // Keyboard shortcuts (after canvas so shortcuts can reflect hover/focus).
         ui::handle_shortcuts(ctx, &mut self.state);
 
-        // Render overlays (on top of everything)
+        // 21. RENDER (overlays): modals layered above the canvas.
         ui::render_site_modal(ctx, &mut self.state, &mut self.site_modal_state);
         ui::render_mobile_settings_modal(ctx, &mut self.state);
         ui::render_shortcuts_help(ctx, &mut self.state);
