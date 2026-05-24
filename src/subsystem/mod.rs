@@ -12,5 +12,7 @@
 //! in sync by every caller).
 
 pub mod acquisition;
+pub mod diagnostics;
 
 pub use acquisition::Acquisition;
+pub use diagnostics::Diagnostics;

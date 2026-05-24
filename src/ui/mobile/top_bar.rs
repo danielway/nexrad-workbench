@@ -16,7 +16,11 @@ use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText};
 const TOP_BAR_CONTENT_HEIGHT: f32 = 44.0;
 const ACCENT_THICKNESS: f32 = 2.0;
 
-pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
+pub(crate) fn render_mobile_top_bar(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the translucent status bar / notch. Pad the top so OS icons
     // don't overlap our content.
@@ -69,7 +73,7 @@ pub(crate) fn render_mobile_top_bar(ctx: &egui::Context, state: &mut AppState) {
                 ui.label(RichText::new(icon).size(14.0).color(accent_color));
 
                 // Alerts chip (reuses the desktop helper).
-                super::super::top_bar::render_alerts_chip(ui, state);
+                super::super::top_bar::render_alerts_chip(ui, state, diagnostics);
 
                 // Worker error banner — critical, must be visible on mobile too.
                 if let Some(ref error_msg) = state.worker_init_error {

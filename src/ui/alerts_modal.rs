@@ -17,26 +17,34 @@ use crate::state::{AppCommand, AppState};
 use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
 
 /// Render the list + detail modals. Call once per frame from the main update loop.
-pub fn render_alerts_modals(ctx: &egui::Context, state: &mut AppState) {
-    if state.alerts.list_modal_open {
-        render_list_modal(ctx, state);
+pub fn render_alerts_modals(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+) {
+    if diagnostics.alerts.list_modal_open {
+        render_list_modal(ctx, state, diagnostics);
     }
-    if state.alerts.selected_alert_id.is_some() {
-        render_detail_modal(ctx, state);
+    if diagnostics.alerts.selected_alert_id.is_some() {
+        render_detail_modal(ctx, state, diagnostics);
     }
 }
 
-fn render_list_modal(ctx: &egui::Context, state: &mut AppState) {
+fn render_list_modal(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+) {
     if modal_backdrop(ctx, "alerts_list_backdrop", 140) {
-        state.alerts.list_modal_open = false;
+        diagnostics.alerts.list_modal_open = false;
         return;
     }
 
-    // Collect the filtered list now, then release the borrow of state.alerts
+    // Collect the filtered list now, then release the borrow of diagnostics.alerts
     // before we render (so we can push commands freely inside the closure).
     let visible: Vec<(String, String, String, AlertSeverity, Option<f64>)> =
         match state.viz_state.last_visible_bounds {
-            Some(bounds) => state
+            Some(bounds) => diagnostics
                 .alerts
                 .visible_in(bounds)
                 .into_iter()
@@ -151,30 +159,34 @@ fn render_list_modal(ctx: &egui::Context, state: &mut AppState) {
         });
 
     if close {
-        state.alerts.list_modal_open = false;
+        diagnostics.alerts.list_modal_open = false;
     }
     if let Some(id) = selected_id {
-        state.alerts.selected_alert_id = Some(id);
+        diagnostics.alerts.selected_alert_id = Some(id);
     }
 }
 
-fn render_detail_modal(ctx: &egui::Context, state: &mut AppState) {
+fn render_detail_modal(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+) {
     if modal_backdrop(ctx, "alerts_detail_backdrop", 160) {
-        state.alerts.selected_alert_id = None;
+        diagnostics.alerts.selected_alert_id = None;
         return;
     }
 
     // Clone the alert once so we don't hold a borrow through the UI closure.
-    let alert: Alert = match state
+    let alert: Alert = match diagnostics
         .alerts
         .selected_alert_id
         .as_ref()
-        .and_then(|id| state.alerts.find(id))
+        .and_then(|id| diagnostics.alerts.find(id))
     {
         Some(a) => a.clone(),
         None => {
             // Stale selection (e.g. alert expired while modal was open).
-            state.alerts.selected_alert_id = None;
+            diagnostics.alerts.selected_alert_id = None;
             return;
         }
     };
@@ -298,7 +310,7 @@ fn render_detail_modal(ctx: &egui::Context, state: &mut AppState) {
         });
 
     if close {
-        state.alerts.selected_alert_id = None;
+        diagnostics.alerts.selected_alert_id = None;
     }
 }
 

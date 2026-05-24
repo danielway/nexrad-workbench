@@ -258,9 +258,6 @@ pub struct AppState {
     /// the corresponding layer toggle is enabled.
     pub national_mosaic: crate::nexrad::NationalMosaic,
 
-    /// NWS active alerts + related modal state.
-    pub alerts: AlertsState,
-
     /// mPING storm reports + related modal state.
     pub mping: MpingState,
 

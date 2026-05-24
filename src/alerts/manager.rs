@@ -8,7 +8,7 @@ use eframe::egui;
 
 use super::api;
 use super::channel::{AlertsChannel, AlertsEvent};
-use crate::state::AppState;
+use crate::state::AlertsState;
 
 /// Poll interval in wall-clock milliseconds. NWS recommends <= 1 req/min;
 /// 2 minutes is comfortable and still plenty fresh for warnings.
@@ -39,69 +39,77 @@ impl AlertsManager {
     }
 
     /// Called every frame. Drains any events, kicks off a new fetch when due.
-    pub fn tick(&mut self, ctx: &egui::Context, state: &mut AppState) {
+    ///
+    /// `is_live` should reflect [`crate::state::recency::data_is_live`] —
+    /// when the user is scrubbed far behind wall-clock the alerts overlay
+    /// is hidden so we skip the poll. Computed by the caller so this
+    /// manager doesn't need to reach back into `AppState`.
+    pub fn tick(&mut self, ctx: &egui::Context, alerts: &mut AlertsState, is_live: bool) {
         // Drain events produced by any in-flight fetch.
         let events = self.channel.drain();
         if !events.is_empty() {
             self.fetch_in_flight = false;
         }
         for event in events {
-            self.apply_event(state, event);
+            self.apply_event(alerts, event);
         }
 
         // Drop expired alerts proactively so the UI never shows stale items.
         let now = js_sys::Date::now() / 1000.0;
-        if !state.alerts.alerts.is_empty() {
-            state.alerts.alerts.retain(|a| !a.is_expired(now));
+        if !alerts.alerts.is_empty() {
+            alerts.alerts.retain(|a| !a.is_expired(now));
         }
 
         // While viewing archive data far behind wall-clock, the alerts overlay
         // is hidden — don't burn requests fetching warnings the user can't see.
-        if !crate::state::recency::data_is_live(state) {
+        if !is_live {
             return;
         }
 
         // Was a manual refresh requested?
-        let manual_refresh = std::mem::take(&mut state.alerts.refresh_requested);
+        let manual_refresh = std::mem::take(&mut alerts.refresh_requested);
 
         // Due to poll?
         let now_ms = js_sys::Date::now();
-        let elapsed = now_ms - state.alerts.last_poll_ms;
-        let due = state.alerts.last_poll_ms <= 0.0
-            || (state.alerts.last_error.is_some() && elapsed >= RETRY_INTERVAL_MS)
+        let elapsed = now_ms - alerts.last_poll_ms;
+        let due = alerts.last_poll_ms <= 0.0
+            || (alerts.last_error.is_some() && elapsed >= RETRY_INTERVAL_MS)
             || elapsed >= POLL_INTERVAL_MS;
 
         if !self.fetch_in_flight && (manual_refresh || due) {
-            self.start_fetch(ctx, state);
+            self.start_fetch(ctx, alerts);
         }
     }
 
-    fn start_fetch(&mut self, ctx: &egui::Context, state: &mut AppState) {
+    fn start_fetch(&mut self, ctx: &egui::Context, alerts: &mut AlertsState) {
         self.fetch_in_flight = true;
-        state.alerts.fetch_in_flight = true;
-        state.alerts.last_poll_ms = js_sys::Date::now();
-        let etag = state.alerts.last_etag.clone();
+        alerts.fetch_in_flight = true;
+        alerts.last_poll_ms = js_sys::Date::now();
+        let etag = alerts.last_etag.clone();
         api::spawn_fetch(ctx.clone(), self.channel.clone(), etag);
     }
 
-    fn apply_event(&mut self, state: &mut AppState, event: AlertsEvent) {
-        state.alerts.fetch_in_flight = false;
+    fn apply_event(&mut self, alerts: &mut AlertsState, event: AlertsEvent) {
+        alerts.fetch_in_flight = false;
         match event {
-            AlertsEvent::Updated { alerts, etag } => {
-                state.alerts.alerts = alerts;
-                state.alerts.last_etag = etag;
-                state.alerts.last_error = None;
-                state.alerts.last_success_ms = js_sys::Date::now();
-                log::info!("NWS alerts refreshed: {} active", state.alerts.alerts.len());
+            AlertsEvent::Updated {
+                alerts: new_alerts,
+                etag,
+            } => {
+                alerts.alerts = new_alerts;
+                alerts.last_etag = etag;
+                alerts.last_error = None;
+                alerts.last_success_ms = js_sys::Date::now();
+                log::info!("NWS alerts refreshed: {} active", alerts.alerts.len());
             }
             AlertsEvent::NotModified => {
-                state.alerts.last_error = None;
-                state.alerts.last_success_ms = js_sys::Date::now();
+                alerts.last_error = None;
+                alerts.last_success_ms = js_sys::Date::now();
                 log::debug!("NWS alerts: 304 Not Modified");
             }
             AlertsEvent::Error(msg) => {
                 log::warn!("NWS alerts fetch failed: {}", msg);
-                state.alerts.last_error = Some(msg);
+                alerts.last_error = Some(msg);
             }
         }
     }

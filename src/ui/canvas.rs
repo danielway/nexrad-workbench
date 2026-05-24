@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
     geo_layers: Option<&GeoLayerSet>,
     gpu: &crate::GpuResources,
 ) {
@@ -215,9 +216,9 @@ pub fn render_canvas_with_geo(
 
                 if state.layer_state.geo.alerts
                     && data_is_live(state)
-                    && !state.alerts.alerts.is_empty()
+                    && !diagnostics.alerts.alerts.is_empty()
                 {
-                    render_alerts(&painter, &projection, &state.alerts.alerts);
+                    render_alerts(&painter, &projection, &diagnostics.alerts.alerts);
                 }
 
                 if state.layer_state.geo.mping
@@ -341,7 +342,7 @@ pub fn render_canvas_with_geo(
                 draw_overlay_info(ui, &rect, state);
                 draw_scale_bar(ui, &rect, &projection);
 
-                handle_canvas_interaction(&response, &rect, state, &projection);
+                handle_canvas_interaction(&response, &rect, state, diagnostics, &projection);
             }
         }
     });

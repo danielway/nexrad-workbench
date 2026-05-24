@@ -138,6 +138,7 @@ pub(crate) fn handle_canvas_interaction(
     response: &egui::Response,
     rect: &Rect,
     state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
     projection: &MapProjection,
 ) {
     // Distance tool: click to place points
@@ -173,7 +174,7 @@ pub(crate) fn handle_canvas_interaction(
                 let geo = projection.screen_to_geo(click_pos);
                 let bounds = projection.visible_bounds();
                 let mut best: Option<(u8, String)> = None;
-                for alert in &state.alerts.alerts {
+                for alert in &diagnostics.alerts.alerts {
                     if !crate::alerts::bbox_intersects(alert, bounds) {
                         continue;
                     }

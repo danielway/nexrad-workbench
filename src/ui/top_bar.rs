@@ -4,7 +4,11 @@ use crate::alerts::AlertSeverity;
 use crate::state::{AppCommand, AppMode, AppState, CameraMode, ViewMode};
 use eframe::egui::{self, Color32, Frame, RichText};
 
-pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
+pub fn render_top_bar(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+) {
     // Detect status message changes: if the message content differs from when we
     // last recorded the timestamp, update the timestamp now. This works even when
     // callers assign directly to `status_message` without using `set_status()`.
@@ -63,7 +67,7 @@ pub fn render_top_bar(ctx: &egui::Context, state: &mut AppState) {
 
                 // NWS alerts chip — shown only in 2D when one or more alerts
                 // intersect the visible map bounds.
-                render_alerts_chip(ui, state);
+                render_alerts_chip(ui, state, diagnostics);
 
                 // Persistent worker initialization error banner
                 if let Some(ref error_msg) = state.worker_init_error {
@@ -328,12 +332,16 @@ fn render_ui_mode_pill(ui: &mut egui::Ui, state: &mut AppState) {
 /// Render a compact alerts indicator for the top bar. Shows nothing when
 /// no active NWS alerts intersect the current viewing area (or when the
 /// viewing area is undefined, e.g. in 3D globe mode).
-pub(super) fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_alerts_chip(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+) {
     // Show a subtle loading/error hint on the first fetch so the user knows
     // the feed is being contacted. After the first success, stay quiet unless
     // there are alerts to surface.
-    let has_ever_loaded = state.alerts.last_success_ms > 0.0;
-    let has_error = state.alerts.last_error.is_some();
+    let has_ever_loaded = diagnostics.alerts.last_success_ms > 0.0;
+    let has_error = diagnostics.alerts.last_error.is_some();
     if !has_ever_loaded && !has_error {
         let icon = RichText::new(egui_phosphor::regular::BELL_SIMPLE)
             .size(14.0)
@@ -349,7 +357,7 @@ pub(super) fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
         return;
     };
 
-    let visible: Vec<(String, String, AlertSeverity)> = state
+    let visible: Vec<(String, String, AlertSeverity)> = diagnostics
         .alerts
         .visible_in(bounds)
         .into_iter()
@@ -361,12 +369,12 @@ pub(super) fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
         let tooltip = if has_error {
             format!(
                 "NWS alerts: {}",
-                state.alerts.last_error.as_deref().unwrap_or("error")
+                diagnostics.alerts.last_error.as_deref().unwrap_or("error")
             )
         } else {
             format!(
                 "No active alerts in view ({} active nationwide)",
-                state.alerts.alerts.len()
+                diagnostics.alerts.alerts.len()
             )
         };
         let color = if has_error {
@@ -428,7 +436,7 @@ pub(super) fn render_alerts_chip(ui: &mut egui::Ui, state: &mut AppState) {
         if visible.len() == 1 {
             state.push_command(AppCommand::OpenAlert(visible[0].0.clone()));
         } else {
-            state.alerts.list_modal_open = true;
+            diagnostics.alerts.list_modal_open = true;
         }
     }
 

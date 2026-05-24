@@ -96,11 +96,11 @@ impl WorkbenchApp {
             AppCommand::RetryWorker => self.handle_retry_worker(ctx),
 
             // ---- Alerts -----------------------------------------------
-            AppCommand::RefreshAlerts => self.state.alerts.refresh_requested = true,
-            AppCommand::OpenAlert(id) => self.state.alerts.selected_alert_id = Some(id),
+            AppCommand::RefreshAlerts => self.diagnostics.alerts.refresh_requested = true,
+            AppCommand::OpenAlert(id) => self.diagnostics.alerts.selected_alert_id = Some(id),
             AppCommand::CloseAlert => {
-                self.state.alerts.selected_alert_id = None;
-                self.state.alerts.list_modal_open = false;
+                self.diagnostics.alerts.selected_alert_id = None;
+                self.diagnostics.alerts.list_modal_open = false;
             }
         }
     }

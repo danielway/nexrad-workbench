@@ -165,8 +165,9 @@ pub struct WorkbenchApp {
     /// Sweep cache and previous-sweep resolution for sweep animation.
     playback_manager: PlaybackManager,
 
-    /// NWS alerts polling lifecycle.
-    alerts_manager: alerts::AlertsManager,
+    /// Diagnostics subsystem: observability + peripheral telemetry overlays
+    /// (currently NWS alerts; mPING / GPS / network monitor fold in next).
+    diagnostics: subsystem::Diagnostics,
 
     /// mPING storm-report fetch lifecycle.
     mping_manager: mping::MpingManager,
@@ -479,7 +480,7 @@ impl WorkbenchApp {
             // URL has `dev=true`, or when the user toggles it on later).
             network_monitor: None,
             playback_manager: PlaybackManager::new(),
-            alerts_manager: alerts::AlertsManager::new(),
+            diagnostics: subsystem::Diagnostics::new(),
             mping_manager: mping::MpingManager::new(),
             scrub_cache: ScrubCache::default(),
             last_favicon_mode: None,
@@ -626,7 +627,8 @@ impl eframe::App for WorkbenchApp {
                 && crate::state::recency::data_is_live(&self.state),
         );
         // NWS alerts and mPING storm reports — polled if due.
-        self.alerts_manager.tick(ctx, &mut self.state);
+        let is_live = crate::state::recency::data_is_live(&self.state);
+        self.diagnostics.tick(ctx, is_live);
         if std::mem::take(&mut self.state.mping.invalidate_requested) {
             self.mping_manager.invalidate();
         }
@@ -691,17 +693,23 @@ impl eframe::App for WorkbenchApp {
                 ui::trigger_geolocation(ctx, &mut self.state, &mut self.modals.site);
             }
 
-            ui::render_mobile_top_bar(ctx, &mut self.state);
+            ui::render_mobile_top_bar(ctx, &mut self.state, &mut self.diagnostics);
             ui::render_mobile_chrome(ctx, &mut self.state);
         } else {
-            ui::render_top_bar(ctx, &mut self.state);
+            ui::render_top_bar(ctx, &mut self.state, &mut self.diagnostics);
             ui::render_bottom_panel(ctx, &mut self.state, &mut self.acquisition);
             ui::render_left_panel(ctx, &mut self.state);
             ui::render_right_panel(ctx, &mut self.state);
         }
 
         // 20. RENDER (canvas): GPU-based radar rendering in the CentralPanel.
-        ui::render_canvas_with_geo(ctx, &mut self.state, Some(&self.geo_layers), &self.gpu);
+        ui::render_canvas_with_geo(
+            ctx,
+            &mut self.state,
+            &mut self.diagnostics,
+            Some(&self.geo_layers),
+            &self.gpu,
+        );
 
         // Keyboard shortcuts (after canvas so shortcuts can reflect hover/focus).
         ui::handle_shortcuts(ctx, &mut self.state);
@@ -715,7 +723,7 @@ impl eframe::App for WorkbenchApp {
         ui::render_vcp_forecast_modal(ctx, &mut self.state);
         ui::render_network_log(ctx, &mut self.state);
         ui::render_event_modal(ctx, &mut self.state, &mut self.modals.event);
-        ui::render_alerts_modals(ctx, &mut self.state);
+        ui::render_alerts_modals(ctx, &mut self.state, &mut self.diagnostics);
         ui::render_mping_modal(ctx, &mut self.state, &mut self.modals.mping);
     }
 }
