@@ -21,7 +21,7 @@ use crate::state::{AppMode, LiveModeState, LiveRadarModel, PlaybackState, RadarT
 /// to [`AppState`].
 pub struct LiveRefreshInputs<'a> {
     pub radar_timeline: &'a RadarTimeline,
-    pub playback_state: &'a PlaybackState,
+    pub playback: &'a PlaybackState,
 }
 
 /// Owner of the real-time streaming pipeline and the derived
@@ -66,7 +66,7 @@ impl Live {
             AppMode::Live
         } else if inputs
             .radar_timeline
-            .find_scan_at_timestamp(inputs.playback_state.playback_position())
+            .find_scan_at_timestamp(inputs.playback.playback_position())
             .is_some()
         {
             AppMode::Archive

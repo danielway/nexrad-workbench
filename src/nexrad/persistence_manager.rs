@@ -41,12 +41,13 @@ impl PersistenceManager {
     /// Push current app state to the URL bar and save user preferences (throttled).
     ///
     /// `mping_api_key` is the current value from the diagnostics subsystem;
-    /// `is_live` is sourced from the Live subsystem. Both are passed in
-    /// rather than reached for so the persistence manager doesn't take
-    /// back-references to subsystems.
+    /// `is_live` is sourced from the Live subsystem; `playback` is the
+    /// Playback subsystem's state. All are passed in so the persistence
+    /// manager doesn't take back-references to subsystems.
     pub fn persist_if_due(
         &mut self,
         state: &AppState,
+        playback: &state::PlaybackState,
         mping_api_key: Option<String>,
         is_live: bool,
     ) {
@@ -59,10 +60,10 @@ impl PersistenceManager {
         // `ViewState::from_state` keeps the field-by-field mapping in
         // one place; adding a new auxiliary view field is then a single
         // edit there instead of two synchronized lists.
-        let view = state::url_state::ViewState::from_state(state, is_live);
+        let view = state::url_state::ViewState::from_state(state, playback, is_live);
         state::url_state::push_to_url(
             &state.viz_state.site_id,
-            state.playback_state.playback_position(),
+            playback.playback_position(),
             state.viz_state.product.short_code(),
             state.viz_state.center_lat,
             state.viz_state.center_lon,
@@ -71,7 +72,7 @@ impl PersistenceManager {
         );
 
         // Save user preferences if changed (piggyback on URL throttle)
-        let current_prefs = state::UserPreferences::from_app_state(state, mping_api_key);
+        let current_prefs = state::UserPreferences::from_app_state(state, playback, mping_api_key);
         if current_prefs != self.last_saved_preferences {
             current_prefs.save();
             self.last_saved_preferences = current_prefs;

@@ -8,6 +8,7 @@ pub fn render_top_bar(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
 ) {
     // Detect status message changes: if the message content differs from when we
@@ -97,7 +98,7 @@ pub fn render_top_bar(
                     }
                 }
 
-                render_mode_badge(ui, state, live);
+                render_mode_badge(ui, state, live, playback);
 
                 // Status message (Idle/Archive only — Live has its own trailing
                 // text with chunk counts/countdown).
@@ -551,6 +552,7 @@ pub(super) fn render_mode_badge(
     ui: &mut egui::Ui,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
 ) {
     let mode = live.app_mode;
     let color = mode.color();
@@ -608,8 +610,8 @@ pub(super) fn render_mode_badge(
             {
                 live.mode_state
                     .stop(crate::state::LiveExitReason::UserStopped);
-                state.playback_state.time_model.disable_realtime_lock();
-                state.playback_state.playing = false;
+                playback.state.time_model.disable_realtime_lock();
+                playback.state.playing = false;
                 state.status_message = live
                     .mode_state
                     .last_exit_reason
@@ -622,7 +624,7 @@ pub(super) fn render_mode_badge(
             .clicked()
         {
             state.push_command(AppCommand::StartLive);
-            state.playback_state.speed = crate::state::PlaybackSpeed::Realtime;
+            playback.state.speed = crate::state::PlaybackSpeed::Realtime;
             ui.close();
         }
     });
@@ -630,7 +632,7 @@ pub(super) fn render_mode_badge(
     // Live-only trailing detail: chunk count, countdown, or elapsed acquire time.
     if mode == AppMode::Live {
         use crate::state::LivePhase;
-        let now = state.playback_state.playback_position();
+        let now = playback.state.playback_position();
         let phase = live.mode_state.phase;
         let detail = match phase {
             LivePhase::AcquiringLock => {

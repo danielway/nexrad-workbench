@@ -14,6 +14,7 @@ pub(crate) fn render_mobile_settings_modal(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
 ) {
     if !state.mobile_settings_open || !state.is_mobile {
@@ -51,16 +52,24 @@ pub(crate) fn render_mobile_settings_modal(
                 .max_height(body_h)
                 .auto_shrink([false, false])
                 .show(ui, |ui| match state.mobile_settings_tab {
-                    MobileSettingsTab::Playback => render_playback_body(ui, state, timeline, live),
-                    MobileSettingsTab::Product => render_product_body(ui, state, timeline, live),
-                    MobileSettingsTab::Layers => render_layers_body(ui, state, diagnostics),
-                    MobileSettingsTab::More => render_more_body(ui, state),
+                    MobileSettingsTab::Playback => {
+                        render_playback_body(ui, state, timeline, live, playback)
+                    }
+                    MobileSettingsTab::Product => {
+                        render_product_body(ui, state, timeline, live, playback)
+                    }
+                    MobileSettingsTab::Layers => {
+                        render_layers_body(ui, state, playback, diagnostics)
+                    }
+                    MobileSettingsTab::More => render_more_body(ui, state, playback),
                 });
 
             // The datetime picker popup (opened by tapping the current-time
             // label in the Playback tab) renders as an Area, so it must be
             // spawned from within the window.
-            super::super::playback_controls::render_datetime_picker_popup(ui, state, live);
+            super::super::playback_controls::render_datetime_picker_popup(
+                ui, state, live, playback,
+            );
         });
 }
 
@@ -129,11 +138,12 @@ fn render_playback_body(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
 ) {
     ui.add_space(6.0);
 
     // Current time — tap to open the datetime picker.
-    let selected_ts = state.playback_state.playback_position();
+    let selected_ts = playback.state.playback_position();
     let use_local = state.use_local_time;
     let tz = if use_local { "Local" } else { "UTC" };
     let time_label = format!(
@@ -158,7 +168,7 @@ fn render_playback_body(
     // Transport: play/pause + prev/next.
     ui.horizontal(|ui| {
         ui.add_space(8.0);
-        let play_icon = if state.playback_state.playing {
+        let play_icon = if playback.state.playing {
             egui_phosphor::regular::PAUSE
         } else {
             egui_phosphor::regular::PLAY
@@ -170,7 +180,7 @@ fn render_playback_body(
             )
             .clicked()
         {
-            super::tabs::toggle_play(state, live);
+            super::tabs::toggle_play(state, live, playback);
         }
 
         ui.add_space(8.0);
@@ -181,7 +191,7 @@ fn render_playback_body(
             )
             .clicked()
         {
-            super::tabs::step_frame(state, timeline, live, -1);
+            super::tabs::step_frame(state, timeline, live, playback, -1);
         }
         if ui
             .add_sized(
@@ -190,7 +200,7 @@ fn render_playback_body(
             )
             .clicked()
         {
-            super::tabs::step_frame(state, timeline, live, 1);
+            super::tabs::step_frame(state, timeline, live, playback, 1);
         }
     });
 
@@ -200,7 +210,7 @@ fn render_playback_body(
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         ui.label(RichText::new("Speed:").size(13.0));
-        let mode = state.playback_state.playback_mode();
+        let mode = playback.state.playback_mode();
         let common: &[PlaybackSpeed] = &[
             PlaybackSpeed::Half,
             PlaybackSpeed::Normal,
@@ -211,12 +221,12 @@ fn render_playback_body(
                 PlaybackMode::Macro => speed.macro_label(),
                 PlaybackMode::Micro => speed.label(),
             };
-            let is_selected = state.playback_state.speed == *speed;
+            let is_selected = playback.state.speed == *speed;
             if ui
                 .selectable_label(is_selected, RichText::new(label).size(13.0))
                 .clicked()
             {
-                state.playback_state.speed = *speed;
+                playback.state.speed = *speed;
             }
         }
         egui::ComboBox::from_id_salt("mobile_settings_speed_all")
@@ -232,7 +242,7 @@ fn render_playback_body(
                         PlaybackMode::Macro => s.macro_label(),
                         PlaybackMode::Micro => s.label(),
                     };
-                    ui.selectable_value(&mut state.playback_state.speed, *s, label);
+                    ui.selectable_value(&mut playback.state.speed, *s, label);
                 }
             });
     });
@@ -257,27 +267,33 @@ fn render_product_body(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
 ) {
     ui.add_space(4.0);
-    super::super::right_panel::render_product_section(ui, state, timeline, live);
+    super::super::right_panel::render_product_section(ui, state, timeline, live, playback);
 }
 
 fn render_layers_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    playback: &crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
 ) {
     ui.add_space(4.0);
-    super::super::right_panel::render_layers_section(ui, state, diagnostics);
+    super::super::right_panel::render_layers_section(ui, state, diagnostics, playback);
 }
 
-fn render_more_body(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_more_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    playback: &mut crate::subsystem::Playback,
+) {
     ui.add_space(4.0);
-    super::super::right_panel::render_rendering_section(ui, state);
+    super::super::right_panel::render_rendering_section(ui, state, playback);
     ui.add_space(4.0);
     super::super::right_panel::render_tools_section(ui, state);
     ui.add_space(4.0);
-    super::super::right_panel::render_events_section(ui, state);
+    super::super::right_panel::render_events_section(ui, state, playback);
     ui.add_space(4.0);
     super::super::right_panel::render_storage_section(ui, state);
 }

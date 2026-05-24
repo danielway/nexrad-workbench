@@ -14,11 +14,13 @@
 pub mod acquisition;
 pub mod diagnostics;
 pub mod live;
+pub mod playback;
 pub mod render;
 pub mod timeline;
 
 pub use acquisition::Acquisition;
 pub use diagnostics::Diagnostics;
 pub use live::Live;
+pub use playback::Playback;
 pub use render::Render;
 pub use timeline::Timeline;

@@ -119,9 +119,6 @@ pub enum AppCommand {
 /// Root application state containing all sub-states.
 #[derive(Default)]
 pub struct AppState {
-    /// Playback controls state
-    pub playback_state: PlaybackState,
-
     /// Visualization state (canvas, zoom/pan, product selection)
     pub viz_state: VizState,
 
@@ -383,10 +380,12 @@ impl DateTimePickerState {
 /// Bootstrap output from [`AppState::new`].
 ///
 /// Carries values that are loaded from persistence at construction time
-/// but no longer live on `AppState` itself — currently just the saved
-/// mPING API key, which belongs on the diagnostics subsystem.
+/// but no longer live on `AppState` itself: the persisted speed
+/// (which belongs on the Playback subsystem) and the saved mPING API
+/// key (which belongs on the Diagnostics subsystem).
 pub struct AppStateBootstrap {
     pub state: AppState,
+    pub playback: PlaybackState,
     pub mping_api_key: Option<String>,
 }
 
@@ -400,15 +399,11 @@ impl AppState {
     /// Construct a fresh `AppState`, loading persisted preferences from
     /// localStorage along the way. Returns an [`AppStateBootstrap`] so
     /// pieces of the persisted state that belong on subsystems
-    /// (currently the mPING API key) can be applied at the right place
-    /// by the caller.
+    /// (currently the playback speed and mPING API key) can be applied
+    /// at the right place by the caller.
     pub fn bootstrap() -> AppStateBootstrap {
         // Use current time for initialization
         let now = js_sys::Date::now() / 1000.0;
-
-        // Start with empty timeline - will be populated from cache
-        // Set up playback state centered on "now"
-        let playback_state = PlaybackState::new_at_time(now);
 
         // Load storage settings from localStorage
         let storage_settings = StorageSettings::load();
@@ -427,7 +422,6 @@ impl AppState {
         });
 
         let mut state = Self {
-            playback_state,
             status_message: "Ready".to_string(),
             session_stats: SessionStats::new(),
             storage_settings,
@@ -440,16 +434,18 @@ impl AppState {
             auto_position_on_timeline_load: false,
             ..Default::default()
         };
+        let mut playback = PlaybackState::new_at_time(now);
 
         // Apply persisted user preferences (speed, palette, layers, etc.).
         // Returns the mPING api key (if any) which lives on the diagnostics
         // subsystem rather than on AppState; the constructor caller is
         // responsible for applying it.
         let prefs = UserPreferences::load();
-        let mping_api_key = prefs.apply_to(&mut state);
+        let mping_api_key = prefs.apply_to(&mut state, &mut playback);
 
         AppStateBootstrap {
             state,
+            playback,
             mping_api_key,
         }
     }
@@ -501,9 +497,9 @@ impl AppState {
     /// Macro mode and Basic UI both suppress the animation regardless of
     /// the stored preference; Basic users get a calmer display and the
     /// preference is preserved across UI-mode toggles.
-    pub fn effective_sweep_animation(&self) -> bool {
+    pub fn effective_sweep_animation(&self, playback: &PlaybackState) -> bool {
         self.render_processing.sweep_animation
-            && self.playback_state.playback_mode() == PlaybackMode::Micro
+            && playback.playback_mode() == PlaybackMode::Micro
             && self.advanced_mode
     }
 
@@ -513,16 +509,16 @@ impl AppState {
     /// empty. Both panels share this so they can't disagree about
     /// what's available.
     ///
-    /// `timeline` is the scan inventory from
-    /// [`crate::subsystem::Timeline::scans`] and `live_vcp_pattern` is
-    /// the current VCP from [`crate::subsystem::Live::mode_state`].
-    /// Both are passed in so this method doesn't reach for subsystems.
+    /// `playback` / `timeline` / `live_vcp_pattern` are passed in from
+    /// their respective subsystems so this method doesn't reach into
+    /// them itself.
     pub fn current_elevation_list(
         &self,
+        playback: &PlaybackState,
         timeline: &RadarTimeline,
         live_vcp_pattern: Option<&crate::data::keys::ExtractedVcp>,
     ) -> Vec<ElevationListEntry> {
-        let ts = self.playback_state.playback_position();
+        let ts = playback.playback_position();
         if let Some(scan) = timeline.find_scan_at_timestamp(ts) {
             return playback_manager::build_elevation_list(scan);
         }

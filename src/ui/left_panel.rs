@@ -31,6 +31,7 @@ pub fn render_left_panel(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
 ) {
     // Left panel is power-user instrumentation (VCP / azimuth / elevation
     // diagnostics). Mobile layout never invokes this function; the
@@ -46,7 +47,7 @@ pub fn render_left_panel(
         .max_width(400.0)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                render_radar_operations_section(ui, state, timeline, live);
+                render_radar_operations_section(ui, state, timeline, live, playback);
             });
         });
 }
@@ -56,13 +57,14 @@ fn render_radar_operations_section(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
 ) {
     // Header
     ui.label(RichText::new("Radar Operations").strong().size(14.0));
 
     ui.add_space(4.0);
 
-    let radar_state = query_radar_state_at_timestamp(state, timeline, live);
+    let radar_state = query_radar_state_at_timestamp(state, timeline, live, playback);
 
     // Top-down and side views side-by-side
     let is_live = live.mode_state.is_active();
@@ -85,11 +87,12 @@ fn render_radar_operations_section(
 }
 
 fn query_radar_state_at_timestamp<'a>(
-    state: &'a AppState,
+    _state: &'a AppState,
     timeline: &'a crate::subsystem::Timeline,
     live: &'a crate::subsystem::Live,
+    playback: &'a crate::subsystem::Playback,
 ) -> RadarStateAtTimestamp<'a> {
-    let ts = state.playback_state.playback_position();
+    let ts = playback.state.playback_position();
 
     // Find the scan at the current timestamp
     let scan = timeline.scans.find_scan_at_timestamp(ts);
@@ -119,12 +122,8 @@ fn query_radar_state_at_timestamp<'a>(
             // At high playback speeds (>30 s/s), freeze all animated radar state
             // (azimuth, elevation, sweep indicator, progress) to prevent violent flashing.
             // Static VCP info (number, name, elevation list) still renders.
-            let is_fast = state.playback_state.playing
-                && state
-                    .playback_state
-                    .speed
-                    .timeline_seconds_per_real_second()
-                    > 30.0;
+            let is_fast = playback.state.playing
+                && playback.state.speed.timeline_seconds_per_real_second() > 30.0;
 
             let azimuth = if is_fast {
                 None

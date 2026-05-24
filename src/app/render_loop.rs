@@ -17,10 +17,10 @@ impl WorkbenchApp {
             return;
         }
         // Rebuild macro frame list when dirty (elevation selection, bounds, or scan count changed)
-        if self.state.playback_state.playback_mode() == crate::state::PlaybackMode::Macro {
-            let mp = &self.state.playback_state.macro_playback;
+        if self.playback.state.playback_mode() == crate::state::PlaybackMode::Macro {
+            let mp = &self.playback.state.macro_playback;
             let elev_sel = self.state.viz_state.elevation_selection.clone();
-            let bounds = self.state.playback_state.time_model.playback_bounds;
+            let bounds = self.playback.state.time_model.playback_bounds;
             let scan_count = self.timeline.scans.scans.len();
 
             let elev_changed = mp.cached_elevation_selection != elev_sel;
@@ -39,14 +39,14 @@ impl WorkbenchApp {
                         self.timeline.scans.all_sweep_end_times(bounds)
                     }
                 };
-                self.state.playback_state.macro_playback.sweep_frames = frames;
-                self.state
-                    .playback_state
+                self.playback.state.macro_playback.sweep_frames = frames;
+                self.playback
+                    .state
                     .macro_playback
                     .cached_elevation_selection = elev_sel;
-                self.state.playback_state.macro_playback.cached_bounds = bounds;
-                self.state.playback_state.macro_playback.cached_scan_count = scan_count;
-                self.state.playback_state.sync_macro_frame_index();
+                self.playback.state.macro_playback.cached_bounds = bounds;
+                self.playback.state.macro_playback.cached_scan_count = scan_count;
+                self.playback.state.sync_macro_frame_index();
                 // When the elevation filter changes, snap playback_position
                 // to the resolved frame so the canvas resolver picks a sweep
                 // at the new elevation. Frames are sweep end-times and a
@@ -57,26 +57,19 @@ impl WorkbenchApp {
                 // the canvas. Skip on bounds/scan_count changes so
                 // streaming and selection edits don't teleport the cursor.
                 if elev_changed {
-                    self.state.playback_state.snap_playback_to_macro_frame();
+                    self.playback.state.snap_playback_to_macro_frame();
                 }
             }
 
             // Detect manual seek: if playback position changed externally
             // (user clicked timeline, jog, etc.) re-sync frame index.
-            let pos = self.state.playback_state.playback_position();
-            let cached_pos = self
-                .state
-                .playback_state
-                .macro_playback
-                .cached_playback_position;
+            let pos = self.playback.state.playback_position();
+            let cached_pos = self.playback.state.macro_playback.cached_playback_position;
             if (pos - cached_pos).abs() > 0.5 {
-                self.state.playback_state.sync_macro_frame_index();
-                self.state.playback_state.macro_playback.frame_accumulator = 0.0;
+                self.playback.state.sync_macro_frame_index();
+                self.playback.state.macro_playback.frame_accumulator = 0.0;
             }
-            self.state
-                .playback_state
-                .macro_playback
-                .cached_playback_position = pos;
+            self.playback.state.macro_playback.cached_playback_position = pos;
         }
 
         // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
@@ -89,7 +82,7 @@ impl WorkbenchApp {
         // sweep's start_time, we re-render with that sweep's elevation_number.
         // Uses module-level MAX_SCAN_AGE_SECS constant.
         {
-            let playback_ts = self.state.playback_state.playback_position();
+            let playback_ts = self.playback.state.playback_position();
 
             // Skip the timeline walk when nothing that feeds the scrub
             // decision has moved since last frame. The O(scans) search
@@ -184,16 +177,12 @@ impl WorkbenchApp {
         // preemptively send a render request for the upcoming sweep so the result
         // is ready when the boundary is crossed, reducing perceived stutter.
         // Skip in macro mode — frame jumps are instant and the frame list handles sequencing.
-        if self.state.playback_state.playing
+        if self.playback.state.playing
             && self.render.coordinator.has_worker()
-            && self.state.playback_state.playback_mode() == crate::state::PlaybackMode::Micro
+            && self.playback.state.playback_mode() == crate::state::PlaybackMode::Micro
         {
-            let playback_ts = self.state.playback_state.playback_position();
-            let speed = self
-                .state
-                .playback_state
-                .speed
-                .timeline_seconds_per_real_second();
+            let playback_ts = self.playback.state.playback_position();
+            let speed = self.playback.state.speed.timeline_seconds_per_real_second();
             let prefetch_lookahead = PREFETCH_LOOKAHEAD_SECS * speed;
 
             if let Some(scan) = self.timeline.scans.find_scan_at_timestamp(playback_ts) {
@@ -262,13 +251,13 @@ impl WorkbenchApp {
             return;
         }
 
-        if !self.state.effective_sweep_animation() {
+        if !self.state.effective_sweep_animation(&self.playback.state) {
             self.state.viz_state.previous_displayed = None;
             self.state.viz_state.last_sweep_line_cache = None;
             return;
         }
 
-        let playback_ts = self.state.playback_state.playback_position();
+        let playback_ts = self.playback.state.playback_position();
         // Anchor "previous" to the on-GPU main slot (i.e., what's
         // actually on screen), not the resolver's intent — otherwise
         // the prev-sweep upload races ahead of the main upload.

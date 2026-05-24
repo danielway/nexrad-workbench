@@ -72,18 +72,22 @@ pub struct ViewState {
 }
 
 impl ViewState {
-    /// Build a `ViewState` from the current [`super::AppState`] plus an
-    /// explicit `is_live` flag.
+    /// Build a `ViewState` from the current [`super::AppState`] plus
+    /// explicit `playback` and `is_live` slices.
     ///
-    /// `is_live` is sourced from [`crate::subsystem::Live::mode_state`]
-    /// — the URL-state module doesn't reach for the Live subsystem so
-    /// the dependency stays one-way. Callers in
-    /// [`crate::nexrad::persistence_manager`] pass it in.
-    pub fn from_state(state: &super::AppState, is_live: bool) -> Self {
+    /// `playback` comes from [`crate::subsystem::Playback::state`] and
+    /// `is_live` from [`crate::subsystem::Live::mode_state`] — the
+    /// URL-state module doesn't reach for either subsystem so the
+    /// dependency stays one-way.
+    pub fn from_state(
+        state: &super::AppState,
+        playback: &super::PlaybackState,
+        is_live: bool,
+    ) -> Self {
         let cam = &state.viz_state.camera;
         Self {
             mz: Some(state.viz_state.zoom),
-            tz: Some(state.playback_state.timeline_zoom),
+            tz: Some(playback.timeline_zoom),
             vm: Some(match state.viz_state.view_mode {
                 super::ViewMode::Flat2D => 0,
                 super::ViewMode::Globe3D => 1,

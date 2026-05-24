@@ -98,6 +98,7 @@ pub(crate) fn render_radar_sweep(
     state: &AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
     sweep_info: Option<(f32, f32)>,
     stale: bool,
 ) {
@@ -184,7 +185,7 @@ pub(crate) fn render_radar_sweep(
     // has sweep_animation enabled.
     if let Some((az, start_az)) = sweep_info {
         let is_live = live.radar_model.active;
-        let show_lines = state.effective_sweep_animation();
+        let show_lines = state.effective_sweep_animation(&playback.state);
 
         let (start_line_color, data_edge_color, data_edge_width) = if stale {
             (
@@ -309,11 +310,13 @@ pub(crate) fn render_radar_sweep(
         // when sweep_animation is off so the user has spatial context
         // for which sectors are recent. Archive mode respects the
         // toggle (where it's purely an animation artifact).
-        if is_live || state.effective_sweep_animation() {
+        if is_live || state.effective_sweep_animation(&playback.state) {
             if stale {
                 draw_sweep_donut_stale(painter, center, radius);
             } else {
-                draw_sweep_donut(painter, center, radius, az, start_az, state, timeline, live);
+                draw_sweep_donut(
+                    painter, center, radius, az, start_az, state, timeline, live, playback,
+                );
             }
         }
     }
@@ -421,6 +424,7 @@ fn draw_sweep_donut(
     state: &AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
 ) {
     let donut_inner = radius + 4.0;
     let donut_outer = radius + 10.0;
@@ -537,7 +541,7 @@ fn draw_sweep_donut(
         });
     } else {
         // Cached playback
-        let playback_ts = state.playback_state.playback_position();
+        let playback_ts = playback.state.playback_position();
         let displayed_elev = state
             .viz_state
             .displayed

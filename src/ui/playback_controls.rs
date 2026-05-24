@@ -13,6 +13,7 @@ pub(super) fn render_datetime_picker_popup(
     ui: &mut egui::Ui,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
 ) {
     if !state.datetime_picker.open {
         return;
@@ -109,18 +110,18 @@ pub(super) fn render_datetime_picker_popup(
                             if ui.button("Jump").clicked() || enter_pressed {
                                 if let Some(ts) = valid_ts {
                                     // Update playback position
-                                    state.playback_state.set_playback_position(ts);
+                                    playback.state.set_playback_position(ts);
 
                                     // Left-align timeline view on new position
                                     // Place the jumped-to position at ~5% from the left edge
-                                    let view_width_secs = state.playback_state.view_width_secs();
-                                    state.playback_state.timeline_view_start =
+                                    let view_width_secs = playback.state.view_width_secs();
+                                    playback.state.timeline_view_start =
                                         ts - view_width_secs * 0.05;
 
                                     // Exit live mode if active
                                     if live.mode_state.is_active() {
                                         live.mode_state.stop(LiveExitReason::UserSeeked);
-                                        state.playback_state.time_model.disable_realtime_lock();
+                                        playback.state.time_model.disable_realtime_lock();
                                     }
 
                                     state.datetime_picker.close();
@@ -145,6 +146,7 @@ pub(super) fn render_playback_controls(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
     acquisition: &mut Acquisition,
 ) {
     let use_local = state.use_local_time;
@@ -158,7 +160,7 @@ pub(super) fn render_playback_controls(
     // opens the datetime picker; in Basic it's a plain label so a casual
     // viewer can't accidentally jump weeks into the past.
     {
-        let selected_ts = state.playback_state.playback_position();
+        let selected_ts = playback.state.playback_position();
         let tz_suffix = if use_local { "" } else { " Z" };
         let text = RichText::new(format!(
             "{}{}",
@@ -188,18 +190,18 @@ pub(super) fn render_playback_controls(
     }
 
     // Datetime picker popup
-    render_datetime_picker_popup(ui, state, live);
+    render_datetime_picker_popup(ui, state, live, playback);
 
     // Live mode indicator badge (when active)
     if live.mode_state.is_active() {
-        render_live_indicator(ui, state, live);
+        render_live_indicator(ui, state, live, playback);
         ui.separator();
     }
     // Live entry consolidated into the top-bar mode pill — clicking the
     // pill opens the Go Live / Stop streaming menu.
 
     // Play/Stop button — disabled in Idle (no data to play).
-    let play_text = if state.playback_state.playing {
+    let play_text = if playback.state.playing {
         egui_phosphor::regular::STOP
     } else {
         egui_phosphor::regular::PLAY
@@ -212,26 +214,26 @@ pub(super) fn render_playback_controls(
         )
         .clicked()
     {
-        if state.playback_state.playing {
+        if playback.state.playing {
             // Stop - also exits live mode if active
             if live.mode_state.is_active() {
                 live.mode_state.stop(LiveExitReason::UserStopped);
-                state.playback_state.time_model.disable_realtime_lock();
+                playback.state.time_model.disable_realtime_lock();
                 state.status_message = live
                     .mode_state
                     .last_exit_reason
                     .map(|r| r.message().to_string())
                     .unwrap_or_default();
             }
-            state.playback_state.playing = false;
+            playback.state.playing = false;
         } else {
             // Play
-            state.playback_state.playing = true;
+            playback.state.playing = true;
         }
     }
 
     // Jog: jump to end of next/previous matching sweep for current elevation
-    let current_pos = state.playback_state.playback_position();
+    let current_pos = playback.state.playback_position();
 
     // Step backward
     if ui
@@ -244,23 +246,20 @@ pub(super) fn render_playback_controls(
         // Exit live mode when jogging
         if live.mode_state.is_active() {
             live.mode_state.stop(LiveExitReason::UserJogged);
-            state.playback_state.time_model.disable_realtime_lock();
+            playback.state.time_model.disable_realtime_lock();
             state.status_message = live
                 .mode_state
                 .last_exit_reason
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
         }
-        match state.playback_state.playback_mode() {
+        match playback.state.playback_mode() {
             PlaybackMode::Macro => {
-                state.playback_state.step_macro_frame(-1);
+                playback.state.step_macro_frame(-1);
             }
             PlaybackMode::Micro => {
-                let fallback = current_pos
-                    - state
-                        .playback_state
-                        .speed
-                        .timeline_seconds_per_real_second();
+                let fallback =
+                    current_pos - playback.state.speed.timeline_seconds_per_real_second();
                 let new_pos = match &state.viz_state.elevation_selection {
                     crate::state::ElevationSelection::Fixed {
                         elevation_number, ..
@@ -273,7 +272,7 @@ pub(super) fn render_playback_controls(
                         .prev_any_sweep_end(current_pos)
                         .unwrap_or(fallback),
                 };
-                state.playback_state.set_playback_position(new_pos);
+                playback.state.set_playback_position(new_pos);
             }
         }
     }
@@ -295,23 +294,20 @@ pub(super) fn render_playback_controls(
         // Exit live mode when jogging
         if live.mode_state.is_active() {
             live.mode_state.stop(LiveExitReason::UserJogged);
-            state.playback_state.time_model.disable_realtime_lock();
+            playback.state.time_model.disable_realtime_lock();
             state.status_message = live
                 .mode_state
                 .last_exit_reason
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
         }
-        match state.playback_state.playback_mode() {
+        match playback.state.playback_mode() {
             PlaybackMode::Macro => {
-                state.playback_state.step_macro_frame(1);
+                playback.state.step_macro_frame(1);
             }
             PlaybackMode::Micro => {
-                let fallback = current_pos
-                    + state
-                        .playback_state
-                        .speed
-                        .timeline_seconds_per_real_second();
+                let fallback =
+                    current_pos + playback.state.speed.timeline_seconds_per_real_second();
                 let new_pos = match &state.viz_state.elevation_selection {
                     crate::state::ElevationSelection::Fixed {
                         elevation_number, ..
@@ -324,7 +320,7 @@ pub(super) fn render_playback_controls(
                         .next_any_sweep_end(current_pos)
                         .unwrap_or(fallback),
                 };
-                state.playback_state.set_playback_position(new_pos);
+                playback.state.set_playback_position(new_pos);
             }
         }
     }
@@ -344,29 +340,29 @@ pub(super) fn render_playback_controls(
         // Exit live mode if active
         if live.mode_state.is_active() {
             live.mode_state.stop(LiveExitReason::UserSeeked);
-            state.playback_state.time_model.disable_realtime_lock();
+            playback.state.time_model.disable_realtime_lock();
         }
 
         // Stop playback
-        state.playback_state.playing = false;
+        playback.state.playing = false;
 
         // Clear bounds so seek_to doesn't clamp
-        state.playback_state.time_model.clear_bounds();
-        state.playback_state.clear_selection();
+        playback.state.time_model.clear_bounds();
+        playback.state.clear_selection();
 
         // Jump playback position and center the view
-        state.playback_state.time_model.playback_position = now;
-        state.playback_state.center_view_on(now);
+        playback.state.time_model.playback_position = now;
+        playback.state.center_view_on(now);
     }
 
     ui.separator();
 
     // Speed selector (mode-aware: macro shows fps labels, micro shows timeline speed).
     // Disabled in Idle alongside the rest of the transport controls.
-    let mode = state.playback_state.playback_mode();
+    let mode = playback.state.playback_mode();
     let selected_label = match mode {
-        PlaybackMode::Macro => state.playback_state.speed.macro_label(),
-        PlaybackMode::Micro => state.playback_state.speed.label(),
+        PlaybackMode::Macro => playback.state.speed.macro_label(),
+        PlaybackMode::Micro => playback.state.speed.label(),
     };
     ui.add_enabled_ui(interactive, |ui| {
         egui::ComboBox::from_id_salt("speed_selector")
@@ -382,7 +378,7 @@ pub(super) fn render_playback_controls(
                         PlaybackMode::Macro => speed.macro_label(),
                         PlaybackMode::Micro => speed.label(),
                     };
-                    ui.selectable_value(&mut state.playback_state.speed, *speed, label);
+                    ui.selectable_value(&mut playback.state.speed, *speed, label);
                 }
             });
     });
@@ -390,16 +386,16 @@ pub(super) fn render_playback_controls(
     // Loop mode + clear-selection. Show the loop combo only in Advanced.
     // Always show the clear-selection X when bounds are set so a Basic
     // user landing on a `?selection=…` URL has a way to clear it.
-    if state.playback_state.time_model.playback_bounds.is_some() {
+    if playback.state.time_model.playback_bounds.is_some() {
         ui.separator();
         if advanced {
             egui::ComboBox::from_id_salt("loop_mode_selector")
-                .selected_text(state.playback_state.time_model.loop_mode.label())
+                .selected_text(playback.state.time_model.loop_mode.label())
                 .width(55.0)
                 .show_ui(ui, |ui| {
                     for mode in LoopMode::all() {
                         ui.selectable_value(
-                            &mut state.playback_state.time_model.loop_mode,
+                            &mut playback.state.time_model.loop_mode,
                             *mode,
                             mode.label(),
                         );
@@ -412,7 +408,7 @@ pub(super) fn render_playback_controls(
             .on_hover_text("Clear selection and playback bounds")
             .clicked()
         {
-            state.playback_state.clear_selection();
+            playback.state.clear_selection();
         }
     }
 
@@ -420,7 +416,7 @@ pub(super) fn render_playback_controls(
         ui.separator();
 
         // Download button
-        let has_selection = state.playback_state.selection_range().is_some();
+        let has_selection = playback.state.selection_range().is_some();
         let download_in_progress = state.download_selection_in_progress;
 
         if download_in_progress {
@@ -467,17 +463,22 @@ pub(super) fn render_playback_controls(
 
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        render_session_stats(ui, state, acquisition);
+        render_session_stats(ui, state, playback, acquisition);
     });
 }
 
 /// Render live mode indicator badge with pulsing dot.
-fn render_live_indicator(ui: &mut egui::Ui, state: &AppState, live: &crate::subsystem::Live) {
+fn render_live_indicator(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
+) {
     let phase = live.mode_state.phase;
     let pulse_alpha = live.mode_state.pulse_alpha();
 
     // Get current time for status text
-    let now = state.playback_state.playback_position();
+    let now = playback.state.playback_position();
 
     match phase {
         LivePhase::AcquiringLock => {
@@ -554,7 +555,12 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState, live: &crate::subs
 /// Render session statistics (right-aligned in the bottom bar).
 ///
 /// Layout (right-to-left): FPS | pipeline (clickable) | download | cache
-fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState, acquisition: &mut Acquisition) {
+fn render_session_stats(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    playback: &mut crate::subsystem::Playback,
+    acquisition: &mut Acquisition,
+) {
     let dark = state.is_dark;
 
     // FPS (rightmost) — read value before mutable borrow
@@ -577,7 +583,7 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState, acquisition: &m
         }
 
         // Pipeline status — clickable phase boxes open detail modal
-        render_pipeline_indicator(ui, state);
+        render_pipeline_indicator(ui, state, playback);
 
         // Download group: requests + transferred
         // Use service worker aggregate if available, otherwise fall back to channel stats
@@ -657,7 +663,11 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState, acquisition: &m
 /// Clicking any phase opens the detailed stats modal.
 /// The indicator stays visible for 1.5 s after the last phase completes
 /// so the user can see which stages ran.
-fn render_pipeline_indicator(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_pipeline_indicator(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    _playback: &mut crate::subsystem::Playback,
+) {
     let pipeline = &state.session_stats.pipeline;
     let progress = &state.download_progress;
     let dark = state.is_dark;

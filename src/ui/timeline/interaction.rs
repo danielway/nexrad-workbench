@@ -9,6 +9,7 @@ pub(super) fn handle_timeline_interaction(
     ui: &mut egui::Ui,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
     response: &egui::Response,
     full_rect: &Rect,
     view_start: f64,
@@ -19,10 +20,10 @@ pub(super) fn handle_timeline_interaction(
     if shift_held && response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
             let clicked_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
-            let current_pos = state.playback_state.playback_position();
-            state.playback_state.selection_start = Some(current_pos);
-            state.playback_state.selection_end = Some(clicked_ts);
-            state.playback_state.apply_selection_as_bounds();
+            let current_pos = playback.state.playback_position();
+            playback.state.selection_start = Some(current_pos);
+            playback.state.selection_end = Some(clicked_ts);
+            playback.state.apply_selection_as_bounds();
             let duration_mins = (clicked_ts - current_pos).abs() / 60.0;
             log::debug!("Shift+click range: {:.0} minutes", duration_mins);
         }
@@ -31,25 +32,25 @@ pub(super) fn handle_timeline_interaction(
     if shift_held && response.drag_started() {
         if let Some(pos) = response.interact_pointer_pos() {
             let drag_start_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
-            state.playback_state.selection_start = Some(drag_start_ts);
-            state.playback_state.selection_end = Some(drag_start_ts);
-            state.playback_state.selection_in_progress = true;
+            playback.state.selection_start = Some(drag_start_ts);
+            playback.state.selection_end = Some(drag_start_ts);
+            playback.state.selection_in_progress = true;
         }
     }
 
-    if shift_held && response.dragged() && state.playback_state.selection_in_progress {
+    if shift_held && response.dragged() && playback.state.selection_in_progress {
         if let Some(pos) = response.interact_pointer_pos() {
             let current_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
-            state.playback_state.selection_end = Some(current_ts);
+            playback.state.selection_end = Some(current_ts);
         }
     }
 
-    if response.drag_stopped() && state.playback_state.selection_in_progress {
-        state.playback_state.selection_in_progress = false;
-        if let Some((start, end)) = state.playback_state.selection_range() {
+    if response.drag_stopped() && playback.state.selection_in_progress {
+        playback.state.selection_in_progress = false;
+        if let Some((start, end)) = playback.state.selection_range() {
             let duration_mins = (end - start) / 60.0;
             log::debug!("Selected time range: {:.0} minutes", duration_mins);
-            state.playback_state.apply_selection_as_bounds();
+            playback.state.apply_selection_as_bounds();
         }
     }
 
@@ -57,7 +58,7 @@ pub(super) fn handle_timeline_interaction(
         if let Some(pos) = response.interact_pointer_pos() {
             if live.mode_state.is_active() {
                 live.mode_state.stop(LiveExitReason::UserSeeked);
-                state.playback_state.time_model.disable_realtime_lock();
+                playback.state.time_model.disable_realtime_lock();
                 state.status_message = live
                     .mode_state
                     .last_exit_reason
@@ -67,19 +68,19 @@ pub(super) fn handle_timeline_interaction(
 
             let clicked_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
 
-            state.playback_state.set_playback_position(clicked_ts);
-            state.playback_state.clear_selection();
+            playback.state.set_playback_position(clicked_ts);
+            playback.state.clear_selection();
 
-            if let Some(frame) = state.playback_state.timestamp_to_frame(clicked_ts as i64) {
-                state.playback_state.current_frame = frame;
+            if let Some(frame) = playback.state.timestamp_to_frame(clicked_ts as i64) {
+                playback.state.current_frame = frame;
             }
         }
     }
 
     // Drag to pan
-    if response.dragged() && !shift_held && !state.playback_state.selection_in_progress {
+    if response.dragged() && !shift_held && !playback.state.selection_in_progress {
         let delta_secs = -response.drag_delta().x as f64 / zoom;
-        state.playback_state.timeline_view_start += delta_secs;
+        playback.state.timeline_view_start += delta_secs;
     }
 
     // Scroll wheel zoom
@@ -87,17 +88,17 @@ pub(super) fn handle_timeline_interaction(
         let scroll_delta = ui.input(|i| i.raw_scroll_delta);
         if scroll_delta.y != 0.0 {
             let zoom_factor = 1.0 + scroll_delta.y as f64 * 0.002;
-            let old_zoom = state.playback_state.timeline_zoom;
+            let old_zoom = playback.state.timeline_zoom;
             let new_zoom = (old_zoom * zoom_factor).clamp(0.000001, 1000.0);
 
             if let Some(cursor_pos) = response.hover_pos() {
                 let cursor_ts = view_start + (cursor_pos.x - full_rect.left()) as f64 / old_zoom;
                 let new_view_start =
                     cursor_ts - (cursor_pos.x - full_rect.left()) as f64 / new_zoom;
-                state.playback_state.timeline_view_start = new_view_start;
+                playback.state.timeline_view_start = new_view_start;
             }
 
-            state.playback_state.timeline_zoom = new_zoom;
+            playback.state.timeline_zoom = new_zoom;
         }
     }
 }

@@ -155,10 +155,10 @@ impl WorkbenchApp {
         // For position download, we use a temporary wide window to determine which
         // date listings to fetch, then narrow to the exact scan below.
         let (sel_start, sel_end) = if is_position_download {
-            let pos = self.state.playback_state.playback_position();
+            let pos = self.playback.state.playback_position();
             (pos, pos)
         } else {
-            match self.state.playback_state.selection_range() {
+            match self.playback.state.selection_range() {
                 Some(range) => range,
                 None => {
                     log::warn!("Download selection requested but no valid selection");

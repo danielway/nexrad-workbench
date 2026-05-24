@@ -240,12 +240,13 @@ pub(super) fn render_timeline(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
 ) {
     let use_local = state.use_local_time;
     let available_width = ui.available_width() as f64;
-    state.playback_state.timeline_width_px = available_width;
+    playback.state.timeline_width_px = available_width;
 
-    let zoom = state.playback_state.timeline_zoom;
+    let zoom = playback.state.timeline_zoom;
     let detail_level = if zoom < 0.2 {
         DetailLevel::Solid
     } else if zoom < 1.0 {
@@ -329,7 +330,7 @@ pub(super) fn render_timeline(
         return;
     }
 
-    let view_start = state.playback_state.timeline_view_start;
+    let view_start = playback.state.timeline_view_start;
     let visible_secs = available_width / zoom;
     let view_end = view_start + visible_secs;
 
@@ -398,7 +399,7 @@ pub(super) fn render_timeline(
     // Previous border tracks the prior on-GPU sweep — snapshotted from
     // `displayed` at the moment a new sweep is uploaded, so it flips
     // atomically with `active_sweep`.
-    let prev_active_sweep = if state.effective_sweep_animation() {
+    let prev_active_sweep = if state.effective_sweep_animation(&playback.state) {
         state.viz_state.previous_displayed.as_ref().map(|d| {
             (
                 d.identity.scan_timestamp_secs(),
@@ -553,7 +554,7 @@ pub(super) fn render_timeline(
     );
 
     // Draw selection range (if user has selected a range via shift+drag)
-    if let Some((range_start, range_end)) = state.playback_state.selection_range() {
+    if let Some((range_start, range_end)) = playback.state.selection_range() {
         let start_x = ts_to_x(range_start);
         let end_x = ts_to_x(range_end);
 
@@ -596,13 +597,13 @@ pub(super) fn render_timeline(
     render_playback_cursor(
         &painter,
         &overlay_rect,
-        state.playback_state.playback_position(),
+        playback.state.playback_position(),
         view_start,
         zoom,
     );
 
     // Draw selection range labels (boundaries and duration)
-    if let Some((range_start, range_end)) = state.playback_state.selection_range() {
+    if let Some((range_start, range_end)) = playback.state.selection_range() {
         let start_x = ts_to_x(range_start);
         let end_x = ts_to_x(range_end);
 
@@ -669,10 +670,13 @@ pub(super) fn render_timeline(
                 detail_level,
                 use_local,
                 frame_now_secs,
+                playback,
             );
         }
     }
 
     // -- Interaction handling --
-    handle_timeline_interaction(ui, state, live, &response, &full_rect, view_start, zoom);
+    handle_timeline_interaction(
+        ui, state, live, playback, &response, &full_rect, view_start, zoom,
+    );
 }

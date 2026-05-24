@@ -112,9 +112,14 @@ impl UserPreferences {
     ///
     /// `mping_api_key` is sourced separately because the mPING state
     /// lives on the diagnostics subsystem, not on `AppState`.
-    pub fn from_app_state(state: &AppState, mping_api_key: Option<String>) -> Self {
+    /// `playback` comes from the Playback subsystem.
+    pub fn from_app_state(
+        state: &AppState,
+        playback: &super::PlaybackState,
+        mping_api_key: Option<String>,
+    ) -> Self {
         Self {
-            speed: state.playback_state.speed,
+            speed: playback.speed,
             elevation_auto: state.viz_state.elevation_selection.is_auto(),
             preferred_elevation_angle: state.viz_state.elevation_selection.angle(),
             layer_states: state.layer_state.geo.states,
@@ -140,8 +145,13 @@ impl UserPreferences {
     /// Apply loaded preferences to application state. Returns the saved
     /// `mping_api_key` (if any) so the caller can apply it to the
     /// diagnostics subsystem; `AppState` no longer owns mPING state.
-    pub fn apply_to(&self, state: &mut AppState) -> Option<String> {
-        state.playback_state.speed = self.speed;
+    /// `playback` is mutated to carry the persisted speed.
+    pub fn apply_to(
+        &self,
+        state: &mut AppState,
+        playback: &mut super::PlaybackState,
+    ) -> Option<String> {
+        playback.speed = self.speed;
         if self.elevation_auto {
             state.viz_state.elevation_selection = ElevationSelection::Latest;
         } else {

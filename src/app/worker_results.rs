@@ -84,8 +84,8 @@ impl WorkbenchApp {
                     // Set overall bounds from first to last
                     let start = ranges.first().unwrap().start;
                     let end = ranges.last().unwrap().end;
-                    self.state.playback_state.data_start_timestamp = Some(start as i64);
-                    self.state.playback_state.data_end_timestamp = Some(end as i64);
+                    self.playback.state.data_start_timestamp = Some(start as i64);
+                    self.playback.state.data_end_timestamp = Some(end as i64);
 
                     // Position playback at the end of the most recent range
                     let most_recent_end = ranges.last().unwrap().end;
@@ -94,13 +94,11 @@ impl WorkbenchApp {
                     // not when refreshing after a download.
                     if self.state.auto_position_on_timeline_load {
                         self.state.auto_position_on_timeline_load = false;
-                        let ts = self.state.playback_state.playback_position();
+                        let ts = self.playback.state.playback_position();
                         let in_any_range = ranges.iter().any(|r| r.contains(ts));
                         if !in_any_range {
-                            self.state
-                                .playback_state
-                                .set_playback_position(most_recent_end);
-                            self.state.playback_state.center_view_on(most_recent_end);
+                            self.playback.state.set_playback_position(most_recent_end);
+                            self.playback.state.center_view_on(most_recent_end);
                         }
                     }
 
@@ -517,7 +515,7 @@ impl WorkbenchApp {
                 );
             } else {
                 let now = js_sys::Date::now() / 1000.0;
-                self.state.playback_state.set_playback_position(now);
+                self.playback.state.set_playback_position(now);
             }
 
             log::debug!(
@@ -620,14 +618,14 @@ impl WorkbenchApp {
         );
         let current_target = state::playback_manager::resolve_active_sweep_target(
             &self.state.viz_state.site_id,
-            self.state.playback_state.playback_position(),
+            self.playback.state.playback_position(),
             &self.state.viz_state.elevation_selection,
             self.state.viz_state.product,
             &self.timeline.scans,
             MAX_SCAN_AGE_SECS,
         );
         let is_current_scan = current_target.as_ref() == Some(&result_identity);
-        if self.state.effective_sweep_animation() && !is_current_scan {
+        if self.state.effective_sweep_animation(&self.playback.state) && !is_current_scan {
             log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id);
             // Clear pending tracker so sync_prev_sweep_texture can load from cache
             if self.render.playback_manager.pending_prev_sweep_key() == Some(&result_sweep_id) {

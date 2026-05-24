@@ -180,6 +180,7 @@ impl EventModalState {
 pub fn render_event_modal(
     ctx: &egui::Context,
     state: &mut AppState,
+    playback: &crate::subsystem::Playback,
     modal_state: &mut EventModalState,
 ) {
     if !state.event_modal_open {
@@ -208,8 +209,8 @@ pub fn render_event_modal(
             }
         } else {
             // Creating new event — pre-fill from selection range
-            let (start, end) = state.playback_state.selection_range().unwrap_or_else(|| {
-                let pos = state.playback_state.playback_position();
+            let (start, end) = playback.state.selection_range().unwrap_or_else(|| {
+                let pos = playback.state.playback_position();
                 (pos - 1800.0, pos + 1800.0)
             });
             modal_state.init_from_selection(

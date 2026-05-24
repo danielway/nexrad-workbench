@@ -152,6 +152,10 @@ pub struct WorkbenchApp {
     /// derived from the archive listing.
     timeline: subsystem::Timeline,
 
+    /// Playback subsystem: cursor position, speed, mode, animation,
+    /// realtime lock.
+    playback: subsystem::Playback,
+
     /// URL state, preferences, and site change detection.
     persistence: nexrad::PersistenceManager,
 
@@ -234,8 +238,12 @@ impl WorkbenchApp {
 
         let state::AppStateBootstrap {
             mut state,
+            playback: bootstrapped_playback,
             mping_api_key: loaded_mping_api_key,
         } = AppState::bootstrap();
+        let mut playback = subsystem::Playback {
+            state: bootstrapped_playback,
+        };
 
         // Apply URL parameters (site, time, lat/lon)
         let url_params = state::url_state::parse_from_url();
@@ -273,7 +281,7 @@ impl WorkbenchApp {
             state.viz_state.zoom = mz;
         }
         if let Some(tz) = url_params.view.tz {
-            state.playback_state.timeline_zoom = tz;
+            playback.state.timeline_zoom = tz;
         }
         // Restore 3D view mode and camera parameters from URL
         {
@@ -342,11 +350,11 @@ impl WorkbenchApp {
             }
         }
         if let Some(time) = url_params.time {
-            state.playback_state.set_playback_position(time);
+            playback.state.set_playback_position(time);
             // Center view on the restored position. timeline_width_px may
             // still be the default 1000px since we haven't rendered yet, but
             // it will be accurate on subsequent centers.
-            state.playback_state.center_view_on(time);
+            playback.state.center_view_on(time);
         }
 
         // First-launch detection: if no site specified in the URL, check for a
@@ -382,8 +390,11 @@ impl WorkbenchApp {
             });
         }
 
-        let initial_prefs =
-            state::UserPreferences::from_app_state(&state, loaded_mping_api_key.clone());
+        let initial_prefs = state::UserPreferences::from_app_state(
+            &state,
+            &playback.state,
+            loaded_mping_api_key.clone(),
+        );
         let has_preferred_site = state.preferred_site.is_some();
 
         // Create decode worker pool (offloads heavy NEXRAD work to parallel
@@ -458,6 +469,7 @@ impl WorkbenchApp {
             acquisition,
             live: subsystem::Live::new(realtime_channel),
             timeline: subsystem::Timeline::default(),
+            playback,
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             modals: ui::ModalStates::new(has_preferred_site),
             diagnostics: {
@@ -531,6 +543,7 @@ impl WorkbenchApp {
     fn persist_url_state(&mut self) {
         self.persistence.persist_if_due(
             &self.state,
+            &self.playback.state,
             self.diagnostics.mping.api_key.clone(),
             self.live.mode_state.is_active(),
         );
@@ -613,14 +626,14 @@ impl eframe::App for WorkbenchApp {
         self.state.national_mosaic.poll_tick(
             ctx,
             self.state.layer_state.geo.national_mosaic
-                && crate::state::recency::data_is_live(&self.state),
+                && crate::state::recency::data_is_live(&self.playback.state),
         );
         // NWS alerts and mPING storm reports — polled if due.
         let diagnostics_inputs = subsystem::diagnostics::DiagnosticsInputs {
-            is_live: crate::state::recency::data_is_live(&self.state),
+            is_live: crate::state::recency::data_is_live(&self.playback.state),
             mping_layer_visible: self.state.layer_state.geo.mping,
             site_id: &self.state.viz_state.site_id,
-            playback_secs: self.state.playback_state.playback_position(),
+            playback_secs: self.playback.state.playback_position(),
         };
         self.diagnostics
             .tick(ctx, diagnostics_inputs, &mut self.state.errors);
@@ -637,7 +650,7 @@ impl eframe::App for WorkbenchApp {
         // Live::refresh captures a consistent `now` for every consumer.
         self.live.refresh(subsystem::live::LiveRefreshInputs {
             radar_timeline: &self.timeline.scans,
-            playback_state: &self.state.playback_state,
+            playback: &self.playback.state,
         });
         self.state.refresh_mobile_mode(ctx);
 
@@ -681,22 +694,42 @@ impl eframe::App for WorkbenchApp {
             }
 
             ui::render_mobile_top_bar(ctx, &mut self.state, &self.live, &mut self.diagnostics);
-            ui::render_mobile_chrome(ctx, &mut self.state, &self.timeline, &mut self.live);
+            ui::render_mobile_chrome(
+                ctx,
+                &mut self.state,
+                &self.timeline,
+                &mut self.live,
+                &mut self.playback,
+            );
         } else {
-            ui::render_top_bar(ctx, &mut self.state, &mut self.live, &mut self.diagnostics);
+            ui::render_top_bar(
+                ctx,
+                &mut self.state,
+                &mut self.live,
+                &mut self.playback,
+                &mut self.diagnostics,
+            );
             ui::render_bottom_panel(
                 ctx,
                 &mut self.state,
                 &self.timeline,
                 &mut self.live,
+                &mut self.playback,
                 &mut self.acquisition,
             );
-            ui::render_left_panel(ctx, &mut self.state, &self.timeline, &self.live);
+            ui::render_left_panel(
+                ctx,
+                &mut self.state,
+                &self.timeline,
+                &self.live,
+                &self.playback,
+            );
             ui::render_right_panel(
                 ctx,
                 &mut self.state,
                 &self.timeline,
                 &self.live,
+                &mut self.playback,
                 &mut self.diagnostics,
             );
         }
@@ -707,13 +740,20 @@ impl eframe::App for WorkbenchApp {
             &mut self.state,
             &self.timeline,
             &self.live,
+            &mut self.playback,
             &mut self.diagnostics,
             Some(&self.geo_layers),
             &self.gpu,
         );
 
         // Keyboard shortcuts (after canvas so shortcuts can reflect hover/focus).
-        ui::handle_shortcuts(ctx, &mut self.state, &mut self.live, &self.timeline);
+        ui::handle_shortcuts(
+            ctx,
+            &mut self.state,
+            &mut self.live,
+            &self.timeline,
+            &mut self.playback,
+        );
 
         // 21. RENDER (overlays): modals layered above the canvas.
         ui::render_site_modal(ctx, &mut self.state, &mut self.modals.site);
@@ -722,6 +762,7 @@ impl eframe::App for WorkbenchApp {
             &mut self.state,
             &self.timeline,
             &mut self.live,
+            &mut self.playback,
             &mut self.diagnostics,
         );
         ui::render_shortcuts_help(ctx, &mut self.state);
@@ -729,7 +770,7 @@ impl eframe::App for WorkbenchApp {
         ui::render_stats_modal(ctx, &mut self.state, &self.live);
         ui::render_vcp_forecast_modal(ctx, &mut self.state, &self.live);
         ui::render_network_log(ctx, &mut self.state);
-        ui::render_event_modal(ctx, &mut self.state, &mut self.modals.event);
+        ui::render_event_modal(ctx, &mut self.state, &self.playback, &mut self.modals.event);
         ui::render_alerts_modals(ctx, &mut self.state, &mut self.diagnostics);
         ui::render_mping_modal(ctx, &mut self.diagnostics, &mut self.modals.mping);
     }

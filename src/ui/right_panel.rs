@@ -10,6 +10,7 @@ pub fn render_right_panel(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
 ) {
     // Mobile layout never invokes this function; the visibility gate
@@ -28,20 +29,20 @@ pub fn render_right_panel(
                 ui.heading("Controls");
                 ui.separator();
 
-                render_product_section(ui, state, timeline, live);
+                render_product_section(ui, state, timeline, live, playback);
                 ui.add_space(5.0);
 
-                render_layers_section(ui, state, diagnostics);
+                render_layers_section(ui, state, diagnostics, playback);
 
                 if state.show_advanced() {
                     ui.add_space(5.0);
-                    render_rendering_section(ui, state);
+                    render_rendering_section(ui, state, playback);
                     ui.add_space(5.0);
                     render_volume_section(ui, state);
                     ui.add_space(5.0);
                     render_tools_section(ui, state);
                     ui.add_space(5.0);
-                    render_events_section(ui, state);
+                    render_events_section(ui, state, playback);
                     ui.add_space(5.0);
                     render_storage_section(ui, state);
                     ui.add_space(5.0);
@@ -68,6 +69,7 @@ pub(super) fn render_product_section(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
+    playback: &crate::subsystem::Playback,
 ) {
     egui::CollapsingHeader::new(RichText::new("Product").strong())
         .default_open(true)
@@ -120,6 +122,7 @@ pub(super) fn render_product_section(
             // Elevation list — shared derivation with the left panel so
             // both reflect the same scan/live-VCP source per frame.
             let entries = state.current_elevation_list(
+                &playback.state,
                 &timeline.scans,
                 live.mode_state.current_vcp_pattern.as_ref(),
             );
@@ -230,6 +233,7 @@ pub(super) fn render_layers_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    playback: &crate::subsystem::Playback,
 ) {
     let advanced = state.show_advanced();
     egui::CollapsingHeader::new(RichText::new("Layers").strong())
@@ -242,7 +246,7 @@ pub(super) fn render_layers_section(
             ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
             ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
             ui.checkbox(&mut state.layer_state.geo.cities, "Cities");
-            let live = crate::state::recency::data_is_live(state);
+            let live = crate::state::recency::data_is_live(&playback.state);
             let stale_tip = "Live overlays are disabled while viewing archive data \
                              (more than 15 minutes behind real-time). Return to live to re-enable.";
 
@@ -319,8 +323,12 @@ pub(super) fn render_layers_section(
         });
 }
 
-pub(super) fn render_rendering_section(ui: &mut egui::Ui, state: &mut AppState) {
-    let in_macro = state.playback_state.playback_mode() == crate::state::PlaybackMode::Macro;
+pub(super) fn render_rendering_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    playback: &crate::subsystem::Playback,
+) {
+    let in_macro = playback.state.playback_mode() == crate::state::PlaybackMode::Macro;
     egui::CollapsingHeader::new(RichText::new("Rendering").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -448,12 +456,16 @@ pub(super) fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-pub(super) fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_events_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    playback: &mut crate::subsystem::Playback,
+) {
     egui::CollapsingHeader::new(RichText::new("Events").strong())
         .default_open(true)
         .show(ui, |ui| {
             // Save current selection as event button
-            let has_selection = state.playback_state.selection_range().is_some();
+            let has_selection = playback.state.selection_range().is_some();
             let btn = ui
                 .add_enabled(
                     has_selection,
@@ -504,7 +516,7 @@ pub(super) fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
                                 .small_button(egui_phosphor::regular::NAVIGATION_ARROW)
                                 .clicked()
                             {
-                                navigate_to_event(state, event);
+                                navigate_to_event(state, playback, event);
                             }
                         });
                     });
@@ -556,7 +568,7 @@ pub(super) fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
                                         .small_button(egui_phosphor::regular::NAVIGATION_ARROW)
                                         .clicked()
                                     {
-                                        navigate_to_event(state, event);
+                                        navigate_to_event(state, playback, event);
                                     }
                                 },
                             );
@@ -573,7 +585,11 @@ pub(super) fn render_events_section(ui: &mut egui::Ui, state: &mut AppState) {
 }
 
 /// Navigate to a saved event: switch site if needed, set selection, center timeline.
-fn navigate_to_event(state: &mut AppState, event: &crate::state::SavedEvent) {
+fn navigate_to_event(
+    state: &mut AppState,
+    playback: &mut crate::subsystem::Playback,
+    event: &crate::state::SavedEvent,
+) {
     use crate::data::get_site;
 
     // Switch site if needed
@@ -591,12 +607,12 @@ fn navigate_to_event(state: &mut AppState, event: &crate::state::SavedEvent) {
     }
 
     // Set selection to event bounds
-    state.playback_state.selection_start = Some(event.start_time);
-    state.playback_state.selection_end = Some(event.end_time);
+    playback.state.selection_start = Some(event.start_time);
+    playback.state.selection_end = Some(event.end_time);
 
     // Center timeline on the event
     let mid = (event.start_time + event.end_time) / 2.0;
-    state.playback_state.center_view_on(mid);
+    playback.state.center_view_on(mid);
 }
 
 /// Format a timestamp for display in the events list.

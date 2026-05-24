@@ -52,8 +52,13 @@ type PressedFn = fn(&egui::InputState) -> bool;
 type EnabledFn = fn(&AppState) -> bool;
 
 /// Side-effect to apply when the shortcut fires.
-type HandlerFn =
-    fn(&mut AppState, &mut crate::subsystem::Live, &crate::subsystem::Timeline, &egui::Context);
+type HandlerFn = fn(
+    &mut AppState,
+    &mut crate::subsystem::Live,
+    &crate::subsystem::Timeline,
+    &mut crate::subsystem::Playback,
+    &egui::Context,
+);
 
 /// A one-shot keyboard shortcut definition.
 struct OneShotShortcut {
@@ -168,7 +173,9 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "2D top-down mode",
         pressed: |i| no_mods(i, egui::Key::Num1),
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _| state.viz_state.view_mode = ViewMode::Flat2D,
+        handler: |state, _live, _timeline, _playback, _| {
+            state.viz_state.view_mode = ViewMode::Flat2D
+        },
     },
     OneShotShortcut {
         section: SECTION_VIEW,
@@ -176,7 +183,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "3D site orbit mode",
         pressed: |i| no_mods(i, egui::Key::Num2),
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _| {
+        handler: |state, _live, _timeline, _playback, _| {
             state.viz_state.view_mode = ViewMode::Globe3D;
             state.viz_state.camera.switch_mode(CameraMode::SiteOrbit);
         },
@@ -187,7 +194,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "3D planet orbit mode",
         pressed: |i| no_mods(i, egui::Key::Num3),
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _| {
+        handler: |state, _live, _timeline, _playback, _| {
             state.viz_state.view_mode = ViewMode::Globe3D;
             state.viz_state.camera.switch_mode(CameraMode::PlanetOrbit);
         },
@@ -198,7 +205,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Free look mode",
         pressed: |i| no_mods(i, egui::Key::Num4),
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _| {
+        handler: |state, _live, _timeline, _playback, _| {
             state.viz_state.view_mode = ViewMode::Globe3D;
             state.viz_state.camera.switch_mode(CameraMode::FreeLook);
         },
@@ -209,7 +216,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Toggle last 2D / 3D mode",
         pressed: |i| no_mods(i, egui::Key::T),
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _| {
+        handler: |state, _live, _timeline, _playback, _| {
             state.viz_state.view_mode = match state.viz_state.view_mode {
                 ViewMode::Flat2D => ViewMode::Globe3D,
                 ViewMode::Globe3D => ViewMode::Flat2D,
@@ -239,7 +246,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Align North up (3D)",
         pressed: |i| no_mods(i, egui::Key::N),
         enabled: in_3d,
-        handler: |state, _live, _timeline, _| state.viz_state.camera.align_north(),
+        handler: |state, _live, _timeline, _playback, _| state.viz_state.camera.align_north(),
     },
     OneShotShortcut {
         section: SECTION_CAMERA,
@@ -247,7 +254,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Reset pivot to default (3D)",
         pressed: |i| no_mods(i, egui::Key::Home),
         enabled: in_3d,
-        handler: |state, _live, _timeline, _| state.viz_state.camera.reset_pivot(),
+        handler: |state, _live, _timeline, _playback, _| state.viz_state.camera.reset_pivot(),
     },
     // ---- General ----------------------------------------------------
     OneShotShortcut {
@@ -260,7 +267,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
                 || (i.key_pressed(egui::Key::Slash) && i.modifiers.shift)
         },
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _| {
+        handler: |state, _live, _timeline, _playback, _| {
             state.shortcuts_help_visible = !state.shortcuts_help_visible
         },
     },
@@ -270,7 +277,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Toggle Basic / Advanced controls",
         pressed: |i| i.key_pressed(egui::Key::A) && i.modifiers.command && i.modifiers.shift,
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _| state.advanced_mode = !state.advanced_mode,
+        handler: |state, _live, _timeline, _playback, _| state.advanced_mode = !state.advanced_mode,
     },
 ];
 
@@ -318,6 +325,7 @@ pub fn handle_shortcuts(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
+    playback: &mut crate::subsystem::Playback,
 ) {
     // No keyboard on mobile; skip shortcut processing entirely.
     if state.is_mobile {
@@ -335,39 +343,37 @@ pub fn handle_shortcuts(
             continue;
         }
         if ctx.input(sc.pressed) {
-            (sc.handler)(state, live, timeline, ctx);
+            (sc.handler)(state, live, timeline, playback, ctx);
         }
     }
 
     // Continuous WASD/arrows movement. Structurally different from
     // one-shot dispatch (integrates dt, multi-key combinations).
-    handle_continuous_movement(ctx, state);
+    handle_continuous_movement(ctx, state, playback);
 }
 
 // ---------------------------------------------------------------------------
 // Per-handler functions for the registry
 // ---------------------------------------------------------------------------
 
-fn current_pos(state: &AppState) -> f64 {
-    state.playback_state.playback_position()
+fn current_pos(_state: &AppState, playback: &crate::subsystem::Playback) -> f64 {
+    playback.state.playback_position()
 }
 
-fn jog_fallback(state: &AppState) -> f64 {
-    state
-        .playback_state
-        .speed
-        .timeline_seconds_per_real_second()
+fn jog_fallback(_state: &AppState, playback: &crate::subsystem::Playback) -> f64 {
+    playback.state.speed.timeline_seconds_per_real_second()
 }
 
 fn handle_step_backward(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
+    playback: &mut crate::subsystem::Playback,
     _: &egui::Context,
 ) {
-    exit_live_if_active(state, live, LiveExitReason::UserJogged);
-    let pos = current_pos(state);
-    let fallback = jog_fallback(state);
+    exit_live_if_active(state, live, playback, LiveExitReason::UserJogged);
+    let pos = current_pos(state, playback);
+    let fallback = jog_fallback(state, playback);
     let new_pos = match &state.viz_state.elevation_selection {
         crate::state::ElevationSelection::Fixed {
             elevation_number, ..
@@ -380,18 +386,19 @@ fn handle_step_backward(
             .prev_any_sweep_end(pos)
             .unwrap_or(pos - fallback),
     };
-    state.playback_state.set_playback_position(new_pos);
+    playback.state.set_playback_position(new_pos);
 }
 
 fn handle_step_forward(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
+    playback: &mut crate::subsystem::Playback,
     _: &egui::Context,
 ) {
-    exit_live_if_active(state, live, LiveExitReason::UserJogged);
-    let pos = current_pos(state);
-    let fallback = jog_fallback(state);
+    exit_live_if_active(state, live, playback, LiveExitReason::UserJogged);
+    let pos = current_pos(state, playback);
+    let fallback = jog_fallback(state, playback);
     let new_pos = match &state.viz_state.elevation_selection {
         crate::state::ElevationSelection::Fixed {
             elevation_number, ..
@@ -404,33 +411,35 @@ fn handle_step_forward(
             .next_any_sweep_end(pos)
             .unwrap_or(pos + fallback),
     };
-    state.playback_state.set_playback_position(new_pos);
+    playback.state.set_playback_position(new_pos);
 }
 
 fn handle_speed_down(
-    state: &mut AppState,
+    _state: &mut AppState,
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
+    playback: &mut crate::subsystem::Playback,
     _: &egui::Context,
 ) {
     let speeds = PlaybackSpeed::all();
-    if let Some(idx) = speeds.iter().position(|s| *s == state.playback_state.speed) {
+    if let Some(idx) = speeds.iter().position(|s| *s == playback.state.speed) {
         if idx > 0 {
-            state.playback_state.speed = speeds[idx - 1];
+            playback.state.speed = speeds[idx - 1];
         }
     }
 }
 
 fn handle_speed_up(
-    state: &mut AppState,
+    _state: &mut AppState,
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
+    playback: &mut crate::subsystem::Playback,
     _: &egui::Context,
 ) {
     let speeds = PlaybackSpeed::all();
-    if let Some(idx) = speeds.iter().position(|s| *s == state.playback_state.speed) {
+    if let Some(idx) = speeds.iter().position(|s| *s == playback.state.speed) {
         if idx + 1 < speeds.len() {
-            state.playback_state.speed = speeds[idx + 1];
+            playback.state.speed = speeds[idx + 1];
         }
     }
 }
@@ -439,12 +448,13 @@ fn handle_toggle_live(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
+    playback: &mut crate::subsystem::Playback,
     _: &egui::Context,
 ) {
     if live.mode_state.is_active() {
         live.mode_state.stop(LiveExitReason::UserStopped);
-        state.playback_state.time_model.disable_realtime_lock();
-        state.playback_state.playing = false;
+        playback.state.time_model.disable_realtime_lock();
+        playback.state.playing = false;
         state.status_message = live
             .mode_state
             .last_exit_reason
@@ -452,7 +462,7 @@ fn handle_toggle_live(
             .unwrap_or_default();
     } else {
         state.push_command(crate::state::AppCommand::StartLive);
-        state.playback_state.speed = PlaybackSpeed::Realtime;
+        playback.state.speed = PlaybackSpeed::Realtime;
     }
 }
 
@@ -460,6 +470,7 @@ fn handle_cycle_product(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
+    _playback: &mut crate::subsystem::Playback,
     _: &egui::Context,
 ) {
     let products = RadarProduct::all();
@@ -472,9 +483,11 @@ fn handle_cycle_elevation(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
+    playback: &mut crate::subsystem::Playback,
     _: &egui::Context,
 ) {
     let entries = state.current_elevation_list(
+        &playback.state,
         &timeline.scans,
         live.mode_state.current_vcp_pattern.as_ref(),
     );
@@ -502,6 +515,7 @@ fn handle_open_site(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
+    _playback: &mut crate::subsystem::Playback,
     _: &egui::Context,
 ) {
     state.site_modal_open = true;
@@ -511,6 +525,7 @@ fn handle_reset_camera(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
+    _playback: &mut crate::subsystem::Playback,
     _: &egui::Context,
 ) {
     if state.viz_state.view_mode == ViewMode::Flat2D {
@@ -525,6 +540,7 @@ fn handle_focus_site(
     state: &mut AppState,
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
+    _playback: &mut crate::subsystem::Playback,
     _: &egui::Context,
 ) {
     if state.viz_state.view_mode == ViewMode::Flat2D {
@@ -538,7 +554,11 @@ fn handle_focus_site(
 // Continuous (held-key) movement
 // ---------------------------------------------------------------------------
 
-fn handle_continuous_movement(ctx: &egui::Context, state: &mut AppState) {
+fn handle_continuous_movement(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    _playback: &mut crate::subsystem::Playback,
+) {
     let (forward, right_move, up_move, speed_mult, dt) = ctx.input(|i| {
         let dt = i.stable_dt.min(0.1); // cap to avoid jumps
         let w = i.key_down(egui::Key::W) as i32 as f32;
@@ -674,11 +694,12 @@ fn render_help_section(ui: &mut egui::Ui, section: &'static str) {
 fn exit_live_if_active(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
     reason: LiveExitReason,
 ) {
     if live.mode_state.is_active() {
         live.mode_state.stop(reason);
-        state.playback_state.time_model.disable_realtime_lock();
+        playback.state.time_model.disable_realtime_lock();
         state.status_message = live
             .mode_state
             .last_exit_reason

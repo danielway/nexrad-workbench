@@ -19,6 +19,7 @@ pub(super) fn render_timeline_tooltip(
     detail_level: DetailLevel,
     use_local: bool,
     now_secs: f64,
+    _playback: &crate::subsystem::Playback,
 ) {
     let live_state = &live.mode_state;
     let in_sweep_track = detail_level == DetailLevel::Sweeps && hover_pos.y > sweep_rect.top();

@@ -19,16 +19,16 @@ impl WorkbenchApp {
 
         // Initialize live mode state
         self.live.mode_state.start(now);
-        self.state.playback_state.set_playback_position(now);
-        self.state.playback_state.time_model.enable_realtime_lock();
-        self.state.playback_state.playing = true;
+        self.playback.state.set_playback_position(now);
+        self.playback.state.time_model.enable_realtime_lock();
+        self.playback.state.playing = true;
 
         // Ensure the timeline is zoomed in far enough to show individual sweeps
         // and chunks. Live mode enforces micro-mode as the widest allowed zoom.
         const LIVE_DEFAULT_ZOOM: f64 = 2.0;
-        if self.state.playback_state.timeline_zoom < LIVE_DEFAULT_ZOOM {
-            self.state.playback_state.timeline_zoom = LIVE_DEFAULT_ZOOM;
-            self.state.playback_state.center_view_on(now);
+        if self.playback.state.timeline_zoom < LIVE_DEFAULT_ZOOM {
+            self.playback.state.timeline_zoom = LIVE_DEFAULT_ZOOM;
+            self.playback.state.center_view_on(now);
         }
 
         self.state.status_message = "Connecting to live stream...".to_string();
@@ -71,7 +71,7 @@ impl WorkbenchApp {
     pub(crate) fn request_worker_render(&mut self) {
         let target = state::playback_manager::resolve_active_sweep_target(
             &self.state.viz_state.site_id,
-            self.state.playback_state.playback_position(),
+            self.playback.state.playback_position(),
             &self.state.viz_state.elevation_selection,
             self.state.viz_state.product,
             &self.timeline.scans,
@@ -108,7 +108,7 @@ impl WorkbenchApp {
         log::info!("Stopping live mode: {:?}", reason);
 
         self.live.mode_state.stop(reason);
-        self.state.playback_state.time_model.disable_realtime_lock();
+        self.playback.state.time_model.disable_realtime_lock();
         self.live.channel.stop();
 
         // Halt playback unless the user is actively scrubbing/jogging — those
@@ -119,7 +119,7 @@ impl WorkbenchApp {
             reason,
             state::LiveExitReason::UserSeeked | state::LiveExitReason::UserJogged
         ) {
-            self.state.playback_state.playing = false;
+            self.playback.state.playing = false;
         }
 
         self.state.status_message = self

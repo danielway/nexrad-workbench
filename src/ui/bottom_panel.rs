@@ -19,6 +19,7 @@ pub fn render_bottom_panel(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
     acquisition: &mut Acquisition,
 ) {
     let dt = ctx.input(|i| i.stable_dt);
@@ -27,69 +28,64 @@ pub fn render_bottom_panel(
     let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space) && !i.modifiers.any());
     let has_focus = ctx.memory(|m| m.focused().is_some());
     if space_pressed && !has_focus {
-        if state.playback_state.playing {
+        if playback.state.playing {
             // Stop - also exits live mode if active
             if live.mode_state.is_active() {
                 live.mode_state.stop(LiveExitReason::UserStopped);
-                state.playback_state.time_model.disable_realtime_lock();
+                playback.state.time_model.disable_realtime_lock();
                 state.status_message = live
                     .mode_state
                     .last_exit_reason
                     .map(|r| r.message().to_string())
                     .unwrap_or_default();
             }
-            state.playback_state.playing = false;
+            playback.state.playing = false;
         } else {
             // Only allow playback if zoom permits
-            if state.playback_state.is_playback_allowed() {
-                state.playback_state.playing = true;
+            if playback.state.is_playback_allowed() {
+                playback.state.playing = true;
             }
         }
     }
 
     // Advance playback position when playing
     // The time_model handles real-time lock mode internally
-    if state.playback_state.playing {
-        let mode = state.playback_state.playback_mode();
-        let was_macro = state.playback_state.macro_playback.was_macro;
+    if playback.state.playing {
+        let mode = playback.state.playback_mode();
+        let was_macro = playback.state.macro_playback.was_macro;
 
         // Detect mode transitions and auto-adjust speed
         if mode == PlaybackMode::Macro && !was_macro {
             // Entering macro: promote disallowed speeds to nearest macro speed
-            if state
-                .playback_state
-                .speed
-                .macro_frames_per_second()
-                .is_none()
-            {
-                state.playback_state.speed = PlaybackSpeed::Quarter;
+            if playback.state.speed.macro_frames_per_second().is_none() {
+                playback.state.speed = PlaybackSpeed::Quarter;
             }
             // Reset accumulator on transition
-            state.playback_state.macro_playback.frame_accumulator = 0.0;
+            playback.state.macro_playback.frame_accumulator = 0.0;
         } else if mode == PlaybackMode::Micro && was_macro {
             // Entering micro: map fps-based speed to a reasonable timeline speed.
             // Keep the same PlaybackSpeed variant — the labels just change.
         }
-        state.playback_state.macro_playback.was_macro = mode == PlaybackMode::Macro;
+        playback.state.macro_playback.was_macro = mode == PlaybackMode::Macro;
 
         match mode {
-            PlaybackMode::Micro => state.playback_state.advance(dt as f64),
-            PlaybackMode::Macro => state.playback_state.advance_macro(dt as f64),
+            PlaybackMode::Micro => playback.state.advance(dt as f64),
+            PlaybackMode::Macro => playback.state.advance_macro(dt as f64),
         }
 
         // In real-time streaming mode, keep the playhead on-screen. Pan/zoom is
         // otherwise free; this only fires when "now" would fall outside the
         // visible range, scrolling the view minimally to put it at the edge.
         if live.mode_state.is_active() {
-            let view_width = state.playback_state.view_width_secs();
+            let view_width = playback.state.view_width_secs();
             if view_width > 0.0 {
-                let now = state.playback_state.playback_position();
-                let view_start = state.playback_state.timeline_view_start;
+                let now = playback.state.playback_position();
+                let view_start = playback.state.timeline_view_start;
                 let view_end = view_start + view_width;
                 if now > view_end {
-                    state.playback_state.timeline_view_start = now - view_width;
+                    playback.state.timeline_view_start = now - view_width;
                 } else if now < view_start {
-                    state.playback_state.timeline_view_start = now;
+                    playback.state.timeline_view_start = now;
                 }
             }
         }
@@ -154,14 +150,14 @@ pub fn render_bottom_panel(
 
             ui.vertical(|ui| {
                 // Timeline row
-                render_timeline(ui, state, timeline, live);
+                render_timeline(ui, state, timeline, live, playback);
 
                 ui.add_space(2.0);
 
                 // Playback controls row
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    render_playback_controls(ui, state, timeline, live, acquisition);
+                    render_playback_controls(ui, state, timeline, live, playback, acquisition);
                 });
             });
         });

@@ -18,6 +18,7 @@ pub(crate) fn render_mobile_chrome(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
 ) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the home indicator reservation. Pad the action bar below the
@@ -29,7 +30,7 @@ pub(crate) fn render_mobile_chrome(
         .resizable(false)
         .exact_height(ACTION_BAR_HEIGHT + inset_bottom)
         .show(ctx, |ui| {
-            render_action_bar(ui, state, live);
+            render_action_bar(ui, state, live, playback);
         });
 
     // Scrubber — sits just above the action bar.
@@ -38,7 +39,7 @@ pub(crate) fn render_mobile_chrome(
         .exact_height(SCRUBBER_AREA_HEIGHT)
         .show(ctx, |ui| {
             ui.add_space(2.0);
-            super::scrubber::render_scrubber(ui, state, timeline, live);
+            super::scrubber::render_scrubber(ui, state, timeline, live, playback);
         });
 }
 
@@ -48,7 +49,12 @@ pub(crate) fn render_mobile_chrome(
 /// The slot height stays fixed at `ACTION_BAR_HEIGHT` even when the hosting
 /// panel is taller (iOS safe-area bottom inset); the extra space falls
 /// below the icons as blank panel padding clearing the home indicator.
-fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState, live: &mut crate::subsystem::Live) {
+fn render_action_bar(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+) {
     let total_w = ui.available_width();
     let slot_h = ACTION_BAR_HEIGHT;
     let slot_w = total_w / 4.0;
@@ -116,11 +122,11 @@ fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState, live: &mut crate::
         {
             if is_live {
                 live.mode_state.stop(LiveExitReason::UserStopped);
-                state.playback_state.time_model.disable_realtime_lock();
-                state.playback_state.playing = false;
+                playback.state.time_model.disable_realtime_lock();
+                playback.state.playing = false;
             } else {
                 state.push_command(crate::state::AppCommand::StartLive);
-                state.playback_state.speed = PlaybackSpeed::Realtime;
+                playback.state.speed = PlaybackSpeed::Realtime;
             }
         }
 
@@ -184,15 +190,19 @@ fn icon_slot(
 // Playback helpers (shared with the settings modal).
 // ---------------------------------------------------------------------------
 
-pub(super) fn toggle_play(state: &mut AppState, live: &mut crate::subsystem::Live) {
-    if state.playback_state.playing {
+pub(super) fn toggle_play(
+    _state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+) {
+    if playback.state.playing {
         if live.mode_state.is_active() {
             live.mode_state.stop(LiveExitReason::UserStopped);
-            state.playback_state.time_model.disable_realtime_lock();
+            playback.state.time_model.disable_realtime_lock();
         }
-        state.playback_state.playing = false;
-    } else if state.playback_state.is_playback_allowed() {
-        state.playback_state.playing = true;
+        playback.state.playing = false;
+    } else if playback.state.is_playback_allowed() {
+        playback.state.playing = true;
     }
 }
 
@@ -200,24 +210,22 @@ pub(super) fn step_frame(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
     direction: isize,
 ) {
     use crate::state::PlaybackMode;
 
-    let current_pos = state.playback_state.playback_position();
+    let current_pos = playback.state.playback_position();
     if live.mode_state.is_active() {
         live.mode_state.stop(LiveExitReason::UserJogged);
-        state.playback_state.time_model.disable_realtime_lock();
+        playback.state.time_model.disable_realtime_lock();
     }
-    match state.playback_state.playback_mode() {
+    match playback.state.playback_mode() {
         PlaybackMode::Macro => {
-            state.playback_state.step_macro_frame(direction);
+            playback.state.step_macro_frame(direction);
         }
         PlaybackMode::Micro => {
-            let step = state
-                .playback_state
-                .speed
-                .timeline_seconds_per_real_second();
+            let step = playback.state.speed.timeline_seconds_per_real_second();
             let fallback = current_pos + step * direction as f64;
             let new_pos = match &state.viz_state.elevation_selection {
                 crate::state::ElevationSelection::Fixed {
@@ -249,7 +257,7 @@ pub(super) fn step_frame(
                     }
                 }
             };
-            state.playback_state.set_playback_position(new_pos);
+            playback.state.set_playback_position(new_pos);
         }
     }
 }

@@ -138,6 +138,7 @@ pub(crate) fn handle_canvas_interaction(
     response: &egui::Response,
     rect: &Rect,
     state: &mut AppState,
+    playback: &crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
     projection: &MapProjection,
 ) {
@@ -163,7 +164,7 @@ pub(crate) fn handle_canvas_interaction(
                 apply_site_selection(state, site_id, lat, lon);
                 handled = true;
             }
-            if !handled && state.layer_state.geo.mping && data_is_live(state) {
+            if !handled && state.layer_state.geo.mping && data_is_live(&playback.state) {
                 if let Some(id) =
                     pick_mping_report_at(click_pos, projection, &diagnostics.mping.reports)
                 {
@@ -171,7 +172,7 @@ pub(crate) fn handle_canvas_interaction(
                     handled = true;
                 }
             }
-            if !handled && state.layer_state.geo.alerts && data_is_live(state) {
+            if !handled && state.layer_state.geo.alerts && data_is_live(&playback.state) {
                 let geo = projection.screen_to_geo(click_pos);
                 let bounds = projection.visible_bounds();
                 let mut best: Option<(u8, String)> = None;

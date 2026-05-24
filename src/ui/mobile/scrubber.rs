@@ -20,6 +20,7 @@ pub(super) fn render_scrubber(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
 ) {
     let available_w = ui.available_width();
     let (response, painter) = ui.allocate_painter(
@@ -85,7 +86,7 @@ pub(super) fn render_scrubber(
         );
     }
 
-    let playback_ts = state.playback_state.playback_position();
+    let playback_ts = playback.state.playback_position();
 
     // Filled "played" region from start to thumb.
     let thumb_x = ts_to_x(playback_ts);
@@ -134,14 +135,14 @@ pub(super) fn render_scrubber(
         // Exit live mode when the user seeks manually.
         if live.mode_state.is_active() {
             live.mode_state.stop(LiveExitReason::UserSeeked);
-            state.playback_state.time_model.disable_realtime_lock();
+            playback.state.time_model.disable_realtime_lock();
         }
         // Scrubbing pauses playback so the thumb stays where the user dropped
         // it — otherwise a running playback loop would immediately snap it
         // forward on the next frame.
         if response.dragged() {
-            state.playback_state.playing = false;
+            playback.state.playing = false;
         }
-        state.playback_state.set_playback_position(new_ts);
+        playback.state.set_playback_position(new_ts);
     }
 }
