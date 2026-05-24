@@ -191,6 +191,145 @@ static COUNTIES_SHP: &[u8] =
 static COUNTIES_DBF: &[u8] =
     include_bytes!("../assets/vectors/cb_2023_us_county_20m/cb_2023_us_county_20m.dbf");
 
+/// Apply parsed URL parameters to the freshly bootstrapped state +
+/// playback + chrome subsystems. Extracted from `WorkbenchApp::new`
+/// to keep the constructor focused on wiring up subsystems rather
+/// than restoring view state.
+fn apply_url_params(
+    url_params: &state::url_state::UrlParams,
+    state: &mut AppState,
+    playback: &mut subsystem::Playback,
+    chrome: &mut subsystem::Chrome,
+) {
+    state.dev_mode = url_params.dev;
+    if let Some(advanced) = url_params.ui_advanced {
+        state.advanced_mode = advanced;
+    }
+    if let Some(ref site) = url_params.site {
+        state.viz_state.site_id = site.to_uppercase();
+        if let Some(site_info) = data::sites::get_site(site) {
+            state.viz_state.center_lat = site_info.lat;
+            state.viz_state.center_lon = site_info.lon;
+            state
+                .viz_state
+                .camera
+                .center_on(site_info.lat, site_info.lon);
+        }
+        state.push_command(state::AppCommand::RefreshTimeline {
+            auto_position: false,
+        });
+    }
+    if let Some(lat) = url_params.lat {
+        state.viz_state.center_lat = lat;
+    }
+    if let Some(lon) = url_params.lon {
+        state.viz_state.center_lon = lon;
+    }
+    // Sync camera with potentially overridden lat/lon
+    state
+        .viz_state
+        .camera
+        .center_on(state.viz_state.center_lat, state.viz_state.center_lon);
+
+    // Apply view state (zoom levels) before centering so the zoom is correct
+    if let Some(mz) = url_params.view.mz {
+        state.viz_state.zoom = mz;
+    }
+    if let Some(tz) = url_params.view.tz {
+        playback.state.timeline_zoom = tz;
+    }
+
+    // Restore 3D view mode and camera parameters from URL
+    let v = &url_params.view;
+    if let Some(vm) = v.vm {
+        state.viz_state.view_mode = match vm {
+            0 => state::ViewMode::Flat2D,
+            _ => state::ViewMode::Globe3D,
+        };
+    }
+    if let Some(cm) = v.cm {
+        state.viz_state.camera.mode = match cm {
+            1 => state::CameraMode::SiteOrbit,
+            2 => state::CameraMode::FreeLook,
+            _ => state::CameraMode::PlanetOrbit,
+        };
+    }
+    if let Some(cd) = v.cd {
+        state.viz_state.camera.distance = cd;
+    }
+    if let Some(clat) = v.clat {
+        state.viz_state.camera.center_lat = clat;
+    }
+    if let Some(clon) = v.clon {
+        state.viz_state.camera.center_lon = clon;
+    }
+    if let Some(ct) = v.ct {
+        state.viz_state.camera.tilt = ct;
+    }
+    if let Some(cr) = v.cr {
+        state.viz_state.camera.rotation = cr;
+    }
+    if let Some(ob) = v.ob {
+        state.viz_state.camera.orbit_bearing = ob;
+    }
+    if let Some(oe) = v.oe {
+        state.viz_state.camera.orbit_elevation = oe;
+    }
+    if let Some(fp) = v.fp {
+        state.viz_state.camera.free_pos = glam::Vec3::new(fp[0], fp[1], fp[2]);
+    }
+    if let Some(fy) = v.fy {
+        state.viz_state.camera.free_yaw = fy;
+    }
+    if let Some(fpt) = v.fpt {
+        state.viz_state.camera.free_pitch = fpt;
+    }
+    if let Some(fs) = v.fs {
+        state.viz_state.camera.free_speed = fs;
+    }
+    if let Some(v3d) = v.v3d {
+        state.viz_state.volume_3d_enabled = v3d;
+    }
+    if let Some(vdc) = v.vdc {
+        state.viz_state.volume_density_cutoff = vdc;
+    }
+
+    // If the URL indicates real-time mode was active, re-enter live on boot.
+    // Queued behind the initial RefreshTimeline so the timeline populates first.
+    if url_params.view.rt == Some(true) {
+        state.push_command(state::AppCommand::StartLive);
+    }
+    if let Some(ref product_code) = url_params.product {
+        if let Some(product) = state::RadarProduct::from_short_code(product_code) {
+            state.viz_state.product = product;
+        }
+    }
+    if let Some(time) = url_params.time {
+        playback.state.set_playback_position(time);
+        // Center view on the restored position. timeline_width_px may
+        // still be the default 1000px since we haven't rendered yet, but
+        // it will be accurate on subsequent centers.
+        playback.state.center_view_on(time);
+    }
+
+    // First-launch detection: if no site specified in the URL, check for a
+    // saved preferred site. If one exists, apply it silently. Otherwise open
+    // the first-visit modal so the user can choose a site.
+    if url_params.site.is_none() {
+        if let Some(ref preferred) = state.preferred_site {
+            if let Some(site) = crate::data::get_site(preferred) {
+                state.viz_state.site_id = site.id.to_string();
+                state.viz_state.center_lat = site.lat;
+                state.viz_state.center_lon = site.lon;
+                state.viz_state.camera.center_on(site.lat, site.lon);
+                // Not a first visit — modal starts in SiteList mode if reopened
+            }
+        } else {
+            chrome.site_modal_open = true;
+        }
+    }
+}
+
 impl WorkbenchApp {
     /// Creates a new WorkbenchApp instance.
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -250,134 +389,8 @@ impl WorkbenchApp {
         };
         let mut chrome = subsystem::Chrome::new();
 
-        // Apply URL parameters (site, time, lat/lon)
         let url_params = state::url_state::parse_from_url();
-        state.dev_mode = url_params.dev;
-        if let Some(advanced) = url_params.ui_advanced {
-            state.advanced_mode = advanced;
-        }
-        if let Some(ref site) = url_params.site {
-            state.viz_state.site_id = site.to_uppercase();
-            if let Some(site_info) = data::sites::get_site(site) {
-                state.viz_state.center_lat = site_info.lat;
-                state.viz_state.center_lon = site_info.lon;
-                state
-                    .viz_state
-                    .camera
-                    .center_on(site_info.lat, site_info.lon);
-            }
-            state.push_command(state::AppCommand::RefreshTimeline {
-                auto_position: false,
-            });
-        }
-        if let Some(lat) = url_params.lat {
-            state.viz_state.center_lat = lat;
-        }
-        if let Some(lon) = url_params.lon {
-            state.viz_state.center_lon = lon;
-        }
-        // Sync camera with potentially overridden lat/lon
-        state
-            .viz_state
-            .camera
-            .center_on(state.viz_state.center_lat, state.viz_state.center_lon);
-        // Apply view state (zoom levels) before centering so the zoom is correct
-        if let Some(mz) = url_params.view.mz {
-            state.viz_state.zoom = mz;
-        }
-        if let Some(tz) = url_params.view.tz {
-            playback.state.timeline_zoom = tz;
-        }
-        // Restore 3D view mode and camera parameters from URL
-        {
-            let v = &url_params.view;
-            if let Some(vm) = v.vm {
-                state.viz_state.view_mode = match vm {
-                    0 => state::ViewMode::Flat2D,
-                    _ => state::ViewMode::Globe3D,
-                };
-            }
-            if let Some(cm) = v.cm {
-                state.viz_state.camera.mode = match cm {
-                    1 => state::CameraMode::SiteOrbit,
-                    2 => state::CameraMode::FreeLook,
-                    _ => state::CameraMode::PlanetOrbit,
-                };
-            }
-            if let Some(cd) = v.cd {
-                state.viz_state.camera.distance = cd;
-            }
-            if let Some(clat) = v.clat {
-                state.viz_state.camera.center_lat = clat;
-            }
-            if let Some(clon) = v.clon {
-                state.viz_state.camera.center_lon = clon;
-            }
-            if let Some(ct) = v.ct {
-                state.viz_state.camera.tilt = ct;
-            }
-            if let Some(cr) = v.cr {
-                state.viz_state.camera.rotation = cr;
-            }
-            if let Some(ob) = v.ob {
-                state.viz_state.camera.orbit_bearing = ob;
-            }
-            if let Some(oe) = v.oe {
-                state.viz_state.camera.orbit_elevation = oe;
-            }
-            if let Some(fp) = v.fp {
-                state.viz_state.camera.free_pos = glam::Vec3::new(fp[0], fp[1], fp[2]);
-            }
-            if let Some(fy) = v.fy {
-                state.viz_state.camera.free_yaw = fy;
-            }
-            if let Some(fpt) = v.fpt {
-                state.viz_state.camera.free_pitch = fpt;
-            }
-            if let Some(fs) = v.fs {
-                state.viz_state.camera.free_speed = fs;
-            }
-            if let Some(v3d) = v.v3d {
-                state.viz_state.volume_3d_enabled = v3d;
-            }
-            if let Some(vdc) = v.vdc {
-                state.viz_state.volume_density_cutoff = vdc;
-            }
-        }
-        // If the URL indicates real-time mode was active, re-enter live on boot.
-        // Queued behind the initial RefreshTimeline so the timeline populates first.
-        if url_params.view.rt == Some(true) {
-            state.push_command(state::AppCommand::StartLive);
-        }
-        if let Some(ref product_code) = url_params.product {
-            if let Some(product) = state::RadarProduct::from_short_code(product_code) {
-                state.viz_state.product = product;
-            }
-        }
-        if let Some(time) = url_params.time {
-            playback.state.set_playback_position(time);
-            // Center view on the restored position. timeline_width_px may
-            // still be the default 1000px since we haven't rendered yet, but
-            // it will be accurate on subsequent centers.
-            playback.state.center_view_on(time);
-        }
-
-        // First-launch detection: if no site specified in the URL, check for a
-        // saved preferred site. If one exists, apply it silently. Otherwise open
-        // the first-visit modal so the user can choose a site.
-        if url_params.site.is_none() {
-            if let Some(ref preferred) = state.preferred_site {
-                if let Some(site) = crate::data::get_site(preferred) {
-                    state.viz_state.site_id = site.id.to_string();
-                    state.viz_state.center_lat = site.lat;
-                    state.viz_state.center_lon = site.lon;
-                    state.viz_state.camera.center_on(site.lat, site.lon);
-                    // Not a first visit — modal starts in SiteList mode if reopened
-                }
-            } else {
-                chrome.site_modal_open = true;
-            }
-        }
+        apply_url_params(&url_params, &mut state, &mut playback, &mut chrome);
 
         let initial_site_id = state.viz_state.site_id.clone();
         let data_facade = DataFacade::new();
