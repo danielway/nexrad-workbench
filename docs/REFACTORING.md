@@ -180,6 +180,6 @@ Each catalog item is independently shippable as its own PR. Per-item verificatio
 | B2 | Type-enforced single-writer for `upsert_scan` | not started |
 | E1 | Canvas computation/rendering split | not started |
 | E2 | Overlay layering registry | not started |
-| E5 | Shortcuts registry | not started |
+| E5 | Shortcuts registry | done |
 | F1 | Camera state machine via enum | not started |
 | F2 | Projection trait | not started |
