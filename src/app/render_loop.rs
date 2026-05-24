@@ -97,7 +97,11 @@ impl WorkbenchApp {
             // the idle case cost only a few comparisons.
             let scan_count = self.state.radar_timeline.scans.len();
             let elev_sel = &self.state.viz_state.elevation_selection;
-            let active_ts = self.render.scan_key().map(|k| k.scan_start.as_secs_f64());
+            let active_ts = self
+                .render
+                .coordinator
+                .scan_key()
+                .map(|k| k.scan_start.as_secs_f64());
             let scrub_cache_hit = self.scrub_cache.last_playback_ts == Some(playback_ts)
                 && self.scrub_cache.last_scan_count == scan_count
                 && self.scrub_cache.last_active_scan_ts == active_ts
@@ -136,7 +140,7 @@ impl WorkbenchApp {
 
                 match scrub_action {
                     Some((scan_ts, elev_nums, elev_list)) => {
-                        if self.render.has_worker() {
+                        if self.render.coordinator.has_worker() {
                             let scan_key = data::ScanKey::from_secs_f64(
                                 &self.state.viz_state.site_id,
                                 scan_ts,
@@ -152,10 +156,13 @@ impl WorkbenchApp {
                                     .viz_state
                                     .elevation_selection
                                     .resolve_for_vcp(&elev_list);
-                                self.render.force_fresh_render();
+                                self.render.coordinator.force_fresh_render();
                                 // Active scan moved — refresh the cache snapshot.
-                                self.scrub_cache.last_active_scan_ts =
-                                    self.render.scan_key().map(|k| k.scan_start.as_secs_f64());
+                                self.scrub_cache.last_active_scan_ts = self
+                                    .render
+                                    .coordinator
+                                    .scan_key()
+                                    .map(|k| k.scan_start.as_secs_f64());
                             }
                             self.request_worker_render();
                             if self.state.viz_state.volume_3d_enabled {
@@ -177,7 +184,7 @@ impl WorkbenchApp {
         // is ready when the boundary is crossed, reducing perceived stutter.
         // Skip in macro mode — frame jumps are instant and the frame list handles sequencing.
         if self.state.playback_state.playing
-            && self.render.has_worker()
+            && self.render.coordinator.has_worker()
             && self.state.playback_state.playback_mode() == crate::state::PlaybackMode::Micro
         {
             let playback_ts = self.state.playback_state.playback_position();
@@ -216,7 +223,8 @@ impl WorkbenchApp {
                                 .as_ref()
                                 .map(|d| d.identity.elevation_number);
                             if cur_elev != Some(next_en) {
-                                if let Some(scan_key) = self.render.scan_key().cloned() {
+                                if let Some(scan_key) = self.render.coordinator.scan_key().cloned()
+                                {
                                     let product =
                                         self.state.viz_state.product.to_worker_string().to_string();
                                     let prefetch_identity = SweepIdentity::new(
@@ -229,8 +237,10 @@ impl WorkbenchApp {
                                         next_en,
                                         time_to_end,
                                     );
-                                    self.render.set_last_render(prefetch_identity);
-                                    self.render.render_direct(&scan_key, next_en, product);
+                                    self.render.coordinator.set_last_render(prefetch_identity);
+                                    self.render
+                                        .coordinator
+                                        .render_direct(&scan_key, next_en, product);
                                 }
                             }
                         }
@@ -343,7 +353,7 @@ impl WorkbenchApp {
         });
 
         let product = self.state.viz_state.product.to_worker_string().to_string();
-        let action = self.playback_manager.resolve_prev_sweep(
+        let action = self.render.playback_manager.resolve_prev_sweep(
             &prev_scan_key,
             prev_elev_num,
             current_gpu_prev_id.as_deref(),
@@ -359,7 +369,7 @@ impl WorkbenchApp {
                         r.clear_previous_data();
                     }
                 }
-                if let Some(cached) = self.playback_manager.get_cached_sweep(&cache_key) {
+                if let Some(cached) = self.render.playback_manager.get_cached_sweep(&cache_key) {
                     if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
                         if let Ok(mut r) = renderer.lock() {
                             r.update_previous_data(
@@ -393,6 +403,7 @@ impl WorkbenchApp {
                     }
                 }
                 self.render
+                    .coordinator
                     .render_direct(&scan_key, elevation_number, product);
             }
             PrevSweepAction::Clear => {
@@ -459,7 +470,7 @@ impl WorkbenchApp {
         // Detect elevation/product changes and trigger worker re-render.
         // If the user changes these settings and we have a current scan, we need
         // a new render from the worker.
-        if self.render.scan_key().is_some() && self.render.has_worker() {
+        if self.render.coordinator.scan_key().is_some() && self.render.coordinator.has_worker() {
             if self.state.viz_state.volume_3d_enabled
                 && self.state.viz_state.view_mode == state::ViewMode::Globe3D
             {

@@ -122,7 +122,6 @@ pub struct GpuResources {
     pub volume_ray: Option<std::sync::Arc<std::sync::Mutex<nexrad::VolumeRayRenderer>>>,
 }
 
-use state::playback_manager::PlaybackManager;
 use state::MAX_RECENT_NETWORK_REQUESTS;
 
 /// Main application state and logic.
@@ -136,8 +135,9 @@ pub struct WorkbenchApp {
     /// All GPU renderers and their GL context.
     gpu: GpuResources,
 
-    /// Render coordinator: owns the decode worker, scan key, elevations, and render dedup.
-    render: nexrad::RenderCoordinator,
+    /// Render subsystem: worker pool + scan/elevation tracking +
+    /// sweep-animation cache.
+    render: subsystem::Render,
 
     /// Acquisition subsystem: owns the download pipeline (channels, queue,
     /// archive index, data facade) and the per-operation tracking state
@@ -158,9 +158,6 @@ pub struct WorkbenchApp {
     /// (one owns an `Rc<RefCell<>>` shared with async callbacks) and so
     /// the transient input doesn't survive a reload.
     modals: ui::ModalStates,
-
-    /// Sweep cache and previous-sweep resolution for sweep animation.
-    playback_manager: PlaybackManager,
 
     /// Diagnostics subsystem: observability + peripheral telemetry overlays
     /// (currently NWS alerts; mPING / GPS / network monitor fold in next).
@@ -469,12 +466,11 @@ impl WorkbenchApp {
                 globe_radar: globe_radar_renderer,
                 volume_ray: volume_ray_renderer,
             },
-            render: nexrad::RenderCoordinator::new(decode_worker),
+            render: subsystem::Render::new(nexrad::RenderCoordinator::new(decode_worker)),
             acquisition,
             streaming: realtime_channel,
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             modals: ui::ModalStates::new(has_preferred_site),
-            playback_manager: PlaybackManager::new(),
             diagnostics: {
                 let mut diag = subsystem::Diagnostics::new();
                 // Apply the persisted mPING API key (loaded from prefs at

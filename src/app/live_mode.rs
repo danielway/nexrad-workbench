@@ -88,7 +88,8 @@ impl WorkbenchApp {
             return;
         };
 
-        if self.render.request_render_for(identity) && !self.state.session_stats.pipeline.processing
+        if self.render.coordinator.request_render_for(identity)
+            && !self.state.session_stats.pipeline.processing
         {
             self.state.session_stats.pipeline.processing = true;
         }
@@ -97,7 +98,7 @@ impl WorkbenchApp {
     /// Request volume render (all elevations for ray marching).
     pub(crate) fn request_worker_render_volume(&mut self) {
         let product = self.state.viz_state.product.to_worker_string().to_string();
-        self.render.request_volume_render(&product);
+        self.render.coordinator.request_volume_render(&product);
     }
 
     /// Stop live mode streaming.
@@ -243,7 +244,7 @@ impl WorkbenchApp {
                     timestamp,
                     is_last_in_sweep,
                 );
-                self.render.ingest_chunk(
+                self.render.coordinator.ingest_chunk(
                     data,
                     site_id,
                     timestamp,

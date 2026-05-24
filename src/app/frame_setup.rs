@@ -85,12 +85,12 @@ impl WorkbenchApp {
                     r.clear_data();
                 }
             }
-            self.playback_manager.clear_cache();
+            self.render.playback_manager.clear_cache();
             // `clear_for_site_change` is broader than `clear_active_scan`:
             // it also wipes `available_elevations` and the per-render
             // dedup cache. Pair it with the on-GPU `displayed` wipe so
             // the timeline/canvas don't keep highlighting the old site.
-            self.render.clear_for_site_change();
+            self.render.coordinator.clear_for_site_change();
             self.state.viz_state.displayed = None;
             self.state.viz_state.previous_displayed = None;
             self.state.shadow_scan_boundaries.clear();

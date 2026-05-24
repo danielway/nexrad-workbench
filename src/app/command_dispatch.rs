@@ -177,7 +177,7 @@ impl WorkbenchApp {
     }
 
     fn handle_retry_worker(&mut self, ctx: &egui::Context) {
-        match self.render.create_worker(ctx.clone()) {
+        match self.render.coordinator.create_worker(ctx.clone()) {
             Ok(()) => {
                 self.state.worker_init_error = None;
                 self.state.status_message = "Decode worker initialized".to_string();

@@ -270,7 +270,7 @@ Each initiative is multiple PRs; standard per-PR checks:
 
 | ID | Title | Status |
 |----|-------|--------|
-| S1 | Subsystem Decomposition | in progress (Acquisition + full Diagnostics extracted; Render/Timeline/Playback/Live/Chrome remain) |
+| S1 | Subsystem Decomposition | in progress (Acquisition + Diagnostics + Render extracted; Timeline/Playback/Live/Chrome remain) |
 | S2 | Unified Async / Effect Model | not started |
 | S3 | UI Layer Tree | not started |
 | S4 | Camera + Projection State Machine | not started |

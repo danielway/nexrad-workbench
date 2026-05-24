@@ -17,7 +17,7 @@ impl WorkbenchApp {
             self.handle_cache_load_outcome(result);
         }
 
-        for outcome in self.render.try_recv() {
+        for outcome in self.render.coordinator.try_recv() {
             match outcome {
                 nexrad::WorkerOutcome::Ingested(result) => {
                     self.handle_ingested_outcome(result);
@@ -123,7 +123,7 @@ impl WorkbenchApp {
         elevations: Vec<u8>,
         _displayed_ts: f64,
     ) {
-        self.render.set_scan(scan_key, elevations);
+        self.render.coordinator.set_scan(scan_key, elevations);
     }
 
     /// Like [`Self::set_active_scan`] but for the live chunk-by-chunk
@@ -134,14 +134,14 @@ impl WorkbenchApp {
         new_elevations: &[u8],
         _displayed_ts: f64,
     ) {
-        self.render.set_scan_key(scan_key);
-        self.render.add_elevations(new_elevations);
+        self.render.coordinator.set_scan_key(scan_key);
+        self.render.coordinator.add_elevations(new_elevations);
     }
 
     /// Clear the active scan. Used when no scan is in range, on site
     /// change, and on error paths.
     pub(crate) fn clear_active_scan(&mut self) {
-        self.render.clear_scan_key();
+        self.render.coordinator.clear_scan_key();
     }
 
     fn handle_ingested_outcome(&mut self, result: nexrad::IngestResult) {
@@ -196,7 +196,7 @@ impl WorkbenchApp {
         self.state.push_command(state::AppCommand::CheckEviction);
 
         // Force a fresh render
-        self.render.force_fresh_render();
+        self.render.coordinator.force_fresh_render();
 
         // Trigger render for the ingested scan
         self.request_worker_render();
@@ -266,7 +266,7 @@ impl WorkbenchApp {
 
         // Update scan key, growing elevation list, and displayed timestamp
         // through the single owner so they can never drift.
-        let had_elevations = !self.render.available_elevations().is_empty();
+        let had_elevations = !self.render.coordinator.available_elevations().is_empty();
         self.advance_active_scan_chunk(
             result.scan_key.clone(),
             &result.elevations_completed,
@@ -478,7 +478,7 @@ impl WorkbenchApp {
                         chunk_vol_index,
                     );
 
-                    self.render.render_live(target_elev, product);
+                    self.render.coordinator.render_live(target_elev, product);
                 }
             }
         }
@@ -489,7 +489,7 @@ impl WorkbenchApp {
                 "{}: {} new elevation(s) cached, refreshing timeline (total available: {:?})",
                 source,
                 result.elevations_completed.len(),
-                self.render.available_elevations(),
+                self.render.coordinator.available_elevations(),
             );
             self.state.push_command(state::AppCommand::RefreshTimeline {
                 auto_position: !is_live,
@@ -498,7 +498,7 @@ impl WorkbenchApp {
             if is_live {
                 self.state.status_message = format!(
                     "Live: {} elevation(s) cached",
-                    self.render.available_elevations().len()
+                    self.render.coordinator.available_elevations().len()
                 );
             }
         }
@@ -514,7 +514,7 @@ impl WorkbenchApp {
                 self.state.live_mode_state.handle_volume_complete(now);
                 self.state.status_message = format!(
                     "Live: volume complete ({} elevations)",
-                    self.render.available_elevations().len()
+                    self.render.coordinator.available_elevations().len()
                 );
             } else {
                 let now = js_sys::Date::now() / 1000.0;
@@ -524,7 +524,7 @@ impl WorkbenchApp {
             log::debug!(
                 "{}: volume complete — {} elevations, triggering render",
                 source,
-                self.render.available_elevations().len()
+                self.render.coordinator.available_elevations().len()
             );
             self.state.push_command(state::AppCommand::RefreshTimeline {
                 auto_position: !is_live,
@@ -532,19 +532,19 @@ impl WorkbenchApp {
             self.state.push_command(state::AppCommand::CheckEviction);
             self.state.session_stats.pipeline.mark_processing_done();
 
-            self.render.force_fresh_render();
+            self.render.coordinator.force_fresh_render();
             if !is_live {
                 self.request_worker_render();
                 if self.state.viz_state.volume_3d_enabled {
                     self.request_worker_render_volume();
                 }
             }
-        } else if !had_elevations && !self.render.available_elevations().is_empty() {
+        } else if !had_elevations && !self.render.coordinator.available_elevations().is_empty() {
             log::debug!(
                 "{}: first elevation available, triggering initial render",
                 source
             );
-            self.render.force_fresh_render();
+            self.render.coordinator.force_fresh_render();
             if !is_live {
                 self.request_worker_render();
                 if self.state.viz_state.volume_3d_enabled {
@@ -578,7 +578,7 @@ impl WorkbenchApp {
             result.context.elevation_number,
             &result.product,
         );
-        self.playback_manager.cache_sweep(
+        self.render.playback_manager.cache_sweep(
             result_sweep_id.clone(),
             CachedSweepData {
                 gate_values: result.gate_values.clone(),
@@ -631,8 +631,10 @@ impl WorkbenchApp {
         if self.state.effective_sweep_animation() && !is_current_scan {
             log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id);
             // Clear pending tracker so sync_prev_sweep_texture can load from cache
-            if self.playback_manager.pending_prev_sweep_key() == Some(&result_sweep_id) {
-                self.playback_manager.set_pending_prev_sweep_key(None);
+            if self.render.playback_manager.pending_prev_sweep_key() == Some(&result_sweep_id) {
+                self.render
+                    .playback_manager
+                    .set_pending_prev_sweep_key(None);
             }
         }
         let t_gpu = web_time::Instant::now();
@@ -954,8 +956,12 @@ impl WorkbenchApp {
         // Prefer the scan attributed to the failing worker request so the
         // right ghost is removed even after the user scrolled away and
         // the active scan key now points elsewhere.
-        let cleanup_ts = failed_scan_timestamp_secs
-            .or_else(|| self.render.scan_key().map(|k| k.scan_start.as_secs_f64()));
+        let cleanup_ts = failed_scan_timestamp_secs.or_else(|| {
+            self.render
+                .coordinator
+                .scan_key()
+                .map(|k| k.scan_start.as_secs_f64())
+        });
         if let Some(ts) = cleanup_ts {
             // The in_flight_scans queue is keyed by archive-derived i64
             // seconds; truncate the failure timestamp on this comparison

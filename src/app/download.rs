@@ -82,7 +82,7 @@ impl WorkbenchApp {
                     .unwrap_or_default();
                 self.set_active_scan(scan.key.clone(), elev_nums, scan_ts as f64);
 
-                self.render.force_fresh_render();
+                self.render.coordinator.force_fresh_render();
                 self.request_worker_render();
                 if self.state.viz_state.volume_3d_enabled {
                     self.request_worker_render_volume();
@@ -98,7 +98,7 @@ impl WorkbenchApp {
                 // Worker splits records, probes elevations, stores in IDB,
                 // then returns metadata. We render on the Ingested callback.
                 self.state.session_stats.pipeline.processing = true;
-                self.render.ingest(
+                self.render.coordinator.ingest(
                     scan.data.clone(),
                     scan.key.site.0.clone(),
                     scan.key.scan_start.as_secs_f64(),
