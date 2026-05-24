@@ -74,7 +74,7 @@ impl WorkbenchApp {
             self.state.playback_state.playback_position(),
             &self.state.viz_state.elevation_selection,
             self.state.viz_state.product,
-            &self.state.radar_timeline,
+            &self.timeline.scans,
             MAX_SCAN_AGE_SECS,
         );
 

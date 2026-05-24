@@ -17,6 +17,7 @@ use super::timeline::render_timeline;
 pub fn render_bottom_panel(
     ctx: &egui::Context,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     acquisition: &mut Acquisition,
 ) {
@@ -153,14 +154,14 @@ pub fn render_bottom_panel(
 
             ui.vertical(|ui| {
                 // Timeline row
-                render_timeline(ui, state, live);
+                render_timeline(ui, state, timeline, live);
 
                 ui.add_space(2.0);
 
                 // Playback controls row
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    render_playback_controls(ui, state, live, acquisition);
+                    render_playback_controls(ui, state, timeline, live, acquisition);
                 });
             });
         });

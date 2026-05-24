@@ -8,6 +8,7 @@ use eframe::egui::{self, RichText, ScrollArea};
 pub fn render_right_panel(
     ctx: &egui::Context,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     diagnostics: &mut crate::subsystem::Diagnostics,
 ) {
@@ -27,7 +28,7 @@ pub fn render_right_panel(
                 ui.heading("Controls");
                 ui.separator();
 
-                render_product_section(ui, state, live);
+                render_product_section(ui, state, timeline, live);
                 ui.add_space(5.0);
 
                 render_layers_section(ui, state, diagnostics);
@@ -65,6 +66,7 @@ fn render_developer_section(ui: &mut egui::Ui, state: &mut AppState) {
 pub(super) fn render_product_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
 ) {
     egui::CollapsingHeader::new(RichText::new("Product").strong())
@@ -117,8 +119,10 @@ pub(super) fn render_product_section(
 
             // Elevation list — shared derivation with the left panel so
             // both reflect the same scan/live-VCP source per frame.
-            let entries =
-                state.current_elevation_list(live.mode_state.current_vcp_pattern.as_ref());
+            let entries = state.current_elevation_list(
+                &timeline.scans,
+                live.mode_state.current_vcp_pattern.as_ref(),
+            );
             let list_enabled = !is_auto;
             let selected_product = state.viz_state.product.to_worker_string();
 

@@ -91,10 +91,12 @@ fn cached_cardinal_galleys(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_radar_sweep(
     painter: &Painter,
     projection: &MapProjection,
     state: &AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     sweep_info: Option<(f32, f32)>,
     stale: bool,
@@ -311,7 +313,7 @@ pub(crate) fn render_radar_sweep(
             if stale {
                 draw_sweep_donut_stale(painter, center, radius);
             } else {
-                draw_sweep_donut(painter, center, radius, az, start_az, state, live);
+                draw_sweep_donut(painter, center, radius, az, start_az, state, timeline, live);
             }
         }
     }
@@ -409,6 +411,7 @@ fn draw_sweep_donut_stale(painter: &Painter, center: Pos2, radius: f32) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_sweep_donut(
     painter: &Painter,
     center: Pos2,
@@ -416,6 +419,7 @@ fn draw_sweep_donut(
     sweep_az: f32,
     sweep_start: f32,
     state: &AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
 ) {
     let donut_inner = radius + 4.0;
@@ -543,8 +547,8 @@ fn draw_sweep_donut(
         // Look up current sweep from timeline. Display the VCP target
         // angle (the cut's identity) rather than the encoder's
         // measured average — see `Scan::display_angle`.
-        let current_sweep_info = state
-            .radar_timeline
+        let current_sweep_info = timeline
+            .scans
             .find_recent_scan(playback_ts, 15.0 * 60.0)
             .and_then(|scan| {
                 scan.sweeps

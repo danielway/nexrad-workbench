@@ -12,6 +12,7 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 pub(crate) fn render_mobile_settings_modal(
     ctx: &egui::Context,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     diagnostics: &mut crate::subsystem::Diagnostics,
 ) {
@@ -50,8 +51,8 @@ pub(crate) fn render_mobile_settings_modal(
                 .max_height(body_h)
                 .auto_shrink([false, false])
                 .show(ui, |ui| match state.mobile_settings_tab {
-                    MobileSettingsTab::Playback => render_playback_body(ui, state, live),
-                    MobileSettingsTab::Product => render_product_body(ui, state, live),
+                    MobileSettingsTab::Playback => render_playback_body(ui, state, timeline, live),
+                    MobileSettingsTab::Product => render_product_body(ui, state, timeline, live),
                     MobileSettingsTab::Layers => render_layers_body(ui, state, diagnostics),
                     MobileSettingsTab::More => render_more_body(ui, state),
                 });
@@ -126,6 +127,7 @@ fn render_tab_strip(ui: &mut egui::Ui, state: &mut AppState) {
 fn render_playback_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
 ) {
     ui.add_space(6.0);
@@ -179,7 +181,7 @@ fn render_playback_body(
             )
             .clicked()
         {
-            super::tabs::step_frame(state, live, -1);
+            super::tabs::step_frame(state, timeline, live, -1);
         }
         if ui
             .add_sized(
@@ -188,7 +190,7 @@ fn render_playback_body(
             )
             .clicked()
         {
-            super::tabs::step_frame(state, live, 1);
+            super::tabs::step_frame(state, timeline, live, 1);
         }
     });
 
@@ -250,9 +252,14 @@ fn render_playback_body(
     });
 }
 
-fn render_product_body(ui: &mut egui::Ui, state: &mut AppState, live: &crate::subsystem::Live) {
+fn render_product_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
+    live: &crate::subsystem::Live,
+) {
     ui.add_space(4.0);
-    super::super::right_panel::render_product_section(ui, state, live);
+    super::super::right_panel::render_product_section(ui, state, timeline, live);
 }
 
 fn render_layers_body(

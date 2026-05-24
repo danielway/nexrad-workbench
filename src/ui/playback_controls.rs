@@ -143,6 +143,7 @@ pub(super) fn render_datetime_picker_popup(
 pub(super) fn render_playback_controls(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     acquisition: &mut Acquisition,
 ) {
@@ -263,12 +264,12 @@ pub(super) fn render_playback_controls(
                 let new_pos = match &state.viz_state.elevation_selection {
                     crate::state::ElevationSelection::Fixed {
                         elevation_number, ..
-                    } => state
-                        .radar_timeline
+                    } => timeline
+                        .scans
                         .prev_matching_sweep_end_by_number(current_pos, *elevation_number)
                         .unwrap_or(fallback),
-                    crate::state::ElevationSelection::Latest => state
-                        .radar_timeline
+                    crate::state::ElevationSelection::Latest => timeline
+                        .scans
                         .prev_any_sweep_end(current_pos)
                         .unwrap_or(fallback),
                 };
@@ -314,12 +315,12 @@ pub(super) fn render_playback_controls(
                 let new_pos = match &state.viz_state.elevation_selection {
                     crate::state::ElevationSelection::Fixed {
                         elevation_number, ..
-                    } => state
-                        .radar_timeline
+                    } => timeline
+                        .scans
                         .next_matching_sweep_end_by_number(current_pos, *elevation_number)
                         .unwrap_or(fallback),
-                    crate::state::ElevationSelection::Latest => state
-                        .radar_timeline
+                    crate::state::ElevationSelection::Latest => timeline
+                        .scans
                         .next_any_sweep_end(current_pos)
                         .unwrap_or(fallback),
                 };

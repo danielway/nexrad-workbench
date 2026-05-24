@@ -238,6 +238,7 @@ pub(super) fn format_timestamp_full(ts: f64, use_local: bool) -> String {
 pub(super) fn render_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
 ) {
     let use_local = state.use_local_time;
@@ -365,14 +366,14 @@ pub(super) fn render_timeline(
     // model's historical_keys are i64 millis in a BTreeSet so the cost of
     // including all of them is negligible.
     let timeline_model =
-        crate::state::TimelineModel::build(live_anchor, state.radar_timeline.scans.iter());
+        crate::state::TimelineModel::build(live_anchor, timeline.scans.scans.iter());
 
     // -- Render shadow scan boundaries from archive index --
-    if !state.shadow_scan_boundaries.is_empty() {
+    if !timeline.shadow_scan_boundaries.is_empty() {
         render_shadow_boundaries(
             &painter,
             &scan_rect,
-            &state.shadow_scan_boundaries,
+            &timeline.shadow_scan_boundaries,
             &timeline_model,
             view_start,
             view_end,
@@ -385,7 +386,7 @@ pub(super) fn render_timeline(
     render_scan_track(
         &painter,
         &scan_rect,
-        &state.radar_timeline,
+        &timeline.scans,
         view_start,
         view_end,
         zoom,
@@ -411,7 +412,7 @@ pub(super) fn render_timeline(
         render_sweep_track(
             &painter,
             &sweep_rect,
-            &state.radar_timeline,
+            &timeline.scans,
             view_start,
             view_end,
             zoom,
@@ -424,7 +425,7 @@ pub(super) fn render_timeline(
             &painter,
             &scan_rect,
             &sweep_rect,
-            &state.radar_timeline,
+            &timeline.scans,
             view_start,
             view_end,
             zoom,
@@ -438,7 +439,7 @@ pub(super) fn render_timeline(
             &painter,
             &scan_rect,
             &state.download_progress,
-            &state.radar_timeline,
+            &timeline.scans,
             &timeline_model,
             view_start,
             view_end,
@@ -658,7 +659,7 @@ pub(super) fn render_timeline(
             let hover_ts = view_start + (hover_pos.x - full_rect.left()) as f64 / zoom;
             render_timeline_tooltip(
                 ui,
-                &state.radar_timeline,
+                &timeline.scans,
                 state,
                 live,
                 hover_ts,

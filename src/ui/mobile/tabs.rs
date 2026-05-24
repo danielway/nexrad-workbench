@@ -16,6 +16,7 @@ const SCRUBBER_AREA_HEIGHT: f32 = super::scrubber::SCRUBBER_HEIGHT + 4.0;
 pub(crate) fn render_mobile_chrome(
     ctx: &egui::Context,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
 ) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
@@ -37,7 +38,7 @@ pub(crate) fn render_mobile_chrome(
         .exact_height(SCRUBBER_AREA_HEIGHT)
         .show(ctx, |ui| {
             ui.add_space(2.0);
-            super::scrubber::render_scrubber(ui, state, live);
+            super::scrubber::render_scrubber(ui, state, timeline, live);
         });
 }
 
@@ -197,6 +198,7 @@ pub(super) fn toggle_play(state: &mut AppState, live: &mut crate::subsystem::Liv
 
 pub(super) fn step_frame(
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     direction: isize,
 ) {
@@ -222,26 +224,26 @@ pub(super) fn step_frame(
                     elevation_number, ..
                 } => {
                     if direction < 0 {
-                        state
-                            .radar_timeline
+                        timeline
+                            .scans
                             .prev_matching_sweep_end_by_number(current_pos, *elevation_number)
                             .unwrap_or(fallback)
                     } else {
-                        state
-                            .radar_timeline
+                        timeline
+                            .scans
                             .next_matching_sweep_end_by_number(current_pos, *elevation_number)
                             .unwrap_or(fallback)
                     }
                 }
                 crate::state::ElevationSelection::Latest => {
                     if direction < 0 {
-                        state
-                            .radar_timeline
+                        timeline
+                            .scans
                             .prev_any_sweep_end(current_pos)
                             .unwrap_or(fallback)
                     } else {
-                        state
-                            .radar_timeline
+                        timeline
+                            .scans
                             .next_any_sweep_end(current_pos)
                             .unwrap_or(fallback)
                     }

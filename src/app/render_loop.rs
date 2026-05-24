@@ -21,7 +21,7 @@ impl WorkbenchApp {
             let mp = &self.state.playback_state.macro_playback;
             let elev_sel = self.state.viz_state.elevation_selection.clone();
             let bounds = self.state.playback_state.time_model.playback_bounds;
-            let scan_count = self.state.radar_timeline.scans.len();
+            let scan_count = self.timeline.scans.scans.len();
 
             let elev_changed = mp.cached_elevation_selection != elev_sel;
             let dirty =
@@ -32,11 +32,11 @@ impl WorkbenchApp {
                     crate::state::ElevationSelection::Fixed {
                         elevation_number, ..
                     } => self
-                        .state
-                        .radar_timeline
+                        .timeline
+                        .scans
                         .matching_sweep_end_times_by_number(*elevation_number, bounds),
                     crate::state::ElevationSelection::Latest => {
-                        self.state.radar_timeline.all_sweep_end_times(bounds)
+                        self.timeline.scans.all_sweep_end_times(bounds)
                     }
                 };
                 self.state.playback_state.macro_playback.sweep_frames = frames;
@@ -95,7 +95,7 @@ impl WorkbenchApp {
             // decision has moved since last frame. The O(scans) search
             // below used to run every frame even while paused; this lets
             // the idle case cost only a few comparisons.
-            let scan_count = self.state.radar_timeline.scans.len();
+            let scan_count = self.timeline.scans.scans.len();
             let elev_sel = &self.state.viz_state.elevation_selection;
             let active_ts = self
                 .render
@@ -126,8 +126,8 @@ impl WorkbenchApp {
                 // job is just to keep `RenderCoordinator.current_scan_key`
                 // (and the elevation list / VCP-resolution) in sync.
                 let scrub_action = self
-                    .state
-                    .radar_timeline
+                    .timeline
+                    .scans
                     .find_recent_scan(playback_ts, MAX_SCAN_AGE_SECS)
                     .map(|scan| {
                         let scan_ts: f64 = scan.key_timestamp;
@@ -196,11 +196,7 @@ impl WorkbenchApp {
                 .timeline_seconds_per_real_second();
             let prefetch_lookahead = PREFETCH_LOOKAHEAD_SECS * speed;
 
-            if let Some(scan) = self
-                .state
-                .radar_timeline
-                .find_scan_at_timestamp(playback_ts)
-            {
+            if let Some(scan) = self.timeline.scans.find_scan_at_timestamp(playback_ts) {
                 if let Some((sweep_idx, sweep)) = scan.find_sweep_at_timestamp(playback_ts) {
                     let time_to_end = sweep.end_time - playback_ts;
                     if time_to_end > 0.0 && time_to_end < prefetch_lookahead {
@@ -208,8 +204,8 @@ impl WorkbenchApp {
                             Some(scan.sweeps[sweep_idx + 1].elevation_number)
                         } else {
                             let future_ts = playback_ts + prefetch_lookahead;
-                            self.state
-                                .radar_timeline
+                            self.timeline
+                                .scans
                                 .find_scan_at_timestamp(future_ts)
                                 .and_then(|next_scan| {
                                     next_scan.sweeps.first().map(|s| s.elevation_number)
@@ -296,14 +292,14 @@ impl WorkbenchApp {
             playback_ts_bits: playback_ts.to_bits(),
             displayed_elev,
             is_auto,
-            scan_count: self.state.radar_timeline.scans.len(),
+            scan_count: self.timeline.scans.scans.len(),
         };
         let prev_info = if self.state.render_cache.prev_sweep_cache_key.as_ref() == Some(&cache_key)
         {
             self.state.render_cache.prev_sweep_cache_value
         } else {
             let computed = PlaybackManager::find_prev_sweep(
-                &self.state.radar_timeline,
+                &self.timeline.scans,
                 playback_ts,
                 displayed_elev,
                 is_auto,

@@ -18,6 +18,7 @@ pub(super) const SCRUBBER_HEIGHT: f32 = 28.0;
 pub(super) fn render_scrubber(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
 ) {
     let available_w = ui.available_width();
@@ -50,7 +51,7 @@ pub(super) fn render_scrubber(
     // Find the time range to render. Prefer actual data range when it exists;
     // otherwise fall back to a 1-hour window centered on `now` so the track
     // isn't zero-width.
-    let (t_start, t_end) = match state.radar_timeline.overall_time_range() {
+    let (t_start, t_end) = match timeline.scans.overall_time_range() {
         Some((s, e)) if e > s => (s, e),
         _ => {
             let now = js_sys::Date::now() / 1000.0;
@@ -69,7 +70,7 @@ pub(super) fn render_scrubber(
     };
 
     // Faint ticks for each scan so the user sees where data exists.
-    for scan in &state.radar_timeline.scans {
+    for scan in &timeline.scans.scans {
         let scan_ts = scan.start_time;
         if scan_ts < t_start || scan_ts > t_end {
             continue;

@@ -144,9 +144,13 @@ pub struct WorkbenchApp {
     /// (queue/operation log/drawer state) that UI panels read.
     acquisition: subsystem::Acquisition,
 
-    /// Live subsystem: real-time streaming. Slated to absorb
-    /// `live_mode_state` + `live_radar_model` + `app_mode` in future PRs.
+    /// Live subsystem: streaming channel + mode state + per-frame
+    /// derived models (live radar model, top-level app mode).
     live: subsystem::Live,
+
+    /// Timeline subsystem: scan inventory + shadow scan boundaries
+    /// derived from the archive listing.
+    timeline: subsystem::Timeline,
 
     /// URL state, preferences, and site change detection.
     persistence: nexrad::PersistenceManager,
@@ -453,6 +457,7 @@ impl WorkbenchApp {
             render: subsystem::Render::new(nexrad::RenderCoordinator::new(decode_worker)),
             acquisition,
             live: subsystem::Live::new(realtime_channel),
+            timeline: subsystem::Timeline::default(),
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             modals: ui::ModalStates::new(has_preferred_site),
             diagnostics: {
@@ -631,7 +636,7 @@ impl eframe::App for WorkbenchApp {
         // 14-17. FRAME SNAPSHOT: materialize the per-frame state UI reads.
         // Live::refresh captures a consistent `now` for every consumer.
         self.live.refresh(subsystem::live::LiveRefreshInputs {
-            radar_timeline: &self.state.radar_timeline,
+            radar_timeline: &self.timeline.scans,
             playback_state: &self.state.playback_state,
         });
         self.state.refresh_mobile_mode(ctx);
@@ -676,18 +681,31 @@ impl eframe::App for WorkbenchApp {
             }
 
             ui::render_mobile_top_bar(ctx, &mut self.state, &self.live, &mut self.diagnostics);
-            ui::render_mobile_chrome(ctx, &mut self.state, &mut self.live);
+            ui::render_mobile_chrome(ctx, &mut self.state, &self.timeline, &mut self.live);
         } else {
             ui::render_top_bar(ctx, &mut self.state, &mut self.live, &mut self.diagnostics);
-            ui::render_bottom_panel(ctx, &mut self.state, &mut self.live, &mut self.acquisition);
-            ui::render_left_panel(ctx, &mut self.state, &self.live);
-            ui::render_right_panel(ctx, &mut self.state, &self.live, &mut self.diagnostics);
+            ui::render_bottom_panel(
+                ctx,
+                &mut self.state,
+                &self.timeline,
+                &mut self.live,
+                &mut self.acquisition,
+            );
+            ui::render_left_panel(ctx, &mut self.state, &self.timeline, &self.live);
+            ui::render_right_panel(
+                ctx,
+                &mut self.state,
+                &self.timeline,
+                &self.live,
+                &mut self.diagnostics,
+            );
         }
 
         // 20. RENDER (canvas): GPU-based radar rendering in the CentralPanel.
         ui::render_canvas_with_geo(
             ctx,
             &mut self.state,
+            &self.timeline,
             &self.live,
             &mut self.diagnostics,
             Some(&self.geo_layers),
@@ -695,13 +713,14 @@ impl eframe::App for WorkbenchApp {
         );
 
         // Keyboard shortcuts (after canvas so shortcuts can reflect hover/focus).
-        ui::handle_shortcuts(ctx, &mut self.state, &mut self.live);
+        ui::handle_shortcuts(ctx, &mut self.state, &mut self.live, &self.timeline);
 
         // 21. RENDER (overlays): modals layered above the canvas.
         ui::render_site_modal(ctx, &mut self.state, &mut self.modals.site);
         ui::render_mobile_settings_modal(
             ctx,
             &mut self.state,
+            &self.timeline,
             &mut self.live,
             &mut self.diagnostics,
         );

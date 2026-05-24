@@ -76,10 +76,10 @@ impl WorkbenchApp {
                 self.state.session_stats.cache_size_bytes = total_cache_size;
 
                 // Build timeline from metadata
-                self.state.radar_timeline = state::RadarTimeline::from_metadata(metadata);
+                self.timeline.scans = state::RadarTimeline::from_metadata(metadata);
 
                 // Get time ranges (may be non-contiguous)
-                let ranges = self.state.radar_timeline.time_ranges();
+                let ranges = self.timeline.scans.time_ranges();
                 if !ranges.is_empty() {
                     // Set overall bounds from first to last
                     let start = ranges.first().unwrap().start;
@@ -623,7 +623,7 @@ impl WorkbenchApp {
             self.state.playback_state.playback_position(),
             &self.state.viz_state.elevation_selection,
             self.state.viz_state.product,
-            &self.state.radar_timeline,
+            &self.timeline.scans,
             MAX_SCAN_AGE_SECS,
         );
         let is_current_scan = current_target.as_ref() == Some(&result_identity);
@@ -687,8 +687,8 @@ impl WorkbenchApp {
         // angle so labels read 0.5° rather than 0.44° (the encoder
         // average wobbles a few hundredths of a degree per spin).
         let display_angle = self
-            .state
-            .radar_timeline
+            .timeline
+            .scans
             .find_scan_at_timestamp(result.context.scan_key.scan_start.as_secs_f64())
             .and_then(|scan| scan.target_elevation_angle(result.context.elevation_number))
             .unwrap_or(result.mean_elevation);

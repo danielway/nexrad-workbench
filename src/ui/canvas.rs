@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     diagnostics: &mut crate::subsystem::Diagnostics,
     geo_layers: Option<&GeoLayerSet>,
@@ -162,8 +163,9 @@ pub fn render_canvas_with_geo(
                     crate::geo::GeoPass::Lines,
                 );
 
-                let sweep_info = compute_sweep_line_azimuth(state);
-                let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(state, live, sweep_info);
+                let sweep_info = compute_sweep_line_azimuth(state, timeline);
+                let (gpu_sweep, between_sweeps) =
+                    compute_gpu_sweep_state(state, timeline, live, sweep_info);
 
                 let chunk_boundary = live.radar_model.estimated_azimuth;
 
@@ -298,6 +300,7 @@ pub fn render_canvas_with_geo(
                     &painter,
                     &projection,
                     state,
+                    timeline,
                     live,
                     sweep_line_info,
                     sweep_stale,
@@ -480,6 +483,7 @@ pub(super) const AGE_RANGE_COLLAPSE_SECS: f64 = 300.0;
 
 fn compute_gpu_sweep_state(
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool) {
@@ -498,8 +502,8 @@ fn compute_gpu_sweep_state(
         Some((last_az, first_az))
     } else if state.effective_sweep_animation() {
         let playback_ts = state.playback_state.playback_position();
-        let sweep_bounds = state
-            .radar_timeline
+        let sweep_bounds = timeline
+            .scans
             .find_recent_scan(playback_ts, 15.0 * 60.0)
             .and_then(|scan| {
                 let displayed_elev = state
@@ -543,7 +547,10 @@ fn compute_gpu_sweep_state(
     (gpu_sweep, between_sweeps)
 }
 
-fn compute_sweep_line_azimuth(state: &AppState) -> Option<(f32, f32)> {
+fn compute_sweep_line_azimuth(
+    state: &AppState,
+    timeline: &crate::subsystem::Timeline,
+) -> Option<(f32, f32)> {
     if state
         .playback_state
         .speed
@@ -556,7 +563,7 @@ fn compute_sweep_line_azimuth(state: &AppState) -> Option<(f32, f32)> {
     let ts = state.playback_state.playback_position();
 
     // Try to find azimuth from persisted scan/sweep data first
-    if let Some(scan) = state.radar_timeline.find_scan_at_timestamp(ts) {
+    if let Some(scan) = timeline.scans.find_scan_at_timestamp(ts) {
         if let Some((_, sweep)) = scan.find_sweep_at_timestamp(ts) {
             let duration = sweep.end_time - sweep.start_time;
             if duration > 0.0 {

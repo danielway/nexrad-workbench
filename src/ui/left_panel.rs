@@ -26,7 +26,12 @@ struct RadarStateAtTimestamp<'a> {
     position: Option<crate::state::VcpPositionModel>,
 }
 
-pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState, live: &crate::subsystem::Live) {
+pub fn render_left_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
+    live: &crate::subsystem::Live,
+) {
     // Left panel is power-user instrumentation (VCP / azimuth / elevation
     // diagnostics). Mobile layout never invokes this function; the
     // visibility/Basic-mode gate below covers the desktop "hidden" cases.
@@ -41,7 +46,7 @@ pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState, live: &crate
         .max_width(400.0)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                render_radar_operations_section(ui, state, live);
+                render_radar_operations_section(ui, state, timeline, live);
             });
         });
 }
@@ -49,6 +54,7 @@ pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState, live: &crate
 fn render_radar_operations_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
 ) {
     // Header
@@ -56,7 +62,7 @@ fn render_radar_operations_section(
 
     ui.add_space(4.0);
 
-    let radar_state = query_radar_state_at_timestamp(state, live);
+    let radar_state = query_radar_state_at_timestamp(state, timeline, live);
 
     // Top-down and side views side-by-side
     let is_live = live.mode_state.is_active();
@@ -80,12 +86,13 @@ fn render_radar_operations_section(
 
 fn query_radar_state_at_timestamp<'a>(
     state: &'a AppState,
+    timeline: &'a crate::subsystem::Timeline,
     live: &'a crate::subsystem::Live,
 ) -> RadarStateAtTimestamp<'a> {
     let ts = state.playback_state.playback_position();
 
     // Find the scan at the current timestamp
-    let scan = state.radar_timeline.find_scan_at_timestamp(ts);
+    let scan = timeline.scans.find_scan_at_timestamp(ts);
 
     match scan {
         Some(scan) => {

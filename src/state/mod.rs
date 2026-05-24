@@ -122,9 +122,6 @@ pub struct AppState {
     /// Playback controls state
     pub playback_state: PlaybackState,
 
-    /// Radar timeline data (scans, sweeps, radials)
-    pub radar_timeline: RadarTimeline,
-
     /// Visualization state (canvas, zoom/pan, product selection)
     pub viz_state: VizState,
 
@@ -219,14 +216,6 @@ pub struct AppState {
 
     /// Event ID being edited (None = creating new event).
     pub event_modal_editing_id: Option<u64>,
-
-    /// Shadowed scan boundaries from the archive index.
-    ///
-    /// When a listing is fetched for a site/date, scan time boundaries are
-    /// derived from adjacent file timestamps and stored here. The timeline
-    /// renders these as subtle markers to show where scans exist before they
-    /// are actually downloaded.
-    pub shadow_scan_boundaries: Vec<crate::nexrad::ScanBoundary>,
 
     /// Aggregate network statistics from the service worker (all intercepted traffic).
     pub network_aggregate: crate::nexrad::NetworkAggregate,
@@ -418,8 +407,6 @@ impl AppState {
         let now = js_sys::Date::now() / 1000.0;
 
         // Start with empty timeline - will be populated from cache
-        let radar_timeline = RadarTimeline::default();
-
         // Set up playback state centered on "now"
         let playback_state = PlaybackState::new_at_time(now);
 
@@ -441,7 +428,6 @@ impl AppState {
 
         let mut state = Self {
             playback_state,
-            radar_timeline,
             status_message: "Ready".to_string(),
             session_stats: SessionStats::new(),
             storage_settings,
@@ -527,16 +513,17 @@ impl AppState {
     /// empty. Both panels share this so they can't disagree about
     /// what's available.
     ///
-    /// `live_vcp_pattern` is the current VCP from
-    /// [`crate::subsystem::Live::mode_state`]; the caller supplies it
-    /// rather than this method reaching for the Live subsystem so the
-    /// dependency stays one-way.
+    /// `timeline` is the scan inventory from
+    /// [`crate::subsystem::Timeline::scans`] and `live_vcp_pattern` is
+    /// the current VCP from [`crate::subsystem::Live::mode_state`].
+    /// Both are passed in so this method doesn't reach for subsystems.
     pub fn current_elevation_list(
         &self,
+        timeline: &RadarTimeline,
         live_vcp_pattern: Option<&crate::data::keys::ExtractedVcp>,
     ) -> Vec<ElevationListEntry> {
         let ts = self.playback_state.playback_position();
-        if let Some(scan) = self.radar_timeline.find_scan_at_timestamp(ts) {
+        if let Some(scan) = timeline.find_scan_at_timestamp(ts) {
             return playback_manager::build_elevation_list(scan);
         }
         if let Some(vcp) = live_vcp_pattern {

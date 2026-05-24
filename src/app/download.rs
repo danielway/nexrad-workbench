@@ -69,8 +69,8 @@ impl WorkbenchApp {
                 // scan key and elevation list through the single-owner
                 // helper.
                 let elev_nums: Vec<u8> = self
-                    .state
-                    .radar_timeline
+                    .timeline
+                    .scans
                     .find_recent_scan(scan_ts as f64, 1.0)
                     .map(|tl_scan| {
                         let mut nums: Vec<u8> =
@@ -189,7 +189,7 @@ impl WorkbenchApp {
 
                 // Rebuild shadow scan boundaries for the timeline
                 if site_id == self.state.viz_state.site_id {
-                    self.state.shadow_scan_boundaries = self
+                    self.timeline.shadow_scan_boundaries = self
                         .acquisition
                         .coordinator
                         .archive_index
