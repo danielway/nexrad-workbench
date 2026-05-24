@@ -6,6 +6,8 @@ NEXRAD Workbench is a mature WASM-based weather radar app where we have been doi
 
 This document catalogs **medium and large opportunities** to clean up tech debt and make future iteration easier. Each item is sized so you can pick by appetite and tackle one as its own focused project. Small polish items are omitted.
 
+> For the next-tier strategic plan that **subsumes most of the remaining items below** under four bigger structural initiatives (subsystem decomposition, async unification, UI layer tree, camera state machine), see [REFACTORING_STRATEGIC.md](REFACTORING_STRATEGIC.md).
+
 ## Cross-cutting theme: invariants in comments, not types
 
 A recurring pattern across the codebase: load-bearing rules are documented in prose, with runtime panics or silent breakage as the only enforcement. Several opportunities below reduce to moving an invariant from a comment into the type system.
