@@ -4,26 +4,34 @@
 //! from AWS. The public surface is [`RealtimeChannel`]; the actual polling
 //! loop and its helpers live in [`streaming`].
 //!
-//! ## Internal state machine
+//! ## Cross-thread coordination
 //!
-//! Streaming-loop output flows over a typed [`futures_channel::mpsc`]
-//! results channel (loop ⇒ UI). Two coordination fields still live on
-//! [`RealtimeState`] behind `Rc<RefCell<_>>` because the loop polls them
-//! synchronously inside `interruptible_sleep`:
+//! Two typed [`futures_channel::mpsc`] queues carry the bulk of the
+//! traffic between the UI thread and the async `streaming_loop`:
+//!
+//! - **results** (loop → UI): every [`RealtimeResult`] the loop produces.
+//! - **observations** (UI → loop): projector hints
+//!   ([`super::ProjectorObservation`]) the UI gathers from worker results
+//!   and forwards via [`RealtimeChannel::observe`].
+//!
+//! Both channel pairs are replaced on every `start()` so messages from a
+//! still-winding-down previous loop don't leak into the new session.
+//!
+//! Two fields still live on [`RealtimeState`] behind `Rc<RefCell<_>>`
+//! because the loop polls them synchronously inside `interruptible_sleep`
+//! every 250 ms:
 //!
 //! - `stop_requested`: set by `stop()`; the loop checks it on each iteration
 //!   and at every sleep break, exiting cleanly when set.
-//! - `pending_observations`: drained by the loop each iteration and applied
-//!   to the projector. New observations can be enqueued from the UI thread
-//!   via `observe()` without ordering constraints.
-//! - `filter_epoch`: bumped by `set_filter()` on every change. A sleeping
-//!   loop polls the epoch every ~250 ms (`interruptible_sleep`) and wakes
-//!   to re-target when it changes, so filter swaps don't have to wait for
+//! - `pending_filter` / `filter_epoch`: bumped by `set_filter()` on every
+//!   change. A sleeping loop polls the epoch every ~250 ms and wakes to
+//!   re-target when it changes, so filter swaps don't have to wait for
 //!   the current chunk to arrive.
 //!
-//! Migrating the remaining three fields to typed control channels is the
-//! second slice of S2; gating it on a real select-with-timeout primitive
-//! (the loop's `interruptible_sleep` would become a `select!`).
+//! Migrating these two to typed control channels is the next slice of S2;
+//! it requires a real select-with-timeout primitive (the loop's
+//! `interruptible_sleep` would become a `select!` over a control receiver
+//! and a sleep future).
 
 use super::download::NetworkStats;
 use super::streaming_filter::StreamingFilter;
@@ -167,25 +175,18 @@ pub enum RealtimeResult {
 ///
 /// Shared between the UI thread (via `RealtimeChannel`) and the async
 /// `streaming_loop`. Coordinates via the fields documented at the module
-/// top: `stop_requested`, `pending_observations`, `pending_filter` /
-/// `filter_epoch`. Streaming output flows over a separate typed channel
-/// (the loop's `results_tx`) so the UI no longer racially shares the
-/// produced-vs-consumed Vec.
+/// top: `stop_requested`, `pending_filter` / `filter_epoch`. Streaming
+/// output and queued projector observations flow over separate typed
+/// channels rather than through this struct.
 #[derive(Default)]
 pub(super) struct RealtimeState {
     pub(super) active: bool,
     pub(super) stop_requested: bool,
-    /// Projector observations queued from the main thread (worker ingest
-    /// results, etc.) for the streaming loop to drain and apply to its
-    /// `StreamingState`. See [`super::ProjectorObservation`] for the
-    /// vocabulary; adding new observation kinds is mechanical (one
-    /// enum variant + one drain match arm).
-    pub(super) pending_observations: Vec<super::ProjectorObservation>,
     /// Active filter on the chunk stream. Updated from the UI thread via
     /// `RealtimeChannel::set_filter`; the streaming loop snapshots this on
     /// each iteration and uses it to skip chunks that don't match.
     ///
-    /// Filter changes are not routed through `pending_observations`
+    /// Filter changes aren't routed through the observations channel
     /// because they have additional sleep-interruption semantics (see
     /// `filter_epoch` below) and a re-entry path in the loop that other
     /// observations don't need.
@@ -198,15 +199,23 @@ pub(super) struct RealtimeState {
 
 /// Channel for real-time NEXRAD streaming.
 ///
-/// `results` is a typed [`futures_channel::mpsc`] queue carrying
-/// loop-produced events to the UI; the channel pair is replaced on
-/// every [`start`](Self::start) so messages from a previously-running
-/// loop don't leak into a new session.
+/// Two typed [`futures_channel::mpsc`] queues carry messages across the
+/// thread boundary:
+/// - `results` (loop → UI): every [`RealtimeResult`] the loop produces.
+/// - `observations` (UI → loop): projector hints (collection-end times,
+///   availability lags) the UI gathers from worker results.
+///
+/// Both channel pairs are replaced on every [`start`](Self::start) so
+/// messages from a previously-running loop don't leak across sessions.
 pub struct RealtimeChannel {
     state: Rc<RefCell<RealtimeState>>,
     /// Results channel pair. Refilled by `start()`; reads via
     /// `try_recv` borrow the receiver mutably through the `RefCell`.
     results: RefCell<ResultsChannel>,
+    /// Observations channel pair. The sender is cloned out to the UI for
+    /// every [`observe`](Self::observe) call; the receiver is taken by
+    /// the streaming loop when `start()` is called.
+    observations: RefCell<ObservationsChannel>,
     stats: NetworkStats,
 }
 
@@ -222,6 +231,26 @@ impl ResultsChannel {
     }
 }
 
+struct ObservationsChannel {
+    tx: UnboundedSender<super::ProjectorObservation>,
+    /// `Option` so `start()` can `take()` the receiver and hand it to
+    /// the streaming loop; reset to `Some` on every fresh channel pair.
+    rx: Option<UnboundedReceiver<super::ProjectorObservation>>,
+}
+
+impl ObservationsChannel {
+    fn new() -> Self {
+        let (tx, rx) = unbounded();
+        Self { tx, rx: Some(rx) }
+    }
+}
+
+impl Default for ObservationsChannel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Default for RealtimeChannel {
     fn default() -> Self {
         Self::new()
@@ -233,6 +262,7 @@ impl RealtimeChannel {
         Self {
             state: Rc::new(RefCell::new(RealtimeState::default())),
             results: RefCell::new(ResultsChannel::new()),
+            observations: RefCell::new(ObservationsChannel::new()),
             stats: NetworkStats::new(),
         }
     }
@@ -241,6 +271,7 @@ impl RealtimeChannel {
         Self {
             state: Rc::new(RefCell::new(RealtimeState::default())),
             results: RefCell::new(ResultsChannel::new()),
+            observations: RefCell::new(ObservationsChannel::new()),
             stats,
         }
     }
@@ -256,18 +287,36 @@ impl RealtimeChannel {
             state.stop_requested = false;
         }
 
-        // Replace the channel pair on every start so any in-flight
+        // Replace both channel pairs on every start so any in-flight
         // sends from a still-winding-down previous loop hit a dropped
         // receiver and disappear, rather than leaking into the new
-        // session's result stream.
+        // session.
         *self.results.borrow_mut() = ResultsChannel::new();
+        *self.observations.borrow_mut() = ObservationsChannel::new();
         let results_tx = self.results.borrow().tx.clone();
+        // `take()` is safe because we just installed a fresh pair above —
+        // rx is always Some right after construction.
+        let observations_rx = self
+            .observations
+            .borrow_mut()
+            .rx
+            .take()
+            .expect("freshly-built ObservationsChannel always has rx");
 
         let state = self.state.clone();
         let stats = self.stats.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            streaming_loop(ctx, site_id, state, stats, facade, results_tx).await;
+            streaming_loop(
+                ctx,
+                site_id,
+                state,
+                stats,
+                facade,
+                results_tx,
+                observations_rx,
+            )
+            .await;
         });
     }
 
@@ -286,10 +335,9 @@ impl RealtimeChannel {
     /// a matter of extending [`super::ProjectorObservation`] and the
     /// drain dispatch — no new state field or new channel method needed.
     pub fn observe(&self, observation: super::ProjectorObservation) {
-        self.state
-            .borrow_mut()
-            .pending_observations
-            .push(observation);
+        // Drop the result silently; if the loop has finished and
+        // closed the receiver, late observations have no consumer.
+        let _ = self.observations.borrow().tx.unbounded_send(observation);
     }
 
     /// Push the latest radial collection time (Unix seconds) parsed from

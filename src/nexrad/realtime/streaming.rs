@@ -14,7 +14,7 @@ use crate::nexrad::download::NetworkStats;
 use crate::nexrad::streaming_filter::StreamingFilter;
 use crate::nexrad::streaming_state::StreamingState;
 use eframe::egui;
-use futures_channel::mpsc::UnboundedSender;
+use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::future::join_all;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -280,9 +280,11 @@ async fn run_mid_stream_backfill(
 /// dispatch shape — match on [`crate::nexrad::ProjectorObservation`] variant,
 /// call the matching projector method — is intentionally explicit so
 /// adding a new observation kind is just one new arm here.
-fn drain_pending_observations(state_cell: &Rc<RefCell<RealtimeState>>, iter: &mut StreamingState) {
-    let observations = std::mem::take(&mut state_cell.borrow_mut().pending_observations);
-    for obs in observations {
+fn drain_pending_observations(
+    observations_rx: &mut UnboundedReceiver<crate::nexrad::ProjectorObservation>,
+    iter: &mut StreamingState,
+) {
+    while let Ok(obs) = observations_rx.try_recv() {
         match obs {
             crate::nexrad::ProjectorObservation::CollectionEndSecs(secs) => {
                 let prior = iter.latest_chunk_collection_end_secs();
@@ -302,6 +304,7 @@ fn drain_pending_observations(state_cell: &Rc<RefCell<RealtimeState>>, iter: &mu
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn streaming_loop(
     ctx: egui::Context,
     site_id: String,
@@ -309,6 +312,7 @@ pub(super) async fn streaming_loop(
     stats: NetworkStats,
     facade: DataFacade,
     results_tx: UnboundedSender<RealtimeResult>,
+    mut observations_rx: UnboundedReceiver<crate::nexrad::ProjectorObservation>,
 ) {
     use nexrad_data::aws::realtime::{list_chunks_in_volume, ChunkType};
 
@@ -644,7 +648,7 @@ pub(super) async fn streaming_loop(
         // Ingest any volume header time + availability lag the worker
         // produced from the most recent chunk's radials so projections and
         // stats in this iteration see them.
-        drain_pending_observations(&state, &mut iter);
+        drain_pending_observations(&mut observations_rx, &mut iter);
 
         // Filter-change detection: if the user toggled to a new filter
         // (FilterChanged sleep wake or first iteration after a `set_filter`
