@@ -36,9 +36,10 @@ impl WorkbenchApp {
         // Push the current elevation filter into the channel before starting
         // so the streaming loop's init-time backfill targets the user's
         // selected elevation rather than a default.
-        self.streaming
+        self.live
+            .channel
             .sync_filter(&self.state.viz_state.elevation_selection);
-        self.streaming.start(
+        self.live.channel.start(
             ctx.clone(),
             site_id,
             self.acquisition.coordinator.facade().clone(),
@@ -108,7 +109,7 @@ impl WorkbenchApp {
 
         self.state.live_mode_state.stop(reason);
         self.state.playback_state.time_model.disable_realtime_lock();
-        self.streaming.stop();
+        self.live.channel.stop();
 
         // Halt playback unless the user is actively scrubbing/jogging — those
         // paths set the new position themselves. Without this, we leave

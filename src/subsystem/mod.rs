@@ -13,8 +13,10 @@
 
 pub mod acquisition;
 pub mod diagnostics;
+pub mod live;
 pub mod render;
 
 pub use acquisition::Acquisition;
 pub use diagnostics::Diagnostics;
+pub use live::Live;
 pub use render::Render;

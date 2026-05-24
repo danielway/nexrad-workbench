@@ -144,9 +144,9 @@ pub struct WorkbenchApp {
     /// (queue/operation log/drawer state) that UI panels read.
     acquisition: subsystem::Acquisition,
 
-    /// Live streaming channel: spawns the streaming loop, exposes the result
-    /// queue + observation setters + filter sync to the UI thread.
-    streaming: nexrad::RealtimeChannel,
+    /// Live subsystem: real-time streaming. Slated to absorb
+    /// `live_mode_state` + `live_radar_model` + `app_mode` in future PRs.
+    live: subsystem::Live,
 
     /// URL state, preferences, and site change detection.
     persistence: nexrad::PersistenceManager,
@@ -468,7 +468,7 @@ impl WorkbenchApp {
             },
             render: subsystem::Render::new(nexrad::RenderCoordinator::new(decode_worker)),
             acquisition,
-            streaming: realtime_channel,
+            live: subsystem::Live::new(realtime_channel),
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             modals: ui::ModalStates::new(has_preferred_site),
             diagnostics: {

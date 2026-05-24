@@ -246,17 +246,18 @@ impl WorkbenchApp {
         // each frame. The manager diffs internally so this is a no-op when
         // the selection hasn't changed; on a real change it bumps the
         // channel's filter epoch so any in-flight sleep wakes within ~250ms.
-        self.streaming
+        self.live
+            .channel
             .sync_filter(&self.state.viz_state.elevation_selection);
 
-        for result in self.streaming.poll() {
+        for result in self.live.channel.poll() {
             self.handle_realtime_result(result, ctx);
         }
 
         // Stop realtime channel if live mode was stopped by UI
-        if !self.state.live_mode_state.is_active() && self.streaming.is_active() {
+        if !self.state.live_mode_state.is_active() && self.live.channel.is_active() {
             log::debug!("Stopping realtime channel (live mode ended)");
-            self.streaming.stop();
+            self.live.channel.stop();
         }
 
         // The plan's per-chunk `projected_available_at_secs` is an absolute

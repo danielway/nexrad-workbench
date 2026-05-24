@@ -304,7 +304,8 @@ impl WorkbenchApp {
             // volume_start + small_offset, landing in the past once the
             // volume is past its first chunk.
             if let Some(chunk_max_secs) = result.chunk_max_time_secs {
-                self.streaming
+                self.live
+                    .channel
                     .record_chunk_collection_end_secs(chunk_max_secs);
             }
 
@@ -327,7 +328,7 @@ impl WorkbenchApp {
                     .map(|s3| s3 - chunk_max_secs)
                     .filter(|v| v.is_finite());
                 if let Some(lag) = lag_secs {
-                    self.streaming.record_availability_lag_secs(lag);
+                    self.live.channel.record_availability_lag_secs(lag);
                 }
                 // Back-fill onto the most recent arrival so the diagnostics
                 // modal can compute per-chunk collection-space intervals
