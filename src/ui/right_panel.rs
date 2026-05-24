@@ -268,7 +268,7 @@ pub(super) fn render_layers_section(
                 diagnostics.gps.coords = None;
                 diagnostics.gps.error = None;
                 crate::ui::start_geolocation(
-                    diagnostics.gps.results.clone(),
+                    diagnostics.gps.result_sender(),
                     gps_resp.ctx.clone(),
                 );
             } else if was_gps_on && !state.layer_state.geo.gps_location {

@@ -649,14 +649,7 @@ impl eframe::App for WorkbenchApp {
         // Drain GPS-overlay async results before panels render so the
         // "My Location" checkbox sees coords/error on the same frame the
         // geolocation callback fires.
-        let drained_gps: Vec<_> = self
-            .diagnostics
-            .gps
-            .results
-            .borrow_mut()
-            .drain(..)
-            .collect();
-        for r in drained_gps {
+        for r in self.diagnostics.gps.drain_results() {
             match r {
                 ui::LocationResult::Success(lat, lon) => {
                     self.diagnostics.gps.coords = Some((lat, lon));

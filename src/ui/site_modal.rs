@@ -5,13 +5,11 @@
 //! visit (no preferred site saved), shows welcome verbiage; on subsequent
 //! visits, shows a shorter "change site" heading instead.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use crate::data::{all_sites_sorted, get_site, nearest_site};
 use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 use crate::state::AppState;
 use eframe::egui::{self, Color32, RichText, Vec2};
+use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -47,21 +45,40 @@ pub struct SiteModalState {
     pub zip_input: String,
     /// Error message to display (from geolocation or zip lookup).
     pub error_message: Option<String>,
-    /// Shared queue for receiving async location results.
-    pub location_results: Rc<RefCell<Vec<LocationResult>>>,
+    /// Sender given to async callbacks. Clone freely.
+    location_tx: UnboundedSender<LocationResult>,
+    /// Receiver drained inside `render_site_modal` each frame.
+    location_rx: UnboundedReceiver<LocationResult>,
     /// Whether this is the first visit (no preferred site yet).
     pub is_first_visit: bool,
 }
 
+impl SiteModalState {
+    /// A clone-able sink for async callbacks (geolocation, zip lookup).
+    pub fn location_sender(&self) -> UnboundedSender<LocationResult> {
+        self.location_tx.clone()
+    }
+
+    /// Drain all location results that have arrived since the last call.
+    pub fn drain_location_results(&mut self) -> Vec<LocationResult> {
+        let mut out = Vec::new();
+        while let Ok(r) = self.location_rx.try_recv() {
+            out.push(r);
+        }
+        out
+    }
+}
+
 impl Default for SiteModalState {
     fn default() -> Self {
-        let location_results = Rc::new(RefCell::new(Vec::new()));
+        let (location_tx, location_rx) = futures_channel::mpsc::unbounded();
         Self {
             filter: String::new(),
             mode: SiteModalMode::Welcome,
             zip_input: String::new(),
             error_message: None,
-            location_results,
+            location_tx,
+            location_rx,
             is_first_visit: true,
         }
     }
@@ -90,7 +107,7 @@ pub fn trigger_geolocation(
     state.site_modal_open = true;
     modal_state.mode = SiteModalMode::Pending;
     modal_state.error_message = None;
-    start_geolocation(modal_state.location_results.clone(), ctx.clone());
+    start_geolocation(modal_state.location_sender(), ctx.clone());
 }
 
 /// Apply a site selection to app state: update viz, center camera, refresh timeline.
@@ -109,13 +126,18 @@ pub(super) fn apply_site_selection(state: &mut AppState, site_id: &str, lat: f64
 }
 
 /// Start browser geolocation lookup.
-pub(crate) fn start_geolocation(results: Rc<RefCell<Vec<LocationResult>>>, ctx: egui::Context) {
+///
+/// `results` is an unbounded mpsc sender that the success/error callbacks
+/// push their outcome into. The caller is responsible for draining the
+/// corresponding receiver each frame.
+pub(crate) fn start_geolocation(
+    results: futures_channel::mpsc::UnboundedSender<LocationResult>,
+    ctx: egui::Context,
+) {
     let window = match web_sys::window() {
         Some(w) => w,
         None => {
-            results
-                .borrow_mut()
-                .push(LocationResult::Error("No browser window".into()));
+            let _ = results.unbounded_send(LocationResult::Error("No browser window".into()));
             return;
         }
     };
@@ -124,9 +146,8 @@ pub(crate) fn start_geolocation(results: Rc<RefCell<Vec<LocationResult>>>, ctx: 
     let geolocation = match navigator.geolocation() {
         Ok(g) => g,
         Err(_) => {
-            results
-                .borrow_mut()
-                .push(LocationResult::Error("Geolocation not available".into()));
+            let _ =
+                results.unbounded_send(LocationResult::Error("Geolocation not available".into()));
             return;
         }
     };
@@ -143,20 +164,18 @@ pub(crate) fn start_geolocation(results: Rc<RefCell<Vec<LocationResult>>>, ctx: 
             .unwrap()
             .as_f64()
             .unwrap_or(0.0);
-        results_ok
-            .borrow_mut()
-            .push(LocationResult::Success(lat, lon));
+        let _ = results_ok.unbounded_send(LocationResult::Success(lat, lon));
         ctx_ok.request_repaint();
     });
 
-    let results_err = results.clone();
+    let results_err = results;
     let ctx_err = ctx;
     let error_cb = Closure::once(move |error: JsValue| {
         let msg = js_sys::Reflect::get(&error, &"message".into())
             .ok()
             .and_then(|v| v.as_string())
             .unwrap_or_else(|| "Location access denied".into());
-        results_err.borrow_mut().push(LocationResult::Error(msg));
+        let _ = results_err.unbounded_send(LocationResult::Error(msg));
         ctx_err.request_repaint();
     });
 
@@ -171,9 +190,8 @@ pub(crate) fn start_geolocation(results: Rc<RefCell<Vec<LocationResult>>>, ctx: 
 }
 
 /// Start zip code geocoding via the Zippopotam.us API.
-fn start_zip_lookup(zip: &str, results: Rc<RefCell<Vec<LocationResult>>>, ctx: egui::Context) {
+fn start_zip_lookup(zip: &str, results: UnboundedSender<LocationResult>, ctx: egui::Context) {
     let url = format!("https://api.zippopotam.us/us/{}", zip);
-    let results = results.clone();
 
     wasm_bindgen_futures::spawn_local(async move {
         let result: Result<(f64, f64), String> =
@@ -192,14 +210,11 @@ fn start_zip_lookup(zip: &str, results: Rc<RefCell<Vec<LocationResult>>>, ctx: e
                 }
             });
 
-        match result {
-            Ok((lat, lon)) => {
-                results.borrow_mut().push(LocationResult::Success(lat, lon));
-            }
-            Err(e) => {
-                results.borrow_mut().push(LocationResult::Error(e));
-            }
-        }
+        let payload = match result {
+            Ok((lat, lon)) => LocationResult::Success(lat, lon),
+            Err(e) => LocationResult::Error(e),
+        };
+        let _ = results.unbounded_send(payload);
         ctx.request_repaint();
     });
 }
@@ -288,12 +303,7 @@ pub fn render_site_modal(
     }
 
     // Poll for async location results
-    let results: Vec<_> = modal_state
-        .location_results
-        .borrow_mut()
-        .drain(..)
-        .collect();
-    for result in results {
+    for result in modal_state.drain_location_results() {
         match result {
             LocationResult::Success(lat, lon) => {
                 if let Some(site) = nearest_site(lat, lon) {
@@ -434,7 +444,7 @@ fn render_welcome_screen(
                 if ui.add(btn).clicked() {
                     modal_state.error_message = None;
                     modal_state.mode = SiteModalMode::Pending;
-                    start_geolocation(modal_state.location_results.clone(), ctx.clone());
+                    start_geolocation(modal_state.location_sender(), ctx.clone());
                 }
             });
 
@@ -689,7 +699,7 @@ fn render_zip_entry(
                 if zip.len() == 5 && zip.chars().all(|c| c.is_ascii_digit()) {
                     modal_state.error_message = None;
                     modal_state.mode = SiteModalMode::Pending;
-                    start_zip_lookup(zip, modal_state.location_results.clone(), ctx.clone());
+                    start_zip_lookup(zip, modal_state.location_sender(), ctx.clone());
                 } else {
                     modal_state.error_message =
                         Some("Please enter a valid 5-digit zip code".into());
