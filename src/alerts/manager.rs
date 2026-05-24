@@ -44,14 +44,24 @@ impl AlertsManager {
     /// when the user is scrubbed far behind wall-clock the alerts overlay
     /// is hidden so we skip the poll. Computed by the caller so this
     /// manager doesn't need to reach back into `AppState`.
-    pub fn tick(&mut self, ctx: &egui::Context, alerts: &mut AlertsState, is_live: bool) {
+    ///
+    /// `errors` is the app-wide error collector; failures encountered
+    /// while polling are pushed here in addition to landing in
+    /// `alerts.last_error` (which the chip still reads for its color).
+    pub fn tick(
+        &mut self,
+        ctx: &egui::Context,
+        alerts: &mut AlertsState,
+        is_live: bool,
+        errors: &mut crate::state::ErrorContext,
+    ) {
         // Drain events produced by any in-flight fetch.
         let events = self.channel.drain();
         if !events.is_empty() {
             self.fetch_in_flight = false;
         }
         for event in events {
-            self.apply_event(alerts, event);
+            self.apply_event(alerts, event, errors);
         }
 
         // Drop expired alerts proactively so the UI never shows stale items.
@@ -89,7 +99,12 @@ impl AlertsManager {
         api::spawn_fetch(ctx.clone(), self.channel.clone(), etag);
     }
 
-    fn apply_event(&mut self, alerts: &mut AlertsState, event: AlertsEvent) {
+    fn apply_event(
+        &mut self,
+        alerts: &mut AlertsState,
+        event: AlertsEvent,
+        errors: &mut crate::state::ErrorContext,
+    ) {
         alerts.fetch_in_flight = false;
         match event {
             AlertsEvent::Updated {
@@ -109,7 +124,8 @@ impl AlertsManager {
             }
             AlertsEvent::Error(msg) => {
                 log::warn!("NWS alerts fetch failed: {}", msg);
-                alerts.last_error = Some(msg);
+                alerts.last_error = Some(msg.clone());
+                errors.push(crate::state::AppError::Alerts { message: msg });
             }
         }
     }

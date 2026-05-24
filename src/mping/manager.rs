@@ -61,18 +61,23 @@ impl MpingManager {
     }
 
     /// Called every frame. Drains any events, kicks off a new fetch when due.
+    ///
+    /// `errors` is the app-wide error collector; failures encountered
+    /// while polling are pushed here in addition to landing in
+    /// `mping.last_error` (which the modal still reads to display).
     pub fn tick(
         &mut self,
         ctx: &egui::Context,
         mping: &mut MpingState,
         inputs: MpingTickInputs<'_>,
+        errors: &mut crate::state::ErrorContext,
     ) {
         let events = self.channel.drain();
         if !events.is_empty() {
             self.fetch_in_flight = false;
         }
         for event in events {
-            self.apply_event(mping, event);
+            self.apply_event(mping, event, errors);
         }
 
         // Bail early if the layer is off, the user is viewing archive data far
@@ -138,7 +143,12 @@ impl MpingManager {
         api::spawn_fetch(ctx.clone(), self.channel.clone(), api_key, params);
     }
 
-    fn apply_event(&mut self, mping: &mut MpingState, event: MpingEvent) {
+    fn apply_event(
+        &mut self,
+        mping: &mut MpingState,
+        event: MpingEvent,
+        errors: &mut crate::state::ErrorContext,
+    ) {
         mping.fetch_in_flight = false;
         match event {
             MpingEvent::Updated {
@@ -165,7 +175,8 @@ impl MpingManager {
             }
             MpingEvent::Error(msg) => {
                 log::warn!("mPING fetch failed: {}", msg);
-                mping.last_error = Some(msg);
+                mping.last_error = Some(msg.clone());
+                errors.push(crate::state::AppError::Mping { message: msg });
                 // Drop any stale reports so the user isn't shown them as if
                 // they were fresh.
                 mping.reports.clear();

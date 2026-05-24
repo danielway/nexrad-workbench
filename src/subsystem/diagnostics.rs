@@ -15,7 +15,7 @@
 use crate::alerts::AlertsManager;
 use crate::mping::{MpingManager, MpingTickInputs};
 use crate::nexrad::NetworkMonitor;
-use crate::state::{AlertsState, GpsState, MpingState};
+use crate::state::{AlertsState, ErrorContext, GpsState, MpingState};
 use eframe::egui;
 
 /// Per-frame inputs the diagnostics subsystem needs to tick its managers.
@@ -68,9 +68,18 @@ impl Diagnostics {
     }
 
     /// Per-frame tick: poll managers, drain results into their state.
-    pub fn tick(&mut self, ctx: &egui::Context, inputs: DiagnosticsInputs<'_>) {
+    ///
+    /// `errors` is the app-wide error collector that managers push into
+    /// when they encounter a failure, so the unified errors view sees
+    /// every report alongside worker / download failures.
+    pub fn tick(
+        &mut self,
+        ctx: &egui::Context,
+        inputs: DiagnosticsInputs<'_>,
+        errors: &mut ErrorContext,
+    ) {
         self.alerts_manager
-            .tick(ctx, &mut self.alerts, inputs.is_live);
+            .tick(ctx, &mut self.alerts, inputs.is_live, errors);
 
         // mPING: drain any invalidation request the modal posted, then
         // tick the manager.
@@ -86,6 +95,7 @@ impl Diagnostics {
                 site_id: inputs.site_id,
                 playback_secs: inputs.playback_secs,
             },
+            errors,
         );
     }
 }

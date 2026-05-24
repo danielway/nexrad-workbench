@@ -631,7 +631,8 @@ impl eframe::App for WorkbenchApp {
             site_id: &self.state.viz_state.site_id,
             playback_secs: self.state.playback_state.playback_position(),
         };
-        self.diagnostics.tick(ctx, diagnostics_inputs);
+        self.diagnostics
+            .tick(ctx, diagnostics_inputs, &mut self.state.errors);
 
         // 9-13. COMPUTE: advance playback, sync GPU state, decide whether
         // to issue the next render, then capture network stats and persist.
