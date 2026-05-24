@@ -163,26 +163,9 @@ pub struct WorkbenchApp {
     /// (currently NWS alerts; mPING / GPS / network monitor fold in next).
     diagnostics: subsystem::Diagnostics,
 
-    /// Cache of the inputs that drive `advance_playback`'s scrub-detection
-    /// pass so we can skip the O(scans) timeline search on idle frames
-    /// where the playback position, elevation selection, and scan count
-    /// have not changed.
-    scrub_cache: ScrubCache,
-
     /// Last `AppMode` pushed to the favicon. `None` until the first frame so
     /// the initial mode is always sent. See `sync_favicon_to_mode`.
     last_favicon_mode: Option<state::AppMode>,
-}
-
-#[derive(Default)]
-struct ScrubCache {
-    last_playback_ts: Option<f64>,
-    last_elevation_selection: Option<state::ElevationSelection>,
-    last_scan_count: usize,
-    /// Active scan timestamp (sub-second Unix seconds) from
-    /// `RenderCoordinator::scan_key`. Detects ingest-driven scan changes
-    /// so the scrub block re-runs even when playback hasn't moved.
-    last_active_scan_ts: Option<f64>,
 }
 
 // Embed shapefile data at compile time
@@ -479,7 +462,6 @@ impl WorkbenchApp {
                 diag.mping.api_key = loaded_mping_api_key;
                 diag
             },
-            scrub_cache: ScrubCache::default(),
             last_favicon_mode: None,
         };
 

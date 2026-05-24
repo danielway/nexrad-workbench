@@ -102,20 +102,21 @@ impl WorkbenchApp {
                 .coordinator
                 .scan_key()
                 .map(|k| k.scan_start.as_secs_f64());
-            let scrub_cache_hit = self.scrub_cache.last_playback_ts == Some(playback_ts)
-                && self.scrub_cache.last_scan_count == scan_count
-                && self.scrub_cache.last_active_scan_ts == active_ts
+            let scrub_cache_hit = self.render.scrub_cache.last_playback_ts == Some(playback_ts)
+                && self.render.scrub_cache.last_scan_count == scan_count
+                && self.render.scrub_cache.last_active_scan_ts == active_ts
                 && self
+                    .render
                     .scrub_cache
                     .last_elevation_selection
                     .as_ref()
                     .is_some_and(|cached| cached == elev_sel);
 
             if !scrub_cache_hit {
-                self.scrub_cache.last_playback_ts = Some(playback_ts);
-                self.scrub_cache.last_scan_count = scan_count;
-                self.scrub_cache.last_active_scan_ts = active_ts;
-                self.scrub_cache.last_elevation_selection = Some(elev_sel.clone());
+                self.render.scrub_cache.last_playback_ts = Some(playback_ts);
+                self.render.scrub_cache.last_scan_count = scan_count;
+                self.render.scrub_cache.last_active_scan_ts = active_ts;
+                self.render.scrub_cache.last_elevation_selection = Some(elev_sel.clone());
             }
 
             if !scrub_cache_hit {
@@ -158,7 +159,7 @@ impl WorkbenchApp {
                                     .resolve_for_vcp(&elev_list);
                                 self.render.coordinator.force_fresh_render();
                                 // Active scan moved — refresh the cache snapshot.
-                                self.scrub_cache.last_active_scan_ts = self
+                                self.render.scrub_cache.last_active_scan_ts = self
                                     .render
                                     .coordinator
                                     .scan_key()
@@ -434,7 +435,7 @@ impl WorkbenchApp {
         // that no longer has backing pixels.
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
-        self.scrub_cache.last_active_scan_ts = None;
+        self.render.scrub_cache.last_active_scan_ts = None;
     }
 
     /// Clear the on-canvas sweep when the selected (elevation, product) isn't
