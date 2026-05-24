@@ -135,6 +135,10 @@ impl WorkbenchApp {
         {
             self.state.status_message = format!("Download failed: {}", message);
             log::error!("Download failed: {}", message);
+            self.state.errors.push(state::AppError::Download {
+                message: message.clone(),
+                scan_start_secs: Some(*scan_start),
+            });
 
             // Mark this scan's acquisition operation as failed
             if let Some(op_id) = self

@@ -8,6 +8,7 @@
 pub(crate) mod acquisition;
 mod alerts;
 mod app_mode;
+mod errors;
 mod gps;
 mod layer;
 mod live_mode;
@@ -38,6 +39,7 @@ pub use acquisition::{
 };
 pub use alerts::AlertsState;
 pub use app_mode::AppMode;
+pub use errors::{AppError, ErrorContext};
 pub use gps::GpsState;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
@@ -249,6 +251,11 @@ pub struct AppState {
 
     /// Whether the network request log modal is open.
     pub network_log_open: bool,
+
+    /// Recent-errors ring buffer. Reporters across the codebase push
+    /// into this; UI surfaces from it instead of inventing its own
+    /// per-feature error indicators.
+    pub errors: ErrorContext,
 
     /// Persistent worker initialization error message.
     /// When set, a non-dismissable error banner is shown in the top bar.

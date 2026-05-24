@@ -943,6 +943,11 @@ impl WorkbenchApp {
             message
         );
         self.state.status_message = format!("Worker error: {}", message);
+        self.state.errors.push(state::AppError::Worker {
+            kind,
+            message: message.clone(),
+            scan_timestamp_secs: failed_scan_timestamp_secs,
+        });
 
         // When the worker reports that the requested (elevation, product) has
         // no pre-computed sweep, clear the stale canvas so the user sees what
