@@ -19,6 +19,7 @@ mod event_modal;
 mod left_panel;
 mod mobile;
 mod modal_helper;
+mod modal_states;
 mod mping_modal;
 mod network_panel;
 mod playback_controls;
@@ -40,6 +41,7 @@ pub use left_panel::render_left_panel;
 pub(crate) use mobile::{
     render_mobile_chrome, render_mobile_settings_modal, render_mobile_top_bar,
 };
+pub use modal_states::ModalStates;
 pub use mping_modal::{render_mping_modal, MpingModalState};
 pub use network_panel::render_network_log;
 pub use right_panel::render_right_panel;

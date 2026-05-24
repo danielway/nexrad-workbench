@@ -148,11 +148,13 @@ pub struct WorkbenchApp {
     /// URL state, preferences, and site change detection.
     persistence: nexrad::PersistenceManager,
 
-    /// Transient state for the site selection modal.
-    site_modal_state: ui::SiteModalState,
-
-    /// Transient state for the event create/edit modal.
-    event_modal_state: ui::EventModalState,
+    /// Transient state for the modal UI overlays (site picker, event
+    /// editor, mPING settings). Aggregated here so the three modals share
+    /// one ownership and threading rule instead of three scattered fields.
+    /// They live outside `AppState` so they don't need `Default + Clone`
+    /// (one owns an `Rc<RefCell<>>` shared with async callbacks) and so
+    /// the transient input doesn't survive a reload.
+    modals: ui::ModalStates,
 
     /// Service worker network monitor (None if SW not available).
     network_monitor: Option<nexrad::NetworkMonitor>,
@@ -165,11 +167,6 @@ pub struct WorkbenchApp {
 
     /// mPING storm-report fetch lifecycle.
     mping_manager: mping::MpingManager,
-
-    /// In-flight text-edit buffer for the mPING settings modal. Lives
-    /// outside `AppState` so it doesn't need `Default + Clone` and so the
-    /// transient input doesn't survive a reload.
-    mping_modal_state: ui::MpingModalState,
 
     /// Cache of the inputs that drive `advance_playback`'s scrub-detection
     /// pass so we can skip the O(scans) timeline search on idle frames
@@ -473,21 +470,13 @@ impl WorkbenchApp {
             acquisition,
             streaming: realtime_channel,
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
-            site_modal_state: {
-                let mut sms = ui::SiteModalState::default();
-                if has_preferred_site {
-                    sms.is_first_visit = false;
-                }
-                sms
-            },
-            event_modal_state: ui::EventModalState::default(),
+            modals: ui::ModalStates::new(has_preferred_site),
             // Lazily initialized when dev mode is enabled (at startup if the
             // URL has `dev=true`, or when the user toggles it on later).
             network_monitor: None,
             playback_manager: PlaybackManager::new(),
             alerts_manager: alerts::AlertsManager::new(),
             mping_manager: mping::MpingManager::new(),
-            mping_modal_state: ui::MpingModalState::default(),
             scrub_cache: ScrubCache::default(),
             last_favicon_mode: None,
         };
@@ -689,7 +678,7 @@ impl eframe::App for WorkbenchApp {
             // outside AppState.
             if self.state.mobile_geolocate_requested {
                 self.state.mobile_geolocate_requested = false;
-                ui::trigger_geolocation(ctx, &mut self.state, &mut self.site_modal_state);
+                ui::trigger_geolocation(ctx, &mut self.state, &mut self.modals.site);
             }
 
             ui::render_mobile_top_bar(ctx, &mut self.state);
@@ -712,16 +701,16 @@ impl eframe::App for WorkbenchApp {
         ui::handle_shortcuts(ctx, &mut self.state);
 
         // 21. RENDER (overlays): modals layered above the canvas.
-        ui::render_site_modal(ctx, &mut self.state, &mut self.site_modal_state);
+        ui::render_site_modal(ctx, &mut self.state, &mut self.modals.site);
         ui::render_mobile_settings_modal(ctx, &mut self.state);
         ui::render_shortcuts_help(ctx, &mut self.state);
         ui::render_wipe_modal(ctx, &mut self.state);
         ui::render_stats_modal(ctx, &mut self.state);
         ui::render_vcp_forecast_modal(ctx, &mut self.state);
         ui::render_network_log(ctx, &mut self.state);
-        ui::render_event_modal(ctx, &mut self.state, &mut self.event_modal_state);
+        ui::render_event_modal(ctx, &mut self.state, &mut self.modals.event);
         ui::render_alerts_modals(ctx, &mut self.state);
-        ui::render_mping_modal(ctx, &mut self.state, &mut self.mping_modal_state);
+        ui::render_mping_modal(ctx, &mut self.state, &mut self.modals.mping);
     }
 }
 
