@@ -9,7 +9,7 @@ This plan covers the **strategic tier**: changes to *how the codebase is structu
 ## Where we stand
 
 - Done or partial: C1, A2, D1 stage 1, E3, E4 dispatcher, E5
-- Remaining catalog items: A1, A3, A4, B1, B2, E1, E2, F1, F2, D1 stage 2
+- Remaining catalog items: A1, A3, A4, B1 (in progress), B2, E1, E2, F1, F2
 - The initiatives below subsume those remaining items.
 
 ## Cross-cutting themes still in need of attention
@@ -264,13 +264,13 @@ Each initiative is multiple PRs; standard per-PR checks:
 - **Schema-first worker IPC** — would generate both Rust types and `worker.js` dispatch from one schema. Incremental on C1; not ambitious enough for this tier.
 - **Performance optimization** — the renderer is already fast.
 - **New features** — the app's functionality is set.
-- **Catalog items that *don't* fit a strategic initiative**: D1 stage 2 (app-side `ErrorContext` aggregation) is small enough to do standalone whenever appetite arises; it doesn't need a strategic envelope.
+- **Catalog items that *don't* fit a strategic initiative**: D1 stage 2 (app-side `ErrorContext` aggregation) is done — the top-bar errors chip surfaces the unified collector.
 
 ## Status
 
 | ID | Title | Status |
 |----|-------|--------|
 | S1 | Subsystem Decomposition | in progress (Acquisition + Diagnostics + Render (incl. ScrubCache) + Live (channel only) extracted; Timeline/Playback/Chrome remain; Live still owes mode/model/app_mode) |
-| S2 | Unified Async / Effect Model | in progress (GpsState + SiteModalState location queues moved to mpsc channels; upsert_scan single-writer enforced via UpsertScanGuard RAII; RealtimeChannel + CHUNK_ACCUM remain) |
+| S2 | Unified Async / Effect Model | in progress (GpsState + SiteModalState location queues moved to mpsc channels; upsert_scan single-writer enforced via UpsertScanGuard RAII; RealtimeChannel `results` + `pending_observations` migrated to mpsc; only `stop_requested` + filter epoch still on shared state, gated on a select-with-timeout primitive; CHUNK_ACCUM remains) |
 | S3 | UI Layer Tree | not started |
 | S4 | Camera + Projection State Machine | not started |
