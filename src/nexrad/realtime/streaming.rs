@@ -14,6 +14,7 @@ use crate::nexrad::download::NetworkStats;
 use crate::nexrad::streaming_filter::StreamingFilter;
 use crate::nexrad::streaming_state::StreamingState;
 use eframe::egui;
+use futures_channel::mpsc::UnboundedSender;
 use futures_util::future::join_all;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -117,6 +118,7 @@ async fn emit_backfill_chunks(
     targets: &[nexrad_data::aws::realtime::ChunkIdentifier],
     iter: &mut StreamingState,
     state: &Rc<RefCell<RealtimeState>>,
+    results_tx: &UnboundedSender<RealtimeResult>,
     ctx: &egui::Context,
     chunks_in_volume_start: u32,
     timestamp: f64,
@@ -161,8 +163,7 @@ async fn emit_backfill_chunks(
         emitted += 1;
         let chunk_index = chunks_in_volume_start + emitted - 1;
         let is_last_in_sweep = iter.chunk_metadata(seq).map(|m| m.is_last_in_sweep());
-        let mut s = state.borrow_mut();
-        s.results.push(RealtimeResult::ChunkData {
+        let _ = results_tx.unbounded_send(RealtimeResult::ChunkData {
             data: chunk_data,
             chunk_index,
             is_start: false,
@@ -170,14 +171,13 @@ async fn emit_backfill_chunks(
             timestamp,
             is_last_in_sweep,
         });
-        s.results.push(RealtimeResult::ChunkReceived {
+        let _ = results_tx.unbounded_send(RealtimeResult::ChunkReceived {
             chunks_in_volume: chunks_in_volume_start + emitted,
             is_volume_end: false,
             fetch_latency_ms: 0.0,
             plan: iter.build_plan(current_timestamp_f64()),
             arrival_stat: None,
         });
-        drop(s);
         emitted_sequences_this_volume.insert(seq);
     }
     ctx.request_repaint();
@@ -201,6 +201,7 @@ async fn run_mid_stream_backfill(
     facade: &DataFacade,
     scan_start_secs: f64,
     state: &Rc<RefCell<RealtimeState>>,
+    results_tx: &UnboundedSender<RealtimeResult>,
     ctx: &egui::Context,
     chunks_in_volume_start: u32,
     timestamp: f64,
@@ -265,6 +266,7 @@ async fn run_mid_stream_backfill(
         &to_download,
         iter,
         state,
+        results_tx,
         ctx,
         chunks_in_volume_start,
         timestamp,
@@ -306,6 +308,7 @@ pub(super) async fn streaming_loop(
     state: Rc<RefCell<RealtimeState>>,
     stats: NetworkStats,
     facade: DataFacade,
+    results_tx: UnboundedSender<RealtimeResult>,
 ) {
     use nexrad_data::aws::realtime::{list_chunks_in_volume, ChunkType};
 
@@ -327,7 +330,7 @@ pub(super) async fn streaming_loop(
         futures_util::future::Either::Left((Ok(init), _)) => init,
         futures_util::future::Either::Left((Err(e), _)) => {
             let mut s = state.borrow_mut();
-            s.results.push(RealtimeResult::Error(format!(
+            let _ = results_tx.unbounded_send(RealtimeResult::Error(format!(
                 "Failed to initialize: {}",
                 e
             )));
@@ -342,7 +345,7 @@ pub(super) async fn streaming_loop(
                 site_id
             );
             let mut s = state.borrow_mut();
-            s.results.push(RealtimeResult::Error(format!(
+            let _ = results_tx.unbounded_send(RealtimeResult::Error(format!(
                 "Acquisition timed out after {}s — data may be unavailable for this site",
                 ACQUIRE_TIMEOUT_SECS
             )));
@@ -368,12 +371,9 @@ pub(super) async fn streaming_loop(
     );
 
     // Send Started event
-    {
-        let mut s = state.borrow_mut();
-        s.results.push(RealtimeResult::Started {
-            site_id: site_id.clone(),
-        });
-    }
+    let _ = results_tx.unbounded_send(RealtimeResult::Started {
+        site_id: site_id.clone(),
+    });
     ctx.request_repaint();
 
     let mut chunks_in_volume: u32;
@@ -404,32 +404,29 @@ pub(super) async fn streaming_loop(
             "Init: emitting start_chunk ({} bytes) for mid-volume join",
             start_data.len()
         );
-        {
-            let mut s = state.borrow_mut();
-            s.results.push(RealtimeResult::ChunkData {
-                data: start_data,
-                chunk_index: 0,
-                is_start: true,
-                is_end: false,
-                timestamp: current_scan_start_secs.0,
-                // Skip overlap deletion — we're only backfilling the current
-                // sweep, not replacing the full volume.
-                // Start chunks are metadata-only and aren't part of any sweep.
-                is_last_in_sweep: Some(false),
-            });
-            // Why: chunk_projections is consumed by the worker fast-path to
-            // detect last-chunk-in-sweep. ChunkReceived is the only event
-            // that updates it on the main thread, so without this push the
-            // resumed sweep's chunks reach the worker with stale/None
-            // projections and finalize only on the next sweep's first chunk.
-            s.results.push(RealtimeResult::ChunkReceived {
-                chunks_in_volume: 1,
-                is_volume_end: false,
-                fetch_latency_ms: 0.0,
-                plan: iter.build_plan(current_timestamp_f64()),
-                arrival_stat: None,
-            });
-        }
+        let _ = results_tx.unbounded_send(RealtimeResult::ChunkData {
+            data: start_data,
+            chunk_index: 0,
+            is_start: true,
+            is_end: false,
+            timestamp: current_scan_start_secs.0,
+            // Skip overlap deletion — we're only backfilling the current
+            // sweep, not replacing the full volume.
+            // Start chunks are metadata-only and aren't part of any sweep.
+            is_last_in_sweep: Some(false),
+        });
+        // Why: chunk_projections is consumed by the worker fast-path to
+        // detect last-chunk-in-sweep. ChunkReceived is the only event
+        // that updates it on the main thread, so without this push the
+        // resumed sweep's chunks reach the worker with stale/None
+        // projections and finalize only on the next sweep's first chunk.
+        let _ = results_tx.unbounded_send(RealtimeResult::ChunkReceived {
+            chunks_in_volume: 1,
+            is_volume_end: false,
+            fetch_latency_ms: 0.0,
+            plan: iter.build_plan(current_timestamp_f64()),
+            arrival_stat: None,
+        });
         ctx.request_repaint();
 
         // Filter-aware backfill. With `StreamingFilter::All` we backfill the
@@ -501,6 +498,7 @@ pub(super) async fn streaming_loop(
                         &to_download,
                         &mut iter,
                         &state,
+                        &results_tx,
                         &ctx,
                         chunks_in_volume,
                         current_scan_start_secs.0,
@@ -552,8 +550,7 @@ pub(super) async fn streaming_loop(
             let latest_is_last_in_sweep = iter
                 .chunk_metadata(latest_seq)
                 .map(|m| m.is_last_in_sweep());
-            let mut s = state.borrow_mut();
-            s.results.push(RealtimeResult::ChunkData {
+            let _ = results_tx.unbounded_send(RealtimeResult::ChunkData {
                 data: latest_data,
                 chunk_index: chunks_in_volume - 1,
                 is_start: false,
@@ -561,14 +558,13 @@ pub(super) async fn streaming_loop(
                 timestamp: current_scan_start_secs.0,
                 is_last_in_sweep: latest_is_last_in_sweep,
             });
-            s.results.push(RealtimeResult::ChunkReceived {
+            let _ = results_tx.unbounded_send(RealtimeResult::ChunkReceived {
                 chunks_in_volume,
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
                 plan: iter.build_plan(current_timestamp_f64()),
                 arrival_stat: None,
             });
-            drop(s);
             ctx.request_repaint();
         } else {
             log::debug!(
@@ -596,27 +592,24 @@ pub(super) async fn streaming_loop(
             "Init: emitting latest_chunk as start ({} bytes)",
             latest_data.len()
         );
-        {
-            let init_is_last_in_sweep = iter
-                .chunk_metadata(init_result.latest_chunk.identifier.sequence())
-                .map(|m| m.is_last_in_sweep());
-            let mut s = state.borrow_mut();
-            s.results.push(RealtimeResult::ChunkData {
-                data: latest_data,
-                chunk_index: 0,
-                is_start: latest_is_start,
-                is_end: latest_is_end,
-                timestamp: current_scan_start_secs.0,
-                is_last_in_sweep: init_is_last_in_sweep,
-            });
-            s.results.push(RealtimeResult::ChunkReceived {
-                chunks_in_volume,
-                is_volume_end: latest_is_end,
-                fetch_latency_ms: 0.0,
-                plan: iter.build_plan(current_timestamp_f64()),
-                arrival_stat: None,
-            });
-        }
+        let init_is_last_in_sweep = iter
+            .chunk_metadata(init_result.latest_chunk.identifier.sequence())
+            .map(|m| m.is_last_in_sweep());
+        let _ = results_tx.unbounded_send(RealtimeResult::ChunkData {
+            data: latest_data,
+            chunk_index: 0,
+            is_start: latest_is_start,
+            is_end: latest_is_end,
+            timestamp: current_scan_start_secs.0,
+            is_last_in_sweep: init_is_last_in_sweep,
+        });
+        let _ = results_tx.unbounded_send(RealtimeResult::ChunkReceived {
+            chunks_in_volume,
+            is_volume_end: latest_is_end,
+            fetch_latency_ms: 0.0,
+            plan: iter.build_plan(current_timestamp_f64()),
+            arrival_stat: None,
+        });
         ctx.request_repaint();
     }
 
@@ -679,6 +672,7 @@ pub(super) async fn streaming_loop(
                 &facade,
                 current_scan_start_secs.0,
                 &state,
+                &results_tx,
                 &ctx,
                 chunks_in_volume,
                 current_scan_start_secs.0,
@@ -844,17 +838,14 @@ pub(super) async fn streaming_loop(
             // chunk via the chained projection) is the single source for
             // the cross-volume countdown.
             chunks_in_volume += 1;
-            {
-                let plan = iter.build_plan(current_timestamp_f64());
-                let mut s = state.borrow_mut();
-                s.results.push(RealtimeResult::ChunkReceived {
-                    chunks_in_volume,
-                    is_volume_end: true,
-                    fetch_latency_ms: 0.0,
-                    plan,
-                    arrival_stat: None,
-                });
-            }
+            let plan = iter.build_plan(current_timestamp_f64());
+            let _ = results_tx.unbounded_send(RealtimeResult::ChunkReceived {
+                chunks_in_volume,
+                is_volume_end: true,
+                fetch_latency_ms: 0.0,
+                plan,
+                arrival_stat: None,
+            });
             ctx.request_repaint();
             // Reset per-chunk tracking; the next iteration will roll over to
             // the next volume's Start via the existing try_next path.
@@ -1001,26 +992,23 @@ pub(super) async fn streaming_loop(
                     .chunk_metadata(chunk.identifier.sequence())
                     .map(|m| m.is_last_in_sweep());
 
-                {
-                    let mut s = state.borrow_mut();
-                    // Emit the raw chunk for incremental ingest
-                    s.results.push(RealtimeResult::ChunkData {
-                        data: chunk_data,
-                        chunk_index: chunks_in_volume - 1,
-                        is_start,
-                        is_end,
-                        timestamp: current_scan_start_secs.0,
-                        is_last_in_sweep: chunk_is_last_in_sweep,
-                    });
-                    // Emit UI status update
-                    s.results.push(RealtimeResult::ChunkReceived {
-                        chunks_in_volume,
-                        is_volume_end: is_end,
-                        fetch_latency_ms: chunk_fetch_ms,
-                        plan: post_plan,
-                        arrival_stat: Some(arrival_stat),
-                    });
-                }
+                // Emit the raw chunk for incremental ingest
+                let _ = results_tx.unbounded_send(RealtimeResult::ChunkData {
+                    data: chunk_data,
+                    chunk_index: chunks_in_volume - 1,
+                    is_start,
+                    is_end,
+                    timestamp: current_scan_start_secs.0,
+                    is_last_in_sweep: chunk_is_last_in_sweep,
+                });
+                // Emit UI status update
+                let _ = results_tx.unbounded_send(RealtimeResult::ChunkReceived {
+                    chunks_in_volume,
+                    is_volume_end: is_end,
+                    fetch_latency_ms: chunk_fetch_ms,
+                    plan: post_plan,
+                    arrival_stat: Some(arrival_stat),
+                });
 
                 save_timing_stats(&site_id, iter.timing_stats());
 
@@ -1029,7 +1017,7 @@ pub(super) async fn streaming_loop(
             Err(msg) => {
                 log::error!("Streaming error: {}", msg);
                 let mut s = state.borrow_mut();
-                s.results.push(RealtimeResult::Error(msg));
+                let _ = results_tx.unbounded_send(RealtimeResult::Error(msg));
                 s.active = false;
                 ctx.request_repaint();
                 break;

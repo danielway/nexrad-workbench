@@ -6,9 +6,10 @@
 //!
 //! ## Internal state machine
 //!
-//! [`RealtimeState`] is shared between the UI thread (via `RealtimeChannel`
-//! methods) and the async `streaming_loop` task. Three fields coordinate
-//! across the thread boundary:
+//! Streaming-loop output flows over a typed [`futures_channel::mpsc`]
+//! results channel (loop ⇒ UI). Two coordination fields still live on
+//! [`RealtimeState`] behind `Rc<RefCell<_>>` because the loop polls them
+//! synchronously inside `interruptible_sleep`:
 //!
 //! - `stop_requested`: set by `stop()`; the loop checks it on each iteration
 //!   and at every sleep break, exiting cleanly when set.
@@ -19,11 +20,16 @@
 //!   loop polls the epoch every ~250 ms (`interruptible_sleep`) and wakes
 //!   to re-target when it changes, so filter swaps don't have to wait for
 //!   the current chunk to arrive.
+//!
+//! Migrating the remaining three fields to typed control channels is the
+//! second slice of S2; gating it on a real select-with-timeout primitive
+//! (the loop's `interruptible_sleep` would become a `select!`).
 
 use super::download::NetworkStats;
 use super::streaming_filter::StreamingFilter;
 use crate::data::facade::DataFacade;
 use eframe::egui;
+use futures_channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -160,11 +166,13 @@ pub enum RealtimeResult {
 /// Internal state for the realtime streaming channel.
 ///
 /// Shared between the UI thread (via `RealtimeChannel`) and the async
-/// `streaming_loop`. The two threads coordinate via three fields documented
-/// at the module top: `stop_requested`, `pending_observations`, `filter_epoch`.
+/// `streaming_loop`. Coordinates via the fields documented at the module
+/// top: `stop_requested`, `pending_observations`, `pending_filter` /
+/// `filter_epoch`. Streaming output flows over a separate typed channel
+/// (the loop's `results_tx`) so the UI no longer racially shares the
+/// produced-vs-consumed Vec.
 #[derive(Default)]
 pub(super) struct RealtimeState {
-    pub(super) results: Vec<RealtimeResult>,
     pub(super) active: bool,
     pub(super) stop_requested: bool,
     /// Projector observations queued from the main thread (worker ingest
@@ -189,9 +197,29 @@ pub(super) struct RealtimeState {
 }
 
 /// Channel for real-time NEXRAD streaming.
+///
+/// `results` is a typed [`futures_channel::mpsc`] queue carrying
+/// loop-produced events to the UI; the channel pair is replaced on
+/// every [`start`](Self::start) so messages from a previously-running
+/// loop don't leak into a new session.
 pub struct RealtimeChannel {
     state: Rc<RefCell<RealtimeState>>,
+    /// Results channel pair. Refilled by `start()`; reads via
+    /// `try_recv` borrow the receiver mutably through the `RefCell`.
+    results: RefCell<ResultsChannel>,
     stats: NetworkStats,
+}
+
+struct ResultsChannel {
+    tx: UnboundedSender<RealtimeResult>,
+    rx: UnboundedReceiver<RealtimeResult>,
+}
+
+impl ResultsChannel {
+    fn new() -> Self {
+        let (tx, rx) = unbounded();
+        Self { tx, rx }
+    }
 }
 
 impl Default for RealtimeChannel {
@@ -204,6 +232,7 @@ impl RealtimeChannel {
     pub fn new() -> Self {
         Self {
             state: Rc::new(RefCell::new(RealtimeState::default())),
+            results: RefCell::new(ResultsChannel::new()),
             stats: NetworkStats::new(),
         }
     }
@@ -211,6 +240,7 @@ impl RealtimeChannel {
     pub fn with_stats(stats: NetworkStats) -> Self {
         Self {
             state: Rc::new(RefCell::new(RealtimeState::default())),
+            results: RefCell::new(ResultsChannel::new()),
             stats,
         }
     }
@@ -224,14 +254,20 @@ impl RealtimeChannel {
             let mut state = self.state.borrow_mut();
             state.active = true;
             state.stop_requested = false;
-            state.results.clear();
         }
+
+        // Replace the channel pair on every start so any in-flight
+        // sends from a still-winding-down previous loop hit a dropped
+        // receiver and disappear, rather than leaking into the new
+        // session's result stream.
+        *self.results.borrow_mut() = ResultsChannel::new();
+        let results_tx = self.results.borrow().tx.clone();
 
         let state = self.state.clone();
         let stats = self.stats.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            streaming_loop(ctx, site_id, state, stats, facade).await;
+            streaming_loop(ctx, site_id, state, stats, facade, results_tx).await;
         });
     }
 
@@ -242,12 +278,7 @@ impl RealtimeChannel {
     }
 
     pub fn try_recv(&self) -> Option<RealtimeResult> {
-        let mut state = self.state.borrow_mut();
-        if state.results.is_empty() {
-            None
-        } else {
-            Some(state.results.remove(0))
-        }
+        self.results.borrow_mut().rx.try_recv().ok()
     }
 
     /// Enqueue a projector observation to be applied on the next
