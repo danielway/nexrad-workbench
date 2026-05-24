@@ -99,6 +99,7 @@ pub(crate) fn render_radar_sweep(
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
+    chrome: &crate::subsystem::Chrome,
     sweep_info: Option<(f32, f32)>,
     stale: bool,
 ) {
@@ -315,7 +316,7 @@ pub(crate) fn render_radar_sweep(
                 draw_sweep_donut_stale(painter, center, radius);
             } else {
                 draw_sweep_donut(
-                    painter, center, radius, az, start_az, state, timeline, live, playback,
+                    painter, center, radius, az, start_az, state, timeline, live, playback, chrome,
                 );
             }
         }
@@ -425,6 +426,7 @@ fn draw_sweep_donut(
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
+    _chrome: &crate::subsystem::Chrome,
 ) {
     let donut_inner = radius + 4.0;
     let donut_outer = radius + 10.0;

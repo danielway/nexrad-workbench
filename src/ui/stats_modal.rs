@@ -12,19 +12,20 @@ pub fn render_stats_modal(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &crate::subsystem::Live,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !state.stats_detail_open {
+    if !chrome.stats_detail_open {
         return;
     }
     // The modal is only reachable from the dev-mode pipeline indicator.
     // If dev mode was disabled while it was open, close it silently.
     if !state.dev_mode {
-        state.stats_detail_open = false;
+        chrome.stats_detail_open = false;
         return;
     }
 
     if super::modal_helper::modal_backdrop(ctx, "stats_modal_backdrop", 160) {
-        state.stats_detail_open = false;
+        chrome.stats_detail_open = false;
         return;
     }
 
@@ -255,8 +256,8 @@ pub fn render_stats_modal(
                     .on_hover_text("Open the full network request log")
                     .clicked()
                 {
-                    state.network_log_open = true;
-                    state.stats_detail_open = false;
+                    chrome.network_log_open = true;
+                    chrome.stats_detail_open = false;
                 }
             });
 
@@ -283,8 +284,8 @@ pub fn render_stats_modal(
                     .on_disabled_hover_text("Available after a live VCP message has been received")
                     .clicked()
                 {
-                    state.vcp_forecast_open = true;
-                    state.stats_detail_open = false;
+                    chrome.vcp_forecast_open = true;
+                    chrome.stats_detail_open = false;
                 }
             });
 

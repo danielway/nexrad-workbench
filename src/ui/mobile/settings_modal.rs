@@ -16,13 +16,14 @@ pub(crate) fn render_mobile_settings_modal(
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !state.mobile_settings_open || !state.is_mobile {
+    if !chrome.mobile_settings_open || !state.is_mobile {
         return;
     }
 
     if super::super::modal_helper::modal_backdrop(ctx, "mobile_settings_backdrop", 160) {
-        state.mobile_settings_open = false;
+        chrome.mobile_settings_open = false;
         return;
     }
 
@@ -40,9 +41,9 @@ pub(crate) fn render_mobile_settings_modal(
         .fixed_size(Vec2::new(modal_w, modal_h))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            render_header(ui, state);
+            render_header(ui, state, chrome);
             ui.separator();
-            render_tab_strip(ui, state);
+            render_tab_strip(ui, state, chrome);
             ui.separator();
             ui.add_space(4.0);
 
@@ -51,7 +52,7 @@ pub(crate) fn render_mobile_settings_modal(
                 .id_salt("mobile_settings_body_scroll")
                 .max_height(body_h)
                 .auto_shrink([false, false])
-                .show(ui, |ui| match state.mobile_settings_tab {
+                .show(ui, |ui| match chrome.mobile_settings_tab {
                     MobileSettingsTab::Playback => {
                         render_playback_body(ui, state, timeline, live, playback)
                     }
@@ -59,9 +60,9 @@ pub(crate) fn render_mobile_settings_modal(
                         render_product_body(ui, state, timeline, live, playback)
                     }
                     MobileSettingsTab::Layers => {
-                        render_layers_body(ui, state, playback, diagnostics)
+                        render_layers_body(ui, state, playback, diagnostics, chrome)
                     }
-                    MobileSettingsTab::More => render_more_body(ui, state, playback),
+                    MobileSettingsTab::More => render_more_body(ui, state, playback, chrome),
                 });
 
             // The datetime picker popup (opened by tapping the current-time
@@ -73,22 +74,26 @@ pub(crate) fn render_mobile_settings_modal(
         });
 }
 
-fn render_header(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_header(ui: &mut egui::Ui, _state: &mut AppState, chrome: &mut crate::subsystem::Chrome) {
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        ui.heading(state.mobile_settings_tab.label());
+        ui.heading(chrome.mobile_settings_tab.label());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let close = ui.add(
                 egui::Button::new(RichText::new(egui_phosphor::regular::X).size(20.0)).frame(false),
             );
             if close.clicked() {
-                state.mobile_settings_open = false;
+                chrome.mobile_settings_open = false;
             }
         });
     });
 }
 
-fn render_tab_strip(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_tab_strip(
+    ui: &mut egui::Ui,
+    _state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
+) {
     let total_w = ui.available_width();
     let tab_count = MobileSettingsTab::all().len() as f32;
     let tab_w = total_w / tab_count;
@@ -96,7 +101,7 @@ fn render_tab_strip(ui: &mut egui::Ui, state: &mut AppState) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         for tab in MobileSettingsTab::all() {
-            let is_active = state.mobile_settings_tab == tab;
+            let is_active = chrome.mobile_settings_tab == tab;
             let text_color = if is_active {
                 ui.visuals().strong_text_color()
             } else {
@@ -105,7 +110,7 @@ fn render_tab_strip(ui: &mut egui::Ui, state: &mut AppState) {
             let (rect, resp) =
                 ui.allocate_exact_size(egui::vec2(tab_w, 36.0), egui::Sense::click());
             if resp.clicked() {
-                state.mobile_settings_tab = tab;
+                chrome.mobile_settings_tab = tab;
             }
             let painter = ui.painter_at(rect);
             painter.text(
@@ -278,22 +283,24 @@ fn render_layers_body(
     state: &mut AppState,
     playback: &crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     ui.add_space(4.0);
-    super::super::right_panel::render_layers_section(ui, state, diagnostics, playback);
+    super::super::right_panel::render_layers_section(ui, state, diagnostics, playback, chrome);
 }
 
 fn render_more_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
     playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     ui.add_space(4.0);
-    super::super::right_panel::render_rendering_section(ui, state, playback);
+    super::super::right_panel::render_rendering_section(ui, state, playback, chrome);
     ui.add_space(4.0);
-    super::super::right_panel::render_tools_section(ui, state);
+    super::super::right_panel::render_tools_section(ui, state, chrome);
     ui.add_space(4.0);
-    super::super::right_panel::render_events_section(ui, state, playback);
+    super::super::right_panel::render_events_section(ui, state, playback, chrome);
     ui.add_space(4.0);
-    super::super::right_panel::render_storage_section(ui, state);
+    super::super::right_panel::render_storage_section(ui, state, chrome);
 }

@@ -12,6 +12,7 @@
 //! in sync by every caller).
 
 pub mod acquisition;
+pub mod chrome;
 pub mod diagnostics;
 pub mod live;
 pub mod playback;
@@ -19,6 +20,7 @@ pub mod render;
 pub mod timeline;
 
 pub use acquisition::Acquisition;
+pub use chrome::Chrome;
 pub use diagnostics::Diagnostics;
 pub use live::Live;
 pub use playback::Playback;

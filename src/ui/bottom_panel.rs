@@ -21,6 +21,7 @@ pub fn render_bottom_panel(
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     acquisition: &mut Acquisition,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     let dt = ctx.input(|i| i.stable_dt);
 
@@ -144,20 +145,35 @@ pub fn render_bottom_panel(
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
                 }
 
-                render_acquisition_drawer(ui, state, live, acquisition, drawer_height - 4.0);
+                render_acquisition_drawer(
+                    ui,
+                    state,
+                    live,
+                    acquisition,
+                    drawer_height - 4.0,
+                    chrome,
+                );
                 ui.separator();
             }
 
             ui.vertical(|ui| {
                 // Timeline row
-                render_timeline(ui, state, timeline, live, playback);
+                render_timeline(ui, state, timeline, live, playback, chrome);
 
                 ui.add_space(2.0);
 
                 // Playback controls row
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    render_playback_controls(ui, state, timeline, live, playback, acquisition);
+                    render_playback_controls(
+                        ui,
+                        state,
+                        timeline,
+                        live,
+                        playback,
+                        acquisition,
+                        chrome,
+                    );
                 });
             });
         });

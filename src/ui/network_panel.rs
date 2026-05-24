@@ -9,13 +9,17 @@ use crate::state::{format_bytes, AppState};
 use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
 
 /// Render the network log modal if open.
-pub fn render_network_log(ctx: &egui::Context, state: &mut AppState) {
-    if !state.network_log_open {
+pub fn render_network_log(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
+) {
+    if !chrome.network_log_open {
         return;
     }
 
     if super::modal_helper::modal_backdrop(ctx, "network_log_backdrop", 160) {
-        state.network_log_open = false;
+        chrome.network_log_open = false;
         return;
     }
 

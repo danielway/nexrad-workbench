@@ -26,13 +26,14 @@ pub fn render_vcp_forecast_modal(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &crate::subsystem::Live,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !state.vcp_forecast_open {
+    if !chrome.vcp_forecast_open {
         return;
     }
 
     if super::modal_helper::modal_backdrop(ctx, "vcp_forecast_backdrop", 160) {
-        state.vcp_forecast_open = false;
+        chrome.vcp_forecast_open = false;
         return;
     }
 
@@ -84,15 +85,16 @@ pub fn render_vcp_forecast_modal(
                 );
                 ui.add_space(8.0);
                 if ui.button("Close").clicked() {
-                    state.vcp_forecast_open = false;
+                    chrome.vcp_forecast_open = false;
                 }
             }
             Some(snap) => {
-                render_snapshot(ui, ctx, &snap, &arrivals, &site_id, dark, state);
+                render_snapshot(ui, ctx, &snap, &arrivals, &site_id, dark, state, chrome);
             }
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_snapshot(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -101,6 +103,7 @@ fn render_snapshot(
     site_id: &str,
     dark: bool,
     state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     let label_color = ui_colors::label(dark);
     let value_color = ui_colors::value(dark);
@@ -521,7 +524,7 @@ fn render_snapshot(
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Close").clicked() {
-                state.vcp_forecast_open = false;
+                chrome.vcp_forecast_open = false;
             }
         });
     });

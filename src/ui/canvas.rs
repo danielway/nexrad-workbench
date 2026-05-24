@@ -24,6 +24,7 @@ pub fn render_canvas_with_geo(
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
     diagnostics: &mut crate::subsystem::Diagnostics,
     geo_layers: Option<&GeoLayerSet>,
     gpu: &crate::GpuResources,
@@ -305,6 +306,7 @@ pub fn render_canvas_with_geo(
                     timeline,
                     live,
                     playback,
+                    chrome,
                     sweep_line_info,
                     sweep_stale,
                 );
@@ -361,6 +363,7 @@ pub fn render_canvas_with_geo(
                     &rect,
                     state,
                     playback,
+                    chrome,
                     diagnostics,
                     &projection,
                 );

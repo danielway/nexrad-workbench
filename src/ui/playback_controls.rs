@@ -148,6 +148,7 @@ pub(super) fn render_playback_controls(
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     acquisition: &mut Acquisition,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     let use_local = state.use_local_time;
     let advanced = state.show_advanced();
@@ -463,7 +464,7 @@ pub(super) fn render_playback_controls(
 
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        render_session_stats(ui, state, playback, acquisition);
+        render_session_stats(ui, state, playback, acquisition, chrome);
     });
 }
 
@@ -560,6 +561,7 @@ fn render_session_stats(
     state: &mut AppState,
     playback: &mut crate::subsystem::Playback,
     acquisition: &mut Acquisition,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     let dark = state.is_dark;
 
@@ -583,7 +585,7 @@ fn render_session_stats(
         }
 
         // Pipeline status — clickable phase boxes open detail modal
-        render_pipeline_indicator(ui, state, playback);
+        render_pipeline_indicator(ui, state, playback, chrome);
 
         // Download group: requests + transferred
         // Use service worker aggregate if available, otherwise fall back to channel stats
@@ -667,6 +669,7 @@ fn render_pipeline_indicator(
     ui: &mut egui::Ui,
     state: &mut AppState,
     _playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     let pipeline = &state.session_stats.pipeline;
     let progress = &state.download_progress;
@@ -770,7 +773,7 @@ fn render_pipeline_indicator(
     );
 
     if clicked {
-        state.stats_detail_open = !state.stats_detail_open;
+        chrome.stats_detail_open = !chrome.stats_detail_open;
     }
 
     ui.separator();

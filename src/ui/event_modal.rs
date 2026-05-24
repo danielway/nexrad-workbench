@@ -182,8 +182,9 @@ pub fn render_event_modal(
     state: &mut AppState,
     playback: &crate::subsystem::Playback,
     modal_state: &mut EventModalState,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !state.event_modal_open {
+    if !chrome.event_modal_open {
         modal_state.initialized = false;
         return;
     }
@@ -191,7 +192,7 @@ pub fn render_event_modal(
     // Initialize form fields on first frame after opening
     if !modal_state.initialized {
         modal_state.initialized = true;
-        if let Some(editing_id) = state.event_modal_editing_id {
+        if let Some(editing_id) = chrome.event_modal_editing_id {
             // Editing existing event
             if let Some(event) = state
                 .saved_events
@@ -223,11 +224,11 @@ pub fn render_event_modal(
     }
 
     if super::modal_helper::modal_backdrop(ctx, "event_modal_backdrop", 160) {
-        state.event_modal_open = false;
+        chrome.event_modal_open = false;
         return;
     }
 
-    let is_editing = state.event_modal_editing_id.is_some();
+    let is_editing = chrome.event_modal_editing_id.is_some();
     let title = if is_editing {
         "Edit Event"
     } else {
@@ -367,11 +368,11 @@ pub fn render_event_modal(
                             .fill(Color32::from_rgb(200, 60, 60)),
                     );
                     if delete_btn.clicked() {
-                        if let Some(id) = state.event_modal_editing_id {
+                        if let Some(id) = chrome.event_modal_editing_id {
                             state.saved_events.remove(id);
                         }
-                        state.event_modal_open = false;
-                        state.event_modal_editing_id = None;
+                        chrome.event_modal_open = false;
+                        chrome.event_modal_editing_id = None;
                     }
                 }
 
@@ -382,7 +383,7 @@ pub fn render_event_modal(
                         let end = end_ts.unwrap();
                         let name = modal_state.name.trim().to_string();
 
-                        if let Some(id) = state.event_modal_editing_id {
+                        if let Some(id) = chrome.event_modal_editing_id {
                             state.saved_events.update(id, name, start, end);
                         } else {
                             state
@@ -390,13 +391,13 @@ pub fn render_event_modal(
                                 .add(name, modal_state.site_id.clone(), start, end);
                         }
 
-                        state.event_modal_open = false;
-                        state.event_modal_editing_id = None;
+                        chrome.event_modal_open = false;
+                        chrome.event_modal_editing_id = None;
                     }
 
                     if ui.button("Cancel").clicked() {
-                        state.event_modal_open = false;
-                        state.event_modal_editing_id = None;
+                        chrome.event_modal_open = false;
+                        chrome.event_modal_editing_id = None;
                     }
                 });
             });

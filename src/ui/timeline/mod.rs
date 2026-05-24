@@ -241,6 +241,7 @@ pub(super) fn render_timeline(
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
+    _chrome: &crate::subsystem::Chrome,
 ) {
     let use_local = state.use_local_time;
     let available_width = ui.available_width() as f64;

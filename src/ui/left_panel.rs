@@ -32,11 +32,12 @@ pub fn render_left_panel(
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     // Left panel is power-user instrumentation (VCP / azimuth / elevation
     // diagnostics). Mobile layout never invokes this function; the
     // visibility/Basic-mode gate below covers the desktop "hidden" cases.
-    if !state.left_sidebar_visible || !state.show_advanced() {
+    if !chrome.left_sidebar_visible || !state.show_advanced() {
         return;
     }
 

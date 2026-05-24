@@ -155,25 +155,10 @@ pub struct AppState {
     /// Storage settings (quota, eviction targets).
     pub storage_settings: StorageSettings,
 
-    /// Whether the site selection modal is open.
-    pub site_modal_open: bool,
-
     /// Preferred NEXRAD site chosen during first visit. `Some` means the user
     /// has already completed the first-visit flow and this site should be used
     /// as the default on future visits.
     pub preferred_site: Option<String>,
-
-    /// Whether the left sidebar is visible.
-    pub left_sidebar_visible: bool,
-
-    /// Whether the right sidebar is visible.
-    pub right_sidebar_visible: bool,
-
-    /// Whether the keyboard shortcut help overlay is visible.
-    pub shortcuts_help_visible: bool,
-
-    /// Whether the "wipe all data" confirmation modal is open.
-    pub wipe_modal_open: bool,
 
     /// Theme mode selection (System, Dark, Light).
     pub theme_mode: ThemeMode,
@@ -199,20 +184,8 @@ pub struct AppState {
     /// Override via `?ui=basic` or `?ui=advanced`.
     pub advanced_mode: bool,
 
-    /// Whether the stats detail popup is open.
-    pub stats_detail_open: bool,
-
-    /// Whether the VCP forecast diagnostics modal is open.
-    pub vcp_forecast_open: bool,
-
     /// User-saved weather event bookmarks.
     pub saved_events: SavedEvents,
-
-    /// Whether the event create/edit modal is open.
-    pub event_modal_open: bool,
-
-    /// Event ID being edited (None = creating new event).
-    pub event_modal_editing_id: Option<u64>,
 
     /// Aggregate network statistics from the service worker (all intercepted traffic).
     pub network_aggregate: crate::nexrad::NetworkAggregate,
@@ -223,9 +196,6 @@ pub struct AppState {
 
     /// Whether the browsing context is cross-origin isolated (SharedArrayBuffer available).
     pub cross_origin_isolated: bool,
-
-    /// Whether the network request log modal is open.
-    pub network_log_open: bool,
 
     /// Recent-errors ring buffer. Reporters across the codebase push
     /// into this; UI surfaces from it instead of inventing its own
@@ -254,19 +224,6 @@ pub struct AppState {
     /// User override for mobile mode. `None` = auto (default), `Some(true)` =
     /// force mobile, `Some(false)` = force desktop. Persisted via preferences.
     pub mobile_override: Option<bool>,
-
-    /// Whether the mobile settings modal (opened via the ellipsis button in
-    /// the mobile bottom bar) is currently visible.
-    pub mobile_settings_open: bool,
-
-    /// Active tab inside the mobile settings modal.
-    pub mobile_settings_tab: MobileSettingsTab,
-
-    /// Latched when the mobile bottom bar's location button is tapped. The
-    /// main update loop consumes this flag and kicks off geolocation against
-    /// the `SiteModalState` that lives outside `AppState`, avoiding a direct
-    /// state dependency from the bottom-bar renderer.
-    pub mobile_geolocate_requested: bool,
 
     /// Per-frame render caches: camera-motion tracking for label-tier
     /// debouncing, prev-sweep lookup memoization, and theme-gating state.
@@ -426,8 +383,6 @@ impl AppState {
             session_stats: SessionStats::new(),
             storage_settings,
             saved_events,
-            left_sidebar_visible: true,
-            right_sidebar_visible: true,
             theme_mode,
             is_dark,
             commands,

@@ -156,6 +156,10 @@ pub struct WorkbenchApp {
     /// realtime lock.
     playback: subsystem::Playback,
 
+    /// Chrome subsystem: UI shell visibility flags + modal-open
+    /// booleans (sidebars, help overlay, modals, mobile settings sheet).
+    chrome: subsystem::Chrome,
+
     /// URL state, preferences, and site change detection.
     persistence: nexrad::PersistenceManager,
 
@@ -244,6 +248,7 @@ impl WorkbenchApp {
         let mut playback = subsystem::Playback {
             state: bootstrapped_playback,
         };
+        let mut chrome = subsystem::Chrome::new();
 
         // Apply URL parameters (site, time, lat/lon)
         let url_params = state::url_state::parse_from_url();
@@ -370,7 +375,7 @@ impl WorkbenchApp {
                     // Not a first visit — modal starts in SiteList mode if reopened
                 }
             } else {
-                state.site_modal_open = true;
+                chrome.site_modal_open = true;
             }
         }
 
@@ -470,6 +475,7 @@ impl WorkbenchApp {
             live: subsystem::Live::new(realtime_channel),
             timeline: subsystem::Timeline::default(),
             playback,
+            chrome,
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             modals: ui::ModalStates::new(has_preferred_site),
             diagnostics: {
@@ -688,18 +694,30 @@ impl eframe::App for WorkbenchApp {
             // Consume any deferred geolocation request raised by the mobile
             // action bar. Handled here because the site-modal state lives
             // outside AppState.
-            if self.state.mobile_geolocate_requested {
-                self.state.mobile_geolocate_requested = false;
-                ui::trigger_geolocation(ctx, &mut self.state, &mut self.modals.site);
+            if self.chrome.mobile_geolocate_requested {
+                self.chrome.mobile_geolocate_requested = false;
+                ui::trigger_geolocation(
+                    ctx,
+                    &mut self.state,
+                    &mut self.chrome,
+                    &mut self.modals.site,
+                );
             }
 
-            ui::render_mobile_top_bar(ctx, &mut self.state, &self.live, &mut self.diagnostics);
+            ui::render_mobile_top_bar(
+                ctx,
+                &mut self.state,
+                &self.live,
+                &mut self.diagnostics,
+                &mut self.chrome,
+            );
             ui::render_mobile_chrome(
                 ctx,
                 &mut self.state,
                 &self.timeline,
                 &mut self.live,
                 &mut self.playback,
+                &mut self.chrome,
             );
         } else {
             ui::render_top_bar(
@@ -708,6 +726,7 @@ impl eframe::App for WorkbenchApp {
                 &mut self.live,
                 &mut self.playback,
                 &mut self.diagnostics,
+                &mut self.chrome,
             );
             ui::render_bottom_panel(
                 ctx,
@@ -716,6 +735,7 @@ impl eframe::App for WorkbenchApp {
                 &mut self.live,
                 &mut self.playback,
                 &mut self.acquisition,
+                &mut self.chrome,
             );
             ui::render_left_panel(
                 ctx,
@@ -723,6 +743,7 @@ impl eframe::App for WorkbenchApp {
                 &self.timeline,
                 &self.live,
                 &self.playback,
+                &mut self.chrome,
             );
             ui::render_right_panel(
                 ctx,
@@ -731,6 +752,7 @@ impl eframe::App for WorkbenchApp {
                 &self.live,
                 &mut self.playback,
                 &mut self.diagnostics,
+                &mut self.chrome,
             );
         }
 
@@ -741,6 +763,7 @@ impl eframe::App for WorkbenchApp {
             &self.timeline,
             &self.live,
             &mut self.playback,
+            &mut self.chrome,
             &mut self.diagnostics,
             Some(&self.geo_layers),
             &self.gpu,
@@ -753,10 +776,16 @@ impl eframe::App for WorkbenchApp {
             &mut self.live,
             &self.timeline,
             &mut self.playback,
+            &mut self.chrome,
         );
 
         // 21. RENDER (overlays): modals layered above the canvas.
-        ui::render_site_modal(ctx, &mut self.state, &mut self.modals.site);
+        ui::render_site_modal(
+            ctx,
+            &mut self.state,
+            &mut self.chrome,
+            &mut self.modals.site,
+        );
         ui::render_mobile_settings_modal(
             ctx,
             &mut self.state,
@@ -764,13 +793,20 @@ impl eframe::App for WorkbenchApp {
             &mut self.live,
             &mut self.playback,
             &mut self.diagnostics,
+            &mut self.chrome,
         );
-        ui::render_shortcuts_help(ctx, &mut self.state);
-        ui::render_wipe_modal(ctx, &mut self.state);
-        ui::render_stats_modal(ctx, &mut self.state, &self.live);
-        ui::render_vcp_forecast_modal(ctx, &mut self.state, &self.live);
-        ui::render_network_log(ctx, &mut self.state);
-        ui::render_event_modal(ctx, &mut self.state, &self.playback, &mut self.modals.event);
+        ui::render_shortcuts_help(ctx, &mut self.state, &mut self.chrome);
+        ui::render_wipe_modal(ctx, &mut self.state, &mut self.chrome);
+        ui::render_stats_modal(ctx, &mut self.state, &self.live, &mut self.chrome);
+        ui::render_vcp_forecast_modal(ctx, &mut self.state, &self.live, &mut self.chrome);
+        ui::render_network_log(ctx, &mut self.state, &mut self.chrome);
+        ui::render_event_modal(
+            ctx,
+            &mut self.state,
+            &self.playback,
+            &mut self.modals.event,
+            &mut self.chrome,
+        );
         ui::render_alerts_modals(ctx, &mut self.state, &mut self.diagnostics);
         ui::render_mping_modal(ctx, &mut self.diagnostics, &mut self.modals.mping);
     }

@@ -57,6 +57,7 @@ type HandlerFn = fn(
     &mut crate::subsystem::Live,
     &crate::subsystem::Timeline,
     &mut crate::subsystem::Playback,
+    &mut crate::subsystem::Chrome,
     &egui::Context,
 );
 
@@ -173,7 +174,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "2D top-down mode",
         pressed: |i| no_mods(i, egui::Key::Num1),
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _playback, _| {
+        handler: |state, _live, _timeline, _playback, _chrome, _| {
             state.viz_state.view_mode = ViewMode::Flat2D
         },
     },
@@ -183,7 +184,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "3D site orbit mode",
         pressed: |i| no_mods(i, egui::Key::Num2),
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _playback, _| {
+        handler: |state, _live, _timeline, _playback, _chrome, _| {
             state.viz_state.view_mode = ViewMode::Globe3D;
             state.viz_state.camera.switch_mode(CameraMode::SiteOrbit);
         },
@@ -194,7 +195,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "3D planet orbit mode",
         pressed: |i| no_mods(i, egui::Key::Num3),
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _playback, _| {
+        handler: |state, _live, _timeline, _playback, _chrome, _| {
             state.viz_state.view_mode = ViewMode::Globe3D;
             state.viz_state.camera.switch_mode(CameraMode::PlanetOrbit);
         },
@@ -205,7 +206,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Free look mode",
         pressed: |i| no_mods(i, egui::Key::Num4),
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _playback, _| {
+        handler: |state, _live, _timeline, _playback, _chrome, _| {
             state.viz_state.view_mode = ViewMode::Globe3D;
             state.viz_state.camera.switch_mode(CameraMode::FreeLook);
         },
@@ -216,7 +217,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Toggle last 2D / 3D mode",
         pressed: |i| no_mods(i, egui::Key::T),
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _playback, _| {
+        handler: |state, _live, _timeline, _playback, _chrome, _| {
             state.viz_state.view_mode = match state.viz_state.view_mode {
                 ViewMode::Flat2D => ViewMode::Globe3D,
                 ViewMode::Globe3D => ViewMode::Flat2D,
@@ -246,7 +247,9 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Align North up (3D)",
         pressed: |i| no_mods(i, egui::Key::N),
         enabled: in_3d,
-        handler: |state, _live, _timeline, _playback, _| state.viz_state.camera.align_north(),
+        handler: |state, _live, _timeline, _playback, _chrome, _| {
+            state.viz_state.camera.align_north()
+        },
     },
     OneShotShortcut {
         section: SECTION_CAMERA,
@@ -254,7 +257,9 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Reset pivot to default (3D)",
         pressed: |i| no_mods(i, egui::Key::Home),
         enabled: in_3d,
-        handler: |state, _live, _timeline, _playback, _| state.viz_state.camera.reset_pivot(),
+        handler: |state, _live, _timeline, _playback, _chrome, _| {
+            state.viz_state.camera.reset_pivot()
+        },
     },
     // ---- General ----------------------------------------------------
     OneShotShortcut {
@@ -267,8 +272,8 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
                 || (i.key_pressed(egui::Key::Slash) && i.modifiers.shift)
         },
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _playback, _| {
-            state.shortcuts_help_visible = !state.shortcuts_help_visible
+        handler: |_state, _live, _timeline, _playback, chrome, _| {
+            chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible
         },
     },
     OneShotShortcut {
@@ -277,7 +282,9 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         description: "Toggle Basic / Advanced controls",
         pressed: |i| i.key_pressed(egui::Key::A) && i.modifiers.command && i.modifiers.shift,
         enabled: always_enabled,
-        handler: |state, _live, _timeline, _playback, _| state.advanced_mode = !state.advanced_mode,
+        handler: |state, _live, _timeline, _playback, _chrome, _| {
+            state.advanced_mode = !state.advanced_mode
+        },
     },
 ];
 
@@ -326,6 +333,7 @@ pub fn handle_shortcuts(
     live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     // No keyboard on mobile; skip shortcut processing entirely.
     if state.is_mobile {
@@ -343,7 +351,7 @@ pub fn handle_shortcuts(
             continue;
         }
         if ctx.input(sc.pressed) {
-            (sc.handler)(state, live, timeline, playback, ctx);
+            (sc.handler)(state, live, timeline, playback, chrome, ctx);
         }
     }
 
@@ -369,6 +377,7 @@ fn handle_step_backward(
     live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
     exit_live_if_active(state, live, playback, LiveExitReason::UserJogged);
@@ -394,6 +403,7 @@ fn handle_step_forward(
     live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
     exit_live_if_active(state, live, playback, LiveExitReason::UserJogged);
@@ -419,6 +429,7 @@ fn handle_speed_down(
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
     let speeds = PlaybackSpeed::all();
@@ -434,6 +445,7 @@ fn handle_speed_up(
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
     let speeds = PlaybackSpeed::all();
@@ -449,6 +461,7 @@ fn handle_toggle_live(
     live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
     if live.mode_state.is_active() {
@@ -471,6 +484,7 @@ fn handle_cycle_product(
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
     _playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
     let products = RadarProduct::all();
@@ -484,6 +498,7 @@ fn handle_cycle_elevation(
     live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
     let entries = state.current_elevation_list(
@@ -512,13 +527,14 @@ fn handle_cycle_elevation(
 }
 
 fn handle_open_site(
-    state: &mut AppState,
+    _state: &mut AppState,
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
     _playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    state.site_modal_open = true;
+    chrome.site_modal_open = true;
 }
 
 fn handle_reset_camera(
@@ -526,6 +542,7 @@ fn handle_reset_camera(
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
     _playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
     if state.viz_state.view_mode == ViewMode::Flat2D {
@@ -541,6 +558,7 @@ fn handle_focus_site(
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
     _playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
     if state.viz_state.view_mode == ViewMode::Flat2D {
@@ -610,15 +628,19 @@ fn handle_continuous_movement(
 // ---------------------------------------------------------------------------
 
 /// Render the keyboard shortcut help overlay.
-pub fn render_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
-    if !state.shortcuts_help_visible {
+pub fn render_shortcuts_help(
+    ctx: &egui::Context,
+    _state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
+) {
+    if !chrome.shortcuts_help_visible {
         return;
     }
 
     // Close on Escape (checked here because the overlay area may consume the key
     // event before handle_shortcuts sees it)
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-        state.shortcuts_help_visible = false;
+        chrome.shortcuts_help_visible = false;
         return;
     }
 
@@ -638,7 +660,7 @@ pub fn render_shortcuts_help(ctx: &egui::Context, state: &mut AppState) {
                         ui.heading("Keyboard Shortcuts");
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button(egui_phosphor::regular::X).clicked() {
-                                state.shortcuts_help_visible = false;
+                                chrome.shortcuts_help_visible = false;
                             }
                         });
                     });

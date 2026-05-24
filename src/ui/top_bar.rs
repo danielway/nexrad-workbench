@@ -10,6 +10,7 @@ pub fn render_top_bar(
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     // Detect status message changes: if the message content differs from when we
     // last recorded the timestamp, update the timestamp now. This works even when
@@ -42,7 +43,7 @@ pub fn render_top_bar(
                         .on_hover_text("Toggle left panel")
                         .clicked()
                 {
-                    state.left_sidebar_visible = !state.left_sidebar_visible;
+                    chrome.left_sidebar_visible = !chrome.left_sidebar_visible;
                 }
 
                 // App title
@@ -62,14 +63,14 @@ pub fn render_top_bar(
                     .on_hover_text("Click to change radar site")
                     .clicked()
                 {
-                    state.site_modal_open = true;
+                    chrome.site_modal_open = true;
                 }
 
                 ui.separator();
 
                 // NWS alerts chip — shown only in 2D when one or more alerts
                 // intersect the visible map bounds.
-                render_alerts_chip(ui, state, diagnostics);
+                render_alerts_chip(ui, state, diagnostics, chrome);
 
                 // Recent-errors chip — surfaces failures from the unified
                 // ErrorContext aggregator. Quiet when no errors have been
@@ -140,7 +141,7 @@ pub fn render_top_bar(
                         .on_hover_text("Toggle right panel")
                         .clicked()
                     {
-                        state.right_sidebar_visible = !state.right_sidebar_visible;
+                        chrome.right_sidebar_visible = !chrome.right_sidebar_visible;
                     }
 
                     // Help button — toggles keyboard shortcut overlay
@@ -149,7 +150,7 @@ pub fn render_top_bar(
                         .on_hover_text("Keyboard shortcuts (?)")
                         .clicked()
                     {
-                        state.shortcuts_help_visible = !state.shortcuts_help_visible;
+                        chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible;
                     }
 
                     // Basic / Advanced pill — toggles UI complexity. Same
@@ -343,6 +344,7 @@ pub(super) fn render_alerts_chip(
     ui: &mut egui::Ui,
     state: &mut AppState,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    _chrome: &mut crate::subsystem::Chrome,
 ) {
     // Show a subtle loading/error hint on the first fetch so the user knows
     // the feed is being contacted. After the first success, stay quiet unless

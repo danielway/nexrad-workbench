@@ -19,6 +19,7 @@ pub(crate) fn render_mobile_chrome(
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the home indicator reservation. Pad the action bar below the
@@ -30,7 +31,7 @@ pub(crate) fn render_mobile_chrome(
         .resizable(false)
         .exact_height(ACTION_BAR_HEIGHT + inset_bottom)
         .show(ctx, |ui| {
-            render_action_bar(ui, state, live, playback);
+            render_action_bar(ui, state, live, playback, chrome);
         });
 
     // Scrubber — sits just above the action bar.
@@ -54,6 +55,7 @@ fn render_action_bar(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     let total_w = ui.available_width();
     let slot_h = ACTION_BAR_HEIGHT;
@@ -66,7 +68,7 @@ fn render_action_bar(
     } else {
         ui.visuals().strong_text_color()
     };
-    let settings_open = state.mobile_settings_open;
+    let settings_open = chrome.mobile_settings_open;
 
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
@@ -84,10 +86,10 @@ fn render_action_bar(
         )
         .clicked()
         {
-            state.site_modal_open = true;
+            chrome.site_modal_open = true;
             // Close the settings modal if it was open so the site modal
             // isn't sitting on top of two backdrops.
-            state.mobile_settings_open = false;
+            chrome.mobile_settings_open = false;
         }
 
         // 2. Crosshair → trigger geolocation immediately. The modal's
@@ -104,8 +106,8 @@ fn render_action_bar(
         )
         .clicked()
         {
-            state.mobile_geolocate_requested = true;
-            state.mobile_settings_open = false;
+            chrome.mobile_geolocate_requested = true;
+            chrome.mobile_settings_open = false;
         }
 
         // 3. Broadcast → toggle live mode.
@@ -142,9 +144,9 @@ fn render_action_bar(
         )
         .clicked()
         {
-            state.mobile_settings_open = !settings_open;
-            if state.mobile_settings_open {
-                state.mobile_settings_tab = MobileSettingsTab::default();
+            chrome.mobile_settings_open = !settings_open;
+            if chrome.mobile_settings_open {
+                chrome.mobile_settings_tab = MobileSettingsTab::default();
             }
         }
     });

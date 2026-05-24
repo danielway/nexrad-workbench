@@ -101,17 +101,24 @@ fn responsive_width(ctx: &egui::Context, desktop: f32) -> f32 {
 /// the error visible.
 pub fn trigger_geolocation(
     ctx: &egui::Context,
-    state: &mut AppState,
+    _state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) {
-    state.site_modal_open = true;
+    chrome.site_modal_open = true;
     modal_state.mode = SiteModalMode::Pending;
     modal_state.error_message = None;
     start_geolocation(modal_state.location_sender(), ctx.clone());
 }
 
 /// Apply a site selection to app state: update viz, center camera, refresh timeline.
-pub(super) fn apply_site_selection(state: &mut AppState, site_id: &str, lat: f64, lon: f64) {
+pub(super) fn apply_site_selection(
+    state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
+    site_id: &str,
+    lat: f64,
+    lon: f64,
+) {
     state.viz_state.site_id = site_id.to_string();
     state.viz_state.center_lat = lat;
     state.viz_state.center_lon = lon;
@@ -122,7 +129,7 @@ pub(super) fn apply_site_selection(state: &mut AppState, site_id: &str, lat: f64
     });
     state.push_command(crate::state::AppCommand::RefreshAlerts);
     state.preferred_site = Some(site_id.to_string());
-    state.site_modal_open = false;
+    chrome.site_modal_open = false;
 }
 
 /// Start browser geolocation lookup.
@@ -296,9 +303,10 @@ async fn zip_lookup_attempt(url: &str) -> Verdict<(f64, f64)> {
 pub fn render_site_modal(
     ctx: &egui::Context,
     state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
-    if !state.site_modal_open {
+    if !chrome.site_modal_open {
         return false;
     }
 
@@ -307,7 +315,7 @@ pub fn render_site_modal(
         match result {
             LocationResult::Success(lat, lon) => {
                 if let Some(site) = nearest_site(lat, lon) {
-                    apply_site_selection(state, site.id, site.lat, site.lon);
+                    apply_site_selection(state, chrome, site.id, site.lat, site.lon);
                     modal_state.mode = SiteModalMode::Welcome;
                     modal_state.filter.clear();
                     modal_state.zip_input.clear();
@@ -331,7 +339,7 @@ pub fn render_site_modal(
             SiteModalMode::Welcome => {
                 // Only allow closing if we already have a site
                 if get_site(&state.viz_state.site_id).is_some() && !modal_state.is_first_visit {
-                    state.site_modal_open = false;
+                    chrome.site_modal_open = false;
                     return false;
                 }
             }
@@ -345,7 +353,7 @@ pub fn render_site_modal(
                 modal_state.error_message = None;
             }
             _ => {
-                state.site_modal_open = false;
+                chrome.site_modal_open = false;
                 return false;
             }
         }
@@ -370,19 +378,19 @@ pub fn render_site_modal(
                 && !modal_state.is_first_visit
                 && get_site(&state.viz_state.site_id).is_some()
             {
-                state.site_modal_open = false;
+                chrome.site_modal_open = false;
             }
         });
 
     match modal_state.mode {
         SiteModalMode::Welcome => {
-            selected = render_welcome_screen(ctx, state, modal_state);
+            selected = render_welcome_screen(ctx, state, chrome, modal_state);
         }
         SiteModalMode::SiteList => {
-            selected = render_site_list(ctx, state, modal_state);
+            selected = render_site_list(ctx, state, chrome, modal_state);
         }
         SiteModalMode::ZipEntry => {
-            selected = render_zip_entry(ctx, state, modal_state);
+            selected = render_zip_entry(ctx, state, chrome, modal_state);
         }
         SiteModalMode::Pending => {
             render_pending_screen(ctx);
@@ -395,7 +403,8 @@ pub fn render_site_modal(
 /// Render the selection method screen with three paths (location, zip, browse).
 fn render_welcome_screen(
     ctx: &egui::Context,
-    state: &mut AppState,
+    _state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
     let selected = false;
@@ -497,7 +506,7 @@ fn render_welcome_screen(
                         .small_button(RichText::new("Cancel").color(Color32::GRAY))
                         .clicked()
                     {
-                        state.site_modal_open = false;
+                        chrome.site_modal_open = false;
                     }
                 });
                 ui.add_space(4.0);
@@ -511,6 +520,7 @@ fn render_welcome_screen(
 fn render_site_list(
     ctx: &egui::Context,
     state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
     let mut selected = false;
@@ -554,7 +564,7 @@ fn render_site_list(
                         .desired_width(search_w),
                 );
                 // Auto-focus the search field
-                if state.site_modal_open {
+                if chrome.site_modal_open {
                     response.request_focus();
                 }
             });
@@ -586,7 +596,7 @@ fn render_site_list(
             if enter_pressed && filtered.len() == 1 {
                 let site = &filtered[0];
                 if site.id != state.viz_state.site_id {
-                    apply_site_selection(state, site.id, site.lat, site.lon);
+                    apply_site_selection(state, chrome, site.id, site.lat, site.lon);
                     modal_state.filter.clear();
                     modal_state.mode = SiteModalMode::Welcome;
                     modal_state.is_first_visit = false;
@@ -620,7 +630,7 @@ fn render_site_list(
                         };
 
                         if ui.selectable_label(is_current, text).clicked() && !is_current {
-                            apply_site_selection(state, site.id, site.lat, site.lon);
+                            apply_site_selection(state, chrome, site.id, site.lat, site.lon);
                             modal_state.filter.clear();
                             modal_state.mode = SiteModalMode::Welcome;
                             modal_state.is_first_visit = false;
@@ -636,7 +646,8 @@ fn render_site_list(
 /// Render the zip code entry view.
 fn render_zip_entry(
     ctx: &egui::Context,
-    state: &mut AppState,
+    _state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
     let window_w = responsive_width(ctx, 340.0);
@@ -717,7 +728,7 @@ fn render_zip_entry(
                         .small_button(RichText::new("Cancel").color(Color32::GRAY))
                         .clicked()
                     {
-                        state.site_modal_open = false;
+                        chrome.site_modal_open = false;
                     }
                 });
                 ui.add_space(4.0);

@@ -6,13 +6,17 @@ use crate::state::AppState;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Render the "wipe all data" confirmation modal if open.
-pub fn render_wipe_modal(ctx: &egui::Context, state: &mut AppState) {
-    if !state.wipe_modal_open {
+pub fn render_wipe_modal(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
+) {
+    if !chrome.wipe_modal_open {
         return;
     }
 
     if super::modal_helper::modal_backdrop(ctx, "wipe_modal_backdrop", 180) {
-        state.wipe_modal_open = false;
+        chrome.wipe_modal_open = false;
         return;
     }
 
@@ -47,7 +51,7 @@ pub fn render_wipe_modal(ctx: &egui::Context, state: &mut AppState) {
 
             ui.horizontal(|ui| {
                 if ui.button("Cancel").clicked() {
-                    state.wipe_modal_open = false;
+                    chrome.wipe_modal_open = false;
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -56,7 +60,7 @@ pub fn render_wipe_modal(ctx: &egui::Context, state: &mut AppState) {
                             .fill(Color32::from_rgb(200, 60, 60)),
                     );
                     if reset_btn.clicked() {
-                        state.wipe_modal_open = false;
+                        chrome.wipe_modal_open = false;
                         state.push_command(crate::state::AppCommand::WipeAll);
                     }
                 });

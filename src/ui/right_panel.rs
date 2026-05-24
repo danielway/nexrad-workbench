@@ -12,10 +12,11 @@ pub fn render_right_panel(
     live: &crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     // Mobile layout never invokes this function; the visibility gate
     // below only handles the desktop "hidden" case.
-    if !state.right_sidebar_visible {
+    if !chrome.right_sidebar_visible {
         return;
     }
 
@@ -32,27 +33,31 @@ pub fn render_right_panel(
                 render_product_section(ui, state, timeline, live, playback);
                 ui.add_space(5.0);
 
-                render_layers_section(ui, state, diagnostics, playback);
+                render_layers_section(ui, state, diagnostics, playback, chrome);
 
                 if state.show_advanced() {
                     ui.add_space(5.0);
-                    render_rendering_section(ui, state, playback);
+                    render_rendering_section(ui, state, playback, chrome);
                     ui.add_space(5.0);
                     render_volume_section(ui, state);
                     ui.add_space(5.0);
-                    render_tools_section(ui, state);
+                    render_tools_section(ui, state, chrome);
                     ui.add_space(5.0);
-                    render_events_section(ui, state, playback);
+                    render_events_section(ui, state, playback, chrome);
                     ui.add_space(5.0);
-                    render_storage_section(ui, state);
+                    render_storage_section(ui, state, chrome);
                     ui.add_space(5.0);
-                    render_developer_section(ui, state);
+                    render_developer_section(ui, state, chrome);
                 }
             });
         });
 }
 
-fn render_developer_section(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_developer_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    _chrome: &mut crate::subsystem::Chrome,
+) {
     egui::CollapsingHeader::new(RichText::new("Developer").strong())
         .default_open(false)
         .show(ui, |ui| {
@@ -234,6 +239,7 @@ pub(super) fn render_layers_section(
     state: &mut AppState,
     diagnostics: &mut crate::subsystem::Diagnostics,
     playback: &crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
 ) {
     let advanced = state.show_advanced();
     egui::CollapsingHeader::new(RichText::new("Layers").strong())
@@ -327,6 +333,7 @@ pub(super) fn render_rendering_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
     playback: &crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
 ) {
     let in_macro = playback.state.playback_mode() == crate::state::PlaybackMode::Macro;
     egui::CollapsingHeader::new(RichText::new("Rendering").strong())
@@ -415,7 +422,11 @@ fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-pub(super) fn render_tools_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_tools_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    _chrome: &mut crate::subsystem::Chrome,
+) {
     egui::CollapsingHeader::new(RichText::new("Tools").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -460,6 +471,7 @@ pub(super) fn render_events_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
     playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     egui::CollapsingHeader::new(RichText::new("Events").strong())
         .default_open(true)
@@ -476,8 +488,8 @@ pub(super) fn render_events_section(
                 )
                 .on_hover_text("Select a time range on the timeline first (Shift+drag)");
             if btn.clicked() {
-                state.event_modal_open = true;
-                state.event_modal_editing_id = None;
+                chrome.event_modal_open = true;
+                chrome.event_modal_editing_id = None;
             }
 
             // Events for current site
@@ -509,14 +521,14 @@ pub(super) fn render_events_section(
                                 .small_button(egui_phosphor::regular::PENCIL_SIMPLE)
                                 .clicked()
                             {
-                                state.event_modal_open = true;
-                                state.event_modal_editing_id = Some(event.id);
+                                chrome.event_modal_open = true;
+                                chrome.event_modal_editing_id = Some(event.id);
                             }
                             if ui
                                 .small_button(egui_phosphor::regular::NAVIGATION_ARROW)
                                 .clicked()
                             {
-                                navigate_to_event(state, playback, event);
+                                navigate_to_event(state, playback, event, chrome);
                             }
                         });
                     });
@@ -561,14 +573,14 @@ pub(super) fn render_events_section(
                                         .small_button(egui_phosphor::regular::PENCIL_SIMPLE)
                                         .clicked()
                                     {
-                                        state.event_modal_open = true;
-                                        state.event_modal_editing_id = Some(event.id);
+                                        chrome.event_modal_open = true;
+                                        chrome.event_modal_editing_id = Some(event.id);
                                     }
                                     if ui
                                         .small_button(egui_phosphor::regular::NAVIGATION_ARROW)
                                         .clicked()
                                     {
-                                        navigate_to_event(state, playback, event);
+                                        navigate_to_event(state, playback, event, chrome);
                                     }
                                 },
                             );
@@ -589,6 +601,7 @@ fn navigate_to_event(
     state: &mut AppState,
     playback: &mut crate::subsystem::Playback,
     event: &crate::state::SavedEvent,
+    _chrome: &mut crate::subsystem::Chrome,
 ) {
     use crate::data::get_site;
 
@@ -648,7 +661,11 @@ fn event_color(id: u64) -> egui::Color32 {
     PALETTE[(id % PALETTE.len() as u64) as usize]
 }
 
-pub(super) fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_storage_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
+) {
     egui::CollapsingHeader::new(RichText::new("Storage").strong())
         .default_open(true)
         .show(ui, |ui| {
@@ -728,7 +745,7 @@ pub(super) fn render_storage_section(ui: &mut egui::Ui, state: &mut AppState) {
                 .on_hover_text("Wipe all data and settings, then reload")
                 .clicked()
             {
-                state.wipe_modal_open = true;
+                chrome.wipe_modal_open = true;
             }
         });
 }

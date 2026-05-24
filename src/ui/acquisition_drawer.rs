@@ -20,6 +20,7 @@ pub fn render_acquisition_drawer(
     live: &crate::subsystem::Live,
     acquisition: &mut Acquisition,
     height: f32,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     let dark = state.is_dark;
 
@@ -65,7 +66,7 @@ pub fn render_acquisition_drawer(
                 } else {
                     // Network tab: link to full log
                     if ui.small_button("Full Log").clicked() {
-                        state.network_log_open = true;
+                        chrome.network_log_open = true;
                     }
                 }
             });

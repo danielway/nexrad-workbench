@@ -21,6 +21,7 @@ pub(crate) fn render_mobile_top_bar(
     state: &mut AppState,
     live: &crate::subsystem::Live,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the translucent status bar / notch. Pad the top so OS icons
@@ -59,7 +60,7 @@ pub(crate) fn render_mobile_top_bar(
                     .button(RichText::new(&site_label).size(14.0).strong())
                     .clicked()
                 {
-                    state.site_modal_open = true;
+                    chrome.site_modal_open = true;
                 }
 
                 ui.separator();
@@ -74,7 +75,7 @@ pub(crate) fn render_mobile_top_bar(
                 ui.label(RichText::new(icon).size(14.0).color(accent_color));
 
                 // Alerts chip (reuses the desktop helper).
-                super::super::top_bar::render_alerts_chip(ui, state, diagnostics);
+                super::super::top_bar::render_alerts_chip(ui, state, diagnostics, chrome);
 
                 // Worker error banner — critical, must be visible on mobile too.
                 if let Some(ref error_msg) = state.worker_init_error {

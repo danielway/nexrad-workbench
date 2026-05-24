@@ -134,11 +134,13 @@ pub(crate) fn handle_globe_interaction(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_canvas_interaction(
     response: &egui::Response,
     rect: &Rect,
     state: &mut AppState,
     playback: &crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
     diagnostics: &mut crate::subsystem::Diagnostics,
     projection: &MapProjection,
 ) {
@@ -161,7 +163,7 @@ pub(crate) fn handle_canvas_interaction(
             // polygons, so they hit-test first; alerts catch the rest.
             let mut handled = false;
             if let Some((site_id, lat, lon)) = pick_site_at(click_pos, projection, state) {
-                apply_site_selection(state, site_id, lat, lon);
+                apply_site_selection(state, chrome, site_id, lat, lon);
                 handled = true;
             }
             if !handled && state.layer_state.geo.mping && data_is_live(&playback.state) {
