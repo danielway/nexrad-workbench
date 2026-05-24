@@ -159,8 +159,9 @@ pub struct WorkbenchApp {
     /// the transient input doesn't survive a reload.
     modals: ui::ModalStates,
 
-    /// Diagnostics subsystem: observability + peripheral telemetry overlays
-    /// (currently NWS alerts; mPING / GPS / network monitor fold in next).
+    /// Diagnostics subsystem: observability + peripheral telemetry
+    /// overlays (NWS alerts, mPING storm reports, GPS location,
+    /// service-worker network monitor).
     diagnostics: subsystem::Diagnostics,
 
     /// Last `AppMode` pushed to the favicon. `None` until the first frame so
