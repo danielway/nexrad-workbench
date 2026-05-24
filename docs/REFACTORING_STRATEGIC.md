@@ -270,7 +270,7 @@ Each initiative is multiple PRs; standard per-PR checks:
 
 | ID | Title | Status |
 |----|-------|--------|
-| S1 | Subsystem Decomposition | in progress (Acquisition + Diagnostics + Render + Live (channel only) extracted; Timeline/Playback/Chrome remain; Live still owes mode/model/app_mode) |
+| S1 | Subsystem Decomposition | in progress (Acquisition + Diagnostics + Render (incl. ScrubCache) + Live (channel only) extracted; Timeline/Playback/Chrome remain; Live still owes mode/model/app_mode) |
 | S2 | Unified Async / Effect Model | in progress (GpsState + SiteModalState location queues moved to mpsc channels; upsert_scan single-writer enforced via UpsertScanGuard RAII; RealtimeChannel + CHUNK_ACCUM remain) |
 | S3 | UI Layer Tree | not started |
 | S4 | Camera + Projection State Machine | not started |
