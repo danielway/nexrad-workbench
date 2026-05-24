@@ -26,7 +26,7 @@ const MAX_RETAINED: usize = 50;
 /// Variants identify the originating subsystem so the UI can show an
 /// appropriate icon / link without parsing the message string.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Some variants are slated for future reporter migrations.
+#[allow(dead_code)] // `Other` is reserved for future reporters not yet migrated.
 pub enum AppError {
     /// Failure from the decode worker.
     Worker {
@@ -54,7 +54,6 @@ pub enum AppError {
 
 impl AppError {
     /// Short human-readable label for the originating subsystem.
-    #[allow(dead_code)] // UI consumer comes in a follow-up PR.
     pub fn source_label(&self) -> &'static str {
         match self {
             AppError::Worker { .. } => "worker",
@@ -66,7 +65,6 @@ impl AppError {
     }
 
     /// The user-facing message.
-    #[allow(dead_code)] // UI consumer comes in a follow-up PR.
     pub fn message(&self) -> &str {
         match self {
             AppError::Worker { message, .. }
@@ -80,7 +78,6 @@ impl AppError {
 
 /// One entry in the error ring buffer.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Fields read by future UI consumers.
 pub struct TimestampedError {
     pub error: AppError,
     /// Wall-clock time the error was pushed (milliseconds since epoch).
@@ -108,20 +105,29 @@ impl ErrorContext {
         self.recent.push_back(entry);
     }
 
-    /// All retained entries, oldest first.
-    #[allow(dead_code)] // UI consumer comes in a follow-up PR.
-    pub fn iter(&self) -> impl Iterator<Item = &TimestampedError> {
+    /// All retained entries, oldest first. The returned iterator is
+    /// double-ended so callers can `.rev()` for newest-first display.
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &TimestampedError> {
         self.recent.iter()
     }
 
     /// Most recent error, if any.
-    #[allow(dead_code)] // UI consumer comes in a follow-up PR.
+    #[allow(dead_code)] // Available for callers; current UI iterates instead.
     pub fn most_recent(&self) -> Option<&TimestampedError> {
         self.recent.back()
     }
 
+    /// Number of retained entries.
+    pub fn len(&self) -> usize {
+        self.recent.len()
+    }
+
+    /// Whether the ring is currently empty.
+    pub fn is_empty(&self) -> bool {
+        self.recent.is_empty()
+    }
+
     /// Clear the ring.
-    #[allow(dead_code)]
     pub fn clear(&mut self) {
         self.recent.clear();
     }

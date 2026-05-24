@@ -1,7 +1,7 @@
 //! Top bar UI: app title, status, and site context.
 
 use crate::alerts::AlertSeverity;
-use crate::state::{AppCommand, AppMode, AppState, CameraMode, ViewMode};
+use crate::state::{AppCommand, AppMode, AppState, CameraMode, ErrorContext, ViewMode};
 use eframe::egui::{self, Color32, Frame, RichText};
 
 pub fn render_top_bar(
@@ -68,6 +68,11 @@ pub fn render_top_bar(
                 // NWS alerts chip — shown only in 2D when one or more alerts
                 // intersect the visible map bounds.
                 render_alerts_chip(ui, state, diagnostics);
+
+                // Recent-errors chip — surfaces failures from the unified
+                // ErrorContext aggregator. Quiet when no errors have been
+                // pushed; a click pops a small log with the latest entries.
+                render_errors_chip(ui, &mut state.errors);
 
                 // Persistent worker initialization error banner
                 if let Some(ref error_msg) = state.worker_init_error {
@@ -441,6 +446,98 @@ pub(super) fn render_alerts_chip(
     }
 
     ui.separator();
+}
+
+/// Render a compact errors-log indicator for the top bar.
+///
+/// Renders nothing when no errors have been recorded — this is the
+/// quiet, non-intrusive baseline. As soon as any reporter pushes into
+/// [`ErrorContext`], a warning chip with a count appears; clicking it
+/// pops a small log showing the most recent entries (newest first) and
+/// a Clear button to dismiss the ring.
+pub(super) fn render_errors_chip(ui: &mut egui::Ui, errors: &mut ErrorContext) {
+    if errors.is_empty() {
+        return;
+    }
+
+    let count = errors.len();
+    let label = format!("{} {}", egui_phosphor::regular::WARNING, count);
+    let chip_color = Color32::from_rgb(220, 120, 60);
+
+    let response = ui.add(egui::Button::new(
+        RichText::new(label).size(13.0).strong().color(chip_color),
+    ));
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let hover = if count == 1 {
+        "1 recent error — click for details".to_string()
+    } else {
+        format!("{} recent errors — click for details", count)
+    };
+
+    let response = response.on_hover_text(hover);
+
+    egui::Popup::menu(&response).show(|ui| {
+        ui.set_min_width(320.0);
+        ui.set_max_width(480.0);
+        ui.label(RichText::new(format!("Recent errors ({})", count)).strong());
+        ui.separator();
+
+        // Show newest first, capped at 10 entries to keep the popup
+        // compact. The ring buffer retains 50 total — opening a full
+        // log view is left to a future Modal if appetite arises.
+        let now_ms = js_sys::Date::now();
+        let entries: Vec<_> = errors.iter().rev().take(10).cloned().collect();
+        for entry in &entries {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format_age(now_ms - entry.timestamp_ms))
+                        .size(11.0)
+                        .color(Color32::from_rgb(130, 130, 130)),
+                );
+                ui.label(
+                    RichText::new(entry.error.source_label())
+                        .size(11.0)
+                        .color(Color32::from_rgb(180, 140, 80))
+                        .strong(),
+                );
+                ui.label(
+                    RichText::new(entry.error.message())
+                        .size(12.0)
+                        .color(Color32::from_rgb(220, 220, 220)),
+                );
+            });
+        }
+
+        ui.separator();
+        if ui
+            .button(format!("{} Clear", egui_phosphor::regular::TRASH))
+            .clicked()
+        {
+            errors.clear();
+            ui.close();
+        }
+    });
+
+    ui.separator();
+}
+
+/// Compact relative-age string for the errors popup. Always returns a
+/// 4–6 char string so columns stay aligned.
+fn format_age(age_ms: f64) -> String {
+    let secs = (age_ms.max(0.0) / 1000.0) as u64;
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86400 {
+        format!("{}h", secs / 3600)
+    } else {
+        format!("{}d", secs / 86400)
+    }
 }
 
 /// Render the unified mode badge (Idle / Archive / Live) in the top bar.
