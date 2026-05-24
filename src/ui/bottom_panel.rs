@@ -7,19 +7,14 @@ use eframe::egui;
 use super::playback_controls::render_playback_controls;
 use super::timeline::render_timeline;
 
+/// Desktop bottom panel: timeline + playback controls + session stats.
+///
+/// Only rendered when not in mobile layout — the mobile chrome owns the
+/// bottom region. The per-frame pulse-animation tick is hoisted into the
+/// main update loop so it runs in both layouts without this function
+/// needing to be called as a side-effect carrier on mobile.
 pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     let dt = ctx.input(|i| i.stable_dt);
-
-    // Update live mode pulse animation
-    state.live_mode_state.update_pulse(dt);
-
-    // Mobile chrome owns the bottom region; skip the desktop panel entirely.
-    // (Spacebar toggle is skipped along with it — on mobile there's no
-    // keyboard, and on a narrow desktop window it's reasonable to lose it
-    // in favor of the mobile layout.)
-    if state.is_mobile {
-        return;
-    }
 
     // Handle spacebar to toggle playback (only when no text input is focused)
     let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space) && !i.modifiers.any());

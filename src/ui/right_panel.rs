@@ -6,7 +6,9 @@ use crate::state::{
 use eframe::egui::{self, RichText, ScrollArea};
 
 pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
-    if state.is_mobile || !state.right_sidebar_visible {
+    // Mobile layout never invokes this function; the visibility gate
+    // below only handles the desktop "hidden" case.
+    if !state.right_sidebar_visible {
         return;
     }
 

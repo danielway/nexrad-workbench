@@ -668,10 +668,16 @@ impl eframe::App for WorkbenchApp {
         // 18. Recolor the favicon if the AppMode changed this frame.
         self.sync_favicon_to_mode();
 
+        // Per-frame chrome animations that should tick in both layouts.
+        // Hoisted out of `render_bottom_panel` so the mobile path doesn't
+        // have to call it as a no-op side-effect carrier.
+        let dt = ctx.input(|i| i.stable_dt);
+        self.state.live_mode_state.update_pulse(dt);
+
         // 19. RENDER (panels). egui requires side and top/bottom panels
-        // to be rendered before CentralPanel. On mobile, the tabbed chrome
-        // replaces both the desktop top bar and bottom panel; the
-        // left/right side panels early-return internally.
+        // to be rendered before CentralPanel. main.rs is the single
+        // dispatcher for layout choice; panels no longer self-check
+        // `is_mobile`.
         if self.state.is_mobile {
             // Consume any deferred geolocation request raised by the mobile
             // action bar. Handled here because the site-modal state lives
@@ -683,10 +689,6 @@ impl eframe::App for WorkbenchApp {
 
             ui::render_mobile_top_bar(ctx, &mut self.state);
             ui::render_mobile_chrome(ctx, &mut self.state);
-            // The desktop bottom_panel is still called so its per-frame
-            // side effects (pulse animation update) run. It early-returns
-            // before rendering when `is_mobile` is true.
-            ui::render_bottom_panel(ctx, &mut self.state);
         } else {
             ui::render_top_bar(ctx, &mut self.state);
             ui::render_bottom_panel(ctx, &mut self.state);

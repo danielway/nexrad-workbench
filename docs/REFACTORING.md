@@ -172,7 +172,7 @@ Each catalog item is independently shippable as its own PR. Per-item verificatio
 | A2 | AppCommand dispatch consistency | done |
 | D1 | Unified typed error model | partial (worker boundary done; app-side ErrorContext aggregation deferred) |
 | E3 | Modal state pattern unification | done |
-| E4 | Mobile/desktop chrome unification | not started |
+| E4 | Mobile/desktop chrome unification | partial (single-dispatcher cleanup done; LayoutProvider trait deferred) |
 | A1 | Consolidate `WorkbenchApp` managers | not started |
 | A3 | Unify acquisition state ownership | not started |
 | A4 | Decompose `AppState` into nested sub-states | not started |

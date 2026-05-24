@@ -28,8 +28,9 @@ struct RadarStateAtTimestamp<'a> {
 
 pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
     // Left panel is power-user instrumentation (VCP / azimuth / elevation
-    // diagnostics). Hide entirely in Basic and on mobile.
-    if state.is_mobile || !state.left_sidebar_visible || !state.show_advanced() {
+    // diagnostics). Mobile layout never invokes this function; the
+    // visibility/Basic-mode gate below covers the desktop "hidden" cases.
+    if !state.left_sidebar_visible || !state.show_advanced() {
         return;
     }
 
