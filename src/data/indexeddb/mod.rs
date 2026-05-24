@@ -19,9 +19,12 @@
 //! - Cross-store transactions are supported by passing a multi-store slice.
 //! - `upsert_scan` does a readonly `scan_availability` lookup before its
 //!   readwrite transaction to decide create-vs-merge. The split is *not*
-//!   atomic, so callers must ensure single-writer serialization for a given
-//!   scan key. The ingest pipeline does this via the per-worker
-//!   `CHUNK_ACCUM` thread-local.
+//!   atomic across async awaits, so the function acquires an
+//!   [`UpsertScanGuard`] at entry and returns
+//!   [`DataError::ConcurrentUpsert`] when a second task tries to upsert
+//!   the same scan in parallel. The ingest pipeline already serializes
+//!   via the per-worker `CHUNK_ACCUM` thread-local; the guard is the
+//!   type-system backstop.
 
 use crate::data::keys::*;
 use js_sys::{Array, ArrayBuffer, Uint8Array};
@@ -48,6 +51,11 @@ pub enum DataError {
     NotFound,
     /// (De)serialization of stored data failed.
     SerdeError(String),
+    /// Another async task is already performing an upsert for this scan.
+    /// The non-atomic read-then-write split in `upsert_scan` requires
+    /// per-scan serialization; this is raised when that contract is
+    /// violated rather than letting the writes silently race.
+    ConcurrentUpsert { scan_key: String },
 }
 
 impl std::fmt::Display for DataError {
@@ -66,8 +74,55 @@ impl std::fmt::Display for DataError {
             ),
             DataError::NotFound => write!(f, "Not found"),
             DataError::SerdeError(msg) => write!(f, "Serde error: {}", msg),
+            DataError::ConcurrentUpsert { scan_key } => {
+                write!(f, "Concurrent upsert in flight for scan {}", scan_key)
+            }
         }
     }
+}
+
+/// RAII token enforcing the single-writer invariant on
+/// [`IndexedDbStore::upsert_scan`]. The store's read-then-write split is
+/// not atomic across its two IDB transactions, so two concurrent async
+/// tasks writing the same scan would race; this token rejects the second
+/// caller via [`DataError::ConcurrentUpsert`] instead of corrupting
+/// `scan_availability`.
+///
+/// Acquire via [`UpsertScanGuard::try_acquire`]; drop releases the lock.
+/// The lock is per-scan-key and lives in a thread-local (WASM is
+/// single-threaded; the only contention is between concurrently-running
+/// async futures on the same worker).
+pub struct UpsertScanGuard {
+    key: String,
+}
+
+impl UpsertScanGuard {
+    /// Try to acquire the lock for `scan`. Returns `None` if another
+    /// task is mid-upsert for the same scan; the caller should propagate
+    /// [`DataError::ConcurrentUpsert`] in that case.
+    pub fn try_acquire(scan: &crate::data::ScanKey) -> Option<Self> {
+        let key = scan.to_storage_key();
+        UPSERT_LOCKS.with(|locks| {
+            if !locks.borrow_mut().insert(key.clone()) {
+                None
+            } else {
+                Some(Self { key })
+            }
+        })
+    }
+}
+
+impl Drop for UpsertScanGuard {
+    fn drop(&mut self) {
+        UPSERT_LOCKS.with(|locks| {
+            locks.borrow_mut().remove(&self.key);
+        });
+    }
+}
+
+thread_local! {
+    static UPSERT_LOCKS: std::cell::RefCell<std::collections::HashSet<String>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
 }
 
 /// Format a `JsValue` error into a string. Tries to extract `name`/`message`
@@ -343,14 +398,24 @@ impl IndexedDbStore {
     /// fields merged) without any blob writes.
     ///
     /// Read-modify-write is *not* atomic across the readonly and readwrite
-    /// transactions, so the caller must ensure single-writer serialization
-    /// for a given scan key. The ingest pipeline does this via the
-    /// per-worker `CHUNK_ACCUM` thread-local.
+    /// transactions, so callers must serialize on the per-scan key. This
+    /// is enforced at runtime by an [`UpsertScanGuard`] acquired here:
+    /// two concurrent async tasks targeting the same scan are rejected
+    /// with [`DataError::ConcurrentUpsert`] rather than allowed to race.
+    /// (The ingest pipeline naturally serializes already via the
+    /// per-worker `CHUNK_ACCUM` thread-local; the guard is the
+    /// type-system backstop.)
     pub async fn upsert_scan(
         &self,
         header: &ScanHeader,
         elevations: &[ElevationUpload],
     ) -> Result<(), DataError> {
+        let _guard = UpsertScanGuard::try_acquire(&header.scan).ok_or_else(|| {
+            DataError::ConcurrentUpsert {
+                scan_key: header.scan.to_storage_key(),
+            }
+        })?;
+
         // Drop phantom elevations at the boundary. Everything downstream
         // (manifest derivation, blob writes, size accounting) operates on
         // the filtered list, so the manifest can never claim a sweep that
@@ -774,3 +839,37 @@ mod helpers;
 mod logic;
 pub use helpers::WriteTransaction;
 use helpers::*;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::{ScanKey, SiteId, UnixMillis};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn key(site: &str, ms: i64) -> ScanKey {
+        ScanKey::new(SiteId::new(site), UnixMillis(ms))
+    }
+
+    #[wasm_bindgen_test]
+    fn upsert_guard_blocks_concurrent_acquisition_for_same_scan() {
+        let scan = key("KDMX", 1_700_000_000_000);
+        let g1 = UpsertScanGuard::try_acquire(&scan).expect("first acquire succeeds");
+        assert!(
+            UpsertScanGuard::try_acquire(&scan).is_none(),
+            "second concurrent acquire must fail"
+        );
+        drop(g1);
+        // Once the first guard is dropped, the lock is released and a
+        // fresh acquire is allowed again.
+        assert!(UpsertScanGuard::try_acquire(&scan).is_some());
+    }
+
+    #[wasm_bindgen_test]
+    fn upsert_guard_independent_per_scan() {
+        let scan_a = key("KDMX", 1_700_000_000_000);
+        let scan_b = key("KFTG", 1_700_000_000_000);
+        let _ga = UpsertScanGuard::try_acquire(&scan_a).expect("acquire A");
+        let _gb =
+            UpsertScanGuard::try_acquire(&scan_b).expect("acquire B independent of A succeeds");
+    }
+}
