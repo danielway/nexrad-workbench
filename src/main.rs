@@ -654,8 +654,8 @@ impl eframe::App for WorkbenchApp {
         // "My Location" checkbox sees coords/error on the same frame the
         // geolocation callback fires.
         let drained_gps: Vec<_> = self
-            .state
-            .gps_state
+            .diagnostics
+            .gps
             .results
             .borrow_mut()
             .drain(..)
@@ -663,12 +663,12 @@ impl eframe::App for WorkbenchApp {
         for r in drained_gps {
             match r {
                 ui::LocationResult::Success(lat, lon) => {
-                    self.state.gps_state.coords = Some((lat, lon));
-                    self.state.gps_state.error = None;
+                    self.diagnostics.gps.coords = Some((lat, lon));
+                    self.diagnostics.gps.error = None;
                 }
                 ui::LocationResult::Error(msg) => {
-                    self.state.gps_state.error = Some(msg);
-                    self.state.gps_state.coords = None;
+                    self.diagnostics.gps.error = Some(msg);
+                    self.diagnostics.gps.coords = None;
                     self.state.layer_state.geo.gps_location = false;
                 }
             }

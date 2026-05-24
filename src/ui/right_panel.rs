@@ -265,17 +265,17 @@ pub(super) fn render_layers_section(
                      (one-shot lookup; requires browser permission)",
                 );
             if !was_gps_on && state.layer_state.geo.gps_location {
-                state.gps_state.coords = None;
-                state.gps_state.error = None;
+                diagnostics.gps.coords = None;
+                diagnostics.gps.error = None;
                 crate::ui::start_geolocation(
-                    state.gps_state.results.clone(),
+                    diagnostics.gps.results.clone(),
                     gps_resp.ctx.clone(),
                 );
             } else if was_gps_on && !state.layer_state.geo.gps_location {
-                state.gps_state.coords = None;
-                state.gps_state.error = None;
+                diagnostics.gps.coords = None;
+                diagnostics.gps.error = None;
             }
-            if let Some(err) = state.gps_state.error.clone() {
+            if let Some(err) = diagnostics.gps.error.clone() {
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
             }
 

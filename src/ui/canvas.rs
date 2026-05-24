@@ -272,7 +272,7 @@ pub fn render_canvas_with_geo(
                 }
 
                 if state.layer_state.geo.gps_location {
-                    if let Some(coords) = state.gps_state.coords {
+                    if let Some(coords) = diagnostics.gps.coords {
                         render_gps_location(&painter, &projection, coords);
                     }
                 }

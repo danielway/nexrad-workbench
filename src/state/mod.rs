@@ -258,10 +258,6 @@ pub struct AppState {
     /// the corresponding layer toggle is enabled.
     pub national_mosaic: crate::nexrad::NationalMosaic,
 
-    /// Transient GPS-location state backing the "My Location" map overlay.
-    /// Per-session only — not persisted across reloads.
-    pub gps_state: GpsState,
-
     /// Resolved mobile mode for the current frame. Computed by
     /// [`AppState::refresh_mobile_mode`] from viewport width and touch history.
     /// When true, panels collapse to the mobile chrome.

@@ -15,7 +15,7 @@
 use crate::alerts::AlertsManager;
 use crate::mping::{MpingManager, MpingTickInputs};
 use crate::nexrad::NetworkMonitor;
-use crate::state::{AlertsState, MpingState};
+use crate::state::{AlertsState, GpsState, MpingState};
 use eframe::egui;
 
 /// Per-frame inputs the diagnostics subsystem needs to tick its managers.
@@ -45,6 +45,10 @@ pub struct Diagnostics {
     pub mping: MpingState,
     /// Lifecycle for the mPING polling loop.
     pub mping_manager: MpingManager,
+    /// Transient one-shot GPS-location state for the "My Location" overlay.
+    /// Not persisted across reloads (geolocation permission is per-session
+    /// in many browsers).
+    pub gps: GpsState,
     /// Service worker network monitor. Lazily initialized the first time
     /// dev mode becomes active so the listener isn't attached when the
     /// user can't see the metrics.
@@ -58,6 +62,7 @@ impl Diagnostics {
             alerts_manager: AlertsManager::new(),
             mping: MpingState::default(),
             mping_manager: MpingManager::new(),
+            gps: GpsState::default(),
             network_monitor: None,
         }
     }
