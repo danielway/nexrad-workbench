@@ -272,5 +272,5 @@ Each initiative is multiple PRs; standard per-PR checks:
 |----|-------|--------|
 | S1 | Subsystem Decomposition | ✅ done (Acquisition + Diagnostics + Render + Live + Timeline + Playback + Chrome all extracted). AppState shrank from ~45 to ~22 fields; WorkbenchApp owns 7 bounded subsystems. |
 | S2 | Unified Async / Effect Model | ✅ done (GpsState + SiteModalState location queues moved to mpsc; upsert_scan single-writer enforced via UpsertScanGuard RAII; RealtimeChannel fully migrated — results / observations / control all typed channels, active as Rc<Cell<bool>>, no shared RealtimeState). CHUNK_ACCUM hardening still pending as a smaller follow-up. |
-| S3 | UI Layer Tree | not started |
-| S4 | Camera + Projection State Machine | not started |
+| S3 | UI Layer Tree | not started — substantial design work. Symptom: 40 functions silenced `clippy::too_many_arguments` after S1 threading. A declarative layer tree would address this by giving each rendered surface its own bound context. |
+| S4 | Camera + Projection State Machine | partial — F2 `Projection` trait + `GlobeProjection` adapter landed; F1 camera enum split (the `GlobeCamera` struct → `Camera` enum with `PlanetOrbit`/`SiteOrbit`/`FreeLook` variants) not started. F1 is large (`geo/camera.rs` is 889 lines and every interaction handler branches on mode). |
