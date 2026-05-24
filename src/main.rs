@@ -159,9 +159,6 @@ pub struct WorkbenchApp {
     /// the transient input doesn't survive a reload.
     modals: ui::ModalStates,
 
-    /// Service worker network monitor (None if SW not available).
-    network_monitor: Option<nexrad::NetworkMonitor>,
-
     /// Sweep cache and previous-sweep resolution for sweep animation.
     playback_manager: PlaybackManager,
 
@@ -476,9 +473,6 @@ impl WorkbenchApp {
             streaming: realtime_channel,
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             modals: ui::ModalStates::new(has_preferred_site),
-            // Lazily initialized when dev mode is enabled (at startup if the
-            // URL has `dev=true`, or when the user toggles it on later).
-            network_monitor: None,
             playback_manager: PlaybackManager::new(),
             diagnostics: subsystem::Diagnostics::new(),
             mping_manager: mping::MpingManager::new(),
@@ -495,7 +489,7 @@ impl WorkbenchApp {
         // Attach the service-worker network monitor only in dev mode. When
         // toggled on later, `update_network_stats` will lazily attach it.
         if app.state.dev_mode {
-            app.network_monitor = nexrad::NetworkMonitor::new();
+            app.diagnostics.network_monitor = nexrad::NetworkMonitor::new();
         }
 
         app
@@ -514,12 +508,12 @@ impl WorkbenchApp {
         if !self.state.dev_mode {
             return;
         }
-        if self.network_monitor.is_none() {
-            self.network_monitor = nexrad::NetworkMonitor::new();
+        if self.diagnostics.network_monitor.is_none() {
+            self.diagnostics.network_monitor = nexrad::NetworkMonitor::new();
         }
 
         // Drain service worker network metrics into app state
-        if let Some(ref monitor) = self.network_monitor {
+        if let Some(ref monitor) = self.diagnostics.network_monitor {
             self.state.network_aggregate = monitor.aggregate();
             let mut pending = monitor.take_pending();
             if !pending.is_empty() {

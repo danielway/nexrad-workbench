@@ -13,6 +13,7 @@
 //! (e.g. recency-driven gating).
 
 use crate::alerts::AlertsManager;
+use crate::nexrad::NetworkMonitor;
 use crate::state::AlertsState;
 use eframe::egui;
 
@@ -23,6 +24,10 @@ pub struct Diagnostics {
     pub alerts: AlertsState,
     /// Lifecycle for the NWS alerts polling loop.
     pub alerts_manager: AlertsManager,
+    /// Service worker network monitor. Lazily initialized the first time
+    /// dev mode becomes active so the listener isn't attached when the
+    /// user can't see the metrics.
+    pub network_monitor: Option<NetworkMonitor>,
 }
 
 impl Diagnostics {
@@ -30,6 +35,7 @@ impl Diagnostics {
         Self {
             alerts: AlertsState::default(),
             alerts_manager: AlertsManager::new(),
+            network_monitor: None,
         }
     }
 
