@@ -6,39 +6,31 @@
 //!
 //! ## Cross-thread coordination
 //!
-//! Two typed [`futures_channel::mpsc`] queues carry the bulk of the
-//! traffic between the UI thread and the async `streaming_loop`:
+//! Three typed [`futures_channel::mpsc`] queues + one shared `Cell<bool>`
+//! carry all traffic between the UI thread and the async `streaming_loop`:
 //!
 //! - **results** (loop → UI): every [`RealtimeResult`] the loop produces.
 //! - **observations** (UI → loop): projector hints
 //!   ([`super::ProjectorObservation`]) the UI gathers from worker results
 //!   and forwards via [`RealtimeChannel::observe`].
+//! - **control** (UI → loop): stop signal + filter changes, drained on
+//!   every iteration and inside the sleep loop so a filter swap doesn't
+//!   have to wait for the current chunk to arrive.
+//! - **active flag** (`Rc<Cell<bool>>`): set true by `start()`, flipped
+//!   false by the loop on exit. The UI reads it via [`is_active`](Self::is_active).
 //!
-//! Both channel pairs are replaced on every `start()` so messages from a
-//! still-winding-down previous loop don't leak into the new session.
-//!
-//! Two fields still live on [`RealtimeState`] behind `Rc<RefCell<_>>`
-//! because the loop polls them synchronously inside `interruptible_sleep`
-//! every 250 ms:
-//!
-//! - `stop_requested`: set by `stop()`; the loop checks it on each iteration
-//!   and at every sleep break, exiting cleanly when set.
-//! - `pending_filter` / `filter_epoch`: bumped by `set_filter()` on every
-//!   change. A sleeping loop polls the epoch every ~250 ms and wakes to
-//!   re-target when it changes, so filter swaps don't have to wait for
-//!   the current chunk to arrive.
-//!
-//! Migrating these two to typed control channels is the next slice of S2;
-//! it requires a real select-with-timeout primitive (the loop's
-//! `interruptible_sleep` would become a `select!` over a control receiver
-//! and a sleep future).
+//! All three channel pairs are replaced on every `start()` so messages
+//! from a still-winding-down previous loop don't leak into the new
+//! session. The loop maintains the previously-shared filter/epoch state
+//! as local variables; nothing about per-stream coordination requires
+//! `Rc<RefCell<_>>` anymore.
 
 use super::download::NetworkStats;
 use super::streaming_filter::StreamingFilter;
 use crate::data::facade::DataFacade;
 use eframe::egui;
 use futures_channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 mod streaming;
@@ -171,44 +163,35 @@ pub enum RealtimeResult {
     Error(String),
 }
 
-/// Internal state for the realtime streaming channel.
+/// Control messages flowing from the UI thread into the streaming loop.
 ///
-/// Shared between the UI thread (via `RealtimeChannel`) and the async
-/// `streaming_loop`. Coordinates via the fields documented at the module
-/// top: `stop_requested`, `pending_filter` / `filter_epoch`. Streaming
-/// output and queued projector observations flow over separate typed
-/// channels rather than through this struct.
-#[derive(Default)]
-pub(super) struct RealtimeState {
-    pub(super) active: bool,
-    pub(super) stop_requested: bool,
-    /// Active filter on the chunk stream. Updated from the UI thread via
-    /// `RealtimeChannel::set_filter`; the streaming loop snapshots this on
-    /// each iteration and uses it to skip chunks that don't match.
-    ///
-    /// Filter changes aren't routed through the observations channel
-    /// because they have additional sleep-interruption semantics (see
-    /// `filter_epoch` below) and a re-entry path in the loop that other
-    /// observations don't need.
-    pub(super) pending_filter: StreamingFilter,
-    /// Bumped by `set_filter` on every change so a sleeping loop can detect
-    /// "the filter just changed" via epoch comparison and wake up to
-    /// re-target without polling the filter value itself for equality.
-    pub(super) filter_epoch: u64,
+/// The loop drains the control channel on every iteration and inside its
+/// sleep loop, so a filter change or stop signal interrupts a long wait
+/// without polling shared state.
+pub(super) enum ControlMessage {
+    /// Tear down the loop; the UI clears the active flag separately.
+    Stop,
+    /// Re-target chunk filtering. The loop replaces its `active_filter`
+    /// only when the value actually changes (mirrors the old
+    /// `pending_filter == filter` no-op check).
+    SetFilter(StreamingFilter),
 }
 
 /// Channel for real-time NEXRAD streaming.
 ///
-/// Two typed [`futures_channel::mpsc`] queues carry messages across the
-/// thread boundary:
+/// Three typed [`futures_channel::mpsc`] queues carry messages across
+/// the thread boundary:
 /// - `results` (loop → UI): every [`RealtimeResult`] the loop produces.
 /// - `observations` (UI → loop): projector hints (collection-end times,
 ///   availability lags) the UI gathers from worker results.
+/// - `control` (UI → loop): stop + filter-change messages.
 ///
-/// Both channel pairs are replaced on every [`start`](Self::start) so
-/// messages from a previously-running loop don't leak across sessions.
+/// All three channel pairs are replaced on every [`start`](Self::start)
+/// so messages from a previously-running loop don't leak across sessions.
+/// `active` is a `Cell<bool>` set by `start()` and cleared by the loop on
+/// exit; the UI reads it via [`is_active`](Self::is_active).
 pub struct RealtimeChannel {
-    state: Rc<RefCell<RealtimeState>>,
+    active: Rc<Cell<bool>>,
     /// Results channel pair. Refilled by `start()`; reads via
     /// `try_recv` borrow the receiver mutably through the `RefCell`.
     results: RefCell<ResultsChannel>,
@@ -216,6 +199,10 @@ pub struct RealtimeChannel {
     /// every [`observe`](Self::observe) call; the receiver is taken by
     /// the streaming loop when `start()` is called.
     observations: RefCell<ObservationsChannel>,
+    /// Control channel pair. The sender is held by `RealtimeChannel`;
+    /// the receiver is taken by the streaming loop when `start()` is
+    /// called.
+    control: RefCell<ControlChannel>,
     stats: NetworkStats,
 }
 
@@ -251,6 +238,26 @@ impl Default for ObservationsChannel {
     }
 }
 
+struct ControlChannel {
+    tx: UnboundedSender<ControlMessage>,
+    /// `Option` so `start()` can `take()` the receiver and hand it to
+    /// the streaming loop; reset to `Some` on every fresh channel pair.
+    rx: Option<UnboundedReceiver<ControlMessage>>,
+}
+
+impl ControlChannel {
+    fn new() -> Self {
+        let (tx, rx) = unbounded();
+        Self { tx, rx: Some(rx) }
+    }
+}
+
+impl Default for ControlChannel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Default for RealtimeChannel {
     fn default() -> Self {
         Self::new()
@@ -260,70 +267,83 @@ impl Default for RealtimeChannel {
 impl RealtimeChannel {
     pub fn new() -> Self {
         Self {
-            state: Rc::new(RefCell::new(RealtimeState::default())),
+            active: Rc::new(Cell::new(false)),
             results: RefCell::new(ResultsChannel::new()),
             observations: RefCell::new(ObservationsChannel::new()),
+            control: RefCell::new(ControlChannel::new()),
             stats: NetworkStats::new(),
         }
     }
 
     pub fn with_stats(stats: NetworkStats) -> Self {
         Self {
-            state: Rc::new(RefCell::new(RealtimeState::default())),
+            active: Rc::new(Cell::new(false)),
             results: RefCell::new(ResultsChannel::new()),
             observations: RefCell::new(ObservationsChannel::new()),
+            control: RefCell::new(ControlChannel::new()),
             stats,
         }
     }
 
     pub fn is_active(&self) -> bool {
-        self.state.borrow().active
+        self.active.get()
     }
 
     pub fn start(&self, ctx: egui::Context, site_id: String, facade: DataFacade) {
-        {
-            let mut state = self.state.borrow_mut();
-            state.active = true;
-            state.stop_requested = false;
-        }
+        self.active.set(true);
 
-        // Replace both channel pairs on every start so any in-flight
+        // Replace all channel pairs on every start so any in-flight
         // sends from a still-winding-down previous loop hit a dropped
         // receiver and disappear, rather than leaking into the new
         // session.
         *self.results.borrow_mut() = ResultsChannel::new();
         *self.observations.borrow_mut() = ObservationsChannel::new();
+        *self.control.borrow_mut() = ControlChannel::new();
         let results_tx = self.results.borrow().tx.clone();
-        // `take()` is safe because we just installed a fresh pair above —
-        // rx is always Some right after construction.
+        // `take()` is safe for both because we just installed fresh
+        // pairs above — rx is always Some right after construction.
         let observations_rx = self
             .observations
             .borrow_mut()
             .rx
             .take()
             .expect("freshly-built ObservationsChannel always has rx");
+        let control_rx = self
+            .control
+            .borrow_mut()
+            .rx
+            .take()
+            .expect("freshly-built ControlChannel always has rx");
 
-        let state = self.state.clone();
+        let active = self.active.clone();
         let stats = self.stats.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
             streaming_loop(
                 ctx,
                 site_id,
-                state,
+                active,
                 stats,
                 facade,
                 results_tx,
                 observations_rx,
+                control_rx,
             )
             .await;
         });
     }
 
     pub fn stop(&self) {
-        let mut state = self.state.borrow_mut();
-        state.stop_requested = true;
-        state.active = false;
+        // Send a Stop message; the loop will exit cleanly the next time
+        // it drains the control channel. Also clear `active` eagerly so
+        // `is_active()` reflects the user's intent immediately — the
+        // loop's own end-of-life clear is a defense-in-depth backstop.
+        let _ = self
+            .control
+            .borrow()
+            .tx
+            .unbounded_send(ControlMessage::Stop);
+        self.active.set(false);
     }
 
     pub fn try_recv(&self) -> Option<RealtimeResult> {
@@ -354,21 +374,20 @@ impl RealtimeChannel {
         self.observe(super::ProjectorObservation::AvailabilityLagSecs(lag_secs));
     }
 
-    /// Update the active streaming filter. Bumps the filter epoch so a
-    /// sleeping `streaming_loop` wakes within ~250 ms and re-targets.
-    /// Setting the same value the loop already has is a no-op.
+    /// Update the active streaming filter. The loop's de-dupe check
+    /// drops the message if the value didn't actually change, so calling
+    /// this every frame from the UI is cheap.
     pub fn set_filter(&self, filter: StreamingFilter) {
-        let mut state = self.state.borrow_mut();
-        if state.pending_filter == filter {
-            return;
-        }
-        state.pending_filter = filter;
-        state.filter_epoch = state.filter_epoch.wrapping_add(1);
+        let _ = self
+            .control
+            .borrow()
+            .tx
+            .unbounded_send(ControlMessage::SetFilter(filter));
     }
 
     /// Push the user's elevation selection down as a [`StreamingFilter`].
-    /// Called once per frame from the UI; the underlying [`Self::set_filter`]
-    /// no-ops on equal values, so this is cheap.
+    /// Called once per frame from the UI; the loop's de-dupe makes this
+    /// cheap.
     pub fn sync_filter(&self, selection: &crate::state::ElevationSelection) {
         self.set_filter(StreamingFilter::from(selection));
     }

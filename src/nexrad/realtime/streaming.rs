@@ -5,7 +5,7 @@
 //! back through the channel. All other functions here are helpers called
 //! from `streaming_loop` (or from `super::mod`'s `RealtimeChannel::start`).
 
-use super::{RealtimeResult, RealtimeState};
+use super::{ControlMessage, RealtimeResult};
 use crate::data::facade::DataFacade;
 use crate::net::retry::{
     attempt_with_timeout, compute_delay, sleep_duration, sleep_ms, Verdict, REALTIME_CHUNK_POLICY,
@@ -16,8 +16,56 @@ use crate::nexrad::streaming_state::StreamingState;
 use eframe::egui;
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::future::join_all;
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::rc::Rc;
+
+/// Loop-local mirror of the coordination state that used to live on
+/// `RealtimeState`. Updated by [`drain_control`] from incoming
+/// [`ControlMessage`]s.
+struct LoopState {
+    /// Set true when the UI sends [`ControlMessage::Stop`]; the loop
+    /// checks this at every iteration / sleep boundary.
+    stop_requested: bool,
+    /// Currently applied chunk filter. Bumped by [`ControlMessage::SetFilter`]
+    /// when the value actually changes.
+    active_filter: StreamingFilter,
+    /// Local counter that increments every time `active_filter` changes.
+    /// Used by [`interruptible_sleep`] to signal a sleep-aborting filter
+    /// swap to the main loop.
+    filter_epoch: u64,
+}
+
+impl LoopState {
+    fn new() -> Self {
+        Self {
+            stop_requested: false,
+            active_filter: StreamingFilter::All,
+            filter_epoch: 0,
+        }
+    }
+}
+
+/// Drain every pending control message into `loop_state`. Returns
+/// `true` if `active_filter` changed.
+fn drain_control(
+    loop_state: &mut LoopState,
+    control_rx: &mut UnboundedReceiver<ControlMessage>,
+) -> bool {
+    let mut filter_changed = false;
+    while let Ok(msg) = control_rx.try_recv() {
+        match msg {
+            ControlMessage::Stop => loop_state.stop_requested = true,
+            ControlMessage::SetFilter(new_filter) => {
+                if loop_state.active_filter != new_filter {
+                    loop_state.active_filter = new_filter;
+                    loop_state.filter_epoch = loop_state.filter_epoch.wrapping_add(1);
+                    filter_changed = true;
+                }
+            }
+        }
+    }
+    filter_changed
+}
 
 /// Outcome of `interruptible_sleep`. `Stopped` means the user requested stop;
 /// `FilterChanged` means the active filter changed mid-sleep so the caller
@@ -117,7 +165,8 @@ async fn emit_backfill_chunks(
     site_id: &str,
     targets: &[nexrad_data::aws::realtime::ChunkIdentifier],
     iter: &mut StreamingState,
-    state: &Rc<RefCell<RealtimeState>>,
+    loop_state: &mut LoopState,
+    control_rx: &mut UnboundedReceiver<ControlMessage>,
     results_tx: &UnboundedSender<RealtimeResult>,
     ctx: &egui::Context,
     chunks_in_volume_start: u32,
@@ -126,12 +175,14 @@ async fn emit_backfill_chunks(
 ) -> u32 {
     use nexrad_data::aws::realtime::download_chunk;
 
-    if targets.is_empty() || state.borrow().stop_requested {
+    drain_control(loop_state, control_rx);
+    if targets.is_empty() || loop_state.stop_requested {
         return 0;
     }
 
     let results = join_all(targets.iter().map(|id| download_chunk(site_id, id))).await;
-    if state.borrow().stop_requested {
+    drain_control(loop_state, control_rx);
+    if loop_state.stop_requested {
         return 0;
     }
 
@@ -200,7 +251,8 @@ async fn run_mid_stream_backfill(
     iter: &mut StreamingState,
     facade: &DataFacade,
     scan_start_secs: f64,
-    state: &Rc<RefCell<RealtimeState>>,
+    loop_state: &mut LoopState,
+    control_rx: &mut UnboundedReceiver<ControlMessage>,
     results_tx: &UnboundedSender<RealtimeResult>,
     ctx: &egui::Context,
     chunks_in_volume_start: u32,
@@ -265,7 +317,8 @@ async fn run_mid_stream_backfill(
         site_id,
         &to_download,
         iter,
-        state,
+        loop_state,
+        control_rx,
         results_tx,
         ctx,
         chunks_in_volume_start,
@@ -308,12 +361,18 @@ fn drain_pending_observations(
 pub(super) async fn streaming_loop(
     ctx: egui::Context,
     site_id: String,
-    state: Rc<RefCell<RealtimeState>>,
+    active: Rc<Cell<bool>>,
     stats: NetworkStats,
     facade: DataFacade,
     results_tx: UnboundedSender<RealtimeResult>,
     mut observations_rx: UnboundedReceiver<crate::nexrad::ProjectorObservation>,
+    mut control_rx: UnboundedReceiver<ControlMessage>,
 ) {
+    let mut loop_state = LoopState::new();
+    // First drain: pick up any control messages already queued (e.g.
+    // the UI's once-per-frame sync_filter that fired between start()
+    // returning and the loop's first iteration).
+    drain_control(&mut loop_state, &mut control_rx);
     use nexrad_data::aws::realtime::{list_chunks_in_volume, ChunkType};
 
     log::debug!("Starting realtime streaming for site: {}", site_id);
@@ -333,12 +392,11 @@ pub(super) async fn streaming_loop(
     let init_result = match futures_util::future::select(init_future, timeout_future).await {
         futures_util::future::Either::Left((Ok(init), _)) => init,
         futures_util::future::Either::Left((Err(e), _)) => {
-            let mut s = state.borrow_mut();
             let _ = results_tx.unbounded_send(RealtimeResult::Error(format!(
                 "Failed to initialize: {}",
                 e
             )));
-            s.active = false;
+            active.set(false);
             ctx.request_repaint();
             return;
         }
@@ -348,19 +406,20 @@ pub(super) async fn streaming_loop(
                 ACQUIRE_TIMEOUT_SECS,
                 site_id
             );
-            let mut s = state.borrow_mut();
             let _ = results_tx.unbounded_send(RealtimeResult::Error(format!(
                 "Acquisition timed out after {}s — data may be unavailable for this site",
                 ACQUIRE_TIMEOUT_SECS
             )));
-            s.active = false;
+            active.set(false);
             ctx.request_repaint();
             return;
         }
     };
 
     let mut iter = init_result.state;
-    iter.set_filter(state.borrow().pending_filter);
+    // Pick up any filter the UI sent before init completed.
+    drain_control(&mut loop_state, &mut control_rx);
+    iter.set_filter(loop_state.active_filter);
     if let Some(cached) = load_cached_timing_stats(&site_id) {
         iter.preload_timing_stats(cached);
         log::debug!("Loaded cached timing stats for {}", site_id);
@@ -440,7 +499,7 @@ pub(super) async fn streaming_loop(
         // chunk of elevation `n` in this volume, which may be earlier sweeps
         // that already finished — that's by design so the user sees their
         // selected elevation immediately on connect.
-        let initial_filter = state.borrow().pending_filter;
+        let initial_filter = loop_state.active_filter;
         let latest_seq = init_result.latest_chunk.identifier.sequence();
         let volume = *init_result.latest_chunk.identifier.volume();
         cache_volume_number(&site_id, volume);
@@ -501,7 +560,8 @@ pub(super) async fn streaming_loop(
                         &site_id,
                         &to_download,
                         &mut iter,
-                        &state,
+                        &mut loop_state,
+                        &mut control_rx,
                         &results_tx,
                         &ctx,
                         chunks_in_volume,
@@ -636,11 +696,15 @@ pub(super) async fn streaming_loop(
     // Track filter changes across iterations so we can run a mid-stream
     // backfill exactly once per change, and so the in-flight predicted-at
     // diagnostic doesn't outlive its target sequence.
-    let mut active_filter: StreamingFilter = state.borrow().pending_filter;
-    let mut active_filter_epoch: u64 = state.borrow().filter_epoch;
+    // Seed the loop's filter mirror from the LoopState (already
+    // populated by the init-time drain).
+    let mut active_filter_epoch: u64 = loop_state.filter_epoch;
+    let mut active_filter: StreamingFilter = loop_state.active_filter;
     loop {
-        // Check stop signal
-        if state.borrow().stop_requested {
+        // Drain control messages once per iteration so stop/filter
+        // signals propagate without waiting for a sleep boundary.
+        drain_control(&mut loop_state, &mut control_rx);
+        if loop_state.stop_requested {
             log::debug!("Realtime streaming stopped");
             break;
         }
@@ -655,9 +719,8 @@ pub(super) async fn streaming_loop(
         // race), run the mid-stream backfill before re-targeting. Discard
         // stale per-chunk diagnostics — they were aimed at the previous
         // target sequence.
-        let live_epoch = state.borrow().filter_epoch;
-        if live_epoch != active_filter_epoch {
-            let new_filter = state.borrow().pending_filter;
+        if loop_state.filter_epoch != active_filter_epoch {
+            let new_filter = loop_state.active_filter;
             log::debug!(
                 "streaming_loop: filter changed {:?} -> {:?}, resolving target",
                 active_filter,
@@ -675,7 +738,8 @@ pub(super) async fn streaming_loop(
                 &mut iter,
                 &facade,
                 current_scan_start_secs.0,
-                &state,
+                &mut loop_state,
+                &mut control_rx,
                 &results_tx,
                 &ctx,
                 chunks_in_volume,
@@ -685,7 +749,7 @@ pub(super) async fn streaming_loop(
             .await;
             chunks_in_volume += emitted;
             active_filter = new_filter;
-            active_filter_epoch = live_epoch;
+            active_filter_epoch = loop_state.filter_epoch;
             iter.set_filter(active_filter);
         }
 
@@ -726,7 +790,15 @@ pub(super) async fn streaming_loop(
             // `projected_poll_at_secs` upstream, so we sleep directly to
             // that target without additional padding here.
             if wait_ms > 0 {
-                match interruptible_sleep(&state, &ctx, wait_ms, active_filter_epoch).await {
+                match interruptible_sleep(
+                    &mut loop_state,
+                    &mut control_rx,
+                    &ctx,
+                    wait_ms,
+                    active_filter_epoch,
+                )
+                .await
+                {
                     SleepOutcome::Stopped => {
                         log::debug!("Realtime streaming stopped");
                         break;
@@ -758,7 +830,8 @@ pub(super) async fn streaming_loop(
         let mut synthetic_volume_end = false;
         let fetch_outcome: Result<nexrad_data::aws::realtime::DownloadedChunk, String> = 'retry: {
             for attempt in 1..=policy.max_attempts {
-                if state.borrow().stop_requested {
+                drain_control(&mut loop_state, &mut control_rx);
+                if loop_state.stop_requested {
                     break 'retry Err("stopped".into());
                 }
                 if attempt > 1 {
@@ -1020,16 +1093,15 @@ pub(super) async fn streaming_loop(
             }
             Err(msg) => {
                 log::error!("Streaming error: {}", msg);
-                let mut s = state.borrow_mut();
                 let _ = results_tx.unbounded_send(RealtimeResult::Error(msg));
-                s.active = false;
+                active.set(false);
                 ctx.request_repaint();
                 break;
             }
         }
     }
 
-    state.borrow_mut().active = false;
+    active.set(false);
 }
 
 /// Either an actual downloaded chunk or a synthetic-volume-end signal from
@@ -1092,14 +1164,17 @@ fn classify_chunk_result(
     }
 }
 
-/// Sleep in increments, updating countdown UI and watching for stop +
-/// filter-change signals. Returns the reason the sleep ended.
+/// Sleep in increments, draining the control channel and watching for
+/// stop + filter-change signals between increments. Returns the reason
+/// the sleep ended.
 ///
 /// `wake_epoch` is the `filter_epoch` value the caller observed when it
-/// decided how long to sleep — if it differs from the current epoch when we
-/// look, the filter has been mutated and the caller should re-evaluate.
+/// decided how long to sleep — if `drain_control` bumps it past that
+/// value mid-sleep, the filter has been mutated and the caller should
+/// re-evaluate.
 async fn interruptible_sleep(
-    state: &Rc<RefCell<RealtimeState>>,
+    loop_state: &mut LoopState,
+    control_rx: &mut UnboundedReceiver<ControlMessage>,
     ctx: &egui::Context,
     total_ms: u32,
     wake_epoch: u64,
@@ -1108,14 +1183,12 @@ async fn interruptible_sleep(
     let mut remaining = total_ms;
 
     while remaining > 0 {
-        {
-            let s = state.borrow();
-            if s.stop_requested {
-                return SleepOutcome::Stopped;
-            }
-            if s.filter_epoch != wake_epoch {
-                return SleepOutcome::FilterChanged;
-            }
+        drain_control(loop_state, control_rx);
+        if loop_state.stop_requested {
+            return SleepOutcome::Stopped;
+        }
+        if loop_state.filter_epoch != wake_epoch {
+            return SleepOutcome::FilterChanged;
         }
 
         ctx.request_repaint();
@@ -1125,9 +1198,10 @@ async fn interruptible_sleep(
         remaining = remaining.saturating_sub(INCREMENT);
     }
 
-    if state.borrow().stop_requested {
+    drain_control(loop_state, control_rx);
+    if loop_state.stop_requested {
         SleepOutcome::Stopped
-    } else if state.borrow().filter_epoch != wake_epoch {
+    } else if loop_state.filter_epoch != wake_epoch {
         SleepOutcome::FilterChanged
     } else {
         SleepOutcome::Completed
