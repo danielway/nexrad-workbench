@@ -13,7 +13,7 @@ use eframe::egui;
 
 impl WorkbenchApp {
     pub(crate) fn handle_worker_results(&mut self, _ctx: &egui::Context) {
-        if let Some(result) = self.acquisition.cache_load_channel.try_recv() {
+        if let Some(result) = self.acquisition.coordinator.cache_load_channel.try_recv() {
             self.handle_cache_load_outcome(result);
         }
 
@@ -45,11 +45,16 @@ impl WorkbenchApp {
             }
         }
 
-        if let Some(result) = self.acquisition.download_channel.try_recv() {
+        if let Some(result) = self.acquisition.coordinator.download_channel.try_recv() {
             self.handle_download_outcome(result);
         }
 
-        if let Some(result) = self.acquisition.download_channel.try_recv_listing() {
+        if let Some(result) = self
+            .acquisition
+            .coordinator
+            .download_channel
+            .try_recv_listing()
+        {
             self.handle_listing_outcome(result);
         }
     }

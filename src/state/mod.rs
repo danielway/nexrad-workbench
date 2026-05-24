@@ -250,9 +250,6 @@ pub struct AppState {
     /// Whether the network request log modal is open.
     pub network_log_open: bool,
 
-    /// Unified acquisition queue state.
-    pub acquisition: AcquisitionState,
-
     /// Persistent worker initialization error message.
     /// When set, a non-dismissable error banner is shown in the top bar.
     pub worker_init_error: Option<String>,

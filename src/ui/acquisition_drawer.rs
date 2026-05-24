@@ -9,11 +9,17 @@ use crate::state::{
     format_bytes, AcquisitionState, AppCommand, AppState, DrawerTab, NetworkGroupKey,
     OperationStatus, QueueState,
 };
+use crate::subsystem::Acquisition;
 use eframe::egui::{self, Color32, RichText, ScrollArea};
 use egui_phosphor::regular as icons;
 
 /// Render the acquisition drawer content inside the bottom panel.
-pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height: f32) {
+pub fn render_acquisition_drawer(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    acquisition: &mut Acquisition,
+    height: f32,
+) {
     let dark = state.is_dark;
 
     // Drawer container
@@ -24,33 +30,33 @@ pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height
             let queue_label = format!("{} Queue", icons::QUEUE);
             if ui
                 .selectable_label(
-                    state.acquisition.active_tab == DrawerTab::Queue,
+                    acquisition.state.active_tab == DrawerTab::Queue,
                     RichText::new(queue_label).size(10.0).strong(),
                 )
                 .clicked()
             {
-                state.acquisition.active_tab = DrawerTab::Queue;
+                acquisition.state.active_tab = DrawerTab::Queue;
             }
 
             let net_label = format!("{} Network", icons::WIFI_HIGH);
             if ui
                 .selectable_label(
-                    state.acquisition.active_tab == DrawerTab::Network,
+                    acquisition.state.active_tab == DrawerTab::Network,
                     RichText::new(net_label).size(10.0).strong(),
                 )
                 .clicked()
             {
-                state.acquisition.active_tab = DrawerTab::Network;
+                acquisition.state.active_tab = DrawerTab::Network;
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Queue controls (only when Queue tab is active)
-                if state.acquisition.active_tab == DrawerTab::Queue {
-                    if state.acquisition.is_paused() {
+                if acquisition.state.active_tab == DrawerTab::Queue {
+                    if acquisition.state.is_paused() {
                         if ui.small_button(format!("{} Resume", icons::PLAY)).clicked() {
                             state.push_command(AppCommand::ResumeQueue);
                         }
-                    } else if state.acquisition.has_active_operations()
+                    } else if acquisition.state.has_active_operations()
                         && ui.small_button(format!("{} Pause", icons::PAUSE)).clicked()
                     {
                         state.push_command(AppCommand::PauseQueue);
@@ -65,7 +71,7 @@ pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height
         });
 
         // Error-pause banner
-        if state.acquisition.queue_state == QueueState::ErrorPaused {
+        if acquisition.state.queue_state == QueueState::ErrorPaused {
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(format!("{} Queue paused due to error", icons::WARNING))
@@ -74,7 +80,7 @@ pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height
                         .color(acq_colors::FAILED),
                 );
 
-                if let Some(err_op_id) = state.acquisition.error_pause_operation_id {
+                if let Some(err_op_id) = acquisition.state.error_pause_operation_id {
                     if ui.small_button("Retry").clicked() {
                         state.push_command(AppCommand::RetryFailed(err_op_id));
                     }
@@ -90,20 +96,25 @@ pub fn render_acquisition_drawer(ui: &mut egui::Ui, state: &mut AppState, height
         }
 
         // Tab content
-        match state.acquisition.active_tab {
-            DrawerTab::Queue => render_queue_tab(ui, state, dark),
-            DrawerTab::Network => render_network_tab(ui, state, dark),
+        match acquisition.state.active_tab {
+            DrawerTab::Queue => render_queue_tab(ui, state, acquisition, dark),
+            DrawerTab::Network => render_network_tab(ui, state, acquisition, dark),
         }
     });
 }
 
 /// Render the Queue tab content.
-fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
+fn render_queue_tab(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    acquisition: &mut Acquisition,
+    dark: bool,
+) {
     let label_color = ui_colors::label(dark);
 
     // Streaming latency section (shown in live mode)
     if state.live_mode_state.is_active() {
-        if let Some(summary) = state.acquisition.latency_summary() {
+        if let Some(summary) = acquisition.state.latency_summary() {
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new("Chunk Latency:")
@@ -128,8 +139,8 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
             });
 
             // Sparkline of last 20 chunk latencies
-            let latencies: Vec<f64> = state
-                .acquisition
+            let latencies: Vec<f64> = acquisition
+                .state
                 .chunk_latencies
                 .iter()
                 .rev()
@@ -151,7 +162,7 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
     ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if state.acquisition.operations.is_empty() {
+            if acquisition.state.operations.is_empty() {
                 ui.label(
                     RichText::new("No acquisition operations.")
                         .size(10.0)
@@ -165,7 +176,7 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
             let mut commands_to_push: Vec<AppCommand> = Vec::new();
 
             // Display operations in reverse order (most recent first)
-            let ops: Vec<_> = state.acquisition.operations.iter().rev().cloned().collect();
+            let ops: Vec<_> = acquisition.state.operations.iter().rev().cloned().collect();
             for op in &ops {
                 ui.horizontal(|ui| {
                     // Status icon
@@ -277,7 +288,12 @@ fn render_queue_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
 
 /// Render the Network tab content with operations grouped by scan for realtime
 /// chunks and by operation ID for everything else.
-fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
+fn render_network_tab(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    acquisition: &mut Acquisition,
+    dark: bool,
+) {
     let label_color = ui_colors::label(dark);
     let value_color = ui_colors::value(dark);
 
@@ -288,8 +304,8 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
         let key = match req.operation_id {
             Some(op_id) => {
                 // Look up the operation to derive the group key.
-                state
-                    .acquisition
+                acquisition
+                    .state
                     .find(op_id)
                     .map(AcquisitionState::network_group_key)
                     .unwrap_or(NetworkGroupKey::Operation(op_id))
@@ -369,8 +385,8 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
                     .filter_map(|&i| state.recent_network_requests.get(i).map(|r| r.duration_ms))
                     .sum();
 
-                let is_expanded = state
-                    .acquisition
+                let is_expanded = acquisition
+                    .state
                     .expanded_network_groups
                     .contains(group_key);
                 let arrow = if is_expanded {
@@ -381,8 +397,8 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
 
                 // Group header
                 let group_name = match group_key {
-                    NetworkGroupKey::Operation(id) => state
-                        .acquisition
+                    NetworkGroupKey::Operation(id) => acquisition
+                        .state
                         .find(*id)
                         .map(|op| AcquisitionState::operation_description(&op.kind))
                         .unwrap_or_else(|| format!("Op #{}", id)),
@@ -488,14 +504,14 @@ fn render_network_tab(ui: &mut egui::Ui, state: &mut AppState, dark: bool) {
 
             // Apply group toggle
             if let Some(group_key) = toggle_group {
-                if state
-                    .acquisition
+                if acquisition
+                    .state
                     .expanded_network_groups
                     .contains(&group_key)
                 {
-                    state.acquisition.expanded_network_groups.remove(&group_key);
+                    acquisition.state.expanded_network_groups.remove(&group_key);
                 } else {
-                    state.acquisition.expanded_network_groups.insert(group_key);
+                    acquisition.state.expanded_network_groups.insert(group_key);
                 }
             }
         });

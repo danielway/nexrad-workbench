@@ -2,6 +2,7 @@
 
 use super::acquisition_drawer::render_acquisition_drawer;
 use crate::state::{AppState, LiveExitReason, PlaybackMode, PlaybackSpeed};
+use crate::subsystem::Acquisition;
 use eframe::egui;
 
 use super::playback_controls::render_playback_controls;
@@ -13,7 +14,11 @@ use super::timeline::render_timeline;
 /// bottom region. The per-frame pulse-animation tick is hoisted into the
 /// main update loop so it runs in both layouts without this function
 /// needing to be called as a side-effect carrier on mobile.
-pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
+pub fn render_bottom_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    acquisition: &mut Acquisition,
+) {
     let dt = ctx.input(|i| i.stable_dt);
 
     // Handle spacebar to toggle playback (only when no text input is focused)
@@ -95,7 +100,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     // The acquisition drawer is reachable only via the dev-mode-only network
     // metric label. Force it closed when dev mode is off so a previously
     // expanded drawer doesn't linger after the user toggles dev off.
-    let drawer_expanded = state.dev_mode && state.acquisition.drawer_expanded;
+    let drawer_expanded = state.dev_mode && acquisition.state.drawer_expanded;
     // Sized to the new content layout (timeline 53 + spacing + controls
     // ~24 + frame margins). Stays constant across macro/micro because
     // the timeline locks its own height in render_timeline.
@@ -111,7 +116,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
     let drawer_spacing_overhead = 14.0;
     let drawer_height = if drawer_expanded {
         let max_drawer = (max_panel_height - controls_height - drawer_spacing_overhead).max(0.0);
-        state.acquisition.drawer_height.min(max_drawer)
+        acquisition.state.drawer_height.min(max_drawer)
     } else {
         0.0
     };
@@ -134,14 +139,14 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
                 if resize_response.dragged() {
                     // Dragging up increases height, dragging down decreases
                     let delta = -resize_response.drag_delta().y;
-                    state.acquisition.drawer_height =
-                        (state.acquisition.drawer_height + delta).clamp(100.0, 600.0);
+                    acquisition.state.drawer_height =
+                        (acquisition.state.drawer_height + delta).clamp(100.0, 600.0);
                 }
                 if resize_response.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
                 }
 
-                render_acquisition_drawer(ui, state, drawer_height - 4.0);
+                render_acquisition_drawer(ui, state, acquisition, drawer_height - 4.0);
                 ui.separator();
             }
 
@@ -154,7 +159,7 @@ pub fn render_bottom_panel(ctx: &egui::Context, state: &mut AppState) {
                 // Playback controls row
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    render_playback_controls(ui, state);
+                    render_playback_controls(ui, state, acquisition);
                 });
             });
         });

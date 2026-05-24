@@ -5,6 +5,7 @@ use super::timeline::format_timestamp_full;
 use crate::state::{
     AppMode, AppState, LiveExitReason, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed, TimeModel,
 };
+use crate::subsystem::Acquisition;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Render the datetime picker popup for jumping to a specific time.
@@ -135,7 +136,11 @@ pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppSta
     }
 }
 
-pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_playback_controls(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    acquisition: &mut Acquisition,
+) {
     let use_local = state.use_local_time;
     let advanced = state.show_advanced();
     // Idle = nothing under the playback cursor. Disable transport controls
@@ -456,7 +461,7 @@ pub(super) fn render_playback_controls(ui: &mut egui::Ui, state: &mut AppState) 
 
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        render_session_stats(ui, state);
+        render_session_stats(ui, state, acquisition);
     });
 }
 
@@ -543,7 +548,7 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
 /// Render session statistics (right-aligned in the bottom bar).
 ///
 /// Layout (right-to-left): FPS | pipeline (clickable) | download | cache
-fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState, acquisition: &mut Acquisition) {
     let dark = state.is_dark;
 
     // FPS (rightmost) — read value before mutable borrow
@@ -590,14 +595,14 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
         }
         if display_count > 0 {
             // Clickable to toggle acquisition drawer (subsumes network log modal)
-            let queued = state.acquisition.queued_count();
+            let queued = acquisition.state.queued_count();
             let req_text = if queued > 0 {
                 format!("{}r / {} | {}q", display_count, display_transferred, queued)
             } else {
                 format!("{}r / {}", display_count, display_transferred)
             };
 
-            let drawer_icon = if state.acquisition.drawer_expanded {
+            let drawer_icon = if acquisition.state.drawer_expanded {
                 egui_phosphor::regular::CARET_DOWN
             } else {
                 egui_phosphor::regular::CARET_UP
@@ -615,7 +620,7 @@ fn render_session_stats(ui: &mut egui::Ui, state: &mut AppState) {
                 .on_hover_text("Click to toggle acquisition drawer")
                 .clicked()
             {
-                state.acquisition.drawer_expanded = !state.acquisition.drawer_expanded;
+                acquisition.state.drawer_expanded = !acquisition.state.drawer_expanded;
             }
             ui.separator();
         }

@@ -18,6 +18,7 @@ mod mping;
 mod net;
 mod nexrad;
 mod state;
+mod subsystem;
 mod ui;
 
 use data::DataFacade;
@@ -138,8 +139,10 @@ pub struct WorkbenchApp {
     /// Render coordinator: owns the decode worker, scan key, elevations, and render dedup.
     render: nexrad::RenderCoordinator,
 
-    /// Download pipeline: channels, queue, archive index, current scan.
-    acquisition: nexrad::AcquisitionCoordinator,
+    /// Acquisition subsystem: owns the download pipeline (channels, queue,
+    /// archive index, data facade) and the per-operation tracking state
+    /// (queue/operation log/drawer state) that UI panels read.
+    acquisition: subsystem::Acquisition,
 
     /// Live streaming channel: spawns the streaming loop, exposes the result
     /// queue + observation setters + filter sync to the UI thread.
@@ -382,8 +385,9 @@ impl WorkbenchApp {
 
         let initial_site_id = state.viz_state.site_id.clone();
         let data_facade = DataFacade::new();
-        let acquisition = nexrad::AcquisitionCoordinator::new(data_facade.clone());
-        let realtime_channel = nexrad::RealtimeChannel::with_stats(acquisition.download_stats());
+        let acquisition = subsystem::Acquisition::new(data_facade.clone());
+        let realtime_channel =
+            nexrad::RealtimeChannel::with_stats(acquisition.coordinator.download_stats());
 
         // Open the record cache database
         {
@@ -499,7 +503,7 @@ impl WorkbenchApp {
     /// Start live mode streaming for the current site.
     fn update_network_stats(&mut self) {
         // Update session stats from live network statistics
-        let network_stats = self.acquisition.download_channel.stats();
+        let network_stats = self.acquisition.coordinator.download_channel.stats();
         self.state
             .session_stats
             .update_from_network_stats(&network_stats);
@@ -523,7 +527,7 @@ impl WorkbenchApp {
                 // re-cloned and re-correlated the entire ring every frame
                 // regardless of whether anything had changed.
                 for req in pending.iter_mut() {
-                    req.operation_id = self.state.acquisition.correlate_network_request(&req.url);
+                    req.operation_id = self.acquisition.state.correlate_network_request(&req.url);
                 }
                 let ring = &mut self.state.recent_network_requests;
                 ring.reserve(pending.len());
@@ -691,7 +695,7 @@ impl eframe::App for WorkbenchApp {
             ui::render_mobile_chrome(ctx, &mut self.state);
         } else {
             ui::render_top_bar(ctx, &mut self.state);
-            ui::render_bottom_panel(ctx, &mut self.state);
+            ui::render_bottom_panel(ctx, &mut self.state, &mut self.acquisition);
             ui::render_left_panel(ctx, &mut self.state);
             ui::render_right_panel(ctx, &mut self.state);
         }

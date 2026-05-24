@@ -47,6 +47,7 @@ impl WorkbenchApp {
             let scan_ts = scan.key.scan_start.as_secs();
             let scan_end = self
                 .acquisition
+                .coordinator
                 .download_queue
                 .find_by_scan_start(scan_ts)
                 .map(|item| item.scan_end)
@@ -115,9 +116,14 @@ impl WorkbenchApp {
         // Mark acquisition operation completed on success
         if let Some(scan) = scan_opt {
             let scan_ts = scan.key.scan_start.as_secs();
-            if let Some(op_id) = self.acquisition.download_queue.take_operation_id(scan_ts) {
-                self.state
-                    .acquisition
+            if let Some(op_id) = self
+                .acquisition
+                .coordinator
+                .download_queue
+                .take_operation_id(scan_ts)
+            {
+                self.acquisition
+                    .state
                     .mark_completed(op_id, scan.data.len() as u64);
             }
         }
@@ -133,15 +139,17 @@ impl WorkbenchApp {
             // Mark this scan's acquisition operation as failed
             if let Some(op_id) = self
                 .acquisition
+                .coordinator
                 .download_queue
                 .take_operation_id(*scan_start)
             {
-                self.state.acquisition.mark_failed(op_id, message.clone());
+                self.acquisition.state.mark_failed(op_id, message.clone());
             }
 
             // Transition the failed queue item out of Active so the concurrency
             // slot frees up for the next pump.
             self.acquisition
+                .coordinator
                 .download_queue
                 .mark_active_done(*scan_start);
             self.state
@@ -150,8 +158,8 @@ impl WorkbenchApp {
                 .retain(|&(s, _)| s != *scan_start);
 
             // Clear download progress on error if no more work remains
-            if !self.acquisition.download_queue.has_work() {
-                self.acquisition.download_queue.clear();
+            if !self.acquisition.coordinator.download_queue.has_work() {
+                self.acquisition.coordinator.download_queue.clear();
                 self.state.download_progress.clear();
             }
         }
@@ -171,6 +179,7 @@ impl WorkbenchApp {
                     date
                 );
                 self.acquisition
+                    .coordinator
                     .archive_index
                     .insert(&site_id, date, listing);
 
@@ -178,12 +187,13 @@ impl WorkbenchApp {
                 if site_id == self.state.viz_state.site_id {
                     self.state.shadow_scan_boundaries = self
                         .acquisition
+                        .coordinator
                         .archive_index
                         .all_boundaries_for_site(&site_id);
                 }
 
                 // Resume pending download now that the listing is available
-                if let Some(pending) = &self.acquisition.pending_download {
+                if let Some(pending) = &self.acquisition.coordinator.pending_download {
                     if pending.is_position {
                         self.state
                             .push_command(state::AppCommand::DownloadAtPosition);
@@ -196,8 +206,8 @@ impl WorkbenchApp {
             nexrad::ListingResult::Error(msg) => {
                 log::error!("Listing request failed: {}", msg);
                 // Abandon pending download on listing failure
-                if self.acquisition.pending_download.is_some() {
-                    self.acquisition.pending_download = None;
+                if self.acquisition.coordinator.pending_download.is_some() {
+                    self.acquisition.coordinator.pending_download = None;
                     self.state.status_message =
                         format!("Download cancelled: listing fetch failed ({})", msg);
                 }
@@ -220,7 +230,7 @@ impl WorkbenchApp {
         } else {
             None // Just pumping existing queue, or nothing to do
         };
-        let queue_has_work = self.acquisition.download_queue.has_work();
+        let queue_has_work = self.acquisition.coordinator.download_queue.has_work();
         if outcome.download_selection
             || outcome.download_at_position
             || outcome.pump_queue

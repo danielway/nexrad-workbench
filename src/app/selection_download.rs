@@ -23,15 +23,17 @@ impl WorkbenchApp {
         // If we have items in the queue, try to advance the state machine.
         // The queue allows up to `max_parallel` concurrent downloads; we both
         // reap completed slots and fill empty slots on every poll.
-        if self.acquisition.download_queue.has_work() {
+        if self.acquisition.coordinator.download_queue.has_work() {
             // 1. Sweep all Active items and mark any whose download has finished.
             let finished_starts: Vec<i64> = self
                 .acquisition
+                .coordinator
                 .download_queue
                 .active_items()
                 .filter_map(|item| {
                     if !self
                         .acquisition
+                        .coordinator
                         .download_channel
                         .is_download_pending(&site_id, item.scan_start)
                     {
@@ -42,22 +44,31 @@ impl WorkbenchApp {
                 })
                 .collect();
             for start in finished_starts {
-                self.acquisition.download_queue.mark_active_done(start);
+                self.acquisition
+                    .coordinator
+                    .download_queue
+                    .mark_active_done(start);
             }
 
             // 2. Refresh the timeline-ghost list from the queue state.
             self.state.download_progress.active_scans = self
                 .acquisition
+                .coordinator
                 .download_queue
                 .active_items()
                 .map(|item| (item.scan_start, item.scan_end))
                 .collect();
 
             // 3. Fill as many concurrency slots as possible.
-            let is_paused = self.state.acquisition.is_paused();
+            let is_paused = self.acquisition.state.is_paused();
             let mut completed_this_pump = false;
             loop {
-                match self.acquisition.download_queue.advance(is_paused) {
+                match self
+                    .acquisition
+                    .coordinator
+                    .download_queue
+                    .advance(is_paused)
+                {
                     QueueAction::StartDownload {
                         idx: _,
                         date,
@@ -79,20 +90,21 @@ impl WorkbenchApp {
                         // Mark next acquisition operation as active and pin it
                         // to this download's scan_start so correlation survives
                         // concurrent completions.
-                        if let Some(op_id) = self.state.acquisition.next_queued_id() {
-                            self.state.acquisition.mark_active(op_id);
+                        if let Some(op_id) = self.acquisition.state.next_queued_id() {
+                            self.acquisition.state.mark_active(op_id);
                             self.acquisition
+                                .coordinator
                                 .download_queue
                                 .set_operation_id(scan_start, op_id);
                         }
 
-                        self.acquisition.download_channel.download_file(
+                        self.acquisition.coordinator.download_channel.download_file(
                             ctx.clone(),
                             site_id.clone(),
                             date,
                             file_name,
                             scan_start,
-                            self.acquisition.facade().clone(),
+                            self.acquisition.coordinator.facade().clone(),
                         );
                     }
                     QueueAction::Complete => {
@@ -127,11 +139,12 @@ impl WorkbenchApp {
                 // Fresh user action (not a pending resume) — reset pending state
                 if self
                     .acquisition
+                    .coordinator
                     .pending_download
                     .as_ref()
                     .is_none_or(|p| p.is_position != is_pos)
                 {
-                    self.acquisition.pending_download = None;
+                    self.acquisition.coordinator.pending_download = None;
                 }
                 is_pos
             }
@@ -180,7 +193,12 @@ impl WorkbenchApp {
         let mut current_date = start_date;
 
         while current_date <= end_date {
-            if let Some(listing) = self.acquisition.archive_index.get(&site_id, &current_date) {
+            if let Some(listing) = self
+                .acquisition
+                .coordinator
+                .archive_index
+                .get(&site_id, &current_date)
+            {
                 if is_position_download {
                     // Single-position: find the exact scan containing the playback position
                     if let Some((file, boundary)) = listing.find_scan_containing(sel_start_i64) {
@@ -201,6 +219,7 @@ impl WorkbenchApp {
                         // Check if we already re-fetched this date's listing.
                         let already_refetched = self
                             .acquisition
+                            .coordinator
                             .pending_download
                             .as_ref()
                             .is_some_and(|p| p.refetched_dates.contains(&current_date));
@@ -215,8 +234,11 @@ impl WorkbenchApp {
                                 site_id,
                                 current_date
                             );
-                            let pending =
-                                self.acquisition.pending_download.get_or_insert_with(|| {
+                            let pending = self
+                                .acquisition
+                                .coordinator
+                                .pending_download
+                                .get_or_insert_with(|| {
                                     nexrad::acquisition_coordinator::PendingDownload {
                                         is_position: true,
                                         refetched_dates: std::collections::HashSet::new(),
@@ -224,14 +246,16 @@ impl WorkbenchApp {
                                 });
                             pending.refetched_dates.insert(current_date);
                             self.acquisition
+                                .coordinator
                                 .archive_index
                                 .remove(&site_id, &current_date);
                             if !self
                                 .acquisition
+                                .coordinator
                                 .download_channel
                                 .is_listing_pending(&site_id, &current_date)
                             {
-                                self.acquisition.download_channel.fetch_listing(
+                                self.acquisition.coordinator.download_channel.fetch_listing(
                                     ctx.clone(),
                                     site_id.clone(),
                                     current_date,
@@ -272,22 +296,24 @@ impl WorkbenchApp {
                 // when the listing arrives (via handle_listing_outcome).
                 if !self
                     .acquisition
+                    .coordinator
                     .download_channel
                     .is_listing_pending(&site_id, &current_date)
                 {
                     log::debug!("Fetching listing for {}/{}", site_id, current_date);
-                    self.acquisition.download_channel.fetch_listing(
+                    self.acquisition.coordinator.download_channel.fetch_listing(
                         ctx.clone(),
                         site_id.clone(),
                         current_date,
                     );
                 }
-                self.acquisition.pending_download.get_or_insert_with(|| {
-                    nexrad::acquisition_coordinator::PendingDownload {
+                self.acquisition
+                    .coordinator
+                    .pending_download
+                    .get_or_insert_with(|| nexrad::acquisition_coordinator::PendingDownload {
                         is_position: is_position_download,
                         refetched_dates: std::collections::HashSet::new(),
-                    }
-                });
+                    });
                 self.state.status_message =
                     format!("Fetching archive listing for {}...", current_date);
                 return;
@@ -297,7 +323,7 @@ impl WorkbenchApp {
         }
 
         // Queue building complete — clear pending state
-        self.acquisition.pending_download = None;
+        self.acquisition.coordinator.pending_download = None;
 
         if files_to_download.is_empty() {
             self.state.status_message = "No new scans to download in selection".to_string();
@@ -317,13 +343,16 @@ impl WorkbenchApp {
         self.state.download_selection_in_progress = true;
 
         // Cancel any existing acquisition operations (selection change = cancel all + rebuild)
-        self.state.acquisition.cancel_all();
-        self.acquisition.download_queue.set_queue(files_to_download);
+        self.acquisition.state.cancel_all();
+        self.acquisition
+            .coordinator
+            .download_queue
+            .set_queue(files_to_download);
 
         // Create acquisition operations for each file in the queue
-        for item in self.acquisition.download_queue.items() {
-            self.state
-                .acquisition
+        for item in self.acquisition.coordinator.download_queue.items() {
+            self.acquisition
+                .state
                 .create_operation(state::OperationKind::ArchiveDownload {
                     site_id: site_id.clone(),
                     file_name: item.file_name.clone(),
@@ -337,19 +366,20 @@ impl WorkbenchApp {
             let progress = &mut self.state.download_progress;
             progress.pending_scans = self
                 .acquisition
+                .coordinator
                 .download_queue
                 .items()
                 .iter()
                 .map(|item| (item.scan_start, item.scan_end))
                 .collect();
-            progress.batch_total = self.acquisition.download_queue.len() as u32;
+            progress.batch_total = self.acquisition.coordinator.download_queue.len() as u32;
             progress.batch_completed = 0;
             progress.phase = crate::state::DownloadPhase::Downloading;
             progress.active_scans.clear();
         }
 
         // Kick off as many downloads as the concurrency limit allows.
-        let is_paused = self.state.acquisition.is_paused();
+        let is_paused = self.acquisition.state.is_paused();
         while let QueueAction::StartDownload {
             idx: _,
             date,
@@ -357,7 +387,11 @@ impl WorkbenchApp {
             scan_start,
             scan_end,
             remaining,
-        } = self.acquisition.download_queue.advance(is_paused)
+        } = self
+            .acquisition
+            .coordinator
+            .download_queue
+            .advance(is_paused)
         {
             self.state.status_message =
                 format!("Downloading {} ({} remaining)", file_name, remaining);
@@ -366,20 +400,21 @@ impl WorkbenchApp {
                 .active_scans
                 .push((scan_start, scan_end));
 
-            if let Some(op_id) = self.state.acquisition.next_queued_id() {
-                self.state.acquisition.mark_active(op_id);
+            if let Some(op_id) = self.acquisition.state.next_queued_id() {
+                self.acquisition.state.mark_active(op_id);
                 self.acquisition
+                    .coordinator
                     .download_queue
                     .set_operation_id(scan_start, op_id);
             }
 
-            self.acquisition.download_channel.download_file(
+            self.acquisition.coordinator.download_channel.download_file(
                 ctx.clone(),
                 site_id.clone(),
                 date,
                 file_name,
                 scan_start,
-                self.acquisition.facade().clone(),
+                self.acquisition.coordinator.facade().clone(),
             );
         }
     }

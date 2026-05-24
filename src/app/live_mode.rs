@@ -38,8 +38,11 @@ impl WorkbenchApp {
         // selected elevation rather than a default.
         self.streaming
             .sync_filter(&self.state.viz_state.elevation_selection);
-        self.streaming
-            .start(ctx.clone(), site_id, self.acquisition.facade().clone());
+        self.streaming.start(
+            ctx.clone(),
+            site_id,
+            self.acquisition.coordinator.facade().clone(),
+        );
     }
 
     /// Build the elevation list from a scan's VCP data.
@@ -171,7 +174,7 @@ impl WorkbenchApp {
                 }
 
                 // Record chunk latency for the acquisition drawer
-                self.state.acquisition.record_chunk_latency(
+                self.acquisition.state.record_chunk_latency(
                     chunks_in_volume,
                     fetch_latency_ms,
                     None, // radial timestamps populated after ingest
@@ -198,8 +201,8 @@ impl WorkbenchApp {
                 // Track realtime chunk as an acquisition operation
                 let rt_site_id = self.state.viz_state.site_id.clone();
                 let op_id =
-                    self.state
-                        .acquisition
+                    self.acquisition
+                        .state
                         .create_operation(state::OperationKind::RealtimeChunk {
                             site_id: rt_site_id,
                             chunk_index,
@@ -211,9 +214,9 @@ impl WorkbenchApp {
                             // volumes never share a wall-clock second.
                             scan_timestamp: timestamp.round() as i64,
                         });
-                self.state.acquisition.mark_active(op_id);
-                self.state
-                    .acquisition
+                self.acquisition.state.mark_active(op_id);
+                self.acquisition
+                    .state
                     .mark_completed(op_id, data.len() as u64);
 
                 if is_start {
@@ -261,8 +264,8 @@ impl WorkbenchApp {
                 // Track error as a failed acquisition operation
                 let err_site_id = self.state.viz_state.site_id.clone();
                 let op_id =
-                    self.state
-                        .acquisition
+                    self.acquisition
+                        .state
                         .create_operation(state::OperationKind::RealtimeChunk {
                             site_id: err_site_id,
                             chunk_index: 0,
@@ -270,7 +273,7 @@ impl WorkbenchApp {
                             is_end: false,
                             scan_timestamp: 0,
                         });
-                self.state.acquisition.mark_failed(op_id, msg);
+                self.acquisition.state.mark_failed(op_id, msg);
             }
         }
     }

@@ -74,22 +74,22 @@ impl WorkbenchApp {
             // ---- Queue management -------------------------------------
             // Mutations that may unblock work flip `pump_queue` so the
             // post-results queue pump runs in the same frame.
-            AppCommand::PauseQueue => self.state.acquisition.pause(),
+            AppCommand::PauseQueue => self.acquisition.state.pause(),
             AppCommand::ResumeQueue => {
-                self.state.acquisition.resume();
+                self.acquisition.state.resume();
                 outcome.pump_queue = true;
             }
             AppCommand::RetryFailed(op_id) => {
-                self.state.acquisition.retry_failed(op_id);
+                self.acquisition.state.retry_failed(op_id);
                 outcome.pump_queue = true;
             }
             AppCommand::SkipFailed(op_id) => {
-                self.state.acquisition.skip_failed(op_id);
+                self.acquisition.state.skip_failed(op_id);
                 outcome.pump_queue = true;
             }
-            AppCommand::CancelOperation(op_id) => self.state.acquisition.cancel_operation(op_id),
+            AppCommand::CancelOperation(op_id) => self.acquisition.state.cancel_operation(op_id),
             AppCommand::ReorderOperation(op_id, delta) => {
-                self.state.acquisition.reorder_operation(op_id, delta);
+                self.acquisition.state.reorder_operation(op_id, delta);
             }
 
             // ---- Worker lifecycle -------------------------------------
@@ -106,10 +106,11 @@ impl WorkbenchApp {
     }
 
     fn handle_clear_cache(&mut self, ctx: &egui::Context) {
-        if !self.acquisition.cache_load_channel.is_loading() {
+        if !self.acquisition.coordinator.cache_load_channel.is_loading() {
             self.acquisition
+                .coordinator
                 .cache_load_channel
-                .clear_cache(ctx.clone(), self.acquisition.facade().clone());
+                .clear_cache(ctx.clone(), self.acquisition.coordinator.facade().clone());
         } else {
             // Cache loader is busy; replay the request on the next frame.
             self.state.push_command(state::AppCommand::ClearCache);
@@ -117,7 +118,7 @@ impl WorkbenchApp {
     }
 
     fn handle_wipe_all(&mut self) {
-        let facade = self.acquisition.facade().clone();
+        let facade = self.acquisition.coordinator.facade().clone();
         wasm_bindgen_futures::spawn_local(async move {
             if let Err(e) = facade.clear_all().await {
                 log::error!("Failed to clear IndexedDB: {}", e);
@@ -135,12 +136,15 @@ impl WorkbenchApp {
         if auto_position {
             self.state.auto_position_on_timeline_load = true;
         }
-        if !self.acquisition.cache_load_channel.is_loading() {
-            self.acquisition.cache_load_channel.load_site_timeline(
-                ctx.clone(),
-                self.acquisition.facade().clone(),
-                self.state.viz_state.site_id.clone(),
-            );
+        if !self.acquisition.coordinator.cache_load_channel.is_loading() {
+            self.acquisition
+                .coordinator
+                .cache_load_channel
+                .load_site_timeline(
+                    ctx.clone(),
+                    self.acquisition.coordinator.facade().clone(),
+                    self.state.viz_state.site_id.clone(),
+                );
         } else {
             // Cache loader is busy; replay (without auto-position) next frame.
             self.state.push_command(state::AppCommand::RefreshTimeline {
@@ -150,7 +154,7 @@ impl WorkbenchApp {
     }
 
     fn handle_check_eviction(&mut self, ctx: &egui::Context) {
-        let facade = self.acquisition.facade().clone();
+        let facade = self.acquisition.coordinator.facade().clone();
         let quota = self.state.storage_settings.quota_bytes;
         let target = self.state.storage_settings.eviction_target_bytes;
         let ctx_clone = ctx.clone();
