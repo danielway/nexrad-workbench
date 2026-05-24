@@ -166,9 +166,6 @@ pub struct WorkbenchApp {
     /// (currently NWS alerts; mPING / GPS / network monitor fold in next).
     diagnostics: subsystem::Diagnostics,
 
-    /// mPING storm-report fetch lifecycle.
-    mping_manager: mping::MpingManager,
-
     /// Cache of the inputs that drive `advance_playback`'s scrub-detection
     /// pass so we can skip the O(scans) timeline search on idle frames
     /// where the playback position, elevation selection, and scan count
@@ -250,7 +247,10 @@ impl WorkbenchApp {
                 .unwrap_or(0),
         );
 
-        let mut state = AppState::new();
+        let state::AppStateBootstrap {
+            mut state,
+            mping_api_key: loaded_mping_api_key,
+        } = AppState::bootstrap();
 
         // Apply URL parameters (site, time, lat/lon)
         let url_params = state::url_state::parse_from_url();
@@ -397,7 +397,8 @@ impl WorkbenchApp {
             });
         }
 
-        let initial_prefs = state::UserPreferences::from_app_state(&state);
+        let initial_prefs =
+            state::UserPreferences::from_app_state(&state, loaded_mping_api_key.clone());
         let has_preferred_site = state.preferred_site.is_some();
 
         // Create decode worker pool (offloads heavy NEXRAD work to parallel
@@ -474,8 +475,14 @@ impl WorkbenchApp {
             persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
             modals: ui::ModalStates::new(has_preferred_site),
             playback_manager: PlaybackManager::new(),
-            diagnostics: subsystem::Diagnostics::new(),
-            mping_manager: mping::MpingManager::new(),
+            diagnostics: {
+                let mut diag = subsystem::Diagnostics::new();
+                // Apply the persisted mPING API key (loaded from prefs at
+                // AppState construction; mPING state lives on the
+                // subsystem so it can't be applied inside AppState::new).
+                diag.mping.api_key = loaded_mping_api_key;
+                diag
+            },
             scrub_cache: ScrubCache::default(),
             last_favicon_mode: None,
         };
@@ -538,7 +545,8 @@ impl WorkbenchApp {
 
     /// Push current app state to the URL bar and save user preferences (throttled).
     fn persist_url_state(&mut self) {
-        self.persistence.persist_if_due(&self.state);
+        self.persistence
+            .persist_if_due(&self.state, self.diagnostics.mping.api_key.clone());
     }
 
     /// Push the current `AppMode`'s color to the browser favicon via the
@@ -621,12 +629,13 @@ impl eframe::App for WorkbenchApp {
                 && crate::state::recency::data_is_live(&self.state),
         );
         // NWS alerts and mPING storm reports — polled if due.
-        let is_live = crate::state::recency::data_is_live(&self.state);
-        self.diagnostics.tick(ctx, is_live);
-        if std::mem::take(&mut self.state.mping.invalidate_requested) {
-            self.mping_manager.invalidate();
-        }
-        self.mping_manager.tick(ctx, &mut self.state);
+        let diagnostics_inputs = subsystem::diagnostics::DiagnosticsInputs {
+            is_live: crate::state::recency::data_is_live(&self.state),
+            mping_layer_visible: self.state.layer_state.geo.mping,
+            site_id: &self.state.viz_state.site_id,
+            playback_secs: self.state.playback_state.playback_position(),
+        };
+        self.diagnostics.tick(ctx, diagnostics_inputs);
 
         // 9-13. COMPUTE: advance playback, sync GPU state, decide whether
         // to issue the next render, then capture network stats and persist.
@@ -693,7 +702,7 @@ impl eframe::App for WorkbenchApp {
             ui::render_top_bar(ctx, &mut self.state, &mut self.diagnostics);
             ui::render_bottom_panel(ctx, &mut self.state, &mut self.acquisition);
             ui::render_left_panel(ctx, &mut self.state);
-            ui::render_right_panel(ctx, &mut self.state);
+            ui::render_right_panel(ctx, &mut self.state, &mut self.diagnostics);
         }
 
         // 20. RENDER (canvas): GPU-based radar rendering in the CentralPanel.
@@ -710,7 +719,7 @@ impl eframe::App for WorkbenchApp {
 
         // 21. RENDER (overlays): modals layered above the canvas.
         ui::render_site_modal(ctx, &mut self.state, &mut self.modals.site);
-        ui::render_mobile_settings_modal(ctx, &mut self.state);
+        ui::render_mobile_settings_modal(ctx, &mut self.state, &mut self.diagnostics);
         ui::render_shortcuts_help(ctx, &mut self.state);
         ui::render_wipe_modal(ctx, &mut self.state);
         ui::render_stats_modal(ctx, &mut self.state);
@@ -718,7 +727,7 @@ impl eframe::App for WorkbenchApp {
         ui::render_network_log(ctx, &mut self.state);
         ui::render_event_modal(ctx, &mut self.state, &mut self.modals.event);
         ui::render_alerts_modals(ctx, &mut self.state, &mut self.diagnostics);
-        ui::render_mping_modal(ctx, &mut self.state, &mut self.modals.mping);
+        ui::render_mping_modal(ctx, &mut self.diagnostics, &mut self.modals.mping);
     }
 }
 

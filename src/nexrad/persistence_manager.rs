@@ -39,7 +39,11 @@ impl PersistenceManager {
     }
 
     /// Push current app state to the URL bar and save user preferences (throttled).
-    pub fn persist_if_due(&mut self, state: &AppState) {
+    ///
+    /// `mping_api_key` is the current value from the diagnostics subsystem
+    /// — sourced separately because mPING state lives there rather than
+    /// on `AppState`.
+    pub fn persist_if_due(&mut self, state: &AppState, mping_api_key: Option<String>) {
         let now = web_time::Instant::now();
         if now.duration_since(self.last_url_push).as_secs_f64() < 1.0 {
             return;
@@ -61,7 +65,7 @@ impl PersistenceManager {
         );
 
         // Save user preferences if changed (piggyback on URL throttle)
-        let current_prefs = state::UserPreferences::from_app_state(state);
+        let current_prefs = state::UserPreferences::from_app_state(state, mping_api_key);
         if current_prefs != self.last_saved_preferences {
             current_prefs.save();
             self.last_saved_preferences = current_prefs;

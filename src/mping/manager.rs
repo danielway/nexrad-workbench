@@ -9,13 +9,27 @@ use eframe::egui;
 use super::api::{self, FetchParams};
 use super::channel::{MpingChannel, MpingEvent};
 use crate::data::get_site;
-use crate::state::AppState;
+use crate::state::MpingState;
 
 /// Half-window around the current playback position, in seconds.
 const TIME_WINDOW_SECS: i64 = 30 * 60;
 
 /// Radius around the active radar site, in meters.
 const RADIUS_METERS: u32 = 300_000;
+
+/// Per-frame inputs computed by the caller. Lets the manager stay
+/// decoupled from `AppState`.
+pub struct MpingTickInputs<'a> {
+    /// Whether the mPING overlay layer is currently visible.
+    pub layer_visible: bool,
+    /// Whether data is "live" (within the recency window). When false,
+    /// the manager skips polling.
+    pub is_live: bool,
+    /// Active radar site id (any case; manager uppercases for lookup).
+    pub site_id: &'a str,
+    /// Current playback position in Unix seconds.
+    pub playback_secs: f64,
+}
 
 /// Inputs that determine whether a refetch is required.
 #[derive(Clone, Debug, PartialEq)]
@@ -47,28 +61,33 @@ impl MpingManager {
     }
 
     /// Called every frame. Drains any events, kicks off a new fetch when due.
-    pub fn tick(&mut self, ctx: &egui::Context, state: &mut AppState) {
+    pub fn tick(
+        &mut self,
+        ctx: &egui::Context,
+        mping: &mut MpingState,
+        inputs: MpingTickInputs<'_>,
+    ) {
         let events = self.channel.drain();
         if !events.is_empty() {
             self.fetch_in_flight = false;
         }
         for event in events {
-            self.apply_event(state, event);
+            self.apply_event(mping, event);
         }
 
         // Bail early if the layer is off, the user is viewing archive data far
-        // behind wall-clock (the overlay is hidden then — see `state::recency`),
-        // or no key has been configured.
-        if !state.layer_state.geo.mping || !crate::state::recency::data_is_live(state) {
+        // behind wall-clock (the overlay is hidden then), or no key has been
+        // configured.
+        if !inputs.layer_visible || !inputs.is_live {
             return;
         }
-        let api_key = match state.mping.api_key.as_deref() {
+        let api_key = match mping.api_key.as_deref() {
             Some(k) if !k.is_empty() => k.to_string(),
             _ => return,
         };
 
         // Resolve the active site center.
-        let site_id = state.viz_state.site_id.to_uppercase();
+        let site_id = inputs.site_id.to_uppercase();
         let site = match get_site(&site_id) {
             Some(s) => s,
             None => return,
@@ -76,8 +95,7 @@ impl MpingManager {
 
         // Quantize playback position to whole minutes for dedup so that
         // sub-second scrubbing doesn't trigger a fetch storm.
-        let playback_secs = state.playback_state.playback_position();
-        let playback_minute = (playback_secs / 60.0) as i64;
+        let playback_minute = (inputs.playback_secs / 60.0) as i64;
 
         let key = CacheKey {
             site_id: site_id.clone(),
@@ -88,21 +106,21 @@ impl MpingManager {
         if self.fetch_in_flight {
             return;
         }
-        if self.last_fetched.as_ref() == Some(&key) && state.mping.last_error.is_none() {
+        if self.last_fetched.as_ref() == Some(&key) && mping.last_error.is_none() {
             return;
         }
 
         // Throttle retries after errors — wait at least 30 s before retrying
         // the same key/site/minute so a misconfigured key doesn't hammer the
         // server every frame.
-        if state.mping.last_error.is_some() {
+        if mping.last_error.is_some() {
             let now_ms = js_sys::Date::now();
-            if now_ms - state.mping.last_poll_ms < 30_000.0 {
+            if now_ms - mping.last_poll_ms < 30_000.0 {
                 return;
             }
         }
 
-        let center_secs_i64 = playback_secs as i64;
+        let center_secs_i64 = inputs.playback_secs as i64;
         let params = FetchParams {
             center_lon: site.lon,
             center_lat: site.lat,
@@ -112,16 +130,16 @@ impl MpingManager {
         };
 
         self.fetch_in_flight = true;
-        state.mping.fetch_in_flight = true;
-        state.mping.last_poll_ms = js_sys::Date::now();
-        state.mping.window_min_ms = params.min_obtime_ms as f64;
-        state.mping.window_max_ms = params.max_obtime_ms as f64;
+        mping.fetch_in_flight = true;
+        mping.last_poll_ms = js_sys::Date::now();
+        mping.window_min_ms = params.min_obtime_ms as f64;
+        mping.window_max_ms = params.max_obtime_ms as f64;
         self.last_fetched = Some(key);
         api::spawn_fetch(ctx.clone(), self.channel.clone(), api_key, params);
     }
 
-    fn apply_event(&mut self, state: &mut AppState, event: MpingEvent) {
-        state.mping.fetch_in_flight = false;
+    fn apply_event(&mut self, mping: &mut MpingState, event: MpingEvent) {
+        mping.fetch_in_flight = false;
         match event {
             MpingEvent::Updated {
                 reports,
@@ -135,24 +153,24 @@ impl MpingManager {
                 // If the previously-selected report id is no longer in the
                 // refreshed list, drop the stale selection so the popover
                 // doesn't reference a missing entry.
-                if let Some(sel) = state.mping.selected_report_id {
+                if let Some(sel) = mping.selected_report_id {
                     if !reports.iter().any(|r| r.id == sel) {
-                        state.mping.selected_report_id = None;
+                        mping.selected_report_id = None;
                     }
                 }
-                state.mping.reports = reports;
-                state.mping.total_count = total_count;
-                state.mping.last_error = None;
-                state.mping.last_success_ms = js_sys::Date::now();
+                mping.reports = reports;
+                mping.total_count = total_count;
+                mping.last_error = None;
+                mping.last_success_ms = js_sys::Date::now();
             }
             MpingEvent::Error(msg) => {
                 log::warn!("mPING fetch failed: {}", msg);
-                state.mping.last_error = Some(msg);
+                mping.last_error = Some(msg);
                 // Drop any stale reports so the user isn't shown them as if
                 // they were fresh.
-                state.mping.reports.clear();
-                state.mping.total_count = 0;
-                state.mping.selected_report_id = None;
+                mping.reports.clear();
+                mping.total_count = 0;
+                mping.selected_report_id = None;
             }
         }
     }

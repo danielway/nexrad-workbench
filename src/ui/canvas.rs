@@ -223,15 +223,15 @@ pub fn render_canvas_with_geo(
 
                 if state.layer_state.geo.mping
                     && data_is_live(state)
-                    && !state.mping.reports.is_empty()
+                    && !diagnostics.mping.reports.is_empty()
                 {
                     render_mping_reports(
                         &painter,
                         &projection,
-                        &state.mping.reports,
-                        state.mping.window_min_ms,
-                        state.mping.window_max_ms,
-                        state.mping.selected_report_id,
+                        &diagnostics.mping.reports,
+                        diagnostics.mping.window_min_ms,
+                        diagnostics.mping.window_max_ms,
+                        diagnostics.mping.selected_report_id,
                     );
                 }
 
@@ -323,14 +323,14 @@ pub fn render_canvas_with_geo(
 
                 if state.layer_state.geo.mping
                     && data_is_live(state)
-                    && state.mping.selected_report_id.is_some()
+                    && diagnostics.mping.selected_report_id.is_some()
                 {
                     render_mping_detail(
                         &painter,
                         rect,
                         &projection,
-                        &state.mping.reports,
-                        state.mping.selected_report_id,
+                        &diagnostics.mping.reports,
+                        diagnostics.mping.selected_report_id,
                         state.viz_state.center_lat,
                         state.viz_state.center_lon,
                         state.playback_state.playback_position(),

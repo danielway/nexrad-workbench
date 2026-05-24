@@ -9,7 +9,11 @@ use crate::state::{AppState, MobileSettingsTab, PlaybackMode, PlaybackSpeed};
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Render the mobile settings modal if it's open.
-pub(crate) fn render_mobile_settings_modal(ctx: &egui::Context, state: &mut AppState) {
+pub(crate) fn render_mobile_settings_modal(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+) {
     if !state.mobile_settings_open || !state.is_mobile {
         return;
     }
@@ -47,7 +51,7 @@ pub(crate) fn render_mobile_settings_modal(ctx: &egui::Context, state: &mut AppS
                 .show(ui, |ui| match state.mobile_settings_tab {
                     MobileSettingsTab::Playback => render_playback_body(ui, state),
                     MobileSettingsTab::Product => render_product_body(ui, state),
-                    MobileSettingsTab::Layers => render_layers_body(ui, state),
+                    MobileSettingsTab::Layers => render_layers_body(ui, state, diagnostics),
                     MobileSettingsTab::More => render_more_body(ui, state),
                 });
 
@@ -246,9 +250,13 @@ fn render_product_body(ui: &mut egui::Ui, state: &mut AppState) {
     super::super::right_panel::render_product_section(ui, state);
 }
 
-fn render_layers_body(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_layers_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+) {
     ui.add_space(4.0);
-    super::super::right_panel::render_layers_section(ui, state);
+    super::super::right_panel::render_layers_section(ui, state, diagnostics);
 }
 
 fn render_more_body(ui: &mut egui::Ui, state: &mut AppState) {

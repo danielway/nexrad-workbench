@@ -258,9 +258,6 @@ pub struct AppState {
     /// the corresponding layer toggle is enabled.
     pub national_mosaic: crate::nexrad::NationalMosaic,
 
-    /// mPING storm reports + related modal state.
-    pub mping: MpingState,
-
     /// Transient GPS-location state backing the "My Location" map overlay.
     /// Per-session only — not persisted across reloads.
     pub gps_state: GpsState,
@@ -402,8 +399,29 @@ impl DateTimePickerState {
     }
 }
 
+/// Bootstrap output from [`AppState::new`].
+///
+/// Carries values that are loaded from persistence at construction time
+/// but no longer live on `AppState` itself — currently just the saved
+/// mPING API key, which belongs on the diagnostics subsystem.
+pub struct AppStateBootstrap {
+    pub state: AppState,
+    pub mping_api_key: Option<String>,
+}
+
+impl Default for AppStateBootstrap {
+    fn default() -> Self {
+        AppState::bootstrap()
+    }
+}
+
 impl AppState {
-    pub fn new() -> Self {
+    /// Construct a fresh `AppState`, loading persisted preferences from
+    /// localStorage along the way. Returns an [`AppStateBootstrap`] so
+    /// pieces of the persisted state that belong on subsystems
+    /// (currently the mPING API key) can be applied at the right place
+    /// by the caller.
+    pub fn bootstrap() -> AppStateBootstrap {
         // Use current time for initialization
         let now = js_sys::Date::now() / 1000.0;
 
@@ -445,11 +463,17 @@ impl AppState {
             ..Default::default()
         };
 
-        // Apply persisted user preferences (speed, palette, layers, etc.)
+        // Apply persisted user preferences (speed, palette, layers, etc.).
+        // Returns the mPING api key (if any) which lives on the diagnostics
+        // subsystem rather than on AppState; the constructor caller is
+        // responsible for applying it.
         let prefs = UserPreferences::load();
-        prefs.apply_to(&mut state);
+        let mping_api_key = prefs.apply_to(&mut state);
 
-        state
+        AppStateBootstrap {
+            state,
+            mping_api_key,
+        }
     }
 
     /// Whether advanced controls should be shown. Helper for UI gating

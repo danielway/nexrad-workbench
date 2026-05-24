@@ -13,17 +13,38 @@
 //! (e.g. recency-driven gating).
 
 use crate::alerts::AlertsManager;
+use crate::mping::{MpingManager, MpingTickInputs};
 use crate::nexrad::NetworkMonitor;
-use crate::state::AlertsState;
+use crate::state::{AlertsState, MpingState};
 use eframe::egui;
+
+/// Per-frame inputs the diagnostics subsystem needs to tick its managers.
+///
+/// Computed by the caller from `AppState` so this subsystem stays
+/// decoupled from the god struct.
+pub struct DiagnosticsInputs<'a> {
+    /// Recency gate. Managers skip polling when false because their
+    /// overlays are hidden while viewing far-past archive data.
+    pub is_live: bool,
+    /// Whether the mPING overlay layer is currently visible.
+    pub mping_layer_visible: bool,
+    /// Active radar site id.
+    pub site_id: &'a str,
+    /// Current playback position in Unix seconds (used by the mPING
+    /// fetch cache key).
+    pub playback_secs: f64,
+}
 
 /// Owner of telemetry/observability state and the managers that drive it.
 pub struct Diagnostics {
-    /// NWS active-alerts overlay state (alert list, modal open/close,
-    /// last-error chip).
+    /// NWS active-alerts overlay state.
     pub alerts: AlertsState,
     /// Lifecycle for the NWS alerts polling loop.
     pub alerts_manager: AlertsManager,
+    /// mPING crowd-sourced storm-report overlay state.
+    pub mping: MpingState,
+    /// Lifecycle for the mPING polling loop.
+    pub mping_manager: MpingManager,
     /// Service worker network monitor. Lazily initialized the first time
     /// dev mode becomes active so the listener isn't attached when the
     /// user can't see the metrics.
@@ -35,19 +56,32 @@ impl Diagnostics {
         Self {
             alerts: AlertsState::default(),
             alerts_manager: AlertsManager::new(),
+            mping: MpingState::default(),
+            mping_manager: MpingManager::new(),
             network_monitor: None,
         }
     }
 
     /// Per-frame tick: poll managers, drain results into their state.
-    ///
-    /// `is_live` lets each manager skip polling when the user is viewing
-    /// archive data far from wall-clock (e.g. scrubbed weeks into the
-    /// past) — there's nothing fresh to report against. Computed by the
-    /// caller from [`crate::state::recency::data_is_live`] so this
-    /// subsystem doesn't have to reach back into `AppState`.
-    pub fn tick(&mut self, ctx: &egui::Context, is_live: bool) {
-        self.alerts_manager.tick(ctx, &mut self.alerts, is_live);
+    pub fn tick(&mut self, ctx: &egui::Context, inputs: DiagnosticsInputs<'_>) {
+        self.alerts_manager
+            .tick(ctx, &mut self.alerts, inputs.is_live);
+
+        // mPING: drain any invalidation request the modal posted, then
+        // tick the manager.
+        if std::mem::take(&mut self.mping.invalidate_requested) {
+            self.mping_manager.invalidate();
+        }
+        self.mping_manager.tick(
+            ctx,
+            &mut self.mping,
+            MpingTickInputs {
+                layer_visible: inputs.mping_layer_visible,
+                is_live: inputs.is_live,
+                site_id: inputs.site_id,
+                playback_secs: inputs.playback_secs,
+            },
+        );
     }
 }
 

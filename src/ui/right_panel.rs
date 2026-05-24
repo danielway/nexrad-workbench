@@ -5,7 +5,11 @@ use crate::state::{
 };
 use eframe::egui::{self, RichText, ScrollArea};
 
-pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
+pub fn render_right_panel(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+) {
     // Mobile layout never invokes this function; the visibility gate
     // below only handles the desktop "hidden" case.
     if !state.right_sidebar_visible {
@@ -25,7 +29,7 @@ pub fn render_right_panel(ctx: &egui::Context, state: &mut AppState) {
                 render_product_section(ui, state);
                 ui.add_space(5.0);
 
-                render_layers_section(ui, state);
+                render_layers_section(ui, state, diagnostics);
 
                 if state.show_advanced() {
                     ui.add_space(5.0);
@@ -212,7 +216,11 @@ pub(super) fn render_product_section(ui: &mut egui::Ui, state: &mut AppState) {
         });
 }
 
-pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_layers_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    diagnostics: &mut crate::subsystem::Diagnostics,
+) {
     let advanced = state.show_advanced();
     egui::CollapsingHeader::new(RichText::new("Layers").strong())
         .default_open(true)
@@ -273,7 +281,7 @@ pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
 
             if advanced {
                 ui.horizontal(|ui| {
-                    let has_key = state.mping.api_key.is_some();
+                    let has_key = diagnostics.mping.api_key.is_some();
                     ui.add_enabled_ui(live && has_key, |ui| {
                         let resp =
                             ui.checkbox(&mut state.layer_state.geo.mping, "Storm Reports (mPING)")
@@ -294,7 +302,7 @@ pub(super) fn render_layers_section(ui: &mut egui::Ui, state: &mut AppState) {
                         .on_hover_text("mPING settings (API key)")
                         .clicked()
                     {
-                        state.mping.settings_modal_open = true;
+                        diagnostics.mping.settings_modal_open = true;
                     }
                 });
             }

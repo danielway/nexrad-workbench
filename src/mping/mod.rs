@@ -13,5 +13,5 @@ mod manager;
 mod parse;
 mod types;
 
-pub use manager::MpingManager;
+pub use manager::{MpingManager, MpingTickInputs};
 pub use types::{ReportCategory, StormReport};

@@ -164,9 +164,10 @@ pub(crate) fn handle_canvas_interaction(
                 handled = true;
             }
             if !handled && state.layer_state.geo.mping && data_is_live(state) {
-                if let Some(id) = pick_mping_report_at(click_pos, projection, &state.mping.reports)
+                if let Some(id) =
+                    pick_mping_report_at(click_pos, projection, &diagnostics.mping.reports)
                 {
-                    state.mping.selected_report_id = Some(id);
+                    diagnostics.mping.selected_report_id = Some(id);
                     handled = true;
                 }
             }
@@ -193,7 +194,7 @@ pub(crate) fn handle_canvas_interaction(
             // Click missed every interactive overlay — dismiss any open
             // mPING popover.
             if !handled {
-                state.mping.selected_report_id = None;
+                diagnostics.mping.selected_report_id = None;
             }
         }
     }

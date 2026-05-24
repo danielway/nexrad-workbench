@@ -109,7 +109,10 @@ impl UserPreferences {
     const STORAGE_KEY: &'static str = "nexrad_user_preferences";
 
     /// Snapshot current preferences from application state.
-    pub fn from_app_state(state: &AppState) -> Self {
+    ///
+    /// `mping_api_key` is sourced separately because the mPING state
+    /// lives on the diagnostics subsystem, not on `AppState`.
+    pub fn from_app_state(state: &AppState, mping_api_key: Option<String>) -> Self {
         Self {
             speed: state.playback_state.speed,
             elevation_auto: state.viz_state.elevation_selection.is_auto(),
@@ -122,7 +125,7 @@ impl UserPreferences {
             layer_national_mosaic: state.layer_state.geo.national_mosaic,
             layer_alerts: state.layer_state.geo.alerts,
             layer_mping: state.layer_state.geo.mping,
-            mping_api_key: state.mping.api_key.clone(),
+            mping_api_key,
             use_local_time: state.use_local_time,
             preferred_site: state.preferred_site.clone(),
             interpolation: state.render_processing.interpolation,
@@ -134,8 +137,10 @@ impl UserPreferences {
         }
     }
 
-    /// Apply loaded preferences to application state.
-    pub fn apply_to(&self, state: &mut AppState) {
+    /// Apply loaded preferences to application state. Returns the saved
+    /// `mping_api_key` (if any) so the caller can apply it to the
+    /// diagnostics subsystem; `AppState` no longer owns mPING state.
+    pub fn apply_to(&self, state: &mut AppState) -> Option<String> {
         state.playback_state.speed = self.speed;
         if self.elevation_auto {
             state.viz_state.elevation_selection = ElevationSelection::Latest;
@@ -154,7 +159,6 @@ impl UserPreferences {
         state.layer_state.geo.national_mosaic = self.layer_national_mosaic;
         state.layer_state.geo.alerts = self.layer_alerts;
         state.layer_state.geo.mping = self.layer_mping;
-        state.mping.api_key = self.mping_api_key.clone();
         state.use_local_time = self.use_local_time;
         state.preferred_site = self.preferred_site.clone();
         state.render_processing.interpolation = self.interpolation;
@@ -163,6 +167,7 @@ impl UserPreferences {
         state.render_processing.data_age_desaturation = self.data_age_desaturation;
         state.mobile_override = self.mobile_override;
         state.advanced_mode = self.advanced_mode;
+        self.mping_api_key.clone()
     }
 
     /// Load preferences from localStorage.
