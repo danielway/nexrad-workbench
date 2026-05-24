@@ -101,14 +101,18 @@ fn draw_row(
 }
 
 /// km per screen pixel at the canvas center, derived from the projection.
-fn compute_km_per_pixel(projection: &MapProjection, rect: &Rect) -> Option<f64> {
+///
+/// Works against any [`Projection`] — 2D always resolves, 3D returns
+/// `None` when the canvas center happens to land off-globe (the scale
+/// bar is suppressed in that case).
+fn compute_km_per_pixel(projection: &dyn crate::geo::Projection, rect: &Rect) -> Option<f64> {
     if rect.width() < 4.0 || rect.height() < 4.0 {
         return None;
     }
     let center = rect.center();
-    let a = projection.screen_to_geo(center);
-    let b = projection.screen_to_geo(Pos2::new(center.x + 100.0, center.y));
-    let km = haversine_km(a.y, a.x, b.y, b.x);
+    let (lat_a, lon_a) = projection.screen_to_geo(center)?;
+    let (lat_b, lon_b) = projection.screen_to_geo(Pos2::new(center.x + 100.0, center.y))?;
+    let km = haversine_km(lat_a, lon_a, lat_b, lon_b);
     if km.is_finite() && km > 0.0 {
         Some(km / 100.0)
     } else {

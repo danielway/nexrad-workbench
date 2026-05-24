@@ -271,6 +271,6 @@ Each initiative is multiple PRs; standard per-PR checks:
 | ID | Title | Status |
 |----|-------|--------|
 | S1 | Subsystem Decomposition | ✅ done (Acquisition + Diagnostics + Render + Live + Timeline + Playback + Chrome all extracted). AppState shrank from ~45 to ~22 fields; WorkbenchApp owns 7 bounded subsystems. |
-| S2 | Unified Async / Effect Model | in progress (GpsState + SiteModalState location queues moved to mpsc channels; upsert_scan single-writer enforced via UpsertScanGuard RAII; RealtimeChannel `results` + `pending_observations` migrated to mpsc; only `stop_requested` + filter epoch still on shared state, gated on a select-with-timeout primitive; CHUNK_ACCUM remains) |
+| S2 | Unified Async / Effect Model | ✅ done (GpsState + SiteModalState location queues moved to mpsc; upsert_scan single-writer enforced via UpsertScanGuard RAII; RealtimeChannel fully migrated — results / observations / control all typed channels, active as Rc<Cell<bool>>, no shared RealtimeState). CHUNK_ACCUM hardening still pending as a smaller follow-up. |
 | S3 | UI Layer Tree | not started |
 | S4 | Camera + Projection State Machine | not started |

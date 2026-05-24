@@ -1,26 +1,29 @@
-//! NEXRAD site marker overlay on the 2D canvas.
+//! NEXRAD site marker overlay.
 //!
 //! Renders colored dots and optional labels for all 156+ NEXRAD sites
 //! within the visible map bounds. The active site is drawn larger and
 //! highlighted; off-screen sites are culled for performance.
+//!
+//! Works against any [`Projection`] — 2D culls via `visible_bounds`,
+//! 3D falls back to projecting every site and skipping the ones the
+//! projector reports as not visible.
 
 use crate::data::{get_site, NEXRAD_SITES};
-use crate::geo::{text_with_halo, GeoPass, MapProjection};
+use crate::geo::{text_with_halo, GeoPass, Projection};
 use crate::state::GeoLayerVisibility;
 use eframe::egui::{self, Painter, Stroke, Vec2};
-use geo_types::Coord;
 
 use super::super::colors::sites as site_colors;
 
 pub(crate) fn render_nexrad_sites(
     painter: &Painter,
-    projection: &MapProjection,
+    projection: &dyn Projection,
     current_site_id: &str,
     visibility: &GeoLayerVisibility,
     pass: GeoPass,
 ) {
     let current_site_id_upper = current_site_id.to_uppercase();
-    let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
+    let bounds = projection.visible_bounds();
 
     if visibility.nexrad_sites {
         for site in NEXRAD_SITES.iter() {
@@ -28,19 +31,23 @@ pub(crate) fn render_nexrad_sites(
                 continue;
             }
 
-            let padding = 2.0;
-            if site.lat < min_lat - padding
-                || site.lat > max_lat + padding
-                || site.lon < min_lon - padding
-                || site.lon > max_lon + padding
-            {
-                continue;
+            // 2D cull: skip sites outside the bbox + padding. 3D has no
+            // bbox; project everything and let the visibility check fall
+            // through.
+            if let Some((min_lon, min_lat, max_lon, max_lat)) = bounds {
+                let padding = 2.0;
+                if site.lat < min_lat - padding
+                    || site.lat > max_lat + padding
+                    || site.lon < min_lon - padding
+                    || site.lon > max_lon + padding
+                {
+                    continue;
+                }
             }
 
-            let screen_pos = projection.geo_to_screen(Coord {
-                x: site.lon,
-                y: site.lat,
-            });
+            let Some(screen_pos) = projection.geo_to_screen(site.lat, site.lon) else {
+                continue;
+            };
 
             match pass {
                 GeoPass::Lines => {
@@ -68,10 +75,9 @@ pub(crate) fn render_nexrad_sites(
     }
 
     if let Some(site) = get_site(&current_site_id_upper) {
-        let screen_pos = projection.geo_to_screen(Coord {
-            x: site.lon,
-            y: site.lat,
-        });
+        let Some(screen_pos) = projection.geo_to_screen(site.lat, site.lon) else {
+            return;
+        };
 
         match pass {
             GeoPass::Lines => {

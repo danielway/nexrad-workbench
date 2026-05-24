@@ -2,9 +2,38 @@
 //!
 //! Handles converting between geographic coordinates (lat/lon) and
 //! screen coordinates for rendering on the canvas.
+//!
+//! The [`Projection`] trait abstracts over both the 2D
+//! [`MapProjection`] and a 3D wrapper around
+//! [`GlobeCamera`](crate::geo::camera::GlobeCamera). Both return
+//! `Option<Pos2>` from `geo_to_screen` so the 3D side can signal
+//! "behind the globe" — for 2D it's always `Some`.
 
 use eframe::egui::{Pos2, Rect, Vec2};
 use geo_types::Coord;
+
+/// Unified geographic ↔ screen projection.
+///
+/// Implemented by [`MapProjection`] (2D, always projects) and by the
+/// `GlobeProjection` wrapper in [`crate::geo::camera`] (3D, returns
+/// `None` for points hidden behind the globe). UI code that doesn't
+/// care which view mode is active can hold `&dyn Projection`.
+pub trait Projection {
+    /// Project a geographic coordinate to screen space, or `None` if
+    /// the point isn't visible (e.g. behind a 3D globe).
+    fn geo_to_screen(&self, lat: f64, lon: f64) -> Option<Pos2>;
+
+    /// Project a screen-space position back to geographic coordinates,
+    /// or `None` if the click missed the globe surface (3D only).
+    fn screen_to_geo(&self, pos: Pos2) -> Option<(f64, f64)>;
+
+    /// Axis-aligned geographic bounds currently in view, as
+    /// `(min_lon, min_lat, max_lon, max_lat)`, or `None` when an
+    /// axis-aligned bound isn't meaningful (3D: the whole world is
+    /// "visible," and a planet-scale bbox isn't useful for hit-test
+    /// culling). 2D always returns `Some`.
+    fn visible_bounds(&self) -> Option<(f64, f64, f64, f64)>;
+}
 
 /// Map projection for converting geographic to screen coordinates.
 #[derive(Debug, Clone)]
@@ -163,6 +192,21 @@ impl MapProjection {
             rect_max_x: self.screen_rect.max.x.to_bits(),
             rect_max_y: self.screen_rect.max.y.to_bits(),
         }
+    }
+}
+
+impl Projection for MapProjection {
+    fn geo_to_screen(&self, lat: f64, lon: f64) -> Option<Pos2> {
+        Some(MapProjection::geo_to_screen(self, Coord { x: lon, y: lat }))
+    }
+
+    fn screen_to_geo(&self, pos: Pos2) -> Option<(f64, f64)> {
+        let coord = MapProjection::screen_to_geo(self, pos);
+        Some((coord.y, coord.x))
+    }
+
+    fn visible_bounds(&self) -> Option<(f64, f64, f64, f64)> {
+        Some(MapProjection::visible_bounds(self))
     }
 }
 

@@ -770,6 +770,40 @@ impl GlobeCamera {
     }
 }
 
+/// 3D adapter implementing [`crate::geo::projection::Projection`].
+///
+/// `GlobeCamera`'s `geo_to_screen` / `screen_to_geo` need a `screen_rect`
+/// to project against, but the [`Projection`](crate::geo::projection::Projection)
+/// trait can't take one as a parameter because [`MapProjection`] stores
+/// its own. This wrapper binds a camera + rect together so callers that
+/// want a uniform `&dyn Projection` can pass it.
+///
+/// 2D-only overlays (sites, alerts, scale bar) call sites that take
+/// `&dyn Projection` today; the 3D side is wired through this wrapper
+/// for the future hybrid path or 3D overlays that may want to share
+/// the same call sites.
+#[allow(dead_code)] // 3D overlays are not yet sharing the &dyn Projection call sites.
+pub struct GlobeProjection<'a> {
+    pub camera: &'a GlobeCamera,
+    pub screen_rect: Rect,
+}
+
+impl crate::geo::projection::Projection for GlobeProjection<'_> {
+    fn geo_to_screen(&self, lat: f64, lon: f64) -> Option<Pos2> {
+        self.camera.geo_to_screen(lat, lon, self.screen_rect)
+    }
+
+    fn screen_to_geo(&self, pos: Pos2) -> Option<(f64, f64)> {
+        self.camera.screen_to_geo(pos, self.screen_rect)
+    }
+
+    fn visible_bounds(&self) -> Option<(f64, f64, f64, f64)> {
+        // 3D: the whole globe is potentially visible, and an axis-aligned
+        // lon/lat bbox isn't a useful hit-test bound at planet scale.
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
