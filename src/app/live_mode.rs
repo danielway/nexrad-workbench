@@ -18,7 +18,7 @@ impl WorkbenchApp {
         let now = js_sys::Date::now() / 1000.0;
 
         // Initialize live mode state
-        self.state.live_mode_state.start(now);
+        self.live.mode_state.start(now);
         self.state.playback_state.set_playback_position(now);
         self.state.playback_state.time_model.enable_realtime_lock();
         self.state.playback_state.playing = true;
@@ -83,7 +83,7 @@ impl WorkbenchApp {
             // partial in-progress data on the GPU (driven by
             // `handle_live_decoded_outcome`); leave it untouched. Archive
             // mode has no other producer, so blank the canvas.
-            if !self.state.live_mode_state.is_active() {
+            if !self.live.mode_state.is_active() {
                 self.clear_display_no_sweep();
             }
             return;
@@ -107,7 +107,7 @@ impl WorkbenchApp {
     pub(crate) fn stop_live_mode(&mut self, reason: state::LiveExitReason) {
         log::info!("Stopping live mode: {:?}", reason);
 
-        self.state.live_mode_state.stop(reason);
+        self.live.mode_state.stop(reason);
         self.state.playback_state.time_model.disable_realtime_lock();
         self.live.channel.stop();
 
@@ -123,8 +123,8 @@ impl WorkbenchApp {
         }
 
         self.state.status_message = self
-            .state
-            .live_mode_state
+            .live
+            .mode_state
             .last_exit_reason
             .map(|r| r.message().to_string())
             .unwrap_or_default();
@@ -142,7 +142,7 @@ impl WorkbenchApp {
         match result {
             nexrad::RealtimeResult::Started { site_id } => {
                 log::debug!("Realtime streaming started for site: {}", site_id);
-                self.state.live_mode_state.handle_streaming_started(now);
+                self.live.mode_state.handle_streaming_started(now);
                 self.state.status_message = format!("Live: connected to {}", site_id);
             }
             nexrad::RealtimeResult::ChunkReceived {
@@ -164,7 +164,7 @@ impl WorkbenchApp {
                     fetch_latency_ms,
                     plan.as_ref().and_then(|p| p.next_available_in_secs(now)),
                 );
-                self.state.live_mode_state.handle_realtime_chunk(
+                self.live.mode_state.handle_realtime_chunk(
                     chunks_in_volume,
                     is_volume_end,
                     now,
@@ -172,7 +172,7 @@ impl WorkbenchApp {
                 );
 
                 if let Some(stat) = arrival_stat {
-                    self.state.live_mode_state.record_chunk_arrival(stat);
+                    self.live.mode_state.record_chunk_arrival(stat);
                 }
 
                 // Record chunk latency for the acquisition drawer
@@ -260,7 +260,7 @@ impl WorkbenchApp {
                 log::error!("Realtime streaming error: {}", msg);
                 self.stop_live_mode(state::LiveExitReason::ConnectionError);
                 // Preserve error message (stop_live_mode clears it)
-                self.state.live_mode_state.error_message = Some(msg.clone());
+                self.live.mode_state.error_message = Some(msg.clone());
                 self.state.status_message = format!("Live error: {}", msg);
 
                 // Track error as a failed acquisition operation

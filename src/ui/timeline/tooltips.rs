@@ -10,7 +10,8 @@ use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 pub(super) fn render_timeline_tooltip(
     ui: &mut egui::Ui,
     timeline: &RadarTimeline,
-    state: &crate::state::AppState,
+    _state: &crate::state::AppState,
+    live: &crate::subsystem::Live,
     hover_ts: f64,
     hover_pos: Pos2,
     scan_rect: &Rect,
@@ -19,7 +20,7 @@ pub(super) fn render_timeline_tooltip(
     use_local: bool,
     now_secs: f64,
 ) {
-    let live_state = &state.live_mode_state;
+    let live_state = &live.mode_state;
     let in_sweep_track = detail_level == DetailLevel::Sweeps && hover_pos.y > sweep_rect.top();
 
     // Find the scan at the hovered timestamp
@@ -28,7 +29,7 @@ pub(super) fn render_timeline_tooltip(
         .find(|s| s.start_time <= hover_ts && s.end_time >= hover_ts);
 
     // Check if hovering within the active real-time volume (including projected future)
-    let live_model = &state.live_radar_model;
+    let live_model = &live.radar_model;
     let in_active_volume = scan.is_none()
         && live_model.active
         && live_model

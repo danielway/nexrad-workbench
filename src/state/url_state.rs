@@ -71,8 +71,15 @@ pub struct ViewState {
     pub rt: Option<bool>,
 }
 
-impl From<&super::AppState> for ViewState {
-    fn from(state: &super::AppState) -> Self {
+impl ViewState {
+    /// Build a `ViewState` from the current [`super::AppState`] plus an
+    /// explicit `is_live` flag.
+    ///
+    /// `is_live` is sourced from [`crate::subsystem::Live::mode_state`]
+    /// — the URL-state module doesn't reach for the Live subsystem so
+    /// the dependency stays one-way. Callers in
+    /// [`crate::nexrad::persistence_manager`] pass it in.
+    pub fn from_state(state: &super::AppState, is_live: bool) -> Self {
         let cam = &state.viz_state.camera;
         Self {
             mz: Some(state.viz_state.zoom),
@@ -99,7 +106,7 @@ impl From<&super::AppState> for ViewState {
             fs: Some(cam.free_speed),
             v3d: Some(state.viz_state.volume_3d_enabled),
             vdc: Some(state.viz_state.volume_density_cutoff),
-            rt: state.live_mode_state.is_active().then_some(true),
+            rt: is_live.then_some(true),
         }
     }
 }

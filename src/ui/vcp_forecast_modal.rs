@@ -22,7 +22,11 @@ use crate::state::{
 use eframe::egui::{self, RichText, Vec2};
 use std::collections::BTreeMap;
 
-pub fn render_vcp_forecast_modal(ctx: &egui::Context, state: &mut AppState) {
+pub fn render_vcp_forecast_modal(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    live: &crate::subsystem::Live,
+) {
     if !state.vcp_forecast_open {
         return;
     }
@@ -35,7 +39,7 @@ pub fn render_vcp_forecast_modal(ctx: &egui::Context, state: &mut AppState) {
     let dark = state.is_dark;
     let site_id = state.viz_state.site_id.clone();
     let (snap_opt, arrivals) = {
-        let live = &state.live_mode_state;
+        let live = &live.mode_state;
         if let Some(snap) = live.derive_current_volume_forecast() {
             (Some(snap), live.chunk_arrivals.clone())
         } else if let Some(record) = live.last_completed_volume.as_ref() {

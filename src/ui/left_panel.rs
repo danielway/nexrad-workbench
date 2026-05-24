@@ -26,7 +26,7 @@ struct RadarStateAtTimestamp<'a> {
     position: Option<crate::state::VcpPositionModel>,
 }
 
-pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
+pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState, live: &crate::subsystem::Live) {
     // Left panel is power-user instrumentation (VCP / azimuth / elevation
     // diagnostics). Mobile layout never invokes this function; the
     // visibility/Basic-mode gate below covers the desktop "hidden" cases.
@@ -41,21 +41,25 @@ pub fn render_left_panel(ctx: &egui::Context, state: &mut AppState) {
         .max_width(400.0)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                render_radar_operations_section(ui, state);
+                render_radar_operations_section(ui, state, live);
             });
         });
 }
 
-fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_radar_operations_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    live: &crate::subsystem::Live,
+) {
     // Header
     ui.label(RichText::new("Radar Operations").strong().size(14.0));
 
     ui.add_space(4.0);
 
-    let radar_state = query_radar_state_at_timestamp(state);
+    let radar_state = query_radar_state_at_timestamp(state, live);
 
     // Top-down and side views side-by-side
-    let is_live = state.live_mode_state.is_active();
+    let is_live = live.mode_state.is_active();
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(RichText::new("Azimuth").small());
@@ -74,7 +78,10 @@ fn render_radar_operations_section(ui: &mut egui::Ui, state: &mut AppState) {
     render_vcp_breakdown(ui, &radar_state);
 }
 
-fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimestamp<'a> {
+fn query_radar_state_at_timestamp<'a>(
+    state: &'a AppState,
+    live: &'a crate::subsystem::Live,
+) -> RadarStateAtTimestamp<'a> {
     let ts = state.playback_state.playback_position();
 
     // Find the scan at the current timestamp
@@ -157,13 +164,12 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
             // js_sys::Date::now() — that would drift by ~frame-render
             // duration against every other surface that consumed the same
             // model.
-            if let Some(ref position) = state.live_radar_model.position {
-                let frame = &state.live_radar_model.frame_now;
+            if let Some(ref position) = live.radar_model.position {
+                let frame = &live.radar_model.frame_now;
                 let vcp = Some(position.vcp_number).filter(|&v| v > 0);
-                let azimuth = state.live_radar_model.estimated_azimuth;
+                let azimuth = live.radar_model.estimated_azimuth;
                 let sweep_index = frame.sweep_index.or_else(|| {
-                    state
-                        .live_mode_state
+                    live.mode_state
                         .current_in_progress_elevation
                         .map(|e| e.saturating_sub(1) as usize)
                 });
@@ -173,7 +179,7 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                 });
                 let current_elevation_number = sweep_index
                     .and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_number))
-                    .or(state.live_mode_state.current_in_progress_elevation);
+                    .or(live.mode_state.current_in_progress_elevation);
 
                 RadarStateAtTimestamp {
                     azimuth,
@@ -182,7 +188,7 @@ fn query_radar_state_at_timestamp<'a>(state: &'a AppState) -> RadarStateAtTimest
                     current_elevation_number,
                     scan_progress,
                     scan: None,
-                    live_vcp_pattern: state.live_mode_state.current_vcp_pattern.as_ref(),
+                    live_vcp_pattern: live.mode_state.current_vcp_pattern.as_ref(),
                     position: Some(position.clone()),
                 }
             } else {

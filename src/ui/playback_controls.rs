@@ -9,7 +9,11 @@ use crate::subsystem::Acquisition;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Render the datetime picker popup for jumping to a specific time.
-pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_datetime_picker_popup(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+) {
     if !state.datetime_picker.open {
         return;
     }
@@ -114,8 +118,8 @@ pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppSta
                                         ts - view_width_secs * 0.05;
 
                                     // Exit live mode if active
-                                    if state.live_mode_state.is_active() {
-                                        state.live_mode_state.stop(LiveExitReason::UserSeeked);
+                                    if live.mode_state.is_active() {
+                                        live.mode_state.stop(LiveExitReason::UserSeeked);
                                         state.playback_state.time_model.disable_realtime_lock();
                                     }
 
@@ -139,6 +143,7 @@ pub(super) fn render_datetime_picker_popup(ui: &mut egui::Ui, state: &mut AppSta
 pub(super) fn render_playback_controls(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    live: &mut crate::subsystem::Live,
     acquisition: &mut Acquisition,
 ) {
     let use_local = state.use_local_time;
@@ -146,7 +151,7 @@ pub(super) fn render_playback_controls(
     // Idle = nothing under the playback cursor. Disable transport controls
     // so they don't visibly do nothing; layout stays stable for when data
     // arrives.
-    let interactive = state.app_mode != AppMode::Idle;
+    let interactive = live.app_mode != AppMode::Idle;
 
     // Current position timestamp display. In Advanced it's a button that
     // opens the datetime picker; in Basic it's a plain label so a casual
@@ -182,11 +187,11 @@ pub(super) fn render_playback_controls(
     }
 
     // Datetime picker popup
-    render_datetime_picker_popup(ui, state);
+    render_datetime_picker_popup(ui, state, live);
 
     // Live mode indicator badge (when active)
-    if state.live_mode_state.is_active() {
-        render_live_indicator(ui, state);
+    if live.mode_state.is_active() {
+        render_live_indicator(ui, state, live);
         ui.separator();
     }
     // Live entry consolidated into the top-bar mode pill — clicking the
@@ -208,11 +213,11 @@ pub(super) fn render_playback_controls(
     {
         if state.playback_state.playing {
             // Stop - also exits live mode if active
-            if state.live_mode_state.is_active() {
-                state.live_mode_state.stop(LiveExitReason::UserStopped);
+            if live.mode_state.is_active() {
+                live.mode_state.stop(LiveExitReason::UserStopped);
                 state.playback_state.time_model.disable_realtime_lock();
-                state.status_message = state
-                    .live_mode_state
+                state.status_message = live
+                    .mode_state
                     .last_exit_reason
                     .map(|r| r.message().to_string())
                     .unwrap_or_default();
@@ -236,11 +241,11 @@ pub(super) fn render_playback_controls(
         .clicked()
     {
         // Exit live mode when jogging
-        if state.live_mode_state.is_active() {
-            state.live_mode_state.stop(LiveExitReason::UserJogged);
+        if live.mode_state.is_active() {
+            live.mode_state.stop(LiveExitReason::UserJogged);
             state.playback_state.time_model.disable_realtime_lock();
-            state.status_message = state
-                .live_mode_state
+            state.status_message = live
+                .mode_state
                 .last_exit_reason
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
@@ -275,7 +280,7 @@ pub(super) fn render_playback_controls(
     // Step-forward and "Now" are no-ops in Live (cursor is locked to wall
     // clock). Hide them in Basic+Live to declutter; Advanced always sees
     // them so power users keep their workflow.
-    let show_forward_seek = advanced || state.app_mode != AppMode::Live;
+    let show_forward_seek = advanced || live.app_mode != AppMode::Live;
 
     // Step forward
     if show_forward_seek
@@ -287,11 +292,11 @@ pub(super) fn render_playback_controls(
             .clicked()
     {
         // Exit live mode when jogging
-        if state.live_mode_state.is_active() {
-            state.live_mode_state.stop(LiveExitReason::UserJogged);
+        if live.mode_state.is_active() {
+            live.mode_state.stop(LiveExitReason::UserJogged);
             state.playback_state.time_model.disable_realtime_lock();
-            state.status_message = state
-                .live_mode_state
+            state.status_message = live
+                .mode_state
                 .last_exit_reason
                 .map(|r| r.message().to_string())
                 .unwrap_or_default();
@@ -336,8 +341,8 @@ pub(super) fn render_playback_controls(
         let now = TimeModel::wall_clock_time();
 
         // Exit live mode if active
-        if state.live_mode_state.is_active() {
-            state.live_mode_state.stop(LiveExitReason::UserSeeked);
+        if live.mode_state.is_active() {
+            live.mode_state.stop(LiveExitReason::UserSeeked);
             state.playback_state.time_model.disable_realtime_lock();
         }
 
@@ -466,9 +471,9 @@ pub(super) fn render_playback_controls(
 }
 
 /// Render live mode indicator badge with pulsing dot.
-fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
-    let phase = state.live_mode_state.phase;
-    let pulse_alpha = state.live_mode_state.pulse_alpha();
+fn render_live_indicator(ui: &mut egui::Ui, state: &AppState, live: &crate::subsystem::Live) {
+    let phase = live.mode_state.phase;
+    let pulse_alpha = live.mode_state.pulse_alpha();
 
     // Get current time for status text
     let now = state.playback_state.playback_position();
@@ -488,7 +493,7 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
                     .color(pulsed_color),
             );
 
-            let elapsed = state.live_mode_state.phase_elapsed_secs(now) as i32;
+            let elapsed = live.mode_state.phase_elapsed_secs(now) as i32;
             ui.label(
                 RichText::new(format!("CONNECTING {}s", elapsed))
                     .size(11.0)
@@ -517,9 +522,9 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
             );
 
             // Show chunk count
-            if state.live_mode_state.chunks_received > 0 {
+            if live.mode_state.chunks_received > 0 {
                 ui.label(
-                    RichText::new(format!("({})", state.live_mode_state.chunks_received))
+                    RichText::new(format!("({})", live.mode_state.chunks_received))
                         .size(10.0)
                         .color(ui_colors::value(state.is_dark)),
                 );
@@ -533,7 +538,7 @@ fn render_live_indicator(ui: &mut egui::Ui, state: &AppState) {
                         .italics()
                         .color(ui_colors::SUCCESS),
                 );
-            } else if let Some(remaining) = state.live_mode_state.countdown_remaining_secs(now) {
+            } else if let Some(remaining) = live.mode_state.countdown_remaining_secs(now) {
                 ui.label(
                     RichText::new(format!("next in {}s", remaining.ceil() as i32))
                         .size(10.0)

@@ -19,6 +19,7 @@ const ACCENT_THICKNESS: f32 = 2.0;
 pub(crate) fn render_mobile_top_bar(
     ctx: &egui::Context,
     state: &mut AppState,
+    live: &crate::subsystem::Live,
     diagnostics: &mut crate::subsystem::Diagnostics,
 ) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
@@ -27,7 +28,7 @@ pub(crate) fn render_mobile_top_bar(
     let (inset_top, _inset_right, _inset_bottom, _inset_left) = super::safe_area_insets();
 
     let panel_fill = ctx.style().visuals.panel_fill;
-    let accent_color = state.app_mode.color();
+    let accent_color = live.app_mode.color();
 
     // Zero inner-margin frame so the content sits as high as possible —
     // egui's default top-panel frame adds a couple of pixels of padding on
@@ -64,7 +65,7 @@ pub(crate) fn render_mobile_top_bar(
                 ui.separator();
 
                 // Compact mode badge (Idle / Archive / Live).
-                let mode = state.app_mode;
+                let mode = live.app_mode;
                 let icon = match mode {
                     AppMode::Idle => egui_phosphor::regular::PAUSE_CIRCLE,
                     AppMode::Archive => egui_phosphor::regular::ARCHIVE_BOX,

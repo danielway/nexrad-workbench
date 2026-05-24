@@ -12,6 +12,7 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 pub(crate) fn render_mobile_settings_modal(
     ctx: &egui::Context,
     state: &mut AppState,
+    live: &mut crate::subsystem::Live,
     diagnostics: &mut crate::subsystem::Diagnostics,
 ) {
     if !state.mobile_settings_open || !state.is_mobile {
@@ -49,8 +50,8 @@ pub(crate) fn render_mobile_settings_modal(
                 .max_height(body_h)
                 .auto_shrink([false, false])
                 .show(ui, |ui| match state.mobile_settings_tab {
-                    MobileSettingsTab::Playback => render_playback_body(ui, state),
-                    MobileSettingsTab::Product => render_product_body(ui, state),
+                    MobileSettingsTab::Playback => render_playback_body(ui, state, live),
+                    MobileSettingsTab::Product => render_product_body(ui, state, live),
                     MobileSettingsTab::Layers => render_layers_body(ui, state, diagnostics),
                     MobileSettingsTab::More => render_more_body(ui, state),
                 });
@@ -58,7 +59,7 @@ pub(crate) fn render_mobile_settings_modal(
             // The datetime picker popup (opened by tapping the current-time
             // label in the Playback tab) renders as an Area, so it must be
             // spawned from within the window.
-            super::super::playback_controls::render_datetime_picker_popup(ui, state);
+            super::super::playback_controls::render_datetime_picker_popup(ui, state, live);
         });
 }
 
@@ -122,7 +123,11 @@ fn render_tab_strip(ui: &mut egui::Ui, state: &mut AppState) {
 // Tab bodies
 // ---------------------------------------------------------------------------
 
-fn render_playback_body(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_playback_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+) {
     ui.add_space(6.0);
 
     // Current time — tap to open the datetime picker.
@@ -163,7 +168,7 @@ fn render_playback_body(ui: &mut egui::Ui, state: &mut AppState) {
             )
             .clicked()
         {
-            super::tabs::toggle_play(state);
+            super::tabs::toggle_play(state, live);
         }
 
         ui.add_space(8.0);
@@ -174,7 +179,7 @@ fn render_playback_body(ui: &mut egui::Ui, state: &mut AppState) {
             )
             .clicked()
         {
-            super::tabs::step_frame(state, -1);
+            super::tabs::step_frame(state, live, -1);
         }
         if ui
             .add_sized(
@@ -183,7 +188,7 @@ fn render_playback_body(ui: &mut egui::Ui, state: &mut AppState) {
             )
             .clicked()
         {
-            super::tabs::step_frame(state, 1);
+            super::tabs::step_frame(state, live, 1);
         }
     });
 
@@ -245,9 +250,9 @@ fn render_playback_body(ui: &mut egui::Ui, state: &mut AppState) {
     });
 }
 
-fn render_product_body(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_product_body(ui: &mut egui::Ui, state: &mut AppState, live: &crate::subsystem::Live) {
     ui.add_space(4.0);
-    super::super::right_panel::render_product_section(ui, state);
+    super::super::right_panel::render_product_section(ui, state, live);
 }
 
 fn render_layers_body(

@@ -95,6 +95,7 @@ pub(crate) fn render_radar_sweep(
     painter: &Painter,
     projection: &MapProjection,
     state: &AppState,
+    live: &crate::subsystem::Live,
     sweep_info: Option<(f32, f32)>,
     stale: bool,
 ) {
@@ -180,7 +181,7 @@ pub(crate) fn render_radar_sweep(
     // data edge, NOW, per-chunk boundaries) only draw when the user
     // has sweep_animation enabled.
     if let Some((az, start_az)) = sweep_info {
-        let is_live = state.live_radar_model.active;
+        let is_live = live.radar_model.active;
         let show_lines = state.effective_sweep_animation();
 
         let (start_line_color, data_edge_color, data_edge_width) = if stale {
@@ -218,7 +219,7 @@ pub(crate) fn render_radar_sweep(
 
         // In live mode, draw a separate "NOW" line at the estimated antenna position
         if is_live && show_lines {
-            if let Some(now_az) = state.live_radar_model.estimated_azimuth {
+            if let Some(now_az) = live.radar_model.estimated_azimuth {
                 let now_rad = (now_az - 90.0) * PI / 180.0;
                 let now_color = Color32::from_rgb(255, 80, 80);
                 painter.line_segment(
@@ -239,15 +240,15 @@ pub(crate) fn render_radar_sweep(
                 // downloading a previous elevation's data.
                 let now_label_radius = radius + 4.0 + 6.0 + 14.0; // donut_outer + offset
                 let now_secs = js_sys::Date::now() / 1000.0;
-                let collecting_label = state
-                    .live_radar_model
+                let collecting_label = live
+                    .radar_model
                     .position
                     .as_ref()
                     .and_then(|p| {
                         p.elevation_index_at(now_secs).and_then(|idx| {
                             p.sweeps.get(idx).map(|s| {
-                                let angle = state
-                                    .live_radar_model
+                                let angle = live
+                                    .radar_model
                                     .volume
                                     .as_ref()
                                     .and_then(|v| v.vcp_pattern.as_ref())
@@ -263,8 +264,7 @@ pub(crate) fn render_radar_sweep(
                     })
                     .or_else(|| {
                         // Fallback: use the worker's in-progress elevation
-                        state
-                            .live_mode_state
+                        live.mode_state
                             .current_in_progress_elevation
                             .map(|e| format!("NOW \u{00B7} Elev {}", e))
                     })
@@ -288,7 +288,7 @@ pub(crate) fn render_radar_sweep(
         // streaming. Treated as part of "the sweeping line" — gated on
         // the toggle so they vanish when sweep animation is off.
         if show_lines {
-            if let Some(sweep) = state.live_radar_model.active_sweep.as_ref() {
+            if let Some(sweep) = live.radar_model.active_sweep.as_ref() {
                 let boundary_line_color = Color32::from_rgba_unmultiplied(200, 200, 220, 100);
                 for c in sweep
                     .chunks
@@ -311,7 +311,7 @@ pub(crate) fn render_radar_sweep(
             if stale {
                 draw_sweep_donut_stale(painter, center, radius);
             } else {
-                draw_sweep_donut(painter, center, radius, az, start_az, state);
+                draw_sweep_donut(painter, center, radius, az, start_az, state, live);
             }
         }
     }
@@ -416,6 +416,7 @@ fn draw_sweep_donut(
     sweep_az: f32,
     sweep_start: f32,
     state: &AppState,
+    live: &crate::subsystem::Live,
 ) {
     let donut_inner = radius + 4.0;
     let donut_outer = radius + 10.0;
@@ -461,7 +462,7 @@ fn draw_sweep_donut(
     let label_radius = donut_outer + 14.0;
     let label_font = egui::FontId::monospace(10.0);
     let use_local = state.use_local_time;
-    let is_live = state.live_radar_model.active;
+    let is_live = live.radar_model.active;
 
     // ── Gather sweep metadata for both slices ─────────────────────────
     // Helper to format a timestamp with age
@@ -494,7 +495,7 @@ fn draw_sweep_donut(
     let (prev_edge_time, prev_meta): (Option<String>, Option<String>);
 
     if is_live {
-        let model = &state.live_radar_model;
+        let model = &live.radar_model;
         let sweep = model.active_sweep.as_ref();
         let vcp = model.volume.as_ref().and_then(|v| v.vcp_pattern.as_ref());
 
@@ -520,8 +521,7 @@ fn draw_sweep_donut(
             .as_ref()
             .and_then(|v| v.roster.received.last().copied());
         let prev_sweep_meta = prev_elev.and_then(|pe| {
-            state
-                .live_mode_state
+            live.mode_state
                 .completed_sweep_metas
                 .iter()
                 .find(|m| m.elevation_number == pe)
@@ -589,14 +589,13 @@ fn draw_sweep_donut(
     // Prev sweep time interpolated at the data-edge azimuth
     let prev_at_edge_time = if is_live {
         // Live: interpolate within the previous sweep's time range
-        if let Some(meta) = state
-            .live_radar_model
+        if let Some(meta) = live
+            .radar_model
             .volume
             .as_ref()
             .and_then(|v| v.roster.received.last().copied())
             .and_then(|pe| {
-                state
-                    .live_mode_state
+                live.mode_state
                     .completed_sweep_metas
                     .iter()
                     .find(|m| m.elevation_number == pe)

@@ -13,7 +13,7 @@ impl WorkbenchApp {
     /// Auto-load scans when scrubbing the timeline and prefetch upcoming sweeps.
     pub(crate) fn advance_playback(&mut self) {
         // Live mode drives rendering via ChunkIngested/LiveDecoded — skip playback-driven renders.
-        if self.state.live_mode_state.is_active() {
+        if self.live.mode_state.is_active() {
             return;
         }
         // Rebuild macro frame list when dirty (elevation selection, bounds, or scan count changed)
@@ -262,7 +262,7 @@ impl WorkbenchApp {
         // In live mode, the previous sweep texture is managed by
         // promote_current_to_previous in the LiveDecoded handler —
         // don't let the timeline-based sync overwrite or clear it.
-        if self.state.live_mode_state.is_active() {
+        if self.live.mode_state.is_active() {
             return;
         }
 
@@ -465,7 +465,7 @@ impl WorkbenchApp {
     /// Re-render when the user changes elevation, product, or view mode.
     pub(crate) fn request_render_if_needed(&mut self) {
         // Live mode re-renders on the next ChunkIngested (~12s) — no IDB-based render needed.
-        if self.state.live_mode_state.is_active() {
+        if self.live.mode_state.is_active() {
             return;
         }
         // Detect elevation/product changes and trigger worker re-render.

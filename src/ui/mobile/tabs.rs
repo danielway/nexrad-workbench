@@ -13,7 +13,11 @@ use eframe::egui::{self, Color32};
 const ACTION_BAR_HEIGHT: f32 = 56.0;
 const SCRUBBER_AREA_HEIGHT: f32 = super::scrubber::SCRUBBER_HEIGHT + 4.0;
 
-pub(crate) fn render_mobile_chrome(ctx: &egui::Context, state: &mut AppState) {
+pub(crate) fn render_mobile_chrome(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
     // under the home indicator reservation. Pad the action bar below the
     // icons so they don't sit flush with the bottom edge of the screen.
@@ -24,7 +28,7 @@ pub(crate) fn render_mobile_chrome(ctx: &egui::Context, state: &mut AppState) {
         .resizable(false)
         .exact_height(ACTION_BAR_HEIGHT + inset_bottom)
         .show(ctx, |ui| {
-            render_action_bar(ui, state);
+            render_action_bar(ui, state, live);
         });
 
     // Scrubber — sits just above the action bar.
@@ -33,7 +37,7 @@ pub(crate) fn render_mobile_chrome(ctx: &egui::Context, state: &mut AppState) {
         .exact_height(SCRUBBER_AREA_HEIGHT)
         .show(ctx, |ui| {
             ui.add_space(2.0);
-            super::scrubber::render_scrubber(ui, state);
+            super::scrubber::render_scrubber(ui, state, live);
         });
 }
 
@@ -43,13 +47,13 @@ pub(crate) fn render_mobile_chrome(ctx: &egui::Context, state: &mut AppState) {
 /// The slot height stays fixed at `ACTION_BAR_HEIGHT` even when the hosting
 /// panel is taller (iOS safe-area bottom inset); the extra space falls
 /// below the icons as blank panel padding clearing the home indicator.
-fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState) {
+fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState, live: &mut crate::subsystem::Live) {
     let total_w = ui.available_width();
     let slot_h = ACTION_BAR_HEIGHT;
     let slot_w = total_w / 4.0;
     let icon_size = ((slot_h - 10.0) * 0.55).clamp(18.0, 24.0);
 
-    let is_live = state.live_mode_state.is_active();
+    let is_live = live.mode_state.is_active();
     let live_color = if is_live {
         Color32::from_rgb(220, 60, 60)
     } else {
@@ -110,7 +114,7 @@ fn render_action_bar(ui: &mut egui::Ui, state: &mut AppState) {
         .clicked()
         {
             if is_live {
-                state.live_mode_state.stop(LiveExitReason::UserStopped);
+                live.mode_state.stop(LiveExitReason::UserStopped);
                 state.playback_state.time_model.disable_realtime_lock();
                 state.playback_state.playing = false;
             } else {
@@ -179,10 +183,10 @@ fn icon_slot(
 // Playback helpers (shared with the settings modal).
 // ---------------------------------------------------------------------------
 
-pub(super) fn toggle_play(state: &mut AppState) {
+pub(super) fn toggle_play(state: &mut AppState, live: &mut crate::subsystem::Live) {
     if state.playback_state.playing {
-        if state.live_mode_state.is_active() {
-            state.live_mode_state.stop(LiveExitReason::UserStopped);
+        if live.mode_state.is_active() {
+            live.mode_state.stop(LiveExitReason::UserStopped);
             state.playback_state.time_model.disable_realtime_lock();
         }
         state.playback_state.playing = false;
@@ -191,12 +195,16 @@ pub(super) fn toggle_play(state: &mut AppState) {
     }
 }
 
-pub(super) fn step_frame(state: &mut AppState, direction: isize) {
+pub(super) fn step_frame(
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+    direction: isize,
+) {
     use crate::state::PlaybackMode;
 
     let current_pos = state.playback_state.playback_position();
-    if state.live_mode_state.is_active() {
-        state.live_mode_state.stop(LiveExitReason::UserJogged);
+    if live.mode_state.is_active() {
+        live.mode_state.stop(LiveExitReason::UserJogged);
         state.playback_state.time_model.disable_realtime_lock();
     }
     match state.playback_state.playback_mode() {

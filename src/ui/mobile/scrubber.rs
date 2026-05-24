@@ -15,7 +15,11 @@ use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 /// Total scrubber height in egui logical pixels.
 pub(super) const SCRUBBER_HEIGHT: f32 = 28.0;
 
-pub(super) fn render_scrubber(ui: &mut egui::Ui, state: &mut AppState) {
+pub(super) fn render_scrubber(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+) {
     let available_w = ui.available_width();
     let (response, painter) = ui.allocate_painter(
         Vec2::new(available_w, SCRUBBER_HEIGHT),
@@ -88,7 +92,7 @@ pub(super) fn render_scrubber(ui: &mut egui::Ui, state: &mut AppState) {
     painter.rect_filled(filled, 2.0, fg);
 
     // "Now" marker in live mode.
-    if state.live_mode_state.is_active() {
+    if live.mode_state.is_active() {
         let now = js_sys::Date::now() / 1000.0;
         if now >= t_start && now <= t_end {
             let x = ts_to_x(now);
@@ -127,8 +131,8 @@ pub(super) fn render_scrubber(ui: &mut egui::Ui, state: &mut AppState) {
     if let Some(pos) = interact_pos {
         let new_ts = x_to_ts(pos.x);
         // Exit live mode when the user seeks manually.
-        if state.live_mode_state.is_active() {
-            state.live_mode_state.stop(LiveExitReason::UserSeeked);
+        if live.mode_state.is_active() {
+            live.mode_state.stop(LiveExitReason::UserSeeked);
             state.playback_state.time_model.disable_realtime_lock();
         }
         // Scrubbing pauses playback so the thumb stays where the user dropped

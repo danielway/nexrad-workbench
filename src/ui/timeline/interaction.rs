@@ -4,9 +4,11 @@ use crate::state::{AppState, LiveExitReason};
 use eframe::egui::{self, Rect};
 
 /// Handle mouse interaction on the timeline: click, shift+click, drag-to-pan, scroll-to-zoom.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_timeline_interaction(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    live: &mut crate::subsystem::Live,
     response: &egui::Response,
     full_rect: &Rect,
     view_start: f64,
@@ -53,11 +55,11 @@ pub(super) fn handle_timeline_interaction(
 
     if response.clicked() && !shift_held {
         if let Some(pos) = response.interact_pointer_pos() {
-            if state.live_mode_state.is_active() {
-                state.live_mode_state.stop(LiveExitReason::UserSeeked);
+            if live.mode_state.is_active() {
+                live.mode_state.stop(LiveExitReason::UserSeeked);
                 state.playback_state.time_model.disable_realtime_lock();
-                state.status_message = state
-                    .live_mode_state
+                state.status_message = live
+                    .mode_state
                     .last_exit_reason
                     .map(|r| r.message().to_string())
                     .unwrap_or_default();

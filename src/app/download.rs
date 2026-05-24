@@ -259,7 +259,7 @@ impl WorkbenchApp {
         }
 
         // Stop realtime channel if live mode was stopped by UI
-        if !self.state.live_mode_state.is_active() && self.live.channel.is_active() {
+        if !self.live.mode_state.is_active() && self.live.channel.is_active() {
             log::debug!("Stopping realtime channel (live mode ended)");
             self.live.channel.stop();
         }

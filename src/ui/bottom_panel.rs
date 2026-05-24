@@ -17,6 +17,7 @@ use super::timeline::render_timeline;
 pub fn render_bottom_panel(
     ctx: &egui::Context,
     state: &mut AppState,
+    live: &mut crate::subsystem::Live,
     acquisition: &mut Acquisition,
 ) {
     let dt = ctx.input(|i| i.stable_dt);
@@ -27,11 +28,11 @@ pub fn render_bottom_panel(
     if space_pressed && !has_focus {
         if state.playback_state.playing {
             // Stop - also exits live mode if active
-            if state.live_mode_state.is_active() {
-                state.live_mode_state.stop(LiveExitReason::UserStopped);
+            if live.mode_state.is_active() {
+                live.mode_state.stop(LiveExitReason::UserStopped);
                 state.playback_state.time_model.disable_realtime_lock();
-                state.status_message = state
-                    .live_mode_state
+                state.status_message = live
+                    .mode_state
                     .last_exit_reason
                     .map(|r| r.message().to_string())
                     .unwrap_or_default();
@@ -78,7 +79,7 @@ pub fn render_bottom_panel(
         // In real-time streaming mode, keep the playhead on-screen. Pan/zoom is
         // otherwise free; this only fires when "now" would fall outside the
         // visible range, scrolling the view minimally to put it at the edge.
-        if state.live_mode_state.is_active() {
+        if live.mode_state.is_active() {
             let view_width = state.playback_state.view_width_secs();
             if view_width > 0.0 {
                 let now = state.playback_state.playback_position();
@@ -146,20 +147,20 @@ pub fn render_bottom_panel(
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
                 }
 
-                render_acquisition_drawer(ui, state, acquisition, drawer_height - 4.0);
+                render_acquisition_drawer(ui, state, live, acquisition, drawer_height - 4.0);
                 ui.separator();
             }
 
             ui.vertical(|ui| {
                 // Timeline row
-                render_timeline(ui, state);
+                render_timeline(ui, state, live);
 
                 ui.add_space(2.0);
 
                 // Playback controls row
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    render_playback_controls(ui, state, acquisition);
+                    render_playback_controls(ui, state, live, acquisition);
                 });
             });
         });

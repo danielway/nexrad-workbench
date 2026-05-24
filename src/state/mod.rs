@@ -141,17 +141,6 @@ pub struct AppState {
     /// Session and performance statistics
     pub session_stats: SessionStats,
 
-    /// Live streaming mode state
-    pub live_mode_state: LiveModeState,
-
-    /// Derived top-level application mode (Idle / Archive / Live).
-    /// Recomputed by [`AppState::refresh_live_model`] once per frame.
-    pub app_mode: AppMode,
-
-    /// Computed live radar model — derived once per frame from `live_mode_state`.
-    /// Provides a consistent snapshot for all UI consumers within a single frame.
-    pub live_radar_model: LiveRadarModel,
-
     /// Download progress tracking for timeline ghost markers and pipeline display.
     pub download_progress: DownloadProgress,
 
@@ -497,26 +486,6 @@ impl AppState {
         self.commands.drain(..).collect()
     }
 
-    /// Recompute the `live_radar_model` snapshot for this frame.
-    ///
-    /// Call once at the start of each UI frame so all consumers see consistent
-    /// state derived from the same `now` timestamp.
-    pub fn refresh_live_model(&mut self) {
-        let now = js_sys::Date::now() / 1000.0;
-        self.live_radar_model = self.live_mode_state.compute_model(now);
-        self.app_mode = if self.live_mode_state.is_active() {
-            AppMode::Live
-        } else if self
-            .radar_timeline
-            .find_scan_at_timestamp(self.playback_state.playback_position())
-            .is_some()
-        {
-            AppMode::Archive
-        } else {
-            AppMode::Idle
-        };
-    }
-
     /// Refresh the mobile-mode flag for this frame.
     ///
     /// Auto mode: `width < 600px` plus either a sticky "touch has been seen"
@@ -557,12 +526,20 @@ impl AppState {
     /// playback timestamp first, then the live VCP if streaming, else
     /// empty. Both panels share this so they can't disagree about
     /// what's available.
-    pub fn current_elevation_list(&self) -> Vec<ElevationListEntry> {
+    ///
+    /// `live_vcp_pattern` is the current VCP from
+    /// [`crate::subsystem::Live::mode_state`]; the caller supplies it
+    /// rather than this method reaching for the Live subsystem so the
+    /// dependency stays one-way.
+    pub fn current_elevation_list(
+        &self,
+        live_vcp_pattern: Option<&crate::data::keys::ExtractedVcp>,
+    ) -> Vec<ElevationListEntry> {
         let ts = self.playback_state.playback_position();
         if let Some(scan) = self.radar_timeline.find_scan_at_timestamp(ts) {
             return playback_manager::build_elevation_list(scan);
         }
-        if let Some(ref vcp) = self.live_mode_state.current_vcp_pattern {
+        if let Some(vcp) = live_vcp_pattern {
             if !vcp.elevations.is_empty() {
                 return playback_manager::build_elevation_list_from_vcp(vcp);
             }

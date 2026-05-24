@@ -17,9 +17,14 @@ use super::super::canvas::{
     ARCHIVE_AGE_THRESHOLD_SECS,
 };
 
-pub(crate) fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState) {
+pub(crate) fn draw_overlay_info(
+    ui: &mut egui::Ui,
+    rect: &Rect,
+    state: &AppState,
+    live: &crate::subsystem::Live,
+) {
     let has_prev = state.viz_state.previous_displayed.is_some();
-    let is_live = state.live_radar_model.active;
+    let is_live = live.radar_model.active;
     let overlay_pos = rect.left_top() + Vec2::new(10.0, 10.0);
     let overlay_height = if has_prev { 170.0 } else { 105.0 };
     let overlay_rect = Rect::from_min_size(overlay_pos, Vec2::new(310.0, overlay_height));
@@ -69,7 +74,7 @@ pub(crate) fn draw_overlay_info(ui: &mut egui::Ui, rect: &Rect, state: &AppState
                 state.viz_state.data_staleness_secs,
                 state.viz_state.data_staleness_start_secs,
                 if is_live {
-                    let active = state.live_radar_model.active_sweep.as_ref();
+                    let active = live.radar_model.active_sweep.as_ref();
                     let chunks = active.map(|s| s.chunks.len() as u32).unwrap_or(0);
                     let expected = active.and_then(|s| s.chunks_expected);
                     let is_partial = active.map(|s| s.radials_received < 360).unwrap_or(false);

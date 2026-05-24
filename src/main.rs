@@ -524,8 +524,11 @@ impl WorkbenchApp {
 
     /// Push current app state to the URL bar and save user preferences (throttled).
     fn persist_url_state(&mut self) {
-        self.persistence
-            .persist_if_due(&self.state, self.diagnostics.mping.api_key.clone());
+        self.persistence.persist_if_due(
+            &self.state,
+            self.diagnostics.mping.api_key.clone(),
+            self.live.mode_state.is_active(),
+        );
     }
 
     /// Push the current `AppMode`'s color to the browser favicon via the
@@ -539,7 +542,7 @@ impl WorkbenchApp {
             fn js_set_favicon_color(hex: &str) -> Result<(), JsValue>;
         }
 
-        let mode = self.state.app_mode;
+        let mode = self.live.app_mode;
         if self.last_favicon_mode == Some(mode) {
             return;
         }
@@ -626,8 +629,11 @@ impl eframe::App for WorkbenchApp {
         self.persist_url_state();
 
         // 14-17. FRAME SNAPSHOT: materialize the per-frame state UI reads.
-        // refresh_live_model captures a consistent `now` for every consumer.
-        self.state.refresh_live_model();
+        // Live::refresh captures a consistent `now` for every consumer.
+        self.live.refresh(subsystem::live::LiveRefreshInputs {
+            radar_timeline: &self.state.radar_timeline,
+            playback_state: &self.state.playback_state,
+        });
         self.state.refresh_mobile_mode(ctx);
 
         // Drain GPS-overlay async results before panels render so the
@@ -654,7 +660,7 @@ impl eframe::App for WorkbenchApp {
         // Hoisted out of `render_bottom_panel` so the mobile path doesn't
         // have to call it as a no-op side-effect carrier.
         let dt = ctx.input(|i| i.stable_dt);
-        self.state.live_mode_state.update_pulse(dt);
+        self.live.mode_state.update_pulse(dt);
 
         // 19. RENDER (panels). egui requires side and top/bottom panels
         // to be rendered before CentralPanel. main.rs is the single
@@ -669,34 +675,40 @@ impl eframe::App for WorkbenchApp {
                 ui::trigger_geolocation(ctx, &mut self.state, &mut self.modals.site);
             }
 
-            ui::render_mobile_top_bar(ctx, &mut self.state, &mut self.diagnostics);
-            ui::render_mobile_chrome(ctx, &mut self.state);
+            ui::render_mobile_top_bar(ctx, &mut self.state, &self.live, &mut self.diagnostics);
+            ui::render_mobile_chrome(ctx, &mut self.state, &mut self.live);
         } else {
-            ui::render_top_bar(ctx, &mut self.state, &mut self.diagnostics);
-            ui::render_bottom_panel(ctx, &mut self.state, &mut self.acquisition);
-            ui::render_left_panel(ctx, &mut self.state);
-            ui::render_right_panel(ctx, &mut self.state, &mut self.diagnostics);
+            ui::render_top_bar(ctx, &mut self.state, &mut self.live, &mut self.diagnostics);
+            ui::render_bottom_panel(ctx, &mut self.state, &mut self.live, &mut self.acquisition);
+            ui::render_left_panel(ctx, &mut self.state, &self.live);
+            ui::render_right_panel(ctx, &mut self.state, &self.live, &mut self.diagnostics);
         }
 
         // 20. RENDER (canvas): GPU-based radar rendering in the CentralPanel.
         ui::render_canvas_with_geo(
             ctx,
             &mut self.state,
+            &self.live,
             &mut self.diagnostics,
             Some(&self.geo_layers),
             &self.gpu,
         );
 
         // Keyboard shortcuts (after canvas so shortcuts can reflect hover/focus).
-        ui::handle_shortcuts(ctx, &mut self.state);
+        ui::handle_shortcuts(ctx, &mut self.state, &mut self.live);
 
         // 21. RENDER (overlays): modals layered above the canvas.
         ui::render_site_modal(ctx, &mut self.state, &mut self.modals.site);
-        ui::render_mobile_settings_modal(ctx, &mut self.state, &mut self.diagnostics);
+        ui::render_mobile_settings_modal(
+            ctx,
+            &mut self.state,
+            &mut self.live,
+            &mut self.diagnostics,
+        );
         ui::render_shortcuts_help(ctx, &mut self.state);
         ui::render_wipe_modal(ctx, &mut self.state);
-        ui::render_stats_modal(ctx, &mut self.state);
-        ui::render_vcp_forecast_modal(ctx, &mut self.state);
+        ui::render_stats_modal(ctx, &mut self.state, &self.live);
+        ui::render_vcp_forecast_modal(ctx, &mut self.state, &self.live);
         ui::render_network_log(ctx, &mut self.state);
         ui::render_event_modal(ctx, &mut self.state, &mut self.modals.event);
         ui::render_alerts_modals(ctx, &mut self.state, &mut self.diagnostics);

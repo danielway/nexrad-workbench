@@ -17,6 +17,7 @@ use egui_phosphor::regular as icons;
 pub fn render_acquisition_drawer(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    live: &crate::subsystem::Live,
     acquisition: &mut Acquisition,
     height: f32,
 ) {
@@ -97,7 +98,7 @@ pub fn render_acquisition_drawer(
 
         // Tab content
         match acquisition.state.active_tab {
-            DrawerTab::Queue => render_queue_tab(ui, state, acquisition, dark),
+            DrawerTab::Queue => render_queue_tab(ui, state, live, acquisition, dark),
             DrawerTab::Network => render_network_tab(ui, state, acquisition, dark),
         }
     });
@@ -107,13 +108,14 @@ pub fn render_acquisition_drawer(
 fn render_queue_tab(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    live: &crate::subsystem::Live,
     acquisition: &mut Acquisition,
     dark: bool,
 ) {
     let label_color = ui_colors::label(dark);
 
     // Streaming latency section (shown in live mode)
-    if state.live_mode_state.is_active() {
+    if live.mode_state.is_active() {
         if let Some(summary) = acquisition.state.latency_summary() {
             ui.horizontal(|ui| {
                 ui.label(

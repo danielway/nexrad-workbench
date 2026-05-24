@@ -40,20 +40,26 @@ impl PersistenceManager {
 
     /// Push current app state to the URL bar and save user preferences (throttled).
     ///
-    /// `mping_api_key` is the current value from the diagnostics subsystem
-    /// — sourced separately because mPING state lives there rather than
-    /// on `AppState`.
-    pub fn persist_if_due(&mut self, state: &AppState, mping_api_key: Option<String>) {
+    /// `mping_api_key` is the current value from the diagnostics subsystem;
+    /// `is_live` is sourced from the Live subsystem. Both are passed in
+    /// rather than reached for so the persistence manager doesn't take
+    /// back-references to subsystems.
+    pub fn persist_if_due(
+        &mut self,
+        state: &AppState,
+        mping_api_key: Option<String>,
+        is_live: bool,
+    ) {
         let now = web_time::Instant::now();
         if now.duration_since(self.last_url_push).as_secs_f64() < 1.0 {
             return;
         }
         self.last_url_push = now;
 
-        // `ViewState: From<&AppState>` keeps the field-by-field mapping in
+        // `ViewState::from_state` keeps the field-by-field mapping in
         // one place; adding a new auxiliary view field is then a single
-        // edit to `ViewState` instead of two synchronized lists.
-        let view = state::url_state::ViewState::from(state);
+        // edit there instead of two synchronized lists.
+        let view = state::url_state::ViewState::from_state(state, is_live);
         state::url_state::push_to_url(
             &state.viz_state.site_id,
             state.playback_state.playback_position(),

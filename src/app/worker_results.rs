@@ -206,7 +206,7 @@ impl WorkbenchApp {
     }
 
     fn handle_chunk_ingested_outcome(&mut self, result: nexrad::ChunkIngestResult) {
-        let is_live = self.state.live_mode_state.is_active();
+        let is_live = self.live.mode_state.is_active();
         let source = "Realtime";
 
         // Build enriched log with projection-derived chunk positioning.
@@ -235,8 +235,8 @@ impl WorkbenchApp {
         // chunk_vol_index (= chunk_index + 1) already equals the 1-based sequence.
         let sequence = chunk_vol_index as usize;
         let (chunk_in_sweep_str, remaining_str) = self
-            .state
-            .live_mode_state
+            .live
+            .mode_state
             .chunk_position_in_sweep(sequence)
             .map(|(idx, total)| {
                 let in_sweep = format!("{}/{}", idx + 1, total);
@@ -285,15 +285,15 @@ impl WorkbenchApp {
                 &self.state.viz_state.site_id,
                 result.context.timestamp_secs,
             );
-            self.state.live_mode_state.set_or_confirm_volume(
+            self.live.mode_state.set_or_confirm_volume(
                 scan_key,
                 result.context.timestamp_secs,
                 result.volume_header_time_secs,
             );
 
             if !result.chunk_elev_spans.is_empty() {
-                self.state
-                    .live_mode_state
+                self.live
+                    .mode_state
                     .record_chunk_elev_spans(&result.chunk_elev_spans);
             }
 
@@ -319,8 +319,8 @@ impl WorkbenchApp {
                 // S3 Last-Modified header. Stamp collection time unconditionally
                 // and lag only when both are finite.
                 let s3_at = self
-                    .state
-                    .live_mode_state
+                    .live
+                    .mode_state
                     .chunk_arrivals
                     .last()
                     .and_then(|a| a.s3_last_modified_at);
@@ -333,16 +333,14 @@ impl WorkbenchApp {
                 // Back-fill onto the most recent arrival so the diagnostics
                 // modal can compute per-chunk collection-space intervals
                 // and (when available) per-chunk availability lag.
-                self.state
-                    .live_mode_state
-                    .attach_collection_data_to_last_arrival(
-                        chunk_max_secs,
-                        lag_secs.map(|lag| (lag * 1000.0) as i64),
-                    );
+                self.live.mode_state.attach_collection_data_to_last_arrival(
+                    chunk_max_secs,
+                    lag_secs.map(|lag| (lag * 1000.0) as i64),
+                );
             }
             if !result.elevations_completed.is_empty() {
-                self.state
-                    .live_mode_state
+                self.live
+                    .mode_state
                     .record_elevations(&result.elevations_completed);
             }
             if let Some(ref vcp) = result.vcp {
@@ -353,13 +351,13 @@ impl WorkbenchApp {
                 // refresh — this resolve is the only thing that needs
                 // to fire on a VCP transition.
                 let prev_count = self
-                    .state
-                    .live_mode_state
+                    .live
+                    .mode_state
                     .current_vcp_pattern
                     .as_ref()
                     .map(|p| p.elevations.len())
                     .unwrap_or(0);
-                self.state.live_mode_state.record_vcp(vcp);
+                self.live.mode_state.record_vcp(vcp);
                 if prev_count != vcp.elevations.len() {
                     let entries = state::playback_manager::build_elevation_list_from_vcp(vcp);
                     self.state
@@ -369,7 +367,7 @@ impl WorkbenchApp {
                 }
             }
 
-            self.state.live_mode_state.record_in_progress_elevation(
+            self.live.mode_state.record_in_progress_elevation(
                 result.current_elevation,
                 result.current_elevation_radials,
             );
@@ -384,7 +382,7 @@ impl WorkbenchApp {
                             .find(|&&(e, _, _, _)| e == elev)
                             .map(|&(_, _, _, c)| c)
                             .unwrap_or(0);
-                        self.state.live_mode_state.current_elev_chunks.push((
+                        self.live.mode_state.current_elev_chunks.push((
                             first_az,
                             last_az,
                             radial_count,
@@ -394,13 +392,13 @@ impl WorkbenchApp {
             }
 
             if !result.sweeps.is_empty() {
-                self.state
-                    .live_mode_state
+                self.live
+                    .mode_state
                     .update_sweep_metas(result.sweeps.clone());
             }
 
-            self.state
-                .live_mode_state
+            self.live
+                .mode_state
                 .record_last_radial(result.last_radial_azimuth, result.last_radial_time_secs);
 
             // ── Log: sweep storage ────────────────────────────────────
@@ -447,15 +445,15 @@ impl WorkbenchApp {
                     // Summarize what the accumulator holds for this elevation
                     let accum_radials = result.current_elevation_radials.unwrap_or(0);
                     let accum_chunks: usize = self
-                        .state
-                        .live_mode_state
+                        .live
+                        .mode_state
                         .chunk_elev_spans
                         .iter()
                         .filter(|&&(e, _, _, _)| e == target_elev)
                         .count();
                     let accum_az_range = self
-                        .state
-                        .live_mode_state
+                        .live
+                        .mode_state
                         .current_elev_chunks
                         .iter()
                         .fold((f32::MAX, f32::MIN), |(lo, hi), &(first_az, last_az, _)| {
@@ -512,7 +510,7 @@ impl WorkbenchApp {
                     }
                 }
                 let now = js_sys::Date::now() / 1000.0;
-                self.state.live_mode_state.handle_volume_complete(now);
+                self.live.mode_state.handle_volume_complete(now);
                 self.state.status_message = format!(
                     "Live: volume complete ({} elevations)",
                     self.render.coordinator.available_elevations().len()
@@ -642,7 +640,7 @@ impl WorkbenchApp {
         // In live mode, LiveDecoded drives the GPU — skip Decoded
         // uploads so completed-elevation IDB renders don't overwrite
         // the current partial sweep.
-        let skip_gpu_upload = self.state.live_mode_state.is_active();
+        let skip_gpu_upload = self.live.mode_state.is_active();
         let mut gpu_upload_succeeded = false;
         if is_current_scan && !skip_gpu_upload {
             if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
@@ -755,8 +753,8 @@ impl WorkbenchApp {
 
         // VCP target angle for the cut (mirrors archived path).
         let display_angle = self
-            .state
-            .live_radar_model
+            .live
+            .radar_model
             .volume
             .as_ref()
             .and_then(|v| v.target_elevation_angle(result.context.elevation_number))
@@ -851,7 +849,7 @@ impl WorkbenchApp {
         if !result.azimuths.is_empty() {
             // Chronological first = sweep start azimuth (set once per sweep).
             // Chronological last = most recent radial's azimuth from the live state.
-            if self.state.live_mode_state.sweep_start_azimuth.is_none() {
+            if self.live.mode_state.sweep_start_azimuth.is_none() {
                 // First live decode for this sweep: use the earliest radial
                 // by collection time as the sweep start.
                 let first_az = if !result.radial_times.is_empty() {
@@ -866,7 +864,7 @@ impl WorkbenchApp {
                 } else {
                     result.azimuths[0]
                 };
-                self.state.live_mode_state.sweep_start_azimuth = Some(first_az);
+                self.live.mode_state.sweep_start_azimuth = Some(first_az);
             }
 
             // The trailing edge of received data: latest radial by collection time.
@@ -883,18 +881,14 @@ impl WorkbenchApp {
                 *result.azimuths.last().unwrap()
             };
 
-            let first_az = self
-                .state
-                .live_mode_state
-                .sweep_start_azimuth
-                .unwrap_or(0.0);
+            let first_az = self.live.mode_state.sweep_start_azimuth.unwrap_or(0.0);
             log::debug!(
                 "Live azimuth range: chrono_first={:.1} chrono_last={:.1} count={}",
                 first_az,
                 last_az,
                 result.azimuths.len(),
             );
-            self.state.live_mode_state.live_data_azimuth_range = Some((first_az, last_az));
+            self.live.mode_state.live_data_azimuth_range = Some((first_az, last_az));
         }
     }
 

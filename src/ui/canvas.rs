@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 pub fn render_canvas_with_geo(
     ctx: &egui::Context,
     state: &mut AppState,
+    live: &crate::subsystem::Live,
     diagnostics: &mut crate::subsystem::Diagnostics,
     geo_layers: Option<&GeoLayerSet>,
     gpu: &crate::GpuResources,
@@ -64,7 +65,7 @@ pub fn render_canvas_with_geo(
 
                 // 2D overlays drawn on top after the GL callback
                 draw_color_scale(ui, &rect, &state.viz_state.product);
-                draw_overlay_info(ui, &rect, state);
+                draw_overlay_info(ui, &rect, state, live);
                 draw_compass(ui, &rect, &state.viz_state.camera);
 
                 // Handle orbit/zoom interactions
@@ -162,9 +163,9 @@ pub fn render_canvas_with_geo(
                 );
 
                 let sweep_info = compute_sweep_line_azimuth(state);
-                let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(state, sweep_info);
+                let (gpu_sweep, between_sweeps) = compute_gpu_sweep_state(state, live, sweep_info);
 
-                let chunk_boundary = state.live_radar_model.estimated_azimuth;
+                let chunk_boundary = live.radar_model.estimated_azimuth;
 
                 if let Some(renderer) = gpu_renderer {
                     draw_radar_gpu(
@@ -197,13 +198,13 @@ pub fn render_canvas_with_geo(
                     // need enough updates to advance the estimated-azimuth line
                     // (~10 fps is visually indistinguishable). Fully idle falls
                     // through to the 1 Hz global tick in `apply_frame_setup`.
-                    let live_has_active_sweep = state
-                        .live_radar_model
+                    let live_has_active_sweep = live
+                        .radar_model
                         .active_sweep
                         .as_ref()
                         .is_some_and(|s| s.data_azimuth_range.is_some());
-                    let live_has_moving_line = state.live_radar_model.active
-                        && state.live_radar_model.estimated_azimuth.is_some();
+                    let live_has_moving_line =
+                        live.radar_model.active && live.radar_model.estimated_azimuth.is_some();
 
                     if gpu_sweep.is_some() || between_sweeps || live_has_active_sweep {
                         ui.ctx()
@@ -281,7 +282,7 @@ pub fn render_canvas_with_geo(
                 // In live mode, the data boundaries and the "now" line are separate:
                 //   data_sweep = (data_edge, data_start) — from actual received chunks
                 //   now_line = estimated antenna position — what's currently being collected
-                let (sweep_line_info, sweep_stale) = if state.live_radar_model.active {
+                let (sweep_line_info, sweep_stale) = if live.radar_model.active {
                     // Use data boundaries for the donut arc (same as GPU compositing)
                     (gpu_sweep, false)
                 } else {
@@ -293,7 +294,14 @@ pub fn render_canvas_with_geo(
                         _ => (None, false),
                     }
                 };
-                render_radar_sweep(&painter, &projection, state, sweep_line_info, sweep_stale);
+                render_radar_sweep(
+                    &painter,
+                    &projection,
+                    state,
+                    live,
+                    sweep_line_info,
+                    sweep_stale,
+                );
 
                 if state.viz_state.distance_tool_active || state.viz_state.distance_start.is_some()
                 {
@@ -339,7 +347,7 @@ pub fn render_canvas_with_geo(
                 }
 
                 draw_color_scale(ui, &rect, &state.viz_state.product);
-                draw_overlay_info(ui, &rect, state);
+                draw_overlay_info(ui, &rect, state, live);
                 draw_scale_bar(ui, &rect, &projection);
 
                 handle_canvas_interaction(&response, &rect, state, diagnostics, &projection);
@@ -472,6 +480,7 @@ pub(super) const AGE_RANGE_COLLAPSE_SECS: f64 = 300.0;
 
 fn compute_gpu_sweep_state(
     state: &mut AppState,
+    live: &crate::subsystem::Live,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool) {
     // In live mode the GPU needs the partial-data azimuth range to
@@ -480,8 +489,8 @@ fn compute_gpu_sweep_state(
     // regardless of the user's sweep_animation preference. The overlay
     // suppresses the rotating lines separately when the toggle is off.
     // The archive branch still respects effective_sweep_animation().
-    let gpu_sweep = if let Some((first_az, last_az)) = state
-        .live_radar_model
+    let gpu_sweep = if let Some((first_az, last_az)) = live
+        .radar_model
         .active_sweep
         .as_ref()
         .and_then(|s| s.data_azimuth_range)
