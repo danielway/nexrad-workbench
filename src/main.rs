@@ -759,6 +759,7 @@ impl eframe::App for WorkbenchApp {
                 &mut self.live,
                 &mut self.playback,
                 &mut self.acquisition,
+                &derived,
                 &mut self.chrome,
             );
             ui::render_left_panel(
@@ -776,6 +777,7 @@ impl eframe::App for WorkbenchApp {
                 &self.live,
                 &mut self.playback,
                 &mut self.diagnostics,
+                &derived,
                 &mut self.chrome,
             );
         }
@@ -818,6 +820,7 @@ impl eframe::App for WorkbenchApp {
             &mut self.live,
             &mut self.playback,
             &mut self.diagnostics,
+            &derived,
             &mut self.chrome,
         );
         ui::render_shortcuts_help(ctx, &mut self.state, &mut self.chrome);

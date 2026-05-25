@@ -9,6 +9,7 @@ use crate::state::{AppState, MobileSettingsTab, PlaybackMode, PlaybackSpeed};
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 /// Render the mobile settings modal if it's open.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_mobile_settings_modal(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -16,6 +17,7 @@ pub(crate) fn render_mobile_settings_modal(
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     if !chrome.mobile_settings_open || !state.is_mobile {
@@ -60,7 +62,7 @@ pub(crate) fn render_mobile_settings_modal(
                         render_product_body(ui, state, timeline, live, playback)
                     }
                     MobileSettingsTab::Layers => {
-                        render_layers_body(ui, state, playback, diagnostics, chrome)
+                        render_layers_body(ui, state, playback, diagnostics, derived, chrome)
                     }
                     MobileSettingsTab::More => render_more_body(ui, state, playback, chrome),
                 });
@@ -278,15 +280,24 @@ fn render_product_body(
     super::super::right_panel::render_product_section(ui, state, timeline, live, playback);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_layers_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
     playback: &crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     ui.add_space(4.0);
-    super::super::right_panel::render_layers_section(ui, state, diagnostics, playback, chrome);
+    super::super::right_panel::render_layers_section(
+        ui,
+        state,
+        diagnostics,
+        playback,
+        derived,
+        chrome,
+    );
 }
 
 fn render_more_body(

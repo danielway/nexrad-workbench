@@ -5,6 +5,7 @@ use crate::state::{
 };
 use eframe::egui::{self, RichText, ScrollArea};
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_right_panel(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -12,6 +13,7 @@ pub fn render_right_panel(
     live: &crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     // Mobile layout never invokes this function; the visibility gate
@@ -33,7 +35,7 @@ pub fn render_right_panel(
                 render_product_section(ui, state, timeline, live, playback);
                 ui.add_space(5.0);
 
-                render_layers_section(ui, state, diagnostics, playback, chrome);
+                render_layers_section(ui, state, diagnostics, playback, derived, chrome);
 
                 if state.show_advanced() {
                     ui.add_space(5.0);
@@ -234,11 +236,13 @@ pub(super) fn render_product_section(
         });
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_layers_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
     diagnostics: &mut crate::subsystem::Diagnostics,
-    playback: &crate::subsystem::Playback,
+    _playback: &crate::subsystem::Playback,
+    derived: &crate::subsystem::Derived,
     _chrome: &mut crate::subsystem::Chrome,
 ) {
     let advanced = state.show_advanced();
@@ -252,7 +256,7 @@ pub(super) fn render_layers_section(
             ui.checkbox(&mut state.layer_state.geo.states, "State Lines");
             ui.checkbox(&mut state.layer_state.geo.counties, "County Lines");
             ui.checkbox(&mut state.layer_state.geo.cities, "Cities");
-            let live = crate::state::recency::data_is_live(&playback.state);
+            let live = derived.data_is_live;
             let stale_tip = "Live overlays are disabled while viewing archive data \
                              (more than 15 minutes behind real-time). Return to live to re-enable.";
 

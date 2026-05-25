@@ -307,6 +307,7 @@ pub fn render_canvas_with_geo(
                     live,
                     playback,
                     chrome,
+                    derived,
                     sweep_line_info,
                     sweep_stale,
                 );
@@ -365,6 +366,7 @@ pub fn render_canvas_with_geo(
                     playback,
                     chrome,
                     diagnostics,
+                    derived,
                     &projection,
                 );
             }

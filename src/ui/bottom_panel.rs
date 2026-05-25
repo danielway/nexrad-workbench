@@ -14,6 +14,7 @@ use super::timeline::render_timeline;
 /// bottom region. The per-frame pulse-animation tick is hoisted into the
 /// main update loop so it runs in both layouts without this function
 /// needing to be called as a side-effect carrier on mobile.
+#[allow(clippy::too_many_arguments)]
 pub fn render_bottom_panel(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -21,6 +22,7 @@ pub fn render_bottom_panel(
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     acquisition: &mut Acquisition,
+    derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     let dt = ctx.input(|i| i.stable_dt);
@@ -158,7 +160,7 @@ pub fn render_bottom_panel(
 
             ui.vertical(|ui| {
                 // Timeline row
-                render_timeline(ui, state, timeline, live, playback, chrome);
+                render_timeline(ui, state, timeline, live, playback, derived, chrome);
 
                 ui.add_space(2.0);
 

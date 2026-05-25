@@ -6,7 +6,6 @@
 use crate::data::NEXRAD_SITES;
 use crate::geo::MapProjection;
 use crate::mping::StormReport;
-use crate::state::recency::data_is_live;
 use crate::state::AppState;
 use eframe::egui::{self, Rect, Vec2};
 use geo_types::Coord;
@@ -139,9 +138,10 @@ pub(crate) fn handle_canvas_interaction(
     response: &egui::Response,
     rect: &Rect,
     state: &mut AppState,
-    playback: &crate::subsystem::Playback,
+    _playback: &crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
     projection: &MapProjection,
 ) {
     // Distance tool: click to place points
@@ -166,7 +166,7 @@ pub(crate) fn handle_canvas_interaction(
                 apply_site_selection(state, chrome, site_id, lat, lon);
                 handled = true;
             }
-            if !handled && state.layer_state.geo.mping && data_is_live(&playback.state) {
+            if !handled && state.layer_state.geo.mping && derived.data_is_live {
                 if let Some(id) =
                     pick_mping_report_at(click_pos, projection, &diagnostics.mping.reports)
                 {
@@ -174,7 +174,7 @@ pub(crate) fn handle_canvas_interaction(
                     handled = true;
                 }
             }
-            if !handled && state.layer_state.geo.alerts && data_is_live(&playback.state) {
+            if !handled && state.layer_state.geo.alerts && derived.data_is_live {
                 let geo = projection.screen_to_geo(click_pos);
                 let bounds = projection.visible_bounds();
                 let mut best: Option<(u8, String)> = None;

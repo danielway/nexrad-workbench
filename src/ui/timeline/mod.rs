@@ -235,12 +235,14 @@ pub(super) fn format_timestamp_full(ts: f64, use_local: bool) -> String {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
+    derived: &crate::subsystem::Derived,
     _chrome: &crate::subsystem::Chrome,
 ) {
     let use_local = state.use_local_time;
@@ -400,7 +402,7 @@ pub(super) fn render_timeline(
     // Previous border tracks the prior on-GPU sweep — snapshotted from
     // `displayed` at the moment a new sweep is uploaded, so it flips
     // atomically with `active_sweep`.
-    let prev_active_sweep = if state.effective_sweep_animation(&playback.state) {
+    let prev_active_sweep = if derived.effective_sweep_animation {
         state.viz_state.previous_displayed.as_ref().map(|d| {
             (
                 d.identity.scan_timestamp_secs(),

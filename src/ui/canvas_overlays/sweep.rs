@@ -100,6 +100,7 @@ pub(crate) fn render_radar_sweep(
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
     chrome: &crate::subsystem::Chrome,
+    derived: &crate::subsystem::Derived,
     sweep_info: Option<(f32, f32)>,
     stale: bool,
 ) {
@@ -186,7 +187,7 @@ pub(crate) fn render_radar_sweep(
     // has sweep_animation enabled.
     if let Some((az, start_az)) = sweep_info {
         let is_live = live.radar_model.active;
-        let show_lines = state.effective_sweep_animation(&playback.state);
+        let show_lines = derived.effective_sweep_animation;
 
         let (start_line_color, data_edge_color, data_edge_width) = if stale {
             (
@@ -311,7 +312,7 @@ pub(crate) fn render_radar_sweep(
         // when sweep_animation is off so the user has spatial context
         // for which sectors are recent. Archive mode respects the
         // toggle (where it's purely an animation artifact).
-        if is_live || state.effective_sweep_animation(&playback.state) {
+        if is_live || derived.effective_sweep_animation {
             if stale {
                 draw_sweep_donut_stale(painter, center, radius);
             } else {
