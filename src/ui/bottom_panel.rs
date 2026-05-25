@@ -204,5 +204,5 @@ fn draw_bottom_panel(
             });
         });
 
-    // Stats detail is now a proper modal rendered from main.rs via render_stats_modal.
+    // Stats detail is now a proper modal rendered via `StatsModalLayer`.
 }

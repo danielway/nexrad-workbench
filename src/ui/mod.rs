@@ -6,6 +6,14 @@
 //! - Central canvas: Radar visualization
 //! - Bottom panel: Timeline, playback controls, and session stats
 //! - Right panel: Product selection, layers, and rendering controls
+//!
+//! Chrome panels + modals dispatch through a typed [`Layer`](layout::Layer)
+//! registry (see [`layout`]). Each panel and modal is a zero-sized marker
+//! type that lives in its own module; [`render_layout`] walks the
+//! mobile-or-desktop layout slice in z-order and calls each layer's
+//! `visible`/`render` impls. The corner-chrome canvas overlays use a
+//! parallel [`Overlay`](canvas_overlays::Overlay) registry inside the
+//! canvas's central panel.
 
 pub(crate) mod acquisition_drawer;
 mod alerts_modal;

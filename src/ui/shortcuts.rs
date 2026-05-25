@@ -2,7 +2,7 @@
 //!
 //! Most shortcuts are data-driven: each entry in [`ONE_SHOT_SHORTCUTS`]
 //! pairs a trigger predicate with a typed handler, and both dispatch
-//! (`handle_shortcuts`) and the help overlay (`render_shortcuts_help`)
+//! (`handle_shortcuts`) and the help overlay (`ShortcutsHelpLayer`)
 //! iterate the same registry — so the help can never drift from the
 //! actually-wired-up bindings.
 //!

@@ -47,7 +47,7 @@ pub struct SiteModalState {
     pub error_message: Option<String>,
     /// Sender given to async callbacks. Clone freely.
     location_tx: UnboundedSender<LocationResult>,
-    /// Receiver drained inside `render_site_modal` each frame.
+    /// Receiver drained inside `SiteModalLayer::render` each frame.
     location_rx: UnboundedReceiver<LocationResult>,
     /// Whether this is the first visit (no preferred site yet).
     pub is_first_visit: bool,
@@ -96,7 +96,7 @@ fn responsive_width(ctx: &egui::Context, desktop: f32) -> f32 {
 ///
 /// Used by the mobile bottom bar's location button to bypass the welcome
 /// screen and go straight to "finding nearest site". The polling loop in
-/// `render_site_modal` handles the result — success closes the modal after
+/// `SiteModalLayer` handles the result — success closes the modal after
 /// applying the selection, failure drops back to the welcome screen with
 /// the error visible.
 pub fn trigger_geolocation(

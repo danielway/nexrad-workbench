@@ -697,7 +697,7 @@ impl eframe::App for WorkbenchApp {
         self.sync_favicon_to_mode();
 
         // Per-frame chrome animations that should tick in both layouts.
-        // Hoisted out of `render_bottom_panel` so the mobile path doesn't
+        // Hoisted out of `BottomPanelLayer` so the mobile path doesn't
         // have to call it as a no-op side-effect carrier.
         let dt = ctx.input(|i| i.stable_dt);
         self.live.mode_state.update_pulse(dt);

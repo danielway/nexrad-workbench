@@ -114,7 +114,7 @@ fn render_action_bar(
         }
 
         // 2. Crosshair → trigger geolocation immediately. The modal's
-        // polling loop (see `render_site_modal`) handles the result and
+        // polling loop (see `SiteModalLayer`) handles the result and
         // applies the nearest site or surfaces an error.
         if icon_slot(
             ui,
