@@ -184,11 +184,13 @@ pub(super) struct ChunkAccumulator {
 //   2. The borrowed-from accumulator state is observed mid-mutation by
 //      another task before the original closure completes.
 //
-// Prefer the [`with_chunk_accum`] / [`with_chunk_accum_mut`] helpers
-// below for new code: they take a synchronous `FnOnce` and drop the
-// borrow before returning, so awaiting on the result is fine.
+// Every access here goes through the [`with_chunk_accum`] /
+// [`with_chunk_accum_mut`] / [`set_chunk_accum`] helpers below. They
+// take a synchronous `FnOnce` (or no closure at all) and drop the
+// borrow before returning, so the no-await-inside invariant is
+// type-enforced: you literally cannot `.await` inside the closure.
 thread_local! {
-    pub(super) static CHUNK_ACCUM: std::cell::RefCell<Option<ChunkAccumulator>> =
+    static CHUNK_ACCUM: std::cell::RefCell<Option<ChunkAccumulator>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -198,15 +200,21 @@ thread_local! {
 /// is dropped before this helper returns, so awaiting on the return value
 /// is safe; awaiting *inside* `f` is impossible (it's a synchronous
 /// `FnOnce`).
-#[allow(dead_code)]
 pub(super) fn with_chunk_accum<R>(f: impl FnOnce(Option<&ChunkAccumulator>) -> R) -> R {
     CHUNK_ACCUM.with(|cell| f(cell.borrow().as_ref()))
 }
 
 /// Like [`with_chunk_accum`] but gives `f` exclusive access.
-#[allow(dead_code)]
 pub(super) fn with_chunk_accum_mut<R>(f: impl FnOnce(Option<&mut ChunkAccumulator>) -> R) -> R {
     CHUNK_ACCUM.with(|cell| f(cell.borrow_mut().as_mut()))
+}
+
+/// Install or clear the accumulator. Used by the ingest path on Start
+/// chunks (install fresh) and end-of-volume (clear). Distinct from
+/// [`with_chunk_accum_mut`] because that helper hands out `&mut` to
+/// the inner value — it can't replace the `Option` itself.
+pub(super) fn set_chunk_accum(value: Option<ChunkAccumulator>) {
+    CHUNK_ACCUM.with(|cell| *cell.borrow_mut() = value);
 }
 
 /// Ingest a single real-time chunk: decompress, decode, and store completed
@@ -268,27 +276,24 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             }
 
             // --- Reset accumulator ---
-            CHUNK_ACCUM.with(|cell| {
-                *cell.borrow_mut() = Some(ChunkAccumulator {
-                    scan_key,
-                    site_id: site_id.clone(),
-                    current_radials: Vec::new(),
-                    current_radial_metas: Vec::new(),
-                    current_elevation: None,
-                    completed_elevations: pre_completed,
-                    completed_sweep_metas: Vec::new(),
-                    vcp: None,
-                    has_vcp: false,
-                    total_chunks: 0,
-                    total_size_bytes: 0,
-                    file_name: file_name.clone(),
-                    timestamp_secs,
-                });
-            });
+            set_chunk_accum(Some(ChunkAccumulator {
+                scan_key,
+                site_id: site_id.clone(),
+                current_radials: Vec::new(),
+                current_radial_metas: Vec::new(),
+                current_elevation: None,
+                completed_elevations: pre_completed,
+                completed_sweep_metas: Vec::new(),
+                vcp: None,
+                has_vcp: false,
+                total_chunks: 0,
+                total_size_bytes: 0,
+                file_name: file_name.clone(),
+                timestamp_secs,
+            }));
         } else {
-            let accum_has_full_vcp = CHUNK_ACCUM.with(|cell| {
-                cell.borrow()
-                    .as_ref()
+            let accum_has_full_vcp = with_chunk_accum(|accum| {
+                accum
                     .and_then(|a| a.vcp.as_ref())
                     .map(|v| !v.elevations.is_empty())
                     .unwrap_or(false)
@@ -327,12 +332,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // Detailed chunk diagnostics
         {
             let radial_count = chunk_radials.len();
-            let accum_radials = CHUNK_ACCUM.with(|cell| {
-                cell.borrow()
-                    .as_ref()
-                    .map(|a| a.current_radials.len())
-                    .unwrap_or(0)
-            });
+            let accum_radials =
+                with_chunk_accum(|accum| accum.map(|a| a.current_radials.len()).unwrap_or(0));
             log::debug!(
                 "Chunk#{} elev={:?} radials={} az_range=[{:.1}..{:.1}] accum_current={} is_start={} is_end={} size={}B",
                 chunk_index,
@@ -347,9 +348,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             );
         }
 
-        CHUNK_ACCUM.with(|cell| {
-            let mut borrow = cell.borrow_mut();
-            let accum = borrow.as_mut().ok_or_else(|| {
+        with_chunk_accum_mut(|accum| {
+            let accum = accum.ok_or_else(|| {
                 wasm_bindgen::JsValue::from_str("No accumulator — missing Start chunk?")
             })?;
 
@@ -419,9 +419,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // On end, finalize the current (last) elevation.
         if is_end {
-            CHUNK_ACCUM.with(|cell| {
-                let mut borrow = cell.borrow_mut();
-                if let Some(accum) = borrow.as_mut() {
+            with_chunk_accum_mut(|accum| {
+                if let Some(accum) = accum {
                     if let Some(elev) = accum.current_elevation {
                         if !accum.completed_elevations.contains(&elev) {
                             newly_completed.push(elev);
@@ -441,9 +440,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             // Build elevation uploads from the current elevation's radials.
             // With flush-on-transition, only the just-completed elevation's
             // radials are in memory — no filtering needed.
-            let elevations = CHUNK_ACCUM.with(|cell| {
-                let mut borrow = cell.borrow_mut();
-                let accum = borrow.as_mut().unwrap();
+            let elevations = with_chunk_accum_mut(|accum| {
+                let accum = accum.unwrap();
                 let result = crate::nexrad::ingest_phases::build_elevation_uploads_for_flush(
                     &accum.current_radials,
                     &accum.current_radial_metas,
@@ -478,9 +476,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             sweeps_stored = elevations.iter().map(|e| e.blobs.len() as u32).sum();
 
             // Snapshot the accumulator state for the upsert header.
-            let (scan_key, accum_vcp, accum_file_name) = CHUNK_ACCUM.with(|cell| {
-                let borrow = cell.borrow();
-                let accum = borrow.as_ref().unwrap();
+            let (scan_key, accum_vcp, accum_file_name) = with_chunk_accum(|accum| {
+                let accum = accum.unwrap();
                 (
                     accum.scan_key.clone(),
                     accum.vcp.clone(),
@@ -504,27 +501,21 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         }
 
         // --- Build the scan key for response ---
-        let scan_key_str = CHUNK_ACCUM.with(|cell| {
-            cell.borrow()
-                .as_ref()
+        let scan_key_str = with_chunk_accum(|accum| {
+            accum
                 .map(|a| a.scan_key.to_storage_key())
                 .unwrap_or_default()
         });
 
         // All completed sweep metadata, accumulated incrementally during flushes.
-        let all_sweeps = CHUNK_ACCUM.with(|cell| {
-            let borrow = cell.borrow();
-            let accum = borrow.as_ref().unwrap();
-            accum.completed_sweep_metas.clone()
-        });
+        let all_sweeps = with_chunk_accum(|accum| accum.unwrap().completed_sweep_metas.clone());
 
-        let vcp = CHUNK_ACCUM.with(|cell| cell.borrow().as_ref().and_then(|a| a.vcp.clone()));
+        let vcp = with_chunk_accum(|accum| accum.and_then(|a| a.vcp.clone()));
 
         let total_ms = t_total.elapsed().as_secs_f64() * 1000.0;
 
-        let accum_info = CHUNK_ACCUM.with(|c| {
-            c.borrow()
-                .as_ref()
+        let accum_info = with_chunk_accum(|accum| {
+            accum
                 .map(|a| {
                     (
                         a.current_radials.len(),
@@ -535,9 +526,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 .unwrap_or((0, false, None))
         });
         // Summary: current elevation in memory + completed elevations count.
-        let chunk_detail = CHUNK_ACCUM.with(|cell| {
-            let borrow = cell.borrow();
-            let Some(accum) = borrow.as_ref() else {
+        let chunk_detail = with_chunk_accum(|accum| {
+            let Some(accum) = accum else {
                 return String::from("no accum");
             };
 
@@ -588,19 +578,14 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
 
         // Current in-progress elevation info
-        let current_elevation =
-            CHUNK_ACCUM.with(|c| c.borrow().as_ref().and_then(|a| a.current_elevation));
-        let current_elevation_radials = CHUNK_ACCUM.with(|c| {
-            c.borrow()
-                .as_ref()
-                .and_then(|a| a.current_elevation.map(|_| a.current_radials.len() as u32))
+        let current_elevation = with_chunk_accum(|accum| accum.and_then(|a| a.current_elevation));
+        let current_elevation_radials = with_chunk_accum(|accum| {
+            accum.and_then(|a| a.current_elevation.map(|_| a.current_radials.len() as u32))
         });
 
         // --- Clear accumulator on end ---
         if is_end {
-            CHUNK_ACCUM.with(|cell| {
-                *cell.borrow_mut() = None;
-            });
+            set_chunk_accum(None);
         }
 
         // --- Build JS response ---

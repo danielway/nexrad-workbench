@@ -1,6 +1,6 @@
 //! WASM export for live (partial sweep) render from in-memory ChunkAccumulator.
 
-use super::ingest::CHUNK_ACCUM;
+use super::ingest::with_chunk_accum;
 use super::*;
 
 /// Parameters for `worker_render_live`.
@@ -31,11 +31,8 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
 
     let product = product_from_str(&p.product);
 
-    CHUNK_ACCUM.with(|cell| {
-        let borrow = cell.borrow();
-        let accum = borrow
-            .as_ref()
-            .ok_or_else(|| JsValue::from_str("No chunk accumulator active"))?;
+    with_chunk_accum(|accum| {
+        let accum = accum.ok_or_else(|| JsValue::from_str("No chunk accumulator active"))?;
 
         let target_elev = p
             .elevation_number
@@ -125,7 +122,11 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
             gaps.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
             // Guard against a zero-gap median (collocated radials) or missing data.
             let median = gaps[gaps.len() / 2];
-            if median > 0.0 { median } else { 1.0 }
+            if median > 0.0 {
+                median
+            } else {
+                1.0
+            }
         } else {
             1.0
         };
