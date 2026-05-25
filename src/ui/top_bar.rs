@@ -4,12 +4,14 @@ use crate::alerts::AlertSeverity;
 use crate::state::{AppCommand, AppMode, AppState, CameraMode, ErrorContext, ViewMode};
 use eframe::egui::{self, Color32, Frame, RichText};
 
+#[allow(clippy::too_many_arguments)]
 pub fn render_top_bar(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     // Detect status message changes: if the message content differs from when we
@@ -70,7 +72,7 @@ pub fn render_top_bar(
 
                 // NWS alerts chip — shown only in 2D when one or more alerts
                 // intersect the visible map bounds.
-                render_alerts_chip(ui, state, diagnostics, chrome);
+                render_alerts_chip(ui, state, diagnostics, derived, chrome);
 
                 // Recent-errors chip — surfaces failures from the unified
                 // ErrorContext aggregator. Quiet when no errors have been
@@ -344,6 +346,7 @@ pub(super) fn render_alerts_chip(
     ui: &mut egui::Ui,
     state: &mut AppState,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
     _chrome: &mut crate::subsystem::Chrome,
 ) {
     // Show a subtle loading/error hint on the first fetch so the user knows
@@ -361,7 +364,7 @@ pub(super) fn render_alerts_chip(
         return;
     }
 
-    let Some(bounds) = state.viz_state.last_visible_bounds else {
+    let Some(bounds) = derived.visible_bounds else {
         // 3D globe view or canvas hasn't rendered yet.
         return;
     };

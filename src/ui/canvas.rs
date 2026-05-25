@@ -10,7 +10,6 @@ use super::canvas_overlays::{
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
 use crate::nexrad::RadarGpuRenderer;
-use crate::state::recency::data_is_live;
 use crate::state::{AppState, RenderProcessing, ViewMode};
 use eframe::egui::{self, Color32, Rect, Sense, Stroke};
 use geo_types::Coord;
@@ -26,6 +25,7 @@ pub fn render_canvas_with_geo(
     playback: &mut crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
     geo_layers: Option<&GeoLayerSet>,
     gpu: &crate::GpuResources,
 ) {
@@ -91,7 +91,7 @@ pub fn render_canvas_with_geo(
                 // or rect changes; we record the time of last change and
                 // expose `camera_settled` so the label cache only rebuilds
                 // after motion has stopped for `SETTLE_WINDOW_SECS`.
-                let now_secs = js_sys::Date::now() / 1000.0;
+                let now_secs = derived.frame_now_secs;
                 state
                     .render_cache
                     .camera_motion
@@ -134,7 +134,7 @@ pub fn render_canvas_with_geo(
                     Some(RadarCutout { center, radius })
                 });
 
-                if state.layer_state.geo.national_mosaic && data_is_live(&playback.state) {
+                if state.layer_state.geo.national_mosaic && derived.data_is_live {
                     draw_national_mosaic(
                         &painter,
                         &projection,
@@ -168,7 +168,7 @@ pub fn render_canvas_with_geo(
 
                 let sweep_info = compute_sweep_line_azimuth(state, timeline, playback);
                 let (gpu_sweep, between_sweeps) =
-                    compute_gpu_sweep_state(state, timeline, live, playback, sweep_info);
+                    compute_gpu_sweep_state(state, timeline, live, playback, derived, sweep_info);
 
                 let chunk_boundary = live.radar_model.estimated_azimuth;
 
@@ -221,14 +221,14 @@ pub fn render_canvas_with_geo(
                 }
 
                 if state.layer_state.geo.alerts
-                    && data_is_live(&playback.state)
+                    && derived.data_is_live
                     && !diagnostics.alerts.alerts.is_empty()
                 {
                     render_alerts(&painter, &projection, &diagnostics.alerts.alerts);
                 }
 
                 if state.layer_state.geo.mping
-                    && data_is_live(&playback.state)
+                    && derived.data_is_live
                     && !diagnostics.mping.reports.is_empty()
                 {
                     render_mping_reports(
@@ -338,7 +338,7 @@ pub fn render_canvas_with_geo(
                 }
 
                 if state.layer_state.geo.mping
-                    && data_is_live(&playback.state)
+                    && derived.data_is_live
                     && diagnostics.mping.selected_report_id.is_some()
                 {
                     render_mping_detail(
@@ -494,11 +494,13 @@ pub(super) const ARCHIVE_AGE_THRESHOLD_SECS: f64 = 3600.0;
 
 pub(super) const AGE_RANGE_COLLAPSE_SECS: f64 = 300.0;
 
+#[allow(clippy::too_many_arguments)]
 fn compute_gpu_sweep_state(
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
+    derived: &crate::subsystem::Derived,
     sweep_info: Option<(f32, f32)>,
 ) -> (Option<(f32, f32)>, bool) {
     // In live mode the GPU needs the partial-data azimuth range to
@@ -514,7 +516,7 @@ fn compute_gpu_sweep_state(
         .and_then(|s| s.data_azimuth_range)
     {
         Some((last_az, first_az))
-    } else if state.effective_sweep_animation(&playback.state) {
+    } else if derived.effective_sweep_animation {
         let playback_ts = playback.state.playback_position();
         let sweep_bounds = timeline
             .scans
@@ -551,10 +553,10 @@ fn compute_gpu_sweep_state(
             state.viz_state.last_sweep_line_cache = Some((az, start));
         }
     }
-    if !state.effective_sweep_animation(&playback.state) {
+    if !derived.effective_sweep_animation {
         state.viz_state.last_sweep_line_cache = None;
     }
-    let between_sweeps = state.effective_sweep_animation(&playback.state)
+    let between_sweeps = derived.effective_sweep_animation
         && gpu_sweep.is_none()
         && state.viz_state.last_sweep_line_cache.is_some();
 

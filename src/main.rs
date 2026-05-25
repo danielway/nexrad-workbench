@@ -642,14 +642,17 @@ impl eframe::App for WorkbenchApp {
         self.pump_download_queue(ctx, &command_outcome);
         self.handle_streaming_results(ctx);
         // 6-8. BACKGROUND TICKS: independent periodic work.
+        // Take an early Derived snapshot so subsystem ticks consume the
+        // same `data_is_live` value the panels will (and recomputation
+        // is centralised).
+        let early_derived = subsystem::Derived::for_frame(&self.state, &self.playback);
         self.state.national_mosaic.poll_tick(
             ctx,
-            self.state.layer_state.geo.national_mosaic
-                && crate::state::recency::data_is_live(&self.playback.state),
+            self.state.layer_state.geo.national_mosaic && early_derived.data_is_live,
         );
         // NWS alerts and mPING storm reports — polled if due.
         let diagnostics_inputs = subsystem::diagnostics::DiagnosticsInputs {
-            is_live: crate::state::recency::data_is_live(&self.playback.state),
+            is_live: early_derived.data_is_live,
             mping_layer_visible: self.state.layer_state.geo.mping,
             site_id: &self.state.viz_state.site_id,
             playback_secs: self.playback.state.playback_position(),
@@ -699,6 +702,12 @@ impl eframe::App for WorkbenchApp {
         let dt = ctx.input(|i| i.stable_dt);
         self.live.mode_state.update_pulse(dt);
 
+        // Re-materialise the per-frame Derived snapshot here so panel
+        // renders see live-mode pulse + the freshest playback position.
+        // (An earlier copy was already taken before the diagnostics tick
+        // so `data_is_live` flows into that consumer.)
+        let derived = subsystem::Derived::for_frame(&self.state, &self.playback);
+
         // 19. RENDER (panels). egui requires side and top/bottom panels
         // to be rendered before CentralPanel. main.rs is the single
         // dispatcher for layout choice; panels no longer self-check
@@ -722,6 +731,7 @@ impl eframe::App for WorkbenchApp {
                 &mut self.state,
                 &self.live,
                 &mut self.diagnostics,
+                &derived,
                 &mut self.chrome,
             );
             ui::render_mobile_chrome(
@@ -739,6 +749,7 @@ impl eframe::App for WorkbenchApp {
                 &mut self.live,
                 &mut self.playback,
                 &mut self.diagnostics,
+                &derived,
                 &mut self.chrome,
             );
             ui::render_bottom_panel(
@@ -778,6 +789,7 @@ impl eframe::App for WorkbenchApp {
             &mut self.playback,
             &mut self.chrome,
             &mut self.diagnostics,
+            &derived,
             Some(&self.geo_layers),
             &self.gpu,
         );
@@ -820,7 +832,7 @@ impl eframe::App for WorkbenchApp {
             &mut self.modals.event,
             &mut self.chrome,
         );
-        ui::render_alerts_modals(ctx, &mut self.state, &mut self.diagnostics);
+        ui::render_alerts_modals(ctx, &mut self.state, &mut self.diagnostics, &derived);
         ui::render_mping_modal(ctx, &mut self.diagnostics, &mut self.modals.mping);
     }
 }

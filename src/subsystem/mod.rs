@@ -13,6 +13,7 @@
 
 pub mod acquisition;
 pub mod chrome;
+pub mod derived;
 pub mod diagnostics;
 pub mod live;
 pub mod playback;
@@ -21,6 +22,7 @@ pub mod timeline;
 
 pub use acquisition::Acquisition;
 pub use chrome::Chrome;
+pub use derived::Derived;
 pub use diagnostics::Diagnostics;
 pub use live::Live;
 pub use playback::Playback;

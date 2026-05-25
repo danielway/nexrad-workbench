@@ -21,9 +21,10 @@ pub fn render_alerts_modals(
     ctx: &egui::Context,
     state: &mut AppState,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
 ) {
     if diagnostics.alerts.list_modal_open {
-        render_list_modal(ctx, state, diagnostics);
+        render_list_modal(ctx, state, diagnostics, derived);
     }
     if diagnostics.alerts.selected_alert_id.is_some() {
         render_detail_modal(ctx, state, diagnostics);
@@ -34,6 +35,7 @@ fn render_list_modal(
     ctx: &egui::Context,
     state: &mut AppState,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    derived: &crate::subsystem::Derived,
 ) {
     if modal_backdrop(ctx, "alerts_list_backdrop", 140) {
         diagnostics.alerts.list_modal_open = false;
@@ -43,7 +45,7 @@ fn render_list_modal(
     // Collect the filtered list now, then release the borrow of diagnostics.alerts
     // before we render (so we can push commands freely inside the closure).
     let visible: Vec<(String, String, String, AlertSeverity, Option<f64>)> =
-        match state.viz_state.last_visible_bounds {
+        match derived.visible_bounds {
             Some(bounds) => diagnostics
                 .alerts
                 .visible_in(bounds)
