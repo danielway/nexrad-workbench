@@ -11,7 +11,35 @@ use eframe::egui::{self, Color32, Pos2, Rect, Stroke};
 const TARGET_BAR_WIDTH_PX: f32 = 120.0;
 const KM_TO_MI: f64 = 0.621371;
 
-pub(crate) fn draw_scale_bar(ui: &mut egui::Ui, rect: &Rect, projection: &MapProjection) {
+/// Trait wrapper for the registry. Scale bar is 2D-only — `visible`
+/// gates on view mode; the projection is rebuilt from state since the
+/// canvas's local projection isn't reachable from chrome dispatch.
+pub(super) struct ScaleBarOverlay;
+
+impl super::Overlay for ScaleBarOverlay {
+    fn z_order(&self) -> i32 {
+        40
+    }
+
+    fn visible(&self, ctx: &super::OverlayContext) -> bool {
+        ctx.state.viz_state.view_mode == crate::state::ViewMode::Flat2D
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+        let mut projection = MapProjection::new(
+            ctx.state.viz_state.center_lat,
+            ctx.state.viz_state.center_lon,
+        );
+        projection.update(
+            ctx.state.viz_state.zoom,
+            ctx.state.viz_state.pan_offset,
+            ctx.rect,
+        );
+        draw_scale_bar(ui, &ctx.rect, &projection);
+    }
+}
+
+fn draw_scale_bar(ui: &mut egui::Ui, rect: &Rect, projection: &MapProjection) {
     let Some(km_per_pixel) = compute_km_per_pixel(projection, rect) else {
         return;
     };

@@ -5,11 +5,21 @@
 
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
-pub(crate) fn draw_color_scale(
-    ui: &mut egui::Ui,
-    rect: &Rect,
-    product: &crate::state::RadarProduct,
-) {
+/// Trait wrapper for the registry. Z-order 20 sits above the radar
+/// image (rendered at 0) and below interactive chrome.
+pub(super) struct ColorScaleOverlay;
+
+impl super::Overlay for ColorScaleOverlay {
+    fn z_order(&self) -> i32 {
+        20
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+        draw_color_scale(ui, &ctx.rect, &ctx.state.viz_state.product);
+    }
+}
+
+fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::state::RadarProduct) {
     use crate::nexrad::color_table::{build_reflectivity_lut, product_value_range};
     use nexrad_render::Product;
 

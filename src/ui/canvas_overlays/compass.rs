@@ -7,7 +7,25 @@
 use crate::geo::GlobeCamera;
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 
-pub(crate) fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera) {
+/// Trait wrapper for the registry. Compass is 3D-only — `visible`
+/// gates on view mode.
+pub(super) struct CompassOverlay;
+
+impl super::Overlay for CompassOverlay {
+    fn z_order(&self) -> i32 {
+        30
+    }
+
+    fn visible(&self, ctx: &super::OverlayContext) -> bool {
+        ctx.state.viz_state.view_mode == crate::state::ViewMode::Globe3D
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+        draw_compass(ui, &ctx.rect, &ctx.state.viz_state.camera);
+    }
+}
+
+fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera) {
     let painter = ui.painter();
     let radius = 28.0f32;
     let margin = 16.0f32;

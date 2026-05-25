@@ -17,7 +17,20 @@ use super::super::canvas::{
     ARCHIVE_AGE_THRESHOLD_SECS,
 };
 
-pub(crate) fn draw_overlay_info(
+/// Trait wrapper for the registry. Always visible.
+pub(super) struct OverlayInfo;
+
+impl super::Overlay for OverlayInfo {
+    fn z_order(&self) -> i32 {
+        10
+    }
+
+    fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
+        draw_overlay_info(ui, &ctx.rect, ctx.state, ctx.live);
+    }
+}
+
+fn draw_overlay_info(
     ui: &mut egui::Ui,
     rect: &Rect,
     state: &AppState,

@@ -3,9 +3,9 @@
 use super::canvas_inspector::{render_distance_measurement, render_inspector, render_storm_cells};
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
-    draw_color_scale, draw_compass, draw_globe, draw_national_mosaic, draw_overlay_info,
-    draw_scale_bar, render_alerts, render_gps_location, render_mping_detail, render_mping_reports,
-    render_nexrad_sites, render_radar_sweep, RadarCutout,
+    draw_globe, draw_national_mosaic, render_alerts, render_chrome_overlays, render_gps_location,
+    render_mping_detail, render_mping_reports, render_nexrad_sites, render_radar_sweep,
+    OverlayContext, RadarCutout,
 };
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
@@ -67,10 +67,18 @@ pub fn render_canvas_with_geo(
                     volume_ray_renderer,
                 );
 
-                // 2D overlays drawn on top after the GL callback
-                draw_color_scale(ui, &rect, &state.viz_state.product);
-                draw_overlay_info(ui, &rect, state, live);
-                draw_compass(ui, &rect, &state.viz_state.camera);
+                // Corner-chrome overlays (color scale + info + compass)
+                // dispatched through the typed registry. The trait's
+                // `visible` predicate keeps the scale bar (2D-only) out.
+                render_chrome_overlays(
+                    ui,
+                    &OverlayContext {
+                        rect,
+                        state,
+                        live,
+                        derived,
+                    },
+                );
 
                 // Handle orbit/zoom interactions
                 handle_globe_interaction(&response, &rect, state);
@@ -355,9 +363,19 @@ pub fn render_canvas_with_geo(
                     );
                 }
 
-                draw_color_scale(ui, &rect, &state.viz_state.product);
-                draw_overlay_info(ui, &rect, state, live);
-                draw_scale_bar(ui, &rect, &projection);
+                // Corner-chrome overlays (color scale + info + scale
+                // bar) dispatched through the typed registry. The
+                // trait's `visible` predicate keeps the compass
+                // (3D-only) out.
+                render_chrome_overlays(
+                    ui,
+                    &OverlayContext {
+                        rect,
+                        state,
+                        live,
+                        derived,
+                    },
+                );
 
                 handle_canvas_interaction(
                     &response,
