@@ -12,8 +12,8 @@ mod tabs;
 mod top_bar;
 
 pub(in crate::ui) use settings_modal::MobileSettingsModalLayer;
-pub(crate) use tabs::render_mobile_chrome;
-pub(crate) use top_bar::render_mobile_top_bar;
+pub(in crate::ui) use tabs::MobileChromeLayer;
+pub(in crate::ui) use top_bar::MobileTopBarLayer;
 
 /// iOS safe-area insets in CSS pixels: `(top, right, bottom, left)`.
 ///

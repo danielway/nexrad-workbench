@@ -10,14 +10,36 @@
 //! devices, where a thin stripe is either obscured or crowded against OS
 //! icons.
 
+use super::super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::state::{AppMode, AppState};
 use eframe::egui::{self, Align, Color32, Frame, Layout, Margin, RichText};
 
 const TOP_BAR_CONTENT_HEIGHT: f32 = 44.0;
 const ACCENT_THICKNESS: f32 = 2.0;
 
+pub(in crate::ui) struct MobileTopBarLayer;
+
+impl Layer for MobileTopBarLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Chrome
+    }
+    fn z_order(&self) -> i32 {
+        10
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_mobile_top_bar(
+            ctx.ctx,
+            ctx.state,
+            ctx.live,
+            ctx.diagnostics,
+            ctx.derived,
+            ctx.chrome,
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_mobile_top_bar(
+fn draw_mobile_top_bar(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &crate::subsystem::Live,

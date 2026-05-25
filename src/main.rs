@@ -708,81 +708,41 @@ impl eframe::App for WorkbenchApp {
         // so `data_is_live` flows into that consumer.)
         let derived = subsystem::Derived::for_frame(&self.state, &self.playback);
 
-        // 19. RENDER (panels). egui requires side and top/bottom panels
-        // to be rendered before CentralPanel. main.rs is the single
-        // dispatcher for layout choice; panels no longer self-check
-        // `is_mobile`.
-        if self.state.is_mobile {
-            // Consume any deferred geolocation request raised by the mobile
-            // action bar. Handled here because the site-modal state lives
-            // outside AppState.
-            if self.chrome.mobile_geolocate_requested {
-                self.chrome.mobile_geolocate_requested = false;
-                ui::trigger_geolocation(
-                    ctx,
-                    &mut self.state,
-                    &mut self.chrome,
-                    &mut self.modals.site,
-                );
-            }
-
-            ui::render_mobile_top_bar(
+        // 19. Consume any deferred geolocation request raised by the
+        // mobile action bar. Handled before layout dispatch because the
+        // site-modal state lives outside AppState and the handler needs
+        // unique access to both `chrome` and `modals.site`.
+        if self.state.is_mobile && self.chrome.mobile_geolocate_requested {
+            self.chrome.mobile_geolocate_requested = false;
+            ui::trigger_geolocation(
                 ctx,
                 &mut self.state,
-                &self.live,
-                &mut self.diagnostics,
-                &derived,
                 &mut self.chrome,
-            );
-            ui::render_mobile_chrome(
-                ctx,
-                &mut self.state,
-                &self.timeline,
-                &mut self.live,
-                &mut self.playback,
-                &mut self.chrome,
-            );
-        } else {
-            ui::render_top_bar(
-                ctx,
-                &mut self.state,
-                &mut self.live,
-                &mut self.playback,
-                &mut self.diagnostics,
-                &derived,
-                &mut self.chrome,
-            );
-            ui::render_bottom_panel(
-                ctx,
-                &mut self.state,
-                &self.timeline,
-                &mut self.live,
-                &mut self.playback,
-                &mut self.acquisition,
-                &derived,
-                &mut self.chrome,
-            );
-            ui::render_left_panel(
-                ctx,
-                &mut self.state,
-                &self.timeline,
-                &self.live,
-                &self.playback,
-                &mut self.chrome,
-            );
-            ui::render_right_panel(
-                ctx,
-                &mut self.state,
-                &self.timeline,
-                &self.live,
-                &mut self.playback,
-                &mut self.diagnostics,
-                &derived,
-                &mut self.chrome,
+                &mut self.modals.site,
             );
         }
 
-        // 20. RENDER (canvas): GPU-based radar rendering in the CentralPanel.
+        // 20. RENDER (layout tree): chrome panels + all modals dispatched
+        // through the declarative `Layer` registry. The desktop and
+        // mobile layouts pick the chrome panel set; the modal set is
+        // shared. Visibility predicates absorb per-panel and per-modal
+        // visibility guards that previously lived in each function body.
+        let is_mobile = self.state.is_mobile;
+        let mut layout_ctx = ui::LayoutCtx {
+            ctx,
+            state: &mut self.state,
+            timeline: &self.timeline,
+            live: &mut self.live,
+            playback: &mut self.playback,
+            acquisition: &mut self.acquisition,
+            chrome: &mut self.chrome,
+            diagnostics: &mut self.diagnostics,
+            derived: &derived,
+            modals: &mut self.modals,
+        };
+        ui::render_layout(is_mobile, &mut layout_ctx);
+
+        // 21. RENDER (canvas): GPU-based radar rendering in the CentralPanel.
         ui::render_canvas_with_geo(
             ctx,
             &mut self.state,
@@ -805,24 +765,6 @@ impl eframe::App for WorkbenchApp {
             &mut self.playback,
             &mut self.chrome,
         );
-
-        // 21. RENDER (overlays): all 10 modals dispatched through the
-        // declarative layer registry. Visibility predicates absorb what
-        // used to be per-modal early-return guards.
-        let is_mobile = self.state.is_mobile;
-        let mut layout_ctx = ui::LayoutCtx {
-            ctx,
-            state: &mut self.state,
-            timeline: &self.timeline,
-            live: &mut self.live,
-            playback: &mut self.playback,
-            acquisition: &mut self.acquisition,
-            chrome: &mut self.chrome,
-            diagnostics: &mut self.diagnostics,
-            derived: &derived,
-            modals: &mut self.modals,
-        };
-        ui::render_layout(is_mobile, &mut layout_ctx);
     }
 }
 

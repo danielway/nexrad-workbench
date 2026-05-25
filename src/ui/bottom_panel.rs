@@ -1,6 +1,7 @@
 //! Bottom panel UI: orchestrates the timeline, playback controls, and session statistics.
 
 use super::acquisition_drawer::render_acquisition_drawer;
+use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::state::{AppState, LiveExitReason, PlaybackMode, PlaybackSpeed};
 use crate::subsystem::Acquisition;
 use eframe::egui;
@@ -10,12 +11,35 @@ use super::timeline::render_timeline;
 
 /// Desktop bottom panel: timeline + playback controls + session stats.
 ///
-/// Only rendered when not in mobile layout — the mobile chrome owns the
-/// bottom region. The per-frame pulse-animation tick is hoisted into the
-/// main update loop so it runs in both layouts without this function
-/// needing to be called as a side-effect carrier on mobile.
+/// Only rendered in the desktop layout — the mobile layout omits this
+/// layer entirely and instead places `MobileChromeLayer` at the bottom.
+/// The per-frame pulse-animation tick is hoisted into the main update
+/// loop so it runs in both layouts.
+pub(super) struct BottomPanelLayer;
+
+impl Layer for BottomPanelLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Chrome
+    }
+    fn z_order(&self) -> i32 {
+        20
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_bottom_panel(
+            ctx.ctx,
+            ctx.state,
+            ctx.timeline,
+            ctx.live,
+            ctx.playback,
+            ctx.acquisition,
+            ctx.derived,
+            ctx.chrome,
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn render_bottom_panel(
+fn draw_bottom_panel(
     ctx: &egui::Context,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,

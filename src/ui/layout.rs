@@ -37,13 +37,17 @@
 //! destructure by name.
 
 use super::alerts_modal::AlertsModalsLayer;
+use super::bottom_panel::BottomPanelLayer;
 use super::event_modal::EventModalLayer;
-use super::mobile::MobileSettingsModalLayer;
+use super::left_panel::LeftPanelLayer;
+use super::mobile::{MobileChromeLayer, MobileSettingsModalLayer, MobileTopBarLayer};
 use super::mping_modal::MpingModalLayer;
 use super::network_panel::NetworkLogLayer;
+use super::right_panel::RightPanelLayer;
 use super::shortcuts::ShortcutsHelpLayer;
 use super::site_modal::SiteModalLayer;
 use super::stats_modal::StatsModalLayer;
+use super::top_bar::TopBarLayer;
 use super::vcp_forecast_modal::VcpForecastModalLayer;
 use super::wipe_modal::WipeModalLayer;
 use crate::state::AppState;
@@ -60,12 +64,8 @@ use eframe::egui;
 /// Within a kind, the static-slice order must match ascending
 /// [`Layer::z_order`] (debug-checked in [`render_layout`]).
 ///
-/// `Chrome` is introduced here for the trait API but only constructed
-/// when the chrome panels migrate to `Layer` impls in a follow-up
-/// commit. Until then every concrete impl returns `Modal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerKind {
-    #[allow(dead_code)]
     Chrome,
     Modal,
 }
@@ -82,10 +82,6 @@ pub struct LayoutCtx<'a> {
     pub timeline: &'a Timeline,
     pub live: &'a mut Live,
     pub playback: &'a mut Playback,
-    /// Only consumed by chrome panels (e.g. `bottom_panel`); kept on the
-    /// ctx now so the panel migration can wire through without a struct
-    /// change.
-    #[allow(dead_code)]
     pub acquisition: &'a mut Acquisition,
     pub chrome: &'a mut Chrome,
     pub diagnostics: &'a mut Diagnostics,
@@ -124,33 +120,43 @@ pub trait Layer {
 /// then walks it in order. The slice contract: all `Chrome` layers
 /// appear before any `Modal` layers, and within each kind the order
 /// matches ascending `z_order`. Both invariants are debug-checked.
-///
-/// Populated incrementally as panel and modal migrations land. The
-/// scaffolding commit ships with both layouts empty so the trait +
-/// dispatch are reviewable in isolation.
 pub fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
-    // The 10 modal layers are shared between both layouts; only the
-    // chrome panel set differs. Panels are added in a follow-up commit
-    // — for now both layouts dispatch the modals only and panels remain
-    // explicit `ui::render_X` calls in `WorkbenchApp::update`.
-    let modals: &[&dyn Layer] = &[
-        &SiteModalLayer,           // z=10
-        &ShortcutsHelpLayer,       // z=20
-        &WipeModalLayer,           // z=30
-        &StatsModalLayer,          // z=40
-        &VcpForecastModalLayer,    // z=50
-        &NetworkLogLayer,          // z=60
-        &EventModalLayer,          // z=70
-        &AlertsModalsLayer,        // z=80
-        &MpingModalLayer,          // z=90
-        &MobileSettingsModalLayer, // z=100
-    ];
     let layers: &[&dyn Layer] = if is_mobile {
-        // Mobile: 2 chrome panels (added later) + 10 modals.
-        modals
+        &[
+            // Chrome: 2 panels above the canvas.
+            &MobileTopBarLayer, // z=10
+            &MobileChromeLayer, // z=20
+            // Modals: same set as desktop, in z-order.
+            &SiteModalLayer,           // z=10
+            &ShortcutsHelpLayer,       // z=20
+            &WipeModalLayer,           // z=30
+            &StatsModalLayer,          // z=40
+            &VcpForecastModalLayer,    // z=50
+            &NetworkLogLayer,          // z=60
+            &EventModalLayer,          // z=70
+            &AlertsModalsLayer,        // z=80
+            &MpingModalLayer,          // z=90
+            &MobileSettingsModalLayer, // z=100
+        ]
     } else {
-        // Desktop: 4 chrome panels (added later) + 10 modals.
-        modals
+        &[
+            // Chrome: 4 panels around the canvas.
+            &TopBarLayer,      // z=10
+            &BottomPanelLayer, // z=20
+            &LeftPanelLayer,   // z=30
+            &RightPanelLayer,  // z=40
+            // Modals: same set as mobile, in z-order.
+            &SiteModalLayer,           // z=10
+            &ShortcutsHelpLayer,       // z=20
+            &WipeModalLayer,           // z=30
+            &StatsModalLayer,          // z=40
+            &VcpForecastModalLayer,    // z=50
+            &NetworkLogLayer,          // z=60
+            &EventModalLayer,          // z=70
+            &AlertsModalsLayer,        // z=80
+            &MpingModalLayer,          // z=90
+            &MobileSettingsModalLayer, // z=100
+        ]
     };
 
     debug_assert!(

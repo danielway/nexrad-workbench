@@ -1,12 +1,39 @@
 //! Right panel UI: product selection, layers, and rendering controls.
 
+use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::state::{
     format_bytes, AppState, ElevationSelection, InterpolationMode, RadarProduct, StorageSettings,
 };
 use eframe::egui::{self, RichText, ScrollArea};
 
+pub(super) struct RightPanelLayer;
+
+impl Layer for RightPanelLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Chrome
+    }
+    fn z_order(&self) -> i32 {
+        40
+    }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        ctx.chrome.right_sidebar_visible
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_right_panel(
+            ctx.ctx,
+            ctx.state,
+            ctx.timeline,
+            ctx.live,
+            ctx.playback,
+            ctx.diagnostics,
+            ctx.derived,
+            ctx.chrome,
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn render_right_panel(
+fn draw_right_panel(
     ctx: &egui::Context,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
@@ -16,12 +43,6 @@ pub fn render_right_panel(
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    // Mobile layout never invokes this function; the visibility gate
-    // below only handles the desktop "hidden" case.
-    if !chrome.right_sidebar_visible {
-        return;
-    }
-
     egui::SidePanel::right("right_panel")
         .resizable(true)
         .default_width(220.0)

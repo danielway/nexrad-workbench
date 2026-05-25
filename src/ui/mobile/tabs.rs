@@ -13,7 +13,28 @@ use eframe::egui::{self, Color32};
 const ACTION_BAR_HEIGHT: f32 = 56.0;
 const SCRUBBER_AREA_HEIGHT: f32 = super::scrubber::SCRUBBER_HEIGHT + 4.0;
 
-pub(crate) fn render_mobile_chrome(
+pub(in crate::ui) struct MobileChromeLayer;
+
+impl super::super::layout::Layer for MobileChromeLayer {
+    fn kind(&self) -> super::super::layout::LayerKind {
+        super::super::layout::LayerKind::Chrome
+    }
+    fn z_order(&self) -> i32 {
+        20
+    }
+    fn render(&self, ctx: &mut super::super::layout::LayoutCtx) {
+        draw_mobile_chrome(
+            ctx.ctx,
+            ctx.state,
+            ctx.timeline,
+            ctx.live,
+            ctx.playback,
+            ctx.chrome,
+        );
+    }
+}
+
+fn draw_mobile_chrome(
     ctx: &egui::Context,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,

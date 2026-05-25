@@ -1,8 +1,28 @@
 //! Left panel UI: radar operations visualization.
 
+use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
+
+pub(super) struct LeftPanelLayer;
+
+impl Layer for LeftPanelLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Chrome
+    }
+    fn z_order(&self) -> i32 {
+        30
+    }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        // Power-user diagnostics: hidden unless the user has the side
+        // panel open AND has Advanced mode enabled.
+        ctx.chrome.left_sidebar_visible && ctx.state.show_advanced()
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_left_panel(ctx.ctx, ctx.state, ctx.timeline, ctx.live, ctx.playback);
+    }
+}
 
 /// State queried from the radar timeline at the current timestamp
 struct RadarStateAtTimestamp<'a> {
@@ -26,21 +46,13 @@ struct RadarStateAtTimestamp<'a> {
     position: Option<crate::state::VcpPositionModel>,
 }
 
-pub fn render_left_panel(
+fn draw_left_panel(
     ctx: &egui::Context,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
-    chrome: &mut crate::subsystem::Chrome,
 ) {
-    // Left panel is power-user instrumentation (VCP / azimuth / elevation
-    // diagnostics). Mobile layout never invokes this function; the
-    // visibility/Basic-mode gate below covers the desktop "hidden" cases.
-    if !chrome.left_sidebar_visible || !state.show_advanced() {
-        return;
-    }
-
     egui::SidePanel::left("left_panel")
         .resizable(true)
         .default_width(235.0)

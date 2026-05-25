@@ -1,11 +1,34 @@
 //! Top bar UI: app title, status, and site context.
 
+use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::alerts::AlertSeverity;
 use crate::state::{AppCommand, AppMode, AppState, CameraMode, ErrorContext, ViewMode};
 use eframe::egui::{self, Color32, Frame, RichText};
 
+pub(super) struct TopBarLayer;
+
+impl Layer for TopBarLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Chrome
+    }
+    fn z_order(&self) -> i32 {
+        10
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_top_bar(
+            ctx.ctx,
+            ctx.state,
+            ctx.live,
+            ctx.playback,
+            ctx.diagnostics,
+            ctx.derived,
+            ctx.chrome,
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub fn render_top_bar(
+fn draw_top_bar(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
