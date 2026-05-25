@@ -16,6 +16,7 @@ mod canvas_interaction;
 mod canvas_overlays;
 pub(crate) mod colors;
 mod event_modal;
+mod layout;
 mod left_panel;
 mod mobile;
 mod modal_helper;
@@ -33,22 +34,16 @@ mod vcp_forecast_modal;
 mod vcp_forecast_serialize;
 mod wipe_modal;
 
-pub use alerts_modal::render_alerts_modals;
 pub use bottom_panel::render_bottom_panel;
 pub use canvas::render_canvas_with_geo;
-pub use event_modal::{render_event_modal, EventModalState};
+pub use event_modal::EventModalState;
+pub use layout::{render_layout, LayoutCtx};
 pub use left_panel::render_left_panel;
-pub(crate) use mobile::{
-    render_mobile_chrome, render_mobile_settings_modal, render_mobile_top_bar,
-};
+pub(crate) use mobile::{render_mobile_chrome, render_mobile_top_bar};
 pub use modal_states::ModalStates;
-pub use mping_modal::{render_mping_modal, MpingModalState};
-pub use network_panel::render_network_log;
+pub use mping_modal::MpingModalState;
 pub use right_panel::render_right_panel;
-pub use shortcuts::{handle_shortcuts, render_shortcuts_help};
-pub use site_modal::{render_site_modal, trigger_geolocation, SiteModalState};
+pub use shortcuts::handle_shortcuts;
 pub(crate) use site_modal::{start_geolocation, LocationResult};
-pub use stats_modal::render_stats_modal;
+pub use site_modal::{trigger_geolocation, SiteModalState};
 pub use top_bar::render_top_bar;
-pub use vcp_forecast_modal::render_vcp_forecast_modal;
-pub use wipe_modal::render_wipe_modal;

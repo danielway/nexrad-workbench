@@ -22,10 +22,29 @@ pub struct MpingModalState {
     seeded: bool,
 }
 
-/// Render the mPING settings modal if open. Returns `true` if the user
-/// just saved a new (or cleared) API key, indicating the manager should
-/// invalidate its cache and refetch.
-pub fn render_mping_modal(
+pub(super) struct MpingModalLayer;
+
+impl super::layout::Layer for MpingModalLayer {
+    fn kind(&self) -> super::layout::LayerKind {
+        super::layout::LayerKind::Modal
+    }
+    fn z_order(&self) -> i32 {
+        90
+    }
+    fn visible(&self, ctx: &super::layout::LayoutCtx) -> bool {
+        // Also visible while modal_state needs the close-time reset that
+        // the body's early-return performs.
+        ctx.diagnostics.mping.settings_modal_open || ctx.modals.mping.seeded
+    }
+    fn render(&self, ctx: &mut super::layout::LayoutCtx) {
+        draw_mping_modal(ctx.ctx, ctx.diagnostics, &mut ctx.modals.mping);
+    }
+}
+
+/// Returns `true` if the user just saved a new (or cleared) API key,
+/// indicating the manager should invalidate its cache and refetch.
+/// Currently the caller ignores the return value.
+fn draw_mping_modal(
     ctx: &egui::Context,
     diagnostics: &mut crate::subsystem::Diagnostics,
     modal_state: &mut MpingModalState,

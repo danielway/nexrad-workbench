@@ -5,12 +5,38 @@
 //! matching content body. Reuses the existing right-panel section renderers
 //! so the mobile surface stays in sync with desktop automatically.
 
+use super::super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::state::{AppState, MobileSettingsTab, PlaybackMode, PlaybackSpeed};
 use eframe::egui::{self, Color32, RichText, Vec2};
 
-/// Render the mobile settings modal if it's open.
+pub(in crate::ui) struct MobileSettingsModalLayer;
+
+impl Layer for MobileSettingsModalLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Modal
+    }
+    fn z_order(&self) -> i32 {
+        100
+    }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        ctx.chrome.mobile_settings_open && ctx.state.is_mobile
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_mobile_settings_modal(
+            ctx.ctx,
+            ctx.state,
+            ctx.timeline,
+            ctx.live,
+            ctx.playback,
+            ctx.diagnostics,
+            ctx.derived,
+            ctx.chrome,
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_mobile_settings_modal(
+fn draw_mobile_settings_modal(
     ctx: &egui::Context,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
@@ -20,10 +46,6 @@ pub(crate) fn render_mobile_settings_modal(
     derived: &crate::subsystem::Derived,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !chrome.mobile_settings_open || !state.is_mobile {
-        return;
-    }
-
     if super::super::modal_helper::modal_backdrop(ctx, "mobile_settings_backdrop", 160) {
         chrome.mobile_settings_open = false;
         return;

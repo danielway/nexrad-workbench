@@ -627,16 +627,28 @@ fn handle_continuous_movement(
 // Help overlay
 // ---------------------------------------------------------------------------
 
-/// Render the keyboard shortcut help overlay.
-pub fn render_shortcuts_help(
+pub(super) struct ShortcutsHelpLayer;
+
+impl super::layout::Layer for ShortcutsHelpLayer {
+    fn kind(&self) -> super::layout::LayerKind {
+        super::layout::LayerKind::Modal
+    }
+    fn z_order(&self) -> i32 {
+        20
+    }
+    fn visible(&self, ctx: &super::layout::LayoutCtx) -> bool {
+        ctx.chrome.shortcuts_help_visible
+    }
+    fn render(&self, ctx: &mut super::layout::LayoutCtx) {
+        draw_shortcuts_help(ctx.ctx, ctx.state, ctx.chrome);
+    }
+}
+
+fn draw_shortcuts_help(
     ctx: &egui::Context,
     _state: &mut AppState,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !chrome.shortcuts_help_visible {
-        return;
-    }
-
     // Close on Escape (checked here because the overlay area may consume the key
     // event before handle_shortcuts sees it)
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {

@@ -806,37 +806,23 @@ impl eframe::App for WorkbenchApp {
             &mut self.chrome,
         );
 
-        // 21. RENDER (overlays): modals layered above the canvas.
-        ui::render_site_modal(
+        // 21. RENDER (overlays): all 10 modals dispatched through the
+        // declarative layer registry. Visibility predicates absorb what
+        // used to be per-modal early-return guards.
+        let is_mobile = self.state.is_mobile;
+        let mut layout_ctx = ui::LayoutCtx {
             ctx,
-            &mut self.state,
-            &mut self.chrome,
-            &mut self.modals.site,
-        );
-        ui::render_mobile_settings_modal(
-            ctx,
-            &mut self.state,
-            &self.timeline,
-            &mut self.live,
-            &mut self.playback,
-            &mut self.diagnostics,
-            &derived,
-            &mut self.chrome,
-        );
-        ui::render_shortcuts_help(ctx, &mut self.state, &mut self.chrome);
-        ui::render_wipe_modal(ctx, &mut self.state, &mut self.chrome);
-        ui::render_stats_modal(ctx, &mut self.state, &self.live, &mut self.chrome);
-        ui::render_vcp_forecast_modal(ctx, &mut self.state, &self.live, &mut self.chrome);
-        ui::render_network_log(ctx, &mut self.state, &mut self.chrome);
-        ui::render_event_modal(
-            ctx,
-            &mut self.state,
-            &self.playback,
-            &mut self.modals.event,
-            &mut self.chrome,
-        );
-        ui::render_alerts_modals(ctx, &mut self.state, &mut self.diagnostics, &derived);
-        ui::render_mping_modal(ctx, &mut self.diagnostics, &mut self.modals.mping);
+            state: &mut self.state,
+            timeline: &self.timeline,
+            live: &mut self.live,
+            playback: &mut self.playback,
+            acquisition: &mut self.acquisition,
+            chrome: &mut self.chrome,
+            diagnostics: &mut self.diagnostics,
+            derived: &derived,
+            modals: &mut self.modals,
+        };
+        ui::render_layout(is_mobile, &mut layout_ctx);
     }
 }
 

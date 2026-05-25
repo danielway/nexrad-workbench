@@ -4,19 +4,33 @@
 //! Shows sub-phase timings for Download, Processing, and Rendering.
 
 use super::colors::ui as ui_colors;
+use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::state::AppState;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
-/// Render the performance detail modal if open.
-pub fn render_stats_modal(
+pub(super) struct StatsModalLayer;
+
+impl Layer for StatsModalLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Modal
+    }
+    fn z_order(&self) -> i32 {
+        40
+    }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        ctx.chrome.stats_detail_open
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_stats_modal(ctx.ctx, ctx.state, ctx.live, ctx.chrome);
+    }
+}
+
+fn draw_stats_modal(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &crate::subsystem::Live,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !chrome.stats_detail_open {
-        return;
-    }
     // The modal is only reachable from the dev-mode pipeline indicator.
     // If dev mode was disabled while it was open, close it silently.
     if !state.dev_mode {

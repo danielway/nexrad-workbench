@@ -11,23 +11,31 @@
 //! Both follow the existing `modal_backdrop` + anchored `egui::Window` pattern
 //! used by `site_modal`, `event_modal`, etc.
 
+use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::modal_helper::modal_backdrop;
 use crate::alerts::{Alert, AlertSeverity};
 use crate::state::{AppCommand, AppState};
 use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
 
-/// Render the list + detail modals. Call once per frame from the main update loop.
-pub fn render_alerts_modals(
-    ctx: &egui::Context,
-    state: &mut AppState,
-    diagnostics: &mut crate::subsystem::Diagnostics,
-    derived: &crate::subsystem::Derived,
-) {
-    if diagnostics.alerts.list_modal_open {
-        render_list_modal(ctx, state, diagnostics, derived);
+pub(super) struct AlertsModalsLayer;
+
+impl Layer for AlertsModalsLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Modal
     }
-    if diagnostics.alerts.selected_alert_id.is_some() {
-        render_detail_modal(ctx, state, diagnostics);
+    fn z_order(&self) -> i32 {
+        80
+    }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        ctx.diagnostics.alerts.list_modal_open || ctx.diagnostics.alerts.selected_alert_id.is_some()
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        if ctx.diagnostics.alerts.list_modal_open {
+            render_list_modal(ctx.ctx, ctx.state, ctx.diagnostics, ctx.derived);
+        }
+        if ctx.diagnostics.alerts.selected_alert_id.is_some() {
+            render_detail_modal(ctx.ctx, ctx.state, ctx.diagnostics);
+        }
     }
 }
 

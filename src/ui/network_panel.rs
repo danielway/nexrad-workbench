@@ -5,19 +5,32 @@
 //! modal or the bottom status bar.
 
 use super::colors::ui as ui_colors;
+use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::state::{format_bytes, AppState};
 use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
 
-/// Render the network log modal if open.
-pub fn render_network_log(
+pub(super) struct NetworkLogLayer;
+
+impl Layer for NetworkLogLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Modal
+    }
+    fn z_order(&self) -> i32 {
+        60
+    }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        ctx.chrome.network_log_open
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_network_log(ctx.ctx, ctx.state, ctx.chrome);
+    }
+}
+
+fn draw_network_log(
     ctx: &egui::Context,
     state: &mut AppState,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !chrome.network_log_open {
-        return;
-    }
-
     if super::modal_helper::modal_backdrop(ctx, "network_log_backdrop", 160) {
         chrome.network_log_open = false;
         return;

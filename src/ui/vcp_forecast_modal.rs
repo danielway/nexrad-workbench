@@ -14,6 +14,7 @@
 //! deltas if needed and would otherwise bloat the clipboard payload.
 
 use super::colors::ui as ui_colors;
+use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::nexrad::timing::{AnchorSource, IntervalCase, PhysicsBreakdown, SchedulerPath};
 use crate::state::{
     AppState, BucketKey, ChunkArrivalStat, SweepForecast, SweepStatus, SweepTiming,
@@ -22,16 +23,29 @@ use crate::state::{
 use eframe::egui::{self, RichText, Vec2};
 use std::collections::BTreeMap;
 
-pub fn render_vcp_forecast_modal(
+pub(super) struct VcpForecastModalLayer;
+
+impl Layer for VcpForecastModalLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Modal
+    }
+    fn z_order(&self) -> i32 {
+        50
+    }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        ctx.chrome.vcp_forecast_open
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_vcp_forecast_modal(ctx.ctx, ctx.state, ctx.live, ctx.chrome);
+    }
+}
+
+fn draw_vcp_forecast_modal(
     ctx: &egui::Context,
     state: &mut AppState,
     live: &crate::subsystem::Live,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !chrome.vcp_forecast_open {
-        return;
-    }
-
     if super::modal_helper::modal_backdrop(ctx, "vcp_forecast_backdrop", 160) {
         chrome.vcp_forecast_open = false;
         return;

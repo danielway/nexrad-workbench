@@ -2,19 +2,32 @@
 //!
 //! Clears IndexedDB stores, localStorage, and reloads the page.
 
+use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::state::AppState;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
-/// Render the "wipe all data" confirmation modal if open.
-pub fn render_wipe_modal(
+pub(super) struct WipeModalLayer;
+
+impl Layer for WipeModalLayer {
+    fn kind(&self) -> LayerKind {
+        LayerKind::Modal
+    }
+    fn z_order(&self) -> i32 {
+        30
+    }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        ctx.chrome.wipe_modal_open
+    }
+    fn render(&self, ctx: &mut LayoutCtx) {
+        draw_wipe_modal(ctx.ctx, ctx.state, ctx.chrome);
+    }
+}
+
+fn draw_wipe_modal(
     ctx: &egui::Context,
     state: &mut AppState,
     chrome: &mut crate::subsystem::Chrome,
 ) {
-    if !chrome.wipe_modal_open {
-        return;
-    }
-
     if super::modal_helper::modal_backdrop(ctx, "wipe_modal_backdrop", 180) {
         chrome.wipe_modal_open = false;
         return;

@@ -297,19 +297,34 @@ async fn zip_lookup_attempt(url: &str) -> Verdict<(f64, f64)> {
     Verdict::Ok((lat, lon))
 }
 
-/// Render the site selection modal if open.
-///
+pub(super) struct SiteModalLayer;
+
+impl super::layout::Layer for SiteModalLayer {
+    fn kind(&self) -> super::layout::LayerKind {
+        super::layout::LayerKind::Modal
+    }
+    fn z_order(&self) -> i32 {
+        10
+    }
+    fn visible(&self, ctx: &super::layout::LayoutCtx) -> bool {
+        ctx.chrome.site_modal_open
+    }
+    fn render(&self, ctx: &mut super::layout::LayoutCtx) {
+        draw_site_modal(ctx.ctx, ctx.state, ctx.chrome, &mut ctx.modals.site);
+    }
+}
+
 /// Returns `true` if a site was selected (so the caller can trigger acquisition).
-pub fn render_site_modal(
+///
+/// Currently the caller ignores the return value — the site-selection flow
+/// dispatches `AppCommand::ChangeSite` via `apply_site_selection` instead.
+/// Kept for the standalone-call-site path used by tests.
+fn draw_site_modal(
     ctx: &egui::Context,
     state: &mut AppState,
     chrome: &mut crate::subsystem::Chrome,
     modal_state: &mut SiteModalState,
 ) -> bool {
-    if !chrome.site_modal_open {
-        return false;
-    }
-
     // Poll for async location results
     for result in modal_state.drain_location_results() {
         match result {

@@ -176,8 +176,32 @@ impl EventModalState {
     }
 }
 
-/// Render the event create/edit modal if open.
-pub fn render_event_modal(
+pub(super) struct EventModalLayer;
+
+impl super::layout::Layer for EventModalLayer {
+    fn kind(&self) -> super::layout::LayerKind {
+        super::layout::LayerKind::Modal
+    }
+    fn z_order(&self) -> i32 {
+        70
+    }
+    fn visible(&self, ctx: &super::layout::LayoutCtx) -> bool {
+        // Also visible while modal_state needs the close-time reset that
+        // the body's early-return performs.
+        ctx.chrome.event_modal_open || ctx.modals.event.initialized
+    }
+    fn render(&self, ctx: &mut super::layout::LayoutCtx) {
+        draw_event_modal(
+            ctx.ctx,
+            ctx.state,
+            ctx.playback,
+            &mut ctx.modals.event,
+            ctx.chrome,
+        );
+    }
+}
+
+fn draw_event_modal(
     ctx: &egui::Context,
     state: &mut AppState,
     playback: &crate::subsystem::Playback,
