@@ -3,7 +3,7 @@ target = "index.html"
 dist = "dist"
 
 [watch]
-watch = ["src", "index.html"]
+watch = ["src", "index.html", "worker.js", "service-worker.js"]
 
 [serve]
 addresses = ["0.0.0.0"]
