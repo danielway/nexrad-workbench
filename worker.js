@@ -42,6 +42,27 @@
 
 let wasm = null;
 
+// Produce a useful string for any thrown value. Naive `String(err)` on a
+// plain object yields "[object Object]" — that's what produced the
+// unhelpful "worker[object Object]" chip in the UI. Walk through the
+// common cases (string, Error, anything with a usable .message, plain
+// object) before giving up.
+function describeError(err) {
+    if (err == null) return 'Unknown error';
+    if (typeof err === 'string') return err;
+    if (typeof err.message === 'string' && err.message) return err.message;
+    try {
+        const json = JSON.stringify(err);
+        if (json && json !== '{}' && json !== 'null') return json;
+    } catch (_) {
+        // Cyclic or non-serializable — fall through.
+    }
+    const s = String(err);
+    if (s && s !== '[object Object]') return s;
+    const ctor = err.constructor && err.constructor.name;
+    return ctor ? `Non-Error object thrown (${ctor})` : 'Non-Error object thrown';
+}
+
 // Classify a caught exception into a structured { kind, message } pair so
 // the Rust receive path can dispatch on the kind instead of regex-matching
 // the message. Rust code that throws can opt into a specific kind by
@@ -51,13 +72,13 @@ let wasm = null;
 // `worker_error_kind_deserializes_known_strings` test.
 function classifyError(err) {
     if (err && typeof err === 'object' && typeof err.kind === 'string') {
-        return { kind: err.kind, message: String(err.message || err.kind) };
+        return { kind: err.kind, message: describeError(err.message || err.kind) };
     }
-    if (!err) {
+    if (err == null) {
         return { kind: 'unknown', message: 'Unknown error' };
     }
-    const name = err.name || '';
-    const message = err.message ? String(err.message) : String(err);
+    const name = (err && err.name) || '';
+    const message = describeError(err);
     if (name === 'QuotaExceededError') {
         return { kind: 'quota_exceeded', message };
     }
@@ -98,7 +119,7 @@ self.onmessage = async function (e) {
                 type: 'error',
                 id: 0,
                 kind: 'init_failed',
-                message: 'Worker init failed: ' + (err && err.message ? err.message : String(err)),
+                message: 'Worker init failed: ' + describeError(err),
             });
         }
         return;
