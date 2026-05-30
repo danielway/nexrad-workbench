@@ -377,6 +377,18 @@ pub fn render_canvas_with_geo(
                     },
                 );
 
+                // Loading hint: a blank canvas with a reactive fetch in flight
+                // should read as "loading", not "broken" (PRODUCT.md §7.2).
+                if state.viz_state.acquiring {
+                    painter.text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "Acquiring data…",
+                        egui::FontId::proportional(15.0),
+                        ui.visuals().weak_text_color(),
+                    );
+                }
+
                 handle_canvas_interaction(
                     &response,
                     &rect,

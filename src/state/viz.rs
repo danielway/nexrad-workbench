@@ -417,6 +417,12 @@ pub struct VizState {
     /// Drives the timeline secondary border and the prev-sweep overlay
     /// panel.
     pub previous_displayed: Option<DisplayedSweep>,
+
+    /// True when the canvas is blank (`displayed` is `None`) *and* a reactive
+    /// fetch covering the playback position is in flight. Lets the canvas show
+    /// an "Acquiring…" hint so an empty view reads as "loading", not "broken"
+    /// (PRODUCT.md §7.2). Recomputed each frame in `advance_playback`.
+    pub acquiring: bool,
 }
 
 impl Default for VizState {
@@ -449,6 +455,7 @@ impl Default for VizState {
             last_visible_bounds: None,
             displayed: None,
             previous_displayed: None,
+            acquiring: false,
         }
     }
 }

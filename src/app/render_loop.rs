@@ -14,6 +14,8 @@ impl WorkbenchApp {
     pub(crate) fn advance_playback(&mut self) {
         // Live mode drives rendering via ChunkIngested/LiveDecoded — skip playback-driven renders.
         if self.live.mode_state.is_active() {
+            // Live owns acquisition; the archive "acquiring" hint never applies.
+            self.state.viz_state.acquiring = false;
             return;
         }
         // Rebuild macro frame list when dirty (elevation selection, bounds, or scan count changed)
@@ -234,6 +236,28 @@ impl WorkbenchApp {
                 }
             }
         }
+
+        // Distinguish "fetching" from "no data here": when the canvas is blank
+        // but a reactive fetch covers the cursor, flag it so the canvas shows
+        // an "Acquiring…" hint instead of reading as broken (PRODUCT.md §7.2).
+        let pos = self.playback.state.playback_position();
+        self.state.viz_state.acquiring =
+            self.state.viz_state.displayed.is_none() && self.position_is_being_acquired(pos);
+    }
+
+    /// Whether an archive fetch covering `playback_secs` is in flight or being
+    /// ingested — drives the canvas "Acquiring…" hint when the position has no
+    /// cached scan yet. Checks the download-progress ghost ranges, which mirror
+    /// the active and just-completed-but-still-ingesting downloads.
+    fn position_is_being_acquired(&self, playback_secs: f64) -> bool {
+        let pos = playback_secs as i64;
+        let progress = &self.state.download_progress;
+        progress
+            .active_scans
+            .iter()
+            .chain(progress.in_flight_scans.iter())
+            .chain(progress.pending_scans.iter())
+            .any(|&(start, end)| pos >= start && pos <= end)
     }
 
     /// Stateless sweep animation: ensure the previous-sweep GPU texture matches
