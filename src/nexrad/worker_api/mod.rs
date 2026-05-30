@@ -24,6 +24,13 @@ pub(super) struct IngestParams {
     pub timestamp_secs: f64,
     #[serde(default)]
     pub file_name: String,
+    /// When non-empty, only these elevation numbers are extracted into sweep
+    /// blobs and written to IDB; the rest of the decoded volume is dropped.
+    /// Empty (the default) stores the whole volume. The VCP header is decoded
+    /// and stored regardless of this filter. The full archive file is always
+    /// downloaded — this scopes decode/storage, not the network transfer.
+    #[serde(default)]
+    pub wanted_elevations: Vec<u8>,
 }
 
 /// Parameters for `worker_render`.

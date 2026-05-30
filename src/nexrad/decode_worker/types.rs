@@ -324,6 +324,7 @@ pub(super) struct IngestRequestMsg<'a> {
     pub site_id: &'a str,
     pub timestamp_secs: f64,
     pub file_name: &'a str,
+    pub wanted_elevations: &'a [u8],
 }
 
 /// Request message sent to the worker for chunk ingest operations.

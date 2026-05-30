@@ -138,13 +138,14 @@ self.onmessage = async function (e) {
     if (msg.type === 'ingest') {
         try {
             // worker_ingest: JsValue -> Promise<JsValue>
-            // Input: { data: ArrayBuffer, siteId, timestampSecs, fileName }
+            // Input: { data: ArrayBuffer, siteId, timestampSecs, fileName, wantedElevations }
             // Output: { recordsStored, scanKey, elevationMap, totalMs }
             const result = await wasm.worker_ingest({
                 data: msg.data,
                 siteId: msg.siteId,
                 timestampSecs: msg.timestampSecs,
                 fileName: msg.fileName,
+                wantedElevations: msg.wantedElevations,
             });
 
             self.postMessage({ type: 'ingested', id: msg.id, result: result });

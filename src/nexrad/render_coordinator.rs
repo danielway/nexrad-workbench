@@ -176,7 +176,9 @@ impl RenderCoordinator {
         }
     }
 
-    /// Forward raw bytes to worker for ingest.
+    /// Forward raw bytes to worker for ingest. When `wanted_elevations` is
+    /// non-empty, the worker stores only those cuts (filter-scoped fetch).
+    #[allow(clippy::too_many_arguments)]
     pub fn ingest(
         &mut self,
         data: Vec<u8>,
@@ -184,9 +186,17 @@ impl RenderCoordinator {
         timestamp: f64,
         file_name: String,
         fetch_latency: f64,
+        wanted_elevations: Vec<u8>,
     ) {
         if let Some(ref mut worker) = self.worker {
-            worker.ingest(data, site_id, timestamp, file_name, fetch_latency);
+            worker.ingest(
+                data,
+                site_id,
+                timestamp,
+                file_name,
+                fetch_latency,
+                wanted_elevations,
+            );
         }
     }
 

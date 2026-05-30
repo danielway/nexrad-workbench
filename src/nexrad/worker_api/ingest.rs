@@ -22,6 +22,7 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let site_id = p.site_id;
         let timestamp_secs = p.timestamp_secs;
         let file_name = p.file_name;
+        let wanted_elevations = p.wanted_elevations;
 
         log::debug!(
             "ingest: received {} ({:.1}MB)",
@@ -71,8 +72,16 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
 
         // --- Phase 2: Group + extract sweeps into uploads ---
+        // A filter-scoped fetch only keeps the requested elevation cuts. The
+        // whole file was still decoded above (records are interleaved, so the
+        // VCP and timing depend on seeing them all), but dropping unwanted cuts
+        // here skips the expensive sweep-blob extraction + IDB write for them.
         let t_extract = web_time::Instant::now();
-        let by_elevation = crate::nexrad::ingest_phases::group_radials_by_elevation(&all_radials);
+        let mut by_elevation =
+            crate::nexrad::ingest_phases::group_radials_by_elevation(&all_radials);
+        if !wanted_elevations.is_empty() {
+            by_elevation.retain(|elev, _| wanted_elevations.contains(elev));
+        }
         let elevations =
             crate::nexrad::ingest_phases::build_elevation_uploads(&by_elevation, &radial_metas);
         let extract_ms = t_extract.elapsed().as_secs_f64() * 1000.0;

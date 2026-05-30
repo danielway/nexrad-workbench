@@ -10,6 +10,7 @@ use web_sys::Worker;
 
 impl DecodeWorker {
     /// Submit an archive for ingestion: split, probe elevations, store in IDB.
+    #[allow(clippy::too_many_arguments)]
     pub fn ingest(
         &mut self,
         data: Vec<u8>,
@@ -17,6 +18,7 @@ impl DecodeWorker {
         timestamp_secs: f64,
         file_name: String,
         fetch_latency_ms: f64,
+        wanted_elevations: Vec<u8>,
     ) {
         let id = self.next_request_id();
         // Build the typed scan-key once at dispatch; the response path
@@ -41,6 +43,7 @@ impl DecodeWorker {
                 &site_id,
                 timestamp_secs,
                 &file_name,
+                &wanted_elevations,
             );
         } else {
             self.queue.push(super::QueuedRequest::Ingest(
@@ -49,6 +52,7 @@ impl DecodeWorker {
                 site_id,
                 timestamp_secs,
                 file_name,
+                wanted_elevations,
             ));
         }
     }
@@ -208,6 +212,7 @@ pub(super) fn send_ingest_request(
     site_id: &str,
     timestamp_secs: f64,
     file_name: &str,
+    wanted_elevations: &[u8],
 ) {
     let request = IngestRequestMsg {
         msg_type: RequestType::Ingest.as_str(),
@@ -215,6 +220,7 @@ pub(super) fn send_ingest_request(
         site_id,
         timestamp_secs,
         file_name,
+        wanted_elevations,
     };
     let msg = match serde_wasm_bindgen::to_value(&request) {
         Ok(v) => v,

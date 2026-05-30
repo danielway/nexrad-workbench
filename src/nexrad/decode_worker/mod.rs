@@ -48,7 +48,7 @@ pub struct DecodeWorker {
 
 /// A request queued before the worker was ready.
 enum QueuedRequest {
-    Ingest(RequestId, Vec<u8>, String, f64, String),
+    Ingest(RequestId, Vec<u8>, String, f64, String, Vec<u8>),
     IngestChunk(
         RequestId,
         Vec<u8>,
@@ -176,7 +176,7 @@ impl DecodeWorker {
             log::debug!("Flushing {} queued worker requests", queued.len());
             for request in queued {
                 match request {
-                    QueuedRequest::Ingest(id, data, site_id, ts, file_name) => {
+                    QueuedRequest::Ingest(id, data, site_id, ts, file_name, wanted_elevations) => {
                         send::send_ingest_request(
                             &self.worker,
                             id,
@@ -184,6 +184,7 @@ impl DecodeWorker {
                             &site_id,
                             ts,
                             &file_name,
+                            &wanted_elevations,
                         );
                     }
                     QueuedRequest::IngestChunk(

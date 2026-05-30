@@ -97,6 +97,18 @@ impl WorkbenchApp {
                 // Fresh download: send raw bytes to worker for ingest.
                 // Worker splits records, probes elevations, stores in IDB,
                 // then returns metadata. We render on the Ingested callback.
+                //
+                // Scope the ingest to the elevation this download was queued
+                // for (if any), so a filter-scoped fetch only stores the cut we
+                // care about. The queue item is still present (Active) here.
+                let wanted_elevations: Vec<u8> = self
+                    .acquisition
+                    .coordinator
+                    .download_queue
+                    .find_by_scan_start(scan_ts)
+                    .and_then(|item| item.elevation_filter)
+                    .map(|elev| vec![elev])
+                    .unwrap_or_default();
                 self.state.session_stats.pipeline.processing = true;
                 self.render.coordinator.ingest(
                     scan.data.clone(),
@@ -104,6 +116,7 @@ impl WorkbenchApp {
                     scan.key.scan_start.as_secs_f64(),
                     scan.file_name.clone(),
                     fetch_latency,
+                    wanted_elevations,
                 );
             }
 

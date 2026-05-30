@@ -66,7 +66,9 @@ impl WorkerPool {
         idx
     }
 
-    /// Submit an archive ingest (full file) — round-robined across workers.
+    /// Submit an archive ingest — round-robined across workers. When
+    /// `wanted_elevations` is non-empty, only those cuts are stored.
+    #[allow(clippy::too_many_arguments)]
     pub fn ingest(
         &mut self,
         data: Vec<u8>,
@@ -74,9 +76,17 @@ impl WorkerPool {
         timestamp_secs: f64,
         file_name: String,
         fetch_latency_ms: f64,
+        wanted_elevations: Vec<u8>,
     ) {
         let idx = self.next_ingest_index();
-        self.workers[idx].ingest(data, site_id, timestamp_secs, file_name, fetch_latency_ms);
+        self.workers[idx].ingest(
+            data,
+            site_id,
+            timestamp_secs,
+            file_name,
+            fetch_latency_ms,
+            wanted_elevations,
+        );
     }
 
     /// Submit a per-chunk ingest — pinned to the live-worker slot so the
