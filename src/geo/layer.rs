@@ -2,12 +2,10 @@
 
 use super::{MapProjection, ProjectionFingerprint};
 use eframe::egui::{Align2, Color32, Pos2, Vec2};
-use eframe::epaint::Galley;
 use geo_types::Coord;
 use shapefile::dbase::FieldValue;
 use std::cell::RefCell;
 use std::io::Cursor;
-use std::sync::Arc;
 
 /// Type of geographic layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,21 +185,28 @@ pub struct GeoLayer {
 }
 
 /// Single retained label, ready to paint at the projected position of its
-/// `anchor`. Built once per camera-settle event; reused every frame in
-/// between.
+/// `anchor`. The feature-selection pass (which features get a label, at what
+/// size) is debounced on camera-settle; the galley itself is laid out fresh
+/// each frame from `text`/`font_size` via egui's internal galley cache, which
+/// — unlike a stored `Arc<Galley>` — is invalidated when egui recreates the
+/// font atlas (it does so as the atlas fills during load). Storing a galley
+/// here instead left it pointing at stale glyph positions after a repack,
+/// rendering garbled until the next zoom forced a rebuild.
 #[derive(Debug, Clone)]
 pub(crate) struct LabelEntry {
     /// Lat/lon anchor — projected each frame to obtain the screen position
     /// at which the label is drawn.
     pub anchor: Coord<f64>,
-    /// How the galley should be aligned around the projected anchor.
+    /// How the label should be aligned around the projected anchor.
     pub align: Align2,
     /// Pixel offset from the anchor's screen position before alignment.
     /// Used by point labels that sit a few pixels to the right of their
     /// marker dot.
     pub pixel_offset: Vec2,
-    /// Pre-laid-out text. Reused every frame — `Arc::clone` is cheap.
-    pub galley: Arc<Galley>,
+    /// Label text, laid out each frame (cheap — memoized by egui).
+    pub text: String,
+    /// Proportional font size, chosen at selection time from layer + zoom.
+    pub font_size: f32,
     /// Foreground text color (halo offsets paint in black).
     pub color: Color32,
 }

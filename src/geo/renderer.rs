@@ -230,7 +230,7 @@ fn render_labels_pass(
             _ => false,
         };
         if needs_rebuild {
-            rebuild_label_cache(painter, layer, projection, zoom, dark, &mut cache);
+            rebuild_label_cache(layer, projection, zoom, dark, &mut cache);
             cache.token = Some(token);
         }
     }
@@ -240,11 +240,11 @@ fn render_labels_pass(
 }
 
 /// Build the per-layer label cache: one [`LabelEntry`] per visible
-/// labelable feature, with text laid out into an `Arc<Galley>`. Skips
-/// features whose `min_label_zoom` threshold isn't met or whose anchor
-/// isn't within the visible bounds at build time.
+/// labelable feature, recording its text and font size (the galley is laid
+/// out per-frame at paint time). Skips features whose `min_label_zoom`
+/// threshold isn't met or whose anchor isn't within the visible bounds at
+/// build time.
 fn rebuild_label_cache(
-    painter: &Painter,
     layer: &GeoLayer,
     projection: &MapProjection,
     zoom: f32,
@@ -275,9 +275,9 @@ fn rebuild_label_cache(
 
         let entry = match feature {
             GeoFeature::Polygon { .. } | GeoFeature::MultiPolygon { .. } => {
-                build_polygon_label_entry(painter, anchor, text, zoom, layer_type, dark)
+                build_polygon_label_entry(anchor, text, zoom, layer_type, dark)
             }
-            GeoFeature::Point(_, _) => build_point_label_entry(painter, anchor, text, zoom, dark),
+            GeoFeature::Point(_, _) => build_point_label_entry(anchor, text, zoom, dark),
             _ => None,
         };
         if let Some(entry) = entry {
@@ -287,7 +287,6 @@ fn rebuild_label_cache(
 }
 
 fn build_polygon_label_entry(
-    painter: &Painter,
     anchor: Coord<f64>,
     text: &str,
     zoom: f32,
@@ -296,18 +295,17 @@ fn build_polygon_label_entry(
 ) -> Option<LabelEntry> {
     let (base_size, color) = polygon_label_style(layer_type);
     let font_size = (base_size * zoom).clamp(base_size * 0.7, base_size * 1.5);
-    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(font_size), color);
     Some(LabelEntry {
         anchor,
         align: Align2::CENTER_CENTER,
         pixel_offset: Vec2::ZERO,
-        galley,
+        text: text.to_string(),
+        font_size,
         color,
     })
 }
 
 fn build_point_label_entry(
-    painter: &Painter,
     anchor: Coord<f64>,
     text: &str,
     zoom: f32,
@@ -316,12 +314,12 @@ fn build_point_label_entry(
     let radius = (2.5 * zoom.sqrt()).clamp(2.0, 5.0);
     let font_size = (9.0 * zoom.sqrt()).clamp(8.0, 13.0);
     let color = Color32::from_rgb(180, 180, 200);
-    let galley = painter.layout_no_wrap(text.to_string(), FontId::proportional(font_size), color);
     Some(LabelEntry {
         anchor,
         align: Align2::LEFT_CENTER,
         pixel_offset: Vec2::new(radius + 2.0, -2.0),
-        galley,
+        text: text.to_string(),
+        font_size,
         color,
     })
 }
@@ -336,15 +334,21 @@ fn polygon_label_style(layer_type: GeoLayerType) -> (f32, Color32) {
     }
 }
 
-/// Per-frame label paint: project each cached anchor through the current
-/// projection and emit one halo'd galley per entry. No text layout runs
-/// here — galleys are reused via `Arc::clone`.
+/// Per-frame label paint: lay out each cached entry's text (memoized by
+/// egui's internal galley cache, which self-invalidates on font-atlas
+/// recreate) and project its anchor through the current projection before
+/// emitting one halo'd galley.
 fn paint_label_cache(painter: &Painter, projection: &MapProjection, cache: &LayerLabelCache) {
     for entry in &cache.entries {
+        let galley = painter.layout_no_wrap(
+            entry.text.clone(),
+            FontId::proportional(entry.font_size),
+            entry.color,
+        );
         let anchor_screen = projection.geo_to_screen(entry.anchor);
         let anchor_with_offset = anchor_screen + entry.pixel_offset;
-        let pos = aligned_galley_pos(anchor_with_offset, entry.galley.size(), entry.align);
-        paint_galley_with_halo(painter, pos, &entry.galley, entry.color, Color32::BLACK);
+        let pos = aligned_galley_pos(anchor_with_offset, galley.size(), entry.align);
+        paint_galley_with_halo(painter, pos, &galley, entry.color, Color32::BLACK);
     }
 }
 
