@@ -75,6 +75,7 @@ impl WorkbenchApp {
                         file_name,
                         scan_start,
                         scan_end,
+                        elevation_filter,
                         remaining,
                     } => {
                         self.state.status_message =
@@ -105,6 +106,7 @@ impl WorkbenchApp {
                             file_name,
                             scan_start,
                             self.acquisition.coordinator.facade().clone(),
+                            elevation_filter,
                         );
                     }
                     QueueAction::Complete => {
@@ -212,6 +214,7 @@ impl WorkbenchApp {
                                 file.name.clone(),
                                 boundary.start,
                                 boundary.end,
+                                None,
                             ));
                         }
                     } else {
@@ -287,6 +290,7 @@ impl WorkbenchApp {
                                 file.name.clone(),
                                 boundary.start,
                                 boundary.end,
+                                None,
                             ));
                         }
                     }
@@ -386,6 +390,7 @@ impl WorkbenchApp {
             file_name,
             scan_start,
             scan_end,
+            elevation_filter,
             remaining,
         } = self
             .acquisition
@@ -415,6 +420,7 @@ impl WorkbenchApp {
                 file_name,
                 scan_start,
                 self.acquisition.coordinator.facade().clone(),
+                elevation_filter,
             );
         }
     }

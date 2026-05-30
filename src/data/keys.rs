@@ -801,6 +801,23 @@ impl ScanIndexEntry {
             self.planned_sweep_count(),
         )
     }
+
+    /// Whether a sweep for the given elevation number has already been stored
+    /// under this scan.
+    ///
+    /// This is the dedup granularity for **filter-scoped** archive fetches.
+    /// `completeness()` can't answer "do I already have this cut?" for a
+    /// scoped scan — a scan that deliberately stores a subset of the VCP plan
+    /// never reaches `Complete`, so a completeness check would re-download the
+    /// whole file on every revisit. Ingest stores every product it can extract
+    /// for a decoded elevation together, so elevation presence (not per-product)
+    /// is the right unit: if the cut is present, all of its available products
+    /// are present.
+    pub fn has_elevation(&self, elevation_number: u8) -> bool {
+        self.cached_sweeps
+            .iter()
+            .any(|s| s.elevation_number == elevation_number)
+    }
 }
 
 #[cfg(test)]
@@ -894,6 +911,41 @@ mod tests {
             ScanCompleteness::from_counts(true, 12, Some(10)),
             ScanCompleteness::Complete
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn test_has_elevation() {
+        let mk_sweep = |elevation_number: u8| CachedSweep {
+            start: 0.0,
+            end: 0.0,
+            elevation: 0.5,
+            elevation_number,
+            start_azimuth: 0.0,
+            cached_products: vec!["reflectivity".to_string()],
+        };
+        let entry = ScanIndexEntry {
+            scan: ScanKey::from_secs("KDMX", 1_700_000_000),
+            vcp: None,
+            file_name: None,
+            cached_sweeps: vec![mk_sweep(1), mk_sweep(3)],
+            total_size_bytes: 0,
+        };
+
+        // Stored cuts are hits; the gap between them (elev 2) is not.
+        assert!(entry.has_elevation(1));
+        assert!(entry.has_elevation(3));
+        assert!(!entry.has_elevation(2));
+
+        // An entry with no cached sweeps is never a hit — the filter-scoped
+        // fetch must proceed.
+        let empty = ScanIndexEntry {
+            scan: ScanKey::from_secs("KDMX", 1_700_000_000),
+            vcp: None,
+            file_name: None,
+            cached_sweeps: vec![],
+            total_size_bytes: 0,
+        };
+        assert!(!empty.has_elevation(1));
     }
 
     #[wasm_bindgen_test]

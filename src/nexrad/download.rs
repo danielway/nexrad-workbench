@@ -123,6 +123,7 @@ impl DownloadChannel {
     /// Download a specific file from the archive by name.
     ///
     /// Returns false if the download is already pending.
+    #[allow(clippy::too_many_arguments)]
     pub fn download_file(
         &self,
         ctx: egui::Context,
@@ -131,6 +132,7 @@ impl DownloadChannel {
         file_name: String,
         timestamp: i64,
         facade: DataFacade,
+        elevation_filter: Option<u8>,
     ) -> bool {
         let storage_key = format!("{}_{}", site_id, timestamp);
 
@@ -149,8 +151,16 @@ impl DownloadChannel {
         let stats = self.stats.clone();
 
         wasm_bindgen_futures::spawn_local(async move {
-            let result =
-                download_specific_file(&site_id, date, &file_name, timestamp, facade, stats).await;
+            let result = download_specific_file(
+                &site_id,
+                date,
+                &file_name,
+                timestamp,
+                facade,
+                stats,
+                elevation_filter,
+            )
+            .await;
 
             // Remove from pending set
             pending.borrow_mut().remove(&storage_key);
@@ -305,13 +315,20 @@ async fn download_specific_file(
     timestamp: i64,
     facade: DataFacade,
     stats: NetworkStats,
+    elevation_filter: Option<u8>,
 ) -> DownloadResult {
     use nexrad::data::aws::archive;
 
-    // Check cache first (no network call).
+    // Check cache first (no network call). The dedup granularity depends on
+    // scope: a filter-scoped fetch only needs its one elevation present, while
+    // an unfiltered fetch is a hit only when the whole volume is complete.
     let scan_key = ScanKey::from_secs(site_id, timestamp);
     if let Ok(Some(entry)) = facade.scan_availability(&scan_key).await {
-        if entry.completeness() == ScanCompleteness::Complete {
+        let cache_hit = match elevation_filter {
+            Some(elev) => entry.has_elevation(elev),
+            None => entry.completeness() == ScanCompleteness::Complete,
+        };
+        if cache_hit {
             log::debug!("Cache hit for {}", scan_key);
             let cached = CachedScan::new(site_id, timestamp, file_name.to_string(), vec![]);
             return DownloadResult::CacheHit(cached);

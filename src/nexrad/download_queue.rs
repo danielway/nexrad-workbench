@@ -31,16 +31,29 @@ pub(crate) struct QueueItem {
     pub scan_start: i64,
     pub scan_end: i64,
     pub state: QueueItemState,
+    /// When `Some(n)`, only elevation number `n` should be decoded and stored
+    /// from this archive file (the active elevation filter at enqueue time).
+    /// `None` means store the whole volume. The whole file is fetched from S3
+    /// either way — a NEXRAD archive object is a single blob — so this scopes
+    /// decode/storage, not the network transfer.
+    pub elevation_filter: Option<u8>,
 }
 
 impl QueueItem {
-    pub fn new(date: chrono::NaiveDate, file_name: String, scan_start: i64, scan_end: i64) -> Self {
+    pub fn new(
+        date: chrono::NaiveDate,
+        file_name: String,
+        scan_start: i64,
+        scan_end: i64,
+        elevation_filter: Option<u8>,
+    ) -> Self {
         Self {
             date,
             file_name,
             scan_start,
             scan_end,
             state: QueueItemState::Pending,
+            elevation_filter,
         }
     }
 }
@@ -55,6 +68,7 @@ pub(crate) enum QueueAction {
         file_name: String,
         scan_start: i64,
         scan_end: i64,
+        elevation_filter: Option<u8>,
         remaining: usize,
     },
     /// All items are done/failed — queue is drained.
@@ -159,6 +173,7 @@ impl DownloadQueueManager {
                 file_name: item.file_name.clone(),
                 scan_start: item.scan_start,
                 scan_end: item.scan_end,
+                elevation_filter: item.elevation_filter,
                 remaining,
             };
             self.queue[idx].state = QueueItemState::Active;
