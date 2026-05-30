@@ -11,11 +11,9 @@ use crate::geo::MapProjection;
 use crate::nexrad::RADAR_COVERAGE_RANGE_KM;
 use crate::state::AppState;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, Vec2};
-use eframe::epaint::Galley;
 use geo_types::Coord;
 use std::cell::RefCell;
 use std::f32::consts::PI;
-use std::sync::Arc;
 
 /// Cached range-ring lon-degree extent for the active site. The km→deg
 /// conversion is invariant under pan/zoom — only `(site_lat, site_lon,
@@ -47,47 +45,6 @@ fn cached_lon_range_deg(lat: f64, lon: f64, range_km: f64) -> f64 {
         cache.key = Some(key);
         cache.lon_range_deg = v;
         v
-    })
-}
-
-/// Cached cardinal direction galleys (N, E, S, W). The font + color are
-/// fixed; the only thing that changes is theme. Build once per (font_size,
-/// dark) and reuse.
-#[derive(Default)]
-struct CardinalGalleyCache {
-    key: Option<(u32, bool)>, // (font_size_bits, dark)
-    galleys: Option<[Arc<Galley>; 4]>,
-}
-
-thread_local! {
-    static CARDINAL_GALLEY_CACHE: RefCell<CardinalGalleyCache> =
-        RefCell::new(CardinalGalleyCache::default());
-}
-
-fn cached_cardinal_galleys(
-    painter: &Painter,
-    font_size: f32,
-    color: Color32,
-    dark: bool,
-) -> [Arc<Galley>; 4] {
-    let key = (font_size.to_bits(), dark);
-    CARDINAL_GALLEY_CACHE.with(|c| {
-        let mut cache = c.borrow_mut();
-        if cache.key == Some(key) {
-            if let Some(ref g) = cache.galleys {
-                return g.clone();
-            }
-        }
-        let font = egui::FontId::proportional(font_size);
-        let g = [
-            painter.layout_no_wrap("N".to_string(), font.clone(), color),
-            painter.layout_no_wrap("E".to_string(), font.clone(), color),
-            painter.layout_no_wrap("S".to_string(), font.clone(), color),
-            painter.layout_no_wrap("W".to_string(), font, color),
-        ];
-        cache.key = Some(key);
-        cache.galleys = Some(g.clone());
-        g
     })
 }
 
@@ -154,22 +111,35 @@ pub(crate) fn render_radar_sweep(
         );
     }
 
-    // Draw cardinal direction labels using cached galleys to skip the
-    // text layout each frame.
+    // Draw cardinal direction labels. Lay these out fresh each frame rather
+    // than caching the galleys: egui's internal galley cache memoizes
+    // identical layout jobs across frames, and — unlike an external cache —
+    // it is invalidated when the font atlas is repacked. A cached `Galley`
+    // holds UV rects into the atlas, so if it outlives a repack (which
+    // happens as the atlas fills during first load) its glyphs point at stale
+    // texture locations and render garbled forever.
     let label_offset = radius + 15.0;
     let cardinal_color = canvas_colors::cardinal_label(dark);
-    let cardinals = cached_cardinal_galleys(painter, 12.0, cardinal_color, dark);
-    let cardinal_specs: [(Vec2, egui::Align2); 4] = [
-        (Vec2::new(0.0, -label_offset), egui::Align2::CENTER_BOTTOM),
-        (Vec2::new(label_offset, 0.0), egui::Align2::LEFT_CENTER),
-        (Vec2::new(0.0, label_offset), egui::Align2::CENTER_TOP),
-        (Vec2::new(-label_offset, 0.0), egui::Align2::RIGHT_CENTER),
+    let font = egui::FontId::proportional(12.0);
+    let cardinal_specs: [(&str, Vec2, egui::Align2); 4] = [
+        (
+            "N",
+            Vec2::new(0.0, -label_offset),
+            egui::Align2::CENTER_BOTTOM,
+        ),
+        ("E", Vec2::new(label_offset, 0.0), egui::Align2::LEFT_CENTER),
+        ("S", Vec2::new(0.0, label_offset), egui::Align2::CENTER_TOP),
+        (
+            "W",
+            Vec2::new(-label_offset, 0.0),
+            egui::Align2::RIGHT_CENTER,
+        ),
     ];
-    for (galley, (offset, align)) in cardinals.iter().zip(cardinal_specs.iter()) {
+    for (label, offset, align) in cardinal_specs.iter() {
+        let galley = painter.layout_no_wrap(label.to_string(), font.clone(), cardinal_color);
         let anchor = center + *offset;
-        let size = galley.size();
-        let pos = align_pos(anchor, size, *align);
-        painter.galley(pos, galley.clone(), cardinal_color);
+        let pos = align_pos(anchor, galley.size(), *align);
+        painter.galley(pos, galley, cardinal_color);
     }
 
     // Draw center marker (radar site)
