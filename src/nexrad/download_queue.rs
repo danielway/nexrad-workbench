@@ -87,6 +87,14 @@ pub(crate) enum QueueAction {
 /// saturate a residential uplink.
 pub(crate) const DEFAULT_MAX_PARALLEL: usize = 4;
 
+/// Default cap on total reactively-prefetched bytes per session (256 MB).
+///
+/// Reactive prefetch fetches as a side effect of navigation; this is the
+/// backstop against runaway background downloading (PRODUCT.md §5.1). Storage
+/// is separately bounded by the IDB quota/eviction system — this caps *session
+/// bandwidth*, not disk. Adjustable.
+pub(crate) const DEFAULT_MAX_AUTO_FETCH_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Manages the download queue state machine.
 ///
 /// This struct owns the queue of [`QueueItem`]s and the per-item operation
@@ -99,6 +107,10 @@ pub(crate) struct DownloadQueueManager {
     /// are in flight simultaneously.
     active_operation_ids: std::collections::HashMap<i64, crate::state::OperationId>,
     max_parallel: usize,
+    /// Running total of bytes fetched via reactive prefetch this session.
+    /// Bounds runaway background downloading; not reset on queue clear.
+    auto_fetched_bytes: u64,
+    max_auto_fetch_bytes: u64,
 }
 
 impl DownloadQueueManager {
@@ -107,6 +119,8 @@ impl DownloadQueueManager {
             queue: Vec::new(),
             active_operation_ids: std::collections::HashMap::new(),
             max_parallel: DEFAULT_MAX_PARALLEL,
+            auto_fetched_bytes: 0,
+            max_auto_fetch_bytes: DEFAULT_MAX_AUTO_FETCH_BYTES,
         }
     }
 
@@ -249,5 +263,69 @@ impl DownloadQueueManager {
     /// Find an item by scan_start timestamp.
     pub fn find_by_scan_start(&self, scan_start: i64) -> Option<&QueueItem> {
         self.queue.iter().find(|item| item.scan_start == scan_start)
+    }
+
+    /// Append items to the existing queue (used by reactive prefetch, which
+    /// adds to in-flight work rather than replacing it). Skips any scan_start
+    /// already present so the same scan is never queued twice.
+    pub fn enqueue(&mut self, items: impl IntoIterator<Item = QueueItem>) {
+        for item in items {
+            if self.find_by_scan_start(item.scan_start).is_none() {
+                self.queue.push(item);
+            }
+        }
+    }
+
+    /// Whether the session auto-fetch volume cap has been reached.
+    pub fn auto_fetch_cap_reached(&self) -> bool {
+        self.auto_fetched_bytes >= self.max_auto_fetch_bytes
+    }
+
+    /// Record bytes fetched via reactive prefetch toward the volume cap.
+    pub fn record_auto_fetched(&mut self, bytes: u64) {
+        self.auto_fetched_bytes = self.auto_fetched_bytes.saturating_add(bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn item(scan_start: i64, elevation_filter: Option<u8>) -> QueueItem {
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        QueueItem::new(
+            date,
+            format!("f{scan_start}"),
+            scan_start,
+            scan_start + 300,
+            elevation_filter,
+        )
+    }
+
+    #[wasm_bindgen_test]
+    fn enqueue_appends_and_skips_duplicate_scan_start() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, Some(1)), item(400, None)]);
+        assert_eq!(q.len(), 2);
+        // Same scan_start is skipped even with a different filter/file.
+        q.enqueue([item(100, Some(3))]);
+        assert_eq!(q.len(), 2);
+        // A new scan_start appends.
+        q.enqueue([item(700, Some(2))]);
+        assert_eq!(q.len(), 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn auto_fetch_cap_tracks_recorded_bytes() {
+        let mut q = DownloadQueueManager::new();
+        assert!(!q.auto_fetch_cap_reached());
+        q.record_auto_fetched(DEFAULT_MAX_AUTO_FETCH_BYTES - 1);
+        assert!(!q.auto_fetch_cap_reached());
+        q.record_auto_fetched(1);
+        assert!(q.auto_fetch_cap_reached());
+        // Saturating: further recording doesn't overflow or un-trip the cap.
+        q.record_auto_fetched(u64::MAX);
+        assert!(q.auto_fetch_cap_reached());
     }
 }

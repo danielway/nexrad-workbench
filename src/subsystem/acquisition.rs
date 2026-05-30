@@ -30,6 +30,8 @@ pub struct Acquisition {
     pub state: AcquisitionState,
     /// Download channels, cache loader, archive index, data facade.
     pub coordinator: AcquisitionCoordinator,
+    /// Debounce/idempotency state for reactive (implicit) prefetch.
+    pub prefetch_settle: PrefetchSettle,
 }
 
 impl Acquisition {
@@ -42,6 +44,89 @@ impl Acquisition {
         Self {
             state: AcquisitionState::default(),
             coordinator: AcquisitionCoordinator::new(data_facade),
+            prefetch_settle: PrefetchSettle::default(),
         }
+    }
+}
+
+/// Debounce + idempotency state for reactive prefetch.
+///
+/// Prefetch must not fire while the user is actively scrubbing or zooming —
+/// the view has to settle first (PRODUCT.md §5.1). This tracks the last
+/// "what should we prefetch" signature and when it last changed; the pump
+/// only acts once the signature has been stable for the debounce window
+/// (which collapses to zero during playback so prefetch tracks the advancing
+/// cursor continuously). `resolved_signature` suppresses redundant
+/// re-evaluation once a settled view has been fully handled.
+#[derive(Default)]
+pub struct PrefetchSettle {
+    last_signature: u64,
+    settled_since_ms: Option<f64>,
+    resolved_signature: Option<u64>,
+}
+
+impl PrefetchSettle {
+    /// Record this frame's signature and report whether the view has been
+    /// settled for at least `settle_ms`. A changed signature resets the timer
+    /// and clears the resolved marker.
+    pub fn poll(&mut self, signature: u64, now_ms: f64, settle_ms: f64) -> bool {
+        if signature != self.last_signature {
+            self.last_signature = signature;
+            self.settled_since_ms = Some(now_ms);
+            self.resolved_signature = None;
+        }
+        self.settled_since_ms
+            .is_some_and(|since| now_ms - since >= settle_ms)
+    }
+
+    /// Whether the current signature has already been fully handled (nothing
+    /// left to enqueue, no listing pending), so re-evaluation can be skipped.
+    pub fn already_resolved(&self) -> bool {
+        self.resolved_signature == Some(self.last_signature)
+    }
+
+    /// Mark the current signature as fully handled.
+    pub fn mark_resolved(&mut self) {
+        self.resolved_signature = Some(self.last_signature);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PrefetchSettle;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn settle_waits_for_stability_then_resets_on_change() {
+        let mut s = PrefetchSettle::default();
+        // First sighting starts the timer; not settled yet.
+        assert!(!s.poll(42, 1000.0, 300.0));
+        // Still inside the debounce window.
+        assert!(!s.poll(42, 1200.0, 300.0));
+        // Past the window → settled.
+        assert!(s.poll(42, 1300.0, 300.0));
+        // A new signature resets the timer (e.g. the user scrubbed elsewhere).
+        assert!(!s.poll(99, 1300.0, 300.0));
+        assert!(s.poll(99, 1600.0, 300.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn settle_zero_window_fires_immediately() {
+        // Playback passes settle_ms = 0: a stable signature fires at once.
+        let mut s = PrefetchSettle::default();
+        assert!(s.poll(7, 500.0, 0.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn resolved_marker_clears_when_signature_changes() {
+        let mut s = PrefetchSettle::default();
+        assert!(s.poll(1, 0.0, 0.0));
+        assert!(!s.already_resolved());
+        s.mark_resolved();
+        assert!(s.already_resolved());
+        // Moving the view (new signature) clears the resolved marker so the
+        // pump re-evaluates.
+        s.poll(2, 0.0, 0.0);
+        assert!(!s.already_resolved());
     }
 }

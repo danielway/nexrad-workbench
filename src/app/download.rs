@@ -91,6 +91,13 @@ impl WorkbenchApp {
                 self.state.status_message =
                     format!("Downloaded: {} ({} bytes)", scan.file_name, scan.data.len());
 
+                // Count fresh-download bytes toward the reactive auto-fetch
+                // volume cap (cache hits cost no network, so they don't count).
+                self.acquisition
+                    .coordinator
+                    .download_queue
+                    .record_auto_fetched(scan.data.len() as u64);
+
                 // Transition to ingesting phase
                 self.state.download_progress.phase = crate::state::DownloadPhase::Ingesting;
 

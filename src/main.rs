@@ -40,6 +40,20 @@ const MAX_SCAN_AGE_SECS: f64 = 15.0 * 60.0;
 /// wasting bandwidth.
 const PREFETCH_LOOKAHEAD_SECS: f64 = 0.5;
 
+/// Reactive (implicit) data-acquisition tuning. These bound *archive*
+/// prefetch — fetching scans as a side effect of navigation (PRODUCT.md §5).
+///
+/// `PREFETCH_DEBOUNCE_MS`: the view (playback position, filter) must be stable
+/// this long before a prefetch fires, so transient scrub/zoom positions don't
+/// trigger downloads. Collapses to zero during playback.
+const PREFETCH_DEBOUNCE_MS: f64 = 300.0;
+/// Timeline-seconds ahead of the cursor to prefetch when paused (≈ one VCP
+/// cycle of margin). Covers the current scan plus the next scan or two.
+const PREFETCH_LOOKAHEAD_SECS_PAUSED: f64 = 600.0;
+/// Real-time seconds of lead to keep buffered during playback; multiplied by
+/// the playback speed so fast playback fetches proportionally further ahead.
+const PREFETCH_PLAY_LEAD_SECS: f64 = 4.0;
+
 /// Fallback scan duration (in seconds) used when the true end timestamp of
 /// a scan boundary is unknown. 300 s (5 minutes) is a conservative upper
 /// bound for a single volume scan.
@@ -663,6 +677,12 @@ impl eframe::App for WorkbenchApp {
         // 9-13. COMPUTE: advance playback, sync GPU state, decide whether
         // to issue the next render, then capture network stats and persist.
         self.advance_playback();
+        // 9.5. REACTIVE ACQUISITION: now that advance_playback has settled the
+        // playback position, prefetch the archive scans that position (and a
+        // bounded lookahead) needs — debounced so scrub/zoom transients don't
+        // fetch. Enqueues into the shared download queue; the next frame's
+        // pump_download_queue (step 4) dispatches it.
+        self.pump_implicit_prefetch(ctx);
         self.sync_prev_sweep_texture();
         self.request_render_if_needed();
         self.update_network_stats();

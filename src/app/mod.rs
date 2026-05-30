@@ -5,6 +5,7 @@
 //! out keeps `main.rs` focused on the high-level frame sequence and lets
 //! each subsystem be read in isolation.
 
+pub(crate) mod acquisition_intent;
 pub(crate) mod command_dispatch;
 pub(crate) mod download;
 pub(crate) mod frame_setup;

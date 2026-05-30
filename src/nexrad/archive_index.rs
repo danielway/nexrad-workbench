@@ -125,6 +125,23 @@ impl ArchiveListing {
             .find(|(_, b)| timestamp >= b.start && timestamp < b.end)
             .map(|(file, b)| (file, *b))
     }
+
+    /// The most recent scan that starts at or before `timestamp`.
+    ///
+    /// This is the scan a playback cursor renders even when it sits in the
+    /// dead-time after a scan's last sweep or in a gap before the next scan —
+    /// matching `find_recent_scan`'s "most recent started" semantics on the
+    /// render side. `find_scan_containing` only matches when the cursor is
+    /// *within* a scan's span; this also covers the after-the-end case.
+    pub fn scan_at_or_before(&self, timestamp: i64) -> Option<(&ArchiveFileMeta, ScanBoundary)> {
+        let boundaries = self.scan_boundaries();
+        self.files
+            .iter()
+            .zip(boundaries.iter())
+            .filter(|(_, b)| b.start <= timestamp)
+            .max_by_key(|(_, b)| b.start)
+            .map(|(file, b)| (file, *b))
+    }
 }
 
 /// In-memory cache for archive listings.
