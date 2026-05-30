@@ -207,7 +207,9 @@ impl WorkbenchApp {
                     .archive_index
                     .insert(&site_id, date, listing);
 
-                // Rebuild shadow scan boundaries for the timeline
+                // Rebuild shadow scan boundaries for the timeline. Reactive
+                // prefetch re-evaluates on the next settle and will pick up the
+                // scans this listing exposes — no explicit resume needed.
                 if site_id == self.state.viz_state.site_id {
                     self.timeline.shadow_scan_boundaries = self
                         .acquisition
@@ -215,52 +217,25 @@ impl WorkbenchApp {
                         .archive_index
                         .all_boundaries_for_site(&site_id);
                 }
-
-                // Resume pending download now that the listing is available
-                if let Some(pending) = &self.acquisition.coordinator.pending_download {
-                    if pending.is_position {
-                        self.state
-                            .push_command(state::AppCommand::DownloadAtPosition);
-                    } else {
-                        self.state
-                            .push_command(state::AppCommand::DownloadSelection);
-                    }
-                }
             }
             nexrad::ListingResult::Error(msg) => {
+                // A failed listing just means prefetch finds no scans for that
+                // date; it retries on a later settle. Log rather than surface.
                 log::error!("Listing request failed: {}", msg);
-                // Abandon pending download on listing failure
-                if self.acquisition.coordinator.pending_download.is_some() {
-                    self.acquisition.coordinator.pending_download = None;
-                    self.state.status_message =
-                        format!("Download cancelled: listing fetch failed ({})", msg);
-                }
             }
         }
     }
 
-    /// Kick off or continue selection/position downloads.
+    /// Advance the in-progress download queue.
     ///
-    /// Reads the deferred-fan-out flags from the per-frame
-    /// [`CommandOutcome`] produced by [`Self::dispatch_commands`] and
-    /// drives whichever of the three paths apply (single-position
-    /// download, selection-range download, or just pumping the
-    /// in-progress queue).
+    /// Archive acquisition is reactive — [`Self::pump_implicit_prefetch`]
+    /// enqueues the scans the current view needs; this drains the queue,
+    /// dispatching downloads up to the concurrency cap. Runs whenever the
+    /// queue has work or a queue mutation (resume/retry/skip) flipped
+    /// `pump_queue`.
     pub(crate) fn pump_download_queue(&mut self, ctx: &egui::Context, outcome: &CommandOutcome) {
-        let download_type = if outcome.download_at_position {
-            Some(true)
-        } else if outcome.download_selection {
-            Some(false)
-        } else {
-            None // Just pumping existing queue, or nothing to do
-        };
-        let queue_has_work = self.acquisition.coordinator.download_queue.has_work();
-        if outcome.download_selection
-            || outcome.download_at_position
-            || outcome.pump_queue
-            || queue_has_work
-        {
-            self.process_selection_download(ctx, download_type);
+        if outcome.pump_queue || self.acquisition.coordinator.download_queue.has_work() {
+            self.advance_download_queue(ctx);
         }
     }
 

@@ -203,47 +203,6 @@ impl DownloadQueueManager {
         }
     }
 
-    /// Replace the queue with a new set of items.
-    ///
-    /// Clears all active operation IDs and sets the new queue.
-    /// Items are **not** automatically started — call `advance()` in a loop
-    /// to saturate the concurrency limit.
-    pub fn set_queue(&mut self, items: Vec<QueueItem>) {
-        self.active_operation_ids.clear();
-        self.queue = items;
-    }
-
-    /// Get progress info: `(completed_count, total_count, pending_scans, active_scans)`.
-    #[allow(clippy::type_complexity, dead_code)]
-    pub fn progress(&self) -> (u32, u32, Vec<(i64, i64)>, Vec<(i64, i64)>) {
-        let total = self.queue.len() as u32;
-        let completed = self
-            .queue
-            .iter()
-            .filter(|item| matches!(item.state, QueueItemState::Done))
-            .count() as u32;
-        let pending_scans: Vec<(i64, i64)> = self
-            .queue
-            .iter()
-            .map(|item| (item.scan_start, item.scan_end))
-            .collect();
-        let active_scans: Vec<(i64, i64)> = self
-            .active_items()
-            .map(|item| (item.scan_start, item.scan_end))
-            .collect();
-        (completed, total, pending_scans, active_scans)
-    }
-
-    /// Get current queue length.
-    pub fn len(&self) -> usize {
-        self.queue.len()
-    }
-
-    /// Get all items for read access.
-    pub fn items(&self) -> &[QueueItem] {
-        &self.queue
-    }
-
     /// Clear the queue and all tracked operation IDs.
     pub fn clear(&mut self) {
         self.queue.clear();
@@ -307,13 +266,17 @@ mod tests {
     fn enqueue_appends_and_skips_duplicate_scan_start() {
         let mut q = DownloadQueueManager::new();
         q.enqueue([item(100, Some(1)), item(400, None)]);
-        assert_eq!(q.len(), 2);
         // Same scan_start is skipped even with a different filter/file.
         q.enqueue([item(100, Some(3))]);
-        assert_eq!(q.len(), 2);
         // A new scan_start appends.
         q.enqueue([item(700, Some(2))]);
-        assert_eq!(q.len(), 3);
+
+        // Drain: each distinct scan_start dispatches exactly once.
+        let mut started = std::collections::HashSet::new();
+        while let QueueAction::StartDownload { scan_start, .. } = q.advance(false) {
+            assert!(started.insert(scan_start), "a scan was dispatched twice");
+        }
+        assert_eq!(started.len(), 3); // 100, 400, 700 — the duplicate 100 skipped
     }
 
     #[wasm_bindgen_test]

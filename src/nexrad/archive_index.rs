@@ -116,16 +116,6 @@ impl ArchiveListing {
             .collect()
     }
 
-    /// Find the single scan containing the given timestamp.
-    pub fn find_scan_containing(&self, timestamp: i64) -> Option<(&ArchiveFileMeta, ScanBoundary)> {
-        let boundaries = self.scan_boundaries();
-        self.files
-            .iter()
-            .zip(boundaries.iter())
-            .find(|(_, b)| timestamp >= b.start && timestamp < b.end)
-            .map(|(file, b)| (file, *b))
-    }
-
     /// The most recent scan that starts at or before `timestamp`.
     ///
     /// This is the scan a playback cursor renders even when it sits in the
@@ -185,12 +175,6 @@ impl ArchiveIndex {
         } else {
             log::debug!("Cached archive listing for {}/{}", site_id, date);
         }
-    }
-
-    /// Remove a specific cached listing (e.g. to force a re-fetch).
-    pub fn remove(&mut self, site_id: &str, date: &NaiveDate) {
-        let key = ArchiveIndexKey::new(site_id, *date);
-        self.listings.remove(&key);
     }
 
     /// Collect scan boundaries from all cached listings for a given site.
@@ -300,20 +284,28 @@ mod tests {
         assert_eq!(b[2].end, 1900);
     }
 
-    // --- find_scan_containing ---
+    // --- scan_at_or_before (wasm_bindgen_test so it actually executes under
+    // the node harness, unlike the plain #[test] cases above) ---
 
-    #[test]
-    fn find_scan_containing_found() {
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn scan_at_or_before_within_scan() {
         let l = listing(vec![file("a", 1000), file("b", 1300)]);
-        let result = l.find_scan_containing(1150);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().0.name, "a");
+        // Cursor inside scan a's span → a.
+        assert_eq!(l.scan_at_or_before(1150).unwrap().0.name, "a");
     }
 
-    #[test]
-    fn find_scan_containing_not_found() {
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn scan_at_or_before_in_dead_time_picks_most_recent() {
         let l = listing(vec![file("a", 1000), file("b", 1300)]);
-        assert!(l.find_scan_containing(500).is_none());
+        // Cursor at/after b's start (even past its computed end) → b, the most
+        // recent scan that has started — matching the render-side staleness rule.
+        assert_eq!(l.scan_at_or_before(1500).unwrap().0.name, "b");
+    }
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn scan_at_or_before_none_before_first() {
+        let l = listing(vec![file("a", 1000), file("b", 1300)]);
+        assert!(l.scan_at_or_before(500).is_none());
     }
 
     // --- scans_intersecting ---
@@ -330,7 +322,7 @@ mod tests {
     // --- ArchiveIndex ---
 
     #[test]
-    fn archive_index_get_and_remove() {
+    fn archive_index_get() {
         let mut idx = ArchiveIndex::new();
         let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
         assert!(idx.get("KDMX", &date).is_none());
@@ -341,8 +333,5 @@ mod tests {
         );
 
         assert!(idx.get("KDMX", &date).is_some());
-
-        idx.remove("KDMX", &date);
-        assert!(idx.get("KDMX", &date).is_none());
     }
 }

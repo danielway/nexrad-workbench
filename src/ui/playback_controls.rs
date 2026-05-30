@@ -416,41 +416,6 @@ pub(super) fn render_playback_controls(
     if advanced {
         ui.separator();
 
-        // Download button
-        let has_selection = playback.state.selection_range().is_some();
-        let download_in_progress = state.download_selection_in_progress;
-
-        if download_in_progress {
-            let label = if state.download_progress.is_batch() {
-                format!(
-                    "{} {}/{}",
-                    egui_phosphor::regular::DOWNLOAD_SIMPLE,
-                    (state.download_progress.batch_completed + 1)
-                        .min(state.download_progress.batch_total),
-                    state.download_progress.batch_total
-                )
-            } else {
-                format!("{} ...", egui_phosphor::regular::DOWNLOAD_SIMPLE)
-            };
-            ui.add_enabled(false, egui::Button::new(RichText::new(label).size(11.0)));
-        } else if has_selection {
-            if ui
-                .button(RichText::new(egui_phosphor::regular::DOWNLOAD_SIMPLE).size(14.0))
-                .on_hover_text("Download all scans in the selected time range")
-                .clicked()
-            {
-                state.push_command(crate::state::AppCommand::DownloadSelection);
-            }
-        } else if ui
-            .button(RichText::new(egui_phosphor::regular::DOWNLOAD_SIMPLE).size(14.0))
-            .on_hover_text("Download the scan at the current playback position")
-            .clicked()
-        {
-            state.push_command(crate::state::AppCommand::DownloadAtPosition);
-        }
-
-        ui.separator();
-
         // UTC/Local toggle
         let label = if state.use_local_time { "Local" } else { "UTC" };
         if ui

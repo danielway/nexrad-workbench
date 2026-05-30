@@ -724,7 +724,6 @@ impl WorkbenchApp {
         // If no more in-flight or pending, fully clear progress.
         if self.state.download_progress.in_flight_scans.is_empty()
             && self.state.download_progress.pending_scans.is_empty()
-            && !self.state.download_selection_in_progress
         {
             self.state.download_progress.clear();
         }
@@ -975,7 +974,6 @@ impl WorkbenchApp {
         self.state.session_stats.pipeline.rendering = false;
         if self.state.download_progress.in_flight_scans.is_empty()
             && self.state.download_progress.pending_scans.is_empty()
-            && !self.state.download_selection_in_progress
         {
             self.state.download_progress.clear();
         }

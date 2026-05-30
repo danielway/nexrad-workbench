@@ -48,12 +48,10 @@ impl WorkbenchApp {
     pub(crate) fn pump_implicit_prefetch(&mut self, ctx: &egui::Context) {
         // Preconditions: a worker to ingest into; archive mode (live streaming
         // owns its own acquisition, and prefetching the archive "ahead of now"
-        // is meaningless); the queue not paused; no manual bulk download in
-        // flight to contend with.
+        // is meaningless); the queue not paused.
         if !self.render.coordinator.has_worker()
             || self.live.mode_state.is_active()
             || self.acquisition.state.is_paused()
-            || self.state.download_selection_in_progress
         {
             return;
         }

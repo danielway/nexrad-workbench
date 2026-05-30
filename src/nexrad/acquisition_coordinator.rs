@@ -12,16 +12,6 @@ use crate::nexrad::types::DownloadResult;
 use crate::nexrad::ListingResult;
 use crate::nexrad::ScanBoundary;
 
-/// A deferred download waiting for one or more archive listings to arrive.
-#[derive(Clone, Debug)]
-pub(crate) struct PendingDownload {
-    /// `true` = position download, `false` = selection download.
-    pub is_position: bool,
-    /// Dates whose listings have already been re-fetched (stale-listing retry).
-    /// Each date is allowed at most one re-fetch to avoid infinite loops.
-    pub refetched_dates: std::collections::HashSet<chrono::NaiveDate>,
-}
-
 /// Owns the download pipeline: channels, queue, archive index.
 pub struct AcquisitionCoordinator {
     /// Channel for async NEXRAD download operations.
@@ -34,10 +24,6 @@ pub struct AcquisitionCoordinator {
     pub(crate) archive_index: ArchiveIndex,
     /// Record-based data facade.
     pub(crate) data_facade: DataFacade,
-    /// A download waiting for archive listings before it can build its queue.
-    /// Set when a listing is missing or stale; cleared when queue building
-    /// completes or is abandoned.
-    pub(crate) pending_download: Option<PendingDownload>,
 }
 
 #[allow(dead_code)]
@@ -52,7 +38,6 @@ impl AcquisitionCoordinator {
             download_queue: DownloadQueueManager::new(),
             archive_index: ArchiveIndex::new(),
             data_facade,
-            pending_download: None,
         }
     }
 

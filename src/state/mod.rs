@@ -83,10 +83,6 @@ pub enum AppCommand {
     RefreshTimeline { auto_position: bool },
     /// Clear the record cache.
     ClearCache,
-    /// Download all scans in the current selection range.
-    DownloadSelection,
-    /// Download the scan at the current playback position.
-    DownloadAtPosition,
     /// Start live/real-time streaming.
     StartLive,
     /// Check and run eviction after a storage operation.
@@ -145,9 +141,6 @@ pub struct AppState {
     /// Whether the next timeline load should auto-position the playback cursor.
     /// Set to true on initial startup and site changes; false for download-triggered refreshes.
     pub auto_position_on_timeline_load: bool,
-
-    /// Whether a selection download is currently in progress.
-    pub download_selection_in_progress: bool,
 
     /// State for the datetime picker popup.
     pub datetime_picker: DateTimePickerState,

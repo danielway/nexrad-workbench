@@ -9,11 +9,12 @@
 //!    (e.g. `WipeAll`, `CheckEviction`).
 //! 3. **Deferred fan-out** — recorded on [`CommandOutcome`] so the
 //!    `update()` loop can run the work after worker results land
-//!    (`DownloadSelection`, `DownloadAtPosition`, `pump_queue`).
+//!    (`pump_queue`).
 //!
-//! The three deferred flags wait for worker results because newly-decoded
-//! sweeps may add scans to the cache; running the download/pump path
-//! against that fresh state avoids issuing duplicate downloads.
+//! The deferred `pump_queue` flag waits for worker results because
+//! newly-decoded sweeps may add scans to the cache; running the queue pump
+//! against that fresh state avoids issuing duplicate downloads. (Archive
+//! acquisition itself is reactive — see `pump_implicit_prefetch`.)
 
 use crate::{state, WorkbenchApp};
 use eframe::egui;
@@ -24,10 +25,6 @@ use eframe::egui;
 /// so the download/queue path sees the latest cache state.
 #[derive(Default)]
 pub(crate) struct CommandOutcome {
-    /// Kick off a download of every scan in the selection range.
-    pub download_selection: bool,
-    /// Kick off a single download at the current playback cursor.
-    pub download_at_position: bool,
     /// Acquisition queue state changed (resume / retry / skip); pump it
     /// so newly-unblocked operations can advance this frame.
     pub pump_queue: bool,
@@ -66,10 +63,6 @@ impl WorkbenchApp {
 
             // ---- Live mode --------------------------------------------
             AppCommand::StartLive => self.start_live_mode(ctx),
-
-            // ---- Downloads (deferred to after worker results) ---------
-            AppCommand::DownloadSelection => outcome.download_selection = true,
-            AppCommand::DownloadAtPosition => outcome.download_at_position = true,
 
             // ---- Queue management -------------------------------------
             // Mutations that may unblock work flip `pump_queue` so the
