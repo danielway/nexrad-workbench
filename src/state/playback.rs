@@ -7,6 +7,12 @@
 /// in pixels per second.
 pub const MICRO_ZOOM_THRESHOLD: f64 = 1.0;
 
+/// How close (wall-clock seconds) the cursor must be to "now" for the timeline
+/// to treat it as the live edge. Used by click-to-go-live, play-at-edge, and
+/// the LIVE-handle render state. Time-based (not pixel-based) so behavior is
+/// independent of timeline zoom.
+pub const LIVE_EDGE_THRESHOLD_SECS: f64 = 90.0;
+
 /// Playback mode derived from timeline zoom level.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PlaybackMode {
@@ -425,6 +431,12 @@ impl PlaybackState {
     /// Set playback position (convenience method).
     pub fn set_playback_position(&mut self, position: f64) {
         self.time_model.seek_to(position);
+    }
+
+    /// True when the cursor sits within [`LIVE_EDGE_THRESHOLD_SECS`] of
+    /// wall-clock now — i.e. parked at the live edge of the timeline.
+    pub fn is_at_live_edge(&self) -> bool {
+        (TimeModel::wall_clock_time() - self.playback_position()).abs() <= LIVE_EDGE_THRESHOLD_SECS
     }
 
     /// Visible time width in seconds, using the real timeline widget width.

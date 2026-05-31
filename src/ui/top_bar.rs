@@ -124,7 +124,7 @@ fn draw_top_bar(
                     }
                 }
 
-                render_mode_badge(ui, state, live, playback);
+                render_mode_badge(ui, live, playback);
 
                 // Status message (Idle/Archive only — Live has its own trailing
                 // text with chunk counts/countdown).
@@ -578,9 +578,8 @@ fn format_age(age_ms: f64) -> String {
 /// preserved.
 pub(super) fn render_mode_badge(
     ui: &mut egui::Ui,
-    state: &mut AppState,
     live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
+    playback: &crate::subsystem::Playback,
 ) {
     let mode = live.app_mode;
     let color = mode.color();
@@ -618,44 +617,15 @@ pub(super) fn render_mode_badge(
                 ui.label(RichText::new(mode.label()).size(13.0).strong().color(color));
             });
         });
-    let pill_response = inner.response.interact(egui::Sense::click());
-    if pill_response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-    }
+    // Indicator-only: the badge reports the current mode. Entering/leaving Live
+    // happens through the timeline (click the now-line, press play at the live
+    // edge, or the Go-live button) — not through this pill.
     let hover_text = match mode {
-        AppMode::Live => "Streaming live — click to manage",
-        AppMode::Archive => "Browsing archive — click to go live",
-        AppMode::Idle => "No data loaded — click to go live",
+        AppMode::Live => "Streaming live",
+        AppMode::Archive => "Browsing archive — go to now to stream",
+        AppMode::Idle => "No data loaded",
     };
-    let pill_response = pill_response.on_hover_text(hover_text);
-
-    egui::Popup::menu(&pill_response).show(|ui| {
-        ui.set_min_width(160.0);
-        if mode == AppMode::Live {
-            if ui
-                .button(format!("{} Stop streaming", egui_phosphor::regular::STOP))
-                .clicked()
-            {
-                live.mode_state
-                    .stop(crate::state::LiveExitReason::UserStopped);
-                playback.state.time_model.disable_realtime_lock();
-                playback.state.playing = false;
-                state.status_message = live
-                    .mode_state
-                    .last_exit_reason
-                    .map(|r| r.message().to_string())
-                    .unwrap_or_default();
-                ui.close();
-            }
-        } else if ui
-            .button(format!("{} Go live", egui_phosphor::regular::BROADCAST))
-            .clicked()
-        {
-            state.push_command(AppCommand::StartLive);
-            playback.state.speed = crate::state::PlaybackSpeed::Realtime;
-            ui.close();
-        }
-    });
+    inner.response.on_hover_text(hover_text);
 
     // Live-only trailing detail: chunk count, countdown, or elapsed acquire time.
     if mode == AppMode::Live {

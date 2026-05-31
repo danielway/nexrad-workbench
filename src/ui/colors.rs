@@ -129,6 +129,10 @@ pub mod timeline {
     pub const PREV_ACTIVE_SWEEP: Color32 = Color32::from_rgb(160, 200, 255);
     /// "Now" marker (current wall-clock time).
     pub const NOW_MARKER: Color32 = Color32::from_rgb(180, 200, 255);
+    /// "Click to go live" call-to-action pill at the now-line (Archive/Idle).
+    pub const LIVE_PILL_CTA: Color32 = Color32::from_rgb(120, 200, 120);
+    /// Live status color for the now-line / "LIVE" badge when streaming.
+    pub const LIVE_ACTIVE: Color32 = Color32::from_rgb(255, 80, 80);
     /// Selection range boundary label color.
     pub const SELECTION_LABEL: Color32 = Color32::from_rgb(140, 180, 255);
     /// Track separator line color.

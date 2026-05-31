@@ -198,8 +198,9 @@ pub(super) fn render_playback_controls(
         render_live_indicator(ui, state, live, playback);
         ui.separator();
     }
-    // Live entry consolidated into the top-bar mode pill — clicking the
-    // pill opens the Go Live / Stop streaming menu.
+    // Live entry emerges from the timeline: press play at the live edge, click
+    // the now-line, or use the Go-live (crosshair) button below. The top-bar
+    // mode pill is now an indicator only.
 
     // Play/Stop button — disabled in Idle (no data to play).
     let play_text = if playback.state.playing {
@@ -216,9 +217,11 @@ pub(super) fn render_playback_controls(
         .clicked()
     {
         if playback.state.playing {
-            // Stop - also exits live mode if active
+            // Pause. If live, exit and freeze the current frame (drop to
+            // Archive): disabling the realtime lock stops `advance()` from
+            // overwriting the position, and playing=false stops it advancing.
             if live.mode_state.is_active() {
-                live.mode_state.stop(LiveExitReason::UserStopped);
+                live.mode_state.stop(LiveExitReason::UserPaused);
                 playback.state.time_model.disable_realtime_lock();
                 state.status_message = live
                     .mode_state
@@ -227,8 +230,13 @@ pub(super) fn render_playback_controls(
                     .unwrap_or_default();
             }
             playback.state.playing = false;
+        } else if !live.mode_state.is_active() && playback.state.is_at_live_edge() {
+            // Parked at the live edge — pressing play goes live rather than
+            // replaying the last archive frames.
+            state.push_command(crate::state::AppCommand::StartLive);
+            playback.state.speed = PlaybackSpeed::Realtime;
         } else {
-            // Play
+            // Ordinary playback from an archive position.
             playback.state.playing = true;
         }
     }
@@ -326,34 +334,23 @@ pub(super) fn render_playback_controls(
         }
     }
 
-    // "Now" button — jump to current wall-clock time. Available even in
-    // Idle so the user can reorient the cursor before data is loaded.
+    // "Go live" button — jump to now and start streaming. This is the
+    // "I'm lost, take me to now" affordance for when the cursor is far in the
+    // past, so it must re-center the view here (start_live_mode only re-centers
+    // when it bumps zoom). It does NOT set position/lock/playing itself —
+    // start_live_mode owns all of that and entry is async (AcquiringLock).
     if show_forward_seek
         && ui
             .add(egui::Button::new(
                 RichText::new(egui_phosphor::regular::CROSSHAIR).size(14.0),
             ))
-            .on_hover_text("Jump to current time")
+            .on_hover_text("Go live")
             .clicked()
     {
         let now = TimeModel::wall_clock_time();
-
-        // Exit live mode if active
-        if live.mode_state.is_active() {
-            live.mode_state.stop(LiveExitReason::UserSeeked);
-            playback.state.time_model.disable_realtime_lock();
-        }
-
-        // Stop playback
-        playback.state.playing = false;
-
-        // Clear bounds so seek_to doesn't clamp
-        playback.state.time_model.clear_bounds();
-        playback.state.clear_selection();
-
-        // Jump playback position and center the view
-        playback.state.time_model.playback_position = now;
         playback.state.center_view_on(now);
+        state.push_command(crate::state::AppCommand::StartLive);
+        playback.state.speed = PlaybackSpeed::Realtime;
     }
 
     ui.separator();

@@ -597,12 +597,16 @@ pub(super) fn render_timeline(
     }
 
     // Draw selection marker (playback cursor) and "now" marker
+    let is_live = live.mode_state.is_active();
+    let at_edge = !is_live && playback.state.is_at_live_edge();
     render_playback_cursor(
         &painter,
         &overlay_rect,
         playback.state.playback_position(),
         view_start,
         zoom,
+        is_live,
+        at_edge,
     );
 
     // Draw selection range labels (boundaries and duration)

@@ -63,12 +63,19 @@ pub(super) fn render_tick_marks(
 }
 
 /// Draw the playback position cursor (selection marker) and "now" wall-clock marker.
+///
+/// `is_live` is true while streaming (renders the now-line as a bold LIVE status
+/// marker); `at_edge` is true when the cursor sits within the live-edge band but
+/// is not yet streaming (renders a "click here to go live" call-to-action pill).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_playback_cursor(
     painter: &Painter,
     overlay_rect: &Rect,
     selected_ts: f64,
     view_start: f64,
     zoom: f64,
+    is_live: bool,
+    at_edge: bool,
 ) {
     let ts_to_x = |ts: f64| -> f32 { overlay_rect.left() + ((ts - view_start) * zoom) as f32 };
 
@@ -106,49 +113,93 @@ pub(super) fn render_playback_cursor(
         let now_x = ts_to_x(now_ts);
 
         if now_x >= overlay_rect.left() && now_x <= overlay_rect.right() {
-            let now_color = tl_colors::NOW_MARKER;
-
-            painter.line_segment(
-                [
-                    Pos2::new(now_x, overlay_rect.top()),
-                    Pos2::new(now_x, overlay_rect.top() + 4.0),
-                ],
-                Stroke::new(1.5, now_color),
-            );
-            painter.line_segment(
-                [
-                    Pos2::new(now_x, overlay_rect.bottom() - 4.0),
-                    Pos2::new(now_x, overlay_rect.bottom()),
-                ],
-                Stroke::new(1.5, now_color),
-            );
-            painter.line_segment(
-                [
-                    Pos2::new(now_x, overlay_rect.top() + 4.0),
-                    Pos2::new(now_x, overlay_rect.bottom() - 4.0),
-                ],
-                Stroke::new(
-                    0.5,
-                    Color32::from_rgba_unmultiplied(
-                        now_color.r(),
-                        now_color.g(),
-                        now_color.b(),
-                        100,
+            if is_live {
+                // Streaming: bold solid LIVE status line + "● LIVE" badge.
+                let live_color = tl_colors::LIVE_ACTIVE;
+                painter.line_segment(
+                    [
+                        Pos2::new(now_x, overlay_rect.top()),
+                        Pos2::new(now_x, overlay_rect.bottom()),
+                    ],
+                    Stroke::new(2.0, live_color),
+                );
+                draw_now_pill(painter, overlay_rect, now_x, "● LIVE", live_color);
+            } else {
+                // Archive/Idle: subtle crosshair "now" marker.
+                let now_color = tl_colors::NOW_MARKER;
+                painter.line_segment(
+                    [
+                        Pos2::new(now_x, overlay_rect.top()),
+                        Pos2::new(now_x, overlay_rect.top() + 4.0),
+                    ],
+                    Stroke::new(1.5, now_color),
+                );
+                painter.line_segment(
+                    [
+                        Pos2::new(now_x, overlay_rect.bottom() - 4.0),
+                        Pos2::new(now_x, overlay_rect.bottom()),
+                    ],
+                    Stroke::new(1.5, now_color),
+                );
+                painter.line_segment(
+                    [
+                        Pos2::new(now_x, overlay_rect.top() + 4.0),
+                        Pos2::new(now_x, overlay_rect.bottom() - 4.0),
+                    ],
+                    Stroke::new(
+                        0.5,
+                        Color32::from_rgba_unmultiplied(
+                            now_color.r(),
+                            now_color.g(),
+                            now_color.b(),
+                            100,
+                        ),
                     ),
-                ),
-            );
-            let d = 3.0;
-            let diamond = vec![
-                Pos2::new(now_x, overlay_rect.bottom() - d),
-                Pos2::new(now_x + d, overlay_rect.bottom()),
-                Pos2::new(now_x, overlay_rect.bottom() + d),
-                Pos2::new(now_x - d, overlay_rect.bottom()),
-            ];
-            painter.add(egui::Shape::convex_polygon(
-                diamond,
-                now_color,
-                Stroke::NONE,
-            ));
+                );
+                let d = 3.0;
+                let diamond = vec![
+                    Pos2::new(now_x, overlay_rect.bottom() - d),
+                    Pos2::new(now_x + d, overlay_rect.bottom()),
+                    Pos2::new(now_x, overlay_rect.bottom() + d),
+                    Pos2::new(now_x - d, overlay_rect.bottom()),
+                ];
+                painter.add(egui::Shape::convex_polygon(
+                    diamond,
+                    now_color,
+                    Stroke::NONE,
+                ));
+
+                // When parked at the live edge, prompt the user that clicking
+                // here goes live (the click is handled by the live-edge band in
+                // handle_timeline_interaction).
+                if at_edge {
+                    draw_now_pill(
+                        painter,
+                        overlay_rect,
+                        now_x,
+                        "▸ LIVE",
+                        tl_colors::LIVE_PILL_CTA,
+                    );
+                }
+            }
         }
     }
+}
+
+/// Draw a small labeled pill anchored at the now-line, near the top of the
+/// timeline. Used for both the "click to go live" CTA and the live status badge.
+fn draw_now_pill(painter: &Painter, overlay_rect: &Rect, now_x: f32, text: &str, color: Color32) {
+    let font = egui::FontId::proportional(9.0);
+    let galley = painter.layout_no_wrap(text.to_string(), font, Color32::WHITE);
+    let pad = egui::vec2(5.0, 1.5);
+    let size = galley.size() + pad * 2.0;
+    // Anchor just right of the line so it doesn't cover the marker itself,
+    // clamped to stay within the timeline.
+    let mut left = now_x + 3.0;
+    if left + size.x > overlay_rect.right() {
+        left = now_x - 3.0 - size.x;
+    }
+    let rect = Rect::from_min_size(Pos2::new(left, overlay_rect.top() + 1.0), size);
+    painter.rect_filled(rect, 3.0, color);
+    painter.galley(rect.min + pad, galley, Color32::WHITE);
 }

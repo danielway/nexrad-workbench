@@ -45,7 +45,9 @@ pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
 pub use mping::MpingState;
-pub use playback::{LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel};
+pub use playback::{
+    LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel, LIVE_EDGE_THRESHOLD_SECS,
+};
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
 pub use render_cache::{PrevSweepCacheKey, RenderCache};

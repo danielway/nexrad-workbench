@@ -95,8 +95,7 @@ impl LivePhase {
 /// Reason why live mode was exited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LiveExitReason {
-    /// User pressed pause (reserved for future pause-vs-stop distinction).
-    #[allow(dead_code)]
+    /// User paused while live — stop streaming and freeze the current frame.
     UserPaused,
     /// User clicked on timeline or used seek controls.
     UserSeeked,

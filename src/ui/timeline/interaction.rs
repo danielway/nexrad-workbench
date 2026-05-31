@@ -56,6 +56,20 @@ pub(super) fn handle_timeline_interaction(
 
     if response.clicked() && !shift_held {
         if let Some(pos) = response.interact_pointer_pos() {
+            let clicked_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
+
+            // Clicking within the live-edge band snaps to now and goes live —
+            // the symmetric inverse of the click-to-exit seek below.
+            if !live.mode_state.is_active()
+                && (crate::state::TimeModel::wall_clock_time() - clicked_ts).abs()
+                    <= crate::state::LIVE_EDGE_THRESHOLD_SECS
+            {
+                playback.state.clear_selection();
+                state.push_command(crate::state::AppCommand::StartLive);
+                playback.state.speed = crate::state::PlaybackSpeed::Realtime;
+                return; // don't also treat this as a seek
+            }
+
             if live.mode_state.is_active() {
                 live.mode_state.stop(LiveExitReason::UserSeeked);
                 playback.state.time_model.disable_realtime_lock();
@@ -65,8 +79,6 @@ pub(super) fn handle_timeline_interaction(
                     .map(|r| r.message().to_string())
                     .unwrap_or_default();
             }
-
-            let clicked_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
 
             playback.state.set_playback_position(clicked_ts);
             playback.state.clear_selection();

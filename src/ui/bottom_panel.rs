@@ -56,9 +56,11 @@ fn draw_bottom_panel(
     let has_focus = ctx.memory(|m| m.focused().is_some());
     if space_pressed && !has_focus {
         if playback.state.playing {
-            // Stop - also exits live mode if active
+            // Pause. If live, exit and freeze the current frame (drop to
+            // Archive): disabling the realtime lock + playing=false leaves the
+            // cursor parked at the last wall-clock frame.
             if live.mode_state.is_active() {
-                live.mode_state.stop(LiveExitReason::UserStopped);
+                live.mode_state.stop(LiveExitReason::UserPaused);
                 playback.state.time_model.disable_realtime_lock();
                 state.status_message = live
                     .mode_state
@@ -67,11 +69,15 @@ fn draw_bottom_panel(
                     .unwrap_or_default();
             }
             playback.state.playing = false;
-        } else {
-            // Only allow playback if zoom permits
-            if playback.state.is_playback_allowed() {
-                playback.state.playing = true;
-            }
+        } else if !live.mode_state.is_active() && playback.state.is_at_live_edge() {
+            // Parked at the live edge — go live rather than replay archive.
+            // Not gated by is_playback_allowed(); start_live_mode enforces its
+            // own minimum zoom.
+            state.push_command(crate::state::AppCommand::StartLive);
+            playback.state.speed = PlaybackSpeed::Realtime;
+        } else if playback.state.is_playback_allowed() {
+            // Only allow ordinary playback if zoom permits.
+            playback.state.playing = true;
         }
     }
 
