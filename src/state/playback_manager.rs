@@ -343,6 +343,91 @@ pub(crate) fn resolve_active_sweep_target(
     ))
 }
 
+/// What the canvas should display this frame.
+///
+/// Mode-agnostic: live and archive are *sources* feeding this decision, not
+/// mutually-exclusive owners of the canvas. The canvas only ever shows one
+/// sweep, so the live↔cache merge that [`crate::state::timeline_view`] does
+/// per-volume collapses here to a single precedence choice — the same rule as
+/// [`crate::state::timeline_view::merge_cached_into_live`]: the live session's
+/// in-progress cut wins for *its own* elevation; cached data answers for every
+/// other (elevation, position) the user can select.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum DesiredDisplay {
+    /// Render the in-progress live partial for the actively-collecting cut.
+    /// Produced by the chunk-ingest → `render_live` → `LiveDecoded` path.
+    LivePartial { elevation_number: u8 },
+    /// Render a finalized/cached sweep blob (worker decode → `Decoded` upload).
+    Cached(crate::state::SweepIdentity),
+    /// Nothing matches the user's intent. Callers must not blindly blank: a
+    /// valid live partial may legitimately hold the canvas (see the caller's
+    /// `Blank` handling).
+    Blank,
+}
+
+/// Resolve what the canvas should display, merging the live in-progress
+/// accumulator with the cached timeline.
+///
+/// Precedence (mirrors `merge_cached_into_live`):
+/// 1. If the live session is actively collecting cut `E` in volume `V`, and
+///    the user's intent points at *that same cut* (the resolved scan is `V`
+///    and the selected elevation is `E`, or selection is `Latest`), the live
+///    partial wins → [`DesiredDisplay::LivePartial`].
+/// 2. Otherwise the cache answers: [`resolve_active_sweep_target`] →
+///    [`DesiredDisplay::Cached`] when a sweep matches, else
+///    [`DesiredDisplay::Blank`].
+///
+/// `live_cut` is `Some((elevation, anchor_key_ms))` only while streaming and
+/// only when the live volume is fully known — pass
+/// `LiveModeState::current_in_progress_elevation` zipped with the anchor's
+/// `scan_key.scan_start.0` (rounded millis, matching how `timeline_view`
+/// identifies the live volume). `None` collapses the resolver to the cache
+/// path.
+pub(crate) fn resolve_desired_display(
+    site_id: &str,
+    playback_position: f64,
+    elevation_selection: &crate::state::ElevationSelection,
+    product: crate::state::RadarProduct,
+    timeline: &RadarTimeline,
+    max_scan_age_secs: f64,
+    live_cut: Option<(u8, i64)>,
+) -> DesiredDisplay {
+    // Does the user's intent point at the cut the live session is actively
+    // collecting? Only then does the live partial win — anything else reads
+    // from cache, which is what makes a completed cut visible during live.
+    if let Some((elev, anchor_ms)) = live_cut {
+        if let Some(scan) = timeline.find_recent_scan(playback_position, max_scan_age_secs) {
+            let scan_ms = (scan.key_timestamp * 1000.0).round() as i64;
+            let intent_is_live_cut = scan_ms == anchor_ms
+                && match elevation_selection {
+                    crate::state::ElevationSelection::Fixed {
+                        elevation_number, ..
+                    } => *elevation_number == elev,
+                    // The collecting cut *is* the latest, so `Latest` always
+                    // points at it while the resolved scan is the live volume.
+                    crate::state::ElevationSelection::Latest => true,
+                };
+            if intent_is_live_cut {
+                return DesiredDisplay::LivePartial {
+                    elevation_number: elev,
+                };
+            }
+        }
+    }
+
+    match resolve_active_sweep_target(
+        site_id,
+        playback_position,
+        elevation_selection,
+        product,
+        timeline,
+        max_scan_age_secs,
+    ) {
+        Some(identity) => DesiredDisplay::Cached(identity),
+        None => DesiredDisplay::Blank,
+    }
+}
+
 /// Build the elevation list from a scan's VCP data (extracted, static, or sweep-based).
 ///
 /// The displayed `angle` is the VCP target (commanded) angle — the cut's
@@ -706,5 +791,132 @@ mod tests {
         .expect("expected Some");
         // ScanKey round-trips through UnixMillis (ms precision).
         assert!((id.scan_timestamp_secs() - 1000.123).abs() < 1e-3);
+    }
+
+    // ── resolve_desired_display (live↔cache merge precedence) ───────────────
+
+    /// A single cached scan keyed at 1000s with elev 1 cached as reflectivity.
+    /// Anchor key-millis for that volume is 1_000_000.
+    fn live_scenario_timeline() -> RadarTimeline {
+        timeline_with(vec![scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        )])
+    }
+
+    #[wasm_bindgen_test]
+    fn live_cut_wins_for_its_own_elevation() {
+        // Live is collecting elev 2 in the live volume; user selects elev 2.
+        let tl = live_scenario_timeline();
+        let d = resolve_desired_display(
+            "KDMX",
+            1005.0,
+            &fixed(2),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+            Some((2, 1_000_000)),
+        );
+        assert_eq!(
+            d,
+            DesiredDisplay::LivePartial {
+                elevation_number: 2
+            }
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn cached_wins_for_completed_cut_during_live() {
+        // The reload bug: live collecting elev 2, user viewing completed elev 1.
+        // The completed cut must resolve to its cached blob, not blank.
+        let tl = live_scenario_timeline();
+        let d = resolve_desired_display(
+            "KDMX",
+            1005.0,
+            &fixed(1),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+            Some((2, 1_000_000)),
+        );
+        match d {
+            DesiredDisplay::Cached(id) => assert_eq!(id.elevation_number, 1),
+            other => panic!("expected Cached(elev 1), got {:?}", other),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn latest_selects_live_partial_during_live() {
+        // `Latest` always points at the actively-collecting cut while the
+        // resolved scan is the live volume.
+        let tl = live_scenario_timeline();
+        let d = resolve_desired_display(
+            "KDMX",
+            1005.0,
+            &ElevationSelection::Latest,
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+            Some((3, 1_000_000)),
+        );
+        assert_eq!(
+            d,
+            DesiredDisplay::LivePartial {
+                elevation_number: 3
+            }
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn cached_when_not_live() {
+        let tl = live_scenario_timeline();
+        let d = resolve_desired_display(
+            "KDMX",
+            1005.0,
+            &fixed(1),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+            None,
+        );
+        assert!(matches!(d, DesiredDisplay::Cached(_)));
+    }
+
+    #[wasm_bindgen_test]
+    fn blank_when_no_live_and_no_cache() {
+        let tl = timeline_with(vec![]);
+        let d = resolve_desired_display(
+            "KDMX",
+            1005.0,
+            &fixed(1),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+            None,
+        );
+        assert_eq!(d, DesiredDisplay::Blank);
+    }
+
+    #[wasm_bindgen_test]
+    fn live_cut_requires_matching_volume() {
+        // Live is collecting elev 1, but its anchor volume (keyed at 2000s)
+        // differs from the scan the user is parked on (1000s). The partial
+        // must NOT paint onto the wrong volume — fall through to the cache.
+        let tl = live_scenario_timeline();
+        let d = resolve_desired_display(
+            "KDMX",
+            1005.0,
+            &fixed(1),
+            RadarProduct::Reflectivity,
+            &tl,
+            MAX_AGE,
+            Some((1, 2_000_000)),
+        );
+        match d {
+            DesiredDisplay::Cached(id) => assert_eq!(id.elevation_number, 1),
+            other => panic!("expected Cached(elev 1), got {:?}", other),
+        }
     }
 }

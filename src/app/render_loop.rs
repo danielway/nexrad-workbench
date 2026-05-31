@@ -12,12 +12,12 @@ use crate::{data, state, WorkbenchApp, MAX_SCAN_AGE_SECS, PREFETCH_LOOKAHEAD_SEC
 impl WorkbenchApp {
     /// Auto-load scans when scrubbing the timeline and prefetch upcoming sweeps.
     pub(crate) fn advance_playback(&mut self) {
-        // Live mode drives rendering via ChunkIngested/LiveDecoded — skip playback-driven renders.
-        if self.live.mode_state.is_active() {
-            // Live owns acquisition; the archive "acquiring" hint never applies.
-            self.state.viz_state.acquiring = false;
-            return;
-        }
+        // Live mode no longer skips playback-driven renders: the unified
+        // resolver (`request_worker_render`) runs in both modes so a cached
+        // cut paints while streaming. Live still owns *acquisition* (the
+        // archive "acquiring" hint never applies) and the active-scan tracking
+        // + prefetch-next-sweep path below stay archive-only.
+        let live_active = self.live.mode_state.is_active();
         // Rebuild macro frame list when dirty (elevation selection, bounds, or scan count changed)
         if self.playback.state.playback_mode() == crate::state::PlaybackMode::Macro {
             let mp = &self.playback.state.macro_playback;
@@ -142,7 +142,12 @@ impl WorkbenchApp {
                                 scan_ts,
                             );
                             let scan_changed = active_ts != Some(scan_ts);
-                            if scan_changed {
+                            // The live ingest path owns active-scan tracking
+                            // while streaming; only archive playback mutates it
+                            // here (and `force_fresh_render` would fight live
+                            // dedup). The unified `request_worker_render` below
+                            // still runs in both modes.
+                            if scan_changed && !live_active {
                                 if !elev_nums.is_empty() {
                                     self.set_active_scan(scan_key, elev_nums, scan_ts);
                                 } else {
@@ -161,13 +166,16 @@ impl WorkbenchApp {
                                     .map(|k| k.scan_start.as_secs_f64());
                             }
                             self.request_worker_render();
-                            if self.state.viz_state.volume_3d_enabled {
+                            if self.state.viz_state.volume_3d_enabled && !live_active {
                                 self.request_worker_render_volume();
                             }
                         }
                     }
                     None => {
-                        if active_ts.is_some() {
+                        // Don't blank during live: an on-GPU live partial has
+                        // no cached scan backing it and must survive a frame
+                        // where the live volume isn't in the timeline yet.
+                        if active_ts.is_some() && !live_active {
                             self.clear_display_no_scan();
                         }
                     }
@@ -180,6 +188,7 @@ impl WorkbenchApp {
         // is ready when the boundary is crossed, reducing perceived stutter.
         // Skip in macro mode — frame jumps are instant and the frame list handles sequencing.
         if self.playback.state.playing
+            && !live_active
             && self.render.coordinator.has_worker()
             && self.playback.state.playback_mode() == crate::state::PlaybackMode::Micro
         {
@@ -241,8 +250,9 @@ impl WorkbenchApp {
         // but a reactive fetch covers the cursor, flag it so the canvas shows
         // an "Acquiring…" hint instead of reading as broken (PRODUCT.md §7.2).
         let pos = self.playback.state.playback_position();
-        self.state.viz_state.acquiring =
-            self.state.viz_state.displayed.is_none() && self.position_is_being_acquired(pos);
+        self.state.viz_state.acquiring = !live_active
+            && self.state.viz_state.displayed.is_none()
+            && self.position_is_being_acquired(pos);
     }
 
     /// Whether an archive fetch covering `playback_secs` is in flight or being

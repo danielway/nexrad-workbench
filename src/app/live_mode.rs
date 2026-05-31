@@ -62,38 +62,91 @@ impl WorkbenchApp {
 
     /// Send a render request to the worker for the current scan/elevation/product.
     ///
-    /// Honours the user's intent exactly: the resolver returns either an
-    /// exact-match [`SweepIdentity`] (sweep present in the scan covering
-    /// `playback_position`, with the selected product available) or `None`
-    /// (blank the canvas). No fuzzy elevation fallback in any mode — if the
-    /// user picks elevation 5° and the resolved scan only has 1°/3°/7°, the
-    /// canvas blanks rather than snapping to a neighbor.
+    /// Mode-agnostic: the unified resolver merges the live in-progress
+    /// accumulator with the cached timeline and returns one of three intents.
+    /// Live and archive are *sources* feeding this decision, not exclusive
+    /// owners of the canvas — so a cached completed cut paints even while
+    /// streaming (the live partial only wins for the cut it's collecting).
+    ///
+    /// Honours the user's intent exactly: no fuzzy elevation fallback — if the
+    /// user picks 5° and the resolved scan only has 1°/3°/7°, the canvas blanks
+    /// rather than snapping to a neighbor.
     pub(crate) fn request_worker_render(&mut self) {
-        let target = state::playback_manager::resolve_active_sweep_target(
+        use state::playback_manager::DesiredDisplay;
+
+        let desired = state::playback_manager::resolve_desired_display(
             &self.state.viz_state.site_id,
             self.playback.state.playback_position(),
             &self.state.viz_state.elevation_selection,
             self.state.viz_state.product,
             &self.timeline.scans,
             MAX_SCAN_AGE_SECS,
+            self.live_render_sources(),
         );
 
-        let Some(identity) = target else {
-            // No sweep matches the intent. Live mode may legitimately have
-            // partial in-progress data on the GPU (driven by
-            // `handle_live_decoded_outcome`); leave it untouched. Archive
-            // mode has no other producer, so blank the canvas.
-            if !self.live.mode_state.is_active() {
-                self.clear_display_no_sweep();
+        match desired {
+            DesiredDisplay::LivePartial { .. } => {
+                // The chunk-ingest → `render_live` path already owns the GPU
+                // for the actively-collecting cut. Don't request a cached blob
+                // for it and don't blank — leave the live partial in place.
             }
-            return;
-        };
-
-        if self.render.coordinator.request_render_for(identity)
-            && !self.state.session_stats.pipeline.processing
-        {
-            self.state.session_stats.pipeline.processing = true;
+            DesiredDisplay::Cached(identity) => {
+                if self.render.coordinator.request_render_for(identity)
+                    && !self.state.session_stats.pipeline.processing
+                {
+                    self.state.session_stats.pipeline.processing = true;
+                }
+            }
+            DesiredDisplay::Blank => {
+                // Don't clear a valid live partial: in a between-chunks frame
+                // the in-progress elevation can momentarily read `None` and
+                // resolve to `Blank` even though the GPU holds a good `live|*`
+                // sweep. Only blank when archive owns the canvas.
+                let protecting_live_partial =
+                    self.live.mode_state.is_active() && self.gpu_holds_live_sweep();
+                if !protecting_live_partial {
+                    self.clear_display_no_sweep();
+                }
+            }
         }
+    }
+
+    /// The live cut feeding [`state::playback_manager::resolve_desired_display`]:
+    /// `Some((collecting_elevation, anchor_key_ms))` while streaming with a
+    /// fully-known volume, else `None` (which collapses the resolver to the
+    /// cache path). Shared by `request_worker_render` and the `Decoded` upload
+    /// gate in `handle_decoded_outcome`.
+    pub(crate) fn live_render_sources(&self) -> Option<(u8, i64)> {
+        if !self.live.mode_state.is_active() {
+            return None;
+        }
+        let anchor_ms = self
+            .live
+            .mode_state
+            .current_volume
+            .as_ref()
+            .map(|a| a.scan_key.scan_start.0);
+        self.live
+            .mode_state
+            .current_in_progress_elevation
+            .zip(anchor_ms)
+    }
+
+    /// Whether the main GPU texture currently holds a live partial sweep
+    /// (`current_sweep_id` like `live|{elev}`, set by
+    /// `handle_live_decoded_outcome`). Lets `request_worker_render` avoid
+    /// blanking a valid partial during a between-chunks frame.
+    fn gpu_holds_live_sweep(&self) -> bool {
+        self.gpu
+            .gpu
+            .as_ref()
+            .and_then(|renderer| {
+                renderer
+                    .lock()
+                    .ok()
+                    .and_then(|r| r.current_sweep_id().map(|id| id.starts_with("live|")))
+            })
+            .unwrap_or(false)
     }
 
     /// Request volume render (all elevations for ray marching).

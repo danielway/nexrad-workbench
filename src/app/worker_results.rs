@@ -619,15 +619,24 @@ impl WorkbenchApp {
             result.context.elevation_number,
             result.product.clone(),
         );
-        let current_target = state::playback_manager::resolve_active_sweep_target(
+        // The result is for the main slot iff the unified resolver would
+        // currently ask for exactly this cached sweep. When live is collecting
+        // this cut the resolver returns `LivePartial`, so a cached `Decoded`
+        // for it is *not* current and stays cached for prev-sweep use — it
+        // never clobbers the live partial. This precedence replaces the old
+        // `skip_gpu_upload = is_active()` mode flag: completed cached cuts now
+        // upload during live, the actively-collecting cut does not.
+        let desired = state::playback_manager::resolve_desired_display(
             &self.state.viz_state.site_id,
             self.playback.state.playback_position(),
             &self.state.viz_state.elevation_selection,
             self.state.viz_state.product,
             &self.timeline.scans,
             MAX_SCAN_AGE_SECS,
+            self.live_render_sources(),
         );
-        let is_current_scan = current_target.as_ref() == Some(&result_identity);
+        let is_current_scan =
+            desired == state::playback_manager::DesiredDisplay::Cached(result_identity.clone());
         if self.state.effective_sweep_animation(&self.playback.state) && !is_current_scan {
             log::debug!("[sweep-anim] cached bg decode: {}", result_sweep_id);
             // Clear pending tracker so sync_prev_sweep_texture can load from cache
@@ -638,12 +647,8 @@ impl WorkbenchApp {
             }
         }
         let t_gpu = web_time::Instant::now();
-        // In live mode, LiveDecoded drives the GPU — skip Decoded
-        // uploads so completed-elevation IDB renders don't overwrite
-        // the current partial sweep.
-        let skip_gpu_upload = self.live.mode_state.is_active();
         let mut gpu_upload_succeeded = false;
-        if is_current_scan && !skip_gpu_upload {
+        if is_current_scan {
             if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
                 if let Ok(mut r) = renderer.lock() {
                     r.update_data(
