@@ -1267,34 +1267,115 @@ fn current_timestamp_f64() -> f64 {
 
 // ── Volume number cache ────────────────────────────────────────────────
 
-/// Cache the latest volume number in localStorage for fast resume.
+/// How recent the cached volume hint must be (in seconds) for the fast-path
+/// resume to trust it. A volume is one VCP (~4–10 min); within ~20 min the true
+/// latest is only a few slots ahead, so the forward-probe walk costs far fewer
+/// list calls than the library's binary search. Past this the hint is ignored
+/// and discovery falls back to `get_latest_volume`.
+const VOLUME_HINT_MAX_AGE_SECS: f64 = 20.0 * 60.0;
+
+fn volume_cache_key(site_id: &str) -> String {
+    format!("nexrad_volume_{}", site_id)
+}
+
+/// Serialize a `(volume, cached-at seconds)` pair to the JSON form stored in
+/// localStorage. Pure — split out for testing.
+fn encode_volume_cache(volume: usize, cached_at_secs: f64) -> String {
+    format!("{{\"v\":{},\"t\":{}}}", volume, cached_at_secs)
+}
+
+/// Parse the cached volume value. Returns `(volume, cached-at seconds)` for the
+/// current JSON form. Legacy bare-number entries (older builds) carry no
+/// timestamp, so they return `None` and are simply ignored — the next Start
+/// chunk rewrites them in the new form. Pure — split out for testing.
+fn decode_volume_cache(raw: &str) -> Option<(nexrad_data::aws::realtime::VolumeIndex, f64)> {
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let v = value.get("v")?.as_u64()? as usize;
+    let t = value.get("t")?.as_f64()?;
+    if (1..=999).contains(&v) {
+        Some((nexrad_data::aws::realtime::VolumeIndex::new(v), t))
+    } else {
+        None
+    }
+}
+
+/// Cache the latest volume number (with the current wall-clock time) in
+/// localStorage for fast resume.
 fn cache_volume_number(site_id: &str, volume: nexrad_data::aws::realtime::VolumeIndex) {
-    let key = format!("nexrad_volume_{}", site_id);
     if let Some(window) = web_sys::window() {
         if let Ok(Some(storage)) = window.local_storage() {
-            let _ = storage.set_item(&key, &volume.as_number().to_string());
+            let payload = encode_volume_cache(volume.as_number(), current_timestamp_f64());
+            let _ = storage.set_item(&volume_cache_key(site_id), &payload);
         }
     }
 }
 
-/// Read the cached volume number for a site from localStorage.
-///
-/// Currently unused — discovery goes through `nexrad_data::aws::realtime::get_latest_volume`,
-/// which doesn't take a hint. Kept for the planned reintroduction as a fast-path hint.
-#[allow(dead_code)]
-fn get_cached_volume(site_id: &str) -> Option<nexrad_data::aws::realtime::VolumeIndex> {
-    let key = format!("nexrad_volume_{}", site_id);
+/// Read the cached volume hint for a site: the slot and its cached-at seconds.
+/// Returns `None` when absent, malformed, or in the legacy timestamp-less form.
+fn get_cached_volume_hint(site_id: &str) -> Option<(nexrad_data::aws::realtime::VolumeIndex, f64)> {
     let window = web_sys::window()?;
     let storage = window.local_storage().ok()??;
-    let raw = storage.get_item(&key).ok()??;
-    // Tolerate the legacy "VolumeIndex(N)" debug format that older builds wrote.
-    let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
-    let n = digits.parse::<usize>().ok()?;
-    if (1..=999).contains(&n) {
-        Some(nexrad_data::aws::realtime::VolumeIndex::new(n))
-    } else {
-        None
+    let raw = storage.get_item(&volume_cache_key(site_id)).ok()??;
+    decode_volume_cache(&raw)
+}
+
+/// Decide whether the forward-probe should advance from the current candidate to
+/// the next slot, given each slot's newest-chunk S3 upload time (seconds). We
+/// advance only while the next slot is strictly newer; a not-yet-written or
+/// recycled-older slot stops the walk. Pure — split out for testing.
+fn probe_should_advance(candidate_upload_secs: f64, next_upload_secs: Option<f64>) -> bool {
+    matches!(next_upload_secs, Some(next) if next > candidate_upload_secs)
+}
+
+/// Newest-chunk S3 upload time (seconds) for a volume slot, or `None` if the
+/// slot has no chunks / no upload metadata.
+async fn slot_newest_upload_secs(
+    site_id: &str,
+    volume: nexrad_data::aws::realtime::VolumeIndex,
+) -> Option<f64> {
+    let chunks = nexrad_data::aws::realtime::list_chunks_in_volume(site_id, volume, 100)
+        .await
+        .ok()?;
+    chunks
+        .last()?
+        .upload_date_time()
+        .map(|dt| dt.timestamp_millis() as f64 / 1000.0)
+}
+
+/// Forward-probe from a fresh cache hint to the true latest volume, comparing S3
+/// upload times (list-only, no chunk downloads). Returns the resolved volume and
+/// the number of list calls made (threaded into `init_at_volume` for accurate
+/// request accounting). Returns `None` — forcing the caller to fall back to the
+/// library's binary search — when the hint slot itself is empty or its upload
+/// time is already older than [`VOLUME_HINT_MAX_AGE_SECS`].
+async fn probe_latest_from_hint(
+    site_id: &str,
+    hint: nexrad_data::aws::realtime::VolumeIndex,
+) -> Option<(nexrad_data::aws::realtime::VolumeIndex, usize)> {
+    let mut calls = 1;
+    let mut candidate = hint;
+    let mut candidate_upload = slot_newest_upload_secs(site_id, hint).await?;
+
+    // Guard against a slot that survived the recency gate by cached-at time but
+    // whose data is actually stale (e.g. the site went offline): if the hint's
+    // own newest chunk is old, don't trust it — fall back to a full search.
+    if current_timestamp_f64() - candidate_upload >= VOLUME_HINT_MAX_AGE_SECS {
+        return None;
     }
+
+    loop {
+        let next = candidate.next();
+        let next_upload = slot_newest_upload_secs(site_id, next).await;
+        calls += 1;
+        if probe_should_advance(candidate_upload, next_upload) {
+            candidate = next;
+            candidate_upload = next_upload.expect("Some by probe_should_advance");
+        } else {
+            break;
+        }
+    }
+
+    Some((candidate, calls))
 }
 
 // ── Timing stats persistence ──────────────────────────────────────────────
@@ -1326,19 +1407,87 @@ fn load_cached_timing_stats(site_id: &str) -> Option<crate::nexrad::timing::Chun
     crate::nexrad::timing::ChunkTimingStats::from_json(&raw)
 }
 
-/// Run `nexrad_data`'s upstream `get_latest_volume` then initialize a
-/// [`StreamingState`] at that volume.
+/// Discover the latest volume for a site and initialize a [`StreamingState`] at
+/// it.
 ///
-/// The cached volume number written by [`cache_volume_number`] is intentionally
-/// ignored here — discovery uses the same sequential rotated-array binary
-/// search the library ships with. The cache will be reintroduced as a hint in
-/// a follow-up.
+/// Fast path: if [`get_cached_volume_hint`] returns a hint cached within
+/// [`VOLUME_HINT_MAX_AGE_SECS`], forward-probe from it ([`probe_latest_from_hint`])
+/// — usually 1–3 list calls — and init there. Any miss (no hint, stale, empty
+/// slot, or stale slot data) falls through to the library's rotated-array binary
+/// search via `get_latest_volume`, so there is no correctness regression.
 async fn acquire_streaming_state(
     site_id: &str,
 ) -> nexrad_data::result::Result<crate::nexrad::streaming_state::StreamingInit> {
+    if let Some((hint, cached_at)) = get_cached_volume_hint(site_id) {
+        if current_timestamp_f64() - cached_at < VOLUME_HINT_MAX_AGE_SECS {
+            if let Some((volume, calls)) = probe_latest_from_hint(site_id, hint).await {
+                log::debug!(
+                    "Realtime: resumed {} from cached volume hint {} → latest {} ({} list calls)",
+                    site_id,
+                    hint.as_number(),
+                    volume.as_number(),
+                    calls
+                );
+                return StreamingState::init_at_volume(site_id, volume, calls).await;
+            }
+        }
+    }
+
     let result = nexrad_data::aws::realtime::get_latest_volume(site_id).await?;
     let volume = result.volume.ok_or(nexrad_data::result::Error::AWS(
         nexrad_data::result::aws::AWSError::LatestVolumeNotFound,
     ))?;
     StreamingState::init_at_volume(site_id, volume, result.calls).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn volume_cache_round_trips_through_json() {
+        let encoded = encode_volume_cache(347, 1_700_000_000.5);
+        let (vol, t) = decode_volume_cache(&encoded).expect("decodes own output");
+        assert_eq!(vol.as_number(), 347);
+        assert_eq!(t, 1_700_000_000.5);
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_bare_number_is_ignored() {
+        // Older builds wrote a bare decimal (no timestamp). It must decode to
+        // None so the fast path is skipped until the entry is rewritten.
+        assert!(decode_volume_cache("347").is_none());
+        assert!(decode_volume_cache("VolumeIndex(347)").is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn out_of_range_volume_rejected() {
+        assert!(decode_volume_cache(&encode_volume_cache(0, 1.0)).is_none());
+        assert!(decode_volume_cache(&encode_volume_cache(1000, 1.0)).is_none());
+        assert!(decode_volume_cache("garbage").is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn recency_gate_boundary() {
+        let now = 1_700_001_200.0;
+        // Just inside the 20-minute window is fresh.
+        let cached_at = now - (VOLUME_HINT_MAX_AGE_SECS - 1.0);
+        assert!(now - cached_at < VOLUME_HINT_MAX_AGE_SECS);
+        // Just outside is stale.
+        let cached_at = now - (VOLUME_HINT_MAX_AGE_SECS + 1.0);
+        assert!(now - cached_at >= VOLUME_HINT_MAX_AGE_SECS);
+    }
+
+    #[wasm_bindgen_test]
+    fn probe_advances_only_to_strictly_newer_slots() {
+        // Next slot newer → advance.
+        assert!(probe_should_advance(100.0, Some(150.0)));
+        // Next slot not yet written → stop.
+        assert!(!probe_should_advance(100.0, None));
+        // Next slot is an older recycled slot (e.g. wrap to slot 1) → stop.
+        assert!(!probe_should_advance(100.0, Some(50.0)));
+        // Equal upload time (no progress) → stop.
+        assert!(!probe_should_advance(100.0, Some(100.0)));
+    }
 }
