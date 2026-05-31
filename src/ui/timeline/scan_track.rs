@@ -2,8 +2,7 @@
 
 use super::DetailLevel;
 use crate::data::ScanCompleteness;
-use crate::state::radar_data::RadarTimeline;
-use crate::state::TimelineModel;
+use crate::state::TimelineView;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
 
@@ -12,19 +11,18 @@ use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
 pub(super) fn render_scan_track(
     painter: &Painter,
     rect: &Rect,
-    timeline: &RadarTimeline,
+    view: &TimelineView<'_>,
     view_start: f64,
     view_end: f64,
     zoom: f64,
     detail_level: DetailLevel,
-    model: &TimelineModel<'_>,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
     match detail_level {
         DetailLevel::Solid => {
             // Draw solid regions for each contiguous time range
-            for range in timeline.time_ranges() {
+            for range in view.cache().time_ranges() {
                 let x_start = ts_to_x(range.start).max(rect.left());
                 let x_end = ts_to_x(range.end).min(rect.right());
 
@@ -48,7 +46,7 @@ pub(super) fn render_scan_track(
             }
         }
         DetailLevel::Scans | DetailLevel::Sweeps => {
-            for scan in model.historical_to_render(timeline.scans_in_range(view_start, view_end)) {
+            for scan in view.settled_scans_in_range(view_start, view_end) {
                 let x_start = ts_to_x(scan.start_time).max(rect.left());
                 let x_end = ts_to_x(scan.end_time).min(rect.right());
                 let width = x_end - x_start;
@@ -153,14 +151,13 @@ pub(super) fn render_scan_track(
 /// Render shadow scan boundaries from the archive index.
 ///
 /// These are subtle markers showing where scans exist in the archive before
-/// they are downloaded. The [`TimelineModel`] supplies the dedup against
+/// they are downloaded. The [`TimelineView`] supplies the dedup against
 /// already-downloaded scans.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_shadow_boundaries(
     painter: &Painter,
     rect: &Rect,
-    boundaries: &[crate::nexrad::ScanBoundary],
-    model: &TimelineModel<'_>,
+    view: &TimelineView<'_>,
     view_start: f64,
     view_end: f64,
     zoom: f64,
@@ -174,8 +171,10 @@ pub(super) fn render_shadow_boundaries(
     match detail_level {
         DetailLevel::Solid => {
             // At solid detail, merge all visible shadow boundaries into contiguous regions
-            let visible: Vec<_> = model
-                .shadows_to_render(boundaries.iter())
+            let visible: Vec<_> = view
+                .shadow_boundaries()
+                .iter()
+                .filter(|b| !view.is_covered_by_cached(b.start))
                 .filter(|b| b.end > view_start_i64 && b.start < view_end_i64)
                 .collect();
 
@@ -216,7 +215,11 @@ pub(super) fn render_shadow_boundaries(
             }
         }
         DetailLevel::Scans | DetailLevel::Sweeps => {
-            for b in model.shadows_to_render(boundaries.iter()) {
+            for b in view
+                .shadow_boundaries()
+                .iter()
+                .filter(|b| !view.is_covered_by_cached(b.start))
+            {
                 // Skip if outside visible range
                 if b.end <= view_start_i64 || b.start >= view_end_i64 {
                     continue;

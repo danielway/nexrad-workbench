@@ -2,14 +2,19 @@
 
 use super::{format_timestamp_full, DetailLevel};
 use crate::data::ScanCompleteness;
-use crate::state::radar_data::RadarTimeline;
+use crate::state::{SweepAvailability, TimelineView};
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 
 /// Render hover tooltip for timeline elements.
+///
+/// Reads only the [`TimelineView`]: cached ("settled") scans for the
+/// non-live volumes, and the merged in-progress volume for the live one —
+/// so the tooltip stays consistent with what the tracks draw (in particular,
+/// a resumed volume's already-cached cuts read as "Complete").
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_timeline_tooltip(
     ui: &mut egui::Ui,
-    timeline: &RadarTimeline,
+    view: &TimelineView<'_>,
     _state: &crate::state::AppState,
     live: &crate::subsystem::Live,
     hover_ts: f64,
@@ -24,26 +29,26 @@ pub(super) fn render_timeline_tooltip(
     let live_state = &live.mode_state;
     let in_sweep_track = detail_level == DetailLevel::Sweeps && hover_pos.y > sweep_rect.top();
 
-    // Find the scan at the hovered timestamp
-    let scan = timeline
-        .scans_in_range(hover_ts - 0.5, hover_ts + 0.5)
-        .find(|s| s.start_time <= hover_ts && s.end_time >= hover_ts);
+    // Find the cached (settled) scan at the hovered timestamp. The in-progress
+    // volume is excluded here — it is handled by the realtime path below so
+    // its merged sweep states (cached + collecting + projected) drive the
+    // tooltip rather than a stale cached-scan snapshot.
+    let scan = view
+        .settled_scan_at(hover_ts)
+        .filter(|s| s.start_time <= hover_ts && s.end_time >= hover_ts);
 
     // Check if hovering within the active real-time volume (including projected future)
-    let live_model = &live.radar_model;
+    let live_position = view.live_volume();
     let in_active_volume = scan.is_none()
-        && live_model.active
-        && live_model
-            .position
-            .as_ref()
-            .is_some_and(|p| hover_ts >= p.volume_start && hover_ts <= p.volume_end);
+        && live_position.is_some_and(|p| hover_ts >= p.volume_start && hover_ts <= p.volume_end);
 
-    // If in sweep track, search for sweep across ALL visible scans (not just the
-    // scan containing hover_ts). This handles edge cases where a sweep's time range
-    // extends before its parent scan's start_time.
+    // If in sweep track, search for a cached sweep across settled scans (not
+    // just the scan containing hover_ts). This handles edge cases where a
+    // sweep's time range extends before its parent scan's start_time. The
+    // live volume's sweeps are handled by the realtime path instead.
     let (sweep, sweep_parent_scan) = if in_sweep_track {
         let mut found = None;
-        for s in timeline.scans_in_range(hover_ts - 600.0, hover_ts + 600.0) {
+        for s in view.settled_scans_in_range(hover_ts - 600.0, hover_ts + 600.0) {
             if let Some(sw) = s
                 .sweeps
                 .iter()
@@ -75,7 +80,7 @@ pub(super) fn render_timeline_tooltip(
         if let Some(sweep) = sweep {
             render_sweep_tooltip_content(ui, sweep, sweep_parent_scan, use_local);
         } else if in_active_volume {
-            if let Some(ref position) = live_model.position {
+            if let Some(position) = live_position {
                 render_realtime_volume_tooltip(
                     ui,
                     position,
@@ -254,12 +259,10 @@ fn render_realtime_volume_tooltip(
         if let Some(sp) = hovered_sweep {
             let elev_num = sp.elevation_number;
 
-            let state_label = if sp.is_complete() {
-                "Complete"
-            } else if sp.is_in_progress() {
-                "Collecting"
-            } else {
-                "Pending"
+            let state_label = match sp.availability() {
+                SweepAvailability::Cached => "Complete",
+                SweepAvailability::Collecting => "Collecting",
+                SweepAvailability::Projected => "Pending",
             };
             ui.label(
                 RichText::new(format!(

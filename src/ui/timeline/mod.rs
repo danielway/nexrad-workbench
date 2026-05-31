@@ -355,30 +355,30 @@ pub(super) fn render_timeline(
         None
     };
 
-    // -- Build the per-frame TimelineModel --
-    // One reconciliation pass across every source the timeline draws: it
-    // owns the live-volume-vs-historical exact-equality match and the
-    // documented filename-vs-radial-time tolerance bands the ghost and
-    // shadow overlays previously inlined as magic numbers.
-    let live_anchor = live
-        .radar_model
-        .volume
-        .as_ref()
-        .and_then(|v| v.anchor.as_ref());
-    // Pass all stored scans (not the in-view subset): the ghost and shadow
-    // overlays dedup against scans that may sit just off-screen, and the
-    // model's historical_keys are i64 millis in a BTreeSet so the cost of
-    // including all of them is negligible.
-    let timeline_model =
-        crate::state::TimelineModel::build(live_anchor, timeline.scans.scans.iter());
+    // -- Build the per-frame TimelineView --
+    // One adapter merges every timeline source (cache, archive shadows, the
+    // live stream + its projection) into a single source-agnostic view. The
+    // renderers ask it availability questions ("what's cached? what's
+    // collecting? is this covered?") and never read a raw source directly.
+    // The cache↔live merge that keeps a resumed volume's already-downloaded
+    // sweeps visible lives entirely inside `TimelineView::build`.
+    let frame_now_secs = js_sys::Date::now() / 1000.0;
+    let elevation_filter = state.viz_state.elevation_selection.elevation_number();
+    let view = crate::state::TimelineView::build(
+        &timeline.scans,
+        &timeline.shadow_scan_boundaries,
+        Some(&live.mode_state),
+        live.radar_model.position.as_ref(),
+        elevation_filter,
+        frame_now_secs,
+    );
 
     // -- Render shadow scan boundaries from archive index --
-    if !timeline.shadow_scan_boundaries.is_empty() {
+    if !view.shadow_boundaries().is_empty() {
         render_shadow_boundaries(
             &painter,
             &scan_rect,
-            &timeline.shadow_scan_boundaries,
-            &timeline_model,
+            &view,
             view_start,
             view_end,
             zoom,
@@ -390,12 +390,11 @@ pub(super) fn render_timeline(
     render_scan_track(
         &painter,
         &scan_rect,
-        &timeline.scans,
+        &view,
         view_start,
         view_end,
         zoom,
         detail_level,
-        &timeline_model,
     );
 
     // -- Render sweep track (only at Sweeps detail) --
@@ -416,20 +415,19 @@ pub(super) fn render_timeline(
         render_sweep_track(
             &painter,
             &sweep_rect,
-            &timeline.scans,
+            &view,
             view_start,
             view_end,
             zoom,
             active_sweep,
-            state.viz_state.elevation_selection.elevation_number(),
-            &timeline_model,
+            view.elevation_filter(),
             prev_active_sweep,
         );
         render_connector_lines(
             &painter,
             &scan_rect,
             &sweep_rect,
-            &timeline.scans,
+            view.cache(),
             view_start,
             view_end,
             zoom,
@@ -443,8 +441,7 @@ pub(super) fn render_timeline(
             &painter,
             &scan_rect,
             &state.download_progress,
-            &timeline.scans,
-            &timeline_model,
+            &view,
             view_start,
             view_end,
             zoom,
@@ -456,16 +453,11 @@ pub(super) fn render_timeline(
     }
 
     // -- Render real-time partial scan progress --
-    // Compute `now` once per frame so render + tooltip use a consistent boundary.
-    let frame_now_secs = js_sys::Date::now() / 1000.0;
-    if let Some(ref position) = live.radar_model.position {
+    // The merged in-progress volume and its overlay context come from the
+    // view; `frame_now_secs` (computed above when the view was built) keeps
+    // render + tooltip on a consistent boundary.
+    if let (Some(position), Some(overlay_ctx)) = (view.live_volume(), view.live_context()) {
         let anim_time = ui.ctx().input(|i| i.time);
-        let overlay_ctx = overlays::LiveOverlayContext {
-            countdown_secs: live.mode_state.countdown_remaining_secs(frame_now_secs),
-            in_progress_radials: live.mode_state.current_in_progress_radials.unwrap_or(0),
-            elevations_received: live.mode_state.elevations_received.clone(),
-            in_progress_elevation: live.mode_state.current_in_progress_elevation,
-        };
         render_realtime_progress(
             &painter,
             &scan_rect,
@@ -475,13 +467,13 @@ pub(super) fn render_timeline(
                 None
             },
             position,
-            &overlay_ctx,
+            overlay_ctx,
             view_start,
             view_end,
             zoom,
             anim_time,
             frame_now_secs,
-            state.viz_state.elevation_selection.elevation_number(),
+            view.elevation_filter(),
             active_sweep,
             prev_active_sweep,
         );
@@ -667,7 +659,7 @@ pub(super) fn render_timeline(
             let hover_ts = view_start + (hover_pos.x - full_rect.left()) as f64 / zoom;
             render_timeline_tooltip(
                 ui,
-                &timeline.scans,
+                &view,
                 state,
                 live,
                 hover_ts,

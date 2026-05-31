@@ -24,11 +24,11 @@ mod saved_events;
 mod settings;
 mod stats;
 pub(crate) mod theme;
-mod timeline_model;
+mod timeline_view;
 pub(crate) mod url_state;
 pub(crate) mod vcp;
 pub(crate) mod vcp_forecast;
-mod vcp_position;
+pub(crate) mod vcp_position;
 mod viz;
 mod volume_elevation_roster;
 
@@ -59,13 +59,15 @@ pub use stats::{
 // Re-export the command type for ergonomic access.
 // AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
-pub use timeline_model::TimelineModel;
+pub use timeline_view::{LiveOverlayContext, TimelineView};
 pub use vcp::get_vcp_definition;
 pub use vcp_forecast::{
     derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord, SweepForecast,
     VolumeForecastSnapshot,
 };
-pub use vcp_position::{SweepPosition, SweepStatus, SweepTiming, VcpPositionModel};
+pub use vcp_position::{
+    SweepAvailability, SweepPosition, SweepStatus, SweepTiming, VcpPositionModel,
+};
 pub use viz::{
     DisplayedSweep, ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct,
     RenderProcessing, StormCellInfo, SweepIdentity, ViewMode, VizState,

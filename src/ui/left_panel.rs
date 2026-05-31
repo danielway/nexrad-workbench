@@ -100,17 +100,29 @@ fn render_radar_operations_section(
 }
 
 fn query_radar_state_at_timestamp<'a>(
-    _state: &'a AppState,
+    state: &'a AppState,
     timeline: &'a crate::subsystem::Timeline,
     live: &'a crate::subsystem::Live,
     playback: &'a crate::subsystem::Playback,
 ) -> RadarStateAtTimestamp<'a> {
     let ts = playback.state.playback_position();
 
-    // Find the scan at the current timestamp
-    let scan = timeline.scans.find_scan_at_timestamp(ts);
+    // Resolve position detail through the same single adapter the timeline
+    // uses, so the panel can't drift from it. The in-progress volume is
+    // excluded from `settled_scan_at` and surfaced via `live_volume()` (with
+    // its already-cached cuts merged in) — this replaces the bespoke
+    // archive-vs-live reconciliation this function used to do itself.
+    let now = js_sys::Date::now() / 1000.0;
+    let view = crate::state::TimelineView::build(
+        &timeline.scans,
+        &timeline.shadow_scan_boundaries,
+        Some(&live.mode_state),
+        live.radar_model.position.as_ref(),
+        state.viz_state.elevation_selection.elevation_number(),
+        now,
+    );
 
-    match scan {
+    match view.settled_scan_at(ts) {
         Some(scan) => {
             // Time-window match: drives the rotating-azimuth animation,
             // which is only meaningful while the cursor is inside a
@@ -183,7 +195,7 @@ fn query_radar_state_at_timestamp<'a>(
             // js_sys::Date::now() — that would drift by ~frame-render
             // duration against every other surface that consumed the same
             // model.
-            if let Some(ref position) = live.radar_model.position {
+            if let Some(position) = view.live_volume() {
                 let frame = &live.radar_model.frame_now;
                 let vcp = Some(position.vcp_number).filter(|&v| v > 0);
                 let azimuth = live.radar_model.estimated_azimuth;

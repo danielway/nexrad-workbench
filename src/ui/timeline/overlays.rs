@@ -2,8 +2,7 @@
 
 use super::strokes::{fill_diagonal_hatch, stroke_dashed_rect, DashedBorder, DashedEdges};
 use super::DetailLevel;
-use crate::state::radar_data::RadarTimeline;
-use crate::state::{SavedEvents, TimelineModel};
+use crate::state::{LiveOverlayContext, SavedEvents, TimelineView};
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
 
@@ -19,8 +18,7 @@ pub(super) fn render_download_ghosts(
     painter: &Painter,
     rect: &Rect,
     progress: &crate::state::DownloadProgress,
-    timeline: &RadarTimeline,
-    model: &TimelineModel<'_>,
+    view: &TimelineView<'_>,
     view_start: f64,
     view_end: f64,
     zoom: f64,
@@ -68,17 +66,11 @@ pub(super) fn render_download_ghosts(
             continue;
         }
         let flash_alpha = ((1.0 - age) * 80.0) as u8;
-        // Resolve the scan via TimelineModel's tighter completion-match
-        // tolerance, then look up its precise start/end on the timeline.
-        let matched_key_ms = model.match_completion(scan_start);
-        if let Some(scan) = matched_key_ms.and_then(|key_ms| {
-            let key_secs = key_ms as f64 / 1000.0;
-            timeline
-                .scans_in_range(key_secs - 1.0, key_secs + 1.0)
-                .find(|s| ((s.key_timestamp * 1000.0).round() as i64) == key_ms)
-        }) {
-            let x_start = ts_to_x(scan.start_time).max(rect.left());
-            let x_end = ts_to_x(scan.end_time).min(rect.right());
+        // Resolve the flash to its target cached scan's bounds via the view's
+        // tighter completion-match tolerance.
+        if let Some((scan_start_time, scan_end_time)) = view.completion_target(scan_start) {
+            let x_start = ts_to_x(scan_start_time).max(rect.left());
+            let x_end = ts_to_x(scan_end_time).min(rect.right());
             if x_end > x_start {
                 let flash_rect = Rect::from_min_max(
                     Pos2::new(x_start, rect.top() + 2.0),
@@ -102,7 +94,7 @@ pub(super) fn render_download_ghosts(
         }
 
         // Skip if real data already covers this timestamp.
-        if model.is_covered_by_historical(scan_start) {
+        if view.is_covered_by_cached(scan_start) {
             return;
         }
 
@@ -183,15 +175,6 @@ pub(super) fn render_download_ghosts(
     for &(s, e) in &progress.in_flight_scans {
         draw_ghost(s, e, false, true);
     }
-}
-
-/// Non-model fields needed for realtime overlay rendering that don't belong in
-/// the position model (UI animation state, countdown).
-pub(super) struct LiveOverlayContext {
-    pub countdown_secs: Option<f64>,
-    pub in_progress_radials: u32,
-    pub elevations_received: Vec<u8>,
-    pub in_progress_elevation: Option<u8>,
 }
 
 /// Render real-time streaming progress on the timeline.

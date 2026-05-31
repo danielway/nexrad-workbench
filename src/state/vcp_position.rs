@@ -68,6 +68,25 @@ pub enum SweepTiming {
     Estimated,
 }
 
+/// Source-agnostic availability of a sweep, as the timeline understands it:
+/// whether the data is already in hand, arriving now, or only forecast.
+///
+/// This is the vocabulary the [`crate::state::TimelineView`] exposes to the
+/// UI so renderers draw by *availability* rather than by which source the
+/// data came from. It is derived from [`SweepStatus`] via
+/// [`SweepPosition::availability`]; `Complete` (persisted to IDB, whether
+/// downloaded from the archive or collected live) maps to `Cached`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SweepAvailability {
+    /// Persisted and renderable — downloaded from the archive or collected
+    /// live and flushed to IDB.
+    Cached,
+    /// Actively being received right now.
+    Collecting,
+    /// Forecast to be collected; not present yet.
+    Projected,
+}
+
 /// Completion status of a sweep.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SweepStatus {
@@ -718,5 +737,14 @@ impl SweepPosition {
     /// Whether this sweep hasn't started yet.
     pub fn is_future(&self) -> bool {
         self.status == SweepStatus::Future
+    }
+
+    /// Source-agnostic availability for the timeline view.
+    pub fn availability(&self) -> SweepAvailability {
+        match self.status {
+            SweepStatus::Complete => SweepAvailability::Cached,
+            SweepStatus::InProgress { .. } => SweepAvailability::Collecting,
+            SweepStatus::Future => SweepAvailability::Projected,
+        }
     }
 }
