@@ -85,21 +85,19 @@ impl fmt::Display for UnixMillis {
 
 /// Identifies a complete volume scan.
 ///
-/// A scan is uniquely identified by site + start time. The start time
-/// is derived from the first record's timestamp (from VCP metadata or
-/// first radial collection time) in the historical/archive path. In the
-/// real-time streaming path, the start is set to `upload_date_time −
-/// median availability lag` when the Start chunk arrives (see
-/// `realtime.rs::provisional_scan_start_secs`), which typically lands
-/// within ~1 s of the true collection time.
+/// A scan is uniquely identified by site + start time, where the start
+/// time is the volume-header collection time (whole seconds) decoded from
+/// the volume's Start chunk. Both ingest paths derive it the same way —
+/// the archive path in `worker_ingest`, the real-time path via
+/// `realtime::streaming::volume_header_start_secs` — so the same physical
+/// volume always resolves to the same key regardless of how it was
+/// acquired. No filename string, S3 upload time, or lag estimate is
+/// involved in the identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ScanKey {
     pub site: SiteId,
-    /// ACTUAL category: Unix-millis volume collection start time. In
-    /// real-time mode this is a close estimate (upload minus median lag)
-    /// rather than the parsed value until/unless an IDB rename refines
-    /// it, but consumers should treat it as actual collection time for
-    /// display and comparison purposes.
+    /// ACTUAL category: Unix-millis volume collection start time, decoded
+    /// from the volume header. Authoritative for display and comparison.
     pub scan_start: UnixMillis,
 }
 
@@ -846,6 +844,26 @@ mod tests {
         let key = ScanKey::from_secs_f64("KDMX", 1_700_000_000.789);
         assert_eq!(key.scan_start.0, 1_700_000_000_789);
         assert_eq!(key.to_storage_key(), "KDMX|1700000000789");
+    }
+
+    /// Identity-equality guard for the archive↔realtime scan-fracture fix:
+    /// both paths key a scan by the whole-second volume-header time, but
+    /// reach `ScanKey` through different constructors — the archive worker
+    /// via `from_secs_f64(dt.timestamp() as f64)` and historical/queue code
+    /// via `from_secs(i64)`. For the same whole-second start these MUST
+    /// produce a byte-identical storage key, otherwise the same physical
+    /// volume fractures into two scans.
+    #[wasm_bindgen_test]
+    fn test_archive_and_realtime_keys_match_for_whole_second_header_time() {
+        for t in [0i64, 1_700_000_000, 1_700_000_137, 1_699_999_999] {
+            let from_int = ScanKey::from_secs("KDMX", t);
+            let from_header = ScanKey::from_secs_f64("KDMX", t as f64);
+            assert_eq!(
+                from_int, from_header,
+                "key constructors diverged for whole-second start {t}"
+            );
+            assert_eq!(from_int.to_storage_key(), from_header.to_storage_key());
+        }
     }
 
     #[wasm_bindgen_test]

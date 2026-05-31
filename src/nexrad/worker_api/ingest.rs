@@ -33,6 +33,15 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // --- Phase 0: Split into LDM records ---
         let t_split = web_time::Instant::now();
         let file = nexrad_data::volume::File::new(data);
+        // Scan identity comes from the decoded volume-header collection time
+        // (whole seconds), never the S3 filename. This matches the realtime
+        // path's `volume_header_start_secs` and `decode_start_chunk`, so an
+        // archive download and a realtime stream of the same physical volume
+        // resolve to an identical `ScanKey`.
+        let header_secs = file
+            .header()
+            .and_then(|h| h.date_time())
+            .map(|dt| dt.timestamp() as f64);
         let records = file.records().map_err(|e| {
             wasm_bindgen::JsValue::from_str(&format!("Failed to split archive: {}", e))
         })?;
@@ -49,7 +58,20 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         );
 
         let store = idb_store().await?;
-        let scan_key = ScanKey::new(site_id.as_str(), UnixMillis::from_secs_f64(timestamp_secs));
+        let header_secs = header_secs.ok_or_else(|| {
+            wasm_bindgen::JsValue::from_str(
+                "Archive volume has no readable header — cannot assign scan identity",
+            )
+        })?;
+        if (header_secs - timestamp_secs).abs() >= 1.0 {
+            log::debug!(
+                "ingest: volume-header start {} differs from filename time {} by {:.1}s",
+                header_secs,
+                timestamp_secs,
+                header_secs - timestamp_secs,
+            );
+        }
+        let scan_key = ScanKey::new(site_id.as_str(), UnixMillis::from_secs_f64(header_secs));
 
         // --- Phase 1: Decompress + decode all records into radials ---
         let t_decode = web_time::Instant::now();

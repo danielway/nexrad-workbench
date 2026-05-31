@@ -178,12 +178,15 @@ impl WorkbenchApp {
             });
         }
 
-        // Worker now returns the typed scan_key on the result (sourced from
-        // the dispatch-time context); no parse step.
+        // The worker returns the scan_key it actually keyed under — the
+        // decoded volume-header time, not the dispatch-time filename. Use it,
+        // and derive the displayed timestamp from it, so the render lookup
+        // and timeline position match the stored blob exactly.
+        let scan_start_secs = result.scan_key.scan_start.as_secs_f64();
         self.set_active_scan(
             result.scan_key.clone(),
             result.elevation_numbers,
-            result.context.timestamp_secs,
+            scan_start_secs,
         );
         // Refresh timeline to include the new scan
         self.state.push_command(state::AppCommand::RefreshTimeline {

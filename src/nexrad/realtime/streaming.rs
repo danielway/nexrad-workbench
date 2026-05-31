@@ -78,38 +78,26 @@ pub enum SleepOutcome {
     FilterChanged,
 }
 
-/// Default provisional lag applied when we have no observed median lag
-/// yet. Matches the default in the projector so a cold stream's first
-/// ScanKey lands near the eventual real value.
-const DEFAULT_PROVISIONAL_LAG_SECS: f64 = 5.0;
-
-/// Provisional scan-start timestamp (Unix seconds, sub-second precision)
-/// for a new volume.
+/// Canonical scan-start timestamp (Unix seconds, whole-second precision)
+/// for a volume, decoded from its Start chunk's volume header.
 ///
-/// Uses the Start chunk's S3 upload time minus the current median
-/// availability lag from `ChunkTimingStats` (falling back to
-/// `DEFAULT_PROVISIONAL_LAG_SECS`). That lands close to the real volume
-/// header collection time — closer than the wall-clock receipt time it
-/// replaces — without needing to wait for the first M chunk's radial
-/// parse. If there is no upload time, fall back to wall clock.
+/// This is the single source of scan identity: `header.date_time()`
+/// truncated to whole seconds via `.timestamp()`. The archive path
+/// derives the exact same value in `worker_ingest`, and the worker
+/// derives it in `decode_start_chunk`, so two realtime sessions (or an
+/// archive download and a realtime stream) covering the same physical
+/// volume always produce an identical `ScanKey`. No AWS upload time,
+/// filename string, or lag estimate is involved.
 ///
-/// Returns `f64` rather than `i64` so the IDB scan key preserves the
-/// volume's true sub-second start time end-to-end. Without this, two
-/// volumes whose true starts differ by less than a second would round to
-/// the same `i64` and risk colliding under `ScanKey::from_secs`.
-fn provisional_scan_start_secs(
-    start_upload: Option<chrono::DateTime<chrono::Utc>>,
-    iter: &StreamingState,
-) -> f64 {
-    let median_lag_secs = iter
-        .timing_stats()
-        .median_availability_lag_secs()
-        .unwrap_or(DEFAULT_PROVISIONAL_LAG_SECS);
-    if let Some(upload) = start_upload {
-        let upload_secs = upload.timestamp_millis() as f64 / 1000.0;
-        return upload_secs - median_lag_secs;
-    }
-    current_timestamp() as f64
+/// Returns `None` when the chunk carries no readable volume header.
+/// Callers treat that as a fatal stream error rather than falling back
+/// to a non-header source — a missing header should not happen, and if
+/// it does we want to surface it rather than silently mis-key the scan.
+fn volume_header_start_secs(start_chunk_bytes: &[u8]) -> Option<f64> {
+    let file = nexrad_data::volume::File::new(start_chunk_bytes.to_vec());
+    file.header()
+        .and_then(|h| h.date_time())
+        .map(|dt| dt.timestamp() as f64)
 }
 
 /// Elevation numbers already fully cached in IndexedDB for the given scan.
@@ -440,10 +428,13 @@ pub(super) async fn streaming_loop(
     ctx.request_repaint();
 
     let mut chunks_in_volume: u32;
-    // Provisional scan start for the in-progress volume. Newtype-wrapped so
-    // a bare `f64` can't be substituted from a different time axis (wall
-    // clock, radial-confirmed time, etc.) by mistake. Helpers downstream
-    // still take `f64` — unwrap with `.0` at those call sites.
+    // Canonical scan start for the in-progress volume, decoded from the
+    // Start chunk's volume header (see `volume_header_start_secs`). This is
+    // the scan's identity — the value that becomes the IDB key, the cache
+    // check key, and the main-thread anchor/render key. Newtype-wrapped so a
+    // bare `f64` can't be substituted from a different time axis (wall
+    // clock, S3 upload time, etc.) by mistake. Helpers downstream still take
+    // `f64` — unwrap with `.0` at those call sites.
     let mut current_scan_start_secs: crate::data::ProvisionalStart;
     // Sequences emitted to the worker for the current volume (init backfill,
     // init latest, steady-state, and mid-stream backfill). The mid-stream
@@ -458,10 +449,20 @@ pub(super) async fn streaming_loop(
     if let Some(start_chunk) = init_result.start_chunk {
         // Joined mid-volume: emit the start chunk + current sweep's chunks only.
         let start_data = start_chunk.chunk.data().to_vec();
-        current_scan_start_secs = crate::data::ProvisionalStart(provisional_scan_start_secs(
-            start_chunk.identifier.upload_date_time(),
-            &iter,
-        ));
+        let Some(header_secs) = volume_header_start_secs(&start_data) else {
+            log::error!(
+                "Realtime: start chunk for {} has no readable volume header — aborting stream",
+                site_id
+            );
+            let _ = results_tx.unbounded_send(RealtimeResult::Error(
+                "Start chunk has no readable volume header — cannot assign scan identity"
+                    .to_string(),
+            ));
+            active.set(false);
+            ctx.request_repaint();
+            return;
+        };
+        current_scan_start_secs = crate::data::ProvisionalStart(header_secs);
 
         log::debug!(
             "Init: emitting start_chunk ({} bytes) for mid-volume join",
@@ -644,10 +645,20 @@ pub(super) async fn streaming_loop(
         let latest_type = init_result.latest_chunk.identifier.chunk_type();
         let latest_is_start = latest_type == ChunkType::Start;
         let latest_is_end = latest_type == ChunkType::End;
-        current_scan_start_secs = crate::data::ProvisionalStart(provisional_scan_start_secs(
-            init_result.latest_chunk.identifier.upload_date_time(),
-            &iter,
-        ));
+        let Some(header_secs) = volume_header_start_secs(&latest_data) else {
+            log::error!(
+                "Realtime: start chunk for {} has no readable volume header — aborting stream",
+                site_id
+            );
+            let _ = results_tx.unbounded_send(RealtimeResult::Error(
+                "Start chunk has no readable volume header — cannot assign scan identity"
+                    .to_string(),
+            ));
+            active.set(false);
+            ctx.request_repaint();
+            return;
+        };
+        current_scan_start_secs = crate::data::ProvisionalStart(header_secs);
         chunks_in_volume = 1;
         emitted_sequences_this_volume.insert(init_result.latest_chunk.identifier.sequence());
         cache_volume_number(&site_id, *init_result.latest_chunk.identifier.volume());
@@ -948,10 +959,21 @@ pub(super) async fn streaming_loop(
 
                 // Reset counters on new volume
                 if is_start {
+                    let Some(header_secs) = volume_header_start_secs(&chunk_data) else {
+                        log::error!(
+                            "Realtime: start chunk for {} has no readable volume header — aborting stream",
+                            site_id
+                        );
+                        let _ = results_tx.unbounded_send(RealtimeResult::Error(
+                            "Start chunk has no readable volume header — cannot assign scan identity"
+                                .to_string(),
+                        ));
+                        active.set(false);
+                        ctx.request_repaint();
+                        return;
+                    };
                     chunks_in_volume = 0;
-                    current_scan_start_secs = crate::data::ProvisionalStart(
-                        provisional_scan_start_secs(chunk.identifier.upload_date_time(), &iter),
-                    );
+                    current_scan_start_secs = crate::data::ProvisionalStart(header_secs);
                     cache_volume_number(&site_id, *chunk.identifier.volume());
                     emitted_sequences_this_volume.clear();
                 }
@@ -1236,10 +1258,6 @@ impl StatsTracker {
         self.last_requests = state.requests_made();
         self.last_bytes = state.bytes_downloaded();
     }
-}
-
-fn current_timestamp() -> i64 {
-    (js_sys::Date::now() / 1000.0) as i64
 }
 
 /// Unix seconds with millisecond precision — for diagnostics timestamps.

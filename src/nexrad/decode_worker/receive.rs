@@ -269,9 +269,12 @@ fn handle_ingested_message(
         r.total_ms,
     );
 
-    // Populate the typed scan_key from the context — same value the worker
-    // serialized in `r.scan_key`, but no parse step needed.
-    let scan_key = context.scan_key.clone();
+    // Scan identity is the decoded volume-header time the worker actually
+    // keyed under (`r.scan_key`), NOT the dispatch-time filename key carried
+    // in `context`. Parse the worker's storage-key string; fall back to the
+    // context key only if it's somehow unparseable (shouldn't happen).
+    let scan_key = crate::data::ScanKey::from_storage_key(&r.scan_key)
+        .unwrap_or_else(|| context.scan_key.clone());
     results
         .borrow_mut()
         .push(WorkerOutcome::Ingested(IngestResult {

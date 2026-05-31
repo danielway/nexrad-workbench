@@ -404,9 +404,10 @@ pub struct IngestContext {
 /// Successful ingest result from the worker.
 pub struct IngestResult {
     pub context: IngestContext,
-    /// Typed identifier for the ingested scan. Read from
-    /// `context.scan_key` rather than the wire-format string the worker
-    /// echoes — same value, no parse step.
+    /// Typed identifier for the ingested scan, parsed from the storage-key
+    /// string the worker actually wrote under (derived from the decoded
+    /// volume-header time). Falls back to `context.scan_key` only if that
+    /// string is unparseable.
     pub scan_key: crate::data::ScanKey,
     /// Number of records stored in IDB.
     pub records_stored: u32,
