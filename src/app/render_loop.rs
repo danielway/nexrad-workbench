@@ -278,10 +278,13 @@ impl WorkbenchApp {
     /// within the same scan that's the preceding sweep in time order. Only look
     /// at the previous scan if the current sweep is the very first in its scan.
     pub(crate) fn sync_prev_sweep_texture(&mut self) {
-        // In live mode, the previous sweep texture is managed by
-        // promote_current_to_previous in the LiveDecoded handler —
-        // don't let the timeline-based sync overwrite or clear it.
-        if self.live.mode_state.is_active() {
+        // When a live partial is on the canvas, its previous-sweep texture is
+        // owned by promote_current_to_previous in the LiveDecoded handler —
+        // don't let the timeline-based sync overwrite or clear it. But when a
+        // *cached* cut is shown during live (e.g. just after a mid-stream
+        // reload), there's no live promote for it, so the archive prev-sweep
+        // animation is correct and should run.
+        if self.live.mode_state.is_active() && self.gpu_holds_live_sweep() {
             return;
         }
 
@@ -483,20 +486,24 @@ impl WorkbenchApp {
 
     /// Re-render when the user changes elevation, product, or view mode.
     pub(crate) fn request_render_if_needed(&mut self) {
-        // Live mode re-renders on the next ChunkIngested (~12s) — no IDB-based render needed.
-        if self.live.mode_state.is_active() {
+        if !self.render.coordinator.has_worker() {
             return;
         }
-        // Detect elevation/product changes and trigger worker re-render.
-        // If the user changes these settings and we have a current scan, we need
-        // a new render from the worker.
-        if self.render.coordinator.scan_key().is_some() && self.render.coordinator.has_worker() {
-            if self.state.viz_state.volume_3d_enabled
-                && self.state.viz_state.view_mode == state::ViewMode::Globe3D
-            {
-                self.request_worker_render_volume();
-            }
-            self.request_worker_render();
+        let live_active = self.live.mode_state.is_active();
+        // Archive renders against an active scan; without one there's nothing
+        // to re-render. Live drives the unified resolver off the timeline, so
+        // it doesn't need a coordinator scan key — switching to a completed
+        // cut repaints it immediately from cache instead of waiting ~12s for
+        // the next chunk. Volume (3D) renders stay archive-only.
+        if !live_active && self.render.coordinator.scan_key().is_none() {
+            return;
         }
+        if !live_active
+            && self.state.viz_state.volume_3d_enabled
+            && self.state.viz_state.view_mode == state::ViewMode::Globe3D
+        {
+            self.request_worker_render_volume();
+        }
+        self.request_worker_render();
     }
 }

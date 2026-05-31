@@ -135,8 +135,10 @@ impl WorkbenchApp {
     /// Whether the main GPU texture currently holds a live partial sweep
     /// (`current_sweep_id` like `live|{elev}`, set by
     /// `handle_live_decoded_outcome`). Lets `request_worker_render` avoid
-    /// blanking a valid partial during a between-chunks frame.
-    fn gpu_holds_live_sweep(&self) -> bool {
+    /// blanking a valid partial during a between-chunks frame, and lets
+    /// `sync_prev_sweep_texture` tell a live partial (whose prev slot the
+    /// LiveDecoded promote owns) from a cached cut shown during live.
+    pub(crate) fn gpu_holds_live_sweep(&self) -> bool {
         self.gpu
             .gpu
             .as_ref()
