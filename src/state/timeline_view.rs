@@ -60,6 +60,14 @@ pub struct LiveOverlayContext {
     /// partially-downloaded volume.
     pub elevations_received: Vec<u8>,
     pub in_progress_elevation: Option<u8>,
+    /// Whether the plan's immediate next download target lives in the *next*
+    /// volume (the active filter has no remaining current-volume match). When
+    /// true, the "next chunk" countdown belongs to the next-volume ghost, not
+    /// a current-volume future sweep.
+    pub next_target_in_next_volume: bool,
+    /// Elevation number of that next target, used to highlight the matching
+    /// sweep in the next-volume ghost.
+    pub next_target_elevation: Option<u8>,
 }
 
 /// Frame-scoped, source-agnostic view of the timeline.
@@ -121,6 +129,11 @@ impl<'a> TimelineView<'a> {
                     in_progress_radials: ls.current_in_progress_radials.unwrap_or(0),
                     elevations_received: received,
                     in_progress_elevation: ls.current_in_progress_elevation,
+                    next_target_in_next_volume: ls
+                        .plan
+                        .as_ref()
+                        .is_some_and(|p| p.next_target_in_next_volume()),
+                    next_target_elevation: ls.plan.as_ref().and_then(|p| p.next_target_elevation()),
                 };
                 (Some(merged), Some(ctx), anchor_ms)
             }

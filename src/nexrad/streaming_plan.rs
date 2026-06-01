@@ -193,6 +193,24 @@ impl StreamingPlan {
         chunks.iter().find(|c| c.sequence == seq)
     }
 
+    /// Whether the immediate next download target falls in the *next*
+    /// volume rather than the current one. True when the active filter has
+    /// no remaining match in the current volume (so the projection extended
+    /// into the next volume). Lets the timeline attach the "next chunk"
+    /// countdown to the next-volume ghost instead of a current-volume sweep.
+    pub fn next_target_in_next_volume(&self) -> bool {
+        matches!(self.next_target_key, Some((1, _)))
+    }
+
+    /// Elevation number (1-based) of the immediate next download target, or
+    /// `None` for a Start chunk / when no target exists. Used to highlight
+    /// the matching sweep in the next-volume ghost.
+    pub fn next_target_elevation(&self) -> Option<u8> {
+        self.next_target()
+            .and_then(|c| c.elevation_number)
+            .map(|n| n as u8)
+    }
+
     /// Convenience: seconds from `now_secs` until the next target becomes
     /// available in S3 (drives the UI's "next in Xs" countdown). Returns
     /// `None` when no next target exists.
@@ -209,5 +227,59 @@ impl StreamingPlan {
         self.next_target()
             .and_then(|t| t.forecast.as_ref())
             .map(|f| (f.poll_at_secs - now_secs).max(0.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn chunk(sequence: usize, elevation_number: Option<usize>) -> ChunkProjectionInfo {
+        ChunkProjectionInfo {
+            sequence,
+            elevation_number,
+            azimuth_rate_dps: 0.0,
+            chunk_index_in_sweep: 0,
+            chunks_in_sweep: 3,
+            forecast: None,
+        }
+    }
+
+    fn plan(
+        next_target_key: Option<(u8, usize)>,
+        current: Vec<ChunkProjectionInfo>,
+        next: Option<Vec<ChunkProjectionInfo>>,
+    ) -> StreamingPlan {
+        StreamingPlan {
+            filter: StreamingFilter::Elevation(1),
+            built_at_secs: 0.0,
+            revision: 0,
+            current_volume_chunks: current,
+            next_volume_chunks: next,
+            current_volume_end_collection_secs: None,
+            next_target_key,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn next_target_in_next_volume_true_for_volume_offset_1() {
+        let p = plan(Some((1, 3)), vec![], Some(vec![chunk(3, Some(1))]));
+        assert!(p.next_target_in_next_volume());
+        assert_eq!(p.next_target_elevation(), Some(1));
+    }
+
+    #[wasm_bindgen_test]
+    fn next_target_in_next_volume_false_for_current_volume() {
+        let p = plan(Some((0, 5)), vec![chunk(5, Some(2))], None);
+        assert!(!p.next_target_in_next_volume());
+        assert_eq!(p.next_target_elevation(), Some(2));
+    }
+
+    #[wasm_bindgen_test]
+    fn next_target_in_next_volume_false_when_no_target() {
+        let p = plan(None, vec![], None);
+        assert!(!p.next_target_in_next_volume());
+        assert_eq!(p.next_target_elevation(), None);
     }
 }
