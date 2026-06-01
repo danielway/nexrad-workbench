@@ -218,16 +218,44 @@ fn render_snapshot(
                 .min_col_width(44.0)
                 .spacing(Vec2::new(10.0, 4.0))
                 .show(ui, |ui| {
-                    for header in [
-                        "elv", "ang", "wf", "used", "src", "pred_dur", "act_dur", "Δdur",
-                        "Δstart", "pred_ch", "act_ch", "Δch", "timing", "status",
+                    for (header, tip) in [
+                        ("elv", "Elevation number (1-based) within the volume."),
+                        ("ang", "Elevation angle, degrees."),
+                        ("wf", "Waveform type for this elevation (CS, CDW, CDWO, B, SPP)."),
+                        (
+                            "used",
+                            "Azimuth rate (deg/s) actually used to predict this sweep's duration.",
+                        ),
+                        (
+                            "src",
+                            "Source of the azimuth rate: LIB = projection library, VCP = VCP-message rate, FB = Method-B fallback.",
+                        ),
+                        ("pred_dur", "Predicted sweep duration, seconds."),
+                        (
+                            "act_dur",
+                            "Observed sweep duration, seconds. — until the sweep completes.",
+                        ),
+                        (
+                            "Δdur",
+                            "Sweep duration error = actual − predicted (s). Positive = sweep took longer than predicted.",
+                        ),
+                        (
+                            "Δstart",
+                            "Sweep start error = actual − predicted start (s). Positive = sweep started later than predicted.",
+                        ),
+                        ("pred_ch", "Predicted number of chunks in this sweep."),
+                        ("act_ch", "Observed number of chunks in this sweep."),
+                        (
+                            "Δch",
+                            "Chunk-count error = actual − predicted. Positive = more chunks than predicted.",
+                        ),
+                        (
+                            "timing",
+                            "Source of the actual timing: Obs = observed, Anch = anchored, Est = estimated.",
+                        ),
+                        ("status", "Sweep status: Complete / InProg / Future."),
                     ] {
-                        ui.label(
-                            RichText::new(header)
-                                .size(10.0)
-                                .strong()
-                                .color(heading_color),
-                        );
+                        header_label(ui, header, tip, heading_color);
                     }
                     ui.end_row();
 
@@ -406,20 +434,30 @@ fn render_snapshot(
                     .min_col_width(44.0)
                     .spacing(Vec2::new(10.0, 4.0))
                     .show(ui, |ui| {
-                        for header in [
-                            "bucket",
-                            "n",
-                            "med_pred_err",
-                            "med_lag_ms",
-                            "n_lag",
-                            "med_wait_after_empty",
+                        for (header, tip) in [
+                            (
+                                "bucket",
+                                "Bucket key = chunk_type|waveform|channel|first_in_sweep. Groups chunks the estimator treats alike.",
+                            ),
+                            ("n", "Number of chunks observed in this bucket this volume."),
+                            (
+                                "med_pred_err",
+                                "Median availability-clock error (ms): success_at − predicted_available_at. Positive = forecaster too optimistic (polled before the chunk was up).",
+                            ),
+                            (
+                                "med_lag_ms",
+                                "Median upload lag (ms): s3_last_modified − chunk_collection_end. Radar→S3 publish latency — NOT our acquisition lateness.",
+                            ),
+                            (
+                                "n_lag",
+                                "Number of chunks in this bucket with a measurable upload lag.",
+                            ),
+                            (
+                                "med_wait_after_empty",
+                                "Median poll-waste (ms): time from the last empty poll to success — wait potentially avoidable with better poll timing.",
+                            ),
                         ] {
-                            ui.label(
-                                RichText::new(header)
-                                    .size(10.0)
-                                    .strong()
-                                    .color(heading_color),
-                            );
+                            header_label(ui, header, tip, heading_color);
                         }
                         ui.end_row();
 
@@ -485,28 +523,62 @@ fn render_snapshot(
                     .min_col_width(40.0)
                     .spacing(Vec2::new(10.0, 4.0))
                     .show(ui, |ui| {
-                        for header in [
-                            "seq",
-                            "type",
-                            "elev",
-                            "empty",
-                            "bucket",
-                            "stats_n",
-                            "path",
-                            "anchor",
-                            "pred_err",
-                            "act_int",
-                            "pred_wait",
-                            "Δint",
-                            "lag_ms",
-                            "physics",
+                        for (header, tip) in [
+                            (
+                                "seq",
+                                "1-based sequence number within the volume at the time of success.",
+                            ),
+                            ("type", "Chunk type: Start / Intermediate / End."),
+                            (
+                                "elev",
+                                "Elevation number, with (chunk-index+1 / chunks-in-sweep).",
+                            ),
+                            (
+                                "empty",
+                                "Empty polls (Ok(None)) before the successful fetch — wasted S3 requests. Orange when > 0.",
+                            ),
+                            (
+                                "bucket",
+                                "Bucket key used for this chunk's prediction = chunk_type|waveform|channel|first_in_sweep.",
+                            ),
+                            (
+                                "stats_n",
+                                "Samples in the bucket when the prediction was made. Distinguishes 'model wrong' from 'stats not warm yet'.",
+                            ),
+                            (
+                                "path",
+                                "Estimator branch that produced the prediction: hist / phys / legacy / start.",
+                            ),
+                            (
+                                "anchor",
+                                "Anchor branch in use at prediction time: obs / median / default. Non-obs = projections degraded by a fallback anchor.",
+                            ),
+                            (
+                                "pred_err",
+                                "Availability-clock error (s): success_at − predicted_available_at. Positive = forecaster too optimistic (polled before the chunk was up). This is acquisition lateness vs predicted availability.",
+                            ),
+                            (
+                                "act_int",
+                                "Actual collection-space interval (s): this chunk's collection time − the previous chunk's. Ground truth for pred_wait.",
+                            ),
+                            (
+                                "pred_wait",
+                                "Wait (s) the scheduler predicted for this chunk (collection-space).",
+                            ),
+                            (
+                                "Δint",
+                                "Interval error (ms) = act_int − pred_wait. Positive = we underestimated the gap (chunk took longer than predicted). Orange when |Δint| > 1s.",
+                            ),
+                            (
+                                "lag_ms",
+                                "Upload lag (ms): s3_last_modified − chunk_collection_end. Radar→S3 publish latency — NOT our acquisition lateness.",
+                            ),
+                            (
+                                "physics",
+                                "Dominant physics case + key terms. intra = intra-sweep; is = inter-sweep (g=gap, wf=waveform penalty, ch=chunk dur); inter_vol = inter-volume.",
+                            ),
                         ] {
-                            ui.label(
-                                RichText::new(header)
-                                    .size(10.0)
-                                    .strong()
-                                    .color(heading_color),
-                            );
+                            header_label(ui, header, tip, heading_color);
                         }
                         ui.end_row();
 
@@ -634,6 +706,14 @@ fn arrival_row(
 
 fn mono_label(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
     ui.label(RichText::new(text).size(10.0).monospace().color(color));
+}
+
+/// Column header with hover help. The terse labels are load-bearing (they
+/// double as the copy-to-clipboard payload), so the full name / units / sign
+/// convention live in the tooltip rather than widening the column.
+fn header_label(ui: &mut egui::Ui, text: &str, tip: &str, color: egui::Color32) {
+    ui.label(RichText::new(text).size(10.0).strong().color(color))
+        .on_hover_text(tip);
 }
 
 fn mono_label_color(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
