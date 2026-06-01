@@ -142,7 +142,7 @@ pub(super) fn render_connector_lines(
         if scan.sweeps.is_empty() {
             continue;
         }
-        for ts in [scan.start_time, scan.end_time] {
+        for ts in [scan.start_time, scan.display_end_time()] {
             let x = ts_to_x(ts);
             if x >= scan_rect.left() && x <= scan_rect.right() {
                 painter.line_segment(

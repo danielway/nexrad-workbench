@@ -102,6 +102,25 @@ impl Scan {
         self.end_time - self.start_time
     }
 
+    /// Full VCP-projected volume end for timeline block rendering.
+    ///
+    /// A scan's stored sweeps can be sparse — a live stream that ended
+    /// mid-volume, or a partial archive download — but the VCP plan defines
+    /// the whole volume's duration. Returns the later of the real data end
+    /// (`end_time`) and the VCP-estimated end so the timeline block reflects
+    /// the entire scan instead of shrinking to the last downloaded sweep.
+    ///
+    /// Display-only: does NOT affect `end_time`, which stays anchored to real
+    /// data for playback progress, scan-at-timestamp, and contiguous-range
+    /// logic.
+    pub fn display_end_time(&self) -> f64 {
+        self.vcp_pattern
+            .as_ref()
+            .and_then(|v| v.estimated_volume_duration())
+            .map(|dur| self.end_time.max(self.start_time + dur))
+            .unwrap_or(self.end_time)
+    }
+
     /// VCP-defined target ("commanded") angle for the given elevation number,
     /// looking through the extracted pattern first then the static VCP table.
     /// Returns `None` only when neither source has an entry — callers should

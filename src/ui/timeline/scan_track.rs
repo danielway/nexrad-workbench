@@ -48,7 +48,7 @@ pub(super) fn render_scan_track(
         DetailLevel::Scans | DetailLevel::Sweeps => {
             for scan in view.settled_scans_in_range(view_start, view_end) {
                 let x_start = ts_to_x(scan.start_time).max(rect.left());
-                let x_end = ts_to_x(scan.end_time).min(rect.right());
+                let x_end = ts_to_x(scan.display_end_time()).min(rect.right());
                 let width = x_end - x_start;
 
                 if width < 1.0 {
