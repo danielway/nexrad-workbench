@@ -158,7 +158,7 @@ impl<'a> TimelineView<'a> {
     pub fn settled_scans_in_range(&self, start: f64, end: f64) -> impl Iterator<Item = &'a Scan> {
         let live_ms = self.live_volume_ms;
         self.cache
-            .scans_in_range(start, end)
+            .scans_in_visual_range(start, end)
             .filter(move |s| !is_live_scan(s, live_ms))
     }
 

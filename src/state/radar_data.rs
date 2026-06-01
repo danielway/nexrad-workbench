@@ -473,11 +473,26 @@ impl RadarTimeline {
         best
     }
 
-    /// Find scans that overlap with the given time range
+    /// Find scans that overlap with the given time range, by real-data
+    /// extent (`end_time`). The display counterpart is
+    /// [`Self::scans_in_visual_range`]; keep this for callers that need the
+    /// scan's true cached-data bounds rather than the projected block.
+    #[allow(dead_code)]
     pub fn scans_in_range(&self, start: f64, end: f64) -> impl Iterator<Item = &Scan> {
         self.scans
             .iter()
             .filter(move |scan| scan.end_time >= start && scan.start_time <= end)
+    }
+
+    /// Like [`Self::scans_in_range`], but culls against each scan's *displayed*
+    /// extent (`display_end_time()`) instead of its real-data `end_time`.
+    /// Timeline rendering uses this so a sparse scan whose cached sweeps are
+    /// off-screen still stays visible when its VCP-projected block intersects
+    /// the view. Keep non-display callers on `scans_in_range`.
+    pub fn scans_in_visual_range(&self, start: f64, end: f64) -> impl Iterator<Item = &Scan> {
+        self.scans
+            .iter()
+            .filter(move |scan| scan.display_end_time() >= start && scan.start_time <= end)
     }
 
     /// Builds a timeline from cached scan metadata.
@@ -903,5 +918,37 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].start_time, 1000.0);
         assert_eq!(result[1].start_time, 1300.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn scans_in_visual_range_uses_display_extent() {
+        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+
+        // A sparse scan whose cached sweeps ended early: real data spans only
+        // [1000, 1010], but the VCP plan projects a 120s volume so the drawn
+        // block reaches to 1120. (360° / 3°/s = 120s; 3.0 is exact in f32.)
+        let mut sparse = scan(1000.0, 1010.0);
+        sparse.vcp_pattern = Some(ExtractedVcp {
+            number: 215,
+            elevations: vec![ExtractedVcpElevation {
+                angle: 0.5,
+                waveform: "CS".to_string(),
+                prf_number: 1,
+                is_sails: false,
+                is_mrle: false,
+                is_base_tilt: false,
+                azimuth_rate: Some(3.0),
+            }],
+        });
+        assert_eq!(sparse.display_end_time(), 1120.0);
+
+        let tl = RadarTimeline {
+            scans: vec![sparse],
+        };
+
+        // View window sits to the right of the cached sweeps but within the
+        // projected block. Real-data culling drops it; visual culling keeps it.
+        assert_eq!(tl.scans_in_range(1050.0, 1500.0).count(), 0);
+        assert_eq!(tl.scans_in_visual_range(1050.0, 1500.0).count(), 1);
     }
 }

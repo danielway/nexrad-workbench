@@ -138,7 +138,7 @@ pub(super) fn render_connector_lines(
 ) {
     let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    for scan in timeline.scans_in_range(view_start, view_end) {
+    for scan in timeline.scans_in_visual_range(view_start, view_end) {
         if scan.sweeps.is_empty() {
             continue;
         }
