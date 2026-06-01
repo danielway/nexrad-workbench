@@ -114,7 +114,7 @@ pub(super) fn render_playback_cursor(
 
         if now_x >= overlay_rect.left() && now_x <= overlay_rect.right() {
             if is_live {
-                // Streaming: bold solid LIVE status line + "● LIVE" badge.
+                // Streaming: bold solid LIVE status line + broadcast LIVE badge.
                 let live_color = tl_colors::LIVE_ACTIVE;
                 painter.line_segment(
                     [
@@ -123,7 +123,8 @@ pub(super) fn render_playback_cursor(
                     ],
                     Stroke::new(2.0, live_color),
                 );
-                draw_now_pill(painter, overlay_rect, now_x, "● LIVE", live_color);
+                let live_label = format!("{} LIVE", egui_phosphor::regular::BROADCAST);
+                draw_now_pill(painter, overlay_rect, now_x, &live_label, live_color);
             } else {
                 // Archive/Idle: subtle crosshair "now" marker.
                 let now_color = tl_colors::NOW_MARKER;
@@ -173,11 +174,12 @@ pub(super) fn render_playback_cursor(
                 // here goes live (the click is handled by the live-edge band in
                 // handle_timeline_interaction).
                 if at_edge {
+                    let cta_label = format!("{} LIVE", egui_phosphor::regular::PLAY);
                     draw_now_pill(
                         painter,
                         overlay_rect,
                         now_x,
-                        "▸ LIVE",
+                        &cta_label,
                         tl_colors::LIVE_PILL_CTA,
                     );
                 }
