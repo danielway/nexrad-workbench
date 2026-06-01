@@ -47,6 +47,7 @@ pub use live_radar_model::LiveRadarModel;
 pub use mping::MpingState;
 pub use playback::{
     LoopMode, PlaybackMode, PlaybackSpeed, PlaybackState, TimeModel, LIVE_EDGE_THRESHOLD_SECS,
+    MICRO_ZOOM_THRESHOLD,
 };
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;

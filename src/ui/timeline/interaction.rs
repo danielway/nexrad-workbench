@@ -101,7 +101,19 @@ pub(super) fn handle_timeline_interaction(
         if scroll_delta.y != 0.0 {
             let zoom_factor = 1.0 + scroll_delta.y as f64 * 0.002;
             let old_zoom = playback.state.timeline_zoom;
-            let new_zoom = (old_zoom * zoom_factor).clamp(0.000001, 1000.0);
+
+            // While streaming live (or otherwise locked to "now"), don't let the
+            // user zoom out into macro mode — the live stream is about individual
+            // sweeps/chunks, which only make sense at micro zoom. Floor the
+            // minimum at the micro threshold so the timeline stays in micro mode.
+            let realtime =
+                live.mode_state.is_active() || playback.state.time_model.locked_to_realtime;
+            let min_zoom = if realtime {
+                crate::state::MICRO_ZOOM_THRESHOLD
+            } else {
+                0.000001
+            };
+            let new_zoom = (old_zoom * zoom_factor).clamp(min_zoom, 1000.0);
 
             if let Some(cursor_pos) = response.hover_pos() {
                 let cursor_ts = view_start + (cursor_pos.x - full_rect.left()) as f64 / old_zoom;
