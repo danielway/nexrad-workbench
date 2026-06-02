@@ -158,6 +158,12 @@ impl Projector {
         self.filter = filter;
     }
 
+    /// The active streaming filter. Used by `ProjectionEngine` to skip a
+    /// cache-busting revision bump when `set_filter` is a no-op.
+    pub fn filter(&self) -> StreamingFilter {
+        self.filter
+    }
+
     pub fn record_chunk_collection_end_secs(&mut self, secs: f64) {
         self.latest_chunk_collection_end_secs = Some(secs);
     }

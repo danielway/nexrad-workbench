@@ -12,6 +12,13 @@
 //! both the collection and availability axes and migrate consumers onto it; the
 //! wrapped `plan` is retained as the math carrier until those migrations land.
 
+mod engine;
+
+// Re-exported as the module's public name; constructed at the Phase 4
+// ownership flip, so unused in the engine-less build until then.
+#[allow(unused_imports)]
+pub use engine::ProjectionEngine;
+
 use super::streaming_plan::StreamingPlan;
 use super::ChunkProjectionInfo;
 
