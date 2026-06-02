@@ -11,12 +11,13 @@
 //! boundaries as additional inputs, and flip ownership to a shared
 //! `Rc<RefCell<ProjectionEngine>>` on the main thread.
 
+use super::inventory::{KnownChunk, KnownChunkInventory};
 use super::Projection;
 use crate::nexrad::projector::Projector;
 use crate::nexrad::streaming_filter::StreamingFilter;
 use crate::nexrad::timing::{AnchorSource, ChunkMetadata, ChunkTimingStats};
 use chrono::Duration as ChronoDuration;
-use nexrad_data::aws::realtime::ChunkIdentifier;
+use nexrad_data::aws::realtime::{ChunkIdentifier, VolumeIndex};
 use nexrad_decode::messages::volume_coverage_pattern;
 
 /// Identifies the inputs a cached projection was built from, so a later request
@@ -37,6 +38,9 @@ struct CacheKey {
 pub struct ProjectionEngine {
     /// The math kernel: VCP, mapper, rolling stats, collection anchor, filter.
     projector: Projector,
+    /// Known-available chunks (arrivals + periodic listings). Supplies the
+    /// availability anchor and per-sweep availability status.
+    inventory: KnownChunkInventory,
     /// Bumped whenever a setter changes an input value; the cache key.
     input_revision: u64,
     /// Memoized output + the inputs it was built from.
@@ -48,6 +52,7 @@ impl ProjectionEngine {
     pub fn new() -> Self {
         Self {
             projector: Projector::new(),
+            inventory: KnownChunkInventory::default(),
             input_revision: 0,
             cached: None,
         }
@@ -111,6 +116,33 @@ impl ProjectionEngine {
         self.projector
             .record_availability_lag_for(chunk_id, lag_secs);
         self.bump();
+    }
+
+    /// Record a single known-available chunk (an arrival, or one listing entry).
+    /// Bumps the input revision only when the availability anchor advanced.
+    pub fn observe_known_chunk(&mut self, chunk: KnownChunk) {
+        if self.inventory.observe(chunk) {
+            self.bump();
+        }
+    }
+
+    /// Merge a full S3 listing for one volume (periodic probe). Bumps the input
+    /// revision only when the availability anchor advanced.
+    pub fn observe_listing(&mut self, volume: VolumeIndex, listed: &[ChunkIdentifier]) {
+        if self.inventory.observe_listing(volume, listed) {
+            self.bump();
+        }
+    }
+
+    /// Drop inventory volumes outside the current + next window (call on
+    /// rollover to bound memory).
+    pub fn retain_inventory_from(&mut self, keep: VolumeIndex) {
+        self.inventory.retain_from(keep);
+    }
+
+    /// The known-available-chunks inventory (read by status derivation).
+    pub fn inventory(&self) -> &KnownChunkInventory {
+        &self.inventory
     }
 
     // ── Output ──
