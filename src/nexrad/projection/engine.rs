@@ -11,8 +11,11 @@
 //! boundaries as additional inputs, and flip ownership to a shared
 //! `Rc<RefCell<ProjectionEngine>>` on the main thread.
 
+use super::cached_sweeps::CachedSweepSet;
 use super::inventory::{KnownChunk, KnownChunkInventory};
+use super::status::{build_sweeps, SweepBuildCtx};
 use super::Projection;
+use crate::data::CachedSweep;
 use crate::nexrad::projector::Projector;
 use crate::nexrad::streaming_filter::StreamingFilter;
 use crate::nexrad::timing::{AnchorSource, ChunkMetadata, ChunkTimingStats};
@@ -41,6 +44,13 @@ pub struct ProjectionEngine {
     /// Known-available chunks (arrivals + periodic listings). Supplies the
     /// availability anchor and per-sweep availability status.
     inventory: KnownChunkInventory,
+    /// Sweeps cached locally (possibly sparse) — drives `CollectedByUs`.
+    cached_sweeps: CachedSweepSet,
+    /// Whole-second scan-start of the current in-progress volume (cache +
+    /// status key). `None` before the first Start chunk.
+    current_scan_start_secs: Option<f64>,
+    /// `(scan_start, elevation)` currently being received — drives `InProgress`.
+    in_progress: Option<(f64, u8)>,
     /// Bumped whenever a setter changes an input value; the cache key.
     input_revision: u64,
     /// Memoized output + the inputs it was built from.
@@ -53,6 +63,9 @@ impl ProjectionEngine {
         Self {
             projector: Projector::new(),
             inventory: KnownChunkInventory::default(),
+            cached_sweeps: CachedSweepSet::default(),
+            current_scan_start_secs: None,
+            in_progress: None,
             input_revision: 0,
             cached: None,
         }
@@ -145,6 +158,36 @@ impl ProjectionEngine {
         &self.inventory
     }
 
+    /// Replace the cached cuts recorded for one scan (drives `CollectedByUs`).
+    /// Always bumps — the cuts list is the changed input.
+    pub fn set_cached_sweeps_for_scan(&mut self, scan_start_secs: f64, sweeps: &[CachedSweep]) {
+        self.cached_sweeps.set_for_scan(scan_start_secs, sweeps);
+        self.bump();
+    }
+
+    /// Set the current in-progress volume's whole-second scan start. No-op when
+    /// unchanged.
+    pub fn set_current_scan_start_secs(&mut self, secs: f64) {
+        if self.current_scan_start_secs != Some(secs) {
+            self.current_scan_start_secs = Some(secs);
+            self.bump();
+        }
+    }
+
+    /// Set (or clear) the elevation currently being received for a scan. No-op
+    /// when unchanged.
+    pub fn set_in_progress_elevation(
+        &mut self,
+        scan_start_secs: f64,
+        elevation_number: Option<u8>,
+    ) {
+        let next = elevation_number.map(|e| (scan_start_secs, e));
+        if self.in_progress != next {
+            self.in_progress = next;
+            self.bump();
+        }
+    }
+
     // ── Output ──
 
     /// Projection anchored at `anchor`, using the engine's stored collection
@@ -187,7 +230,30 @@ impl ProjectionEngine {
             } else {
                 self.projector.build_plan(anchor, now_secs)?
             };
-            self.cached = Some((key, Projection::from_plan(plan)));
+
+            // Whole-second scan start: prefer the explicit input, else the
+            // first projected collection time, else `now`.
+            let current_scan_start = self.current_scan_start_secs.unwrap_or_else(|| {
+                plan.current_volume_chunks
+                    .iter()
+                    .find_map(|c| c.forecast.as_ref().map(|f| f.collection_time_secs))
+                    .unwrap_or(now_secs)
+            });
+            let current_volume = *anchor.volume();
+            let ctx = SweepBuildCtx {
+                current_chunks: &plan.current_volume_chunks,
+                next_chunks: plan.next_volume_chunks.as_deref(),
+                current_scan_start_secs: current_scan_start,
+                next_scan_start_secs: None,
+                current_volume,
+                next_volume: current_volume.next(),
+                cached: &self.cached_sweeps,
+                inventory: &self.inventory,
+                in_progress_elevation: self.in_progress.map(|(_, e)| e),
+                next_scan_boundary_start_secs: None,
+            };
+            let sweeps = build_sweeps(&ctx);
+            self.cached = Some((key, Projection::from_plan_with_sweeps(plan, sweeps)));
         }
         self.cached.as_ref().map(|(_, p)| p)
     }

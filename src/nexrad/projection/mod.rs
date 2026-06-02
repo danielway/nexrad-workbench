@@ -12,18 +12,74 @@
 //! both the collection and availability axes and migrate consumers onto it; the
 //! wrapped `plan` is retained as the math carrier until those migrations land.
 
+mod cached_sweeps;
 mod engine;
 mod inventory;
+mod status;
 
 // Re-exported as the module's public names; constructed at the Phase 4
 // ownership flip, so unused in the engine-less build until then.
 #[allow(unused_imports)]
+pub use cached_sweeps::CachedSweepSet;
+#[allow(unused_imports)]
 pub use engine::ProjectionEngine;
 #[allow(unused_imports)]
 pub use inventory::{ChunkCoord, KnownChunk, KnownChunkInventory};
+#[allow(unused_imports)]
+pub use status::{build_sweeps, derive_sweep_status, SweepBuildCtx};
 
 use super::streaming_plan::StreamingPlan;
 use super::ChunkProjectionInfo;
+
+/// Where a projected sweep sits relative to the streaming anchor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Consumed as surfaces migrate (Phase 5).
+pub enum ProjectionScanRole {
+    /// A sweep of the volume currently being received.
+    CurrentInProgress,
+    /// A sweep of the *next* volume, projected one scan ahead.
+    NextScan,
+}
+
+/// Acquisition/display status of a single projected sweep.
+///
+/// Precedence when deriving: `CollectedByUs` > `InProgress` > `AvailableNotCollected`
+/// > `FutureExpected`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)] // Consumed as surfaces migrate (Phase 5).
+pub enum SweepProjectionStatus {
+    /// We have this sweep cached locally (possibly sparse coverage).
+    CollectedByUs,
+    /// Published in S3 (per the inventory) but not downloaded by us.
+    AvailableNotCollected,
+    /// Currently being received.
+    InProgress,
+    /// Neither available nor cached yet — purely projected.
+    FutureExpected,
+}
+
+/// One projected sweep on both the COLLECTION and AVAILABILITY axes.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)] // Consumed as surfaces migrate (Phase 5).
+pub struct SweepProjection {
+    /// 1-based elevation number.
+    pub elevation_number: u8,
+    /// Which scan (current vs. next) this sweep belongs to.
+    pub scan_role: ProjectionScanRole,
+    /// Acquisition/display status.
+    pub status: SweepProjectionStatus,
+    /// COLLECTION-time span (radar physically scans) — drives timeline / VCP
+    /// panel / sweep line.
+    pub collection_start_secs: f64,
+    pub collection_end_secs: f64,
+    /// AVAILABILITY time (latest chunk of the sweep appears on S3) — drives
+    /// acquisition. Equals `collection_end` for already-collected cuts.
+    pub available_at_secs: f64,
+    /// Chunks expected in the sweep (0 when known only from the cache).
+    pub chunks_in_sweep: usize,
+    /// Azimuth rotation rate (deg/s) for the sweep-line extrapolation.
+    pub azimuth_rate_dps: f64,
+}
 
 /// The unified forward-looking projection emitted by the engine and read by all
 /// consumers.
@@ -42,14 +98,48 @@ pub struct Projection {
     /// Mirror of `plan.revision` — bumped by the projector on every build, used
     /// by consumers to skip redraws / detect a fresher projection.
     pub revision: u64,
+    /// Per-sweep projection for the current + next scan, each tagged with
+    /// status on both the collection and availability axes. Includes cached
+    /// (`CollectedByUs`) sweeps for the display view; acquisition consumers
+    /// filter those out via [`Self::acquisition_sweeps`].
+    pub sweeps: Vec<SweepProjection>,
 }
 
 #[allow(dead_code)] // Accessors come online as consumers migrate (Phase 5).
 impl Projection {
-    /// Wrap a freshly built [`StreamingPlan`].
+    /// Wrap a freshly built [`StreamingPlan`] with no per-sweep view (the
+    /// Phase 0 shape — used until the engine populates `sweeps`).
     pub fn from_plan(plan: StreamingPlan) -> Self {
         let revision = plan.revision;
-        Self { plan, revision }
+        Self {
+            plan,
+            revision,
+            sweeps: Vec::new(),
+        }
+    }
+
+    /// Wrap a plan together with its per-sweep projection.
+    pub fn from_plan_with_sweeps(plan: StreamingPlan, sweeps: Vec<SweepProjection>) -> Self {
+        let revision = plan.revision;
+        Self {
+            plan,
+            revision,
+            sweeps,
+        }
+    }
+
+    /// All projected sweeps, including cached (`CollectedByUs`) cuts — the
+    /// DISPLAY view (timeline, VCP panel, sweep line).
+    pub fn display_sweeps(&self) -> &[SweepProjection] {
+        &self.sweeps
+    }
+
+    /// Sweeps the acquisition loop still needs — everything except the cuts we
+    /// already have cached.
+    pub fn acquisition_sweeps(&self) -> impl Iterator<Item = &SweepProjection> {
+        self.sweeps
+            .iter()
+            .filter(|s| s.status != SweepProjectionStatus::CollectedByUs)
     }
 
     /// The immediate next chunk the streaming loop plans to download.
