@@ -23,6 +23,7 @@ pub(crate) mod ingest_phases;
 mod national_mosaic;
 pub(crate) mod network_monitor;
 pub(crate) mod persistence_manager;
+pub(crate) mod projection;
 mod projector;
 mod realtime;
 pub(crate) mod record_decode;

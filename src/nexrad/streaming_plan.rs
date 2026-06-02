@@ -228,6 +228,21 @@ impl StreamingPlan {
             .and_then(|t| t.forecast.as_ref())
             .map(|f| (f.poll_at_secs - now_secs).max(0.0))
     }
+
+    /// Empty plan with the given filter/revision — test constructor for the
+    /// `projection` module's wrapper tests.
+    #[cfg(test)]
+    pub(crate) fn empty_for_test(filter: StreamingFilter, revision: u64) -> Self {
+        StreamingPlan {
+            filter,
+            built_at_secs: 0.0,
+            revision,
+            current_volume_chunks: Vec::new(),
+            next_volume_chunks: None,
+            current_volume_end_collection_secs: None,
+            next_target_key: None,
+        }
+    }
 }
 
 #[cfg(test)]
