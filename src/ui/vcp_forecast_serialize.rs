@@ -252,7 +252,7 @@ pub fn serialize_forecast(
         );
         let _ = writeln!(
             out,
-            "  seq  type          elev        empty  bucket            stats_n  path    anchor   pred_err  act_int  pred_wait    Δint     lag_ms    physics"
+            "  seq  type          elev        empty  bucket            stats_n  path    anchor   wait      pred_err  act_int  pred_wait    Δint     lag_ms    physics"
         );
         let mut prev_elev: Option<u8> = None;
         let mut prev_arrival: Option<&ChunkArrivalStat> = None;
@@ -265,7 +265,7 @@ pub fn serialize_forecast(
             let int_err = prev_arrival.and_then(|p| a.interval_error_ms(p));
             let _ = writeln!(
                 out,
-                "  {:>3}  {:<12}  {:<10}  {:>5}  {:<16}  {:>7}  {:<6}  {:<7}  {:>8}  {:>7}  {:>9}  {:>8}  {:>7}  {}",
+                "  {:>3}  {:<12}  {:<10}  {:>5}  {:<16}  {:>7}  {:<6}  {:<7}  {:<8}  {:>8}  {:>7}  {:>9}  {:>8}  {:>7}  {}",
                 a.sequence,
                 a.chunk_type,
                 fmt_elev(a),
@@ -281,6 +281,7 @@ pub fn serialize_forecast(
                 },
                 a.scheduler_path.map(|p| p.short()).unwrap_or("—"),
                 a.anchor_source.map(|s| s.short()).unwrap_or("—"),
+                a.wait_resolution.short(),
                 a.prediction_error_secs()
                     .map(|e| format!("{e:+.2}s"))
                     .unwrap_or_else(|| "—".into()),

@@ -699,6 +699,10 @@ pub(super) async fn streaming_loop(
     // projection. Read at success time into the per-chunk arrival stat.
     let mut cur_forecast: Option<super::ChunkForecast> = None;
     let mut cur_predicted_wait_secs: Option<f64> = None;
+    // How the wait before this chunk's fetch resolved. Set by the adaptive
+    // cross-volume wait helper (early-fire / re-anchor); stays
+    // `SleptToPrediction` for the plain single-sleep path.
+    let mut cur_wait_resolution = crate::state::WaitResolution::SleptToPrediction;
     // Revision of the plan that produced cur_forecast, captured at the
     // same moment so the per-chunk arrival stat can record which plan
     // version made the prediction. Diagnostics use this to tell
@@ -742,6 +746,7 @@ pub(super) async fn streaming_loop(
             cur_forecast = None;
             cur_predicted_wait_secs = None;
             cur_plan_revision = None;
+            cur_wait_resolution = crate::state::WaitResolution::SleptToPrediction;
             none_retries = 0;
             let emitted = run_mid_stream_backfill(
                 &site_id,
@@ -795,13 +800,49 @@ pub(super) async fn streaming_loop(
                 }
             }
         }
+        // Adaptive-wait inputs: whether the next target is in the next volume
+        // (the only case the list probe helps) and its sequence number.
+        let next_in_next_volume = plan
+            .as_ref()
+            .map(|p| p.next_target_in_next_volume())
+            .unwrap_or(false);
+        let next_target_seq = plan
+            .as_ref()
+            .and_then(|p| p.next_target())
+            .map(|t| t.sequence);
+
         if let Some(wait_duration) = time_until_next_opt {
             let wait_ms = wait_duration.as_millis() as u32;
             // POLL_BIAS and the bucket retry budget are already folded into
             // `projected_poll_at_secs` upstream, so we sleep directly to
             // that target without additional padding here.
-            if wait_ms > 0 {
-                match interruptible_sleep(
+            let threshold_ms = (LIST_PROBE_THRESHOLD_SECS * 1000.0) as u32;
+            let outcome = if let (true, Some(target_seq)) = (
+                should_list_now(wait_ms, next_in_next_volume, threshold_ms),
+                next_target_seq,
+            ) {
+                // Long filtered cross-volume wait: list-probe the next-volume
+                // slot to early-fire / re-anchor instead of dead-reckoning the
+                // whole sleep.
+                let target_volume = iter.current_volume().next();
+                let prev_anchor_upload = iter.current_upload_secs();
+                let (out, resolution) = wait_for_next_target(
+                    &site_id,
+                    &mut iter,
+                    &mut loop_state,
+                    &mut control_rx,
+                    &ctx,
+                    wait_ms,
+                    target_seq,
+                    target_volume,
+                    prev_anchor_upload,
+                    active_filter_epoch,
+                )
+                .await;
+                cur_wait_resolution = resolution;
+                out
+            } else if wait_ms > 0 {
+                interruptible_sleep(
                     &mut loop_state,
                     &mut control_rx,
                     &ctx,
@@ -809,18 +850,20 @@ pub(super) async fn streaming_loop(
                     active_filter_epoch,
                 )
                 .await
-                {
-                    SleepOutcome::Stopped => {
-                        log::debug!("Realtime streaming stopped");
-                        break;
-                    }
-                    SleepOutcome::FilterChanged => {
-                        // Re-enter the loop top so the filter-change branch
-                        // runs the mid-stream backfill and re-targets.
-                        continue;
-                    }
-                    SleepOutcome::Completed => {}
+            } else {
+                SleepOutcome::Completed
+            };
+            match outcome {
+                SleepOutcome::Stopped => {
+                    log::debug!("Realtime streaming stopped");
+                    break;
                 }
+                SleepOutcome::FilterChanged => {
+                    // Re-enter the loop top so the filter-change branch
+                    // runs the mid-stream backfill and re-targets.
+                    continue;
+                }
+                SleepOutcome::Completed => {}
             }
         }
 
@@ -943,6 +986,7 @@ pub(super) async fn streaming_loop(
             cur_forecast = None;
             cur_predicted_wait_secs = None;
             cur_plan_revision = None;
+            cur_wait_resolution = crate::state::WaitResolution::SleptToPrediction;
             continue;
         }
 
@@ -1060,6 +1104,7 @@ pub(super) async fn streaming_loop(
 
                 let arrival_stat = crate::state::ChunkArrivalStat {
                     sequence: chunks_in_volume,
+                    wait_resolution: cur_wait_resolution,
                     chunk_type: type_label,
                     elevation_number,
                     chunk_index_in_sweep,
@@ -1087,6 +1132,7 @@ pub(super) async fn streaming_loop(
                 cur_forecast = None;
                 cur_predicted_wait_secs = None;
                 cur_plan_revision = None;
+                cur_wait_resolution = crate::state::WaitResolution::SleptToPrediction;
                 let chunk_is_last_in_sweep = iter
                     .chunk_metadata(chunk.identifier.sequence())
                     .map(|m| m.is_last_in_sweep());
@@ -1227,6 +1273,184 @@ async fn interruptible_sleep(
         SleepOutcome::FilterChanged
     } else {
         SleepOutcome::Completed
+    }
+}
+
+// ── Adaptive cross-volume wait (list-probe early-fire + re-anchor) ─────────
+
+/// Minimum predicted wait (seconds) before the adaptive list-probe engages.
+/// Below this the single-sleep path is used verbatim — short / same-volume
+/// waits don't accumulate enough projection error to be worth an S3 list call.
+const LIST_PROBE_THRESHOLD_SECS: f64 = 30.0;
+
+/// Cadence (seconds) of the list probe during a long cross-volume wait. Also
+/// the worst-case overshoot: once the target is published, the next probe
+/// fires within this window and breaks the sleep. Trades S3 list calls for
+/// timing tightness.
+const LIST_PROBE_CADENCE_SECS: f64 = 20.0;
+
+/// Whether the adaptive list-probe should engage for this wait. Only the
+/// filtered cross-volume case (target in the next volume) carries the long
+/// projection chain + stale anchor that the probe corrects; everything else
+/// uses the plain single sleep. Pure — split out for testing.
+fn should_list_now(wait_ms: u32, target_in_next_volume: bool, threshold_ms: u32) -> bool {
+    target_in_next_volume && wait_ms > threshold_ms
+}
+
+/// Whether the next-volume slot has started writing the *new* volume (vs. still
+/// holding the previous occupant of this rotating slot). The new volume's
+/// chunks upload strictly later than our current-volume anchor, while a
+/// recycled old occupant uploaded long ago — so "strictly newer than the
+/// anchor" is the rollover signal. Reuses [`probe_should_advance`]. Pure.
+fn slot_is_fresh(prev_anchor_upload_secs: f64, slot_newest_upload_secs: Option<f64>) -> bool {
+    probe_should_advance(prev_anchor_upload_secs, slot_newest_upload_secs)
+}
+
+/// Whether the target chunk is already published in the listing. Presence is by
+/// sequence: the target sequence was resolved by the projector to the user's
+/// filtered elevation, and chunks publish in order, so any published sequence
+/// `>= target_seq` means the target is available. An End chunk also fires
+/// (the volume finished — possibly shorter than projected — and the fetch path
+/// will roll over). Pure — split out for testing.
+fn target_present_in_listing(
+    listed_seqs: &[usize],
+    listed_has_end: bool,
+    target_seq: usize,
+) -> bool {
+    listed_has_end || listed_seqs.iter().any(|&s| s >= target_seq)
+}
+
+/// Convert a fresh projected poll time into a remaining-wait in milliseconds,
+/// clamped to zero. Pure — split out for testing.
+fn recompute_remaining_wait_ms(new_poll_at_secs: f64, now_secs: f64) -> u32 {
+    ((new_poll_at_secs - now_secs).max(0.0) * 1000.0) as u32
+}
+
+/// Newest-published chunk's S3 upload time (Unix seconds) from a listing, or
+/// `None` when the slot is empty / carries no upload metadata. Assumes the
+/// listing is sequence-sorted (S3 ListObjects is lexicographic), so the last
+/// entry is newest — same assumption as [`slot_newest_upload_secs`].
+fn listing_newest_upload_secs(
+    listed: &[nexrad_data::aws::realtime::ChunkIdentifier],
+) -> Option<f64> {
+    listed
+        .last()?
+        .upload_date_time()
+        .map(|dt| dt.timestamp_millis() as f64 / 1000.0)
+}
+
+/// Sleep until the next download target should be available, periodically
+/// listing the next-volume S3 slot to (a) early-fire the moment the target is
+/// published and (b) re-anchor the remaining-wait projection on a freshly
+/// published chunk — correcting the accumulated-error overshoot of the
+/// single-sleep path.
+///
+/// Returns the terminal [`SleepOutcome`] (so the caller keeps its existing
+/// stop/filter-change/completed handling) plus how the wait resolved (for
+/// per-chunk arrival diagnostics). Never mutates the download cursor: re-anchor
+/// goes through [`StreamingState::build_plan_from_anchor`], which leaves
+/// `self.current` intact.
+///
+/// `prev_anchor_upload_secs` is the current-volume anchor's S3 upload time, the
+/// reference for the rotating-slot freshness guard.
+#[allow(clippy::too_many_arguments)]
+async fn wait_for_next_target(
+    site_id: &str,
+    iter: &mut StreamingState,
+    loop_state: &mut LoopState,
+    control_rx: &mut UnboundedReceiver<ControlMessage>,
+    ctx: &egui::Context,
+    initial_wait_ms: u32,
+    target_seq: usize,
+    target_volume: nexrad_data::aws::realtime::VolumeIndex,
+    prev_anchor_upload_secs: Option<f64>,
+    wake_epoch: u64,
+) -> (SleepOutcome, crate::state::WaitResolution) {
+    use crate::state::WaitResolution;
+    use nexrad_data::aws::realtime::{list_chunks_in_volume, ChunkType};
+
+    let cadence_ms = (LIST_PROBE_CADENCE_SECS * 1000.0) as u32;
+    let mut remaining_ms = initial_wait_ms;
+    let mut resolution = WaitResolution::SleptToPrediction;
+
+    loop {
+        // Final approach: within one cadence of the target, just sleep the
+        // remainder — no point listing right before the fetch attempt.
+        if remaining_ms <= cadence_ms {
+            let outcome =
+                interruptible_sleep(loop_state, control_rx, ctx, remaining_ms, wake_epoch).await;
+            return (outcome, resolution);
+        }
+
+        // Sleep one segment; bail immediately on stop / filter change.
+        match interruptible_sleep(loop_state, control_rx, ctx, cadence_ms, wake_epoch).await {
+            SleepOutcome::Completed => {}
+            other => return (other, resolution),
+        }
+        remaining_ms = remaining_ms.saturating_sub(cadence_ms);
+
+        // Re-check stop before spending a network request.
+        drain_control(loop_state, control_rx);
+        if loop_state.stop_requested {
+            return (SleepOutcome::Stopped, resolution);
+        }
+
+        // Probe the next-volume slot. A failure is non-fatal: keep the
+        // existing schedule, so we're never worse than the single-sleep path.
+        let listed = match list_chunks_in_volume(site_id, target_volume, 100).await {
+            Ok(ids) => ids,
+            Err(e) => {
+                log::warn!(
+                    "list-probe: list_chunks_in_volume failed: {} — continuing scheduled wait",
+                    e
+                );
+                continue;
+            }
+        };
+
+        // Rotating-slot freshness guard: skip both early-fire and re-anchor
+        // until the slot actually holds the new volume.
+        let slot_newest = listing_newest_upload_secs(&listed);
+        let fresh = match prev_anchor_upload_secs {
+            Some(prev) => slot_is_fresh(prev, slot_newest),
+            None => slot_newest.is_some(),
+        };
+        if !fresh {
+            log::debug!("list-probe: next-volume slot not fresh yet (rollover pending)");
+            continue;
+        }
+
+        let listed_seqs: Vec<usize> = listed.iter().map(|c| c.sequence()).collect();
+        let has_end = listed.iter().any(|c| c.chunk_type() == ChunkType::End);
+        if target_present_in_listing(&listed_seqs, has_end, target_seq) {
+            log::debug!(
+                "list-probe: early-fire (target seq {} present in next-volume slot)",
+                target_seq
+            );
+            return (SleepOutcome::Completed, WaitResolution::EarlyFired);
+        }
+
+        // Re-anchor the remaining wait on the newest published chunk — a fresh
+        // upload time + true sequence position collapses the accumulated
+        // projection error. Projection-only: `self.current` is untouched.
+        let now2 = current_timestamp_f64();
+        if let Some(newest) = listed.last() {
+            if let Some(new_poll_at) = iter.build_plan_from_anchor(newest, now2).and_then(|p| {
+                p.next_target()
+                    .and_then(|t| t.forecast.as_ref())
+                    .map(|f| f.poll_at_secs)
+            }) {
+                let new_remaining = recompute_remaining_wait_ms(new_poll_at, now2);
+                log::debug!(
+                    "list-probe: re-anchored on seq {} — remaining wait {}ms (was {}ms)",
+                    newest.sequence(),
+                    new_remaining,
+                    remaining_ms,
+                );
+                remaining_ms = new_remaining;
+                resolution = WaitResolution::ReAnchored;
+            }
+        }
     }
 }
 
@@ -1477,6 +1701,55 @@ mod tests {
         // Just outside is stale.
         let cached_at = now - (VOLUME_HINT_MAX_AGE_SECS + 1.0);
         assert!(now - cached_at >= VOLUME_HINT_MAX_AGE_SECS);
+    }
+
+    #[wasm_bindgen_test]
+    fn should_list_now_only_for_long_cross_volume_waits() {
+        let threshold = 30_000;
+        // Cross-volume + above threshold → probe.
+        assert!(should_list_now(45_000, true, threshold));
+        // Below threshold → no probe even cross-volume.
+        assert!(!should_list_now(20_000, true, threshold));
+        // Exactly threshold is not strictly greater → no probe.
+        assert!(!should_list_now(30_000, true, threshold));
+        // Same-volume → never probe regardless of length.
+        assert!(!should_list_now(120_000, false, threshold));
+    }
+
+    #[wasm_bindgen_test]
+    fn slot_is_fresh_detects_rollover() {
+        // New volume's chunks upload later than our anchor → fresh.
+        assert!(slot_is_fresh(100.0, Some(150.0)));
+        // Slot empty / no metadata → not fresh.
+        assert!(!slot_is_fresh(100.0, None));
+        // Recycled older occupant (uploaded long ago) → not fresh.
+        assert!(!slot_is_fresh(100.0, Some(50.0)));
+        // Equal upload time (no progress) → not fresh.
+        assert!(!slot_is_fresh(100.0, Some(100.0)));
+    }
+
+    #[wasm_bindgen_test]
+    fn target_present_in_listing_fires_on_seq_or_end() {
+        // Exact target sequence present → fire.
+        assert!(target_present_in_listing(&[1, 2, 3], false, 3));
+        // A higher sequence present → fire (target already passed).
+        assert!(target_present_in_listing(&[1, 2, 3, 4], false, 3));
+        // Target not yet reached → wait.
+        assert!(!target_present_in_listing(&[1, 2], false, 3));
+        // End chunk present (volume shorter than projected) → fire.
+        assert!(target_present_in_listing(&[1, 2], true, 9));
+        // Empty listing → wait.
+        assert!(!target_present_in_listing(&[], false, 3));
+    }
+
+    #[wasm_bindgen_test]
+    fn recompute_remaining_wait_clamps_to_zero() {
+        // Future poll time → positive remaining wait in ms.
+        assert_eq!(recompute_remaining_wait_ms(105.0, 100.0), 5_000);
+        // Poll time already passed → clamps to zero (fetch immediately).
+        assert_eq!(recompute_remaining_wait_ms(95.0, 100.0), 0);
+        // Exactly now → zero.
+        assert_eq!(recompute_remaining_wait_ms(100.0, 100.0), 0);
     }
 
     #[wasm_bindgen_test]

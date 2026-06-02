@@ -64,7 +64,7 @@ pub use timeline_view::{LiveOverlayContext, TimelineView};
 pub use vcp::get_vcp_definition;
 pub use vcp_forecast::{
     derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord, SweepForecast,
-    VolumeForecastSnapshot,
+    VolumeForecastSnapshot, WaitResolution,
 };
 pub use vcp_position::{
     SweepAvailability, SweepPosition, SweepStatus, SweepTiming, VcpPositionModel,

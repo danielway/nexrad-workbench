@@ -103,6 +103,28 @@ impl Projector {
         anchor_chunk: &ChunkIdentifier,
         now_secs: f64,
     ) -> Option<StreamingPlan> {
+        self.build_plan_with_collection(
+            anchor_chunk,
+            now_secs,
+            self.latest_chunk_collection_end_secs,
+        )
+    }
+
+    /// Like [`Self::build_plan`], but with an explicit collection-time anchor
+    /// override. Callers re-anchoring on a *listed-but-not-downloaded* chunk
+    /// (e.g. a freshly published next-volume chunk discovered via
+    /// `list_chunks_in_volume`) pass `collection_override = None`: such a chunk
+    /// has no parsed radial-header collection time, and the stored
+    /// `latest_chunk_collection_end_secs` belongs to a *different* volume, so it
+    /// must not leak into the projection. `None` makes the projection fall to
+    /// the `UploadMinusMedian`/`UploadMinusDefault` anchor source — correct for
+    /// an availability-only anchor.
+    pub fn build_plan_with_collection(
+        &mut self,
+        anchor_chunk: &ChunkIdentifier,
+        now_secs: f64,
+        collection_override: Option<f64>,
+    ) -> Option<StreamingPlan> {
         let mapper = self.elevation_mapper.as_ref()?;
         let vcp = self.vcp.as_ref()?;
 
@@ -114,7 +136,7 @@ impl Projector {
 
         let projection = project_scan_timing_with_next(
             anchor_chunk,
-            self.latest_chunk_collection_end_secs,
+            collection_override,
             vcp,
             mapper,
             Some(&self.timing_stats),

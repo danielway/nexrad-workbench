@@ -403,6 +403,35 @@ impl StreamingState {
         self.projector.build_plan(&anchor, now_secs)
     }
 
+    /// Build a [`StreamingPlan`] anchored at an arbitrary chunk identifier
+    /// *without* mutating the download cursor (`self.current`).
+    ///
+    /// Used by the adaptive cross-volume wait to re-anchor the remaining-wait
+    /// projection on a freshly published chunk discovered via
+    /// `list_chunks_in_volume` — collapsing the stale-anchor error — while
+    /// leaving `self.current` intact so `try_next` / `try_next_matching` keep
+    /// walking forward from the real last-downloaded chunk. The collection
+    /// anchor is forced to `None` because a listed chunk carries no parsed
+    /// collection time and may live in a different volume than the stored one.
+    pub fn build_plan_from_anchor(
+        &mut self,
+        anchor: &ChunkIdentifier,
+        now_secs: f64,
+    ) -> Option<StreamingPlan> {
+        self.projector
+            .build_plan_with_collection(anchor, now_secs, None)
+    }
+
+    /// S3-upload time (Unix seconds) of the chunk currently anchoring the
+    /// download cursor, or `None` if the identifier carries no upload time.
+    /// Used as the "previous occupant" reference for the rotating-slot
+    /// freshness guard when probing the next volume's slot.
+    pub fn current_upload_secs(&self) -> Option<f64> {
+        self.current
+            .upload_date_time()
+            .map(|dt| dt.timestamp_millis() as f64 / 1000.0)
+    }
+
     pub fn set_filter(&mut self, filter: StreamingFilter) {
         self.projector.set_filter(filter);
     }

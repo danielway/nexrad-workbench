@@ -350,6 +350,12 @@ pub fn derive_volume_forecast(
 pub struct ChunkArrivalStat {
     /// 1-based sequence number within the volume at the time of success.
     pub sequence: u32,
+    /// How the wait before this chunk's fetch was resolved. Distinguishes a
+    /// plain sleep-to-prediction from the adaptive cross-volume list probe
+    /// firing early or re-anchoring the remaining wait. Lets the diagnostics
+    /// modal attribute "overshoot capped by list probe" vs. "slept to model
+    /// prediction".
+    pub wait_resolution: WaitResolution,
     /// "Start" / "Intermediate" / "End".
     pub chunk_type: &'static str,
     /// 1-based elevation number the chunk contributes to. `None` for the
@@ -423,6 +429,39 @@ pub struct ChunkArrivalStat {
     /// snapshot the plan revision (e.g. resume-from-cache emissions).
     #[allow(dead_code)] // Wired to display in the diagnostics modal in a follow-up.
     pub predicted_with_plan_revision: Option<u64>,
+}
+
+/// How the streaming loop's wait before a chunk fetch was resolved.
+///
+/// The adaptive cross-volume wait (filtered streaming, target in the next
+/// volume) periodically lists the next volume's S3 slot to correct for
+/// accumulated timing-prediction error. This records which path the loop took
+/// for a given arrival so prediction-error diagnostics can separate
+/// model-driven sleeps from probe-corrected ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WaitResolution {
+    /// Slept to the projector's predicted poll time with no list probe — the
+    /// default path (short / same-volume / unfiltered waits, or a cross-volume
+    /// wait whose probes never fired).
+    #[default]
+    SleptToPrediction,
+    /// A list probe found the target chunk already published and broke the
+    /// sleep early, capping overshoot at the probe cadence.
+    EarlyFired,
+    /// A list probe re-anchored the remaining-wait projection on a freshly
+    /// published chunk (no early-fire), then slept to the corrected target.
+    ReAnchored,
+}
+
+impl WaitResolution {
+    /// Compact label for the diagnostics arrivals table.
+    pub fn short(&self) -> &'static str {
+        match self {
+            WaitResolution::SleptToPrediction => "sleep",
+            WaitResolution::EarlyFired => "early",
+            WaitResolution::ReAnchored => "reanchor",
+        }
+    }
 }
 
 /// Compact serialisable bucket key. Mirrors `ChunkCharacteristics` but
