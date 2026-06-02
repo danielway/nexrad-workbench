@@ -289,7 +289,13 @@ impl RealtimeChannel {
         self.active.get()
     }
 
-    pub fn start(&self, ctx: egui::Context, site_id: String, facade: DataFacade) {
+    pub fn start(
+        &self,
+        ctx: egui::Context,
+        site_id: String,
+        facade: DataFacade,
+        engine: crate::nexrad::projection::SharedProjectionEngine,
+    ) {
         self.active.set(true);
 
         // Replace all channel pairs on every start so any in-flight
@@ -328,6 +334,7 @@ impl RealtimeChannel {
                 results_tx,
                 observations_rx,
                 control_rx,
+                engine,
             )
             .await;
         });

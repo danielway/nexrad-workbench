@@ -30,6 +30,20 @@ pub use status::{build_sweeps, derive_sweep_status, SweepBuildCtx};
 
 use super::streaming_plan::StreamingPlan;
 use super::ChunkProjectionInfo;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+/// Main-thread-shared projection engine. The streaming loop holds a clone and
+/// feeds it observations/listings while reading sleep targets; UI consumers read
+/// the same instance. Sound because the streaming loop runs on the main thread
+/// (`spawn_local`), so borrows never cross threads — and, per the engine's
+/// invariant, never span an `.await`.
+pub type SharedProjectionEngine = Rc<RefCell<ProjectionEngine>>;
+
+/// Construct a fresh shared engine.
+pub fn new_shared_engine() -> SharedProjectionEngine {
+    Rc::new(RefCell::new(ProjectionEngine::new()))
+}
 
 /// Where a projected sweep sits relative to the streaming anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

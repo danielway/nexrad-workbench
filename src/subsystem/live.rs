@@ -13,6 +13,7 @@
 //! once at the top of the update loop so every UI consumer sees the
 //! same snapshot for that frame.
 
+use crate::nexrad::projection::{new_shared_engine, SharedProjectionEngine};
 use crate::nexrad::RealtimeChannel;
 use crate::state::{AppMode, LiveModeState, LiveRadarModel, PlaybackState, RadarTimeline};
 
@@ -42,6 +43,11 @@ pub struct Live {
     /// from `mode_state.is_active()` + whether a scan exists at the
     /// playback cursor.
     pub app_mode: AppMode,
+    /// The single, main-thread-shared projection engine. The streaming loop
+    /// holds a clone and feeds it observations/listings while reading sleep
+    /// targets; UI consumers read this same instance. One source of truth for
+    /// all forward-looking timing.
+    pub engine: SharedProjectionEngine,
 }
 
 impl Live {
@@ -51,6 +57,7 @@ impl Live {
             mode_state: LiveModeState::default(),
             radar_model: LiveRadarModel::default(),
             app_mode: AppMode::default(),
+            engine: new_shared_engine(),
         }
     }
 

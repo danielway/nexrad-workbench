@@ -11,11 +11,14 @@ use crate::net::retry::{
     attempt_with_timeout, compute_delay, sleep_duration, sleep_ms, Verdict, REALTIME_CHUNK_POLICY,
 };
 use crate::nexrad::download::NetworkStats;
+use crate::nexrad::projection::{ChunkCoord, KnownChunk, SharedProjectionEngine};
 use crate::nexrad::streaming_filter::StreamingFilter;
 use crate::nexrad::streaming_state::StreamingState;
+use crate::nexrad::StreamingPlan;
 use eframe::egui;
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::future::join_all;
+use nexrad_data::aws::realtime::ChunkIdentifier;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -151,8 +154,9 @@ fn filter_backfill_sequences(
 #[allow(clippy::too_many_arguments)]
 async fn emit_backfill_chunks(
     site_id: &str,
-    targets: &[nexrad_data::aws::realtime::ChunkIdentifier],
+    targets: &[ChunkIdentifier],
     iter: &mut StreamingState,
+    engine: &SharedProjectionEngine,
     loop_state: &mut LoopState,
     control_rx: &mut UnboundedReceiver<ControlMessage>,
     results_tx: &UnboundedSender<RealtimeResult>,
@@ -214,7 +218,7 @@ async fn emit_backfill_chunks(
             chunks_in_volume: chunks_in_volume_start + emitted,
             is_volume_end: false,
             fetch_latency_ms: 0.0,
-            plan: iter.build_plan(current_timestamp_f64()),
+            plan: build_engine_plan(engine, iter.current_id(), current_timestamp_f64()),
             arrival_stat: None,
         });
         emitted_sequences_this_volume.insert(seq);
@@ -237,6 +241,7 @@ async fn run_mid_stream_backfill(
     site_id: &str,
     filter: StreamingFilter,
     iter: &mut StreamingState,
+    engine: &SharedProjectionEngine,
     facade: &DataFacade,
     scan_start_secs: f64,
     loop_state: &mut LoopState,
@@ -305,6 +310,7 @@ async fn run_mid_stream_backfill(
         site_id,
         &to_download,
         iter,
+        engine,
         loop_state,
         control_rx,
         results_tx,
@@ -323,26 +329,35 @@ async fn run_mid_stream_backfill(
 /// adding a new observation kind is just one new arm here.
 fn drain_pending_observations(
     observations_rx: &mut UnboundedReceiver<crate::nexrad::ProjectorObservation>,
-    iter: &mut StreamingState,
+    engine: &SharedProjectionEngine,
+    iter: &StreamingState,
 ) {
     while let Ok(obs) = observations_rx.try_recv() {
         match obs {
             crate::nexrad::ProjectorObservation::CollectionEndSecs(secs) => {
-                let prior = iter.latest_chunk_collection_end_secs();
-                iter.record_chunk_collection_end_secs(secs);
-                if prior != Some(secs) {
-                    log::debug!(
-                        "chunk_collection_end: updated to {:.3}s (prior={:?})",
-                        secs,
-                        prior
-                    );
-                }
+                engine.borrow_mut().set_collection_anchor_secs(secs);
             }
             crate::nexrad::ProjectorObservation::AvailabilityLagSecs(lag_secs) => {
-                iter.record_availability_lag_for_current(lag_secs);
+                engine
+                    .borrow_mut()
+                    .record_availability_lag_for(iter.current_id(), lag_secs);
             }
         }
     }
+}
+
+/// Build a [`StreamingPlan`] from the shared engine, anchored at the loop's
+/// current download cursor. The `engine.borrow_mut()` is scoped to this call —
+/// per the engine invariant it never spans an `.await`.
+fn build_engine_plan(
+    engine: &SharedProjectionEngine,
+    anchor: &ChunkIdentifier,
+    now_secs: f64,
+) -> Option<StreamingPlan> {
+    engine
+        .borrow_mut()
+        .projection(anchor, now_secs)
+        .map(|p| p.plan.clone())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -355,6 +370,7 @@ pub(super) async fn streaming_loop(
     results_tx: UnboundedSender<RealtimeResult>,
     mut observations_rx: UnboundedReceiver<crate::nexrad::ProjectorObservation>,
     mut control_rx: UnboundedReceiver<ControlMessage>,
+    engine: SharedProjectionEngine,
 ) {
     let mut loop_state = LoopState::new();
     // First drain: pick up any control messages already queued (e.g.
@@ -407,11 +423,21 @@ pub(super) async fn streaming_loop(
     let mut iter = init_result.state;
     // Pick up any filter the UI sent before init completed.
     drain_control(&mut loop_state, &mut control_rx);
-    iter.set_filter(loop_state.active_filter);
+    // Seed the shared engine: VCP parsed at init, active filter, warm stats.
+    if let Some(vcp) = init_result.vcp.clone() {
+        engine.borrow_mut().set_vcp(vcp);
+    }
+    engine.borrow_mut().set_filter(loop_state.active_filter);
     if let Some(cached) = load_cached_timing_stats(&site_id) {
-        iter.preload_timing_stats(cached);
+        engine.borrow_mut().preload_timing_stats(cached);
         log::debug!("Loaded cached timing stats for {}", site_id);
     }
+    // Tracks the previous chunk's S3 upload time for inter-chunk duration
+    // samples (was `StreamingState.last_chunk_time`; now loop-local since the
+    // engine owns the stats).
+    let mut prev_upload_dt: Option<chrono::DateTime<chrono::Utc>> = iter
+        .current_upload_secs()
+        .and_then(|s| chrono::DateTime::from_timestamp_millis((s * 1000.0) as i64));
     let mut stats_tracker = StatsTracker::new(&iter);
     stats_tracker.update(&stats, &iter);
 
@@ -488,7 +514,7 @@ pub(super) async fn streaming_loop(
             chunks_in_volume: 1,
             is_volume_end: false,
             fetch_latency_ms: 0.0,
-            plan: iter.build_plan(current_timestamp_f64()),
+            plan: build_engine_plan(&engine, iter.current_id(), current_timestamp_f64()),
             arrival_stat: None,
         });
         ctx.request_repaint();
@@ -561,6 +587,7 @@ pub(super) async fn streaming_loop(
                         &site_id,
                         &to_download,
                         &mut iter,
+                        &engine,
                         &mut loop_state,
                         &mut control_rx,
                         &results_tx,
@@ -627,7 +654,7 @@ pub(super) async fn streaming_loop(
                 chunks_in_volume,
                 is_volume_end: latest_is_end,
                 fetch_latency_ms: 0.0,
-                plan: iter.build_plan(current_timestamp_f64()),
+                plan: build_engine_plan(&engine, iter.current_id(), current_timestamp_f64()),
                 arrival_stat: None,
             });
             ctx.request_repaint();
@@ -682,7 +709,7 @@ pub(super) async fn streaming_loop(
             chunks_in_volume,
             is_volume_end: latest_is_end,
             fetch_latency_ms: 0.0,
-            plan: iter.build_plan(current_timestamp_f64()),
+            plan: build_engine_plan(&engine, iter.current_id(), current_timestamp_f64()),
             arrival_stat: None,
         });
         ctx.request_repaint();
@@ -727,7 +754,7 @@ pub(super) async fn streaming_loop(
         // Ingest any volume header time + availability lag the worker
         // produced from the most recent chunk's radials so projections and
         // stats in this iteration see them.
-        drain_pending_observations(&mut observations_rx, &mut iter);
+        drain_pending_observations(&mut observations_rx, &engine, &iter);
 
         // Filter-change detection: if the user toggled to a new filter
         // (FilterChanged sleep wake or first iteration after a `set_filter`
@@ -752,6 +779,7 @@ pub(super) async fn streaming_loop(
                 &site_id,
                 new_filter,
                 &mut iter,
+                &engine,
                 &facade,
                 current_scan_start_secs.0,
                 &mut loop_state,
@@ -766,7 +794,7 @@ pub(super) async fn streaming_loop(
             chunks_in_volume += emitted;
             active_filter = new_filter;
             active_filter_epoch = loop_state.filter_epoch;
-            iter.set_filter(active_filter);
+            engine.borrow_mut().set_filter(active_filter);
         }
 
         // Build the canonical plan once per iteration. Every consumer of
@@ -774,7 +802,7 @@ pub(super) async fn streaming_loop(
         // wire, the per-chunk arrival diagnostic — reads from this object,
         // so the loop's behavior can't drift from what the UI displays.
         let now_secs = current_timestamp_f64();
-        let plan = iter.build_plan(now_secs);
+        let plan = build_engine_plan(&engine, iter.current_id(), now_secs);
 
         // Sleep target: poll-time of the immediate next download. POLL_BIAS
         // and the bucket's retry budget are already folded into the
@@ -828,7 +856,7 @@ pub(super) async fn streaming_loop(
                 let prev_anchor_upload = iter.current_upload_secs();
                 let (out, resolution) = wait_for_next_target(
                     &site_id,
-                    &mut iter,
+                    &engine,
                     &mut loop_state,
                     &mut control_rx,
                     &ctx,
@@ -969,7 +997,7 @@ pub(super) async fn streaming_loop(
             // chunk via the chained projection) is the single source for
             // the cross-volume countdown.
             chunks_in_volume += 1;
-            let plan = iter.build_plan(current_timestamp_f64());
+            let plan = build_engine_plan(&engine, iter.current_id(), current_timestamp_f64());
             let _ = results_tx.unbounded_send(RealtimeResult::ChunkReceived {
                 chunks_in_volume,
                 is_volume_end: true,
@@ -1020,10 +1048,45 @@ pub(super) async fn streaming_loop(
                     current_scan_start_secs = crate::data::ProvisionalStart(header_secs);
                     cache_volume_number(&site_id, *chunk.identifier.volume());
                     emitted_sequences_this_volume.clear();
+
+                    // Install the new volume's VCP: rebuild the navigation
+                    // mapper (StreamingState) AND feed the shared engine
+                    // (new VCP structure + reset the collection anchor). Bound
+                    // inventory memory to the current + next volume.
+                    if let Some(vcp) = iter.install_vcp_from_start(&chunk.chunk) {
+                        let mut eng = engine.borrow_mut();
+                        eng.set_vcp(vcp);
+                        eng.reset_collection_anchor();
+                        eng.retain_inventory_from(*chunk.identifier.volume());
+                    }
+                    engine
+                        .borrow_mut()
+                        .set_current_scan_start_secs(current_scan_start_secs.0);
                 }
 
                 chunks_in_volume += 1;
                 emitted_sequences_this_volume.insert(chunk.identifier.sequence());
+
+                // Feed the shared engine: this chunk is now known-available, and
+                // its arrival interval feeds the timing-stats blend. Borrows are
+                // scoped and never span an `.await`.
+                if let Some(upload) = chunk.identifier.upload_date_time() {
+                    let upload_secs = upload.timestamp_millis() as f64 / 1000.0;
+                    let mut eng = engine.borrow_mut();
+                    eng.observe_known_chunk(KnownChunk {
+                        coord: ChunkCoord {
+                            volume: *chunk.identifier.volume(),
+                            sequence: chunk.identifier.sequence(),
+                        },
+                        upload_secs,
+                        chunk_type,
+                    });
+                    if let Some(prev) = prev_upload_dt {
+                        eng.record_inter_chunk_duration(&chunk.identifier, upload - prev, 1);
+                    }
+                    drop(eng);
+                    prev_upload_dt = Some(upload);
+                }
 
                 let type_label: &'static str = if is_start {
                     "Start"
@@ -1040,9 +1103,10 @@ pub(super) async fn streaming_loop(
                 // Empirical NEXRAD ingest lag: difference between the chunk's
                 // S3 upload time (AVAILABILITY) and its latest radial
                 // collection time (ACTUAL).
-                if let (Some(upload_secs), Some(collection_end_secs)) =
-                    (s3_last_modified_at, iter.latest_chunk_collection_end_secs())
-                {
+                if let (Some(upload_secs), Some(collection_end_secs)) = (
+                    s3_last_modified_at,
+                    engine.borrow().collection_anchor_secs(),
+                ) {
                     log::debug!(
                         "ingest lag: upload={:.3}s collection_end={:.3}s Δ={:+.3}s (seq={} type={})",
                         upload_secs,
@@ -1057,7 +1121,8 @@ pub(super) async fn streaming_loop(
                 // so it describes the NEXT download from this point. Same
                 // object feeds both the UI and the next loop iteration's
                 // sleep target — keeping them in lock-step.
-                let post_plan = iter.build_plan(current_timestamp_f64());
+                let post_plan =
+                    build_engine_plan(&engine, iter.current_id(), current_timestamp_f64());
 
                 // Attach structural metadata for the chunk that just arrived
                 // by looking it up in the fresh plan's current-volume slice.
@@ -1083,7 +1148,7 @@ pub(super) async fn streaming_loop(
                 // because `current_anchor_source` reads collection-end +
                 // median-lag state, both of which are independent of which
                 // chunk is "current".
-                let anchor_source = Some(iter.current_anchor_source());
+                let anchor_source = Some(engine.borrow().current_anchor_source());
 
                 // The forecast that produced this chunk's sleep target was
                 // captured into `cur_forecast` on the chunk's first
@@ -1155,7 +1220,7 @@ pub(super) async fn streaming_loop(
                     arrival_stat: Some(arrival_stat),
                 });
 
-                save_timing_stats(&site_id, iter.timing_stats());
+                save_timing_stats(&site_id, engine.borrow().timing_stats());
 
                 ctx.request_repaint();
             }
@@ -1356,7 +1421,7 @@ fn listing_newest_upload_secs(
 #[allow(clippy::too_many_arguments)]
 async fn wait_for_next_target(
     site_id: &str,
-    iter: &mut StreamingState,
+    engine: &SharedProjectionEngine,
     loop_state: &mut LoopState,
     control_rx: &mut UnboundedReceiver<ControlMessage>,
     ctx: &egui::Context,
@@ -1420,6 +1485,11 @@ async fn wait_for_next_target(
             continue;
         }
 
+        // Feed the listing into the shared inventory so every surface (not just
+        // this loop's sleep) reflects what's now published — this is what makes
+        // re-anchoring visible in the timeline / VCP panel.
+        engine.borrow_mut().observe_listing(target_volume, &listed);
+
         let listed_seqs: Vec<usize> = listed.iter().map(|c| c.sequence()).collect();
         let has_end = listed.iter().any(|c| c.chunk_type() == ChunkType::End);
         if target_present_in_listing(&listed_seqs, has_end, target_seq) {
@@ -1435,11 +1505,15 @@ async fn wait_for_next_target(
         // projection error. Projection-only: `self.current` is untouched.
         let now2 = current_timestamp_f64();
         if let Some(newest) = listed.last() {
-            if let Some(new_poll_at) = iter.build_plan_from_anchor(newest, now2).and_then(|p| {
-                p.next_target()
-                    .and_then(|t| t.forecast.as_ref())
-                    .map(|f| f.poll_at_secs)
-            }) {
+            let new_poll = engine
+                .borrow_mut()
+                .projection_from_anchor(newest, now2)
+                .and_then(|p| {
+                    p.next_target()
+                        .and_then(|t| t.forecast.as_ref())
+                        .map(|f| f.poll_at_secs)
+                });
+            if let Some(new_poll_at) = new_poll {
                 let new_remaining = recompute_remaining_wait_ms(new_poll_at, now2);
                 log::debug!(
                     "list-probe: re-anchored on seq {} — remaining wait {}ms (was {}ms)",

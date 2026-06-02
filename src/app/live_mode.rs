@@ -43,6 +43,7 @@ impl WorkbenchApp {
             ctx.clone(),
             site_id,
             self.acquisition.coordinator.facade().clone(),
+            self.live.engine.clone(),
         );
     }
 

@@ -85,12 +85,6 @@ impl Projector {
         self.vcp = Some(vcp);
     }
 
-    /// Borrow the current VCP's chunk mapper. `None` before the first
-    /// Start chunk is parsed.
-    pub fn mapper(&self) -> Option<&ElevationChunkMapper> {
-        self.elevation_mapper.as_ref()
-    }
-
     /// Build a [`StreamingPlan`] anchored at `anchor_chunk` (the most
     /// recently observed chunk). `now_secs` is recorded on the plan as
     /// `built_at_secs` for staleness reasoning. Bumps the internal
