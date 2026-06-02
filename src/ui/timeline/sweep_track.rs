@@ -1,6 +1,5 @@
 //! Sweep track rendering: sweep blocks (cool palette) and connector lines.
 
-use crate::state::radar_data::RadarTimeline;
 use crate::state::TimelineView;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
@@ -131,14 +130,14 @@ pub(super) fn render_connector_lines(
     painter: &Painter,
     scan_rect: &Rect,
     sweep_rect: &Rect,
-    timeline: &RadarTimeline,
+    view: &TimelineView<'_>,
     view_start: f64,
     view_end: f64,
     zoom: f64,
 ) {
     let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    for (scan, clamped_end) in timeline.scans_in_visual_range(view_start, view_end) {
+    for (scan, clamped_end) in view.visual_scans_in_range(view_start, view_end) {
         if scan.sweeps.is_empty() {
             continue;
         }

@@ -163,19 +163,38 @@ impl<'a> TimelineView<'a> {
         }
     }
 
+    /// Every cached scan whose *displayed* block intersects `[start, end]`,
+    /// paired with that block's clamped right edge (see [`clamped_display_end`]).
+    /// Includes the in-progress volume's cached scan — connector lines want it;
+    /// [`Self::settled_scans_in_range`] filters it back out for the settled
+    /// track. This is the single source of the displayed right edge, so block
+    /// fills, connector lines, and visual-range culling all agree on one value.
+    pub fn visual_scans_in_range(
+        &self,
+        start: f64,
+        end: f64,
+    ) -> impl Iterator<Item = (&'a Scan, f64)> {
+        let scans: &'a [Scan] = &self.cache.scans;
+        let shadows: &'a [ScanBoundary] = self.shadows;
+        scans.iter().enumerate().filter_map(move |(i, scan)| {
+            let clamped_end = clamped_display_end(scans, shadows, i);
+            (clamped_end >= start && scan.start_time <= end).then_some((scan, clamped_end))
+        })
+    }
+
     /// Cached ("settled") scans overlapping `[start, end]`, excluding the
     /// in-progress volume (the realtime overlay owns that). These carry
     /// [`crate::state::SweepAvailability::Cached`] availability. Borrows tie
     /// to the underlying cache (`'a`), not to the view, so callers can return
-    /// them past the view's own scope.
+    /// them past the view's own scope. Each item carries the clamped display
+    /// end from [`Self::visual_scans_in_range`].
     pub fn settled_scans_in_range(
         &self,
         start: f64,
         end: f64,
     ) -> impl Iterator<Item = (&'a Scan, f64)> {
         let live_ms = self.live_volume_ms;
-        self.cache
-            .scans_in_visual_range(start, end)
+        self.visual_scans_in_range(start, end)
             .filter(move |(s, _)| !is_live_scan(s, live_ms))
     }
 
@@ -239,6 +258,31 @@ impl<'a> TimelineView<'a> {
     pub fn now_secs(&self) -> f64 {
         self.now_secs
     }
+}
+
+/// The displayed right edge of the scan at `scans[i]`.
+///
+/// Prefers the **authoritative** archive extent: when the scan matches a known
+/// archive boundary (by `key_timestamp`, within [`BOUNDARY_MATCH_TOLERANCE_SECS`])
+/// that boundary's `end` is the real start time of the *next* volume, so the
+/// block ends exactly there. This caps sparse/incomplete scans against the
+/// following volume even when that volume is only ghosted (not downloaded) —
+/// the VCP-projected extent alone can overrun several ghosted scans.
+///
+/// With no matching boundary (e.g. no archive listing fetched, as during pure
+/// live streaming) it falls back to the VCP projection
+/// ([`Scan::display_end_time`]), capped at the next *downloaded* scan's start so
+/// sparse blocks still can't overrun a neighbor we do have. Never truncates
+/// real collected data: the result is floored at the scan's own `end_time`.
+fn clamped_display_end(scans: &[Scan], shadows: &[ScanBoundary], i: usize) -> f64 {
+    let scan = &scans[i];
+    if let Some(b) = shadows.iter().find(|b| {
+        (b.start as f64 - scan.key_timestamp).abs() <= BOUNDARY_MATCH_TOLERANCE_SECS as f64
+    }) {
+        return (b.end as f64).max(scan.end_time);
+    }
+    let de = scan.display_end_time();
+    scans.get(i + 1).map_or(de, |next| de.min(next.start_time))
 }
 
 /// Whether `scan` is the in-progress live volume identified by `live_ms`.
@@ -440,6 +484,94 @@ mod tests {
             .count();
         assert_eq!(n, 1);
         assert!(view.live_volume().is_none());
+    }
+
+    /// A scan matching a known archive boundary ends exactly at that
+    /// boundary's `end` (the next volume's real start) — even when the scan is
+    /// sparse and its VCP projection would overrun the following ghosted scan.
+    #[wasm_bindgen_test]
+    fn visual_extent_uses_authoritative_archive_boundary() {
+        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+
+        // Sparse scan at key 1000: real data [1000, 1010], VCP projects 120s
+        // (→ 1120), but the archive says the next volume starts at 1060.
+        let mut sparse = cached_scan(1000.0, Vec::new());
+        sparse.start_time = 1000.0;
+        sparse.end_time = 1010.0;
+        sparse.vcp_pattern = Some(ExtractedVcp {
+            number: 215,
+            elevations: vec![ExtractedVcpElevation {
+                angle: 0.5,
+                waveform: "CS".to_string(),
+                prf_number: 1,
+                is_sails: false,
+                is_mrle: false,
+                is_base_tilt: false,
+                azimuth_rate: Some(3.0),
+            }],
+        });
+        let cache = RadarTimeline {
+            scans: vec![sparse],
+        };
+        // Archive listing knows scans at 1000 and 1060 (only 1000 downloaded).
+        let shadows = vec![
+            ScanBoundary {
+                start: 1000,
+                end: 1060,
+            },
+            ScanBoundary {
+                start: 1060,
+                end: 1120,
+            },
+        ];
+        let view = TimelineView::build(&cache, &shadows, None, None, None, 1000.0);
+
+        let pairs: Vec<_> = view.visual_scans_in_range(0.0, 5000.0).collect();
+        assert_eq!(pairs.len(), 1);
+        // Clamped to the archive boundary end (1060), not the VCP projection (1120).
+        assert_eq!(pairs[0].1, 1060.0);
+    }
+
+    /// With no archive listing, the projection is capped at the next
+    /// downloaded scan's start, and culling uses that clamped extent.
+    #[wasm_bindgen_test]
+    fn visual_extent_falls_back_to_next_downloaded_scan() {
+        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+
+        let mut sparse = cached_scan(1000.0, Vec::new());
+        sparse.start_time = 1000.0;
+        sparse.end_time = 1010.0;
+        sparse.vcp_pattern = Some(ExtractedVcp {
+            number: 215,
+            elevations: vec![ExtractedVcpElevation {
+                angle: 0.5,
+                waveform: "CS".to_string(),
+                prf_number: 1,
+                is_sails: false,
+                is_mrle: false,
+                is_base_tilt: false,
+                azimuth_rate: Some(3.0),
+            }],
+        });
+        let mut next = cached_scan(1060.0, Vec::new());
+        next.start_time = 1060.0;
+        next.end_time = 1100.0;
+        next.vcp_pattern = None;
+        let cache = RadarTimeline {
+            scans: vec![sparse, next],
+        };
+        let shadows: Vec<ScanBoundary> = Vec::new();
+        let view = TimelineView::build(&cache, &shadows, None, None, None, 1000.0);
+
+        let pairs: Vec<_> = view.visual_scans_in_range(0.0, 5000.0).collect();
+        assert_eq!(pairs.len(), 2);
+        // Sparse scan's 1120 projection capped at next downloaded start (1060).
+        assert_eq!(pairs[0].1, 1060.0);
+        // Last scan, no VCP: display end == end_time.
+        assert_eq!(pairs[1].1, 1100.0);
+
+        // Culling uses the clamped extent: a window past the clamp drops it.
+        assert_eq!(view.visual_scans_in_range(1065.0, 5000.0).count(), 1);
     }
 
     /// `completion_target` resolves a scan within the 30s band and returns

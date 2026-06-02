@@ -427,7 +427,7 @@ pub(super) fn render_timeline(
             &painter,
             &scan_rect,
             &sweep_rect,
-            view.cache(),
+            &view,
             view_start,
             view_end,
             zoom,

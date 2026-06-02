@@ -484,30 +484,10 @@ impl RadarTimeline {
             .filter(move |scan| scan.end_time >= start && scan.start_time <= end)
     }
 
-    /// Like [`Self::scans_in_range`], but culls against each scan's *displayed*
-    /// extent (`display_end_time()`) instead of its real-data `end_time`.
-    /// Timeline rendering uses this so a sparse scan whose cached sweeps are
-    /// off-screen still stays visible when its VCP-projected block intersects
-    /// the view. Keep non-display callers on `scans_in_range`.
-    ///
-    /// Each item pairs the scan with its *clamped* display end: the projected
-    /// block is capped at the next scan's `start_time` so a sparse/settled
-    /// block never overdraws its successor. The clamp uses the full ordered
-    /// scan list (including any live volume), so every display consumer — block
-    /// edge, connector line, and this culling predicate — agrees on one value.
-    pub fn scans_in_visual_range(
-        &self,
-        start: f64,
-        end: f64,
-    ) -> impl Iterator<Item = (&Scan, f64)> {
-        self.scans.iter().enumerate().filter_map(move |(i, scan)| {
-            let next_start = self.scans.get(i + 1).map(|n| n.start_time);
-            let clamped_end = next_start.map_or(scan.display_end_time(), |ns| {
-                scan.display_end_time().min(ns)
-            });
-            (clamped_end >= start && scan.start_time <= end).then_some((scan, clamped_end))
-        })
-    }
+    // Display-extent culling and the clamped right edge live in
+    // `TimelineView::visual_scans_in_range`, which also has the archive shadow
+    // boundaries needed to clamp sparse scans against the next *known* (not just
+    // downloaded) volume. See `state::timeline_view::clamped_display_end`.
 
     /// Builds a timeline from cached scan metadata.
     ///
@@ -935,12 +915,15 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn scans_in_visual_range_uses_display_extent() {
+    fn display_end_time_projects_sparse_scan_to_full_vcp_volume() {
         use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
 
         // A sparse scan whose cached sweeps ended early: real data spans only
         // [1000, 1010], but the VCP plan projects a 120s volume so the drawn
         // block reaches to 1120. (360° / 3°/s = 120s; 3.0 is exact in f32.)
+        // Clamping against neighbors/archive boundaries lives in
+        // `TimelineView::visual_scans_in_range`; this only covers the per-scan
+        // projection the view uses as its no-archive fallback.
         let mut sparse = scan(1000.0, 1010.0);
         sparse.vcp_pattern = Some(ExtractedVcp {
             number: 215,
@@ -956,49 +939,7 @@ mod tests {
         });
         assert_eq!(sparse.display_end_time(), 1120.0);
 
-        let tl = RadarTimeline {
-            scans: vec![sparse],
-        };
-
-        // View window sits to the right of the cached sweeps but within the
-        // projected block. Real-data culling drops it; visual culling keeps it.
-        assert_eq!(tl.scans_in_range(1050.0, 1500.0).count(), 0);
-        assert_eq!(tl.scans_in_visual_range(1050.0, 1500.0).count(), 1);
-    }
-
-    #[wasm_bindgen_test]
-    fn scans_in_visual_range_clamps_to_next_scan_start() {
-        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
-
-        // Scan 0: real data [1000, 1010] but the VCP projects a 120s volume,
-        // so its unclamped block would reach 1120 — past scan 1's start.
-        let mut sparse = scan(1000.0, 1010.0);
-        sparse.vcp_pattern = Some(ExtractedVcp {
-            number: 215,
-            elevations: vec![ExtractedVcpElevation {
-                angle: 0.5,
-                waveform: "CS".to_string(),
-                prf_number: 1,
-                is_sails: false,
-                is_mrle: false,
-                is_base_tilt: false,
-                azimuth_rate: Some(3.0),
-            }],
-        });
-        assert_eq!(sparse.display_end_time(), 1120.0);
-
-        // Scan 1 starts at 1060, before scan 0's projected end of 1120.
-        let next = scan(1060.0, 1100.0);
-
-        let tl = RadarTimeline {
-            scans: vec![sparse, next],
-        };
-
-        let pairs: Vec<_> = tl.scans_in_visual_range(0.0, 2000.0).collect();
-        assert_eq!(pairs.len(), 2);
-        // Scan 0's projected block is clamped to scan 1's start.
-        assert_eq!(pairs[0].1, 1060.0);
-        // Scan 1 is the last scan: unclamped, no VCP, so display end == end_time.
-        assert_eq!(pairs[1].1, 1100.0);
+        // With no VCP pattern it falls back to the real-data end_time.
+        assert_eq!(scan(1000.0, 1010.0).display_end_time(), 1010.0);
     }
 }
