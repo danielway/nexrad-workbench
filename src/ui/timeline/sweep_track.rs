@@ -20,7 +20,7 @@ pub(super) fn render_sweep_track(
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    for scan in view.settled_scans_in_range(view_start, view_end) {
+    for (scan, _) in view.settled_scans_in_range(view_start, view_end) {
         if scan.sweeps.is_empty() {
             continue;
         }
@@ -138,11 +138,11 @@ pub(super) fn render_connector_lines(
 ) {
     let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    for scan in timeline.scans_in_visual_range(view_start, view_end) {
+    for (scan, clamped_end) in timeline.scans_in_visual_range(view_start, view_end) {
         if scan.sweeps.is_empty() {
             continue;
         }
-        for ts in [scan.start_time, scan.display_end_time()] {
+        for ts in [scan.start_time, clamped_end] {
             let x = ts_to_x(ts);
             if x >= scan_rect.left() && x <= scan_rect.right() {
                 painter.line_segment(

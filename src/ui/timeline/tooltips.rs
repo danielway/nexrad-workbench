@@ -48,7 +48,7 @@ pub(super) fn render_timeline_tooltip(
     // live volume's sweeps are handled by the realtime path instead.
     let (sweep, sweep_parent_scan) = if in_sweep_track {
         let mut found = None;
-        for s in view.settled_scans_in_range(hover_ts - 600.0, hover_ts + 600.0) {
+        for (s, _) in view.settled_scans_in_range(hover_ts - 600.0, hover_ts + 600.0) {
             if let Some(sw) = s
                 .sweeps
                 .iter()

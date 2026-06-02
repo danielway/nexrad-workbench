@@ -168,11 +168,15 @@ impl<'a> TimelineView<'a> {
     /// [`crate::state::SweepAvailability::Cached`] availability. Borrows tie
     /// to the underlying cache (`'a`), not to the view, so callers can return
     /// them past the view's own scope.
-    pub fn settled_scans_in_range(&self, start: f64, end: f64) -> impl Iterator<Item = &'a Scan> {
+    pub fn settled_scans_in_range(
+        &self,
+        start: f64,
+        end: f64,
+    ) -> impl Iterator<Item = (&'a Scan, f64)> {
         let live_ms = self.live_volume_ms;
         self.cache
             .scans_in_visual_range(start, end)
-            .filter(move |s| !is_live_scan(s, live_ms))
+            .filter(move |(s, _)| !is_live_scan(s, live_ms))
     }
 
     /// The cached scan at `ts`, excluding the in-progress volume.
