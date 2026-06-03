@@ -854,9 +854,11 @@ pub(super) async fn streaming_loop(
                 // whole sleep.
                 let target_volume = iter.current_volume().next();
                 let prev_anchor_upload = iter.current_upload_secs();
+                let cursor_anchor = iter.current_id().clone();
                 let (out, resolution) = wait_for_next_target(
                     &site_id,
                     &engine,
+                    &cursor_anchor,
                     &mut loop_state,
                     &mut control_rx,
                     &ctx,
@@ -1422,6 +1424,7 @@ fn listing_newest_upload_secs(
 async fn wait_for_next_target(
     site_id: &str,
     engine: &SharedProjectionEngine,
+    cursor_anchor: &ChunkIdentifier,
     loop_state: &mut LoopState,
     control_rx: &mut UnboundedReceiver<ControlMessage>,
     ctx: &egui::Context,
@@ -1500,30 +1503,29 @@ async fn wait_for_next_target(
             return (SleepOutcome::Completed, WaitResolution::EarlyFired);
         }
 
-        // Re-anchor the remaining wait on the newest published chunk — a fresh
-        // upload time + true sequence position collapses the accumulated
-        // projection error. Projection-only: `self.current` is untouched.
+        // Re-anchor the remaining wait. We already fed the listing into the
+        // inventory above, so the engine's normal cursor-anchored projection
+        // now self-anchors the next volume on that fresh measurement — fresh
+        // timing in the right frame (offset 1), no separate anchor. Recompute
+        // the remaining wait from it.
         let now2 = current_timestamp_f64();
-        if let Some(newest) = listed.last() {
-            let new_poll = engine
-                .borrow_mut()
-                .projection_from_anchor(newest, now2)
-                .and_then(|p| {
-                    p.next_target()
-                        .and_then(|t| t.forecast.as_ref())
-                        .map(|f| f.poll_at_secs)
-                });
-            if let Some(new_poll_at) = new_poll {
-                let new_remaining = recompute_remaining_wait_ms(new_poll_at, now2);
-                log::debug!(
-                    "list-probe: re-anchored on seq {} — remaining wait {}ms (was {}ms)",
-                    newest.sequence(),
-                    new_remaining,
-                    remaining_ms,
-                );
-                remaining_ms = new_remaining;
-                resolution = WaitResolution::ReAnchored;
-            }
+        let new_poll = engine
+            .borrow_mut()
+            .projection(cursor_anchor, now2)
+            .and_then(|p| {
+                p.next_target()
+                    .and_then(|t| t.forecast.as_ref())
+                    .map(|f| f.poll_at_secs)
+            });
+        if let Some(new_poll_at) = new_poll {
+            let new_remaining = recompute_remaining_wait_ms(new_poll_at, now2);
+            log::debug!(
+                "list-probe: re-anchored from inventory — remaining wait {}ms (was {}ms)",
+                new_remaining,
+                remaining_ms,
+            );
+            remaining_ms = new_remaining;
+            resolution = WaitResolution::ReAnchored;
         }
     }
 }

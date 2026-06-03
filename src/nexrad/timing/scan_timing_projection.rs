@@ -294,6 +294,7 @@ pub fn project_scan_timing(
         mapper,
         timing_stats,
         false,
+        None,
     )
 }
 
@@ -315,6 +316,7 @@ pub fn project_scan_timing(
 /// LAST chunk in `chunks` — which is the end of the next volume when chained.
 /// Consumers wanting current-volume-only bounds should filter `chunks` by
 /// `volume_offset == 0`.
+#[allow(clippy::too_many_arguments)]
 pub fn project_scan_timing_with_next(
     anchor_chunk: &ChunkIdentifier,
     anchor_collection_time_secs: Option<f64>,
@@ -322,6 +324,7 @@ pub fn project_scan_timing_with_next(
     mapper: &ElevationChunkMapper,
     timing_stats: Option<&ChunkTimingStats>,
     include_next_volume: bool,
+    next_volume_anchor: Option<(usize, f64)>,
 ) -> Option<ScanTimingProjection> {
     let anchor_sequence = anchor_chunk.sequence();
     let anchor_available_at = anchor_chunk.upload_date_time().unwrap_or_else(Utc::now);
@@ -431,6 +434,15 @@ pub fn project_scan_timing_with_next(
         prev_collection_secs = times.collection_at_secs;
     }
 
+    // Self-anchor the next-volume (offset 1) timeline on a measured listing.
+    // When the caller supplies a freshly-listed next-volume chunk
+    // `(sequence, upload_secs)`, shift every offset-1 projection so that
+    // sequence lands at its measured collection time (upload − lag). This pins
+    // the ghost / cross-volume target to reality instead of the chained
+    // inter-volume estimate, WITHOUT moving the volume frame — offset 0 stays
+    // the anchor's volume, so the UI's "current scan" never gets mis-framed.
+    apply_next_volume_anchor(&mut projections, next_volume_anchor, availability_lag_secs);
+
     let volume_end_available_at = projections
         .last()
         .map(|p| p.projected_available_at)
@@ -447,6 +459,42 @@ pub fn project_scan_timing_with_next(
         volume_end_available_at,
         remaining_duration,
     })
+}
+
+/// Seconds to shift the next-volume timeline by: `measured − projected` at the
+/// anchor sequence. `None` when the anchor sequence wasn't projected. Pure.
+fn next_volume_shift_secs(
+    projected_at_anchor: Option<f64>,
+    measured_collection: f64,
+) -> Option<f64> {
+    projected_at_anchor.map(|projected| measured_collection - projected)
+}
+
+/// Shift every offset-1 (next-volume) projection so the measured anchor
+/// sequence lands at its measured collection time (`upload − lag`). No-op when
+/// no anchor is supplied or the anchor sequence isn't in the projection.
+fn apply_next_volume_anchor(
+    projections: &mut [ChunkProjection],
+    next_volume_anchor: Option<(usize, f64)>,
+    availability_lag_secs: f64,
+) {
+    let Some((anchor_seq, anchor_upload_secs)) = next_volume_anchor else {
+        return;
+    };
+    let measured_collection = anchor_upload_secs - availability_lag_secs;
+    let projected_at_anchor = projections
+        .iter()
+        .find(|p| p.volume_offset == 1 && p.sequence == anchor_seq)
+        .map(|p| p.projected_collection_time_secs);
+    let Some(delta_secs) = next_volume_shift_secs(projected_at_anchor, measured_collection) else {
+        return;
+    };
+    let delta = Duration::milliseconds((delta_secs * 1000.0) as i64);
+    for p in projections.iter_mut().filter(|p| p.volume_offset == 1) {
+        p.projected_collection_time_secs += delta_secs;
+        p.projected_available_at += delta;
+        p.projected_poll_at += delta;
+    }
 }
 
 /// Build a timing projection for an entire volume from the Start chunk.
@@ -473,4 +521,21 @@ pub fn project_full_scan_timing(
     );
 
     project_scan_timing(&start_chunk, None, vcp, mapper, timing_stats)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_volume_shift_secs;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn shift_is_measured_minus_projected() {
+        // Projection put the anchor sequence at 1100s; the measured collection
+        // is 1090s → shift the next-volume timeline back by 10s.
+        assert_eq!(next_volume_shift_secs(Some(1100.0), 1090.0), Some(-10.0));
+        // Measured later than projected → shift forward.
+        assert_eq!(next_volume_shift_secs(Some(1100.0), 1130.0), Some(30.0));
+        // Anchor sequence not present in the projection → no shift.
+        assert_eq!(next_volume_shift_secs(None, 1090.0), None);
+    }
 }

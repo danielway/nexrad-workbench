@@ -92,32 +92,20 @@ impl Projector {
     ///
     /// Returns `None` only when the projector is in a cold state (no VCP
     /// / no mapper yet); the revision counter is NOT bumped in that case.
-    pub fn build_plan(
-        &mut self,
-        anchor_chunk: &ChunkIdentifier,
-        now_secs: f64,
-    ) -> Option<StreamingPlan> {
-        self.build_plan_with_collection(
-            anchor_chunk,
-            now_secs,
-            self.latest_chunk_collection_end_secs,
-        )
-    }
-
-    /// Like [`Self::build_plan`], but with an explicit collection-time anchor
-    /// override. Callers re-anchoring on a *listed-but-not-downloaded* chunk
-    /// (e.g. a freshly published next-volume chunk discovered via
-    /// `list_chunks_in_volume`) pass `collection_override = None`: such a chunk
-    /// has no parsed radial-header collection time, and the stored
-    /// `latest_chunk_collection_end_secs` belongs to a *different* volume, so it
-    /// must not leak into the projection. `None` makes the projection fall to
-    /// the `UploadMinusMedian`/`UploadMinusDefault` anchor source — correct for
-    /// an availability-only anchor.
+    /// Build a [`StreamingPlan`] anchored at `anchor_chunk`.
+    ///
+    /// `collection_override` is the ACTUAL collection-end anchor to use (the
+    /// engine passes its stored `latest_chunk_collection_end_secs`); `None`
+    /// falls back to the `UploadMinusMedian`/`UploadMinusDefault` lag estimate.
+    /// `next_volume_anchor` is an optional freshly-listed next-volume chunk
+    /// `(sequence, upload_secs)` that pins the next-volume (offset 1) timeline
+    /// to a real measurement.
     pub fn build_plan_with_collection(
         &mut self,
         anchor_chunk: &ChunkIdentifier,
         now_secs: f64,
         collection_override: Option<f64>,
+        next_volume_anchor: Option<(usize, f64)>,
     ) -> Option<StreamingPlan> {
         let mapper = self.elevation_mapper.as_ref()?;
         let vcp = self.vcp.as_ref()?;
@@ -135,6 +123,7 @@ impl Projector {
             mapper,
             Some(&self.timing_stats),
             include_next_volume,
+            next_volume_anchor,
         )?;
 
         self.next_revision = self.next_revision.wrapping_add(1);

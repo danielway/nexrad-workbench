@@ -31,9 +31,6 @@ struct CacheKey {
     anchor_volume: usize,
     anchor_sequence: usize,
     now_bucket_secs: i64,
-    /// Whether the collection anchor was overridden to `None` (re-anchor probe
-    /// path) vs. using the engine's stored collection anchor.
-    collection_override_none: bool,
 }
 
 /// Single owner of every projection input; emits one cached [`Projection`].
@@ -191,45 +188,48 @@ impl ProjectionEngine {
     // ── Output ──
 
     /// Projection anchored at `anchor`, using the engine's stored collection
-    /// anchor. Recomputed only when an input changed since the last build for
-    /// the same anchor + whole-second `now`. `None` only in a cold state
-    /// (no VCP/mapper yet).
+    /// anchor and self-anchoring the next volume on the inventory. Recomputed
+    /// only when an input changed since the last build for the same anchor +
+    /// whole-second `now`. `None` only in a cold state (no VCP/mapper yet).
     pub fn projection(&mut self, anchor: &ChunkIdentifier, now_secs: f64) -> Option<&Projection> {
-        self.projection_inner(anchor, now_secs, false)
+        self.projection_inner(anchor, now_secs)
     }
 
-    /// Like [`Self::projection`] but forces the collection anchor to `None`
-    /// (used when re-anchoring on a listed-but-not-downloaded chunk, which has
-    /// no parsed collection time and may live in a different volume).
-    pub fn projection_from_anchor(
-        &mut self,
-        anchor: &ChunkIdentifier,
-        now_secs: f64,
-    ) -> Option<&Projection> {
-        self.projection_inner(anchor, now_secs, true)
+    /// The most recently built projection, without rebuilding. Lets the UI read
+    /// the latest projection each frame (so re-anchors/listings the loop fed
+    /// propagate) without needing the loop's download cursor as an anchor.
+    pub fn last_projection(&self) -> Option<&Projection> {
+        self.cached.as_ref().map(|(_, p)| p)
     }
 
-    fn projection_inner(
-        &mut self,
-        anchor: &ChunkIdentifier,
-        now_secs: f64,
-        collection_override_none: bool,
-    ) -> Option<&Projection> {
+    fn projection_inner(&mut self, anchor: &ChunkIdentifier, now_secs: f64) -> Option<&Projection> {
         let key = CacheKey {
             input_revision: self.input_revision,
             anchor_volume: anchor.volume().as_number(),
             anchor_sequence: anchor.sequence(),
             now_bucket_secs: now_secs.floor() as i64,
-            collection_override_none,
         };
         let hit = matches!(&self.cached, Some((k, _)) if *k == key);
         if !hit {
-            let plan = if collection_override_none {
-                self.projector
-                    .build_plan_with_collection(anchor, now_secs, None)?
-            } else {
-                self.projector.build_plan(anchor, now_secs)?
+            // Self-anchor the next volume on the freshest listed chunk, when
+            // known. This pins the cross-volume ghost / target to a real
+            // measurement while keeping the volume frame on the cursor's
+            // volume (offset 0), so the displayed scan never gets mis-framed.
+            let next_vol = anchor.volume().next();
+            let next_volume_anchor = match (
+                self.inventory.newest_seq_in(next_vol),
+                self.inventory.newest_upload_in(next_vol),
+            ) {
+                (Some(seq), Some(upload)) => Some((seq, upload)),
+                _ => None,
             };
+            let collection = self.projector.latest_chunk_collection_end_secs();
+            let plan = self.projector.build_plan_with_collection(
+                anchor,
+                now_secs,
+                collection,
+                next_volume_anchor,
+            )?;
 
             // Whole-second scan start: prefer the explicit input, else the
             // first projected collection time, else `now`.
