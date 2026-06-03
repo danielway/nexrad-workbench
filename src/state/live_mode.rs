@@ -470,6 +470,18 @@ impl LiveModeState {
         self.try_capture_volume_start_plan();
     }
 
+    /// Refresh the rolling projection for display from the shared engine,
+    /// called once per frame while streaming. Unlike [`Self::handle_realtime_chunk`]
+    /// (which also advances phase/counters on a real arrival), this only
+    /// updates the plan the UI reads, so re-anchors / listing updates the
+    /// streaming loop fed between arrivals reach the timeline, countdown, ghost,
+    /// and VCP panel live. Still runs the idempotent volume-start capture in
+    /// case the fresher plan newly satisfies it.
+    pub fn adopt_live_projection(&mut self, plan: crate::nexrad::StreamingPlan) {
+        self.plan = Some(plan);
+        self.try_capture_volume_start_plan();
+    }
+
     /// Snapshot the rolling plan as the volume's starting plan iff all
     /// three preconditions have just become satisfied: the plan is
     /// available, the VCP pattern is parsed, and the volume's start

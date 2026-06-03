@@ -298,6 +298,24 @@ impl WorkbenchApp {
                     .record_chunk_elev_spans(&result.chunk_elev_spans);
             }
 
+            // Feed the shared projection engine the cached-sweep + in-progress
+            // inputs: which cuts we have locally (CollectedByUs / omit from the
+            // acquisition view) and which elevation is being received now
+            // (InProgress). Borrow is scoped; no await inside.
+            let scan_start_secs = result
+                .volume_header_time_secs
+                .unwrap_or(result.context.timestamp_secs);
+            {
+                let mut eng = self.live.engine.borrow_mut();
+                eng.set_current_scan_start_secs(scan_start_secs);
+                eng.set_cached_sweeps_for_scan(
+                    scan_start_secs,
+                    &self.live.mode_state.completed_sweep_metas,
+                );
+                let in_progress = result.chunk_elev_spans.last().map(|(elev, ..)| *elev);
+                eng.set_in_progress_elevation(scan_start_secs, in_progress);
+            }
+
             // Push the most recent chunk's collection-end time down to the
             // streaming loop so the next projection anchors on the current
             // chunk's actual collection time (not the volume's start time).

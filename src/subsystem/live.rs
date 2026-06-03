@@ -68,6 +68,21 @@ impl Live {
     /// consistent state derived from the same `now` timestamp.
     pub fn refresh(&mut self, inputs: LiveRefreshInputs<'_>) {
         let now = js_sys::Date::now() / 1000.0;
+        // Adopt the engine's latest projection each frame while streaming, so
+        // re-anchors and listing updates the loop fed between chunk arrivals
+        // (e.g. during a long cross-volume wait) propagate to every surface —
+        // not just on the next `ChunkReceived`. The engine is the single
+        // producer; this is the live read that closes the desync.
+        if self.mode_state.is_active() {
+            let live_plan = self
+                .engine
+                .borrow()
+                .last_projection()
+                .map(|p| p.plan.clone());
+            if let Some(plan) = live_plan {
+                self.mode_state.adopt_live_projection(plan);
+            }
+        }
         self.radar_model = self.mode_state.compute_model(now);
         self.app_mode = if self.mode_state.is_active() {
             AppMode::Live
