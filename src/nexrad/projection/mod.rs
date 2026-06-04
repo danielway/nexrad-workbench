@@ -12,6 +12,7 @@
 //! both the collection and availability axes and migrate consumers onto it; the
 //! wrapped `plan` is retained as the math carrier until those migrations land.
 
+mod archive_adapter;
 mod cached_sweeps;
 mod engine;
 mod inventory;
@@ -19,6 +20,8 @@ mod status;
 
 // Re-exported as the module's public names; constructed at the Phase 4
 // ownership flip, so unused in the engine-less build until then.
+#[allow(unused_imports)]
+pub use archive_adapter::scan_to_projection;
 #[allow(unused_imports)]
 pub use cached_sweeps::CachedSweepSet;
 #[allow(unused_imports)]
