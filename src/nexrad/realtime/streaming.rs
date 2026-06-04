@@ -849,10 +849,15 @@ pub(super) async fn streaming_loop(
                 should_list_now(wait_ms, next_in_next_volume, threshold_ms),
                 next_target_seq,
             ) {
-                // Long filtered cross-volume wait: list-probe the next-volume
-                // slot to early-fire / re-anchor instead of dead-reckoning the
-                // whole sleep.
-                let target_volume = iter.current_volume().next();
+                // Long wait: list-probe the slot the target lives in (next
+                // volume for a cross-volume target, else the current volume) to
+                // early-fire / re-anchor / flip future→available instead of
+                // dead-reckoning the whole sleep.
+                let target_volume = if next_in_next_volume {
+                    iter.current_volume().next()
+                } else {
+                    iter.current_volume()
+                };
                 let prev_anchor_upload = iter.current_upload_secs();
                 let cursor_anchor = iter.current_id().clone();
                 let (out, resolution) = wait_for_next_target(
@@ -1356,12 +1361,13 @@ const LIST_PROBE_THRESHOLD_SECS: f64 = 30.0;
 /// timing tightness.
 const LIST_PROBE_CADENCE_SECS: f64 = 20.0;
 
-/// Whether the adaptive list-probe should engage for this wait. Only the
-/// filtered cross-volume case (target in the next volume) carries the long
-/// projection chain + stale anchor that the probe corrects; everything else
-/// uses the plain single sleep. Pure — split out for testing.
-fn should_list_now(wait_ms: u32, target_in_next_volume: bool, threshold_ms: u32) -> bool {
-    target_in_next_volume && wait_ms > threshold_ms
+/// Whether the adaptive list-probe should engage for this wait. Any long wait
+/// (cross-volume OR a filtered current-volume gap) benefits: cross-volume from
+/// the re-anchor correction, current-volume from flipping a future cut to
+/// `AvailableNotCollected` live as soon as it publishes. The caller lists the
+/// volume the target lives in. Pure — split out for testing.
+fn should_list_now(wait_ms: u32, _target_in_next_volume: bool, threshold_ms: u32) -> bool {
+    wait_ms > threshold_ms
 }
 
 /// Whether the next-volume slot has started writing the *new* volume (vs. still
@@ -1780,16 +1786,14 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn should_list_now_only_for_long_cross_volume_waits() {
+    fn should_list_now_for_any_long_wait() {
         let threshold = 30_000;
-        // Cross-volume + above threshold → probe.
+        // Above threshold → probe (cross-volume or same-volume).
         assert!(should_list_now(45_000, true, threshold));
-        // Below threshold → no probe even cross-volume.
+        assert!(should_list_now(120_000, false, threshold));
+        // Below / at threshold → no probe.
         assert!(!should_list_now(20_000, true, threshold));
-        // Exactly threshold is not strictly greater → no probe.
-        assert!(!should_list_now(30_000, true, threshold));
-        // Same-volume → never probe regardless of length.
-        assert!(!should_list_now(120_000, false, threshold));
+        assert!(!should_list_now(30_000, false, threshold));
     }
 
     #[wasm_bindgen_test]
