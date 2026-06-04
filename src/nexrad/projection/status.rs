@@ -8,7 +8,7 @@
 
 use super::cached_sweeps::CachedSweepSet;
 use super::inventory::{ChunkCoord, KnownChunkInventory};
-use super::{ProjectionScanRole, SweepProjection, SweepProjectionStatus};
+use super::{ProjectionScanRole, SweepProjection, SweepProjectionStatus, SweepTimingProvenance};
 use crate::nexrad::ChunkProjectionInfo;
 use nexrad_data::aws::realtime::VolumeIndex;
 use std::collections::HashMap;
@@ -152,13 +152,18 @@ pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
         current_elevs_built.push(elev);
         sweeps.push(SweepProjection {
             elevation_number: elev,
+            elevation_angle: 0.0,
             scan_role: ProjectionScanRole::CurrentInProgress,
             status,
+            timing: SweepTimingProvenance::Projected,
             collection_start_secs: agg.collection_start,
             collection_end_secs: agg.collection_end,
             available_at_secs: agg.available_at,
             chunks_in_sweep: agg.chunks_in_sweep,
+            chunks_received: 0,
+            radials_received: 0,
             azimuth_rate_dps: agg.azimuth_rate,
+            chunks: Vec::new(),
         });
     }
     // Append already-collected cuts that are behind the anchor (no forecast
@@ -167,13 +172,18 @@ pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
         if !current_elevs_built.contains(&elev) {
             sweeps.push(SweepProjection {
                 elevation_number: elev,
+                elevation_angle: 0.0,
                 scan_role: ProjectionScanRole::CurrentInProgress,
                 status: SweepProjectionStatus::CollectedByUs,
+                timing: SweepTimingProvenance::Observed,
                 collection_start_secs: start,
                 collection_end_secs: end,
                 available_at_secs: end,
                 chunks_in_sweep: 0,
+                chunks_received: 0,
+                radials_received: 0,
                 azimuth_rate_dps: 0.0,
+                chunks: Vec::new(),
             });
         }
     }
@@ -206,13 +216,18 @@ pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
             );
             sweeps.push(SweepProjection {
                 elevation_number: elev,
+                elevation_angle: 0.0,
                 scan_role: ProjectionScanRole::NextScan,
                 status,
+                timing: SweepTimingProvenance::Projected,
                 collection_start_secs: agg.collection_start + delta,
                 collection_end_secs: agg.collection_end + delta,
                 available_at_secs: agg.available_at + delta,
                 chunks_in_sweep: agg.chunks_in_sweep,
+                chunks_received: 0,
+                radials_received: 0,
                 azimuth_rate_dps: agg.azimuth_rate,
+                chunks: Vec::new(),
             });
         }
     }
