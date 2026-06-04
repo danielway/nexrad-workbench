@@ -5,6 +5,12 @@
 //! in-progress volumes (constructed from `LiveModeState`) and archived completed
 //! scans (constructed from `Scan`), so all UI consumers — timeline, left panel,
 //! canvas, tooltips — see the same data without duplicating positioning logic.
+//!
+//! Migration note: consumers now read the engine's `ScanProjection`; this module
+//! survives only as the parity oracle (`build_position_from_live`) + the
+//! `SweepStatus`/`SweepTiming` enums the VCP-forecast diagnostics still use. It
+//! is deleted in the final cleanup step.
+#![allow(dead_code)]
 
 use super::radar_data::Scan;
 use super::LiveModeState;

@@ -194,7 +194,7 @@ pub(super) fn render_realtime_progress(
     painter: &Painter,
     scan_rect: &Rect,
     sweep_rect: Option<&Rect>,
-    model: &crate::state::VcpPositionModel,
+    model: &crate::nexrad::projection::ScanProjection,
     ctx: &LiveOverlayContext,
     view_start: f64,
     view_end: f64,
@@ -390,8 +390,8 @@ pub(super) fn render_realtime_progress(
 
     for sweep_pos in &model.sweeps {
         let elev_num = sweep_pos.elevation_number;
-        let sw_start = sweep_pos.start;
-        let sw_end = sweep_pos.end;
+        let sw_start = sweep_pos.collection_start_secs;
+        let sw_end = sweep_pos.collection_end_secs;
         let is_complete = sweep_pos.is_complete();
         let is_downloading = sweep_pos.is_in_progress();
         let is_future = sweep_pos.is_future();
@@ -444,13 +444,13 @@ pub(super) fn render_realtime_progress(
             // Received chunks fill slots left-to-right; the next expected chunk
             // shows a countdown placeholder.
 
-            let (chunks_received, chunks_expected_opt) = match &sweep_pos.status {
-                crate::state::SweepStatus::InProgress {
-                    chunks_received,
-                    chunks_expected,
-                    ..
-                } => (*chunks_received, *chunks_expected),
-                _ => (0, None),
+            let (chunks_received, chunks_expected_opt) = if sweep_pos.is_in_progress() {
+                (
+                    sweep_pos.chunks_received,
+                    (sweep_pos.chunks_in_sweep > 0).then_some(sweep_pos.chunks_in_sweep as u32),
+                )
+            } else {
+                (0, None)
             };
             let exp_n = chunks_expected_opt.unwrap_or(3).max(1);
             let chunk_width = block.width() / exp_n as f32;
@@ -651,7 +651,7 @@ pub(super) fn render_realtime_progress(
     // remaining matches in the current volume — so the user's next download
     // will land in the next volume. Rendered with a reduced-alpha treatment
     // so it reads as "projected" without competing with the live scan.
-    if let Some(ghost) = model.next_volume_ghost.as_deref() {
+    if let Some(ghost) = model.next_scan_ghost.as_deref() {
         render_ghost_volume_overlay(
             painter,
             scan_rect,
@@ -679,7 +679,7 @@ fn render_ghost_volume_overlay(
     painter: &Painter,
     scan_rect: &Rect,
     sweep_rect: &Rect,
-    ghost: &crate::state::VcpPositionModel,
+    ghost: &crate::nexrad::projection::ScanProjection,
     view_start: f64,
     view_end: f64,
     zoom: f64,
@@ -728,8 +728,8 @@ fn render_ghost_volume_overlay(
     // user-selected target highlighted.
     for sweep_pos in &ghost.sweeps {
         let elev_num = sweep_pos.elevation_number;
-        let sw_start = sweep_pos.start;
-        let sw_end = sweep_pos.end;
+        let sw_start = sweep_pos.collection_start_secs;
+        let sw_end = sweep_pos.collection_end_secs;
         let x_a = ts_to_x(sw_start).max(sweep_rect.left());
         let x_b = ts_to_x(sw_end).min(sweep_rect.right());
         if x_b - x_a < 1.0 || sw_end < view_start || sw_start > view_end {

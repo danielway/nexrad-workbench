@@ -6,7 +6,7 @@
 //! what the radar is doing right now.
 
 use super::LiveModeState;
-use super::VcpPositionModel;
+use crate::nexrad::projection::{ExtrapolationState, ScanProjection};
 
 /// Computed snapshot of live radar state for consistent UI consumption.
 ///
@@ -21,9 +21,9 @@ pub struct LiveRadarModel {
     /// Extrapolated radar azimuth at snapshot time (degrees, 0-360).
     pub estimated_azimuth: Option<f32>,
 
-    /// Unified VCP position model — the single source of truth for
-    /// sweep timing, chunk positions, and volume progress.
-    pub position: Option<VcpPositionModel>,
+    /// Unified scan projection — the single source of truth for sweep timing,
+    /// chunk positions, and volume progress. Sourced from the shared engine.
+    pub position: Option<ScanProjection>,
 
     /// Volume-level progress (present when streaming has started a volume).
     pub volume: Option<LiveVolumeModel>,
@@ -123,13 +123,30 @@ impl LiveModeState {
     ///
     /// Call once per frame at the start of the UI rendering pass, then pass the
     /// result to all consumers so they see the same `now` timestamp.
-    pub fn compute_model(&self, now_secs: f64) -> LiveRadarModel {
+    pub fn compute_model(&self, now_secs: f64, position: Option<ScanProjection>) -> LiveRadarModel {
         let active = self.is_active();
         if !active {
             return LiveRadarModel::default();
         }
 
-        let position = VcpPositionModel::from_live(self, now_secs);
+        // The engine emits the container with `extrapolation: None`; fill it per
+        // frame from the live last-radial + the current sweep's resolved rate.
+        let mut position = position;
+        if let Some(ref mut p) = position {
+            if let (Some(az), Some(t)) = (self.last_radial_azimuth, self.last_radial_time_secs) {
+                let rate = self
+                    .current_in_progress_elevation
+                    .and_then(|e| p.sweeps.iter().find(|s| s.elevation_number == e))
+                    .map(|s| s.azimuth_rate_dps)
+                    .filter(|&r| r > 0.0)
+                    .unwrap_or(20.0);
+                p.extrapolation = Some(ExtrapolationState {
+                    last_radial_azimuth: az,
+                    last_radial_time: t,
+                    degrees_per_sec: rate,
+                });
+            }
+        }
         let estimated_azimuth = position
             .as_ref()
             .and_then(|p| p.estimated_azimuth_at(now_secs));
@@ -153,12 +170,8 @@ impl LiveModeState {
                 p.sweeps
                     .iter()
                     .find(|s| s.elevation_number == elev)
-                    .and_then(|s| match &s.status {
-                        crate::state::SweepStatus::InProgress {
-                            chunks_expected, ..
-                        } => *chunks_expected,
-                        _ => None,
-                    })
+                    .map(|s| s.chunks_in_sweep as u32)
+                    .filter(|&c| c > 0)
             });
 
             LiveSweepModel {

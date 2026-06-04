@@ -28,9 +28,10 @@
 //! still routing every read through one handle.
 
 use crate::data::ScanKey;
+use crate::nexrad::projection::{ScanProjection, SweepProjectionStatus, SweepTimingProvenance};
 use crate::nexrad::ScanBoundary;
 use crate::state::radar_data::{RadarTimeline, Scan};
-use crate::state::{LiveModeState, SweepStatus, SweepTiming, VcpPositionModel};
+use crate::state::LiveModeState;
 use std::collections::BTreeSet;
 
 /// Tolerance for matching a download/shadow boundary against a cached scan,
@@ -82,7 +83,7 @@ pub struct TimelineView<'a> {
     /// renders normally on the settled track).
     live_volume_ms: Option<i64>,
     /// The in-progress volume, with cached sweeps merged in. Owned.
-    live_position: Option<VcpPositionModel>,
+    live_position: Option<ScanProjection>,
     live_ctx: Option<LiveOverlayContext>,
     /// Cached scan key-millis (plus the live volume) for O(log n) coverage
     /// queries by the shadow/ghost overlays.
@@ -102,7 +103,7 @@ impl<'a> TimelineView<'a> {
         cache: &'a RadarTimeline,
         shadows: &'a [ScanBoundary],
         live_state: Option<&LiveModeState>,
-        live_position: Option<&VcpPositionModel>,
+        live_position: Option<&ScanProjection>,
         elevation_filter: Option<u8>,
         now_secs: f64,
     ) -> Self {
@@ -218,7 +219,7 @@ impl<'a> TimelineView<'a> {
 
     /// The in-progress volume, with cached sweeps merged in. `None` when not
     /// streaming (or when the VCP isn't known yet and no overlay is drawn).
-    pub fn live_volume(&self) -> Option<&VcpPositionModel> {
+    pub fn live_volume(&self) -> Option<&ScanProjection> {
         self.live_position.as_ref()
     }
 
@@ -309,18 +310,18 @@ fn scan_with_key_ms(cache: &RadarTimeline, key_ms: i64) -> Option<&Scan> {
 /// The live model's own freshly-decoded sweeps win (they already carry
 /// sub-second radial timing for this session), so cached data only fills the
 /// elevations the live session hasn't produced yet. Idempotent and pure.
-pub fn merge_cached_into_live(position: &mut VcpPositionModel, cached: &Scan) {
+pub fn merge_cached_into_live(position: &mut ScanProjection, cached: &Scan) {
     for sw in &cached.sweeps {
         if let Some(p) = position
             .sweeps
             .iter_mut()
             .find(|p| p.elevation_number == sw.elevation_number)
         {
-            if p.status != SweepStatus::Complete {
-                p.status = SweepStatus::Complete;
-                p.timing = SweepTiming::Observed;
-                p.start = sw.start_time;
-                p.end = sw.end_time;
+            if p.status != SweepProjectionStatus::CollectedByUs {
+                p.status = SweepProjectionStatus::CollectedByUs;
+                p.timing = SweepTimingProvenance::Observed;
+                p.collection_start_secs = sw.start_time;
+                p.collection_end_secs = sw.end_time;
                 p.chunks.clear();
             }
         }
@@ -337,25 +338,33 @@ pub fn scan_key_ms(key: &ScanKey) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nexrad::projection::{
+        ProjectionScanRole, SweepAvailability, SweepProjection, SweepProjectionStatus,
+        SweepTimingProvenance,
+    };
     use crate::state::radar_data::Sweep;
-    use crate::state::vcp_position::{SweepPosition, SweepStatus, SweepTiming};
-    use crate::state::SweepAvailability;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    fn sweep_pos(elev: u8, status: SweepStatus) -> SweepPosition {
-        SweepPosition {
+    fn sweep_pos(elev: u8, status: SweepProjectionStatus) -> SweepProjection {
+        SweepProjection {
             elevation_number: elev,
             elevation_angle: 0.5 * elev as f32,
-            start: 0.0,
-            end: 0.0,
-            timing: SweepTiming::Estimated,
+            scan_role: ProjectionScanRole::CurrentInProgress,
             status,
+            timing: SweepTimingProvenance::Estimated,
+            collection_start_secs: 0.0,
+            collection_end_secs: 0.0,
+            available_at_secs: 0.0,
+            chunks_in_sweep: 0,
+            chunks_received: 0,
+            radials_received: 0,
+            azimuth_rate_dps: 0.0,
             chunks: Vec::new(),
         }
     }
 
-    fn live_model(sweeps: Vec<SweepPosition>) -> VcpPositionModel {
-        VcpPositionModel {
+    fn live_model(sweeps: Vec<SweepProjection>) -> ScanProjection {
+        ScanProjection {
             vcp_number: 212,
             volume_start: 1_700_000_000.0,
             volume_end: 1_700_000_300.0,
@@ -363,7 +372,7 @@ mod tests {
             scan_key: None,
             sweeps,
             extrapolation: None,
-            next_volume_ghost: None,
+            next_scan_ghost: None,
         }
     }
 
@@ -399,16 +408,9 @@ mod tests {
         // Live session has only seen elev 2 (in progress); elevs 1 & 3 are
         // future. The volume already has elevs 1 & 3 cached from a prefetch.
         let mut pos = live_model(vec![
-            sweep_pos(1, SweepStatus::Future),
-            sweep_pos(
-                2,
-                SweepStatus::InProgress {
-                    radials_received: 100,
-                    chunks_received: 1,
-                    chunks_expected: Some(3),
-                },
-            ),
-            sweep_pos(3, SweepStatus::Future),
+            sweep_pos(1, SweepProjectionStatus::FutureExpected),
+            sweep_pos(2, SweepProjectionStatus::InProgress),
+            sweep_pos(3, SweepProjectionStatus::FutureExpected),
         ]);
         let scan = cached_scan(
             1_700_000_000.0,
@@ -423,16 +425,16 @@ mod tests {
         // Cached cuts now render as Cached with their observed times.
         let s1 = &pos.sweeps[0];
         assert_eq!(s1.availability(), SweepAvailability::Cached);
-        assert_eq!(s1.timing, SweepTiming::Observed);
-        assert_eq!(s1.start, 1_700_000_001.0);
-        assert_eq!(s1.end, 1_700_000_030.0);
+        assert_eq!(s1.timing, SweepTimingProvenance::Observed);
+        assert_eq!(s1.collection_start_secs, 1_700_000_001.0);
+        assert_eq!(s1.collection_end_secs, 1_700_000_030.0);
 
         // The in-progress cut is untouched (session data wins).
         assert_eq!(pos.sweeps[1].availability(), SweepAvailability::Collecting);
 
         let s3 = &pos.sweeps[2];
         assert_eq!(s3.availability(), SweepAvailability::Cached);
-        assert_eq!(s3.start, 1_700_000_060.0);
+        assert_eq!(s3.collection_start_secs, 1_700_000_060.0);
 
         assert_eq!(pos.completed_count(), 2);
     }
@@ -442,17 +444,17 @@ mod tests {
     #[wasm_bindgen_test]
     fn merge_does_not_clobber_session_complete() {
         let mut pos = live_model(vec![{
-            let mut p = sweep_pos(1, SweepStatus::Complete);
-            p.timing = SweepTiming::Observed;
-            p.start = 999.0;
-            p.end = 1099.0;
+            let mut p = sweep_pos(1, SweepProjectionStatus::CollectedByUs);
+            p.timing = SweepTimingProvenance::Observed;
+            p.collection_start_secs = 999.0;
+            p.collection_end_secs = 1099.0;
             p
         }]);
         let scan = cached_scan(0.0, vec![cached_sweep(1, 1.0, 2.0)]);
         merge_cached_into_live(&mut pos, &scan);
         // Session times preserved, not overwritten by the cached (1.0, 2.0).
-        assert_eq!(pos.sweeps[0].start, 999.0);
-        assert_eq!(pos.sweeps[0].end, 1099.0);
+        assert_eq!(pos.sweeps[0].collection_start_secs, 999.0);
+        assert_eq!(pos.sweeps[0].collection_end_secs, 1099.0);
     }
 
     /// `is_covered_by_cached` matches the old 60s tolerance band.

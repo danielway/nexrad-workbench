@@ -66,9 +66,7 @@ pub use vcp_forecast::{
     derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord, SweepForecast,
     VolumeForecastSnapshot, WaitResolution,
 };
-pub use vcp_position::{
-    SweepAvailability, SweepPosition, SweepStatus, SweepTiming, VcpPositionModel,
-};
+pub use vcp_position::{SweepStatus, SweepTiming};
 pub use viz::{
     DisplayedSweep, ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct,
     RenderProcessing, StormCellInfo, SweepIdentity, ViewMode, VizState,

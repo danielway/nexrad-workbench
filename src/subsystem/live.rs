@@ -76,20 +76,19 @@ impl Live {
         // (e.g. during a long cross-volume wait) propagate to every surface —
         // not just on the next `ChunkReceived`. The engine is the single
         // producer; this is the live read that closes the desync.
-        if self.mode_state.is_active() {
+        let live_scan = if self.mode_state.is_active() {
             self.engine
                 .borrow_mut()
                 .set_archive_boundaries(inputs.archive_boundaries.to_vec());
-            let live_plan = self
-                .engine
-                .borrow()
-                .last_projection()
-                .map(|p| p.plan.clone());
-            if let Some(plan) = live_plan {
-                self.mode_state.adopt_live_projection(plan);
+            let proj = self.engine.borrow().last_projection().cloned();
+            if let Some(ref p) = proj {
+                self.mode_state.adopt_live_projection(p.plan.clone());
             }
-        }
-        self.radar_model = self.mode_state.compute_model(now);
+            proj.and_then(|p| p.live_scan)
+        } else {
+            None
+        };
+        self.radar_model = self.mode_state.compute_model(now, live_scan);
         self.app_mode = if self.mode_state.is_active() {
             AppMode::Live
         } else if inputs

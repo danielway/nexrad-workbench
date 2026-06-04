@@ -2,7 +2,8 @@
 
 use super::{format_timestamp_full, DetailLevel};
 use crate::data::ScanCompleteness;
-use crate::state::{SweepAvailability, TimelineView};
+use crate::nexrad::projection::SweepAvailability;
+use crate::state::TimelineView;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
 
 /// Render hover tooltip for timeline elements.
@@ -209,7 +210,7 @@ fn render_sweep_tooltip_content(
 #[allow(clippy::too_many_arguments)]
 fn render_realtime_volume_tooltip(
     ui: &mut egui::Ui,
-    model: &crate::state::VcpPositionModel,
+    model: &crate::nexrad::projection::ScanProjection,
     live_state: &crate::state::LiveModeState,
     hover_ts: f64,
     now_secs: f64,
@@ -229,19 +230,19 @@ fn render_realtime_volume_tooltip(
         let vcp_def = crate::state::get_vcp_definition(vcp_num);
 
         // Find which sweep block contains hover_ts (or snap to nearest).
-        let mut hovered_sweep: Option<&crate::state::SweepPosition> = None;
-        let mut nearest_sweep: Option<&crate::state::SweepPosition> = None;
+        let mut hovered_sweep: Option<&crate::nexrad::projection::SweepProjection> = None;
+        let mut nearest_sweep: Option<&crate::nexrad::projection::SweepProjection> = None;
         let mut nearest_dist: f64 = f64::MAX;
 
         for sp in &model.sweeps {
-            if hover_ts >= sp.start && hover_ts <= sp.end {
+            if hover_ts >= sp.collection_start_secs && hover_ts <= sp.collection_end_secs {
                 hovered_sweep = Some(sp);
                 break;
             }
-            let dist = if hover_ts < sp.start {
-                sp.start - hover_ts
+            let dist = if hover_ts < sp.collection_start_secs {
+                sp.collection_start_secs - hover_ts
             } else {
-                hover_ts - sp.end
+                hover_ts - sp.collection_end_secs
             };
             if nearest_sweep.is_none() || dist < nearest_dist {
                 nearest_sweep = Some(sp);
@@ -262,6 +263,7 @@ fn render_realtime_volume_tooltip(
             let state_label = match sp.availability() {
                 SweepAvailability::Cached => "Complete",
                 SweepAvailability::Collecting => "Collecting",
+                SweepAvailability::Available => "Available",
                 SweepAvailability::Projected => "Pending",
             };
             ui.label(
@@ -285,7 +287,7 @@ fn render_realtime_volume_tooltip(
             if sp.is_complete() {
                 if sp.is_observed() {
                     let duration = sp.duration();
-                    let start_str = format_timestamp_full(sp.start, use_local);
+                    let start_str = format_timestamp_full(sp.collection_start_secs, use_local);
                     ui.label(format!("Time: {} ({:.0}s)", start_str, duration));
                 }
                 ui.label(
@@ -294,13 +296,10 @@ fn render_realtime_volume_tooltip(
                         .color(Color32::from_rgb(100, 200, 100)),
                 );
             } else if sp.is_in_progress() {
-                let (total_radials, completed_chunks) = match &sp.status {
-                    crate::state::SweepStatus::InProgress {
-                        radials_received,
-                        chunks_received,
-                        ..
-                    } => (*radials_received, *chunks_received as usize),
-                    _ => (0, 0),
+                let (total_radials, completed_chunks) = if sp.is_in_progress() {
+                    (sp.radials_received, sp.chunks_received as usize)
+                } else {
+                    (0, 0)
                 };
                 let in_progress_radials = live_state.current_in_progress_radials.unwrap_or(0);
 

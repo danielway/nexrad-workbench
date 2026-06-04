@@ -43,7 +43,7 @@ struct RadarStateAtTimestamp<'a> {
     /// Extracted VCP pattern from live streaming (used when scan is None)
     live_vcp_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
     /// Unified position model with sweep timing (live or archived)
-    position: Option<crate::state::VcpPositionModel>,
+    position: Option<crate::nexrad::projection::ScanProjection>,
 }
 
 fn draw_left_panel(
@@ -186,7 +186,7 @@ fn query_radar_state_at_timestamp<'a>(
                 scan_progress,
                 scan: Some(scan),
                 live_vcp_pattern: None,
-                position: Some(crate::state::VcpPositionModel::from_scan(scan)),
+                position: Some(crate::nexrad::projection::scan_to_projection(scan)),
             }
         }
         None => {
@@ -554,7 +554,7 @@ fn build_elevation_rows<'a>(
     scan: Option<&'a Scan>,
     extracted_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
     vcp_def: Option<&'a crate::state::vcp::VcpDefinition>,
-    position: Option<&crate::state::VcpPositionModel>,
+    position: Option<&crate::nexrad::projection::ScanProjection>,
     current_elevation_number: Option<u8>,
 ) -> Vec<ElevRow<'a>> {
     // Helper to get sweep start offset (from volume start) for a given index.
@@ -562,8 +562,8 @@ fn build_elevation_rows<'a>(
         position
             .and_then(|p| {
                 let sp = p.sweeps.get(idx)?;
-                let offset = sp.start - p.volume_start;
-                let estimated = sp.timing != crate::state::SweepTiming::Observed;
+                let offset = sp.collection_start_secs - p.volume_start;
+                let estimated = !sp.is_observed();
                 Some((Some(offset), estimated))
             })
             .unwrap_or((None, true))
