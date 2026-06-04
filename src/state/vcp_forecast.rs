@@ -7,7 +7,29 @@
 //! serialized to plain text and pasted into a chat message so the forecasting
 //! algorithms can be iterated on from real session data.
 
-use super::{SweepStatus, SweepTiming};
+/// How a forecast sweep's time bounds were derived (diagnostic label). Some
+/// variants are matched by the diagnostics UI but only produced for completed
+/// (`Observed`) / predicted (`Estimated`) cuts today.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
+pub enum SweepTiming {
+    Observed,
+    Anchored,
+    Estimated,
+}
+
+/// Completion status of a forecast sweep (diagnostic label).
+#[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
+pub enum SweepStatus {
+    Complete,
+    InProgress {
+        radials_received: u32,
+        chunks_received: u32,
+        chunks_expected: Option<u32>,
+    },
+    Future,
+}
 use crate::nexrad::timing::{AnchorSource, ChunkCharacteristics, PhysicsBreakdown, SchedulerPath};
 use nexrad_data::aws::realtime::ChunkType;
 use nexrad_decode::messages::volume_coverage_pattern::{ChannelConfiguration, WaveformType};

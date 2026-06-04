@@ -36,22 +36,29 @@ pub fn derive_sweep_status(
     if in_progress_elevation == Some(elevation_number) {
         return SweepProjectionStatus::InProgress;
     }
-    // Published if the sweep's final chunk (or a later sequence) is known, or
-    // the volume's End chunk has appeared. Same presence rule the streaming
-    // probe uses for early-fire.
-    let published = inventory.has_end(volume)
+    if published_in_inventory(inventory, volume, last_seq_of_sweep) {
+        SweepProjectionStatus::AvailableNotCollected
+    } else {
+        SweepProjectionStatus::FutureExpected
+    }
+}
+
+/// Whether a sweep's final chunk (or a later sequence / the End chunk) is known
+/// to be published in S3 per the inventory — the presence rule shared by the
+/// status derivation and the streaming probe's early-fire.
+pub fn published_in_inventory(
+    inventory: &KnownChunkInventory,
+    volume: VolumeIndex,
+    last_seq_of_sweep: usize,
+) -> bool {
+    inventory.has_end(volume)
         || inventory
             .newest_seq_in(volume)
             .is_some_and(|s| s >= last_seq_of_sweep)
         || inventory.contains(ChunkCoord {
             volume,
             sequence: last_seq_of_sweep,
-        });
-    if published {
-        SweepProjectionStatus::AvailableNotCollected
-    } else {
-        SweepProjectionStatus::FutureExpected
-    }
+        })
 }
 
 /// Inputs to [`build_sweeps`], bundled to keep the signature manageable.
@@ -175,7 +182,12 @@ pub struct SweepBounds {
     pub start: f64,
     pub end: f64,
     pub timing: SweepTimingProvenance,
+    /// Bound-derivation flags (received roster / in-progress). Orthogonal to
+    /// the acquisition `status`; surfaced for callers that map their own status
+    /// (the legacy oracle did) and asserted by the cascade golden test.
+    #[allow(dead_code)]
     pub is_complete: bool,
+    #[allow(dead_code)]
     pub is_in_progress: bool,
     pub radials_received: u32,
     pub chunks_received: u32,
@@ -474,9 +486,9 @@ pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
             .get(&b.elevation_number)
             .copied()
             .unwrap_or(0);
-        // Acquisition/display status from the engine's inputs (cached set +
-        // inventory + in-progress). Aligns with the cascade's complete/in-progress
-        // flags; the inventory adds the Available-vs-Future distinction.
+        // Acquisition/display status from the engine's cached set (sparse cuts
+        // we actually have) + inventory + in-progress. Orthogonal to the
+        // cascade's `is_complete`/`is_in_progress` *bound-derivation* flags.
         let status = derive_sweep_status(
             ctx.current_scan_start_secs,
             b.elevation_number,
@@ -844,5 +856,49 @@ mod tests {
             .unwrap();
         assert_eq!(next_sweep.collection_start_secs, 1090.0);
         assert_eq!(next_sweep.available_at_secs, 1095.0);
+    }
+
+    /// Golden freeze of the current-scan cascade (formerly validated against the
+    /// from_live oracle): elev 1 cached→Observed, elev 2 in-progress with chunk
+    /// data→Anchored, elev 3 future→Projected.
+    #[wasm_bindgen_test]
+    fn cascade_freezes_observed_anchored_projected() {
+        let current_chunks = vec![chunk(7, Some(3), Some(forecast(1100.0, 1105.0)))];
+        let metas = vec![crate::data::CachedSweep {
+            start: 1000.0,
+            end: 1010.0,
+            elevation: 0.5,
+            elevation_number: 1,
+            start_azimuth: 0.0,
+            cached_products: vec![],
+        }];
+        let spans = vec![(2u8, 1020.0, 1025.0, 50u32)];
+        let received = [true, false, false];
+        let durs = [100.0, 100.0, 100.0];
+        let out = cascade_current_sweeps(&CascadeInputs {
+            vol_start: 1000.0,
+            expected_count: 3,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            expected_dur: 300.0,
+            current_volume_chunks: &current_chunks,
+            completed_sweep_metas: &metas,
+            chunk_elev_spans: &spans,
+            current_elev_chunks: &[],
+            in_progress_elevation: Some(2),
+            in_progress_radials: Some(7),
+            fallback_sweep_durations: &durs,
+        });
+        assert_eq!(out.len(), 3);
+        assert_eq!((out[0].start, out[0].end), (1000.0, 1010.0));
+        assert_eq!(out[0].timing, SweepTimingProvenance::Observed);
+        assert!(out[0].is_complete);
+        assert_eq!(out[1].start, 1020.0);
+        assert_eq!(out[1].end, 1025.0_f64.max(1120.0));
+        assert_eq!(out[1].timing, SweepTimingProvenance::Anchored);
+        assert!(out[1].is_in_progress);
+        assert_eq!(out[2].start, 1100.0);
+        assert_eq!(out[2].timing, SweepTimingProvenance::Projected);
     }
 }
