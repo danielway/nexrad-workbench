@@ -693,6 +693,7 @@ impl eframe::App for WorkbenchApp {
         self.live.refresh(subsystem::live::LiveRefreshInputs {
             radar_timeline: &self.timeline.scans,
             playback: &self.playback.state,
+            archive_boundaries: &self.timeline.shadow_scan_boundaries,
         });
         self.state.refresh_mobile_mode(ctx);
 

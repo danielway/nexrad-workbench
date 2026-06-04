@@ -51,6 +51,8 @@ pub struct ProjectionEngine {
     /// Observed/roster inputs for the current-scan bounds cascade, fed from the
     /// worker-ingest pipeline. Absent until the first ingest (cold → coarse).
     observed: ObservedSweepInputs,
+    /// Available archive scan boundaries, for authoritative next-scan extent.
+    archive_boundaries: Vec<crate::nexrad::ScanBoundary>,
     /// Bumped whenever a setter changes an input value; the cache key.
     input_revision: u64,
     /// Memoized output + the inputs it was built from.
@@ -86,6 +88,7 @@ impl ProjectionEngine {
             current_scan_start_secs: None,
             in_progress: None,
             observed: ObservedSweepInputs::default(),
+            archive_boundaries: Vec::new(),
             input_revision: 0,
             cached: None,
         }
@@ -138,6 +141,15 @@ impl ProjectionEngine {
     pub fn set_observed_inputs(&mut self, observed: ObservedSweepInputs) {
         self.observed = observed;
         self.bump();
+    }
+
+    /// Set the available archive scan boundaries (authoritative next-scan
+    /// extent). Replaces; bumps on a length/content change.
+    pub fn set_archive_boundaries(&mut self, boundaries: Vec<crate::nexrad::ScanBoundary>) {
+        if self.archive_boundaries != boundaries {
+            self.archive_boundaries = boundaries;
+            self.bump();
+        }
     }
 
     /// Record an inter-chunk arrival sample (feeds the blend + retry budget).
@@ -272,6 +284,18 @@ impl ProjectionEngine {
             });
             let current_volume = *anchor.volume();
             let obs = &self.observed;
+            // Authoritative next-scan start: the smallest archive boundary start
+            // strictly after the current scan, when an archive listing covers it.
+            let next_scan_boundary = self
+                .archive_boundaries
+                .iter()
+                .map(|b| b.start as f64)
+                .filter(|&s| s > current_scan_start + 1.0)
+                .reduce(f64::min);
+            // COLLECTION end of the current volume.
+            let volume_end = plan
+                .current_volume_end_collection_secs
+                .unwrap_or(current_scan_start + obs.expected_dur_secs.max(1.0));
             let ctx = SweepBuildCtx {
                 current_chunks: &plan.current_volume_chunks,
                 next_chunks: plan.next_volume_chunks.as_deref(),
@@ -282,7 +306,7 @@ impl ProjectionEngine {
                 cached: &self.cached_sweeps,
                 inventory: &self.inventory,
                 in_progress_elevation: self.in_progress.map(|(_, e)| e),
-                next_scan_boundary_start_secs: None,
+                next_scan_boundary_start_secs: next_scan_boundary,
                 expected_count: obs.expected_count,
                 received: &obs.received,
                 vcp_number: obs.vcp_number,
@@ -296,7 +320,14 @@ impl ProjectionEngine {
                 fallback_sweep_durations: &obs.fallback_sweep_durations,
             };
             let sweeps = build_sweeps(&ctx);
-            self.cached = Some((key, Projection::from_plan_with_sweeps(plan, sweeps)));
+            let live_scan = super::assemble_live_scan(
+                &sweeps,
+                obs.vcp_number,
+                current_scan_start,
+                volume_end,
+                None,
+            );
+            self.cached = Some((key, Projection::from_parts(plan, sweeps, Some(live_scan))));
         }
         self.cached.as_ref().map(|(_, p)| p)
     }

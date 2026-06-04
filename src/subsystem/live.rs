@@ -23,6 +23,9 @@ use crate::state::{AppMode, LiveModeState, LiveRadarModel, PlaybackState, RadarT
 pub struct LiveRefreshInputs<'a> {
     pub radar_timeline: &'a RadarTimeline,
     pub playback: &'a PlaybackState,
+    /// Available archive scan boundaries — fed to the engine for authoritative
+    /// next-scan extent.
+    pub archive_boundaries: &'a [crate::nexrad::ScanBoundary],
 }
 
 /// Owner of the real-time streaming pipeline and the derived
@@ -74,6 +77,9 @@ impl Live {
         // not just on the next `ChunkReceived`. The engine is the single
         // producer; this is the live read that closes the desync.
         if self.mode_state.is_active() {
+            self.engine
+                .borrow_mut()
+                .set_archive_boundaries(inputs.archive_boundaries.to_vec());
             let live_plan = self
                 .engine
                 .borrow()

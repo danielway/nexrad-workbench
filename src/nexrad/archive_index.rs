@@ -65,7 +65,7 @@ pub struct ArchiveListing {
 }
 
 /// A scan's time boundaries derived from adjacent file timestamps in a listing.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScanBoundary {
     /// Start of this scan (Unix seconds).
     pub start: i64,

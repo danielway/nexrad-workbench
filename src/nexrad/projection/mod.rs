@@ -281,6 +281,62 @@ impl ScanProjection {
     }
 }
 
+/// Assemble the live current-scan container from a flat per-sweep list: the
+/// `CurrentInProgress` sweeps become the scan body; the `NextScan` sweeps become
+/// a faded ghost. `extrapolation` is left `None` — the live model fills it per
+/// frame from the last radial + the current sweep's rate.
+#[allow(dead_code)] // Consumed by the engine (Step 5) + LiveRadarModel (Step 6).
+pub fn assemble_live_scan(
+    sweeps: &[SweepProjection],
+    vcp_number: u16,
+    volume_start: f64,
+    volume_end: f64,
+    scan_key: Option<String>,
+) -> ScanProjection {
+    let current: Vec<SweepProjection> = sweeps
+        .iter()
+        .filter(|s| matches!(s.scan_role, ProjectionScanRole::CurrentInProgress))
+        .cloned()
+        .collect();
+    let next: Vec<SweepProjection> = sweeps
+        .iter()
+        .filter(|s| matches!(s.scan_role, ProjectionScanRole::NextScan))
+        .cloned()
+        .collect();
+    let next_scan_ghost = if next.is_empty() {
+        None
+    } else {
+        let gs = next
+            .iter()
+            .map(|s| s.collection_start_secs)
+            .fold(f64::MAX, f64::min);
+        let ge = next
+            .iter()
+            .map(|s| s.collection_end_secs)
+            .fold(f64::MIN, f64::max);
+        Some(Box::new(ScanProjection {
+            vcp_number,
+            volume_start: gs,
+            volume_end: ge,
+            complete: false,
+            scan_key: None,
+            sweeps: next,
+            extrapolation: None,
+            next_scan_ghost: None,
+        }))
+    };
+    ScanProjection {
+        vcp_number,
+        volume_start,
+        volume_end,
+        complete: false,
+        scan_key,
+        sweeps: current,
+        extrapolation: None,
+        next_scan_ghost,
+    }
+}
+
 /// The unified forward-looking projection emitted by the engine and read by all
 /// consumers.
 ///
@@ -303,6 +359,9 @@ pub struct Projection {
     /// (`CollectedByUs`) sweeps for the display view; acquisition consumers
     /// filter those out via [`Self::acquisition_sweeps`].
     pub sweeps: Vec<SweepProjection>,
+    /// The live current-scan container the display consumers read (current-scan
+    /// sweeps + next-scan ghost). `None` until the engine assembles it.
+    pub live_scan: Option<ScanProjection>,
 }
 
 #[allow(dead_code)] // Accessors come online as consumers migrate (Phase 5).
@@ -315,16 +374,22 @@ impl Projection {
             plan,
             revision,
             sweeps: Vec::new(),
+            live_scan: None,
         }
     }
 
-    /// Wrap a plan together with its per-sweep projection.
-    pub fn from_plan_with_sweeps(plan: StreamingPlan, sweeps: Vec<SweepProjection>) -> Self {
+    /// Wrap a plan together with its per-sweep projection + assembled container.
+    pub fn from_parts(
+        plan: StreamingPlan,
+        sweeps: Vec<SweepProjection>,
+        live_scan: Option<ScanProjection>,
+    ) -> Self {
         let revision = plan.revision;
         Self {
             plan,
             revision,
             sweeps,
+            live_scan,
         }
     }
 
