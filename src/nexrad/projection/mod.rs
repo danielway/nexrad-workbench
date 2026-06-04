@@ -22,11 +22,14 @@ mod status;
 #[allow(unused_imports)]
 pub use cached_sweeps::CachedSweepSet;
 #[allow(unused_imports)]
-pub use engine::ProjectionEngine;
+pub use engine::{ObservedSweepInputs, ProjectionEngine};
 #[allow(unused_imports)]
 pub use inventory::{ChunkCoord, KnownChunk, KnownChunkInventory};
 #[allow(unused_imports)]
-pub use status::{build_sweeps, derive_sweep_status, SweepBuildCtx};
+pub use status::{
+    build_sweeps, cascade_current_sweeps, derive_sweep_status, CascadeInputs, SweepBounds,
+    SweepBuildCtx,
+};
 
 use super::streaming_plan::StreamingPlan;
 use super::ChunkProjectionInfo;

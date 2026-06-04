@@ -8,7 +8,9 @@
 
 use super::cached_sweeps::CachedSweepSet;
 use super::inventory::{ChunkCoord, KnownChunkInventory};
-use super::{ProjectionScanRole, SweepProjection, SweepProjectionStatus, SweepTimingProvenance};
+use super::{
+    ChunkSpan, ProjectionScanRole, SweepProjection, SweepProjectionStatus, SweepTimingProvenance,
+};
 use crate::nexrad::ChunkProjectionInfo;
 use nexrad_data::aws::realtime::VolumeIndex;
 use std::collections::HashMap;
@@ -72,6 +74,20 @@ pub struct SweepBuildCtx<'a> {
     /// Authoritative next-scan start (e.g. archive `ScanBoundary.end`); when
     /// present, next-scan sweep times are shifted so the scan begins here.
     pub next_scan_boundary_start_secs: Option<f64>,
+    // ── Current-scan cascade inputs (feed `cascade_current_sweeps`) ──
+    /// Full elevation roster size for the current volume.
+    pub expected_count: usize,
+    /// `received[elev_idx]` — elevation `elev_idx + 1` fully received.
+    pub received: &'a [bool],
+    pub vcp_number: u16,
+    pub vcp_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
+    pub vol_start_secs: f64,
+    pub expected_dur_secs: f64,
+    pub completed_sweep_metas: &'a [crate::data::CachedSweep],
+    pub chunk_elev_spans: &'a [(u8, f64, f64, u32)],
+    pub current_elev_chunks: &'a [(f32, f32, u32)],
+    pub in_progress_radials: Option<u32>,
+    pub fallback_sweep_durations: &'a [f64],
 }
 
 /// Aggregated timing for one elevation's forecast-bearing chunks.
@@ -131,61 +147,360 @@ fn last_seq_by_elev(chunks: &[ChunkProjectionInfo]) -> HashMap<u8, usize> {
     last
 }
 
+/// Inputs to the current-scan bounds cascade. Borrowed slices so both the
+/// engine (`build_sweeps`) and the `build_position_from_live` oracle can call
+/// the SAME cascade — guaranteeing the per-sweep bounds can't diverge.
+pub struct CascadeInputs<'a> {
+    pub vol_start: f64,
+    pub expected_count: usize,
+    /// `received[elev_idx]` — elevation `elev_idx + 1` is fully received.
+    pub received: &'a [bool],
+    pub vcp_number: u16,
+    pub vcp_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
+    pub expected_dur: f64,
+    pub current_volume_chunks: &'a [ChunkProjectionInfo],
+    pub completed_sweep_metas: &'a [crate::data::CachedSweep],
+    pub chunk_elev_spans: &'a [(u8, f64, f64, u32)],
+    pub current_elev_chunks: &'a [(f32, f32, u32)],
+    pub in_progress_elevation: Option<u8>,
+    pub in_progress_radials: Option<u32>,
+    pub fallback_sweep_durations: &'a [f64],
+}
+
+/// One sweep's derived bounds + provenance + in-progress detail — the shared
+/// output of the cascade, mapped by each caller to its own render type.
+pub struct SweepBounds {
+    pub elevation_number: u8,
+    pub elevation_angle: f32,
+    pub start: f64,
+    pub end: f64,
+    pub timing: SweepTimingProvenance,
+    pub is_complete: bool,
+    pub is_in_progress: bool,
+    pub radials_received: u32,
+    pub chunks_received: u32,
+    pub chunks_expected: Option<u32>,
+    /// Resolved azimuth rate (projected if >0, else 360/dur, else 20) — used
+    /// for the sweep-line extrapolation and per-sweep display.
+    pub azimuth_rate_dps: f64,
+    pub chunks: Vec<ChunkSpan>,
+}
+
+/// The sweep-positioning cascade (Observed > Anchored > Projected > Estimated)
+/// for the current scan, as a pure function. Centralized here so the engine and
+/// the legacy `from_live` oracle share one implementation. Faithful transcription
+/// of the previous `from_live` body.
+pub fn cascade_current_sweeps(inp: &CascadeInputs) -> Vec<SweepBounds> {
+    let vol_start = inp.vol_start;
+    let expected_count = inp.expected_count;
+    let expected_dur = inp.expected_dur;
+
+    // Projected sweep bounds from the library projections (COLLECTION times).
+    let mut projected_sweeps: std::collections::BTreeMap<u8, (f64, f64, f64, u32)> =
+        std::collections::BTreeMap::new();
+    for chunk in inp.current_volume_chunks {
+        if let Some(elev) = chunk.elevation_number {
+            let entry = projected_sweeps.entry(elev as u8).or_insert((
+                f64::MAX,
+                f64::MIN,
+                chunk.azimuth_rate_dps,
+                0,
+            ));
+            entry.3 += 1;
+            if let Some(t) = chunk.forecast.as_ref().map(|f| f.collection_time_secs) {
+                entry.0 = entry.0.min(t);
+                entry.1 = entry.1.max(t);
+            }
+        }
+    }
+
+    let fallback_durs = inp.fallback_sweep_durations;
+    let weighted_durations: Vec<f64> = if !fallback_durs.is_empty() {
+        let total_weight: f64 = fallback_durs.iter().sum();
+        if total_weight > 0.0 {
+            fallback_durs
+                .iter()
+                .map(|d| (d / total_weight) * expected_dur)
+                .collect()
+        } else {
+            vec![expected_dur / expected_count as f64; expected_count]
+        }
+    } else {
+        vec![expected_dur / expected_count as f64; expected_count]
+    };
+    let weighted_offsets: Vec<f64> = {
+        let mut offsets = Vec::with_capacity(expected_count);
+        let mut cum = 0.0;
+        for dur in &weighted_durations {
+            offsets.push(cum);
+            cum += dur;
+        }
+        offsets
+    };
+
+    let vcp_def = crate::state::get_vcp_definition(inp.vcp_number);
+    let elev_angle_for = |elev_num: u8| -> f32 {
+        if let Some(vcp) = inp.vcp_pattern {
+            if let Some(e) = vcp.elevations.get(elev_num.saturating_sub(1) as usize) {
+                return e.angle;
+            }
+        }
+        vcp_def
+            .and_then(|d| d.elevations.get(elev_num.saturating_sub(1) as usize))
+            .map(|e| e.angle)
+            .unwrap_or(0.5 * elev_num as f32)
+    };
+
+    let mut out = Vec::with_capacity(expected_count);
+    for elev_idx in 0..expected_count {
+        let elev_num = (elev_idx + 1) as u8;
+        let is_complete = inp.received.get(elev_idx).copied().unwrap_or(false);
+        let is_in_progress = !is_complete && inp.in_progress_elevation == Some(elev_num);
+        let this_sweep_dur = weighted_durations[elev_idx];
+        // (min_time, max_time, azimuth_rate, chunk_count)
+        let proj = projected_sweeps.get(&elev_num).copied();
+
+        let (start, end, timing) = if is_complete {
+            if let Some(meta) = inp
+                .completed_sweep_metas
+                .iter()
+                .find(|m| m.elevation_number == elev_num)
+            {
+                (meta.start, meta.end, SweepTimingProvenance::Observed)
+            } else {
+                let offset = weighted_offsets[elev_idx];
+                (
+                    vol_start + offset,
+                    vol_start + offset + this_sweep_dur,
+                    SweepTimingProvenance::Estimated,
+                )
+            }
+        } else {
+            let chunk_min = inp
+                .chunk_elev_spans
+                .iter()
+                .filter(|&&(e, _, _, _)| e == elev_num)
+                .map(|&(_, s, _, _)| s)
+                .reduce(f64::min);
+            let chunk_max = inp
+                .chunk_elev_spans
+                .iter()
+                .filter(|&&(e, _, _, _)| e == elev_num)
+                .map(|&(_, _, e, _)| e)
+                .reduce(f64::max);
+            if let Some(cm) = chunk_min {
+                let sw_end_actual = match chunk_max {
+                    Some(cmax) => {
+                        let proj_end = proj.filter(|p| p.1 > f64::MIN).map(|p| p.1);
+                        match proj_end {
+                            Some(pe) => cmax.max(pe),
+                            None => cmax.max(cm + this_sweep_dur),
+                        }
+                    }
+                    None => cm + this_sweep_dur,
+                };
+                (cm, sw_end_actual, SweepTimingProvenance::Anchored)
+            } else if let Some(p) = proj.filter(|p| p.0 < f64::MAX) {
+                let proj_start = p.0;
+                let proj_end = if p.1 > f64::MIN {
+                    p.1
+                } else {
+                    let rate = p.2;
+                    let dur = if rate > 0.0 {
+                        360.0 / rate - 0.67
+                    } else {
+                        this_sweep_dur
+                    };
+                    proj_start + dur
+                };
+                (proj_start, proj_end, SweepTimingProvenance::Projected)
+            } else {
+                let anchor_end = inp
+                    .completed_sweep_metas
+                    .iter()
+                    .filter(|m| m.elevation_number < elev_num)
+                    .max_by_key(|m| m.elevation_number)
+                    .map(|m| m.end);
+                match anchor_end {
+                    Some(ae) => {
+                        let anchor_elev_num = inp
+                            .completed_sweep_metas
+                            .iter()
+                            .filter(|m| m.elevation_number < elev_num)
+                            .max_by_key(|m| m.elevation_number)
+                            .map(|m| m.elevation_number)
+                            .unwrap_or(0);
+                        let anchor_idx = anchor_elev_num as usize;
+                        let remaining_dur = (vol_start + expected_dur) - ae;
+                        let remaining_weight_sum: f64 = (anchor_idx..expected_count)
+                            .map(|i| weighted_durations[i])
+                            .sum();
+                        if remaining_weight_sum > 0.0 {
+                            let offset_from_anchor: f64 = (anchor_idx..elev_idx)
+                                .map(|i| {
+                                    (weighted_durations[i] / remaining_weight_sum) * remaining_dur
+                                })
+                                .sum();
+                            let start = ae + offset_from_anchor;
+                            (
+                                start,
+                                start + this_sweep_dur,
+                                SweepTimingProvenance::Anchored,
+                            )
+                        } else {
+                            (ae, ae + this_sweep_dur, SweepTimingProvenance::Anchored)
+                        }
+                    }
+                    None => {
+                        let offset = weighted_offsets[elev_idx];
+                        (
+                            vol_start + offset,
+                            vol_start + offset + this_sweep_dur,
+                            SweepTimingProvenance::Estimated,
+                        )
+                    }
+                }
+            }
+        };
+
+        let chunks_for_elev: Vec<&(u8, f64, f64, u32)> = inp
+            .chunk_elev_spans
+            .iter()
+            .filter(|&&(e, _, _, _)| e == elev_num)
+            .collect();
+        let radials_received: u32 = if is_in_progress {
+            chunks_for_elev.iter().map(|&&(_, _, _, r)| r).sum::<u32>()
+                + inp.in_progress_radials.unwrap_or(0)
+        } else {
+            0
+        };
+        let chunks_received = if is_in_progress {
+            chunks_for_elev.len() as u32
+        } else {
+            0
+        };
+        let chunks_expected = proj.map(|p| p.3);
+
+        let chunks: Vec<ChunkSpan> = inp
+            .chunk_elev_spans
+            .iter()
+            .filter(|&&(e, _, _, _)| e == elev_num)
+            .zip(
+                inp.current_elev_chunks
+                    .iter()
+                    .chain(std::iter::repeat(&(0.0f32, 0.0f32, 0u32))),
+            )
+            .map(
+                |(&(_, start, end, radial_count), &(first_az, last_az, _))| ChunkSpan {
+                    start,
+                    end,
+                    first_azimuth: first_az,
+                    last_azimuth: last_az,
+                    radial_count,
+                },
+            )
+            .collect();
+
+        // Resolved azimuth rate for extrapolation + per-sweep display: projected
+        // rate when positive, else 360/duration, else a safe fallback. Matches
+        // the previous from_live extrapolation resolution.
+        let azimuth_rate_dps = proj.map(|p| p.2).filter(|&r| r > 0.0).unwrap_or_else(|| {
+            if this_sweep_dur > 0.0 {
+                360.0 / this_sweep_dur
+            } else {
+                20.0
+            }
+        });
+
+        out.push(SweepBounds {
+            elevation_number: elev_num,
+            elevation_angle: elev_angle_for(elev_num),
+            start,
+            end,
+            timing,
+            is_complete,
+            is_in_progress,
+            radials_received,
+            chunks_received,
+            chunks_expected,
+            azimuth_rate_dps,
+            chunks,
+        });
+    }
+    out
+}
+
+/// Resolve an elevation angle from the live VCP pattern, else the static VCP
+/// definition, else a 0.5°-per-cut fallback.
+fn elev_angle(
+    vcp_pattern: Option<&crate::data::keys::ExtractedVcp>,
+    vcp_number: u16,
+    elev_num: u8,
+) -> f32 {
+    if let Some(vcp) = vcp_pattern {
+        if let Some(e) = vcp.elevations.get(elev_num.saturating_sub(1) as usize) {
+            return e.angle;
+        }
+    }
+    crate::state::get_vcp_definition(vcp_number)
+        .and_then(|d| d.elevations.get(elev_num.saturating_sub(1) as usize))
+        .map(|e| e.angle)
+        .unwrap_or(0.5 * elev_num as f32)
+}
+
 /// Build the per-sweep projection for the current + next scan.
 pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
     let mut sweeps = Vec::new();
 
-    // ── Current scan ──
+    // ── Current scan — full cascade over every expected elevation ──
     let current_last_seq = last_seq_by_elev(ctx.current_chunks);
-    let mut current_elevs_built: Vec<u8> = Vec::new();
-    for (elev, agg) in group_sweeps(ctx.current_chunks) {
-        let last_seq = current_last_seq.get(&elev).copied().unwrap_or(0);
+    let cascade = cascade_current_sweeps(&CascadeInputs {
+        vol_start: ctx.vol_start_secs,
+        expected_count: ctx.expected_count,
+        received: ctx.received,
+        vcp_number: ctx.vcp_number,
+        vcp_pattern: ctx.vcp_pattern,
+        expected_dur: ctx.expected_dur_secs,
+        current_volume_chunks: ctx.current_chunks,
+        completed_sweep_metas: ctx.completed_sweep_metas,
+        chunk_elev_spans: ctx.chunk_elev_spans,
+        current_elev_chunks: ctx.current_elev_chunks,
+        in_progress_elevation: ctx.in_progress_elevation,
+        in_progress_radials: ctx.in_progress_radials,
+        fallback_sweep_durations: ctx.fallback_sweep_durations,
+    });
+    for b in cascade {
+        let last_seq = current_last_seq
+            .get(&b.elevation_number)
+            .copied()
+            .unwrap_or(0);
+        // Acquisition/display status from the engine's inputs (cached set +
+        // inventory + in-progress). Aligns with the cascade's complete/in-progress
+        // flags; the inventory adds the Available-vs-Future distinction.
         let status = derive_sweep_status(
             ctx.current_scan_start_secs,
-            elev,
+            b.elevation_number,
             ctx.current_volume,
             last_seq,
             ctx.cached,
             ctx.inventory,
             ctx.in_progress_elevation,
         );
-        current_elevs_built.push(elev);
         sweeps.push(SweepProjection {
-            elevation_number: elev,
-            elevation_angle: 0.0,
+            elevation_number: b.elevation_number,
+            elevation_angle: b.elevation_angle,
             scan_role: ProjectionScanRole::CurrentInProgress,
             status,
-            timing: SweepTimingProvenance::Projected,
-            collection_start_secs: agg.collection_start,
-            collection_end_secs: agg.collection_end,
-            available_at_secs: agg.available_at,
-            chunks_in_sweep: agg.chunks_in_sweep,
-            chunks_received: 0,
-            radials_received: 0,
-            azimuth_rate_dps: agg.azimuth_rate,
-            chunks: Vec::new(),
+            timing: b.timing,
+            collection_start_secs: b.start,
+            collection_end_secs: b.end,
+            available_at_secs: b.end,
+            chunks_in_sweep: b.chunks_expected.unwrap_or(0) as usize,
+            chunks_received: b.chunks_received,
+            radials_received: b.radials_received,
+            azimuth_rate_dps: b.azimuth_rate_dps,
+            chunks: b.chunks,
         });
-    }
-    // Append already-collected cuts that are behind the anchor (no forecast
-    // chunks) so the display view is complete. These are `CollectedByUs`.
-    for (elev, start, end) in ctx.cached.cuts_for_scan(ctx.current_scan_start_secs) {
-        if !current_elevs_built.contains(&elev) {
-            sweeps.push(SweepProjection {
-                elevation_number: elev,
-                elevation_angle: 0.0,
-                scan_role: ProjectionScanRole::CurrentInProgress,
-                status: SweepProjectionStatus::CollectedByUs,
-                timing: SweepTimingProvenance::Observed,
-                collection_start_secs: start,
-                collection_end_secs: end,
-                available_at_secs: end,
-                chunks_in_sweep: 0,
-                chunks_received: 0,
-                radials_received: 0,
-                azimuth_rate_dps: 0.0,
-                chunks: Vec::new(),
-            });
-        }
     }
 
     // ── Next scan ──
@@ -216,7 +531,7 @@ pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
             );
             sweeps.push(SweepProjection {
                 elevation_number: elev,
-                elevation_angle: 0.0,
+                elevation_angle: elev_angle(ctx.vcp_pattern, ctx.vcp_number, elev),
                 scan_role: ProjectionScanRole::NextScan,
                 status,
                 timing: SweepTimingProvenance::Projected,
@@ -363,6 +678,16 @@ mod tests {
             }],
         );
         let inv = empty_inventory();
+        let received = [true, false, false];
+        let metas = vec![crate::data::CachedSweep {
+            start: 1000.0,
+            end: 1010.0,
+            elevation: 1.0,
+            elevation_number: 1,
+            start_azimuth: 0.0,
+            cached_products: vec![],
+        }];
+        let durs = [100.0, 100.0, 100.0];
         let ctx = SweepBuildCtx {
             current_chunks: &current,
             next_chunks: Some(&next),
@@ -374,6 +699,17 @@ mod tests {
             inventory: &inv,
             in_progress_elevation: Some(2),
             next_scan_boundary_start_secs: None,
+            expected_count: 3,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            vol_start_secs: 1000.0,
+            expected_dur_secs: 300.0,
+            completed_sweep_metas: &metas,
+            chunk_elev_spans: &[],
+            current_elev_chunks: &[],
+            in_progress_radials: None,
+            fallback_sweep_durations: &durs,
         };
         let sweeps = build_sweeps(&ctx);
 
@@ -424,6 +760,16 @@ mod tests {
             }],
         );
         let inv = empty_inventory();
+        let received = [true, false];
+        let metas = vec![crate::data::CachedSweep {
+            start: 1000.0,
+            end: 1010.0,
+            elevation: 1.0,
+            elevation_number: 1,
+            start_azimuth: 0.0,
+            cached_products: vec![],
+        }];
+        let durs = [100.0, 100.0];
         let ctx = SweepBuildCtx {
             current_chunks: &current,
             next_chunks: None,
@@ -435,6 +781,17 @@ mod tests {
             inventory: &inv,
             in_progress_elevation: None,
             next_scan_boundary_start_secs: None,
+            expected_count: 2,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            vol_start_secs: 1000.0,
+            expected_dur_secs: 300.0,
+            completed_sweep_metas: &metas,
+            chunk_elev_spans: &[],
+            current_elev_chunks: &[],
+            in_progress_radials: None,
+            fallback_sweep_durations: &durs,
         };
         let sweeps = build_sweeps(&ctx);
         // Display has both elev 1 (cached) and elev 2.
@@ -454,6 +811,8 @@ mod tests {
         let next = vec![chunk(2, Some(1), Some(forecast(1100.0, 1105.0)))];
         let cached = CachedSweepSet::default();
         let inv = empty_inventory();
+        let received = [false];
+        let durs = [100.0];
         let ctx = SweepBuildCtx {
             current_chunks: &current,
             next_chunks: Some(&next),
@@ -466,6 +825,17 @@ mod tests {
             in_progress_elevation: None,
             // Authoritative next-scan start is 1090, projection said 1100 → −10s.
             next_scan_boundary_start_secs: Some(1090.0),
+            expected_count: 1,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            vol_start_secs: 1000.0,
+            expected_dur_secs: 300.0,
+            completed_sweep_metas: &[],
+            chunk_elev_spans: &[],
+            current_elev_chunks: &[],
+            in_progress_radials: None,
+            fallback_sweep_durations: &durs,
         };
         let sweeps = build_sweeps(&ctx);
         let next_sweep = sweeps

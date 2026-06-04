@@ -316,6 +316,31 @@ impl WorkbenchApp {
                 eng.set_in_progress_elevation(scan_start_secs, in_progress);
             }
 
+            // Feed the current-scan bounds cascade inputs (roster, completed
+            // metas, in-progress chunk spans, VCP pattern, fallback durations)
+            // — what the legacy `from_live` read off `LiveModeState`.
+            let observed = {
+                let live = &self.live.mode_state;
+                let roster = live.elevation_roster();
+                let expected_count = roster.expected_count().unwrap_or(0);
+                let received: Vec<bool> = (0..expected_count)
+                    .map(|i| roster.is_received((i + 1) as u8))
+                    .collect();
+                crate::nexrad::projection::ObservedSweepInputs {
+                    expected_count,
+                    received,
+                    vcp_number: live.current_vcp_number.unwrap_or(0),
+                    vcp_pattern: live.current_vcp_pattern.clone(),
+                    expected_dur_secs: live.last_volume_duration_secs().unwrap_or(300.0),
+                    completed_sweep_metas: live.completed_sweep_metas.clone(),
+                    chunk_elev_spans: live.chunk_elev_spans.clone(),
+                    current_elev_chunks: live.current_elev_chunks.clone(),
+                    in_progress_radials: live.current_in_progress_radials,
+                    fallback_sweep_durations: live.fallback_sweep_durations(),
+                }
+            };
+            self.live.engine.borrow_mut().set_observed_inputs(observed);
+
             // Push the most recent chunk's collection-end time down to the
             // streaming loop so the next projection anchors on the current
             // chunk's actual collection time (not the volume's start time).

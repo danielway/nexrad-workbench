@@ -48,10 +48,32 @@ pub struct ProjectionEngine {
     current_scan_start_secs: Option<f64>,
     /// `(scan_start, elevation)` currently being received — drives `InProgress`.
     in_progress: Option<(f64, u8)>,
+    /// Observed/roster inputs for the current-scan bounds cascade, fed from the
+    /// worker-ingest pipeline. Absent until the first ingest (cold → coarse).
+    observed: ObservedSweepInputs,
     /// Bumped whenever a setter changes an input value; the cache key.
     input_revision: u64,
     /// Memoized output + the inputs it was built from.
     cached: Option<(CacheKey, Projection)>,
+}
+
+/// The roster + observed inputs the current-scan bounds cascade needs, fed in
+/// one bundle from the worker-ingest pipeline (`worker_results`). Mirrors what
+/// the legacy `from_live` read off `LiveModeState`.
+#[derive(Clone, Debug, Default)]
+#[allow(dead_code)] // Fields read by build_sweeps via the cascade.
+pub struct ObservedSweepInputs {
+    pub expected_count: usize,
+    /// `received[elev_idx]` — elevation `elev_idx + 1` fully received.
+    pub received: Vec<bool>,
+    pub vcp_number: u16,
+    pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
+    pub expected_dur_secs: f64,
+    pub completed_sweep_metas: Vec<crate::data::CachedSweep>,
+    pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
+    pub current_elev_chunks: Vec<(f32, f32, u32)>,
+    pub in_progress_radials: Option<u32>,
+    pub fallback_sweep_durations: Vec<f64>,
 }
 
 #[allow(dead_code)] // Setters/readers come online as the loop + consumers migrate.
@@ -63,6 +85,7 @@ impl ProjectionEngine {
             cached_sweeps: CachedSweepSet::default(),
             current_scan_start_secs: None,
             in_progress: None,
+            observed: ObservedSweepInputs::default(),
             input_revision: 0,
             cached: None,
         }
@@ -106,6 +129,14 @@ impl ProjectionEngine {
     /// Replace rolling timing stats with a persisted snapshot (warm start).
     pub fn preload_timing_stats(&mut self, stats: ChunkTimingStats) {
         self.projector.preload_timing_stats(stats);
+        self.bump();
+    }
+
+    /// Feed the current-scan cascade inputs (roster, completed metas, in-progress
+    /// chunk spans, VCP pattern, fallback durations) from the worker pipeline.
+    /// Always bumps — these change per ingest and drive the per-sweep bounds.
+    pub fn set_observed_inputs(&mut self, observed: ObservedSweepInputs) {
+        self.observed = observed;
         self.bump();
     }
 
@@ -240,6 +271,7 @@ impl ProjectionEngine {
                     .unwrap_or(now_secs)
             });
             let current_volume = *anchor.volume();
+            let obs = &self.observed;
             let ctx = SweepBuildCtx {
                 current_chunks: &plan.current_volume_chunks,
                 next_chunks: plan.next_volume_chunks.as_deref(),
@@ -251,6 +283,17 @@ impl ProjectionEngine {
                 inventory: &self.inventory,
                 in_progress_elevation: self.in_progress.map(|(_, e)| e),
                 next_scan_boundary_start_secs: None,
+                expected_count: obs.expected_count,
+                received: &obs.received,
+                vcp_number: obs.vcp_number,
+                vcp_pattern: obs.vcp_pattern.as_ref(),
+                vol_start_secs: current_scan_start,
+                expected_dur_secs: obs.expected_dur_secs,
+                completed_sweep_metas: &obs.completed_sweep_metas,
+                chunk_elev_spans: &obs.chunk_elev_spans,
+                current_elev_chunks: &obs.current_elev_chunks,
+                in_progress_radials: obs.in_progress_radials,
+                fallback_sweep_durations: &obs.fallback_sweep_durations,
             };
             let sweeps = build_sweeps(&ctx);
             self.cached = Some((key, Projection::from_plan_with_sweeps(plan, sweeps)));

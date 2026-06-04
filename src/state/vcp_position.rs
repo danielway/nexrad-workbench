@@ -640,244 +640,65 @@ pub(crate) struct FromLiveInputs<'a> {
 /// engine's `build_sweeps`; this fn is the parity oracle until then.
 #[allow(dead_code)] // Oracle for the Step-3 parity test; consumed there.
 pub(crate) fn build_position_from_live(inp: &FromLiveInputs) -> Option<VcpPositionModel> {
-    let vol_start = inp.vol_start;
-    let expected_count = inp.expected_count;
-    if expected_count == 0 {
+    if inp.expected_count == 0 {
         return None;
     }
-    let vcp_number = inp.vcp_number;
-    let expected_dur = inp.expected_dur;
-
     let volume_end = inp
         .current_volume_end_collection_secs
-        .unwrap_or(vol_start + expected_dur);
+        .unwrap_or(inp.vol_start + inp.expected_dur);
 
-    // Projected sweep bounds from the library projections (COLLECTION times).
-    // An empty map (no plan) behaves identically to the old `Option::None`:
-    // every `.get`/`and_then` below yields `None`.
-    let projected_sweeps: std::collections::BTreeMap<u8, ProjectedSweepBounds> = {
-        let mut map = std::collections::BTreeMap::new();
-        for chunk in inp.current_volume_chunks {
-            if let Some(elev) = chunk.elevation_number {
-                let elev_u8 = elev as u8;
-                let entry = map.entry(elev_u8).or_insert(ProjectedSweepBounds {
-                    min_time: f64::MAX,
-                    max_time: f64::MIN,
-                    azimuth_rate_dps: chunk.azimuth_rate_dps,
-                    chunk_count: 0,
-                });
-                entry.chunk_count += 1;
-                if let Some(t) = chunk.forecast.as_ref().map(|f| f.collection_time_secs) {
-                    entry.min_time = entry.min_time.min(t);
-                    entry.max_time = entry.max_time.max(t);
+    // Delegate the per-sweep bounds cascade to the shared engine core so the
+    // oracle and `build_sweeps` can't diverge (parity by construction).
+    let cascade = crate::nexrad::projection::cascade_current_sweeps(
+        &crate::nexrad::projection::CascadeInputs {
+            vol_start: inp.vol_start,
+            expected_count: inp.expected_count,
+            received: inp.received,
+            vcp_number: inp.vcp_number,
+            vcp_pattern: inp.vcp_pattern,
+            expected_dur: inp.expected_dur,
+            current_volume_chunks: inp.current_volume_chunks,
+            completed_sweep_metas: inp.completed_sweep_metas,
+            chunk_elev_spans: inp.chunk_elev_spans,
+            current_elev_chunks: inp.current_elev_chunks,
+            in_progress_elevation: inp.in_progress_elevation,
+            in_progress_radials: inp.in_progress_radials,
+            fallback_sweep_durations: inp.fallback_sweep_durations,
+        },
+    );
+
+    let sweeps: Vec<SweepPosition> = cascade
+        .iter()
+        .map(|b| SweepPosition {
+            elevation_number: b.elevation_number,
+            elevation_angle: b.elevation_angle,
+            start: b.start,
+            end: b.end,
+            timing: map_provenance(b.timing),
+            status: if b.is_complete {
+                SweepStatus::Complete
+            } else if b.is_in_progress {
+                SweepStatus::InProgress {
+                    radials_received: b.radials_received,
+                    chunks_received: b.chunks_received,
+                    chunks_expected: b.chunks_expected,
                 }
-            }
-        }
-        map
-    };
-
-    // Fallback: VCP-weighted durations.
-    let fallback_durs = inp.fallback_sweep_durations;
-    let weighted_durations: Vec<f64> = if !fallback_durs.is_empty() {
-        let total_weight: f64 = fallback_durs.iter().sum();
-        if total_weight > 0.0 {
-            fallback_durs
-                .iter()
-                .map(|d| (d / total_weight) * expected_dur)
-                .collect()
-        } else {
-            vec![expected_dur / expected_count as f64; expected_count]
-        }
-    } else {
-        vec![expected_dur / expected_count as f64; expected_count]
-    };
-
-    let weighted_offsets: Vec<f64> = {
-        let mut offsets = Vec::with_capacity(expected_count);
-        let mut cum = 0.0;
-        for dur in &weighted_durations {
-            offsets.push(cum);
-            cum += dur;
-        }
-        offsets
-    };
-
-    let vcp_def = crate::state::get_vcp_definition(vcp_number);
-    let elev_angle_for = |elev_num: u8| -> f32 {
-        if let Some(vcp) = inp.vcp_pattern {
-            if let Some(e) = vcp.elevations.get(elev_num.saturating_sub(1) as usize) {
-                return e.angle;
-            }
-        }
-        vcp_def
-            .and_then(|d| d.elevations.get(elev_num.saturating_sub(1) as usize))
-            .map(|e| e.angle)
-            .unwrap_or(0.5 * elev_num as f32)
-    };
-
-    let mut sweeps = Vec::with_capacity(expected_count);
-
-    for elev_idx in 0..expected_count {
-        let elev_num = (elev_idx + 1) as u8;
-        let is_complete = inp.received.get(elev_idx).copied().unwrap_or(false);
-        let is_in_progress = !is_complete && inp.in_progress_elevation == Some(elev_num);
-        let this_sweep_dur = weighted_durations[elev_idx];
-
-        let proj_sweep = projected_sweeps.get(&elev_num);
-
-        let (sw_start, sw_end, timing) = if is_complete {
-            if let Some(meta) = inp
-                .completed_sweep_metas
-                .iter()
-                .find(|m| m.elevation_number == elev_num)
-            {
-                (meta.start, meta.end, SweepTiming::Observed)
             } else {
-                let offset = weighted_offsets[elev_idx];
-                (
-                    vol_start + offset,
-                    vol_start + offset + this_sweep_dur,
-                    SweepTiming::Estimated,
-                )
-            }
-        } else {
-            let chunk_min = inp
-                .chunk_elev_spans
+                SweepStatus::Future
+            },
+            chunks: b
+                .chunks
                 .iter()
-                .filter(|&&(e, _, _, _)| e == elev_num)
-                .map(|&(_, s, _, _)| s)
-                .reduce(f64::min);
-            let chunk_max = inp
-                .chunk_elev_spans
-                .iter()
-                .filter(|&&(e, _, _, _)| e == elev_num)
-                .map(|&(_, _, e, _)| e)
-                .reduce(f64::max);
-
-            if let Some(cm) = chunk_min {
-                let sw_end_actual = match chunk_max {
-                    Some(cmax) => {
-                        let proj_end = proj_sweep
-                            .filter(|p| p.max_time > f64::MIN)
-                            .map(|p| p.max_time);
-                        match proj_end {
-                            Some(pe) => cmax.max(pe),
-                            None => cmax.max(cm + this_sweep_dur),
-                        }
-                    }
-                    None => cm + this_sweep_dur,
-                };
-                (cm, sw_end_actual, SweepTiming::Anchored)
-            } else if let Some(ps) = proj_sweep.filter(|p| p.min_time < f64::MAX) {
-                let proj_start = ps.min_time;
-                let proj_end = if ps.max_time > f64::MIN {
-                    ps.max_time
-                } else {
-                    let rate = ps.azimuth_rate_dps;
-                    let dur = if rate > 0.0 {
-                        360.0 / rate - 0.67
-                    } else {
-                        this_sweep_dur
-                    };
-                    proj_start + dur
-                };
-                (proj_start, proj_end, SweepTiming::Estimated)
-            } else {
-                let anchor_end = inp
-                    .completed_sweep_metas
-                    .iter()
-                    .filter(|m| m.elevation_number < elev_num)
-                    .max_by_key(|m| m.elevation_number)
-                    .map(|m| m.end);
-
-                match anchor_end {
-                    Some(ae) => {
-                        let anchor_elev_num = inp
-                            .completed_sweep_metas
-                            .iter()
-                            .filter(|m| m.elevation_number < elev_num)
-                            .max_by_key(|m| m.elevation_number)
-                            .map(|m| m.elevation_number)
-                            .unwrap_or(0);
-                        let anchor_idx = anchor_elev_num as usize;
-                        let remaining_dur = (vol_start + expected_dur) - ae;
-                        let remaining_weight_sum: f64 = (anchor_idx..expected_count)
-                            .map(|i| weighted_durations[i])
-                            .sum();
-                        if remaining_weight_sum > 0.0 {
-                            let offset_from_anchor: f64 = (anchor_idx..elev_idx)
-                                .map(|i| {
-                                    (weighted_durations[i] / remaining_weight_sum) * remaining_dur
-                                })
-                                .sum();
-                            let start = ae + offset_from_anchor;
-                            (start, start + this_sweep_dur, SweepTiming::Anchored)
-                        } else {
-                            (ae, ae + this_sweep_dur, SweepTiming::Anchored)
-                        }
-                    }
-                    None => {
-                        let offset = weighted_offsets[elev_idx];
-                        (
-                            vol_start + offset,
-                            vol_start + offset + this_sweep_dur,
-                            SweepTiming::Estimated,
-                        )
-                    }
-                }
-            }
-        };
-
-        let status = if is_complete {
-            SweepStatus::Complete
-        } else if is_in_progress {
-            let chunks_for_elev: Vec<&(u8, f64, f64, u32)> = inp
-                .chunk_elev_spans
-                .iter()
-                .filter(|&&(e, _, _, _)| e == elev_num)
-                .collect();
-            let total_radials: u32 = chunks_for_elev.iter().map(|&&(_, _, _, r)| r).sum::<u32>()
-                + inp.in_progress_radials.unwrap_or(0);
-            let chunks_expected = proj_sweep.map(|ps| ps.chunk_count);
-            SweepStatus::InProgress {
-                radials_received: total_radials,
-                chunks_received: chunks_for_elev.len() as u32,
-                chunks_expected,
-            }
-        } else {
-            SweepStatus::Future
-        };
-
-        let chunks: Vec<ChunkSpan> = inp
-            .chunk_elev_spans
-            .iter()
-            .filter(|&&(e, _, _, _)| e == elev_num)
-            .zip(
-                inp.current_elev_chunks
-                    .iter()
-                    .chain(std::iter::repeat(&(0.0f32, 0.0f32, 0u32))),
-            )
-            .map(
-                |(&(_, start, end, radial_count), &(first_az, last_az, _))| ChunkSpan {
-                    start,
-                    end,
-                    first_azimuth: first_az,
-                    last_azimuth: last_az,
-                    radial_count,
-                },
-            )
-            .collect();
-
-        sweeps.push(SweepPosition {
-            elevation_number: elev_num,
-            elevation_angle: elev_angle_for(elev_num),
-            start: sw_start,
-            end: sw_end,
-            timing,
-            status,
-            chunks,
-        });
-    }
+                .map(|c| ChunkSpan {
+                    start: c.start,
+                    end: c.end,
+                    first_azimuth: c.first_azimuth,
+                    last_azimuth: c.last_azimuth,
+                    radial_count: c.radial_count,
+                })
+                .collect(),
+        })
+        .collect();
 
     let extrapolation = match (inp.last_radial_azimuth, inp.last_radial_time_secs) {
         (Some(az), Some(t)) => {
@@ -885,21 +706,10 @@ pub(crate) fn build_position_from_live(inp: &FromLiveInputs) -> Option<VcpPositi
                 .in_progress_elevation
                 .map(|e| e.saturating_sub(1) as usize)
                 .unwrap_or(0);
-            let degrees_per_sec = projected_sweeps
-                .get(&((current_elev_idx + 1) as u8))
-                .map(|p| p.azimuth_rate_dps)
-                .filter(|&r| r > 0.0)
-                .unwrap_or_else(|| {
-                    let sweep_dur = weighted_durations
-                        .get(current_elev_idx)
-                        .copied()
-                        .unwrap_or(expected_dur / expected_count as f64);
-                    if sweep_dur > 0.0 {
-                        360.0 / sweep_dur
-                    } else {
-                        20.0
-                    }
-                });
+            let degrees_per_sec = cascade
+                .get(current_elev_idx)
+                .map(|b| b.azimuth_rate_dps)
+                .unwrap_or(20.0);
             Some(ExtrapolationState {
                 last_radial_azimuth: az,
                 last_radial_time: t,
@@ -911,12 +721,12 @@ pub(crate) fn build_position_from_live(inp: &FromLiveInputs) -> Option<VcpPositi
 
     let next_volume_ghost = inp
         .next_volume_chunks
-        .and_then(|projs| build_ghost(projs, vcp_number, inp.vcp_pattern))
+        .and_then(|projs| build_ghost(projs, inp.vcp_number, inp.vcp_pattern))
         .map(Box::new);
 
     Some(VcpPositionModel {
-        vcp_number,
-        volume_start: vol_start,
+        vcp_number: inp.vcp_number,
+        volume_start: inp.vol_start,
         volume_end,
         complete: false,
         scan_key: inp.scan_key.clone(),
@@ -924,6 +734,17 @@ pub(crate) fn build_position_from_live(inp: &FromLiveInputs) -> Option<VcpPositi
         extrapolation,
         next_volume_ghost,
     })
+}
+
+/// Map the shared cascade's provenance to the legacy `SweepTiming` (collapsing
+/// `Projected`→`Estimated` to preserve the old labeling the golden froze).
+fn map_provenance(p: crate::nexrad::projection::SweepTimingProvenance) -> SweepTiming {
+    use crate::nexrad::projection::SweepTimingProvenance as P;
+    match p {
+        P::Observed => SweepTiming::Observed,
+        P::Anchored => SweepTiming::Anchored,
+        P::Projected | P::Estimated => SweepTiming::Estimated,
+    }
 }
 
 /// Faded "ghost" model for the projected next volume — all `Future`/`Estimated`.
@@ -1268,5 +1089,103 @@ mod golden {
         assert_eq!(s3.timing, SweepTiming::Estimated);
         assert_eq!(s3.status, SweepStatus::Future);
         assert_eq!(s3.start, 1100.0); // forecast min == max == 1100
+    }
+
+    /// Parity gate: the engine's `build_sweeps` current-scan output must match
+    /// the `from_live` oracle for identical inputs — bounds (exactly, both go
+    /// through `cascade_current_sweeps`), observed-ness, and the status mapping.
+    #[wasm_bindgen_test]
+    fn build_sweeps_matches_oracle_current_scan() {
+        use crate::nexrad::projection::{
+            build_sweeps, CachedSweepSet, KnownChunkInventory, SweepBuildCtx, SweepProjectionStatus,
+        };
+        use nexrad_data::aws::realtime::VolumeIndex;
+
+        let current_chunks = vec![chunk(7, 3, 1100.0)];
+        let cached_metas = vec![cached(1, 1000.0, 1010.0)];
+        let chunk_spans = vec![(2u8, 1020.0, 1025.0, 50u32)];
+        let received = [true, false, false];
+        let durs = [100.0, 100.0, 100.0];
+
+        let inp = FromLiveInputs {
+            vol_start: 1000.0,
+            expected_count: 3,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            expected_dur: 300.0,
+            current_volume_end_collection_secs: None,
+            current_volume_chunks: &current_chunks,
+            next_volume_chunks: None,
+            completed_sweep_metas: &cached_metas,
+            chunk_elev_spans: &chunk_spans,
+            current_elev_chunks: &[],
+            in_progress_elevation: Some(2),
+            in_progress_radials: Some(7),
+            fallback_sweep_durations: &durs,
+            last_radial_azimuth: None,
+            last_radial_time_secs: None,
+            scan_key: None,
+        };
+        let oracle = build_position_from_live(&inp).expect("oracle");
+
+        // CachedSweepSet aligned with `received` so the engine's status matches.
+        let mut cached_set = CachedSweepSet::default();
+        cached_set.set_for_scan(1000.0, &cached_metas);
+        let inv = KnownChunkInventory::default();
+        let ctx = SweepBuildCtx {
+            current_chunks: &current_chunks,
+            next_chunks: None,
+            current_scan_start_secs: 1000.0,
+            next_scan_start_secs: None,
+            current_volume: VolumeIndex::new(1),
+            next_volume: VolumeIndex::new(2),
+            cached: &cached_set,
+            inventory: &inv,
+            in_progress_elevation: Some(2),
+            next_scan_boundary_start_secs: None,
+            expected_count: 3,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            vol_start_secs: 1000.0,
+            expected_dur_secs: 300.0,
+            completed_sweep_metas: &cached_metas,
+            chunk_elev_spans: &chunk_spans,
+            current_elev_chunks: &[],
+            in_progress_radials: Some(7),
+            fallback_sweep_durations: &durs,
+        };
+        let bs = build_sweeps(&ctx);
+        let current: Vec<_> = bs
+            .iter()
+            .filter(|s| {
+                matches!(
+                    s.scan_role,
+                    crate::nexrad::projection::ProjectionScanRole::CurrentInProgress
+                )
+            })
+            .collect();
+
+        assert_eq!(current.len(), oracle.sweeps.len());
+        for (o, b) in oracle.sweeps.iter().zip(current.iter()) {
+            assert_eq!(o.elevation_number, b.elevation_number);
+            assert_eq!(o.elevation_angle, b.elevation_angle);
+            assert_eq!(o.start, b.collection_start_secs);
+            assert_eq!(o.end, b.collection_end_secs);
+            assert_eq!(o.is_observed(), b.is_observed());
+            // Status mapping: Complete↔CollectedByUs, InProgress↔InProgress,
+            // Future↔(FutureExpected|AvailableNotCollected).
+            let mapped_ok = match o.status {
+                SweepStatus::Complete => b.status == SweepProjectionStatus::CollectedByUs,
+                SweepStatus::InProgress { .. } => b.status == SweepProjectionStatus::InProgress,
+                SweepStatus::Future => matches!(
+                    b.status,
+                    SweepProjectionStatus::FutureExpected
+                        | SweepProjectionStatus::AvailableNotCollected
+                ),
+            };
+            assert!(mapped_ok, "status mismatch elev {}", o.elevation_number);
+        }
     }
 }
