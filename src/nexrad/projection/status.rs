@@ -69,8 +69,6 @@ pub struct SweepBuildCtx<'a> {
     pub next_chunks: Option<&'a [ChunkProjectionInfo]>,
     /// Whole-second scan-start of the current volume (cache + status key).
     pub current_scan_start_secs: f64,
-    /// Whole-second scan-start of the next volume, when known.
-    pub next_scan_start_secs: Option<f64>,
     pub current_volume: VolumeIndex,
     pub next_volume: VolumeIndex,
     pub cached: &'a CachedSweepSet,
@@ -101,7 +99,6 @@ pub struct SweepBuildCtx<'a> {
 struct Agg {
     collection_start: f64,
     collection_end: f64,
-    available_at: f64,
     chunks_in_sweep: usize,
     azimuth_rate: f64,
     min_seq: usize,
@@ -125,13 +122,11 @@ fn group_sweeps(chunks: &[ChunkProjectionInfo]) -> Vec<(u8, Agg)> {
             .and_modify(|a| {
                 a.collection_start = a.collection_start.min(f.collection_time_secs);
                 a.collection_end = a.collection_end.max(f.collection_time_secs);
-                a.available_at = a.available_at.max(f.available_at_secs);
                 a.min_seq = a.min_seq.min(c.sequence);
             })
             .or_insert(Agg {
                 collection_start: f.collection_time_secs,
                 collection_end: f.collection_time_secs,
-                available_at: f.available_at_secs,
                 chunks_in_sweep: c.chunks_in_sweep,
                 azimuth_rate: c.azimuth_rate_dps,
                 min_seq: c.sequence,
@@ -506,7 +501,6 @@ pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
             timing: b.timing,
             collection_start_secs: b.start,
             collection_end_secs: b.end,
-            available_at_secs: b.end,
             chunks_in_sweep: b.chunks_expected.unwrap_or(0) as usize,
             chunks_received: b.chunks_received,
             radials_received: b.radials_received,
@@ -526,10 +520,7 @@ pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
             (Some(boundary), Some(proj)) => boundary - proj,
             _ => 0.0,
         };
-        let next_scan_start = ctx
-            .next_scan_start_secs
-            .or(projected_start.map(|p| p + delta))
-            .unwrap_or(0.0);
+        let next_scan_start = projected_start.map(|p| p + delta).unwrap_or(0.0);
         for (elev, agg) in next_groups {
             let last_seq = next_last_seq.get(&elev).copied().unwrap_or(0);
             let status = derive_sweep_status(
@@ -549,7 +540,6 @@ pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
                 timing: SweepTimingProvenance::Projected,
                 collection_start_secs: agg.collection_start + delta,
                 collection_end_secs: agg.collection_end + delta,
-                available_at_secs: agg.available_at + delta,
                 chunks_in_sweep: agg.chunks_in_sweep,
                 chunks_received: 0,
                 radials_received: 0,
@@ -704,7 +694,6 @@ mod tests {
             current_chunks: &current,
             next_chunks: Some(&next),
             current_scan_start_secs: 1000.0,
-            next_scan_start_secs: Some(1100.0),
             current_volume: vol(1),
             next_volume: vol(2),
             cached: &cached,
@@ -786,7 +775,6 @@ mod tests {
             current_chunks: &current,
             next_chunks: None,
             current_scan_start_secs: 1000.0,
-            next_scan_start_secs: None,
             current_volume: vol(1),
             next_volume: vol(2),
             cached: &cached,
@@ -829,7 +817,6 @@ mod tests {
             current_chunks: &current,
             next_chunks: Some(&next),
             current_scan_start_secs: 1000.0,
-            next_scan_start_secs: None,
             current_volume: vol(1),
             next_volume: vol(2),
             cached: &cached,
@@ -855,7 +842,6 @@ mod tests {
             .find(|s| s.scan_role == ProjectionScanRole::NextScan)
             .unwrap();
         assert_eq!(next_sweep.collection_start_secs, 1090.0);
-        assert_eq!(next_sweep.available_at_secs, 1095.0);
     }
 
     /// Golden freeze of the current-scan cascade (formerly validated against the

@@ -354,7 +354,6 @@ mod tests {
             timing: SweepTimingProvenance::Estimated,
             collection_start_secs: 0.0,
             collection_end_secs: 0.0,
-            available_at_secs: 0.0,
             chunks_in_sweep: 0,
             chunks_received: 0,
             radials_received: 0,

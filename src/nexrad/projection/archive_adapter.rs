@@ -26,7 +26,6 @@ pub fn scan_to_projection(scan: &Scan) -> ScanProjection {
             timing: SweepTimingProvenance::Observed,
             collection_start_secs: s.start_time,
             collection_end_secs: s.end_time,
-            available_at_secs: s.end_time,
             chunks_in_sweep: 0,
             chunks_received: 0,
             radials_received: 0,

@@ -34,7 +34,9 @@ struct CacheKey {
 }
 
 /// Single owner of every projection input; emits one cached [`Projection`].
-#[allow(dead_code)] // Constructed and consumed at the Phase 4 ownership flip.
+/// Constructed and fed via [`super::SharedProjectionEngine`] (see
+/// `subsystem::live`).
+#[allow(dead_code)] // A few setters/readers have no caller yet.
 pub struct ProjectionEngine {
     /// The math kernel: VCP, mapper, rolling stats, collection anchor, filter.
     projector: Projector,
@@ -300,7 +302,6 @@ impl ProjectionEngine {
                 current_chunks: &plan.current_volume_chunks,
                 next_chunks: plan.next_volume_chunks.as_deref(),
                 current_scan_start_secs: current_scan_start,
-                next_scan_start_secs: None,
                 current_volume,
                 next_volume: current_volume.next(),
                 cached: &self.cached_sweeps,
@@ -327,7 +328,7 @@ impl ProjectionEngine {
                 volume_end,
                 None,
             );
-            self.cached = Some((key, Projection::from_parts(plan, sweeps, Some(live_scan))));
+            self.cached = Some((key, Projection::from_parts(plan, Some(live_scan))));
         }
         self.cached.as_ref().map(|(_, p)| p)
     }

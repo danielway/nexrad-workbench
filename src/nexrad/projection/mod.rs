@@ -18,8 +18,9 @@ mod engine;
 mod inventory;
 mod status;
 
-// Re-exported as the module's public names; constructed at the Phase 4
-// ownership flip, so unused in the engine-less build until then.
+// Re-exported as the module's public names. The engine is wired (see
+// `subsystem::live`); a few helpers are still consumed only within this module,
+// hence the `allow(unused_imports)` until every consumer converges.
 #[allow(unused_imports)]
 pub use archive_adapter::scan_to_projection;
 #[allow(unused_imports)]
@@ -133,9 +134,9 @@ pub struct ExtrapolationState {
 }
 
 /// One projected sweep — the universal per-sweep render type every consumer
-/// reads, on both the COLLECTION and AVAILABILITY axes.
+/// reads, carrying the COLLECTION-time span the timeline / VCP panel / sweep
+/// line render from.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Consumed as surfaces migrate.
 pub struct SweepProjection {
     /// 1-based elevation number.
     pub elevation_number: u8,
@@ -151,9 +152,6 @@ pub struct SweepProjection {
     /// panel / sweep line.
     pub collection_start_secs: f64,
     pub collection_end_secs: f64,
-    /// AVAILABILITY time (latest chunk of the sweep appears on S3) — drives
-    /// acquisition. Equals `collection_end` for already-collected cuts.
-    pub available_at_secs: f64,
     /// Chunks expected in the sweep (0 when known only from the cache).
     pub chunks_in_sweep: usize,
     /// Chunks received so far (live in-progress).
@@ -338,73 +336,35 @@ pub fn assemble_live_scan(
 }
 
 /// The unified forward-looking projection emitted by the engine and read by all
-/// consumers.
-///
-/// Phase 0: a wrapper around [`StreamingPlan`] that mirrors its `revision` for
-/// cheap change-detection and re-exposes the accessors consumers need, so
-/// surfaces can begin targeting `Projection` before the richer per-sweep view
-/// (status + dual time axes) lands. `plan` stays the authoritative producer
-/// output throughout the migration.
+/// consumers. Pairs the per-chunk math carrier (`plan`, read by the acquisition
+/// loop) with the assembled per-sweep display container (`live_scan`).
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Consumed once the engine is constructed (Phase 4+).
 pub struct Projection {
-    /// The wrapped producer output. Remains the math carrier (per-chunk
-    /// forecasts) until consumers migrate to the per-sweep view.
+    /// The wrapped producer output — the math carrier (per-chunk forecasts)
+    /// the acquisition loop reads for `next_target` and sleep targets.
     pub plan: StreamingPlan,
-    /// Mirror of `plan.revision` — bumped by the projector on every build, used
-    /// by consumers to skip redraws / detect a fresher projection.
+    /// Mirror of `plan.revision` — bumped by the projector on every build, for
+    /// consumers to skip redraws / detect a fresher projection.
+    #[allow(dead_code)] // Change-detection mirror; no consumer reads it yet.
     pub revision: u64,
-    /// Per-sweep projection for the current + next scan, each tagged with
-    /// status on both the collection and availability axes. Includes cached
-    /// (`CollectedByUs`) sweeps for the display view; acquisition consumers
-    /// filter those out via [`Self::acquisition_sweeps`].
-    pub sweeps: Vec<SweepProjection>,
     /// The live current-scan container the display consumers read (current-scan
     /// sweeps + next-scan ghost). `None` until the engine assembles it.
     pub live_scan: Option<ScanProjection>,
 }
 
-#[allow(dead_code)] // Accessors come online as consumers migrate (Phase 5).
+// Read-delegators to the wrapped `plan`, exposing the consumer-facing API on
+// `Projection`. Not every delegator has a caller yet (some are read off the
+// `plan` directly today); `allow(dead_code)` until consumers converge on them.
+#[allow(dead_code)]
 impl Projection {
-    /// Wrap a freshly built [`StreamingPlan`] with no per-sweep view (the
-    /// Phase 0 shape — used until the engine populates `sweeps`).
-    pub fn from_plan(plan: StreamingPlan) -> Self {
+    /// Wrap a plan together with its assembled live-scan container.
+    pub fn from_parts(plan: StreamingPlan, live_scan: Option<ScanProjection>) -> Self {
         let revision = plan.revision;
         Self {
             plan,
             revision,
-            sweeps: Vec::new(),
-            live_scan: None,
-        }
-    }
-
-    /// Wrap a plan together with its per-sweep projection + assembled container.
-    pub fn from_parts(
-        plan: StreamingPlan,
-        sweeps: Vec<SweepProjection>,
-        live_scan: Option<ScanProjection>,
-    ) -> Self {
-        let revision = plan.revision;
-        Self {
-            plan,
-            revision,
-            sweeps,
             live_scan,
         }
-    }
-
-    /// All projected sweeps, including cached (`CollectedByUs`) cuts — the
-    /// DISPLAY view (timeline, VCP panel, sweep line).
-    pub fn display_sweeps(&self) -> &[SweepProjection] {
-        &self.sweeps
-    }
-
-    /// Sweeps the acquisition loop still needs — everything except the cuts we
-    /// already have cached.
-    pub fn acquisition_sweeps(&self) -> impl Iterator<Item = &SweepProjection> {
-        self.sweeps
-            .iter()
-            .filter(|s| s.status != SweepProjectionStatus::CollectedByUs)
     }
 
     /// The immediate next chunk the streaming loop plans to download.
@@ -451,9 +411,9 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     #[wasm_bindgen_test]
-    fn from_plan_mirrors_revision_and_delegates() {
+    fn from_parts_mirrors_revision_and_delegates() {
         let plan = StreamingPlan::empty_for_test(StreamingFilter::All, 42);
-        let projection = Projection::from_plan(plan);
+        let projection = Projection::from_parts(plan, None);
         assert_eq!(projection.revision, 42);
         // Delegating accessors resolve against the wrapped plan.
         assert!(projection.next_target().is_none());
