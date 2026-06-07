@@ -151,9 +151,19 @@ impl LiveModeState {
             .as_ref()
             .and_then(|p| p.estimated_azimuth_at(now_secs));
 
+        // VCP pattern + roster now come from the engine's projection (the single
+        // owner). Fall back to the local fields only in the cold window before
+        // the engine has assembled its first projection; Stage 5 drops the
+        // fallback when those fields leave `LiveModeState`.
         let volume = Some(LiveVolumeModel {
-            vcp_pattern: self.current_vcp_pattern.clone(),
-            roster: self.elevation_roster(),
+            vcp_pattern: position
+                .as_ref()
+                .and_then(|p| p.vcp_pattern.clone())
+                .or_else(|| self.current_vcp_pattern.clone()),
+            roster: position
+                .as_ref()
+                .map(|p| p.roster.clone())
+                .unwrap_or_else(|| self.elevation_roster()),
         });
 
         let active_sweep = self.current_in_progress_elevation.map(|elev| {
