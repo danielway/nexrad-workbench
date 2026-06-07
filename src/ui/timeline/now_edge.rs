@@ -165,9 +165,17 @@ fn render_edge_chip(
 ) -> Option<Rect> {
     let base = if is_live { LIVE_ACTIVE } else { NOW_IDLE };
     let label = if on_left {
-        format!("\u{2190} {} LIVE", egui_phosphor::regular::BROADCAST)
+        format!(
+            "{} {} LIVE",
+            egui_phosphor::regular::ARROW_LEFT,
+            egui_phosphor::regular::BROADCAST
+        )
     } else {
-        format!("{} LIVE \u{2192}", egui_phosphor::regular::BROADCAST)
+        format!(
+            "{} LIVE {}",
+            egui_phosphor::regular::BROADCAST,
+            egui_phosphor::regular::ARROW_RIGHT
+        )
     };
 
     // Anchor the chip flush against the edge that points toward now.
