@@ -111,7 +111,7 @@ impl<'a> TimelineView<'a> {
             (Some(ls), Some(pos)) if ls.is_active() => {
                 let anchor_ms = ls.current_volume.as_ref().map(|a| a.scan_key.scan_start.0);
                 let mut merged = pos.clone();
-                let mut received = ls.elevations_received.clone();
+                let mut received = pos.roster.received.clone();
 
                 if let Some(ms) = anchor_ms {
                     if let Some(scan) = scan_with_key_ms(cache, ms) {
@@ -127,9 +127,9 @@ impl<'a> TimelineView<'a> {
 
                 let ctx = LiveOverlayContext {
                     countdown_secs: ls.countdown_remaining_secs(now_secs),
-                    in_progress_radials: ls.current_in_progress_radials.unwrap_or(0),
+                    in_progress_radials: pos.in_progress_radials.unwrap_or(0),
                     elevations_received: received,
-                    in_progress_elevation: ls.current_in_progress_elevation,
+                    in_progress_elevation: pos.in_progress_elevation,
                     next_target_in_next_volume: ls
                         .plan
                         .as_ref()
@@ -367,6 +367,8 @@ mod tests {
             vcp_number: 212,
             vcp_pattern: None,
             roster: crate::state::VolumeElevationRoster::default(),
+            in_progress_elevation: None,
+            in_progress_radials: None,
             volume_start: 1_700_000_000.0,
             volume_end: 1_700_000_300.0,
             complete: false,

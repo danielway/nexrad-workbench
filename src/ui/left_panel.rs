@@ -200,8 +200,8 @@ fn query_radar_state_at_timestamp<'a>(
                 let vcp = Some(position.vcp_number).filter(|&v| v > 0);
                 let azimuth = live.radar_model.estimated_azimuth;
                 let sweep_index = frame.sweep_index.or_else(|| {
-                    live.mode_state
-                        .current_in_progress_elevation
+                    position
+                        .in_progress_elevation
                         .map(|e| e.saturating_sub(1) as usize)
                 });
                 let scan_progress = frame.progress;
@@ -210,7 +210,7 @@ fn query_radar_state_at_timestamp<'a>(
                 });
                 let current_elevation_number = sweep_index
                     .and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_number))
-                    .or(live.mode_state.current_in_progress_elevation);
+                    .or(position.in_progress_elevation);
 
                 RadarStateAtTimestamp {
                     azimuth,
@@ -219,7 +219,11 @@ fn query_radar_state_at_timestamp<'a>(
                     current_elevation_number,
                     scan_progress,
                     scan: None,
-                    live_vcp_pattern: live.mode_state.current_vcp_pattern.as_ref(),
+                    live_vcp_pattern: live
+                        .radar_model
+                        .volume
+                        .as_ref()
+                        .and_then(|v| v.vcp_pattern.as_ref()),
                     position: Some(position.clone()),
                 }
             } else {

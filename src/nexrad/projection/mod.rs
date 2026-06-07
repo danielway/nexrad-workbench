@@ -209,6 +209,11 @@ pub struct ScanProjection {
     pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
     /// Expected-vs-received elevation roster for the in-progress volume.
     pub roster: crate::state::VolumeElevationRoster,
+    /// Elevation currently being received (`None` between cuts). Mirrors the
+    /// engine's in-progress input exactly — independent of per-sweep status.
+    pub in_progress_elevation: Option<u8>,
+    /// Radials received so far for the in-progress cut (`None` when idle).
+    pub in_progress_radials: Option<u32>,
     pub volume_start: f64,
     pub volume_end: f64,
     pub complete: bool,
@@ -289,11 +294,14 @@ impl ScanProjection {
 /// a faded ghost. `extrapolation` is left `None` — the live model fills it per
 /// frame from the last radial + the current sweep's rate.
 #[allow(dead_code)] // Consumed by the engine (Step 5) + LiveRadarModel (Step 6).
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_live_scan(
     sweeps: &[SweepProjection],
     vcp_number: u16,
     vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
     roster: crate::state::VolumeElevationRoster,
+    in_progress_elevation: Option<u8>,
+    in_progress_radials: Option<u32>,
     volume_start: f64,
     volume_end: f64,
     scan_key: Option<String>,
@@ -323,6 +331,8 @@ pub fn assemble_live_scan(
             vcp_number,
             vcp_pattern: vcp_pattern.clone(),
             roster: crate::state::VolumeElevationRoster::default(),
+            in_progress_elevation: None,
+            in_progress_radials: None,
             volume_start: gs,
             volume_end: ge,
             complete: false,
@@ -336,6 +346,8 @@ pub fn assemble_live_scan(
         vcp_number,
         vcp_pattern,
         roster,
+        in_progress_elevation,
+        in_progress_radials,
         volume_start,
         volume_end,
         complete: false,

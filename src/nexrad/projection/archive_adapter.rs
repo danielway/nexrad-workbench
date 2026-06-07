@@ -41,6 +41,8 @@ pub fn scan_to_projection(scan: &Scan) -> ScanProjection {
             Some(scan.sweeps.len()),
             scan.sweeps.iter().map(|s| s.elevation_number).collect(),
         ),
+        in_progress_elevation: None,
+        in_progress_radials: None,
         volume_start: scan.start_time,
         volume_end: scan.end_time,
         complete: true,

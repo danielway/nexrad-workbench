@@ -328,6 +328,8 @@ impl ProjectionEngine {
                 obs.vcp_number,
                 obs.vcp_pattern.clone(),
                 obs.roster.clone(),
+                self.in_progress.map(|(_, e)| e),
+                obs.in_progress_radials,
                 current_scan_start,
                 volume_end,
                 None,

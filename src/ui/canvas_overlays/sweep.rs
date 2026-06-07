@@ -234,10 +234,11 @@ pub(crate) fn render_radar_sweep(
                         })
                     })
                     .or_else(|| {
-                        // Fallback: use the worker's in-progress elevation
-                        live.mode_state
-                            .current_in_progress_elevation
-                            .map(|e| format!("NOW \u{00B7} Elev {}", e))
+                        // Fallback: the engine's in-progress elevation.
+                        live.radar_model
+                            .active_sweep
+                            .as_ref()
+                            .map(|s| format!("NOW \u{00B7} Elev {}", s.elevation_number))
                     })
                     .unwrap_or_else(|| "NOW".to_string());
 
@@ -497,13 +498,15 @@ fn draw_sweep_donut(
             .volume
             .as_ref()
             .and_then(|v| v.roster.received.last().copied());
-        let prev_sweep_meta = prev_elev.and_then(|pe| {
-            live.mode_state
-                .completed_sweep_metas
+        let prev_sweep = prev_elev.and_then(|pe| {
+            model
+                .position
+                .as_ref()?
+                .sweeps
                 .iter()
-                .find(|m| m.elevation_number == pe)
+                .find(|s| s.elevation_number == pe && s.is_observed())
         });
-        prev_edge_time = prev_sweep_meta.map(|m| fmt_time(m.end));
+        prev_edge_time = prev_sweep.map(|s| fmt_time(s.collection_end_secs));
         prev_meta = prev_elev.map(|pe| {
             let angle = elev_angle_str(pe, vcp);
             format!("Elev {} {}", pe, angle)
@@ -566,20 +569,25 @@ fn draw_sweep_donut(
     // Prev sweep time interpolated at the data-edge azimuth
     let prev_at_edge_time = if is_live {
         // Live: interpolate within the previous sweep's time range
-        if let Some(meta) = live
+        if let Some(sw) = live
             .radar_model
             .volume
             .as_ref()
             .and_then(|v| v.roster.received.last().copied())
             .and_then(|pe| {
-                live.mode_state
-                    .completed_sweep_metas
+                live.radar_model
+                    .position
+                    .as_ref()?
+                    .sweeps
                     .iter()
-                    .find(|m| m.elevation_number == pe)
+                    .find(|s| s.elevation_number == pe && s.is_observed())
             })
         {
             let frac = (swept_arc_deg / 360.0).clamp(0.0, 1.0) as f64;
-            Some(fmt_time(meta.start + frac * (meta.end - meta.start)))
+            Some(fmt_time(
+                sw.collection_start_secs
+                    + frac * (sw.collection_end_secs - sw.collection_start_secs),
+            ))
         } else {
             None
         }

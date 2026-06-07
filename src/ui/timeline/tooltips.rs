@@ -301,7 +301,7 @@ fn render_realtime_volume_tooltip(
                 } else {
                     (0, 0)
                 };
-                let in_progress_radials = live_state.current_in_progress_radials.unwrap_or(0);
+                let in_progress_radials = model.in_progress_radials.unwrap_or(0);
 
                 ui.label(format!("Radials: {}/360 collected", total_radials));
 

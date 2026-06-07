@@ -152,7 +152,10 @@ pub(super) fn render_product_section(
             let entries = state.current_elevation_list(
                 &playback.state,
                 &timeline.scans,
-                live.mode_state.current_vcp_pattern.as_ref(),
+                live.radar_model
+                    .volume
+                    .as_ref()
+                    .and_then(|v| v.vcp_pattern.as_ref()),
             );
             let list_enabled = !is_auto;
             let selected_product = state.viz_state.product.to_worker_string();
