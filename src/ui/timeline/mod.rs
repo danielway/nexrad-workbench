@@ -1,6 +1,7 @@
 //! Timeline rendering: time ruler, scan/sweep tracks, tooltip, and overlays.
 
 mod interaction;
+mod now_edge;
 mod overlays;
 mod ruler;
 mod scan_track;
@@ -14,6 +15,7 @@ use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use interaction::handle_timeline_interaction;
+use now_edge::render_now_affordance;
 use overlays::{render_download_ghosts, render_realtime_progress, render_saved_events};
 use ruler::{render_playback_cursor, render_tick_marks};
 use scan_track::{render_scan_track, render_shadow_boundaries};
@@ -588,17 +590,29 @@ pub(super) fn render_timeline(
         }
     }
 
-    // Draw selection marker (playback cursor) and "now" marker
-    let is_live = live.mode_state.is_active();
-    let at_edge = !is_live && playback.state.is_at_live_edge();
+    // Draw the playback-position cursor (the neutral "needle").
     render_playback_cursor(
         &painter,
         &overlay_rect,
         playback.state.playback_position(),
         view_start,
         zoom,
-        is_live,
-        at_edge,
+        dark,
+    );
+
+    // The now affordance: the live edge of the timeline — both the streaming
+    // indicator and the control to start/stop it. When now is on-screen it's
+    // an inline line + clickable cap; when scrolled off it's an edge chip.
+    // Returns the rect it occupies so the seek handler ignores clicks on it.
+    let now_affordance_rect = render_now_affordance(
+        ui,
+        &painter,
+        state,
+        live,
+        playback,
+        &overlay_rect,
+        view_start,
+        zoom,
     );
 
     // Draw selection range labels (boundaries and duration)
@@ -676,6 +690,14 @@ pub(super) fn render_timeline(
 
     // -- Interaction handling --
     handle_timeline_interaction(
-        ui, state, live, playback, &response, &full_rect, view_start, zoom,
+        ui,
+        state,
+        live,
+        playback,
+        &response,
+        &full_rect,
+        view_start,
+        zoom,
+        now_affordance_rect,
     );
 }

@@ -121,17 +121,27 @@ pub mod timeline {
         }
     }
 
-    /// Selection marker color (theme-independent).
-    pub const SELECTION: Color32 = Color32::from_rgb(255, 100, 100);
+    /// Playback-position cursor ("the needle") and current-time readout.
+    /// A neutral, high-contrast tone deliberately distinct from the red
+    /// now/live family so the "where I'm looking" marker never reads as
+    /// "now". Theme-aware: near-white on dark, near-black on light.
+    pub fn selection(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(235, 240, 250)
+        } else {
+            Color32::from_rgb(40, 45, 60)
+        }
+    }
     /// Active sweep highlight (theme-independent).
     pub const ACTIVE_SWEEP: Color32 = Color32::from_rgb(255, 255, 100);
     /// Previous active sweep highlight during sweep animation (theme-independent).
     pub const PREV_ACTIVE_SWEEP: Color32 = Color32::from_rgb(160, 200, 255);
-    /// "Now" marker (current wall-clock time).
-    pub const NOW_MARKER: Color32 = Color32::from_rgb(180, 200, 255);
-    /// "Click to go live" call-to-action pill at the now-line (Archive/Idle).
-    pub const LIVE_PILL_CTA: Color32 = Color32::from_rgb(120, 200, 120);
-    /// Live status color for the now-line / "LIVE" badge when streaming.
+    /// The now-line / "GO LIVE" cap when NOT streaming — a calm, muted red
+    /// that reads as an invitation. Red is reserved exclusively for the
+    /// now/live concept (see [`LIVE_ACTIVE`] for the streaming state).
+    pub const NOW_IDLE: Color32 = Color32::from_rgb(200, 95, 95);
+    /// Live status color for the now-line / "LIVE" cap when streaming —
+    /// the bright, active end of the same red.
     pub const LIVE_ACTIVE: Color32 = Color32::from_rgb(255, 80, 80);
     /// Selection range boundary label color.
     pub const SELECTION_LABEL: Color32 = Color32::from_rgb(140, 180, 255);

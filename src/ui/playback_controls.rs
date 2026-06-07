@@ -3,7 +3,7 @@
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use super::timeline::format_timestamp_full;
 use crate::state::{
-    AppMode, AppState, LiveExitReason, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed, TimeModel,
+    AppMode, AppState, LiveExitReason, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed,
 };
 use crate::subsystem::Acquisition;
 use eframe::egui::{self, Color32, RichText, Vec2};
@@ -170,7 +170,7 @@ pub(super) fn render_playback_controls(
         ))
         .monospace()
         .size(13.0)
-        .color(tl_colors::SELECTION);
+        .color(tl_colors::selection(state.is_dark));
 
         if advanced {
             let timestamp_btn = ui.add(egui::Button::new(text).frame(false));
@@ -334,24 +334,9 @@ pub(super) fn render_playback_controls(
         }
     }
 
-    // "Go live" button — jump to now and start streaming. This is the
-    // "I'm lost, take me to now" affordance for when the cursor is far in the
-    // past, so it must re-center the view here (start_live_mode only re-centers
-    // when it bumps zoom). It does NOT set position/lock/playing itself —
-    // start_live_mode owns all of that and entry is async (AcquiringLock).
-    if show_forward_seek
-        && ui
-            .add(egui::Button::new(
-                RichText::new(egui_phosphor::regular::CROSSHAIR).size(14.0),
-            ))
-            .on_hover_text("Go live")
-            .clicked()
-    {
-        let now = TimeModel::wall_clock_time();
-        playback.state.center_view_on(now);
-        state.push_command(crate::state::AppCommand::StartLive);
-        playback.state.speed = PlaybackSpeed::Realtime;
-    }
+    // Going live is no longer a transport button — it lives on the timeline
+    // itself (the now-line cap when now is on-screen, the edge chip when it's
+    // scrolled off). See `ui/timeline/now_edge.rs`.
 
     ui.separator();
 
