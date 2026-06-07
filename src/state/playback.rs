@@ -7,12 +7,6 @@
 /// in pixels per second.
 pub const MICRO_ZOOM_THRESHOLD: f64 = 1.0;
 
-/// How close (wall-clock seconds) the cursor must be to "now" for the timeline
-/// to treat it as the live edge. Used by click-to-go-live, play-at-edge, and
-/// the LIVE-handle render state. Time-based (not pixel-based) so behavior is
-/// independent of timeline zoom.
-pub const LIVE_EDGE_THRESHOLD_SECS: f64 = 90.0;
-
 /// Playback mode derived from timeline zoom level.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PlaybackMode {
@@ -337,6 +331,28 @@ impl TimeModel {
 
         self.playback_position = position;
     }
+
+    /// Snap the playhead to wall-clock now. Used by the live tick to pin the
+    /// position in LIVE-NOW independent of the `playing` flag (bypasses
+    /// `seek_to`, which no-ops under the realtime lock).
+    pub fn snap_to_now(&mut self) {
+        self.playback_position = Self::wall_clock_time();
+    }
+
+    /// Update playback bounds *without* resetting direction or clamping the
+    /// position. Used by the sliding lookback window: as new frames complete,
+    /// the window end follows the latest frame while the loop keeps its
+    /// progression — `apply_bounds` re-contains the position on the next
+    /// advance. Contrast [`set_bounds_from_selection`], which resets a fresh
+    /// selection.
+    pub fn set_bounds_preserving(&mut self, start: f64, end: f64) {
+        let (s, e) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        self.playback_bounds = Some((s, e));
+    }
 }
 
 /// State for playback controls.
@@ -384,6 +400,12 @@ pub struct PlaybackState {
 
     /// State for macro (frame-stepping) playback mode.
     pub macro_playback: MacroPlaybackState,
+
+    /// True while the play button is replaying the recent "lookback" window
+    /// during live streaming (last-N frames, looping). Distinguishes lookback
+    /// bounds — transient, owned by the transport — from a user's shift-drag
+    /// selection bounds. Cleared on pause, stop-live, and seek.
+    pub lookback_active: bool,
 }
 
 impl Default for PlaybackState {
@@ -407,6 +429,7 @@ impl Default for PlaybackState {
             total_frames: 0,
             timeline_width_px: 1000.0,
             macro_playback: MacroPlaybackState::default(),
+            lookback_active: false,
         }
     }
 }
@@ -433,10 +456,24 @@ impl PlaybackState {
         self.time_model.seek_to(position);
     }
 
-    /// True when the cursor sits within [`LIVE_EDGE_THRESHOLD_SECS`] of
-    /// wall-clock now — i.e. parked at the live edge of the timeline.
-    pub fn is_at_live_edge(&self) -> bool {
-        (TimeModel::wall_clock_time() - self.playback_position()).abs() <= LIVE_EDGE_THRESHOLD_SECS
+    /// Enter lookback: loop the recent `[start, end]` window oldest→newest.
+    /// The caller must disable the realtime lock first (`advance` no-ops under
+    /// the lock). Plays from the oldest frame so the first pass runs forward.
+    pub fn start_lookback(&mut self, start: f64, end: f64) {
+        self.time_model.set_bounds_from_selection(start, end);
+        self.time_model.loop_mode = LoopMode::Loop;
+        self.time_model.playback_position = start;
+        self.lookback_active = true;
+        self.playing = true;
+    }
+
+    /// Exit lookback: drop the window bounds + marker. Leaves `playing` to the
+    /// caller (pause re-locks to now; stop freezes). Idempotent.
+    pub fn clear_lookback(&mut self) {
+        if self.lookback_active {
+            self.time_model.clear_bounds();
+            self.lookback_active = false;
+        }
     }
 
     /// Visible time width in seconds, using the real timeline widget width.
@@ -651,5 +688,68 @@ impl PlaybackState {
                 .round()
                 .clamp(0.0, (self.total_frames.saturating_sub(1)) as f64) as usize,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn start_lookback_sets_loop_bounds_and_plays_from_oldest() {
+        let mut ps = PlaybackState::default();
+        ps.start_lookback(100.0, 160.0);
+        assert_eq!(ps.time_model.playback_bounds, Some((100.0, 160.0)));
+        assert!(ps.time_model.loop_mode == LoopMode::Loop);
+        assert_eq!(ps.time_model.playback_position, 100.0); // oldest frame
+        assert!(ps.lookback_active);
+        assert!(ps.playing);
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_lookback_clears_bounds_and_flag_but_not_playing() {
+        let mut ps = PlaybackState::default();
+        ps.start_lookback(100.0, 160.0);
+        ps.clear_lookback();
+        assert_eq!(ps.time_model.playback_bounds, None);
+        assert!(!ps.lookback_active);
+        assert!(ps.playing); // caller owns `playing`
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_lookback_is_idempotent_when_inactive() {
+        let mut ps = PlaybackState::default();
+        // A user selection's bounds must survive clear_lookback when no
+        // lookback is active.
+        ps.time_model.set_bounds_from_selection(10.0, 20.0);
+        ps.clear_lookback();
+        assert_eq!(ps.time_model.playback_bounds, Some((10.0, 20.0)));
+    }
+
+    #[wasm_bindgen_test]
+    fn advance_loops_within_lookback_bounds() {
+        let mut tm = TimeModel::at_position(100.0);
+        tm.set_bounds_from_selection(100.0, 150.0); // range 50
+        tm.loop_mode = LoopMode::Loop;
+        // Lock is OFF during lookback, so advance is deterministic (no clock).
+        assert!(!tm.locked_to_realtime);
+        // +60 timeline-secs from 100 → 160, overshoots end (150) by 10 → wraps
+        // to start + 10 = 110.
+        tm.advance(1.0, PlaybackSpeed::Quarter); // Quarter = 60 timeline-secs/real-sec
+        assert!((tm.playback_position - 110.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_bounds_preserving_keeps_direction_and_position() {
+        let mut tm = TimeModel::at_position(130.0);
+        tm.set_bounds_from_selection(100.0, 160.0);
+        tm.direction = PlaybackDirection::Backward;
+        tm.playback_position = 130.0;
+        // Sliding window update should not reset direction or clamp position.
+        tm.set_bounds_preserving(120.0, 180.0);
+        assert_eq!(tm.playback_bounds, Some((120.0, 180.0)));
+        assert!(tm.direction == PlaybackDirection::Backward);
+        assert_eq!(tm.playback_position, 130.0);
     }
 }

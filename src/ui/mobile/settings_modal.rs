@@ -209,7 +209,7 @@ fn render_playback_body(
             )
             .clicked()
         {
-            super::tabs::toggle_play(state, live, playback);
+            super::tabs::toggle_play(state, timeline, live, playback);
         }
 
         ui.add_space(8.0);

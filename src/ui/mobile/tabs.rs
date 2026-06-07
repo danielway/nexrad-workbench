@@ -146,6 +146,7 @@ fn render_action_bar(
             if is_live {
                 live.mode_state.stop(LiveExitReason::UserStopped);
                 playback.state.time_model.disable_realtime_lock();
+                playback.state.clear_lookback();
                 playback.state.playing = false;
             } else {
                 state.push_command(crate::state::AppCommand::StartLive);
@@ -214,19 +215,14 @@ fn icon_slot(
 // ---------------------------------------------------------------------------
 
 pub(super) fn toggle_play(
-    _state: &mut AppState,
+    state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
 ) {
-    if playback.state.playing {
-        if live.mode_state.is_active() {
-            live.mode_state.stop(LiveExitReason::UserStopped);
-            playback.state.time_model.disable_realtime_lock();
-        }
-        playback.state.playing = false;
-    } else if playback.state.is_playback_allowed() {
-        playback.state.playing = true;
-    }
+    // Same decoupled play/pause as desktop: in live this toggles the lookback
+    // replay; stopping the stream is the broadcast button's job.
+    crate::ui::transport::toggle_play_pause(state, timeline, live, playback);
 }
 
 pub(super) fn step_frame(
@@ -242,6 +238,7 @@ pub(super) fn step_frame(
     if live.mode_state.is_active() {
         live.mode_state.stop(LiveExitReason::UserJogged);
         playback.state.time_model.disable_realtime_lock();
+        playback.state.clear_lookback();
     }
     match playback.state.playback_mode() {
         PlaybackMode::Macro => {

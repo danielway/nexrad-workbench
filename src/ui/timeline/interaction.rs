@@ -68,6 +68,7 @@ pub(super) fn handle_timeline_interaction(
             if live.mode_state.is_active() {
                 live.mode_state.stop(LiveExitReason::UserSeeked);
                 playback.state.time_model.disable_realtime_lock();
+                playback.state.clear_lookback();
                 state.status_message = live
                     .mode_state
                     .last_exit_reason

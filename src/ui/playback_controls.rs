@@ -122,6 +122,7 @@ pub(super) fn render_datetime_picker_popup(
                                     if live.mode_state.is_active() {
                                         live.mode_state.stop(LiveExitReason::UserSeeked);
                                         playback.state.time_model.disable_realtime_lock();
+                                        playback.state.clear_lookback();
                                     }
 
                                     state.datetime_picker.close();
@@ -198,15 +199,28 @@ pub(super) fn render_playback_controls(
         render_live_indicator(ui, state, live, playback);
         ui.separator();
     }
-    // Live entry emerges from the timeline: press play at the live edge, click
-    // the now-line, or use the Go-live (crosshair) button below. The top-bar
-    // mode pill is now an indicator only.
+    // Entering/leaving live is owned by the timeline now-line (cap / edge chip)
+    // and Ctrl+L. The play/pause button below is decoupled from the stream.
 
-    // Play/Stop button — disabled in Idle (no data to play).
+    // Play/Stop button — disabled in Idle (no data to play). In live it toggles
+    // the lookback replay (Play = replay the recent window, Stop = back to
+    // now); in archive it's ordinary play/pause. All branching lives in
+    // `transport::toggle_play_pause`.
     let play_text = if playback.state.playing {
         egui_phosphor::regular::STOP
     } else {
         egui_phosphor::regular::PLAY
+    };
+    let play_hover = if live.mode_state.is_active() {
+        if playback.state.playing {
+            "Return to live (stop replay)"
+        } else {
+            "Replay the last 5 frames"
+        }
+    } else if playback.state.playing {
+        "Pause"
+    } else {
+        "Play"
     };
 
     if ui
@@ -214,54 +228,26 @@ pub(super) fn render_playback_controls(
             interactive,
             egui::Button::new(RichText::new(play_text).size(14.0)),
         )
+        .on_hover_text(play_hover)
         .clicked()
     {
-        if playback.state.playing {
-            // Pause. If live, exit and freeze the current frame (drop to
-            // Archive): disabling the realtime lock stops `advance()` from
-            // overwriting the position, and playing=false stops it advancing.
-            if live.mode_state.is_active() {
-                live.mode_state.stop(LiveExitReason::UserPaused);
-                playback.state.time_model.disable_realtime_lock();
-                state.status_message = live
-                    .mode_state
-                    .last_exit_reason
-                    .map(|r| r.message().to_string())
-                    .unwrap_or_default();
-            }
-            playback.state.playing = false;
-        } else if !live.mode_state.is_active() && playback.state.is_at_live_edge() {
-            // Parked at the live edge — pressing play goes live rather than
-            // replaying the last archive frames.
-            state.push_command(crate::state::AppCommand::StartLive);
-            playback.state.speed = PlaybackSpeed::Realtime;
-        } else {
-            // Ordinary playback from an archive position.
-            playback.state.playing = true;
-        }
+        super::transport::toggle_play_pause(state, timeline, live, playback);
     }
 
-    // Jog: jump to end of next/previous matching sweep for current elevation
+    // Jog buttons step between sweeps. Hidden entirely in Live — stepping is a
+    // seek gesture that doesn't belong while pinned to / replaying around now.
+    let show_jog = live.app_mode != AppMode::Live;
     let current_pos = playback.state.playback_position();
 
     // Step backward
-    if ui
-        .add_enabled(
-            interactive,
-            egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_BACK).size(14.0)),
-        )
-        .clicked()
+    if show_jog
+        && ui
+            .add_enabled(
+                interactive,
+                egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_BACK).size(14.0)),
+            )
+            .clicked()
     {
-        // Exit live mode when jogging
-        if live.mode_state.is_active() {
-            live.mode_state.stop(LiveExitReason::UserJogged);
-            playback.state.time_model.disable_realtime_lock();
-            state.status_message = live
-                .mode_state
-                .last_exit_reason
-                .map(|r| r.message().to_string())
-                .unwrap_or_default();
-        }
         match playback.state.playback_mode() {
             PlaybackMode::Macro => {
                 playback.state.step_macro_frame(-1);
@@ -286,13 +272,8 @@ pub(super) fn render_playback_controls(
         }
     }
 
-    // Step-forward and "Now" are no-ops in Live (cursor is locked to wall
-    // clock). Hide them in Basic+Live to declutter; Advanced always sees
-    // them so power users keep their workflow.
-    let show_forward_seek = advanced || live.app_mode != AppMode::Live;
-
     // Step forward
-    if show_forward_seek
+    if show_jog
         && ui
             .add_enabled(
                 interactive,
@@ -300,16 +281,6 @@ pub(super) fn render_playback_controls(
             )
             .clicked()
     {
-        // Exit live mode when jogging
-        if live.mode_state.is_active() {
-            live.mode_state.stop(LiveExitReason::UserJogged);
-            playback.state.time_model.disable_realtime_lock();
-            state.status_message = live
-                .mode_state
-                .last_exit_reason
-                .map(|r| r.message().to_string())
-                .unwrap_or_default();
-        }
         match playback.state.playback_mode() {
             PlaybackMode::Macro => {
                 playback.state.step_macro_frame(1);
@@ -333,10 +304,6 @@ pub(super) fn render_playback_controls(
             }
         }
     }
-
-    // Going live is no longer a transport button — it lives on the timeline
-    // itself (the now-line cap when now is on-screen, the edge chip when it's
-    // scrolled off). See `ui/timeline/now_edge.rs`.
 
     ui.separator();
 

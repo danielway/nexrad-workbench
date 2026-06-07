@@ -17,11 +17,14 @@ impl WorkbenchApp {
         // Get current time
         let now = js_sys::Date::now() / 1000.0;
 
-        // Initialize live mode state
+        // Initialize live mode state. Going live pins the playhead to "now"
+        // (the realtime lock) but does NOT start playback — play/pause is
+        // decoupled and, while live, drives the lookback replay instead. The
+        // playhead is kept on "now" by `tick_live`, independent of `playing`.
         self.live.mode_state.start(now);
+        self.playback.state.clear_lookback();
         self.playback.state.set_playback_position(now);
         self.playback.state.time_model.enable_realtime_lock();
-        self.playback.state.playing = true;
 
         // Ensure the timeline is zoomed in far enough to show individual sweeps
         // and chunks. Live mode enforces micro-mode as the widest allowed zoom.
@@ -45,6 +48,62 @@ impl WorkbenchApp {
             self.acquisition.coordinator.facade().clone(),
             self.live.engine.clone(),
         );
+    }
+
+    /// Per-frame live tick — drives the playhead while streaming, independent
+    /// of the `playing` flag (which now belongs to playback/lookback).
+    ///
+    /// - LIVE-NOW (realtime lock on): pin the playhead to wall-clock now.
+    /// - LIVE-LOOKBACK (lock off, `lookback_active`): slide the loop window so
+    ///   its end follows the latest frame as new volumes complete. `advance`
+    ///   (driven by `playing` in the bottom panel) does the actual looping.
+    ///
+    /// In both states, keep the live edge on-screen. No-op when not live.
+    pub(crate) fn tick_live(&mut self) {
+        if !self.live.mode_state.is_active() {
+            return;
+        }
+        let now = crate::state::TimeModel::wall_clock_time();
+
+        if self.playback.state.time_model.locked_to_realtime {
+            // LIVE-NOW: pin to wall-clock now.
+            self.playback.state.time_model.snap_to_now();
+        } else if self.playback.state.lookback_active {
+            // LIVE-LOOKBACK: keep the loop window's end on the latest frame.
+            const LOOKBACK_FRAMES: usize = 5;
+            if let Some((start, end)) = self.timeline.scans.lookback_window(
+                &self.state.viz_state.elevation_selection,
+                now,
+                LOOKBACK_FRAMES,
+            ) {
+                if end - start > 1.0 {
+                    self.playback
+                        .state
+                        .time_model
+                        .set_bounds_preserving(start, end);
+                }
+            }
+        }
+
+        self.keep_now_on_screen(now);
+    }
+
+    /// Nudge the timeline view minimally so "now" stays visible. Pan/zoom is
+    /// otherwise free; this only fires when "now" would fall outside the
+    /// visible range. (Relocated from the old `playing`-gated block in the
+    /// bottom panel so it runs in both LIVE-NOW and LIVE-LOOKBACK.)
+    fn keep_now_on_screen(&mut self, now: f64) {
+        let view_width = self.playback.state.view_width_secs();
+        if view_width <= 0.0 {
+            return;
+        }
+        let view_start = self.playback.state.timeline_view_start;
+        let view_end = view_start + view_width;
+        if now > view_end {
+            self.playback.state.timeline_view_start = now - view_width;
+        } else if now < view_start {
+            self.playback.state.timeline_view_start = now;
+        }
     }
 
     /// Build the elevation list from a scan's VCP data.
@@ -165,6 +224,7 @@ impl WorkbenchApp {
 
         self.live.mode_state.stop(reason);
         self.playback.state.time_model.disable_realtime_lock();
+        self.playback.state.clear_lookback();
         self.live.channel.stop();
 
         // Halt playback unless the user is actively scrubbing/jogging — those

@@ -674,8 +674,19 @@ impl eframe::App for WorkbenchApp {
         self.diagnostics
             .tick(ctx, diagnostics_inputs, &mut self.state.errors);
 
-        // 9-13. COMPUTE: advance playback, sync GPU state, decide whether
-        // to issue the next render, then capture network stats and persist.
+        // 9-13. COMPUTE: drive the live playhead, advance playback, sync GPU
+        // state, decide whether to issue the next render, then capture network
+        // stats and persist.
+        //
+        // `tick_live` pins the playhead to "now" (LIVE-NOW) or slides the
+        // lookback window (LIVE-LOOKBACK) independent of `playing`, before the
+        // render decision below reads the position. While pinned to now, the
+        // live edge moves continuously, so request a repaint to keep it smooth
+        // even when the user isn't interacting.
+        self.tick_live();
+        if self.live.mode_state.is_active() && self.playback.state.time_model.locked_to_realtime {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         self.advance_playback();
         // 9.5. REACTIVE ACQUISITION: now that advance_playback has settled the
         // playback position, prefetch the archive scans that position (and a

@@ -380,7 +380,10 @@ fn handle_step_backward(
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    exit_live_if_active(state, live, playback, LiveExitReason::UserJogged);
+    // Jogging is unavailable in live (matches the hidden jog buttons).
+    if live.mode_state.is_active() {
+        return;
+    }
     let pos = current_pos(state, playback);
     let fallback = jog_fallback(state, playback);
     let new_pos = match &state.viz_state.elevation_selection {
@@ -406,7 +409,10 @@ fn handle_step_forward(
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    exit_live_if_active(state, live, playback, LiveExitReason::UserJogged);
+    // Jogging is unavailable in live (matches the hidden jog buttons).
+    if live.mode_state.is_active() {
+        return;
+    }
     let pos = current_pos(state, playback);
     let fallback = jog_fallback(state, playback);
     let new_pos = match &state.viz_state.elevation_selection {
@@ -467,6 +473,7 @@ fn handle_toggle_live(
     if live.mode_state.is_active() {
         live.mode_state.stop(LiveExitReason::UserStopped);
         playback.state.time_model.disable_realtime_lock();
+        playback.state.clear_lookback();
         playback.state.playing = false;
         state.status_message = live
             .mode_state
@@ -724,23 +731,6 @@ fn render_help_section(ui: &mut egui::Ui, section: &'static str) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn exit_live_if_active(
-    state: &mut AppState,
-    live: &mut crate::subsystem::Live,
-    playback: &mut crate::subsystem::Playback,
-    reason: LiveExitReason,
-) {
-    if live.mode_state.is_active() {
-        live.mode_state.stop(reason);
-        playback.state.time_model.disable_realtime_lock();
-        state.status_message = live
-            .mode_state
-            .last_exit_reason
-            .map(|r| r.message().to_string())
-            .unwrap_or_default();
-    }
-}
 
 #[cfg(test)]
 mod tests {

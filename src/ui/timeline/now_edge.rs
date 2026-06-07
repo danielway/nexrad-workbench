@@ -297,7 +297,12 @@ fn stop_live(
     playback: &mut crate::subsystem::Playback,
 ) {
     live.mode_state.stop(LiveExitReason::UserStopped);
+    playback.state.playing = false;
+    playback.state.clear_lookback();
     playback.state.time_model.disable_realtime_lock();
+    // Freeze on the latest (live-edge) frame for a predictable stop, whether we
+    // were pinned to now or mid-replay.
+    playback.state.time_model.snap_to_now();
     state.status_message = live
         .mode_state
         .last_exit_reason

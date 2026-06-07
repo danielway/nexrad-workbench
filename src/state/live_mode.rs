@@ -95,8 +95,6 @@ impl LivePhase {
 /// Reason why live mode was exited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LiveExitReason {
-    /// User paused while live — stop streaming and freeze the current frame.
-    UserPaused,
     /// User clicked on timeline or used seek controls.
     UserSeeked,
     /// User used jog forward/backward buttons.
@@ -111,7 +109,6 @@ impl LiveExitReason {
     /// Human-readable message for the exit reason.
     pub fn message(&self) -> &'static str {
         match self {
-            LiveExitReason::UserPaused => "Live mode paused",
             LiveExitReason::UserSeeked => "Live mode exited: timeline seek",
             LiveExitReason::UserJogged => "Live mode exited: manual step",
             LiveExitReason::ConnectionError => "Live mode error: connection lost",

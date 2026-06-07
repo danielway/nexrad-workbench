@@ -405,6 +405,40 @@ impl RadarTimeline {
         times
     }
 
+    /// The `(start, end)` span covering the last `n` matching frames at or
+    /// before `now`, for the given elevation selection — the "lookback" window
+    /// the live Play button replays. Uses the same frame source as the macro
+    /// frame builder ([`Self::matching_sweep_end_times_by_number`] /
+    /// [`Self::all_sweep_end_times`]), so a frame here means the same thing it
+    /// does for stepping.
+    ///
+    /// Returns `None` when no frames exist at/<= `now`. With fewer than `n`
+    /// frames, spans all available. A single frame yields a zero-width span
+    /// (`start == end`); callers must reject that before using it as loop
+    /// bounds (looping divides by the span width).
+    pub fn lookback_window(
+        &self,
+        elevation_selection: &crate::state::ElevationSelection,
+        now: f64,
+        n: usize,
+    ) -> Option<(f64, f64)> {
+        let frames = match elevation_selection {
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            } => self.matching_sweep_end_times_by_number(*elevation_number, None),
+            crate::state::ElevationSelection::Latest => self.all_sweep_end_times(None),
+        };
+        // `frames` is sorted ascending; keep those at/<= now (small slack so a
+        // just-completed frame whose end_time rounds a hair past `now` counts).
+        let cutoff = now + 0.5;
+        let usable: Vec<f64> = frames.into_iter().filter(|&t| t <= cutoff).collect();
+        if usable.is_empty() {
+            return None;
+        }
+        let start_idx = usable.len().saturating_sub(n.max(1));
+        Some((usable[start_idx], *usable.last().unwrap()))
+    }
+
     /// Find the end time of the next sweep matching `elevation_number` after `ts`.
     pub fn next_matching_sweep_end_by_number(&self, ts: f64, elevation_number: u8) -> Option<f64> {
         for scan in &self.scans {
@@ -603,6 +637,87 @@ mod tests {
             radials: Vec::new(),
             cached_products: Vec::new(),
         }
+    }
+
+    // --- lookback_window tests ---
+
+    use crate::state::ElevationSelection;
+
+    fn fixed(elev_num: u8) -> ElevationSelection {
+        ElevationSelection::Fixed {
+            elevation_number: elev_num,
+            angle: 0.5,
+        }
+    }
+
+    /// Timeline of `count` scans, each with a single elevation-1 sweep ending
+    /// at 100, 200, 300, ... so frames are easy to reason about.
+    fn elev1_timeline(count: usize) -> RadarTimeline {
+        let scans = (1..=count)
+            .map(|i| {
+                let end = (i as f64) * 100.0;
+                scan_with_sweeps(end - 50.0, end, vec![sweep(end - 50.0, end, 0.5, 1)])
+            })
+            .collect();
+        RadarTimeline { scans }
+    }
+
+    #[wasm_bindgen_test]
+    fn lookback_window_takes_last_n_before_now() {
+        let tl = elev1_timeline(10); // frames at 100..1000
+        let w = tl.lookback_window(&fixed(1), 1000.0, 5).unwrap();
+        assert_eq!(w, (600.0, 1000.0)); // last 5: 600,700,800,900,1000
+    }
+
+    #[wasm_bindgen_test]
+    fn lookback_window_excludes_future_frames() {
+        let tl = elev1_timeline(10); // frames at 100..1000
+                                     // now=550 → only frames <= 550 (100..500) are usable; last 3 = 300..500
+        let w = tl.lookback_window(&fixed(1), 550.0, 3).unwrap();
+        assert_eq!(w, (300.0, 500.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn lookback_window_spans_all_when_fewer_than_n() {
+        let tl = elev1_timeline(3); // frames at 100,200,300
+        let w = tl.lookback_window(&fixed(1), 10_000.0, 5).unwrap();
+        assert_eq!(w, (100.0, 300.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn lookback_window_single_frame_is_zero_width() {
+        let tl = elev1_timeline(1); // single frame at 100
+        let w = tl.lookback_window(&fixed(1), 10_000.0, 5).unwrap();
+        assert_eq!(w, (100.0, 100.0)); // caller must reject zero width
+    }
+
+    #[wasm_bindgen_test]
+    fn lookback_window_none_when_no_frames_before_now() {
+        let tl = elev1_timeline(3); // earliest frame at 100
+        assert!(tl.lookback_window(&fixed(1), 10.0, 5).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn lookback_window_latest_uses_all_elevations() {
+        // Two elevations per scan; Latest counts every sweep as a frame.
+        let scans = vec![
+            scan_with_sweeps(
+                50.0,
+                100.0,
+                vec![sweep(50.0, 80.0, 0.5, 1), sweep(80.0, 100.0, 1.5, 2)],
+            ),
+            scan_with_sweeps(
+                150.0,
+                200.0,
+                vec![sweep(150.0, 180.0, 0.5, 1), sweep(180.0, 200.0, 1.5, 2)],
+            ),
+        ];
+        let tl = RadarTimeline { scans };
+        // 4 frames: 80,100,180,200 → last 3 = 100..200
+        let w = tl
+            .lookback_window(&ElevationSelection::Latest, 10_000.0, 3)
+            .unwrap();
+        assert_eq!(w, (100.0, 200.0));
     }
 
     // --- TimeRange tests ---

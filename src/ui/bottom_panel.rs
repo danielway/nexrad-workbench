@@ -2,7 +2,7 @@
 
 use super::acquisition_drawer::render_acquisition_drawer;
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::state::{AppState, LiveExitReason, PlaybackMode, PlaybackSpeed};
+use crate::state::{AppState, PlaybackMode, PlaybackSpeed};
 use crate::subsystem::Acquisition;
 use eframe::egui;
 
@@ -51,34 +51,13 @@ fn draw_bottom_panel(
 ) {
     let dt = ctx.input(|i| i.stable_dt);
 
-    // Handle spacebar to toggle playback (only when no text input is focused)
+    // Handle spacebar to toggle playback (only when no text input is focused).
+    // Decoupled from live: in live this toggles the lookback replay; going live
+    // is handled by the now-line cap / Ctrl+L, not the spacebar.
     let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space) && !i.modifiers.any());
     let has_focus = ctx.memory(|m| m.focused().is_some());
     if space_pressed && !has_focus {
-        if playback.state.playing {
-            // Pause. If live, exit and freeze the current frame (drop to
-            // Archive): disabling the realtime lock + playing=false leaves the
-            // cursor parked at the last wall-clock frame.
-            if live.mode_state.is_active() {
-                live.mode_state.stop(LiveExitReason::UserPaused);
-                playback.state.time_model.disable_realtime_lock();
-                state.status_message = live
-                    .mode_state
-                    .last_exit_reason
-                    .map(|r| r.message().to_string())
-                    .unwrap_or_default();
-            }
-            playback.state.playing = false;
-        } else if !live.mode_state.is_active() && playback.state.is_at_live_edge() {
-            // Parked at the live edge — go live rather than replay archive.
-            // Not gated by is_playback_allowed(); start_live_mode enforces its
-            // own minimum zoom.
-            state.push_command(crate::state::AppCommand::StartLive);
-            playback.state.speed = PlaybackSpeed::Realtime;
-        } else if playback.state.is_playback_allowed() {
-            // Only allow ordinary playback if zoom permits.
-            playback.state.playing = true;
-        }
+        super::transport::toggle_play_pause(state, timeline, live, playback);
     }
 
     // Advance playback position when playing
@@ -106,22 +85,9 @@ fn draw_bottom_panel(
             PlaybackMode::Macro => playback.state.advance_macro(dt as f64),
         }
 
-        // In real-time streaming mode, keep the playhead on-screen. Pan/zoom is
-        // otherwise free; this only fires when "now" would fall outside the
-        // visible range, scrolling the view minimally to put it at the edge.
-        if live.mode_state.is_active() {
-            let view_width = playback.state.view_width_secs();
-            if view_width > 0.0 {
-                let now = playback.state.playback_position();
-                let view_start = playback.state.timeline_view_start;
-                let view_end = view_start + view_width;
-                if now > view_end {
-                    playback.state.timeline_view_start = now - view_width;
-                } else if now < view_start {
-                    playback.state.timeline_view_start = now;
-                }
-            }
-        }
+        // Keeping the live edge on-screen now lives in `tick_live`
+        // (App::keep_now_on_screen), so it runs in LIVE-NOW too — not just
+        // while `playing`.
 
         // Repaint at 30 FPS while playing — smooth for continuous micro-mode
         // advances and well above the 1–15 FPS frame cadence macro mode emits.
