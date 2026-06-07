@@ -72,6 +72,8 @@ pub struct ObservedSweepInputs {
     pub received: Vec<bool>,
     pub vcp_number: u16,
     pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
+    /// Expected-vs-received elevation roster (exposed on the `ScanProjection`).
+    pub roster: crate::state::VolumeElevationRoster,
     pub expected_dur_secs: f64,
     pub completed_sweep_metas: Vec<crate::data::CachedSweep>,
     pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
@@ -324,6 +326,8 @@ impl ProjectionEngine {
             let live_scan = super::assemble_live_scan(
                 &sweeps,
                 obs.vcp_number,
+                obs.vcp_pattern.clone(),
+                obs.roster.clone(),
                 current_scan_start,
                 volume_end,
                 None,

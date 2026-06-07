@@ -365,6 +365,8 @@ mod tests {
     fn live_model(sweeps: Vec<SweepProjection>) -> ScanProjection {
         ScanProjection {
             vcp_number: 212,
+            vcp_pattern: None,
+            roster: crate::state::VolumeElevationRoster::default(),
             volume_start: 1_700_000_000.0,
             volume_end: 1_700_000_300.0,
             complete: false,

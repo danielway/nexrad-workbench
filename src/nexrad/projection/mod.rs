@@ -197,13 +197,18 @@ impl SweepProjection {
     }
 }
 
-/// A whole scan's per-sweep projection — the `VcpPositionModel` replacement.
-/// Carries the current scan's sweeps plus the next-scan ghost and the live
-/// extrapolation state, with the per-frame query methods consumers call.
+/// A whole scan's per-sweep projection — the unified live + archive display
+/// container. Carries the current scan's sweeps plus the next-scan ghost, the
+/// live extrapolation state, and the VCP pattern + elevation roster the panels
+/// read, with the per-frame query methods consumers call.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // Consumed as surfaces migrate (Step 6).
+#[allow(dead_code)] // `vcp_pattern`/`roster` are read by consumers in a later step.
 pub struct ScanProjection {
     pub vcp_number: u16,
+    /// Full VCP pattern for elevation-angle lookups (display); `None` pre-VCP.
+    pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
+    /// Expected-vs-received elevation roster for the in-progress volume.
+    pub roster: crate::state::VolumeElevationRoster,
     pub volume_start: f64,
     pub volume_end: f64,
     pub complete: bool,
@@ -287,6 +292,8 @@ impl ScanProjection {
 pub fn assemble_live_scan(
     sweeps: &[SweepProjection],
     vcp_number: u16,
+    vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
+    roster: crate::state::VolumeElevationRoster,
     volume_start: f64,
     volume_end: f64,
     scan_key: Option<String>,
@@ -314,6 +321,8 @@ pub fn assemble_live_scan(
             .fold(f64::MIN, f64::max);
         Some(Box::new(ScanProjection {
             vcp_number,
+            vcp_pattern: vcp_pattern.clone(),
+            roster: crate::state::VolumeElevationRoster::default(),
             volume_start: gs,
             volume_end: ge,
             complete: false,
@@ -325,6 +334,8 @@ pub fn assemble_live_scan(
     };
     ScanProjection {
         vcp_number,
+        vcp_pattern,
+        roster,
         volume_start,
         volume_end,
         complete: false,

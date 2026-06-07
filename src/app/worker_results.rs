@@ -331,6 +331,7 @@ impl WorkbenchApp {
                     received,
                     vcp_number: live.current_vcp_number.unwrap_or(0),
                     vcp_pattern: live.current_vcp_pattern.clone(),
+                    roster,
                     expected_dur_secs: live.last_volume_duration_secs().unwrap_or(300.0),
                     completed_sweep_metas: live.completed_sweep_metas.clone(),
                     chunk_elev_spans: live.chunk_elev_spans.clone(),
