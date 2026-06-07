@@ -237,12 +237,17 @@ impl WorkbenchApp {
         let sequence = chunk_vol_index as usize;
         let (chunk_in_sweep_str, remaining_str) = self
             .live
-            .mode_state
-            .chunk_position_in_sweep(sequence)
-            .map(|(idx, total)| {
-                let in_sweep = format!("{}/{}", idx + 1, total);
-                let remaining_in_sweep = total.saturating_sub(idx + 1);
-                (in_sweep, format!("{}", remaining_in_sweep))
+            .frame_projection
+            .as_ref()
+            .and_then(|p| {
+                p.current_volume_chunks()
+                    .iter()
+                    .find(|c| c.sequence == sequence)
+            })
+            .map(|c| {
+                let in_sweep = format!("{}/{}", c.chunk_index_in_sweep + 1, c.chunks_in_sweep);
+                let remaining = c.chunks_in_sweep.saturating_sub(c.chunk_index_in_sweep + 1);
+                (in_sweep, format!("{}", remaining))
             })
             .unwrap_or_else(|| ("?/?".to_string(), "?".to_string()));
 
@@ -319,6 +324,7 @@ impl WorkbenchApp {
             // Feed the current-scan bounds cascade inputs (roster, completed
             // metas, in-progress chunk spans, VCP pattern, fallback durations)
             // — what the legacy `from_live` read off `LiveModeState`.
+            let plan_available = self.live.frame_projection.is_some();
             let observed = {
                 let live = &self.live.mode_state;
                 let roster = live.elevation_roster();
@@ -337,7 +343,7 @@ impl WorkbenchApp {
                     chunk_elev_spans: live.chunk_elev_spans.clone(),
                     current_elev_chunks: live.current_elev_chunks.clone(),
                     in_progress_radials: live.current_in_progress_radials,
-                    fallback_sweep_durations: live.fallback_sweep_durations(),
+                    fallback_sweep_durations: live.fallback_sweep_durations(plan_available),
                 }
             };
             self.live.engine.borrow_mut().set_observed_inputs(observed);

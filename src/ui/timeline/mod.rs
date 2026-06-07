@@ -371,6 +371,7 @@ pub(super) fn render_timeline(
         &timeline.shadow_scan_boundaries,
         Some(&live.mode_state),
         live.radar_model.position.as_ref(),
+        live.frame_projection.as_ref(),
         elevation_filter,
         frame_now_secs,
     );

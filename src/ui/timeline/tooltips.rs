@@ -43,6 +43,10 @@ pub(super) fn render_timeline_tooltip(
     let in_active_volume = scan.is_none()
         && live_position.is_some_and(|p| hover_ts >= p.volume_start && hover_ts <= p.volume_end);
 
+    // Countdown for the realtime tooltip — computed here (we have `live`) and
+    // passed into the volume tooltip, which only carries `live_state`.
+    let countdown = live.countdown_remaining_secs(now_secs);
+
     // If in sweep track, search for a cached sweep across settled scans (not
     // just the scan containing hover_ts). This handles edge cases where a
     // sweep's time range extends before its parent scan's start_time. The
@@ -86,6 +90,7 @@ pub(super) fn render_timeline_tooltip(
                     ui,
                     position,
                     live_state,
+                    countdown,
                     hover_ts,
                     now_secs,
                     in_sweep_track,
@@ -212,6 +217,7 @@ fn render_realtime_volume_tooltip(
     ui: &mut egui::Ui,
     model: &crate::nexrad::projection::ScanProjection,
     live_state: &crate::state::LiveModeState,
+    countdown: Option<f64>,
     hover_ts: f64,
     now_secs: f64,
     in_sweep_track: bool,
@@ -343,7 +349,6 @@ fn render_realtime_volume_tooltip(
                     }
                 }
 
-                let countdown = live_state.countdown_remaining_secs(now);
                 if let Some(remaining) = countdown {
                     ui.label(format!("Next chunk in ~{}s", remaining.ceil() as i32));
                 }

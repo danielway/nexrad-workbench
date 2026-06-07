@@ -118,6 +118,7 @@ fn query_radar_state_at_timestamp<'a>(
         &timeline.shadow_scan_boundaries,
         Some(&live.mode_state),
         live.radar_model.position.as_ref(),
+        live.frame_projection.as_ref(),
         state.viz_state.elevation_selection.elevation_number(),
         now,
     );

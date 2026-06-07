@@ -5,19 +5,14 @@
 //!
 //! # Timing model invariants
 //!
-//! Two field categories survive on `LiveModeState`:
-//!
-//! - **ACTUAL** — parsed from radial/message headers
-//!   (`current_volume.confirmed`, `completed_sweep_metas`,
-//!   `last_radial_time_secs`, `chunk_elev_spans`). Drives the radar canvas,
-//!   the current-time indicator, and "Age" labels.
-//! - **PROJECTED** — folded into [`crate::nexrad::StreamingPlan`] (stored on
-//!   `plan: Option<StreamingPlan>`). The plan carries per-chunk COLLECTION /
-//!   AVAILABILITY / POLL times, the immediate `next_target`, and the
-//!   current-volume end markers. The streaming loop's sleep target, the
-//!   timeline countdown, the in-progress sweep rendering, the next-scan
-//!   ghost, and the VCP forecast panel all read from the same plan object
-//!   so they can't drift from each other.
+//! `LiveModeState` owns **ACTUAL** state parsed from radial/message headers
+//! (`current_volume.confirmed`, `completed_sweep_metas`,
+//! `last_radial_time_secs`, `chunk_elev_spans`) plus the streaming state
+//! machine. **PROJECTED** timing (the forward-looking [`crate::nexrad::StreamingPlan`])
+//! is produced and owned by the shared [`crate::nexrad::projection::ProjectionEngine`];
+//! the per-frame `Projection` is held on [`crate::subsystem::Live::frame_projection`]
+//! and read from there (countdown, next-target, chunk-in-sweep), never written
+//! back onto this struct.
 //!
 //! Live playhead (`TimeModel::playback_position` when `realtime_lock`
 //! is on) deliberately tracks wall clock rather than clamping to the
@@ -28,26 +23,14 @@
 //!
 //! # UI consumption convention
 //!
-//! Code outside this module and [`crate::state::live_radar_model`] must
-//! NOT reach into `self.plan.current_volume_chunks` (or other plan
-//! internals) directly. Use one of:
-//!
-//! - [`LiveModeState::countdown_remaining_secs`] for the "next chunk in Xs"
-//!   countdown.
-//! - [`LiveModeState::chunk_position_in_sweep`] for chunk-in-sweep lookups
-//!   keyed by sequence.
-//! - [`LiveModeState::derive_current_volume_forecast`] / the
-//!   [`crate::state::derive_volume_forecast`] free function for snapshot
-//!   derivations.
-//! - [`crate::state::live_radar_model::LiveRadarModel`] accessors for
-//!   anything frame-cached (the timeline ghost, VCP panel position, the
-//!   in-progress sweep). The model is rebuilt once per UI frame in
-//!   [`crate::state::AppState::refresh_live_model`] so multiple read sites
-//!   in the same frame see consistent data.
-//!
-//! Direct plan-field access from UI code defeats the frame-caching and
-//! also makes consumers brittle to projector changes — adding an
-//! accessor here keeps the substitution painless.
+//! UI code reads forward-looking timing from the frame `Projection`
+//! ([`crate::subsystem::Live::frame_projection`] /
+//! [`crate::subsystem::Live::countdown_remaining_secs`]) and frame-cached
+//! derivations from [`crate::state::live_radar_model::LiveRadarModel`] (the
+//! timeline ghost, VCP panel position, the in-progress sweep), rebuilt once
+//! per frame so read sites in the same frame stay consistent. Diagnostics
+//! snapshots come from [`LiveModeState::derive_current_volume_forecast`] / the
+//! [`crate::state::derive_volume_forecast`] free function.
 
 /// Live mode phase - current state in the streaming state machine.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
@@ -124,15 +107,6 @@ pub struct LiveModeState {
 
     /// Timestamp when the current phase started (Unix seconds)
     pub phase_started_at: Option<f64>,
-
-    /// Canonical forward-looking projection of the stream (next download
-    /// target, future-chunk timing, current-volume end markers, and the
-    /// optional next-volume ghost). Computed once per streaming-loop
-    /// iteration in [`crate::nexrad::StreamingState::build_plan`] and sent
-    /// over [`crate::nexrad::RealtimeResult::ChunkReceived`]. All UI surfaces
-    /// (timeline countdown, in-progress sweep, ghost next-scan, VCP panel)
-    /// read from this object so they can't drift from the loop's sleep target.
-    pub plan: Option<crate::nexrad::StreamingPlan>,
 
     /// Error message if in Error phase
     pub error_message: Option<String>,
@@ -250,7 +224,6 @@ impl Default for LiveModeState {
         Self {
             phase: LivePhase::Idle,
             phase_started_at: None,
-            plan: None,
             error_message: None,
             last_exit_reason: None,
             chunks_received: 0,
@@ -328,7 +301,6 @@ impl LiveModeState {
     pub fn stop(&mut self, reason: LiveExitReason) {
         self.phase = LivePhase::Idle;
         self.phase_started_at = None;
-        self.plan = None;
         self.last_exit_reason = Some(reason);
         self.elevations_received.clear();
         self.current_volume = None;
@@ -362,8 +334,8 @@ impl LiveModeState {
         self.phase_started_at = Some(now);
     }
 
-    /// Transition to WaitingForChunk phase. The countdown displayed
-    /// downstream is driven by `self.plan.next_target` if present.
+    /// Transition to WaitingForChunk phase. The countdown displayed downstream
+    /// is driven by the frame projection's next target if present.
     #[allow(dead_code)]
     pub fn wait_for_next_chunk(&mut self, now: f64) {
         self.phase = LivePhase::WaitingForChunk;
@@ -384,17 +356,6 @@ impl LiveModeState {
         self.phase_started_at
             .map(|start| now - start)
             .unwrap_or(0.0)
-    }
-
-    /// Get remaining countdown for WaitingForChunk phase.
-    pub fn countdown_remaining_secs(&self, now: f64) -> Option<f64> {
-        if self.phase == LivePhase::WaitingForChunk {
-            self.plan
-                .as_ref()
-                .and_then(|p| p.next_available_in_secs(now))
-        } else {
-            None
-        }
     }
 
     /// Update pulse animation state.
@@ -426,13 +387,7 @@ impl LiveModeState {
             LivePhase::Streaming => {
                 format!("LIVE ({} chunks)", self.chunks_received)
             }
-            LivePhase::WaitingForChunk => {
-                if let Some(remaining) = self.countdown_remaining_secs(now) {
-                    format!("Next chunk in {}s", remaining.ceil() as i32)
-                } else {
-                    "Waiting for chunk...".to_string()
-                }
-            }
+            LivePhase::WaitingForChunk => "Waiting for chunk...".to_string(),
             LivePhase::Error => self
                 .error_message
                 .clone()
@@ -449,50 +404,32 @@ impl LiveModeState {
         chunks_in_volume: u32,
         _is_volume_end: bool,
         now: f64,
-        plan: Option<crate::nexrad::StreamingPlan>,
+        plan: Option<&crate::nexrad::StreamingPlan>,
     ) {
         self.chunks_received = chunks_in_volume;
         // Phase is gated by whether the plan has a `next_target`: when it
         // does, we're waiting for a known future chunk (the timeline shows
         // a countdown derived from the same plan); when it doesn't, we're
         // mid-receipt and the UI shows "receiving…".
-        let has_target = plan.as_ref().and_then(|p| p.next_target()).is_some();
-        self.plan = plan;
+        let has_target = plan.and_then(|p| p.next_target()).is_some();
         if has_target {
             self.phase = LivePhase::WaitingForChunk;
         } else {
             self.phase = LivePhase::Streaming;
         }
         self.phase_started_at = Some(now);
-        self.try_capture_volume_start_plan();
     }
 
-    /// Refresh the rolling projection for display from the shared engine,
-    /// called once per frame while streaming. Unlike [`Self::handle_realtime_chunk`]
-    /// (which also advances phase/counters on a real arrival), this only
-    /// updates the plan the UI reads, so re-anchors / listing updates the
-    /// streaming loop fed between arrivals reach the timeline, countdown, ghost,
-    /// and VCP panel live. Still runs the idempotent volume-start capture in
-    /// case the fresher plan newly satisfies it.
-    pub fn adopt_live_projection(&mut self, plan: crate::nexrad::StreamingPlan) {
-        self.plan = Some(plan);
-        self.try_capture_volume_start_plan();
-    }
-
-    /// Snapshot the rolling plan as the volume's starting plan iff all
-    /// three preconditions have just become satisfied: the plan is
-    /// available, the VCP pattern is parsed, and the volume's start
-    /// timestamp is known. Called from every site that could newly
-    /// satisfy a precondition (chunk arrival, VCP arrival, volume-anchor
-    /// confirmation). Idempotent: once captured, never overwrites until
-    /// the next `handle_volume_complete` clears it.
-    fn try_capture_volume_start_plan(&mut self) {
+    /// Snapshot `plan` as the volume's starting plan iff all three
+    /// preconditions have just become satisfied: a plan exists (passed in from
+    /// the engine), the VCP pattern is parsed, and the volume's start timestamp
+    /// is known. Called once per frame from [`crate::subsystem::Live::refresh`]
+    /// with the engine's plan. Idempotent: once captured, never overwrites
+    /// until the next `handle_volume_complete` clears it.
+    pub fn try_capture_volume_start_plan(&mut self, plan: &crate::nexrad::StreamingPlan) {
         if self.volume_start_plan.is_some() {
             return;
         }
-        let Some(plan) = self.plan.as_ref() else {
-            return;
-        };
         let Some(vcp) = self.current_vcp_pattern.as_ref() else {
             return;
         };
@@ -573,7 +510,6 @@ impl LiveModeState {
         self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
         self.last_radial_time_secs = None;
-        self.plan = None;
     }
 
     /// Adopt or refresh the live volume anchor.
@@ -603,7 +539,6 @@ impl LiveModeState {
                     .expect("same_volume implies Some");
                 if anchor.confirmed.is_none() {
                     anchor.confirm(ConfirmedStart(c));
-                    self.try_capture_volume_start_plan();
                 }
             }
             return;
@@ -613,7 +548,6 @@ impl LiveModeState {
             anchor.confirm(ConfirmedStart(c));
         }
         self.current_volume = Some(anchor);
-        self.try_capture_volume_start_plan();
     }
 
     /// Record that new elevation cuts were received in the current volume.
@@ -673,7 +607,6 @@ impl LiveModeState {
         if !vcp.elevations.is_empty() {
             self.current_vcp_pattern = Some(vcp.clone());
         }
-        self.try_capture_volume_start_plan();
     }
 
     /// Append a chunk arrival diagnostic sample for the current volume.
@@ -712,21 +645,6 @@ impl LiveModeState {
         }
     }
 
-    /// Structural metadata for the chunk at the given 1-based sequence,
-    /// as `(chunk_index_in_sweep, chunks_in_sweep)`. Returns `None` when
-    /// the plan doesn't know about the sequence. The single accessor
-    /// callers outside this module should use instead of reaching into
-    /// `self.plan.current_volume_chunks` — see the module docstring's
-    /// note on UI consumption.
-    pub fn chunk_position_in_sweep(&self, sequence: usize) -> Option<(usize, usize)> {
-        self.plan
-            .as_ref()?
-            .current_volume_chunks
-            .iter()
-            .find(|c| c.sequence == sequence)
-            .map(|c| (c.chunk_index_in_sweep, c.chunks_in_sweep))
-    }
-
     /// Duration of the most recently completed volume scan, in seconds.
     /// Derived from the last completed volume's start/end. Falls back to
     /// the VCP's own `estimated_volume_duration()` before any volume has
@@ -745,14 +663,13 @@ impl LiveModeState {
     }
 
     /// Per-elevation sweep durations (seconds) computed from the current
-    /// VCP pattern's azimuth rates. Returned only when no library
-    /// projection (`plan`) is available — the library's physics model is
-    /// more accurate (includes inter-sweep gaps and the -0.67s
-    /// correction), so consumers should prefer plan-derived bounds when a
-    /// plan exists. Empty when no VCP / no elevations / a plan is
-    /// present.
-    pub fn fallback_sweep_durations(&self) -> Vec<f64> {
-        if self.plan.is_some() {
+    /// VCP pattern's azimuth rates. Returned only when no library projection
+    /// is available (`plan_available == false`) — the library's physics model
+    /// is more accurate (includes inter-sweep gaps and the -0.67s correction),
+    /// so consumers should prefer plan-derived bounds when a plan exists. Empty
+    /// when no VCP / no elevations / a plan is present.
+    pub fn fallback_sweep_durations(&self, plan_available: bool) -> Vec<f64> {
+        if plan_available {
             return Vec::new();
         }
         let Some(vcp) = self.current_vcp_pattern.as_ref() else {

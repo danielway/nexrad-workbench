@@ -13,7 +13,7 @@
 //! once at the top of the update loop so every UI consumer sees the
 //! same snapshot for that frame.
 
-use crate::nexrad::projection::{new_shared_engine, SharedProjectionEngine};
+use crate::nexrad::projection::{new_shared_engine, Projection, SharedProjectionEngine};
 use crate::nexrad::RealtimeChannel;
 use crate::state::{AppMode, LiveModeState, LiveRadarModel, PlaybackState, RadarTimeline};
 
@@ -51,6 +51,10 @@ pub struct Live {
     /// targets; UI consumers read this same instance. One source of truth for
     /// all forward-looking timing.
     pub engine: SharedProjectionEngine,
+    /// This frame's projection, cloned from the engine in [`Live::refresh`].
+    /// Consumers read the plan (countdown, next-target) and live-scan from here
+    /// instead of a copy written back onto `LiveModeState`.
+    pub frame_projection: Option<Projection>,
 }
 
 impl Live {
@@ -61,7 +65,20 @@ impl Live {
             radar_model: LiveRadarModel::default(),
             app_mode: AppMode::default(),
             engine: new_shared_engine(),
+            frame_projection: None,
         }
+    }
+
+    /// Seconds until the next chunk is expected to be available in S3 — drives
+    /// the "next in Xs" countdown. `Some` only while waiting for a chunk, read
+    /// from this frame's projection (no `LiveModeState.plan`).
+    pub fn countdown_remaining_secs(&self, now: f64) -> Option<f64> {
+        if self.mode_state.phase != crate::state::LivePhase::WaitingForChunk {
+            return None;
+        }
+        self.frame_projection
+            .as_ref()
+            .and_then(|p| p.next_available_in_secs(now))
     }
 
     /// Recompute the derived `radar_model` and `app_mode` for this
@@ -82,10 +99,17 @@ impl Live {
                 .set_archive_boundaries(inputs.archive_boundaries.to_vec());
             let proj = self.engine.borrow().last_projection().cloned();
             if let Some(ref p) = proj {
-                self.mode_state.adopt_live_projection(p.plan.clone());
+                // Idempotent diagnostics snapshot — captured here each frame from
+                // the engine's plan (the single producer) the moment VCP +
+                // volume-start are both known, so no plan is written back onto
+                // `LiveModeState`.
+                self.mode_state.try_capture_volume_start_plan(&p.plan);
             }
-            proj.and_then(|p| p.live_scan)
+            let live_scan = proj.as_ref().and_then(|p| p.live_scan.clone());
+            self.frame_projection = proj;
+            live_scan
         } else {
+            self.frame_projection = None;
             None
         };
         self.radar_model = self.mode_state.compute_model(now, live_scan);

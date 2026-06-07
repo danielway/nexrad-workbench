@@ -104,6 +104,7 @@ impl<'a> TimelineView<'a> {
         shadows: &'a [ScanBoundary],
         live_state: Option<&LiveModeState>,
         live_position: Option<&ScanProjection>,
+        live_plan: Option<&crate::nexrad::projection::Projection>,
         elevation_filter: Option<u8>,
         now_secs: f64,
     ) -> Self {
@@ -126,15 +127,17 @@ impl<'a> TimelineView<'a> {
                 received.sort_unstable();
 
                 let ctx = LiveOverlayContext {
-                    countdown_secs: ls.countdown_remaining_secs(now_secs),
+                    countdown_secs: if ls.phase == crate::state::LivePhase::WaitingForChunk {
+                        live_plan.and_then(|p| p.next_available_in_secs(now_secs))
+                    } else {
+                        None
+                    },
                     in_progress_radials: pos.in_progress_radials.unwrap_or(0),
                     elevations_received: received,
                     in_progress_elevation: pos.in_progress_elevation,
-                    next_target_in_next_volume: ls
-                        .plan
-                        .as_ref()
+                    next_target_in_next_volume: live_plan
                         .is_some_and(|p| p.next_target_in_next_volume()),
-                    next_target_elevation: ls.plan.as_ref().and_then(|p| p.next_target_elevation()),
+                    next_target_elevation: live_plan.and_then(|p| p.next_target_elevation()),
                 };
                 (Some(merged), Some(ctx), anchor_ms)
             }
@@ -467,7 +470,7 @@ mod tests {
             scans: vec![cached_scan(1_700_000_000.0, Vec::new())],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, None, 1_700_000_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None, None, None, 1_700_000_000.0);
 
         assert!(view.is_covered_by_cached(1_700_000_000));
         assert!(view.is_covered_by_cached(1_700_000_059));
@@ -483,7 +486,7 @@ mod tests {
             scans: vec![cached_scan(1_700_000_000.0, Vec::new())],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, None, 1_700_000_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None, None, None, 1_700_000_000.0);
         let n = view
             .settled_scans_in_range(1_699_999_000.0, 1_700_001_000.0)
             .count();
@@ -529,7 +532,7 @@ mod tests {
                 end: 1120,
             },
         ];
-        let view = TimelineView::build(&cache, &shadows, None, None, None, 1000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None, None, None, 1000.0);
 
         let pairs: Vec<_> = view.visual_scans_in_range(0.0, 5000.0).collect();
         assert_eq!(pairs.len(), 1);
@@ -566,7 +569,7 @@ mod tests {
             scans: vec![sparse, next],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, None, 1000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None, None, None, 1000.0);
 
         let pairs: Vec<_> = view.visual_scans_in_range(0.0, 5000.0).collect();
         assert_eq!(pairs.len(), 2);
@@ -587,7 +590,7 @@ mod tests {
             scans: vec![cached_scan(1_700_000_000.0, Vec::new())],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, None, 1_700_000_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None, None, None, 1_700_000_000.0);
 
         assert_eq!(
             view.completion_target(1_700_000_029),

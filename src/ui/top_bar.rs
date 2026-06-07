@@ -641,7 +641,7 @@ pub(super) fn render_mode_badge(
                 format!("({} chunks) receiving...", live.mode_state.chunks_received)
             }
             LivePhase::WaitingForChunk => {
-                if let Some(remaining) = live.mode_state.countdown_remaining_secs(now) {
+                if let Some(remaining) = live.countdown_remaining_secs(now) {
                     format!(
                         "({} chunks) next in {}s",
                         live.mode_state.chunks_received,

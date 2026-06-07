@@ -455,7 +455,7 @@ fn render_live_indicator(
                         .italics()
                         .color(ui_colors::SUCCESS),
                 );
-            } else if let Some(remaining) = live.mode_state.countdown_remaining_secs(now) {
+            } else if let Some(remaining) = live.countdown_remaining_secs(now) {
                 ui.label(
                     RichText::new(format!("next in {}s", remaining.ceil() as i32))
                         .size(10.0)

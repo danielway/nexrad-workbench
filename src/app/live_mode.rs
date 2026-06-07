@@ -284,7 +284,7 @@ impl WorkbenchApp {
                     chunks_in_volume,
                     is_volume_end,
                     now,
-                    plan,
+                    plan.as_ref(),
                 );
 
                 if let Some(stat) = arrival_stat {
