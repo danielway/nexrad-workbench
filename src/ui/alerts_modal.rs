@@ -13,7 +13,7 @@
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::modal_helper::modal_backdrop;
-use crate::alerts::{Alert, AlertSeverity};
+use crate::alerts::{event_color, Alert};
 use crate::state::{AppCommand, AppState};
 use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
 
@@ -52,24 +52,22 @@ fn render_list_modal(
 
     // Collect the filtered list now, then release the borrow of diagnostics.alerts
     // before we render (so we can push commands freely inside the closure).
-    let visible: Vec<(String, String, String, AlertSeverity, Option<f64>)> =
-        match derived.visible_bounds {
-            Some(bounds) => diagnostics
-                .alerts
-                .visible_in(bounds)
-                .into_iter()
-                .map(|a| {
-                    (
-                        a.id.clone(),
-                        a.event.clone(),
-                        a.area_desc.clone(),
-                        a.severity,
-                        a.expires_secs,
-                    )
-                })
-                .collect(),
-            None => Vec::new(),
-        };
+    let visible: Vec<(String, String, String, Option<f64>)> = match derived.visible_bounds {
+        Some(bounds) => diagnostics
+            .alerts
+            .visible_in(bounds)
+            .into_iter()
+            .map(|a| {
+                (
+                    a.id.clone(),
+                    a.event.clone(),
+                    a.area_desc.clone(),
+                    a.expires_secs,
+                )
+            })
+            .collect(),
+        None => Vec::new(),
+    };
 
     let mut selected_id: Option<String> = None;
     let mut close = false;
@@ -121,9 +119,9 @@ fn render_list_modal(
             }
 
             ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
-                for (id, event, area_desc, severity, expires) in &visible {
+                for (id, event, area_desc, expires) in &visible {
                     ui.add_space(2.0);
-                    let bg_stroke = severity_stroke(*severity);
+                    let bg_stroke = event_stroke(event);
                     let frame = egui::Frame::default()
                         .stroke(bg_stroke)
                         .inner_margin(egui::Margin::symmetric(10, 8))
@@ -131,7 +129,7 @@ fn render_list_modal(
                     let response = frame
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                severity_dot(ui, *severity);
+                                event_dot(ui, event);
                                 ui.vertical(|ui| {
                                     ui.label(RichText::new(event).size(14.0).strong());
                                     if !area_desc.is_empty() {
@@ -214,7 +212,7 @@ fn render_detail_modal(
 
             // Severity / urgency / certainty badges.
             ui.horizontal_wrapped(|ui| {
-                severity_badge(ui, alert.severity);
+                severity_badge(ui, &alert);
                 if !alert.urgency.is_empty() {
                     chip_badge(
                         ui,
@@ -339,17 +337,19 @@ fn focus_on_alert(state: &mut AppState, alert: &Alert) {
     }
 }
 
-fn severity_dot(ui: &mut egui::Ui, severity: AlertSeverity) {
-    let (r, g, b) = severity.color();
+fn event_dot(ui: &mut egui::Ui, event: &str) {
+    let (r, g, b) = event_color(event);
     let color = Color32::from_rgb(r, g, b);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 10.0), egui::Sense::hover());
     ui.painter().circle_filled(rect.center(), 5.0, color);
 }
 
-fn severity_badge(ui: &mut egui::Ui, severity: AlertSeverity) {
-    let (r, g, b) = severity.color();
+/// Severity-label chip, tinted by the alert's event-type color so it matches the
+/// map overlay and list dots.
+fn severity_badge(ui: &mut egui::Ui, alert: &Alert) {
+    let (r, g, b) = alert.color();
     let color = Color32::from_rgb(r, g, b);
-    chip_badge(ui, severity.label(), color);
+    chip_badge(ui, alert.severity.label(), color);
 }
 
 fn chip_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
@@ -363,8 +363,8 @@ fn chip_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
         });
 }
 
-fn severity_stroke(severity: AlertSeverity) -> egui::Stroke {
-    let (r, g, b) = severity.color();
+fn event_stroke(event: &str) -> egui::Stroke {
+    let (r, g, b) = event_color(event);
     egui::Stroke::new(1.0, Color32::from_rgb(r, g, b))
 }
 

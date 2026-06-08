@@ -16,4 +16,4 @@ mod types;
 
 pub use geometry::{bbox_intersects, contains_point};
 pub use manager::AlertsManager;
-pub use types::{Alert, AlertSeverity};
+pub use types::{event_color, Alert, AlertSeverity};

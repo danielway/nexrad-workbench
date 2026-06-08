@@ -45,16 +45,71 @@ impl AlertSeverity {
             Self::Unknown => 0,
         }
     }
+}
 
-    /// RGB color for this severity (used in top bar, modal, and canvas overlay).
-    pub fn color(self) -> (u8, u8, u8) {
-        match self {
-            Self::Extreme => (220, 40, 40),
-            Self::Severe => (240, 130, 30),
-            Self::Moderate => (230, 200, 50),
-            Self::Minor | Self::Unknown => (120, 180, 230),
-        }
-    }
+/// RGB color for an alert chosen by **event type** (hazard family) rather than
+/// CAP severity. Used in the top bar, modal, and canvas overlay.
+///
+/// Hue encodes the hazard — red for tornadoes, yellow for thunderstorms, green
+/// for floods, tan for special weather statements, and so on. Brightness
+/// encodes the product class: warnings render at full intensity, watches dimmer,
+/// and advisories/statements dimmer still, so the most urgent products read
+/// brightest. Unmapped events fall back to a neutral blue-gray.
+pub fn event_color(event: &str) -> (u8, u8, u8) {
+    let e = event.to_ascii_lowercase();
+
+    // Base hue by hazard family.
+    let base = if e.contains("tornado") {
+        (255, 50, 50) // red
+    } else if e.contains("thunderstorm") {
+        (240, 220, 40) // yellow
+    } else if e.contains("flood") {
+        (60, 200, 90) // green
+    } else if e.contains("special weather statement") {
+        (210, 180, 120) // tan
+    } else if e.contains("snow")
+        || e.contains("winter")
+        || e.contains("blizzard")
+        || e.contains("ice")
+        || e.contains("freez")
+        || e.contains("frost")
+        || e.contains("sleet")
+    {
+        (120, 160, 240) // icy blue
+    } else if e.contains("fire") || e.contains("red flag") || e.contains("smoke") {
+        (255, 120, 40) // orange
+    } else if e.contains("heat") {
+        (240, 100, 140) // magenta
+    } else if e.contains("wind") || e.contains("dust") {
+        (200, 170, 110) // dusty gold
+    } else if e.contains("marine")
+        || e.contains("surf")
+        || e.contains("rip current")
+        || e.contains("coastal")
+        || e.contains("tsunami")
+        || e.contains("seiche")
+    {
+        (80, 200, 210) // teal
+    } else if e.contains("fog") {
+        (160, 160, 170) // gray
+    } else {
+        (150, 170, 200) // neutral default
+    };
+
+    // Dim watches/advisories/statements relative to warnings.
+    let scale = if e.contains("warning") {
+        1.0
+    } else if e.contains("watch") {
+        0.78
+    } else {
+        0.62 // advisory, statement, other
+    };
+
+    (
+        (base.0 as f32 * scale) as u8,
+        (base.1 as f32 * scale) as u8,
+        (base.2 as f32 * scale) as u8,
+    )
 }
 
 /// A polygon ring is a closed sequence of (lon, lat) vertices.
@@ -148,6 +203,11 @@ pub struct Alert {
 }
 
 impl Alert {
+    /// RGB color for this alert, chosen by event type. See [`event_color`].
+    pub fn color(&self) -> (u8, u8, u8) {
+        event_color(&self.event)
+    }
+
     /// True when the alert has an end timestamp in the past.
     pub fn is_expired(&self, now_secs: f64) -> bool {
         let end = self.ends_secs.or(self.expires_secs);

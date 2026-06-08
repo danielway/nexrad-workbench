@@ -1,7 +1,7 @@
 //! NWS alerts canvas overlay.
 //!
 //! Draws the polygon footprints of every alert whose bounding box intersects
-//! the currently visible area as a severity-colored outline.
+//! the currently visible area as an event-type-colored outline.
 //!
 //! Only runs in 2D flat mode.
 
@@ -27,7 +27,7 @@ pub(crate) fn render_alerts(painter: &Painter, projection: &MapProjection, alert
     let halo_stroke = Stroke::new(4.5, Color32::BLACK);
 
     for alert in ordered {
-        let (r, g, b) = alert.severity.color();
+        let (r, g, b) = alert.color();
         let stroke_color = Color32::from_rgba_unmultiplied(r, g, b, 220);
         let stroke = Stroke::new(2.5, stroke_color);
 

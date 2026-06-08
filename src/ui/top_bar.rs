@@ -1,7 +1,7 @@
 //! Top bar UI: app title, status, and site context.
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::alerts::AlertSeverity;
+use crate::alerts::{event_color, AlertSeverity};
 use crate::state::{AppCommand, AppMode, AppState, CameraMode, ErrorContext, ViewMode};
 use eframe::egui::{self, Color32, Frame, RichText};
 
@@ -429,10 +429,9 @@ pub(super) fn render_alerts_chip(
         return;
     }
 
-    // Use the highest-severity alert for the chip color (list is already
-    // sorted by severity descending by `visible_in`).
-    let top_severity = visible[0].2;
-    let (r, g, b) = top_severity.color();
+    // Color the chip after the highest-severity alert's event type (the list is
+    // already sorted by severity descending by `visible_in`).
+    let (r, g, b) = event_color(&visible[0].1);
     let chip_color = Color32::from_rgb(r, g, b);
 
     let label = if visible.len() == 1 {
