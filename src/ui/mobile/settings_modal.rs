@@ -239,7 +239,7 @@ fn render_playback_body(
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         ui.label(RichText::new("Speed:").size(13.0));
-        let mode = playback.state.playback_mode();
+        let mode = playback.state.effective_playback_mode();
         let common: &[PlaybackSpeed] = &[
             PlaybackSpeed::Half,
             PlaybackSpeed::Normal,

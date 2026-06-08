@@ -32,6 +32,9 @@ pub struct Acquisition {
     pub coordinator: AcquisitionCoordinator,
     /// Debounce/idempotency state for reactive (implicit) prefetch.
     pub prefetch_settle: PrefetchSettle,
+    /// Wall-clock ms before which the lookback backfill pump should not
+    /// recompute (a light 1 Hz throttle; the enqueue is idempotent anyway).
+    pub lookback_backfill_next_ms: f64,
 }
 
 impl Acquisition {
@@ -45,6 +48,7 @@ impl Acquisition {
             state: AcquisitionState::default(),
             coordinator: AcquisitionCoordinator::new(data_facade),
             prefetch_settle: PrefetchSettle::default(),
+            lookback_backfill_next_ms: 0.0,
         }
     }
 }

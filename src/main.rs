@@ -59,6 +59,14 @@ const PREFETCH_PLAY_LEAD_SECS: f64 = 4.0;
 /// bound for a single volume scan.
 const FALLBACK_SCAN_DURATION_SECS: i64 = 300;
 
+/// Number of recent matching frames the live "lookback" replay covers.
+const LOOKBACK_FRAMES: usize = 5;
+
+/// Time span (seconds) the lookback covers — sized to roughly `LOOKBACK_FRAMES`
+/// volumes with a volume of slack. Used both as the `tick_live` bounds fallback
+/// (before any frame is cached) and as the backward backfill window.
+const LOOKBACK_SPAN_SECS: f64 = (LOOKBACK_FRAMES as f64 + 1.0) * FALLBACK_SCAN_DURATION_SECS as f64;
+
 /// Maximum time difference (in seconds) between a cached scan's start_time
 /// and an archive file's timestamp for them to be considered the same scan.
 /// 60 s allows for minor clock drift and timestamp rounding.
@@ -694,6 +702,10 @@ impl eframe::App for WorkbenchApp {
         // fetch. Enqueues into the shared download queue; the next frame's
         // pump_download_queue (step 4) dispatches it.
         self.pump_implicit_prefetch(ctx);
+        // The live counterpart: while replaying a lookback, backfill the recent
+        // archive volumes the loop needs (pump_implicit_prefetch is off during
+        // live and only looks forward).
+        self.pump_lookback_backfill(ctx);
         self.sync_prev_sweep_texture();
         self.request_render_if_needed();
         self.update_network_stats();

@@ -308,8 +308,9 @@ pub(super) fn render_playback_controls(
     ui.separator();
 
     // Speed selector (mode-aware: macro shows fps labels, micro shows timeline speed).
-    // Disabled in Idle alongside the rest of the transport controls.
-    let mode = playback.state.playback_mode();
+    // Disabled in Idle alongside the rest of the transport controls. Uses the
+    // effective mode so a lookback replay shows fps options for its frame rate.
+    let mode = playback.state.effective_playback_mode();
     let selected_label = match mode {
         PlaybackMode::Macro => playback.state.speed.macro_label(),
         PlaybackMode::Micro => playback.state.speed.label(),

@@ -69,20 +69,25 @@ impl WorkbenchApp {
             // LIVE-NOW: pin to wall-clock now.
             self.playback.state.time_model.snap_to_now();
         } else if self.playback.state.lookback_active {
-            // LIVE-LOOKBACK: keep the loop window's end on the latest frame.
-            const LOOKBACK_FRAMES: usize = 5;
-            if let Some((start, end)) = self.timeline.scans.lookback_window(
-                &self.state.viz_state.elevation_selection,
-                now,
-                LOOKBACK_FRAMES,
-            ) {
-                if end - start > 1.0 {
-                    self.playback
-                        .state
-                        .time_model
-                        .set_bounds_preserving(start, end);
-                }
-            }
+            // LIVE-LOOKBACK: own the frame window. Prefer the exact last-N-frame
+            // span; before any matching frame is cached, fall back to a time
+            // window of ~N volumes so `render_loop` builds `sweep_frames` from
+            // recent data — not all history. `render_loop` turns these bounds
+            // into the macro frame list; the backfill pump fills the window in,
+            // and this widens to the precise span as frames land.
+            let (start, end) = self
+                .timeline
+                .scans
+                .lookback_window(
+                    &self.state.viz_state.elevation_selection,
+                    now,
+                    crate::LOOKBACK_FRAMES,
+                )
+                .unwrap_or((now - crate::LOOKBACK_SPAN_SECS, now));
+            self.playback
+                .state
+                .time_model
+                .set_bounds_preserving(start, end);
         }
 
         self.keep_now_on_screen(now);

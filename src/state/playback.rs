@@ -456,15 +456,18 @@ impl PlaybackState {
         self.time_model.seek_to(position);
     }
 
-    /// Enter lookback: loop the recent `[start, end]` window oldest→newest.
-    /// The caller must disable the realtime lock first (`advance` no-ops under
-    /// the lock). Plays from the oldest frame so the first pass runs forward.
-    pub fn start_lookback(&mut self, start: f64, end: f64) {
-        self.time_model.set_bounds_from_selection(start, end);
+    /// Enter lookback: discretely step + loop the recent matching frames. The
+    /// caller must disable the realtime lock first. The frame window
+    /// (`playback_bounds`) is owned by `tick_live`, which `render_loop` turns
+    /// into the macro `sweep_frames` list that `advance_macro` steps over —
+    /// lookback is just macro frame-stepping forced on regardless of zoom (see
+    /// [`Self::effective_playback_mode`]).
+    pub fn start_lookback(&mut self) {
         self.time_model.loop_mode = LoopMode::Loop;
-        self.time_model.playback_position = start;
         self.lookback_active = true;
         self.playing = true;
+        self.macro_playback.current_frame_index = 0;
+        self.macro_playback.frame_accumulator = 0.0;
     }
 
     /// Exit lookback: drop the window bounds + marker. Leaves `playing` to the
@@ -502,6 +505,18 @@ impl PlaybackState {
             PlaybackMode::Macro
         } else {
             PlaybackMode::Micro
+        }
+    }
+
+    /// Playback mode for advance dispatch + speed UI. Lookback always
+    /// frame-steps (Macro) regardless of zoom so it snaps between the recent
+    /// sweeps as frames; otherwise this is the zoom-derived
+    /// [`Self::playback_mode`].
+    pub fn effective_playback_mode(&self) -> PlaybackMode {
+        if self.lookback_active {
+            PlaybackMode::Macro
+        } else {
+            self.playback_mode()
         }
     }
 
@@ -697,20 +712,33 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     #[wasm_bindgen_test]
-    fn start_lookback_sets_loop_bounds_and_plays_from_oldest() {
+    fn start_lookback_sets_loop_marker_and_resets_macro_cursor() {
         let mut ps = PlaybackState::default();
-        ps.start_lookback(100.0, 160.0);
-        assert_eq!(ps.time_model.playback_bounds, Some((100.0, 160.0)));
+        // Pretend a prior macro session left a non-zero cursor.
+        ps.macro_playback.current_frame_index = 7;
+        ps.macro_playback.frame_accumulator = 0.4;
+        ps.start_lookback();
         assert!(ps.time_model.loop_mode == LoopMode::Loop);
-        assert_eq!(ps.time_model.playback_position, 100.0); // oldest frame
         assert!(ps.lookback_active);
         assert!(ps.playing);
+        assert_eq!(ps.macro_playback.current_frame_index, 0);
+        assert_eq!(ps.macro_playback.frame_accumulator, 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn effective_mode_is_macro_iff_lookback_active() {
+        let mut ps = PlaybackState::default();
+        ps.timeline_zoom = 2.0; // micro zoom (live)
+        assert!(ps.effective_playback_mode() == PlaybackMode::Micro);
+        ps.lookback_active = true;
+        assert!(ps.effective_playback_mode() == PlaybackMode::Macro);
     }
 
     #[wasm_bindgen_test]
     fn clear_lookback_clears_bounds_and_flag_but_not_playing() {
         let mut ps = PlaybackState::default();
-        ps.start_lookback(100.0, 160.0);
+        ps.time_model.set_bounds_from_selection(100.0, 160.0);
+        ps.start_lookback();
         ps.clear_lookback();
         assert_eq!(ps.time_model.playback_bounds, None);
         assert!(!ps.lookback_active);
@@ -728,16 +756,25 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
-    fn advance_loops_within_lookback_bounds() {
-        let mut tm = TimeModel::at_position(100.0);
-        tm.set_bounds_from_selection(100.0, 150.0); // range 50
-        tm.loop_mode = LoopMode::Loop;
-        // Lock is OFF during lookback, so advance is deterministic (no clock).
-        assert!(!tm.locked_to_realtime);
-        // +60 timeline-secs from 100 → 160, overshoots end (150) by 10 → wraps
-        // to start + 10 = 110.
-        tm.advance(1.0, PlaybackSpeed::Quarter); // Quarter = 60 timeline-secs/real-sec
-        assert!((tm.playback_position - 110.0).abs() < 1e-6);
+    fn advance_macro_steps_and_loops_over_frames() {
+        // Lookback frame-steps via the macro stepper, looping over the
+        // sweep_frames list length (not time bounds).
+        let mut ps = PlaybackState::default();
+        ps.macro_playback.sweep_frames = vec![100.0, 200.0, 300.0];
+        ps.macro_playback.current_frame_index = 0;
+        ps.time_model.loop_mode = LoopMode::Loop;
+        ps.playing = true;
+        ps.speed = PlaybackSpeed::Normal; // 5 fps macro
+
+        // Step one frame: 1/5 s of real time advances exactly one frame.
+        ps.advance_macro(1.0 / 5.0);
+        assert_eq!(ps.macro_playback.current_frame_index, 1);
+        assert_eq!(ps.time_model.playback_position, 200.0);
+
+        // Two more frames overshoots the end and wraps back to index 0.
+        ps.advance_macro(2.0 / 5.0);
+        assert_eq!(ps.macro_playback.current_frame_index, 0);
+        assert_eq!(ps.time_model.playback_position, 100.0);
     }
 
     #[wasm_bindgen_test]

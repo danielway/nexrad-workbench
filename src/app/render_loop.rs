@@ -18,8 +18,10 @@ impl WorkbenchApp {
         // archive "acquiring" hint never applies) and the active-scan tracking
         // + prefetch-next-sweep path below stay archive-only.
         let live_active = self.live.mode_state.is_active();
-        // Rebuild macro frame list when dirty (elevation selection, bounds, or scan count changed)
-        if self.playback.state.playback_mode() == crate::state::PlaybackMode::Macro {
+        // Rebuild macro frame list when dirty (elevation selection, bounds, or
+        // scan count changed). Uses the *effective* mode so the list is also
+        // built during a lookback replay (which frame-steps regardless of zoom).
+        if self.playback.state.effective_playback_mode() == crate::state::PlaybackMode::Macro {
             let mp = &self.playback.state.macro_playback;
             let elev_sel = self.state.viz_state.elevation_selection.clone();
             let bounds = self.playback.state.time_model.playback_bounds;

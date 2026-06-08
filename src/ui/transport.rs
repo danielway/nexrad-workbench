@@ -9,15 +9,12 @@
 use crate::state::AppState;
 use crate::subsystem::{Live, Playback, Timeline};
 
-/// How many recent frames the live "lookback" replay covers.
-const LOOKBACK_FRAMES: usize = 5;
-
 /// Toggle play/pause according to the current mode:
 ///
 /// - **ARCHIVE** (not live): ordinary play/pause through the selection / from
 ///   the current position.
-/// - **LIVE-NOW** (live, locked to now): Play starts a lookback replay of the
-///   last [`LOOKBACK_FRAMES`] frames, looping.
+/// - **LIVE-NOW** (live, locked to now): Play starts a lookback replay that
+///   frame-steps the last [`crate::LOOKBACK_FRAMES`] matching sweeps, looping.
 /// - **LIVE-LOOKBACK** (replaying): Pause snaps back to "now" (re-locks). The
 ///   stream keeps running throughout — `mode_state` is never touched here.
 pub(crate) fn toggle_play_pause(
@@ -35,25 +32,23 @@ pub(crate) fn toggle_play_pause(
         return;
     }
 
-    // LIVE-NOW → LIVE-LOOKBACK: replay the last N frames, looping.
+    // LIVE-NOW → LIVE-LOOKBACK: frame-step the recent matching sweeps, looping.
+    // `tick_live` owns the frame window and the backfill pump fetches any
+    // missing recent volumes — so we enter unconditionally even when few/no
+    // frames are cached yet (the loop fills in as they land). Seed the playhead
+    // at the oldest cached frame so the first pass runs oldest→newest.
     if live.mode_state.is_active() {
+        playback.state.time_model.disable_realtime_lock();
         let now = crate::state::TimeModel::wall_clock_time();
         match timeline.scans.lookback_window(
             &state.viz_state.elevation_selection,
             now,
-            LOOKBACK_FRAMES,
+            crate::LOOKBACK_FRAMES,
         ) {
-            // Reject a zero-width window — looping divides by the span width.
-            Some((start, end)) if end - start > 1.0 => {
-                playback.state.time_model.disable_realtime_lock();
-                playback.state.start_lookback(start, end);
-            }
-            _ => {
-                // Not enough recent frames to replay yet (e.g. still acquiring
-                // the lock). Stay pinned to now.
-                state.status_message = "No recent frames to replay yet".to_string();
-            }
+            Some((oldest, _)) => playback.state.set_playback_position(oldest),
+            None => state.status_message = "Acquiring recent frames…".to_string(),
         }
+        playback.state.start_lookback();
         return;
     }
 

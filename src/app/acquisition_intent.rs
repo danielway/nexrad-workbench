@@ -155,13 +155,13 @@ impl WorkbenchApp {
         h.finish()
     }
 
-    /// Determine which archive scans should be cached for the settled view.
+    /// Determine which archive scans should be cached for the settled view
+    /// (the *forward* lookahead window around the playback cursor).
     ///
     /// Returns `(intents, listing_pending)`, where `listing_pending` is true
     /// when a needed date's listing had to be fetched first — the caller keeps
     /// re-evaluating until it arrives.
     fn compute_acquisition_intent(&self, ctx: &egui::Context) -> (Vec<ScanFetchIntent>, bool) {
-        let site_id = self.state.viz_state.site_id.clone();
         let pos = self.playback.state.playback_position();
 
         // Elevation scope: a Fixed cut scopes ingest to that elevation; Latest
@@ -184,15 +184,42 @@ impl WorkbenchApp {
 
         let pos_i64 = pos as i64;
         let win_end_i64 = (pos + lookahead) as i64;
-        // Look slightly back so the render target is included when the cursor
-        // sits in dead-time just past a scan (and to catch the prior date near
-        // a UTC midnight boundary).
-        let win_start_i64 = (pos - crate::FALLBACK_SCAN_DURATION_SECS as f64) as i64;
+        // Look slightly back so the listing for the prior date is fetched near a
+        // UTC midnight boundary; the render target is the `scan_at_or_before`
+        // anchor below.
+        let dates_start_i64 = (pos - crate::FALLBACK_SCAN_DURATION_SECS as f64) as i64;
 
+        self.compute_intents_for_window(
+            dates_start_i64,
+            pos_i64,
+            win_end_i64,
+            Some(pos_i64),
+            elevation_filter,
+            ctx,
+        )
+    }
+
+    /// Shared core: which archive scans intersect a window should be cached.
+    ///
+    /// `dates_start_i64..win_end_i64` bounds the *dates* whose listings we
+    /// consult; `intersect_start_i64..win_end_i64` bounds which scans within
+    /// those listings we want; `anchor_at_or_before` optionally adds the scan
+    /// covering that instant (the forward render target). Fetches any missing
+    /// listings, dedups, and drops already-cached/queued scans.
+    fn compute_intents_for_window(
+        &self,
+        dates_start_i64: i64,
+        intersect_start_i64: i64,
+        win_end_i64: i64,
+        anchor_at_or_before: Option<i64>,
+        elevation_filter: Option<u8>,
+        ctx: &egui::Context,
+    ) -> (Vec<ScanFetchIntent>, bool) {
+        let site_id = self.state.viz_state.site_id.clone();
         let mut intents: Vec<ScanFetchIntent> = Vec::new();
         let mut missing_dates: Vec<NaiveDate> = Vec::new();
 
-        for date in dates_spanning(win_start_i64, win_end_i64) {
+        for date in dates_spanning(dates_start_i64, win_end_i64) {
             match self
                 .acquisition
                 .coordinator
@@ -200,15 +227,15 @@ impl WorkbenchApp {
                 .get(&site_id, &date)
             {
                 Some(listing) => {
-                    // Current scan + lookahead scans, then the render target
-                    // when the cursor sits in dead-time / a gap (dedup'd below).
                     let mut found: Vec<(String, i64, i64)> = listing
-                        .scans_intersecting(pos_i64, win_end_i64)
+                        .scans_intersecting(intersect_start_i64, win_end_i64)
                         .into_iter()
                         .map(|(file, b)| (file.name.clone(), b.start, b.end))
                         .collect();
-                    if let Some((file, b)) = listing.scan_at_or_before(pos_i64) {
-                        found.push((file.name.clone(), b.start, b.end));
+                    if let Some(anchor) = anchor_at_or_before {
+                        if let Some((file, b)) = listing.scan_at_or_before(anchor) {
+                            found.push((file.name.clone(), b.start, b.end));
+                        }
                     }
                     for (file_name, scan_start, scan_end) in found {
                         intents.push(ScanFetchIntent {
@@ -242,13 +269,86 @@ impl WorkbenchApp {
             }
         }
 
-        // Collapse the duplicate render-target/covering scan, then drop scans
-        // already satisfied (cached for this elevation, or already queued).
+        // Collapse duplicate scans, then drop those already satisfied (cached
+        // for this elevation, or already queued).
         intents.sort_by_key(|i| i.scan_start);
         intents.dedup_by_key(|i| i.scan_start);
         intents.retain(|i| !self.prefetch_already_satisfied(i));
 
         (intents, listing_pending)
+    }
+
+    /// Backward backfill for the live lookback replay: while replaying, ensure
+    /// the last ~[`crate::LOOKBACK_FRAMES`] volumes (matching elevation) ending
+    /// at "now" are fetched from the archive, so the loop has frames. Lazy — it
+    /// runs only while `lookback_active` — and idempotent via the same dedup as
+    /// the forward pump. The live stream itself only fetches the in-progress
+    /// volume, so previous volumes must come from the archive.
+    pub(crate) fn pump_lookback_backfill(&mut self, ctx: &egui::Context) {
+        if !self.playback.state.lookback_active
+            || !self.render.coordinator.has_worker()
+            || self.acquisition.state.is_paused()
+            || self
+                .acquisition
+                .coordinator
+                .download_queue
+                .auto_fetch_cap_reached()
+        {
+            return;
+        }
+
+        // Light 1 Hz throttle — the enqueue is idempotent, this just avoids
+        // recomputing the window every frame for the whole replay.
+        let now_ms = js_sys::Date::now();
+        if now_ms < self.acquisition.lookback_backfill_next_ms {
+            return;
+        }
+        self.acquisition.lookback_backfill_next_ms = now_ms + 1000.0;
+
+        let now = crate::state::TimeModel::wall_clock_time();
+        let win_end_i64 = now as i64;
+        let win_start_i64 = (now - crate::LOOKBACK_SPAN_SECS) as i64;
+        let elevation_filter = match &self.state.viz_state.elevation_selection {
+            state::ElevationSelection::Fixed {
+                elevation_number, ..
+            } => Some(*elevation_number),
+            state::ElevationSelection::Latest => None,
+        };
+
+        let (intents, _listing_pending) = self.compute_intents_for_window(
+            win_start_i64,
+            win_start_i64,
+            win_end_i64,
+            None,
+            elevation_filter,
+            ctx,
+        );
+        if intents.is_empty() {
+            return;
+        }
+
+        let site_id = self.state.viz_state.site_id.clone();
+        let items: Vec<QueueItem> = intents
+            .into_iter()
+            .map(|i| {
+                self.acquisition
+                    .state
+                    .create_operation(state::OperationKind::ArchiveDownload {
+                        site_id: site_id.clone(),
+                        file_name: i.file_name.clone(),
+                        scan_start: i.scan_start,
+                        scan_end: i.scan_end,
+                    });
+                QueueItem::new(
+                    i.date,
+                    i.file_name,
+                    i.scan_start,
+                    i.scan_end,
+                    i.elevation_filter,
+                )
+            })
+            .collect();
+        self.acquisition.coordinator.download_queue.enqueue(items);
     }
 
     /// Whether a candidate scan is already cached for the active scope or is

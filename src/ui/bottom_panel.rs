@@ -63,7 +63,9 @@ fn draw_bottom_panel(
     // Advance playback position when playing
     // The time_model handles real-time lock mode internally
     if playback.state.playing {
-        let mode = playback.state.playback_mode();
+        // Effective mode: a lookback replay frame-steps (Macro) regardless of
+        // zoom, so it dispatches to advance_macro and gets the macro fps speeds.
+        let mode = playback.state.effective_playback_mode();
         let was_macro = playback.state.macro_playback.was_macro;
 
         // Detect mode transitions and auto-adjust speed
