@@ -471,7 +471,7 @@ fn handle_toggle_live(
     _: &egui::Context,
 ) {
     if live.mode_state.is_active() {
-        live.mode_state.stop(LiveExitReason::UserStopped);
+        live.stop(LiveExitReason::UserStopped);
         playback.state.time_model.disable_realtime_lock();
         playback.state.clear_lookback();
         playback.state.playing = false;

@@ -66,7 +66,7 @@ pub(super) fn handle_timeline_interaction(
             let clicked_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
 
             if live.mode_state.is_active() {
-                live.mode_state.stop(LiveExitReason::UserSeeked);
+                live.stop(LiveExitReason::UserSeeked);
                 playback.state.time_model.disable_realtime_lock();
                 playback.state.clear_lookback();
                 state.status_message = live

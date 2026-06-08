@@ -98,7 +98,13 @@ pub(super) fn render_timeline_tooltip(
                 );
             }
         } else if let Some(scan) = scan {
-            render_scan_tooltip_content(ui, scan, live_state, use_local);
+            render_scan_tooltip_content(
+                ui,
+                scan,
+                live_state,
+                live.radar_model.volume.as_ref().map(|v| &v.roster),
+                use_local,
+            );
         }
     });
 
@@ -464,6 +470,7 @@ fn render_scan_tooltip_content(
     ui: &mut egui::Ui,
     scan: &crate::state::radar_data::Scan,
     live_state: &crate::state::LiveModeState,
+    live_roster: Option<&crate::state::VolumeElevationRoster>,
     use_local: bool,
 ) {
     let vcp_label = if scan.vcp > 0 {
@@ -536,8 +543,8 @@ fn render_scan_tooltip_content(
         {
             if (scan.start_time - vol_start).abs() < 30.0 {
                 ui.separator();
-                let received = live_state.elevations_received.len();
-                let expected = live_state.expected_elevation_count.unwrap_or(0);
+                let received = live_roster.map(|r| r.received.len()).unwrap_or(0);
+                let expected = live_roster.and_then(|r| r.expected_count()).unwrap_or(0);
                 ui.label(
                     RichText::new(format!(
                         "Live: {}/{} elevations received",

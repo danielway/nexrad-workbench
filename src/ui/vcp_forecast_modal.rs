@@ -54,8 +54,10 @@ fn draw_vcp_forecast_modal(
     let dark = state.is_dark;
     let site_id = state.viz_state.site_id.clone();
     let (snap_opt, arrivals) = {
+        let eng = live.engine.borrow();
+        let obs = eng.observations();
         let live = &live.mode_state;
-        if let Some(snap) = live.derive_current_volume_forecast() {
+        if let Some(snap) = live.derive_current_volume_forecast(obs) {
             (Some(snap), live.chunk_arrivals.clone())
         } else if let Some(record) = live.last_completed_volume.as_ref() {
             let snap = crate::state::derive_volume_forecast(

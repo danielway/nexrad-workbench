@@ -134,7 +134,7 @@ pub(super) fn render_scrubber(
         let new_ts = x_to_ts(pos.x);
         // Exit live mode when the user seeks manually.
         if live.mode_state.is_active() {
-            live.mode_state.stop(LiveExitReason::UserSeeked);
+            live.stop(LiveExitReason::UserSeeked);
             playback.state.time_model.disable_realtime_lock();
             playback.state.clear_lookback();
         }

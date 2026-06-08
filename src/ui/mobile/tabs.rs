@@ -144,7 +144,7 @@ fn render_action_bar(
         .clicked()
         {
             if is_live {
-                live.mode_state.stop(LiveExitReason::UserStopped);
+                live.stop(LiveExitReason::UserStopped);
                 playback.state.time_model.disable_realtime_lock();
                 playback.state.clear_lookback();
                 playback.state.playing = false;
@@ -236,7 +236,7 @@ pub(super) fn step_frame(
 
     let current_pos = playback.state.playback_position();
     if live.mode_state.is_active() {
-        live.mode_state.stop(LiveExitReason::UserJogged);
+        live.stop(LiveExitReason::UserJogged);
         playback.state.time_model.disable_realtime_lock();
         playback.state.clear_lookback();
     }

@@ -296,7 +296,7 @@ fn stop_live(
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
 ) {
-    live.mode_state.stop(LiveExitReason::UserStopped);
+    live.stop(LiveExitReason::UserStopped);
     playback.state.playing = false;
     playback.state.clear_lookback();
     playback.state.time_model.disable_realtime_lock();

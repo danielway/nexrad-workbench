@@ -16,6 +16,7 @@ mod archive_adapter;
 mod cached_sweeps;
 mod engine;
 mod inventory;
+mod observations;
 mod status;
 
 // Re-exported as the module's public names. The engine is wired (see
@@ -26,9 +27,11 @@ pub use archive_adapter::scan_to_projection;
 #[allow(unused_imports)]
 pub use cached_sweeps::CachedSweepSet;
 #[allow(unused_imports)]
-pub use engine::{ObservedSweepInputs, ProjectionEngine};
+pub use engine::ProjectionEngine;
 #[allow(unused_imports)]
 pub use inventory::{ChunkCoord, KnownChunk, KnownChunkInventory};
+#[allow(unused_imports)]
+pub use observations::VolumeObservations;
 #[allow(unused_imports)]
 pub use status::{
     build_sweeps, cascade_current_sweeps, derive_sweep_status, CascadeInputs, SweepBounds,

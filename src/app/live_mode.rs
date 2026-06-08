@@ -187,7 +187,9 @@ impl WorkbenchApp {
             .as_ref()
             .map(|a| a.scan_key.scan_start.0);
         self.live
-            .mode_state
+            .engine
+            .borrow()
+            .observations()
             .current_in_progress_elevation
             .zip(anchor_ms)
     }
@@ -222,7 +224,7 @@ impl WorkbenchApp {
     pub(crate) fn stop_live_mode(&mut self, reason: state::LiveExitReason) {
         log::info!("Stopping live mode: {:?}", reason);
 
-        self.live.mode_state.stop(reason);
+        self.live.stop(reason);
         self.playback.state.time_model.disable_realtime_lock();
         self.playback.state.clear_lookback();
         self.live.channel.stop();

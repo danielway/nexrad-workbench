@@ -299,7 +299,9 @@ impl WorkbenchApp {
 
             if !result.chunk_elev_spans.is_empty() {
                 self.live
-                    .mode_state
+                    .engine
+                    .borrow_mut()
+                    .observations_mut()
                     .record_chunk_elev_spans(&result.chunk_elev_spans);
             }
 
@@ -310,45 +312,26 @@ impl WorkbenchApp {
             let scan_start_secs = result
                 .volume_header_time_secs
                 .unwrap_or(result.context.timestamp_secs);
+            // Completed-volume duration so the engine can size the expected
+            // in-progress duration (it falls back to the VCP estimate / default).
+            let last_dur = self
+                .live
+                .mode_state
+                .last_completed_volume
+                .as_ref()
+                .map(|r| r.volume_end_secs - r.volume_start_secs);
             {
                 let mut eng = self.live.engine.borrow_mut();
                 eng.set_current_scan_start_secs(scan_start_secs);
-                eng.set_cached_sweeps_for_scan(
-                    scan_start_secs,
-                    &self.live.mode_state.completed_sweep_metas,
-                );
-                // Same source as `LiveModeState.current_in_progress_elevation`
-                // so the engine's projection and the live model agree on which
-                // cut is collecting.
+                eng.observations_mut()
+                    .set_last_volume_duration_secs(last_dur);
+                // Reads the engine's own completed metas — the prior ingest's,
+                // since `update_sweep_metas` runs later this ingest.
+                eng.set_cached_sweeps_for_scan(scan_start_secs);
+                // Same source as the old `LiveModeState.current_in_progress_elevation`
+                // so the projection and the live model agree on the collecting cut.
                 eng.set_in_progress_elevation(scan_start_secs, result.current_elevation);
             }
-
-            // Feed the current-scan bounds cascade inputs (roster, completed
-            // metas, in-progress chunk spans, VCP pattern, fallback durations)
-            // — what the legacy `from_live` read off `LiveModeState`.
-            let plan_available = self.live.frame_projection.is_some();
-            let observed = {
-                let live = &self.live.mode_state;
-                let roster = live.elevation_roster();
-                let expected_count = roster.expected_count().unwrap_or(0);
-                let received: Vec<bool> = (0..expected_count)
-                    .map(|i| roster.is_received((i + 1) as u8))
-                    .collect();
-                crate::nexrad::projection::ObservedSweepInputs {
-                    expected_count,
-                    received,
-                    vcp_number: live.current_vcp_number.unwrap_or(0),
-                    vcp_pattern: live.current_vcp_pattern.clone(),
-                    roster,
-                    expected_dur_secs: live.last_volume_duration_secs().unwrap_or(300.0),
-                    completed_sweep_metas: live.completed_sweep_metas.clone(),
-                    chunk_elev_spans: live.chunk_elev_spans.clone(),
-                    current_elev_chunks: live.current_elev_chunks.clone(),
-                    in_progress_radials: live.current_in_progress_radials,
-                    fallback_sweep_durations: live.fallback_sweep_durations(plan_available),
-                }
-            };
-            self.live.engine.borrow_mut().set_observed_inputs(observed);
 
             // Push the most recent chunk's collection-end time down to the
             // streaming loop so the next projection anchors on the current
@@ -393,7 +376,9 @@ impl WorkbenchApp {
             }
             if !result.elevations_completed.is_empty() {
                 self.live
-                    .mode_state
+                    .engine
+                    .borrow_mut()
+                    .observations_mut()
                     .record_elevations(&result.elevations_completed);
             }
             if let Some(ref vcp) = result.vcp {
@@ -405,12 +390,18 @@ impl WorkbenchApp {
                 // to fire on a VCP transition.
                 let prev_count = self
                     .live
-                    .mode_state
+                    .engine
+                    .borrow()
+                    .observations()
                     .current_vcp_pattern
                     .as_ref()
                     .map(|p| p.elevations.len())
                     .unwrap_or(0);
-                self.live.mode_state.record_vcp(vcp);
+                self.live
+                    .engine
+                    .borrow_mut()
+                    .observations_mut()
+                    .record_vcp(vcp);
                 if prev_count != vcp.elevations.len() {
                     let entries = state::playback_manager::build_elevation_list_from_vcp(vcp);
                     self.state
@@ -420,10 +411,20 @@ impl WorkbenchApp {
                 }
             }
 
-            self.live.mode_state.record_in_progress_elevation(
-                result.current_elevation,
-                result.current_elevation_radials,
-            );
+            let elev_changed = self
+                .live
+                .engine
+                .borrow_mut()
+                .observations_mut()
+                .record_in_progress_elevation(
+                    result.current_elevation,
+                    result.current_elevation_radials,
+                );
+            if elev_changed {
+                // The per-chunk az list (engine) and the decoder-side sweep
+                // start azimuth (live) reset together on an elevation change.
+                self.live.mode_state.on_in_progress_elevation_changed();
+            }
 
             // Record per-chunk azimuth ranges for the current elevation
             if let Some(cur_elev) = result.current_elevation {
@@ -435,18 +436,20 @@ impl WorkbenchApp {
                             .find(|&&(e, _, _, _)| e == elev)
                             .map(|&(_, _, _, c)| c)
                             .unwrap_or(0);
-                        self.live.mode_state.current_elev_chunks.push((
-                            first_az,
-                            last_az,
-                            radial_count,
-                        ));
+                        self.live
+                            .engine
+                            .borrow_mut()
+                            .observations_mut()
+                            .push_elev_chunk((first_az, last_az, radial_count));
                     }
                 }
             }
 
             if !result.sweeps.is_empty() {
                 self.live
-                    .mode_state
+                    .engine
+                    .borrow_mut()
+                    .observations_mut()
                     .update_sweep_metas(result.sweeps.clone());
             }
 
@@ -497,21 +500,22 @@ impl WorkbenchApp {
 
                     // Summarize what the accumulator holds for this elevation
                     let accum_radials = result.current_elevation_radials.unwrap_or(0);
-                    let accum_chunks: usize = self
-                        .live
-                        .mode_state
-                        .chunk_elev_spans
-                        .iter()
-                        .filter(|&&(e, _, _, _)| e == target_elev)
-                        .count();
-                    let accum_az_range = self
-                        .live
-                        .mode_state
-                        .current_elev_chunks
-                        .iter()
-                        .fold((f32::MAX, f32::MIN), |(lo, hi), &(first_az, last_az, _)| {
-                            (lo.min(first_az), hi.max(last_az))
-                        });
+                    let (accum_chunks, accum_az_range) = {
+                        let eng = self.live.engine.borrow();
+                        let obs = eng.observations();
+                        let chunks = obs
+                            .chunk_elev_spans
+                            .iter()
+                            .filter(|&&(e, _, _, _)| e == target_elev)
+                            .count();
+                        let az = obs
+                            .current_elev_chunks
+                            .iter()
+                            .fold((f32::MAX, f32::MIN), |(lo, hi), &(first_az, last_az, _)| {
+                                (lo.min(first_az), hi.max(last_az))
+                            });
+                        (chunks, az)
+                    };
                     let az_str = if accum_az_range.0 < f32::MAX {
                         format!("{:.1}°–{:.1}°", accum_az_range.0, accum_az_range.1)
                     } else {
@@ -563,7 +567,15 @@ impl WorkbenchApp {
                     }
                 }
                 let now = js_sys::Date::now() / 1000.0;
-                self.live.mode_state.handle_volume_complete(now);
+                {
+                    // Seal the diagnostics record from the engine's observations,
+                    // then reset them for the next volume (seal-before-reset).
+                    let eng = self.live.engine.borrow();
+                    self.live
+                        .mode_state
+                        .handle_volume_complete(now, eng.observations());
+                }
+                self.live.engine.borrow_mut().reset_volume_observations();
                 self.state.status_message = format!(
                     "Live: volume complete ({} elevations)",
                     self.render.coordinator.available_elevations().len()

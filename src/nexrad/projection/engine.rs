@@ -13,9 +13,9 @@
 
 use super::cached_sweeps::CachedSweepSet;
 use super::inventory::{KnownChunk, KnownChunkInventory};
+use super::observations::VolumeObservations;
 use super::status::{build_sweeps, SweepBuildCtx};
 use super::Projection;
-use crate::data::CachedSweep;
 use crate::nexrad::projector::Projector;
 use crate::nexrad::streaming_filter::StreamingFilter;
 use crate::nexrad::timing::{AnchorSource, ChunkMetadata, ChunkTimingStats};
@@ -50,36 +50,16 @@ pub struct ProjectionEngine {
     current_scan_start_secs: Option<f64>,
     /// `(scan_start, elevation)` currently being received — drives `InProgress`.
     in_progress: Option<(f64, u8)>,
-    /// Observed/roster inputs for the current-scan bounds cascade, fed from the
-    /// worker-ingest pipeline. Absent until the first ingest (cold → coarse).
-    observed: ObservedSweepInputs,
+    /// The in-progress volume's observations (roster, VCP, in-progress cut,
+    /// per-chunk spans, completed metas), fed directly by the worker pipeline.
+    /// The engine owns this — it is no longer copied from `LiveModeState`.
+    observed: VolumeObservations,
     /// Available archive scan boundaries, for authoritative next-scan extent.
     archive_boundaries: Vec<crate::nexrad::ScanBoundary>,
     /// Bumped whenever a setter changes an input value; the cache key.
     input_revision: u64,
     /// Memoized output + the inputs it was built from.
     cached: Option<(CacheKey, Projection)>,
-}
-
-/// The roster + observed inputs the current-scan bounds cascade needs, fed in
-/// one bundle from the worker-ingest pipeline (`worker_results`). Mirrors what
-/// the legacy `from_live` read off `LiveModeState`.
-#[derive(Clone, Debug, Default)]
-#[allow(dead_code)] // Fields read by build_sweeps via the cascade.
-pub struct ObservedSweepInputs {
-    pub expected_count: usize,
-    /// `received[elev_idx]` — elevation `elev_idx + 1` fully received.
-    pub received: Vec<bool>,
-    pub vcp_number: u16,
-    pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
-    /// Expected-vs-received elevation roster (exposed on the `ScanProjection`).
-    pub roster: crate::state::VolumeElevationRoster,
-    pub expected_dur_secs: f64,
-    pub completed_sweep_metas: Vec<crate::data::CachedSweep>,
-    pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
-    pub current_elev_chunks: Vec<(f32, f32, u32)>,
-    pub in_progress_radials: Option<u32>,
-    pub fallback_sweep_durations: Vec<f64>,
 }
 
 #[allow(dead_code)] // Setters/readers come online as the loop + consumers migrate.
@@ -91,7 +71,7 @@ impl ProjectionEngine {
             cached_sweeps: CachedSweepSet::default(),
             current_scan_start_secs: None,
             in_progress: None,
-            observed: ObservedSweepInputs::default(),
+            observed: VolumeObservations::default(),
             archive_boundaries: Vec::new(),
             input_revision: 0,
             cached: None,
@@ -139,11 +119,22 @@ impl ProjectionEngine {
         self.bump();
     }
 
-    /// Feed the current-scan cascade inputs (roster, completed metas, in-progress
-    /// chunk spans, VCP pattern, fallback durations) from the worker pipeline.
-    /// Always bumps — these change per ingest and drive the per-sweep bounds.
-    pub fn set_observed_inputs(&mut self, observed: ObservedSweepInputs) {
-        self.observed = observed;
+    /// Mutable access to the in-progress volume's observations the worker feeds
+    /// (the engine owns them). Bumps the input revision — the worker only takes
+    /// this handle to record a change.
+    pub fn observations_mut(&mut self) -> &mut VolumeObservations {
+        self.bump();
+        &mut self.observed
+    }
+
+    /// Read-only access to the volume observations (status build + diagnostics).
+    pub fn observations(&self) -> &VolumeObservations {
+        &self.observed
+    }
+
+    /// Reset the volume observations at a volume boundary. Bumps.
+    pub fn reset_volume_observations(&mut self) {
+        self.observed.reset();
         self.bump();
     }
 
@@ -202,10 +193,13 @@ impl ProjectionEngine {
         &self.inventory
     }
 
-    /// Replace the cached cuts recorded for one scan (drives `CollectedByUs`).
-    /// Always bumps — the cuts list is the changed input.
-    pub fn set_cached_sweeps_for_scan(&mut self, scan_start_secs: f64, sweeps: &[CachedSweep]) {
-        self.cached_sweeps.set_for_scan(scan_start_secs, sweeps);
+    /// Refresh the cached cuts recorded for one scan from the volume
+    /// observations' completed-sweep metas (drives `CollectedByUs`). Reads the
+    /// metas as of now — call before `update_sweep_metas` for this ingest to
+    /// preserve the prior-metas semantics. Always bumps.
+    pub fn set_cached_sweeps_for_scan(&mut self, scan_start_secs: f64) {
+        self.cached_sweeps
+            .set_for_scan(scan_start_secs, &self.observed.completed_sweep_metas);
         self.bump();
     }
 
@@ -287,7 +281,17 @@ impl ProjectionEngine {
                     .unwrap_or(now_secs)
             });
             let current_volume = *anchor.volume();
+            // Whether a projection was already built — the fallback-durations
+            // gate (worker used `frame_projection.is_some()`); once a plan
+            // exists the library bounds win and the VCP fallback is unused.
+            let had_prior_plan = self.cached.is_some();
             let obs = &self.observed;
+            // Derivations the worker used to compute, now produced by the owner.
+            let received = obs.received_vec();
+            let fallback = obs.fallback_sweep_durations(had_prior_plan);
+            let roster = obs.elevation_roster();
+            let expected_dur = obs.expected_dur_secs();
+            let vcp_number = obs.current_vcp_number.unwrap_or(0);
             // Authoritative next-scan start: the smallest archive boundary start
             // strictly after the current scan, when an archive listing covers it.
             let next_scan_boundary = self
@@ -299,7 +303,7 @@ impl ProjectionEngine {
             // COLLECTION end of the current volume.
             let volume_end = plan
                 .current_volume_end_collection_secs
-                .unwrap_or(current_scan_start + obs.expected_dur_secs.max(1.0));
+                .unwrap_or(current_scan_start + expected_dur.max(1.0));
             let ctx = SweepBuildCtx {
                 current_chunks: &plan.current_volume_chunks,
                 next_chunks: plan.next_volume_chunks.as_deref(),
@@ -310,26 +314,26 @@ impl ProjectionEngine {
                 inventory: &self.inventory,
                 in_progress_elevation: self.in_progress.map(|(_, e)| e),
                 next_scan_boundary_start_secs: next_scan_boundary,
-                expected_count: obs.expected_count,
-                received: &obs.received,
-                vcp_number: obs.vcp_number,
-                vcp_pattern: obs.vcp_pattern.as_ref(),
+                expected_count: obs.expected_count(),
+                received: &received,
+                vcp_number,
+                vcp_pattern: obs.current_vcp_pattern.as_ref(),
                 vol_start_secs: current_scan_start,
-                expected_dur_secs: obs.expected_dur_secs,
+                expected_dur_secs: expected_dur,
                 completed_sweep_metas: &obs.completed_sweep_metas,
                 chunk_elev_spans: &obs.chunk_elev_spans,
                 current_elev_chunks: &obs.current_elev_chunks,
-                in_progress_radials: obs.in_progress_radials,
-                fallback_sweep_durations: &obs.fallback_sweep_durations,
+                in_progress_radials: obs.current_in_progress_radials,
+                fallback_sweep_durations: &fallback,
             };
             let sweeps = build_sweeps(&ctx);
             let live_scan = super::assemble_live_scan(
                 &sweeps,
-                obs.vcp_number,
-                obs.vcp_pattern.clone(),
-                obs.roster.clone(),
+                vcp_number,
+                obs.current_vcp_pattern.clone(),
+                roster,
                 self.in_progress.map(|(_, e)| e),
-                obs.in_progress_radials,
+                obs.current_in_progress_radials,
                 current_scan_start,
                 volume_end,
                 None,

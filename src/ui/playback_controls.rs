@@ -120,7 +120,7 @@ pub(super) fn render_datetime_picker_popup(
 
                                     // Exit live mode if active
                                     if live.mode_state.is_active() {
-                                        live.mode_state.stop(LiveExitReason::UserSeeked);
+                                        live.stop(LiveExitReason::UserSeeked);
                                         playback.state.time_model.disable_realtime_lock();
                                         playback.state.clear_lookback();
                                     }

@@ -124,19 +124,6 @@ pub struct LiveModeState {
     #[allow(dead_code)] // Used when auto-scroll feature is implemented
     pub auto_scroll_enabled: bool,
 
-    // ── Real-time partial scan tracking for timeline visualization ────
-    /// Elevation numbers received in the current in-progress volume.
-    pub elevations_received: Vec<u8>,
-
-    /// Total expected elevation count from the current VCP.
-    pub expected_elevation_count: Option<u8>,
-
-    /// VCP number of the current/last volume (for projecting scan boundaries).
-    pub current_vcp_number: Option<u16>,
-
-    /// Full extracted VCP pattern from Message Type 5 (for live panel display).
-    pub current_vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
-
     /// Identity + provisional/confirmed start time for the current
     /// in-progress volume. `None` between volumes; populated when the first
     /// chunk's `ChunkData` is received and the [`LiveVolumeAnchor::confirmed`]
@@ -146,27 +133,6 @@ pub struct LiveModeState {
     /// [`LiveVolumeAnchor::scan_key`] for IDB lookups; both stay correct
     /// across the provisional → confirmed transition.
     pub current_volume: Option<crate::data::LiveVolumeAnchor>,
-
-    /// Elevation number of the sweep currently being accumulated (partial).
-    pub current_in_progress_elevation: Option<u8>,
-
-    /// Number of radials received for the current in-progress elevation.
-    pub current_in_progress_radials: Option<u32>,
-
-    /// Per-elevation chunk time spans in the current volume. Each entry is
-    /// (elevation_number, start_secs, end_secs, radial_count) derived from
-    /// actual radial collection timestamps. Each chunk contains data for
-    /// exactly one elevation, so each chunk produces exactly one entry.
-    pub chunk_elev_spans: Vec<(u8, f64, f64, u32)>,
-
-    /// Actual sweep metadata (with real timestamps) for completed elevations
-    /// in the current volume. Used for accurate sweep positioning on the timeline
-    /// instead of even-distribution estimates.
-    pub completed_sweep_metas: Vec<crate::data::CachedSweep>,
-
-    /// Per-chunk azimuth ranges for the current in-progress elevation.
-    /// Each entry: (first_az, last_az, radial_count). Reset on elevation change.
-    pub current_elev_chunks: Vec<(f32, f32, u32)>,
 
     /// Starting azimuth of the current in-progress sweep (first radial).
     /// Used to set the sweep compositing start angle for live partial rendering.
@@ -229,16 +195,7 @@ impl Default for LiveModeState {
             chunks_received: 0,
             pulse_phase: 0.0,
             auto_scroll_enabled: true,
-            elevations_received: Vec::new(),
-            expected_elevation_count: None,
-            current_vcp_number: None,
-            current_vcp_pattern: None,
             current_volume: None,
-            current_in_progress_elevation: None,
-            current_in_progress_radials: None,
-            chunk_elev_spans: Vec::new(),
-            completed_sweep_metas: Vec::new(),
-            current_elev_chunks: Vec::new(),
             sweep_start_azimuth: None,
             live_data_azimuth_range: None,
             last_radial_azimuth: None,
@@ -302,13 +259,7 @@ impl LiveModeState {
         self.phase = LivePhase::Idle;
         self.phase_started_at = None;
         self.last_exit_reason = Some(reason);
-        self.elevations_received.clear();
         self.current_volume = None;
-        self.current_in_progress_elevation = None;
-        self.current_in_progress_radials = None;
-        self.chunk_elev_spans.clear();
-        self.completed_sweep_metas.clear();
-        self.current_elev_chunks.clear();
         self.sweep_start_azimuth = None;
         self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
@@ -430,12 +381,8 @@ impl LiveModeState {
         if self.volume_start_plan.is_some() {
             return;
         }
-        let Some(vcp) = self.current_vcp_pattern.as_ref() else {
-            return;
-        };
-        if vcp.elevations.is_empty() {
-            return;
-        }
+        // A built plan implies the engine has a VCP; gate only on a known
+        // volume start (the VCP pattern lives on the engine now).
         if self
             .current_volume
             .as_ref()
@@ -454,8 +401,14 @@ impl LiveModeState {
         }
     }
 
-    /// Handle volume complete event — compute duration and reset elevation tracking.
-    pub fn handle_volume_complete(&mut self, now: f64) {
+    /// Handle volume complete event — seal the diagnostics record from the
+    /// engine's `obs` and reset the live state. The caller resets the engine
+    /// observations after this (seal-before-reset).
+    pub fn handle_volume_complete(
+        &mut self,
+        now: f64,
+        obs: &crate::nexrad::projection::VolumeObservations,
+    ) {
         let volume_start_secs = self.current_volume.as_ref().map(|v| v.best_start_secs());
 
         // Package the just-completed volume's inputs into a record so the
@@ -468,7 +421,7 @@ impl LiveModeState {
         if let (Some(start), Some(plan), Some(vcp)) = (
             volume_start_secs,
             self.volume_start_plan.take(),
-            self.current_vcp_pattern.clone(),
+            obs.current_vcp_pattern.clone(),
         ) {
             self.last_completed_volume = Some(crate::state::CompletedVolumeRecord {
                 vcp,
@@ -476,8 +429,8 @@ impl LiveModeState {
                 volume_start_secs: start,
                 volume_end_secs: now,
                 previous_volume_end_secs: prev_end,
-                completed_sweep_metas: self.completed_sweep_metas.clone(),
-                chunk_elev_spans: self.chunk_elev_spans.clone(),
+                completed_sweep_metas: obs.completed_sweep_metas.clone(),
+                chunk_elev_spans: obs.chunk_elev_spans.clone(),
                 chunk_arrivals: std::mem::take(&mut self.chunk_arrivals),
             });
         } else {
@@ -488,9 +441,7 @@ impl LiveModeState {
         self.previous_volume_end_secs = Some(now);
 
         // Preserve the just-completed volume's per-chunk arrival stats for the
-        // diagnostics modal alongside `last_completed_volume`'s record. (Kept
-        // separate because nothing else has migrated to read from the record
-        // yet; see Step 10.)
+        // diagnostics modal alongside `last_completed_volume`'s record.
         self.last_chunk_arrivals = self
             .last_completed_volume
             .as_ref()
@@ -499,13 +450,7 @@ impl LiveModeState {
 
         self.phase = LivePhase::Streaming;
         self.phase_started_at = Some(now);
-        self.elevations_received.clear();
         self.current_volume = None;
-        self.current_in_progress_elevation = None;
-        self.current_in_progress_radials = None;
-        self.chunk_elev_spans.clear();
-        self.completed_sweep_metas.clear();
-        self.current_elev_chunks.clear();
         self.sweep_start_azimuth = None;
         self.live_data_azimuth_range = None;
         self.last_radial_azimuth = None;
@@ -550,63 +495,13 @@ impl LiveModeState {
         self.current_volume = Some(anchor);
     }
 
-    /// Record that new elevation cuts were received in the current volume.
-    pub fn record_elevations(&mut self, elevations: &[u8]) {
-        for &e in elevations {
-            if !self.elevations_received.contains(&e) {
-                self.elevations_received.push(e);
-            }
-        }
-        self.elevations_received.sort_unstable();
-    }
-
-    /// Combined view of expected (per VCP) vs received (per chunk radial
-    /// headers) elevations for the in-progress volume. UI surfaces should
-    /// read this rather than the underlying `expected_elevation_count` /
-    /// `elevations_received` fields directly so split-cut VCPs and rare
-    /// observed-not-in-VCP cases are explicit.
-    pub fn elevation_roster(&self) -> crate::state::VolumeElevationRoster {
-        crate::state::VolumeElevationRoster::new(
-            self.expected_elevation_count.map(|c| c as usize),
-            self.elevations_received.clone(),
-        )
-    }
-
-    /// Record a chunk's per-elevation time spans (from radial collection timestamps).
-    pub fn record_chunk_elev_spans(&mut self, spans: &[(u8, f64, f64, u32)]) {
-        self.chunk_elev_spans.extend_from_slice(spans);
-    }
-
-    /// Update completed sweep metadata from the worker's ingest result.
-    /// Replaces the full list each time since the worker returns all completed
-    /// sweeps for the current volume.
-    pub fn update_sweep_metas(&mut self, metas: Vec<crate::data::CachedSweep>) {
-        self.completed_sweep_metas = metas;
-    }
-
-    /// Record which elevation is currently being accumulated (partial sweep).
-    /// Resets `sweep_start_azimuth` when the elevation changes.
-    pub fn record_in_progress_elevation(&mut self, elevation: Option<u8>, radials: Option<u32>) {
-        let elevation_changed = elevation != self.current_in_progress_elevation;
-        if elevation_changed {
-            self.current_elev_chunks.clear();
-            self.sweep_start_azimuth = None;
-            // Keep live_data_azimuth_range until the LiveDecoded result arrives
-            // with the new elevation's data. Clearing it here would disable
-            // shader compositing for 1-2 frames, causing a visible flash.
-        }
-        self.current_in_progress_elevation = elevation;
-        self.current_in_progress_radials = radials;
-    }
-
-    /// Record VCP info from an ingest result. When a full `ExtractedVcp` with
-    /// elevation data is available, also computes per-elevation sweep durations.
-    pub fn record_vcp(&mut self, vcp: &crate::data::keys::ExtractedVcp) {
-        self.current_vcp_number = Some(vcp.number);
-        self.expected_elevation_count = Some(vcp.elevations.len() as u8);
-        if !vcp.elevations.is_empty() {
-            self.current_vcp_pattern = Some(vcp.clone());
-        }
+    /// Reset the decoder-side sweep-start azimuth on an elevation change. The
+    /// engine's `VolumeObservations::record_in_progress_elevation` reports the
+    /// change (it clears its own per-chunk az list); this clears the live field.
+    /// `live_data_azimuth_range` is intentionally kept until the next
+    /// `LiveDecoded` result arrives, to avoid a 1–2 frame compositing flash.
+    pub fn on_in_progress_elevation_changed(&mut self) {
+        self.sweep_start_azimuth = None;
     }
 
     /// Append a chunk arrival diagnostic sample for the current volume.
@@ -645,50 +540,15 @@ impl LiveModeState {
         }
     }
 
-    /// Duration of the most recently completed volume scan, in seconds.
-    /// Derived from the last completed volume's start/end. Falls back to
-    /// the VCP's own `estimated_volume_duration()` before any volume has
-    /// completed, so consumers always get a usable value once a VCP is
-    /// parsed. `None` only when both are unavailable.
-    pub fn last_volume_duration_secs(&self) -> Option<f64> {
-        self.last_completed_volume
-            .as_ref()
-            .map(|r| r.volume_end_secs - r.volume_start_secs)
-            .filter(|&d| d > 0.0 && d < 1200.0)
-            .or_else(|| {
-                self.current_vcp_pattern
-                    .as_ref()
-                    .and_then(|v| v.estimated_volume_duration())
-            })
-    }
-
-    /// Per-elevation sweep durations (seconds) computed from the current
-    /// VCP pattern's azimuth rates. Returned only when no library projection
-    /// is available (`plan_available == false`) — the library's physics model
-    /// is more accurate (includes inter-sweep gaps and the -0.67s correction),
-    /// so consumers should prefer plan-derived bounds when a plan exists. Empty
-    /// when no VCP / no elevations / a plan is present.
-    pub fn fallback_sweep_durations(&self, plan_available: bool) -> Vec<f64> {
-        if plan_available {
-            return Vec::new();
-        }
-        let Some(vcp) = self.current_vcp_pattern.as_ref() else {
-            return Vec::new();
-        };
-        if vcp.elevations.is_empty() {
-            return Vec::new();
-        }
-        let vol_dur = self.last_volume_duration_secs().unwrap_or(300.0);
-        vcp.sweep_durations(vol_dur)
-    }
-
-    /// Derive a forecast snapshot for the current in-progress volume from
-    /// the captured `volume_start_plan` and the rolling observation state
-    /// (completed sweep metas, chunk arrivals, etc.). Returns `None` when
-    /// prerequisites aren't met (no VCP, no volume start, no captured
-    /// plan). Called on demand by the diagnostics modal.
-    pub fn derive_current_volume_forecast(&self) -> Option<crate::state::VolumeForecastSnapshot> {
-        let vcp = self.current_vcp_pattern.as_ref()?;
+    /// Derive a forecast snapshot for the current in-progress volume from the
+    /// captured `volume_start_plan` plus the engine's observations (`obs`) and
+    /// the diagnostics state held here (chunk arrivals, previous volume end).
+    /// Returns `None` when prerequisites aren't met. Called by the modal.
+    pub fn derive_current_volume_forecast(
+        &self,
+        obs: &crate::nexrad::projection::VolumeObservations,
+    ) -> Option<crate::state::VolumeForecastSnapshot> {
+        let vcp = obs.current_vcp_pattern.as_ref()?;
         let plan = self.volume_start_plan.as_ref()?;
         let volume_start_secs = self.current_volume.as_ref().map(|a| a.best_start_secs())?;
         if vcp.elevations.is_empty() {
@@ -698,8 +558,8 @@ impl LiveModeState {
             vcp,
             plan,
             volume_start_secs,
-            &self.completed_sweep_metas,
-            &self.chunk_elev_spans,
+            &obs.completed_sweep_metas,
+            &obs.chunk_elev_spans,
             self.previous_volume_end_secs,
             &self.chunk_arrivals,
             None,

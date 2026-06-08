@@ -69,6 +69,14 @@ impl Live {
         }
     }
 
+    /// Stop live streaming: reset the state machine and the engine's volume
+    /// observations together (the engine owns the observations now, so the old
+    /// `LiveModeState::stop` field-clear must also clear them).
+    pub fn stop(&mut self, reason: crate::state::LiveExitReason) {
+        self.mode_state.stop(reason);
+        self.engine.borrow_mut().reset_volume_observations();
+    }
+
     /// Seconds until the next chunk is expected to be available in S3 — drives
     /// the "next in Xs" countdown. `Some` only while waiting for a chunk, read
     /// from this frame's projection (no `LiveModeState.plan`).
