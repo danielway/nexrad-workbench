@@ -134,8 +134,8 @@ impl LiveModeState {
         let mut position = position;
         if let Some(ref mut p) = position {
             if let (Some(az), Some(t)) = (self.last_radial_azimuth, self.last_radial_time_secs) {
-                let rate = self
-                    .current_in_progress_elevation
+                let rate = p
+                    .in_progress_elevation
                     .and_then(|e| p.sweeps.iter().find(|s| s.elevation_number == e))
                     .map(|s| s.azimuth_rate_dps)
                     .filter(|&r| r > 0.0)
@@ -151,56 +151,52 @@ impl LiveModeState {
             .as_ref()
             .and_then(|p| p.estimated_azimuth_at(now_secs));
 
-        // VCP pattern + roster now come from the engine's projection (the single
-        // owner). Fall back to the local fields only in the cold window before
-        // the engine has assembled its first projection; Stage 5 drops the
-        // fallback when those fields leave `LiveModeState`.
+        // VCP pattern + roster come from the engine's projection (the single
+        // owner); empty in the cold window before the first projection.
         let volume = Some(LiveVolumeModel {
-            vcp_pattern: position
-                .as_ref()
-                .and_then(|p| p.vcp_pattern.clone())
-                .or_else(|| self.current_vcp_pattern.clone()),
+            vcp_pattern: position.as_ref().and_then(|p| p.vcp_pattern.clone()),
             roster: position
                 .as_ref()
                 .map(|p| p.roster.clone())
-                .unwrap_or_else(|| self.elevation_roster()),
+                .unwrap_or_default(),
         });
 
-        let active_sweep = self.current_in_progress_elevation.map(|elev| {
-            let current_elev = elev;
-            let chunk_time_spans: Vec<(f64, f64, u32)> = self
-                .chunk_elev_spans
-                .iter()
-                .filter(|&&(e, _, _, _)| e == current_elev)
-                .map(|&(_, start, end, radials)| (start, end, radials))
-                .collect();
-
-            // Derive chunks_expected from the position model if available.
-            let chunks_expected = position.as_ref().and_then(|p| {
-                p.sweeps
-                    .iter()
-                    .find(|s| s.elevation_number == elev)
-                    .map(|s| s.chunks_in_sweep as u32)
-                    .filter(|&c| c > 0)
-            });
-
-            LiveSweepModel {
+        // The in-progress sweep is read entirely from the engine projection (the
+        // in-progress `SweepProjection` carries the per-chunk az + time spans);
+        // only the decoder-specific azimuth fields stay on `LiveModeState`.
+        let active_sweep = position.as_ref().and_then(|p| {
+            let elev = p.in_progress_elevation?;
+            let sweep = p.sweeps.iter().find(|s| s.elevation_number == elev);
+            let chunk_time_spans: Vec<(f64, f64, u32)> = sweep
+                .map(|s| {
+                    s.chunks
+                        .iter()
+                        .map(|c| (c.start, c.end, c.radial_count))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let chunks: Vec<LiveChunkBoundary> = sweep
+                .map(|s| {
+                    s.chunks
+                        .iter()
+                        .map(|c| LiveChunkBoundary {
+                            first_az: c.first_azimuth,
+                            last_az: c.last_azimuth,
+                            radial_count: c.radial_count,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let chunks_expected = sweep.map(|s| s.chunks_in_sweep as u32).filter(|&c| c > 0);
+            Some(LiveSweepModel {
                 elevation_number: elev,
-                radials_received: self.current_in_progress_radials.unwrap_or(0),
+                radials_received: p.in_progress_radials.unwrap_or(0),
                 data_azimuth_range: self.live_data_azimuth_range,
                 sweep_start_azimuth: self.sweep_start_azimuth,
-                chunks: self
-                    .current_elev_chunks
-                    .iter()
-                    .map(|&(first, last, count)| LiveChunkBoundary {
-                        first_az: first,
-                        last_az: last,
-                        radial_count: count,
-                    })
-                    .collect(),
+                chunks,
                 chunks_expected,
                 chunk_time_spans,
-            }
+            })
         });
 
         let frame_now = FrameDerivedPosition {

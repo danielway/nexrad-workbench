@@ -317,8 +317,10 @@ impl WorkbenchApp {
                     scan_start_secs,
                     &self.live.mode_state.completed_sweep_metas,
                 );
-                let in_progress = result.chunk_elev_spans.last().map(|(elev, ..)| *elev);
-                eng.set_in_progress_elevation(scan_start_secs, in_progress);
+                // Same source as `LiveModeState.current_in_progress_elevation`
+                // so the engine's projection and the live model agree on which
+                // cut is collecting.
+                eng.set_in_progress_elevation(scan_start_secs, result.current_elevation);
             }
 
             // Feed the current-scan bounds cascade inputs (roster, completed
