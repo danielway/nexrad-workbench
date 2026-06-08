@@ -24,7 +24,6 @@ const DEFAULT_VOLUME_DURATION_SECS: f64 = 300.0;
 /// Accumulated observations for the in-progress volume. Reset to `default()` at
 /// each volume boundary via [`super::ProjectionEngine::reset_volume_observations`].
 #[derive(Debug, Default, Clone)]
-#[allow(dead_code)] // Accessors consumed by the engine + diagnostics.
 pub struct VolumeObservations {
     /// Elevation numbers received so far (sorted), from chunk radial headers.
     pub elevations_received: Vec<u8>,
@@ -51,7 +50,6 @@ pub struct VolumeObservations {
     pub last_volume_duration_secs: Option<f64>,
 }
 
-#[allow(dead_code)] // Methods consumed by the engine + worker as the flip lands.
 impl VolumeObservations {
     /// Reset to the empty state for a new volume.
     pub fn reset(&mut self) {

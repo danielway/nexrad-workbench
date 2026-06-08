@@ -17,13 +17,11 @@ fn scan_key(scan_start_secs: f64) -> i64 {
 
 /// Locally-cached sweeps, keyed by `(scan, elevation)`; sparse within a scan.
 #[derive(Clone, Debug, Default)]
-#[allow(dead_code)] // Consumed by status derivation (Phase 3) + engine (Phase 4+).
 pub struct CachedSweepSet {
     /// Observed (start, end) collection span per cached cut.
     spans: BTreeMap<(i64, u8), (f64, f64)>,
 }
 
-#[allow(dead_code)]
 impl CachedSweepSet {
     /// Replace the cached cuts recorded for one scan. Cuts of other scans are
     /// untouched, so sparse per-scan coverage accumulates independently.
@@ -43,6 +41,7 @@ impl CachedSweepSet {
     }
 
     /// Observed (start, end) collection span for a cached cut, if present.
+    #[allow(dead_code)] // Exercised by tests; utility accessor with no prod caller.
     pub fn span(&self, scan_start_secs: f64, elevation_number: u8) -> Option<(f64, f64)> {
         self.spans
             .get(&(scan_key(scan_start_secs), elevation_number))
@@ -50,7 +49,8 @@ impl CachedSweepSet {
     }
 
     /// Cached cuts for one scan, as `(elevation_number, start, end)`, ascending
-    /// by elevation. Used to emit `CollectedByUs` sweeps for display.
+    /// by elevation.
+    #[allow(dead_code)] // Utility accessor; no caller yet.
     pub fn cuts_for_scan(&self, scan_start_secs: f64) -> Vec<(u8, f64, f64)> {
         let key = scan_key(scan_start_secs);
         self.spans

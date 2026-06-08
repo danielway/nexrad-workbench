@@ -18,7 +18,7 @@ use super::status::{build_sweeps, SweepBuildCtx};
 use super::Projection;
 use crate::nexrad::projector::Projector;
 use crate::nexrad::streaming_filter::StreamingFilter;
-use crate::nexrad::timing::{AnchorSource, ChunkMetadata, ChunkTimingStats};
+use crate::nexrad::timing::{AnchorSource, ChunkTimingStats};
 use chrono::Duration as ChronoDuration;
 use nexrad_data::aws::realtime::{ChunkIdentifier, VolumeIndex};
 use nexrad_decode::messages::volume_coverage_pattern;
@@ -36,7 +36,6 @@ struct CacheKey {
 /// Single owner of every projection input; emits one cached [`Projection`].
 /// Constructed and fed via [`super::SharedProjectionEngine`] (see
 /// `subsystem::live`).
-#[allow(dead_code)] // A few setters/readers have no caller yet.
 pub struct ProjectionEngine {
     /// The math kernel: VCP, mapper, rolling stats, collection anchor, filter.
     projector: Projector,
@@ -62,7 +61,6 @@ pub struct ProjectionEngine {
     cached: Option<(CacheKey, Projection)>,
 }
 
-#[allow(dead_code)] // Setters/readers come online as the loop + consumers migrate.
 impl ProjectionEngine {
     pub fn new() -> Self {
         Self {
@@ -186,11 +184,6 @@ impl ProjectionEngine {
     /// rollover to bound memory).
     pub fn retain_inventory_from(&mut self, keep: VolumeIndex) {
         self.inventory.retain_from(keep);
-    }
-
-    /// The known-available-chunks inventory (read by status derivation).
-    pub fn inventory(&self) -> &KnownChunkInventory {
-        &self.inventory
     }
 
     /// Refresh the cached cuts recorded for one scan from the volume
@@ -347,20 +340,6 @@ impl ProjectionEngine {
 
     pub fn timing_stats(&self) -> &ChunkTimingStats {
         self.projector.timing_stats()
-    }
-
-    pub fn chunk_metadata(&self, sequence: usize) -> Option<&ChunkMetadata> {
-        self.projector.chunk_metadata(sequence)
-    }
-
-    pub fn mapper_matching_sequences_in_range(
-        &self,
-        lower: usize,
-        upper: usize,
-        predicate: impl FnMut(Option<usize>) -> bool,
-    ) -> Vec<usize> {
-        self.projector
-            .mapper_matching_sequences_in_range(lower, upper, predicate)
     }
 
     pub fn current_anchor_source(&self) -> AnchorSource {

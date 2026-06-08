@@ -178,8 +178,8 @@ pub struct SweepBounds {
     pub end: f64,
     pub timing: SweepTimingProvenance,
     /// Bound-derivation flags (received roster / in-progress). Orthogonal to
-    /// the acquisition `status`; surfaced for callers that map their own status
-    /// (the legacy oracle did) and asserted by the cascade golden test.
+    /// the acquisition `status`; asserted by the cascade golden test, not read
+    /// in production.
     #[allow(dead_code)]
     pub is_complete: bool,
     #[allow(dead_code)]

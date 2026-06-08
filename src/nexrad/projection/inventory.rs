@@ -16,7 +16,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Volume + 1-based sequence locating a single chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[allow(dead_code)] // Consumed by status derivation (Phase 3) + the loop (Phase 4+).
 pub struct ChunkCoord {
     pub volume: VolumeIndex,
     pub sequence: usize,
@@ -24,7 +23,6 @@ pub struct ChunkCoord {
 
 /// A chunk known to exist in S3, with its S3 upload time (Unix seconds).
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub struct KnownChunk {
     pub coord: ChunkCoord,
     pub upload_secs: f64,
@@ -68,14 +66,12 @@ impl VolumeInventory {
 
 /// Inventory of all known-available chunks across the current + next volume.
 #[derive(Clone, Debug, Default)]
-#[allow(dead_code)] // Wired into the engine (Phase 4) + status derivation (Phase 3).
 pub struct KnownChunkInventory {
     by_volume: BTreeMap<usize, VolumeInventory>,
     /// The newest known chunk across all volumes — the availability anchor.
     newest: Option<KnownChunk>,
 }
 
-#[allow(dead_code)]
 impl KnownChunkInventory {
     /// Merge one observed chunk (an arrival or a single listing entry). Returns
     /// `true` iff the global `newest` advanced (i.e. the availability anchor
@@ -126,6 +122,7 @@ impl KnownChunkInventory {
     }
 
     /// The newest known chunk across all volumes (the availability anchor).
+    #[allow(dead_code)] // Exercised by tests; no prod caller.
     pub fn newest(&self) -> Option<KnownChunk> {
         self.newest
     }

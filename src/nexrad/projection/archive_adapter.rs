@@ -13,7 +13,6 @@ use crate::state::radar_data::Scan;
 
 /// Build a [`ScanProjection`] from a cached/archived [`Scan`] — all sweeps
 /// observed and collected-by-us, no projection/ghost/extrapolation.
-#[allow(dead_code)] // Consumed when the left panel migrates (Step 6).
 pub fn scan_to_projection(scan: &Scan) -> ScanProjection {
     let sweeps = scan
         .sweeps

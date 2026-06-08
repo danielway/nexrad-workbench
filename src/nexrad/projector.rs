@@ -15,8 +15,8 @@
 use super::streaming_filter::StreamingFilter;
 use super::streaming_plan::StreamingPlan;
 use super::timing::{
-    project_scan_timing_with_next, AnchorSource, ChunkCharacteristics, ChunkMetadata,
-    ChunkTimingStats, ElevationChunkMapper,
+    project_scan_timing_with_next, AnchorSource, ChunkCharacteristics, ChunkTimingStats,
+    ElevationChunkMapper,
 };
 use chrono::Duration as ChronoDuration;
 use nexrad_data::aws::realtime::ChunkIdentifier;
@@ -197,24 +197,6 @@ impl Projector {
 
     pub fn timing_stats(&self) -> &ChunkTimingStats {
         &self.timing_stats
-    }
-
-    pub fn chunk_metadata(&self, sequence: usize) -> Option<&ChunkMetadata> {
-        self.elevation_mapper
-            .as_ref()
-            .and_then(|m| m.get_chunk_metadata(sequence))
-    }
-
-    pub fn mapper_matching_sequences_in_range(
-        &self,
-        lower: usize,
-        upper: usize,
-        predicate: impl FnMut(Option<usize>) -> bool,
-    ) -> Vec<usize> {
-        self.elevation_mapper
-            .as_ref()
-            .map(|m| m.matching_sequences_in_range(lower, upper, predicate))
-            .unwrap_or_default()
     }
 
     /// Record an inter-chunk arrival sample for `chunk_id`'s bucket.

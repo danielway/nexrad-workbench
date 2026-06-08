@@ -57,7 +57,6 @@ pub fn new_shared_engine() -> SharedProjectionEngine {
 
 /// Where a projected sweep sits relative to the streaming anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Consumed as surfaces migrate (Phase 5).
 pub enum ProjectionScanRole {
     /// A sweep of the volume currently being received.
     CurrentInProgress,
@@ -70,7 +69,6 @@ pub enum ProjectionScanRole {
 /// Precedence when deriving: `CollectedByUs` > `InProgress` > `AvailableNotCollected`
 /// > `FutureExpected`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Consumed as surfaces migrate (Phase 5).
 pub enum SweepProjectionStatus {
     /// We have this sweep cached locally (possibly sparse coverage).
     CollectedByUs,
@@ -86,7 +84,6 @@ pub enum SweepProjectionStatus {
 /// acquisition `status`). Mirrors the old `state::vcp_position::SweepTiming`
 /// with an explicit `Projected` variant for the library-forecast path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Consumed as surfaces migrate.
 pub enum SweepTimingProvenance {
     /// Actual observed radial timestamps.
     Observed,
@@ -101,7 +98,6 @@ pub enum SweepTimingProvenance {
 /// Source-agnostic availability the timeline renders by. Adds `Available`
 /// (published in S3 but not downloaded by us) to the old three.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(dead_code)] // Consumed as surfaces migrate.
 pub enum SweepAvailability {
     /// Persisted/renderable — collected by us (archive download or live flush).
     Cached,
@@ -115,7 +111,6 @@ pub enum SweepAvailability {
 
 /// A single chunk's time + azimuth span within a sweep (live in-progress only).
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub struct ChunkSpan {
     pub start: f64,
     pub end: f64,
@@ -128,7 +123,6 @@ pub struct ChunkSpan {
 /// rate comes from the projection; `last_radial_*` are filled per frame by the
 /// live model.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub struct ExtrapolationState {
     pub last_radial_azimuth: f32,
     pub last_radial_time: f64,
@@ -167,7 +161,6 @@ pub struct SweepProjection {
     pub chunks: Vec<ChunkSpan>,
 }
 
-#[allow(dead_code)] // Query helpers come online as consumers migrate.
 impl SweepProjection {
     /// We have this cut cached locally.
     pub fn is_complete(&self) -> bool {
@@ -205,7 +198,6 @@ impl SweepProjection {
 /// live extrapolation state, and the VCP pattern + elevation roster the panels
 /// read, with the per-frame query methods consumers call.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // `vcp_pattern`/`roster` are read by consumers in a later step.
 pub struct ScanProjection {
     pub vcp_number: u16,
     /// Full VCP pattern for elevation-angle lookups (display); `None` pre-VCP.
@@ -219,7 +211,11 @@ pub struct ScanProjection {
     pub in_progress_radials: Option<u32>,
     pub volume_start: f64,
     pub volume_end: f64,
+    /// `true` for completed archive scans. Set for completeness; unread today.
+    #[allow(dead_code)]
     pub complete: bool,
+    /// Storage scan key, when known. Set for completeness; unread today.
+    #[allow(dead_code)]
     pub scan_key: Option<String>,
     /// Current-scan sweeps (`scan_role == CurrentInProgress`).
     pub sweeps: Vec<SweepProjection>,
@@ -228,7 +224,6 @@ pub struct ScanProjection {
     pub next_scan_ghost: Option<Box<ScanProjection>>,
 }
 
-#[allow(dead_code)] // Query methods come online as consumers migrate (Step 6).
 impl ScanProjection {
     /// Sweep whose COLLECTION span contains `ts`.
     pub fn sweep_at(&self, ts: f64) -> Option<&SweepProjection> {
@@ -296,7 +291,6 @@ impl ScanProjection {
 /// `CurrentInProgress` sweeps become the scan body; the `NextScan` sweeps become
 /// a faded ghost. `extrapolation` is left `None` — the live model fills it per
 /// frame from the last radial + the current sweep's rate.
-#[allow(dead_code)] // Consumed by the engine (Step 5) + LiveRadarModel (Step 6).
 #[allow(clippy::too_many_arguments)]
 pub fn assemble_live_scan(
     sweeps: &[SweepProjection],
@@ -378,10 +372,7 @@ pub struct Projection {
     pub live_scan: Option<ScanProjection>,
 }
 
-// Read-delegators to the wrapped `plan`, exposing the consumer-facing API on
-// `Projection`. Not every delegator has a caller yet (some are read off the
-// `plan` directly today); `allow(dead_code)` until consumers converge on them.
-#[allow(dead_code)]
+// Read-delegators to the wrapped `plan` — the consumer-facing API on `Projection`.
 impl Projection {
     /// Wrap a plan together with its assembled live-scan container.
     pub fn from_parts(plan: StreamingPlan, live_scan: Option<ScanProjection>) -> Self {
@@ -417,16 +408,6 @@ impl Projection {
     /// Per-chunk info for the current in-progress volume.
     pub fn current_volume_chunks(&self) -> &[ChunkProjectionInfo] {
         &self.plan.current_volume_chunks
-    }
-
-    /// Per-chunk info for the next volume, when the projection extends into it.
-    pub fn next_volume_chunks(&self) -> Option<&[ChunkProjectionInfo]> {
-        self.plan.next_volume_chunks.as_deref()
-    }
-
-    /// COLLECTION time the radar finishes the current volume's final chunk.
-    pub fn current_volume_end_collection_secs(&self) -> Option<f64> {
-        self.plan.current_volume_end_collection_secs
     }
 }
 
