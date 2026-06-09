@@ -109,13 +109,18 @@ fn zone_key(url: &str) -> Option<&str> {
 }
 
 /// Dissolve a set of polygons (in our `[outer, hole, …]` ring form) into the
-/// union of their areas, removing shared internal borders. Returns the input
-/// unchanged when there's nothing to merge or the union comes back empty (so an
-/// alert never loses its footprint).
+/// union of their areas, removing shared internal borders.
+///
+/// Returns the input unchanged unless the union is a clear improvement: a
+/// non-empty result that doesn't *increase* the polygon count and stays within
+/// the input's bounding box. That guard keeps a fragile union (slivers from
+/// overlapping/self-intersecting simplified zones, or stray spike vertices) from
+/// ever making the footprint worse than the plain concatenation.
 fn dissolve_polygons(polygons: Vec<Vec<Ring>>) -> Vec<Vec<Ring>> {
     if polygons.len() < 2 {
         return polygons;
     }
+    let bounds = polygons_bounds(&polygons);
     let mp = to_multipolygon(&polygons);
     // Fold the members together one at a time: each union dissolves the shared
     // edge between the accumulated area and the next polygon. (geo 0.29 has no
@@ -126,11 +131,35 @@ fn dissolve_polygons(polygons: Vec<Vec<Ring>>) -> Vec<Vec<Ring>> {
         acc = acc.union(poly);
     }
     let out = from_multipolygon(&acc);
-    if out.is_empty() {
+
+    if out.is_empty() || out.len() > polygons.len() || !within_bounds(&out, bounds) {
         polygons
     } else {
         out
     }
+}
+
+/// Bounding box (min_x, min_y, max_x, max_y) over every vertex.
+fn polygons_bounds(polygons: &[Vec<Ring>]) -> (f64, f64, f64, f64) {
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for &(x, y) in polygons.iter().flatten().flatten() {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    (min_x, min_y, max_x, max_y)
+}
+
+/// True if every vertex lies within `bounds` (small epsilon for rounding).
+fn within_bounds(polygons: &[Vec<Ring>], bounds: (f64, f64, f64, f64)) -> bool {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let eps = 0.001;
+    polygons
+        .iter()
+        .flatten()
+        .flatten()
+        .all(|&(x, y)| x >= min_x - eps && x <= max_x + eps && y >= min_y - eps && y <= max_y + eps)
 }
 
 /// Convert our `[outer, hole, …]` ring form to a `geo::MultiPolygon`.
@@ -184,6 +213,26 @@ mod tests {
             ends_secs: None,
             geometry: AlertGeometry::default(),
             affected_zones: zones.iter().map(|z| z.to_string()).collect(),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn no_baked_zone_spans_the_antimeridian() {
+        // An antimeridian-spanning zone (lon range > 180°) has a globe-sized
+        // bbox, so it would register as "in view" everywhere and render as lines
+        // across the whole map. The generator drops these; guard against them
+        // creeping back in on a regen.
+        let raw: RawZones = serde_json::from_slice(ZONE_GEOMETRY_JSON).unwrap();
+        for (key, polys) in &raw {
+            let xs: Vec<f64> = polys.iter().flatten().flatten().map(|&(x, _)| x).collect();
+            let span = xs.iter().cloned().fold(f64::MIN, f64::max)
+                - xs.iter().cloned().fold(f64::MAX, f64::min);
+            assert!(
+                span <= 180.0,
+                "zone {} spans {:.0}° of longitude",
+                key,
+                span
+            );
         }
     }
 

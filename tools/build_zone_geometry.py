@@ -219,9 +219,17 @@ def build():
                     polygons.append([simp])
                 else:  # hole (CCW)
                     polygons[-1].append(simp)
-            if polygons:
-                out[f"{prefix}/{zone_id(id_rule, rec)}"] = polygons
-                count += 1
+            if not polygons:
+                continue
+            # Skip antimeridian-spanning zones (Alaska Aleutians / Pacific
+            # marine, with parts at both +179° and -179°): their bbox spans the
+            # globe, so they'd register as "in view" everywhere and project as
+            # lines clear across the map. Irrelevant to a CONUS radar tool.
+            all_x = [x for poly in polygons for ring in poly for x, _ in ring]
+            if max(all_x) - min(all_x) > 180.0:
+                continue
+            out[f"{prefix}/{zone_id(id_rule, rec)}"] = polygons
+            count += 1
         print(f"  {count} zones")
 
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
