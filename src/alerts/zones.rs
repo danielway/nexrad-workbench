@@ -114,7 +114,7 @@ fn zone_key(url: &str) -> Option<&str> {
 /// Returns the input unchanged unless the union is a clear improvement: a
 /// non-empty result that doesn't *increase* the polygon count and stays within
 /// the input's bounding box. That guard keeps a fragile union (slivers from
-/// overlapping/self-intersecting simplified zones, or stray spike vertices) from
+/// overlapping/self-intersecting simplified zones, or a stray spike vertex) from
 /// ever making the footprint worse than the plain concatenation.
 fn dissolve_polygons(polygons: Vec<Vec<Ring>>) -> Vec<Vec<Ring>> {
     if polygons.len() < 2 {
@@ -285,6 +285,28 @@ mod tests {
         let max_x = xs.iter().cloned().fold(f64::MIN, f64::max);
         let min_x = xs.iter().cloned().fold(f64::MAX, f64::min);
         assert!((min_x - 0.0).abs() < 1e-6 && (max_x - 2.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn dissolve_keeps_far_apart_polygons_separate() {
+        // Two disjoint squares 50° apart must not be joined by a connecting
+        // edge (that would be a map-spanning spike). Either kept separate by the
+        // union, or the edge guard falls back to the originals — both fine, and
+        // crucially no long edge survives.
+        let near: Ring = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)];
+        let far: Ring = vec![
+            (50.0, 0.0),
+            (51.0, 0.0),
+            (51.0, 1.0),
+            (50.0, 1.0),
+            (50.0, 0.0),
+        ];
+        let out = dissolve_polygons(vec![vec![near], vec![far]]);
+        assert_eq!(out.len(), 2, "disjoint polygons must stay separate");
+        // No coordinate should stray outside the inputs' combined bounds.
+        for &(x, y) in out.iter().flatten().flatten() {
+            assert!((-1.0..=52.0).contains(&x) && (-1.0..=2.0).contains(&y));
+        }
     }
 
     #[wasm_bindgen_test]
