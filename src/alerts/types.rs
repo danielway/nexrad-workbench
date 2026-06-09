@@ -212,6 +212,14 @@ impl Alert {
         event_color(&self.event)
     }
 
+    /// True if this alert is a warning (vs a watch/advisory/statement) — i.e.
+    /// the event name contains "warning" (case-insensitive). This is the same
+    /// distinction [`event_color`] uses to brighten warnings over watches, and
+    /// it drives the count split, map de-emphasis, and layer toggles.
+    pub fn is_warning(&self) -> bool {
+        self.event.to_ascii_lowercase().contains("warning")
+    }
+
     /// True when the alert has an end timestamp in the past.
     pub fn is_expired(&self, now_secs: f64) -> bool {
         let end = self.ends_secs.or(self.expires_secs);

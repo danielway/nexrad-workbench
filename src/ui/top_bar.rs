@@ -392,11 +392,11 @@ pub(super) fn render_alerts_chip(
         return;
     };
 
-    let visible: Vec<(String, String, AlertSeverity)> = diagnostics
+    let visible: Vec<(String, String, AlertSeverity, bool)> = diagnostics
         .alerts
         .visible_in(bounds)
         .into_iter()
-        .map(|a| (a.id.clone(), a.event.clone(), a.severity))
+        .map(|a| (a.id.clone(), a.event.clone(), a.severity, a.is_warning()))
         .collect();
 
     if visible.is_empty() {
@@ -438,11 +438,26 @@ pub(super) fn render_alerts_chip(
         let event = &visible[0].1;
         format!("{} {}", egui_phosphor::regular::WARNING, event)
     } else {
-        format!(
-            "{} {} alerts",
-            egui_phosphor::regular::WARNING,
-            visible.len()
-        )
+        // Split the count into warnings vs everything else (watches/advisories),
+        // omitting a side when it's zero.
+        let warnings = visible.iter().filter(|a| a.3).count();
+        let watches = visible.len() - warnings;
+        let mut parts = Vec::new();
+        if warnings > 0 {
+            parts.push(format!(
+                "{} warning{}",
+                warnings,
+                if warnings == 1 { "" } else { "s" }
+            ));
+        }
+        if watches > 0 {
+            parts.push(format!(
+                "{} watch{}",
+                watches,
+                if watches == 1 { "" } else { "es" }
+            ));
+        }
+        format!("{} {}", egui_phosphor::regular::WARNING, parts.join(" · "))
     };
 
     let response = ui.add(egui::Button::new(
@@ -457,7 +472,7 @@ pub(super) fn render_alerts_chip(
         format!("{} — click for details", visible[0].1,)
     } else {
         let mut lines = String::from("Click to view alerts in this area:\n");
-        for (_, event, sev) in visible.iter().take(6) {
+        for (_, event, sev, _) in visible.iter().take(6) {
             lines.push_str(&format!("\n  \u{2022} [{}] {}", sev.label(), event));
         }
         if visible.len() > 6 {

@@ -26,8 +26,10 @@ pub struct GeoLayerVisibility {
     pub lakes: bool,
     /// Show the national radar mosaic overlay (CONUS composite)
     pub national_mosaic: bool,
-    /// Show NWS active alert polygons
-    pub alerts: bool,
+    /// Show NWS warning polygons (the urgent, storm-based alerts)
+    pub alerts_warnings: bool,
+    /// Show NWS watch/advisory/statement polygons (everything that isn't a warning)
+    pub alerts_other: bool,
     /// Show mPING crowd-sourced storm reports
     pub mping: bool,
     /// Show the user's current GPS location as a dot on the map.
@@ -46,7 +48,8 @@ impl Default for GeoLayerVisibility {
             highways: false,
             lakes: false,
             national_mosaic: false,
-            alerts: false,
+            alerts_warnings: true,
+            alerts_other: false,
             mping: false,
             gps_location: false,
         }

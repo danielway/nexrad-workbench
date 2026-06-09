@@ -228,11 +228,19 @@ pub fn render_canvas_with_geo(
                     }
                 }
 
-                if state.layer_state.geo.alerts
+                let show_warnings = state.layer_state.geo.alerts_warnings;
+                let show_other = state.layer_state.geo.alerts_other;
+                if (show_warnings || show_other)
                     && derived.data_is_live
                     && !diagnostics.alerts.alerts.is_empty()
                 {
-                    render_alerts(&painter, &projection, &diagnostics.alerts.alerts);
+                    render_alerts(
+                        &painter,
+                        &projection,
+                        &diagnostics.alerts.alerts,
+                        show_warnings,
+                        show_other,
+                    );
                 }
 
                 if state.layer_state.geo.mping

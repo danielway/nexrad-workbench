@@ -174,11 +174,21 @@ pub(crate) fn handle_canvas_interaction(
                     handled = true;
                 }
             }
-            if !handled && state.layer_state.geo.alerts && derived.data_is_live {
+            let show_warnings = state.layer_state.geo.alerts_warnings;
+            let show_other = state.layer_state.geo.alerts_other;
+            if !handled && (show_warnings || show_other) && derived.data_is_live {
                 let geo = projection.screen_to_geo(click_pos);
                 let bounds = projection.visible_bounds();
                 let mut best: Option<(u8, String)> = None;
                 for alert in &diagnostics.alerts.alerts {
+                    // Only hit-test alerts whose class is actually visible.
+                    if !(if alert.is_warning() {
+                        show_warnings
+                    } else {
+                        show_other
+                    }) {
+                        continue;
+                    }
                     if !crate::alerts::bbox_intersects(alert, bounds) {
                         continue;
                     }

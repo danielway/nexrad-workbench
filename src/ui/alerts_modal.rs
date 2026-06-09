@@ -323,8 +323,12 @@ fn render_detail_modal(
 }
 
 fn focus_on_alert(state: &mut AppState, alert: &Alert) {
-    // Turn on the overlay layer.
-    state.layer_state.geo.alerts = true;
+    // Turn on the overlay layer matching this alert's class.
+    if alert.is_warning() {
+        state.layer_state.geo.alerts_warnings = true;
+    } else {
+        state.layer_state.geo.alerts_other = true;
+    }
 
     // Center the 2D view on the alert bbox centroid if we have one.
     if let Some((min_lon, min_lat, max_lon, max_lat)) = alert.geometry.bbox {

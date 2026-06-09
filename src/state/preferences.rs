@@ -28,8 +28,14 @@ pub struct UserPreferences {
     pub layer_cities: bool,
     #[serde(default)]
     pub layer_national_mosaic: bool,
+    #[serde(default = "default_true")]
+    pub layer_alerts_warnings: bool,
     #[serde(default)]
-    pub layer_alerts: bool,
+    pub layer_alerts_other: bool,
+    /// Legacy single alerts toggle, kept only to migrate pre-split preferences
+    /// into the two fields above. Never written going forward.
+    #[serde(default, rename = "layer_alerts")]
+    pub layer_alerts_legacy: Option<bool>,
     #[serde(default)]
     pub layer_mping: bool,
     /// User-supplied mPING API key. Persisted in localStorage so the
@@ -90,7 +96,9 @@ impl Default for UserPreferences {
             layer_nexrad_sites: false,
             layer_cities: true,
             layer_national_mosaic: false,
-            layer_alerts: false,
+            layer_alerts_warnings: true,
+            layer_alerts_other: false,
+            layer_alerts_legacy: None,
             layer_mping: false,
             mping_api_key: None,
             use_local_time: false,
@@ -128,7 +136,9 @@ impl UserPreferences {
             layer_nexrad_sites: state.layer_state.geo.nexrad_sites,
             layer_cities: state.layer_state.geo.cities,
             layer_national_mosaic: state.layer_state.geo.national_mosaic,
-            layer_alerts: state.layer_state.geo.alerts,
+            layer_alerts_warnings: state.layer_state.geo.alerts_warnings,
+            layer_alerts_other: state.layer_state.geo.alerts_other,
+            layer_alerts_legacy: None,
             layer_mping: state.layer_state.geo.mping,
             mping_api_key,
             use_local_time: state.use_local_time,
@@ -167,7 +177,8 @@ impl UserPreferences {
         state.layer_state.geo.nexrad_sites = self.layer_nexrad_sites;
         state.layer_state.geo.cities = self.layer_cities;
         state.layer_state.geo.national_mosaic = self.layer_national_mosaic;
-        state.layer_state.geo.alerts = self.layer_alerts;
+        state.layer_state.geo.alerts_warnings = self.layer_alerts_warnings;
+        state.layer_state.geo.alerts_other = self.layer_alerts_other;
         state.layer_state.geo.mping = self.layer_mping;
         state.use_local_time = self.use_local_time;
         state.preferred_site = self.preferred_site.clone();
@@ -209,6 +220,8 @@ impl UserPreferences {
             }
         };
         let had_advanced_mode_field = raw.get("advanced_mode").is_some();
+        let had_split_alert_layers =
+            raw.get("layer_alerts_warnings").is_some() || raw.get("layer_alerts_other").is_some();
 
         match serde_json::from_value::<Self>(raw) {
             Ok(mut prefs) => {
@@ -218,6 +231,16 @@ impl UserPreferences {
                     );
                     prefs.advanced_mode = true;
                 }
+                // Migrate the old single `layer_alerts` toggle into the split
+                // warnings/other fields: warnings inherit the old on/off state,
+                // watches stay off (the new default).
+                if !had_split_alert_layers {
+                    if let Some(legacy) = prefs.layer_alerts_legacy {
+                        prefs.layer_alerts_warnings = legacy;
+                        prefs.layer_alerts_other = false;
+                    }
+                }
+                prefs.layer_alerts_legacy = None;
                 log::debug!("Loaded user preferences from localStorage");
                 prefs
             }

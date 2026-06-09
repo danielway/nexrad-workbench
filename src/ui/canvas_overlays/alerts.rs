@@ -11,25 +11,44 @@ use eframe::egui::{Color32, Painter, Pos2, Shape, Stroke};
 use geo_types::Coord;
 
 /// Render alert polygons on top of the radar view.
-pub(crate) fn render_alerts(painter: &Painter, projection: &MapProjection, alerts: &[Alert]) {
+///
+/// `show_warnings` / `show_other` gate the two product classes independently so
+/// the layers panel can toggle warnings and watches/advisories separately.
+pub(crate) fn render_alerts(
+    painter: &Painter,
+    projection: &MapProjection,
+    alerts: &[Alert],
+    show_warnings: bool,
+    show_other: bool,
+) {
     let bounds = projection.visible_bounds();
 
-    // Sort lowest → highest severity so highest draws on top. We iterate in
-    // that order without mutating the caller's slice.
     let mut ordered: Vec<&Alert> = alerts
         .iter()
+        .filter(|a| {
+            if a.is_warning() {
+                show_warnings
+            } else {
+                show_other
+            }
+        })
         .filter(|a| bbox_intersects(a, bounds))
         .collect();
-    ordered.sort_by_key(|a| a.severity.rank());
+    // Warnings paint on top of watches, and within a class higher severity wins
+    // (false < true, so non-warnings sort first and draw underneath).
+    ordered.sort_by_key(|a| (a.is_warning(), a.severity.rank()));
 
     // Slightly wider black halo underneath so colored strokes stay legible
-    // against bright radar fills.
+    // against bright radar fills. Only warnings get it — watches stay subdued
+    // so the urgent warnings stand out.
     let halo_stroke = Stroke::new(4.5, Color32::BLACK);
 
     for alert in ordered {
+        let warning = alert.is_warning();
         let (r, g, b) = alert.color();
-        let stroke_color = Color32::from_rgba_unmultiplied(r, g, b, 220);
-        let stroke = Stroke::new(2.5, stroke_color);
+        // Watches render thinner and more transparent than warnings.
+        let (width, alpha) = if warning { (2.5, 220) } else { (1.5, 110) };
+        let stroke = Stroke::new(width, Color32::from_rgba_unmultiplied(r, g, b, alpha));
 
         for polygon in &alert.geometry.polygons {
             // Project all rings once.
@@ -46,7 +65,9 @@ pub(crate) fn render_alerts(painter: &Painter, projection: &MapProjection, alert
                 if ring.len() < 3 {
                     continue;
                 }
-                painter.add(Shape::closed_line(ring.clone(), halo_stroke));
+                if warning {
+                    painter.add(Shape::closed_line(ring.clone(), halo_stroke));
+                }
                 painter.add(Shape::closed_line(ring.clone(), stroke));
             }
         }
