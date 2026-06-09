@@ -204,6 +204,35 @@ pub struct Alert {
     /// Zone API URLs (`properties.affectedZones`). Used to resolve a footprint
     /// for alerts the NWS issues without an inline polygon.
     pub affected_zones: Vec<String>,
+    /// Pre-triangulated geometry (geo-space `(lon, lat)` triangles) for the
+    /// translucent fill. Computed once when `geometry` is finalized so rendering
+    /// only projects cached triangles. Empty until geometry is known.
+    pub fill_triangles: Vec<[(f64, f64); 3]>,
+}
+
+/// Triangulate alert polygons (each `[outer, hole, …]`) into geo-space
+/// triangles for fill rendering. Earcut tolerates the duplicate/near-collinear
+/// vertices left by zone simplification.
+pub(crate) fn triangulate_polygons(polygons: &[Vec<Ring>]) -> Vec<[(f64, f64); 3]> {
+    use geo::TriangulateEarcut;
+    let mut tris = Vec::new();
+    for rings in polygons {
+        let mut iter = rings.iter();
+        let Some(exterior) = iter.next() else {
+            continue;
+        };
+        let poly = geo::Polygon::new(
+            geo::LineString::from(exterior.clone()),
+            iter.map(|r| geo::LineString::from(r.clone())).collect(),
+        );
+        let raw = poly.earcut_triangles_raw();
+        let v = &raw.vertices; // flat [x0, y0, x1, y1, …]
+        for idx in raw.triangle_indices.chunks_exact(3) {
+            let pt = |i: usize| (v[2 * i], v[2 * i + 1]);
+            tris.push([pt(idx[0]), pt(idx[1]), pt(idx[2])]);
+        }
+    }
+    tris
 }
 
 impl Alert {

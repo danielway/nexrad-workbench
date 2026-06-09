@@ -73,6 +73,10 @@ fn parse_feature(feature: &Value) -> Option<Alert> {
         return None;
     }
 
+    // Inline (storm-based) geometry can be triangulated for the fill now;
+    // zone-only alerts get triangulated after their zones resolve.
+    let fill_triangles = super::types::triangulate_polygons(&geometry.polygons);
+
     Some(Alert {
         id,
         event,
@@ -90,6 +94,7 @@ fn parse_feature(feature: &Value) -> Option<Alert> {
         ends_secs,
         geometry,
         affected_zones,
+        fill_triangles,
     })
 }
 
