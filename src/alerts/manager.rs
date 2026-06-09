@@ -8,6 +8,7 @@ use eframe::egui;
 
 use super::api;
 use super::channel::{AlertsChannel, AlertsEvent};
+use super::zones::ZoneResolver;
 use crate::state::AlertsState;
 
 /// Poll interval in wall-clock milliseconds. NWS recommends <= 1 req/min;
@@ -22,6 +23,8 @@ pub struct AlertsManager {
     channel: AlertsChannel,
     /// True while a fetch future is in flight and we're waiting on it.
     fetch_in_flight: bool,
+    /// Resolves footprints for zone-only alerts (watches, advisories, etc.).
+    zones: ZoneResolver,
 }
 
 impl Default for AlertsManager {
@@ -35,6 +38,7 @@ impl AlertsManager {
         Self {
             channel: AlertsChannel::new(),
             fetch_in_flight: false,
+            zones: ZoneResolver::new(),
         }
     }
 
@@ -74,6 +78,14 @@ impl AlertsManager {
         // is hidden — don't burn requests fetching warnings the user can't see.
         if !is_live {
             return;
+        }
+
+        // Fill in footprints for zone-only alerts (most watches, advisories,
+        // statements) from the baked zone-geometry table — a local lookup, no
+        // network. Repaint when something resolved so the overlay/top bar pick
+        // it up.
+        if self.zones.resolve(&mut alerts.alerts) {
+            ctx.request_repaint();
         }
 
         // Was a manual refresh requested?

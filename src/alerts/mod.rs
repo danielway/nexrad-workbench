@@ -13,6 +13,7 @@ mod geometry;
 mod manager;
 mod parse;
 mod types;
+mod zones;
 
 pub use geometry::{bbox_intersects, contains_point};
 pub use manager::AlertsManager;

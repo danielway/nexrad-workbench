@@ -67,8 +67,9 @@ fn parse_feature(feature: &Value) -> Option<Alert> {
     let ends_secs = parse_iso_secs(props, "ends");
 
     let geometry = parse_geometry(feature.get("geometry"));
-    if geometry.is_empty() {
-        // Zone-only alerts — skip in v1.
+    let affected_zones = parse_affected_zones(props);
+    if geometry.is_empty() && affected_zones.is_empty() {
+        // Nothing renderable and no zones to resolve later — drop it.
         return None;
     }
 
@@ -88,7 +89,22 @@ fn parse_feature(feature: &Value) -> Option<Alert> {
         expires_secs,
         ends_secs,
         geometry,
+        affected_zones,
     })
+}
+
+/// Extract `properties.affectedZones` — an array of zone API URLs whose
+/// geometry can be resolved separately for alerts issued without a polygon.
+fn parse_affected_zones(props: &Value) -> Vec<String> {
+    props
+        .get("affectedZones")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn string_field(props: &Value, key: &str) -> String {

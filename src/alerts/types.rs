@@ -198,8 +198,12 @@ pub struct Alert {
     pub expires_secs: Option<f64>,
     /// Ends timestamp (Unix seconds). None if unparseable.
     pub ends_secs: Option<f64>,
-    /// Spatial footprint.
+    /// Spatial footprint. May be empty for zone-only alerts until the zones
+    /// in `affected_zones` are resolved to geometry.
     pub geometry: AlertGeometry,
+    /// Zone API URLs (`properties.affectedZones`). Used to resolve a footprint
+    /// for alerts the NWS issues without an inline polygon.
+    pub affected_zones: Vec<String>,
 }
 
 impl Alert {
