@@ -123,9 +123,9 @@ fn zone_key(url: &str) -> Option<&str> {
 /// many zones draws one clean outline and fills as one region.
 ///
 /// Uses i_overlay's self-union with the **NonZero** fill rule (overlaps stay
-/// filled rather than being XOR-ed out) and a small `min_area` that drops the
-/// thin sliver-holes left where independently-simplified adjacent zone borders
-/// don't quite meet. Returns the input unchanged if the union comes back empty.
+/// filled rather than being XOR-ed out), then drops the thin sliver rings left
+/// where independently-simplified adjacent zone borders don't quite meet (see
+/// [`is_sliver`]). Returns the input unchanged if the union comes back empty.
 fn dissolve_polygons(polygons: Vec<Vec<Ring>>) -> Vec<Vec<Ring>> {
     if polygons.len() < 2 {
         return polygons;
