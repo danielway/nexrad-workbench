@@ -6,6 +6,7 @@ mod overlays;
 mod ruler;
 mod scan_track;
 mod strokes;
+pub(super) mod style;
 mod sweep_track;
 mod tooltips;
 
@@ -265,12 +266,16 @@ pub(super) fn render_timeline(
     // constant across macro/micro transitions: at Sweeps detail the
     // scan + separator + sweep tracks share the space; at lower detail
     // the scan track expands to fill the same total so the bottom
-    // panel doesn't reflow when zooming.
-    let tick_lane_h: f32 = 12.0; // dedicated lane for time tick labels
+    // panel doesn't reflow when zooming. All dimensions live in `style`.
+    let tick_lane_h = style::TICK_LANE_H;
     let (scan_track_h, separator_h, sweep_track_h) = if detail_level == DetailLevel::Sweeps {
-        (20.0_f32, 1.0_f32, 20.0_f32)
+        (
+            style::SCAN_TRACK_H,
+            style::TRACK_SEPARATOR_H,
+            style::SWEEP_TRACK_H,
+        )
     } else {
-        (41.0_f32, 0.0_f32, 0.0_f32)
+        (style::EXPANDED_SCAN_TRACK_H, 0.0_f32, 0.0_f32)
     };
     let timeline_height = tick_lane_h + scan_track_h + separator_h + sweep_track_h;
 
@@ -638,7 +643,7 @@ pub(super) fn render_timeline(
                 Pos2::new(center_x, scan_rect.top() + 3.0),
                 egui::Align2::CENTER_TOP,
                 &duration_text,
-                egui::FontId::monospace(8.0),
+                style::block_font(),
                 label_color,
             );
 
@@ -651,7 +656,7 @@ pub(super) fn render_timeline(
                         Pos2::new(start_x + 2.0, scan_rect.bottom() - 2.0),
                         egui::Align2::LEFT_BOTTOM,
                         &start_label,
-                        egui::FontId::monospace(7.0),
+                        style::block_font(),
                         label_color,
                     );
                 }
@@ -660,7 +665,7 @@ pub(super) fn render_timeline(
                         Pos2::new(end_x - 2.0, scan_rect.bottom() - 2.0),
                         egui::Align2::RIGHT_BOTTOM,
                         &end_label,
-                        egui::FontId::monospace(7.0),
+                        style::block_font(),
                         label_color,
                     );
                 }

@@ -2,7 +2,7 @@
 
 use crate::state::TimelineView;
 use crate::ui::colors::timeline as tl_colors;
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
+use eframe::egui::{self, Painter, Pos2, Rect, Stroke, StrokeKind};
 
 /// Render sweep blocks on the sweep track (cool indigo-to-cyan palette).
 #[allow(clippy::too_many_arguments)]
@@ -117,8 +117,8 @@ pub(super) fn render_sweep_track(
                     sweep_rect.center(),
                     egui::Align2::CENTER_CENTER,
                     label,
-                    egui::FontId::monospace(8.0),
-                    Color32::from_rgba_unmultiplied(220, 230, 255, 180),
+                    super::style::block_font(),
+                    tl_colors::block_label(),
                 );
             }
         }

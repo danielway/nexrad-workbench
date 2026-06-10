@@ -4,7 +4,7 @@ use super::DetailLevel;
 use crate::data::ScanCompleteness;
 use crate::state::TimelineView;
 use crate::ui::colors::timeline as tl_colors;
-use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
+use eframe::egui::{self, Painter, Pos2, Rect, Stroke, StrokeKind};
 
 /// Render scan blocks on the scan track (warm palette, VCP-based colors).
 #[allow(clippy::too_many_arguments)]
@@ -139,8 +139,8 @@ pub(super) fn render_scan_track(
                         scan_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         label,
-                        egui::FontId::monospace(7.0),
-                        Color32::from_rgba_unmultiplied(220, 220, 240, 180),
+                        super::style::block_font(),
+                        tl_colors::block_label(),
                     );
                 }
             }

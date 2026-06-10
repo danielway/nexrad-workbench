@@ -1,6 +1,6 @@
 //! Ruler rendering: tick marks and playback cursor.
 
-use super::{format_timestamp, TickConfig};
+use super::{format_timestamp, style, TickConfig};
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Painter, Pos2, Rect, Stroke};
 
@@ -52,7 +52,7 @@ pub(super) fn render_tick_marks(
                     Pos2::new(x, tick_rect.bottom() - tick_height),
                     egui::Align2::CENTER_BOTTOM,
                     label,
-                    egui::FontId::monospace(8.0),
+                    style::tick_font(),
                     tl_colors::tick_label(dark),
                 );
             }

@@ -327,8 +327,8 @@ pub(super) fn render_realtime_progress(
                 scan_block.center(),
                 egui::Align2::CENTER_CENTER,
                 label,
-                egui::FontId::monospace(8.0),
-                Color32::from_rgba_unmultiplied(220, 240, 220, 180),
+                super::style::block_font(),
+                tl_colors::block_label(),
             );
         }
     }
@@ -359,7 +359,7 @@ pub(super) fn render_realtime_progress(
                     Pos2::new(x + 3.0, scan_rect.top() + 2.0),
                     egui::Align2::LEFT_TOP,
                     "est.",
-                    egui::FontId::monospace(9.0),
+                    super::style::block_font(),
                     boundary_color,
                 );
             }
@@ -526,7 +526,7 @@ pub(super) fn render_realtime_progress(
                                 slot_rect.center(),
                                 egui::Align2::CENTER_CENTER,
                                 format!("{}s", remaining.ceil() as i32),
-                                egui::FontId::monospace(8.0),
+                                super::style::block_font(),
                                 tl_colors::rt_next_chunk_label(),
                             );
                         }
@@ -589,7 +589,7 @@ pub(super) fn render_realtime_progress(
                             nc_rect.center(),
                             egui::Align2::CENTER_CENTER,
                             format!("{}s", remaining.ceil() as i32),
-                            egui::FontId::monospace(8.0),
+                            super::style::block_font(),
                             tl_colors::rt_next_chunk_label(),
                         );
                     }
@@ -632,13 +632,17 @@ pub(super) fn render_realtime_progress(
             } else {
                 format!("{:.1}", elev_angle)
             };
-            let label_alpha = if is_complete { 180u8 } else { 100 };
+            let label_color = if is_complete {
+                tl_colors::block_label()
+            } else {
+                tl_colors::block_label_weak()
+            };
             painter.text(
                 block.center(),
                 egui::Align2::CENTER_CENTER,
                 label,
-                egui::FontId::monospace(8.0),
-                Color32::from_rgba_unmultiplied(220, 230, 255, label_alpha),
+                super::style::block_font(),
+                label_color,
             );
         }
     }
@@ -719,8 +723,8 @@ fn render_ghost_volume_overlay(
             block.center(),
             egui::Align2::CENTER_CENTER,
             format!("next VCP {}", ghost.vcp_number),
-            egui::FontId::monospace(8.0),
-            Color32::from_rgba_unmultiplied(220, 240, 220, 90),
+            super::style::block_font(),
+            tl_colors::block_label_weak(),
         );
     }
 
@@ -792,7 +796,7 @@ fn render_ghost_volume_overlay(
                         nc_rect.center(),
                         egui::Align2::CENTER_CENTER,
                         format!("{}s", remaining.ceil() as i32),
-                        egui::FontId::monospace(8.0),
+                        super::style::block_font(),
                         tl_colors::rt_next_chunk_label(),
                     );
                 }
@@ -811,8 +815,8 @@ fn render_ghost_volume_overlay(
                 block.center(),
                 egui::Align2::CENTER_CENTER,
                 label,
-                egui::FontId::monospace(8.0),
-                Color32::from_rgba_unmultiplied(220, 230, 255, 70),
+                super::style::block_font(),
+                tl_colors::block_label_weak(),
             );
         }
     }

@@ -145,6 +145,15 @@ pub mod timeline {
     pub const LIVE_ACTIVE: Color32 = Color32::from_rgb(255, 80, 80);
     /// Selection range boundary label color.
     pub const SELECTION_LABEL: Color32 = Color32::from_rgb(140, 180, 255);
+    /// Text drawn inside scan/sweep blocks. Theme-independent because it
+    /// sits on the blocks' own fill colors, not the panel background.
+    pub fn block_label() -> Color32 {
+        Color32::from_rgba_unmultiplied(225, 232, 248, 200)
+    }
+    /// De-emphasized in-block text (ghost/projected blocks).
+    pub fn block_label_weak() -> Color32 {
+        Color32::from_rgba_unmultiplied(225, 232, 248, 110)
+    }
     /// Track separator line color.
     pub fn track_separator() -> Color32 {
         Color32::from_rgba_unmultiplied(100, 100, 130, 80)
