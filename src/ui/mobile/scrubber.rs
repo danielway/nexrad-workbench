@@ -1,15 +1,18 @@
 //! Compact mobile scrubber.
 //!
-//! A single-line (28px) horizontal track that:
-//!   - Spans the overall data time range on the scrubber width
-//!   - Draws scan boundaries as faint tick marks
-//!   - Draws the current playback position as a draggable thumb
-//!   - In live mode, draws a "now" marker at the right edge
+//! A single-line (28px) horizontal track that shares the desktop
+//! timeline's visual language:
+//!   - Spans the union of cached and archive-listed data on the width
+//!   - Solid steel-blue segments = data on the device
+//!   - Faint slate segments = available in the cloud archive
+//!   - Neutral draggable thumb = playback position
+//!   - In live mode, a red "now" marker
 //!
 //! Interaction: tap-to-seek, drag-to-scrub. Scrubbing pauses playback so
 //! the thumb stays where the user put it.
 
 use crate::state::{AppState, LiveExitReason};
+use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 /// Total scrubber height in egui logical pixels.
@@ -33,26 +36,24 @@ pub(super) fn render_scrubber(
     // hit area extends above and below for easier touch targeting.
     let track_y = full_rect.center().y;
     let track_rect = Rect::from_min_max(
-        Pos2::new(full_rect.left() + 8.0, track_y - 2.0),
-        Pos2::new(full_rect.right() - 8.0, track_y + 2.0),
+        Pos2::new(full_rect.left() + 8.0, track_y - 3.0),
+        Pos2::new(full_rect.right() - 8.0, track_y + 3.0),
     );
     let dark = state.is_dark;
-    let bg = if dark {
-        Color32::from_rgb(40, 40, 50)
-    } else {
-        Color32::from_rgb(220, 220, 225)
-    };
-    let fg = if dark {
-        Color32::from_rgb(100, 140, 220)
-    } else {
-        Color32::from_rgb(70, 110, 200)
-    };
-    painter.rect_filled(track_rect, 2.0, bg);
+    painter.rect_filled(track_rect, 2.0, tl_colors::background(dark));
 
-    // Find the time range to render. Prefer actual data range when it exists;
-    // otherwise fall back to a 1-hour window centered on `now` so the track
-    // isn't zero-width.
-    let (t_start, t_end) = match timeline.scans.overall_time_range() {
+    // Find the time range to render: the union of cached data and the
+    // archive listing, so not-yet-downloaded data is visible too. Fall
+    // back to a 1-hour window centered on `now` so the track isn't
+    // zero-width.
+    let mut data_range = timeline.scans.overall_time_range();
+    for b in &timeline.shadow_scan_boundaries {
+        data_range = match data_range {
+            Some((s, e)) => Some((s.min(b.start as f64), e.max(b.end as f64))),
+            None => Some((b.start as f64, b.end as f64)),
+        };
+    }
+    let (t_start, t_end) = match data_range {
         Some((s, e)) if e > s => (s, e),
         _ => {
             let now = js_sys::Date::now() / 1000.0;
@@ -70,53 +71,82 @@ pub(super) fn render_scrubber(
         t_start + t * span
     };
 
-    // Faint ticks for each scan so the user sees where data exists.
-    for scan in &timeline.scans.scans {
-        let scan_ts = scan.start_time;
-        if scan_ts < t_start || scan_ts > t_end {
-            continue;
-        }
-        let x = ts_to_x(scan_ts);
-        painter.line_segment(
-            [
-                Pos2::new(x, track_rect.top() - 3.0),
-                Pos2::new(x, track_rect.bottom() + 3.0),
-            ],
-            Stroke::new(1.0, Color32::from_rgb(120, 130, 140)),
+    // Helper: paint a time span as a segment on the bar.
+    let draw_segment = |start: f64, end: f64, color: Color32| {
+        let x0 = ts_to_x(start);
+        let x1 = ts_to_x(end).max(x0 + 2.0);
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(x0, track_rect.top()),
+                Pos2::new(x1.min(track_rect.right()), track_rect.bottom()),
+            ),
+            2.0,
+            color,
         );
+    };
+
+    // Available (in cloud archive, not downloaded) — faint slate, same
+    // meaning as the desktop timeline's hollow blocks. Drawn first so
+    // cached segments paint over any overlap.
+    {
+        // The same suppress-where-cached rule the desktop timeline gets
+        // from TimelineView, without the live-merge machinery.
+        let view = crate::state::TimelineView::build(
+            &timeline.scans,
+            &timeline.shadow_scan_boundaries,
+            None,
+            None,
+            None,
+            None,
+            js_sys::Date::now() / 1000.0,
+        );
+        for b in view.shadow_boundaries() {
+            if view.is_covered_by_cached(b.start) {
+                continue;
+            }
+            draw_segment(
+                b.start as f64,
+                b.end as f64,
+                tl_colors::available_border(dark),
+            );
+        }
+    }
+
+    // Cached (on device) — solid steel blue.
+    for range in timeline.scans.time_ranges() {
+        draw_segment(range.start, range.end, tl_colors::cached_fill(dark, false));
     }
 
     let playback_ts = playback.state.playback_position();
-
-    // Filled "played" region from start to thumb.
     let thumb_x = ts_to_x(playback_ts);
-    let filled = Rect::from_min_max(track_rect.min, Pos2::new(thumb_x, track_rect.max.y));
-    painter.rect_filled(filled, 2.0, fg);
 
     // "Now" marker in live mode.
     if live.mode_state.is_active() {
         let now = js_sys::Date::now() / 1000.0;
         if now >= t_start && now <= t_end {
             let x = ts_to_x(now);
-            let color = Color32::from_rgb(220, 60, 60);
             painter.line_segment(
                 [
                     Pos2::new(x, full_rect.top() + 2.0),
                     Pos2::new(x, full_rect.bottom() - 2.0),
                 ],
-                Stroke::new(1.5, color),
+                Stroke::new(1.5, tl_colors::LIVE_ACTIVE),
             );
         }
     }
 
-    // Thumb — drawn last so it sits on top of the fill and ticks.
+    // Thumb — the neutral playback needle, drawn last so it sits on top.
     let thumb_r = 8.0;
     painter.circle_filled(
         Pos2::new(thumb_x, track_y),
         thumb_r,
-        ui.visuals().strong_text_color(),
+        tl_colors::selection(dark),
     );
-    painter.circle_stroke(Pos2::new(thumb_x, track_y), thumb_r, Stroke::new(1.5, fg));
+    painter.circle_stroke(
+        Pos2::new(thumb_x, track_y),
+        thumb_r,
+        Stroke::new(1.5, tl_colors::background(dark)),
+    );
 
     // Outline for the whole hit area (subtle so it reads as draggable).
     painter.rect_stroke(

@@ -144,6 +144,14 @@ pub mod timeline {
     pub const LIVE_ACTIVE: Color32 = Color32::from_rgb(255, 80, 80);
     /// Selection range boundary label color.
     pub const SELECTION_LABEL: Color32 = Color32::from_rgb(140, 180, 255);
+    /// Selection range (shift+drag) translucent fill.
+    pub fn selection_fill() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 150, 255, 40)
+    }
+    /// Selection range boundary lines.
+    pub fn selection_edge() -> Color32 {
+        Color32::from_rgb(100, 150, 255)
+    }
     /// Text drawn inside scan/sweep blocks. Theme-independent because it
     /// sits on the blocks' own fill colors, not the panel background.
     pub fn block_label() -> Color32 {
@@ -341,31 +349,27 @@ pub mod timeline {
     }
 
     // ── Saved event overlay colors ────────────────────────────────────
+    //
+    // One amber accent for every saved event — the name labels
+    // disambiguate; a rotating palette only added noise.
 
-    const EVENT_PALETTE: &[(u8, u8, u8)] = &[
-        (255, 200, 80),
-        (120, 220, 160),
-        (160, 180, 255),
-        (255, 150, 150),
-        (200, 160, 255),
-        (255, 180, 120),
-    ];
+    const EVENT_RGB: (u8, u8, u8) = (255, 200, 80);
 
     /// Semi-transparent fill for a saved event overlay.
-    pub fn event_fill(index: usize) -> Color32 {
-        let (r, g, b) = EVENT_PALETTE[index % EVENT_PALETTE.len()];
+    pub fn event_fill() -> Color32 {
+        let (r, g, b) = EVENT_RGB;
         Color32::from_rgba_unmultiplied(r, g, b, 30)
     }
 
     /// Border/line color for a saved event overlay.
-    pub fn event_border(index: usize) -> Color32 {
-        let (r, g, b) = EVENT_PALETTE[index % EVENT_PALETTE.len()];
+    pub fn event_border() -> Color32 {
+        let (r, g, b) = EVENT_RGB;
         Color32::from_rgba_unmultiplied(r, g, b, 160)
     }
 
     /// Label color for a saved event name.
-    pub fn event_label(index: usize) -> Color32 {
-        let (r, g, b) = EVENT_PALETTE[index % EVENT_PALETTE.len()];
+    pub fn event_label() -> Color32 {
+        let (r, g, b) = EVENT_RGB;
         Color32::from_rgb(r, g, b)
     }
 }

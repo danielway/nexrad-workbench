@@ -797,7 +797,7 @@ pub(super) fn render_saved_events(
 ) {
     let ts_to_x = |ts: f64| -> f32 { overlay_rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    for (i, event) in saved_events.events.iter().enumerate() {
+    for event in saved_events.events.iter() {
         if event.site_id != current_site {
             continue;
         }
@@ -818,10 +818,10 @@ pub(super) fn render_saved_events(
             Pos2::new(visible_start, overlay_rect.top()),
             Pos2::new(visible_end, overlay_rect.bottom()),
         );
-        painter.rect_filled(event_rect, 0.0, tl_colors::event_fill(i));
+        painter.rect_filled(event_rect, 0.0, tl_colors::event_fill());
 
         // Boundary lines
-        let border_color = tl_colors::event_border(i);
+        let border_color = tl_colors::event_border();
         if start_x >= overlay_rect.left() && start_x <= overlay_rect.right() {
             painter.line_segment(
                 [
@@ -851,7 +851,7 @@ pub(super) fn render_saved_events(
                 egui::Align2::CENTER_TOP,
                 &event.name,
                 egui::FontId::proportional(9.0),
-                tl_colors::event_label(i),
+                tl_colors::event_label(),
             );
         }
     }

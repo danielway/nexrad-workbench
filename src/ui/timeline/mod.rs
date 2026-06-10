@@ -13,7 +13,7 @@ mod tooltips;
 use super::colors::timeline as tl_colors;
 use crate::state::{AppState, LivePhase};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
-use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use eframe::egui::{self, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
 use interaction::handle_timeline_interaction;
 use now_edge::render_now_affordance;
@@ -598,11 +598,7 @@ pub(super) fn render_timeline(
                 Pos2::new(visible_start, overlay_rect.top()),
                 Pos2::new(visible_end, overlay_rect.bottom()),
             );
-            painter.rect_filled(
-                range_rect,
-                0.0,
-                Color32::from_rgba_unmultiplied(100, 150, 255, 40),
-            );
+            painter.rect_filled(range_rect, 0.0, tl_colors::selection_fill());
 
             if start_x >= overlay_rect.left() && start_x <= overlay_rect.right() {
                 painter.line_segment(
@@ -610,7 +606,7 @@ pub(super) fn render_timeline(
                         Pos2::new(start_x, overlay_rect.top()),
                         Pos2::new(start_x, overlay_rect.bottom()),
                     ],
-                    Stroke::new(1.5, Color32::from_rgb(100, 150, 255)),
+                    Stroke::new(1.5, tl_colors::selection_edge()),
                 );
             }
             if end_x >= overlay_rect.left() && end_x <= overlay_rect.right() {
@@ -619,7 +615,7 @@ pub(super) fn render_timeline(
                         Pos2::new(end_x, overlay_rect.top()),
                         Pos2::new(end_x, overlay_rect.bottom()),
                     ],
-                    Stroke::new(1.5, Color32::from_rgb(100, 150, 255)),
+                    Stroke::new(1.5, tl_colors::selection_edge()),
                 );
             }
         }
