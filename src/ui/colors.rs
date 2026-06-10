@@ -79,7 +79,6 @@ pub mod radar {
 /// Colors for timeline visualization.
 pub mod timeline {
     use super::Color32;
-    use crate::data::ScanCompleteness;
 
     pub fn background(dark: bool) -> Color32 {
         if dark {
@@ -167,7 +166,17 @@ pub mod timeline {
         Color32::from_rgba_unmultiplied(180, 200, 255, 90)
     }
 
-    // ── Scan track colors (warm palette) ──────────────────────────────
+    // ── Scan track colors: cached vs available ────────────────────────
+    //
+    // The scan track's color answers exactly one question — the data's
+    // relationship to the user. Solid steel blue = on this device;
+    // hollow slate = listed in the cloud archive but not downloaded.
+    // VCP identity and exact sweep counts are text, not color.
+
+    /// Base RGB for data that is on the device (steel blue).
+    const CACHED_RGB: (u8, u8, u8) = (88, 130, 178);
+    /// Base RGB for archive data not yet downloaded (desaturated slate).
+    const AVAILABLE_RGB: (u8, u8, u8) = (130, 150, 185);
 
     /// Base RGB for a VCP category. Warmer and more saturated than the old
     /// single-lane palette so scan blocks pop against the dark background.
@@ -187,44 +196,41 @@ pub mod timeline {
         }
     }
 
-    /// Fill color for a scan block on the scan track.
-    pub fn scan_fill(vcp: u16, completeness: Option<ScanCompleteness>) -> Color32 {
-        let (r, g, b) = vcp_base_rgb(vcp);
-        let alpha = match completeness {
-            Some(ScanCompleteness::Complete) | None => 210u8,
-            Some(ScanCompleteness::PartialWithVcp) => 170,
-            Some(ScanCompleteness::PartialNoVcp) => 130,
-            Some(ScanCompleteness::Missing) => 60,
-        };
+    /// Fill for an on-device scan block. Partial scans (some sweeps still
+    /// missing) keep the same hue at reduced alpha — two tiers only; the
+    /// exact count is carried by the block label and tooltip.
+    pub fn cached_fill(dark: bool, partial: bool) -> Color32 {
+        let (r, g, b) = if dark { CACHED_RGB } else { (70, 110, 160) };
+        let alpha = if partial { 120 } else { 235 };
         Color32::from_rgba_unmultiplied(r, g, b, alpha)
     }
 
-    /// Border color for a scan block.
-    pub fn scan_border(vcp: u16, completeness: Option<ScanCompleteness>) -> Color32 {
-        let (r, g, b) = vcp_base_rgb(vcp);
-        let alpha = match completeness {
-            Some(ScanCompleteness::Complete) | None => 180u8,
-            Some(ScanCompleteness::PartialWithVcp) => 140,
-            Some(ScanCompleteness::PartialNoVcp) => 100,
-            Some(ScanCompleteness::Missing) => 50,
-        };
-        Color32::from_rgba_unmultiplied(
-            (r as u16 * 6 / 10) as u8,
-            (g as u16 * 6 / 10) as u8,
-            (b as u16 * 6 / 10) as u8,
-            alpha,
-        )
+    /// Border for an on-device scan block. Full alpha even on partial
+    /// blocks so the block's extent stays crisp.
+    pub fn cached_border(dark: bool, _partial: bool) -> Color32 {
+        if dark {
+            Color32::from_rgb(53, 78, 107)
+        } else {
+            Color32::from_rgb(45, 70, 105)
+        }
     }
 
-    /// Hatch line color for PartialWithVcp scans (diagonal stripes).
-    pub fn scan_hatch(vcp: u16) -> Color32 {
-        let (r, g, b) = vcp_base_rgb(vcp);
-        Color32::from_rgba_unmultiplied(
-            (r as u16 + 40).min(255) as u8,
-            (g as u16 + 40).min(255) as u8,
-            (b as u16 + 40).min(255) as u8,
-            90,
-        )
+    /// Faint interior wash for an available-but-not-downloaded block.
+    pub fn available_fill(dark: bool) -> Color32 {
+        let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };
+        Color32::from_rgba_unmultiplied(r, g, b, 36)
+    }
+
+    /// Dashed border for an available-but-not-downloaded block.
+    pub fn available_border(dark: bool) -> Color32 {
+        let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };
+        Color32::from_rgba_unmultiplied(r, g, b, 120)
+    }
+
+    /// Cloud glyph drawn inside available blocks.
+    pub fn available_glyph(dark: bool) -> Color32 {
+        let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };
+        Color32::from_rgba_unmultiplied(r, g, b, 110)
     }
 
     // ── Sweep track colors (cool palette) ─────────────────────────────
@@ -315,19 +321,6 @@ pub mod timeline {
     pub fn event_label(index: usize) -> Color32 {
         let (r, g, b) = EVENT_PALETTE[index % EVENT_PALETTE.len()];
         Color32::from_rgb(r, g, b)
-    }
-
-    // ── Shadow scan boundary colors ──────────────────────────────────
-
-    /// Fill color for shadow scan boundaries from the archive index.
-    /// Very subtle so they don't compete with real (downloaded) scan blocks.
-    pub fn shadow_fill() -> Color32 {
-        Color32::from_rgba_unmultiplied(120, 140, 180, 25)
-    }
-
-    /// Border color for shadow scan boundaries.
-    pub fn shadow_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(120, 140, 180, 45)
     }
 }
 

@@ -1,12 +1,44 @@
-//! Scan track rendering: scan blocks (warm palette) and shadow boundaries.
+//! Scan track rendering: cached (on-device) scan blocks and available
+//! (in-archive, not downloaded) blocks.
+//!
+//! Color on this track answers one question — is the data on the device?
+//! Solid steel blue = cached; hollow dashed slate = available in the cloud
+//! archive. VCP identity and sweep counts are carried by the block label
+//! and the tooltip, not by hue.
 
+use super::strokes::{stroke_dashed_rect, DashedBorder};
 use super::DetailLevel;
 use crate::data::ScanCompleteness;
 use crate::state::TimelineView;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Painter, Pos2, Rect, Stroke, StrokeKind};
 
-/// Render scan blocks on the scan track (warm palette, VCP-based colors).
+/// Draw an "available in the cloud archive" block: a faint wash with a
+/// dashed border — an empty container the same shape as the solid cached
+/// blocks — plus a cloud glyph when there's room for it.
+pub(super) fn draw_available_block(painter: &Painter, block: Rect, dark: bool) {
+    painter.rect_filled(block, 2.0, tl_colors::available_fill(dark));
+    stroke_dashed_rect(
+        painter,
+        block,
+        DashedBorder::uniform(
+            Stroke::new(1.0, tl_colors::available_border(dark)),
+            4.0,
+            7.0,
+        ),
+    );
+    if block.width() >= 24.0 {
+        painter.text(
+            block.center(),
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::CLOUD_ARROW_DOWN,
+            egui::FontId::proportional(11.0),
+            tl_colors::available_glyph(dark),
+        );
+    }
+}
+
+/// Render scan blocks on the scan track.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_scan_track(
     painter: &Painter,
@@ -16,6 +48,7 @@ pub(super) fn render_scan_track(
     view_end: f64,
     zoom: f64,
     detail_level: DetailLevel,
+    dark: bool,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
@@ -40,7 +73,7 @@ pub(super) fn render_scan_track(
                             Pos2::new(x_end, rect.bottom() - 2.0),
                         ),
                         2.0,
-                        tl_colors::scan_fill(0, None),
+                        tl_colors::cached_fill(dark, false),
                     );
                 }
             }
@@ -60,78 +93,42 @@ pub(super) fn render_scan_track(
                     Pos2::new(x_end, rect.bottom() - 2.0),
                 );
 
-                let fill = tl_colors::scan_fill(scan.vcp, scan.completeness);
-                let border = tl_colors::scan_border(scan.vcp, scan.completeness);
-
-                // Missing: outline only with dashed effect
+                // A scan with no cached sweeps at all is semantically
+                // "available, not downloaded" — render it in that style.
                 if scan.completeness == Some(ScanCompleteness::Missing) {
-                    painter.rect_stroke(
-                        scan_rect,
-                        2.0,
-                        Stroke::new(1.0, border),
-                        StrokeKind::Inside,
-                    );
-                } else {
-                    painter.rect_filled(scan_rect, 2.0, fill);
-                    painter.rect_stroke(
-                        scan_rect,
-                        2.0,
-                        Stroke::new(1.0, border),
-                        StrokeKind::Inside,
-                    );
-
-                    // Hatch pattern for PartialWithVcp
-                    if scan.completeness == Some(ScanCompleteness::PartialWithVcp) {
-                        let hatch_color = tl_colors::scan_hatch(scan.vcp);
-                        let spacing = 6.0;
-                        // Use global x-coordinate phase so hatch lines are parallel across all blocks
-                        let phase = scan_rect.left() % spacing;
-                        // `scan_rect` already clips to the intended block; delegate
-                        // the per-segment math to `fill_diagonal_hatch`.
-                        super::strokes::fill_diagonal_hatch(
-                            painter,
-                            scan_rect,
-                            spacing,
-                            phase,
-                            Stroke::new(0.5, hatch_color),
-                        );
-                    }
-
-                    // PartialNoVcp: draw dashed border on top of filled rect
-                    if scan.completeness == Some(ScanCompleteness::PartialNoVcp) {
-                        // Already drew solid border above; the reduced alpha handles visual distinction
-                    }
+                    draw_available_block(painter, scan_rect, dark);
+                    continue;
                 }
 
-                // Single combined label: "VCP 212 15/17" — centered in block
-                // Only show when the block is wide enough to avoid overlap with
-                // neighboring blocks and time tick labels.
+                let partial = matches!(
+                    scan.completeness,
+                    Some(ScanCompleteness::PartialWithVcp | ScanCompleteness::PartialNoVcp)
+                );
+                painter.rect_filled(scan_rect, 2.0, tl_colors::cached_fill(dark, partial));
+                painter.rect_stroke(
+                    scan_rect,
+                    2.0,
+                    Stroke::new(1.0, tl_colors::cached_border(dark, partial)),
+                    StrokeKind::Inside,
+                );
+
+                // Block label: VCP identity plus cached/planned sweep count.
+                // Wide blocks spell out "VCP"; narrow ones show the number,
+                // with the count kept only when it carries information
+                // (i.e. the scan is partial).
                 if width > 60.0 && scan.vcp > 0 {
-                    let is_partial = matches!(
-                        (scan.cached_sweep_count, scan.planned_sweep_count),
-                        (Some(p), Some(e)) if e > 0 && p < e
-                    );
-                    let label = if is_partial {
-                        let (p, e) = (
-                            scan.cached_sweep_count.unwrap(),
-                            scan.planned_sweep_count.unwrap(),
-                        );
-                        if width > 120.0 {
-                            format!("VCP {} {}/{}", scan.vcp, p, e)
-                        } else {
-                            format!("{} {}/{}", scan.vcp, p, e)
+                    let counts = match (scan.cached_sweep_count, scan.planned_sweep_count) {
+                        (Some(p), Some(e)) if e > 0 => Some((p, e)),
+                        _ => None,
+                    };
+                    let is_partial_count = counts.is_some_and(|(p, e)| p < e);
+                    let label = if width > 110.0 {
+                        match counts {
+                            Some((p, e)) => format!("VCP {} \u{00B7} {}/{}", scan.vcp, p, e),
+                            None => format!("VCP {}", scan.vcp),
                         }
-                    } else if width > 100.0 {
-                        let elev_count = scan
-                            .vcp_pattern
-                            .as_ref()
-                            .map(|v| v.elevations.len())
-                            .unwrap_or(scan.sweeps.len());
-                        if elev_count > 0 {
-                            format!("VCP {} ({})", scan.vcp, elev_count)
-                        } else {
-                            format!("VCP {}", scan.vcp)
-                        }
+                    } else if let (true, Some((p, e))) = (is_partial_count, counts) {
+                        format!("{} \u{00B7} {}/{}", scan.vcp, p, e)
                     } else {
                         format!("{}", scan.vcp)
                     };
@@ -148,11 +145,9 @@ pub(super) fn render_scan_track(
     }
 }
 
-/// Render shadow scan boundaries from the archive index.
-///
-/// These are subtle markers showing where scans exist in the archive before
-/// they are downloaded. The [`TimelineView`] supplies the dedup against
-/// already-downloaded scans.
+/// Render shadow scan boundaries from the archive index as first-class
+/// "available, not downloaded" blocks. The [`TimelineView`] supplies the
+/// dedup against already-downloaded scans.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_shadow_boundaries(
     painter: &Painter,
@@ -162,6 +157,7 @@ pub(super) fn render_shadow_boundaries(
     view_end: f64,
     zoom: f64,
     detail_level: DetailLevel,
+    dark: bool,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
@@ -203,13 +199,13 @@ pub(super) fn render_shadow_boundaries(
                     x_end
                 };
                 if x_end > x_start {
-                    painter.rect_filled(
+                    draw_available_block(
+                        painter,
                         Rect::from_min_max(
                             Pos2::new(x_start, rect.top() + 2.0),
                             Pos2::new(x_end, rect.bottom() - 2.0),
                         ),
-                        2.0,
-                        tl_colors::shadow_fill(),
+                        dark,
                     );
                 }
             }
@@ -233,17 +229,13 @@ pub(super) fn render_shadow_boundaries(
                     continue;
                 }
 
-                let shadow_rect = Rect::from_min_max(
-                    Pos2::new(x_start, rect.top() + 2.0),
-                    Pos2::new(x_end, rect.bottom() - 2.0),
-                );
-
-                painter.rect_filled(shadow_rect, 2.0, tl_colors::shadow_fill());
-                painter.rect_stroke(
-                    shadow_rect,
-                    2.0,
-                    Stroke::new(0.5, tl_colors::shadow_border()),
-                    StrokeKind::Inside,
+                draw_available_block(
+                    painter,
+                    Rect::from_min_max(
+                        Pos2::new(x_start, rect.top() + 2.0),
+                        Pos2::new(x_end, rect.bottom() - 2.0),
+                    ),
+                    dark,
                 );
             }
         }

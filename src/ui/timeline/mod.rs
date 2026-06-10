@@ -391,6 +391,7 @@ pub(super) fn render_timeline(
             view_end,
             zoom,
             detail_level,
+            dark,
         );
     }
 
@@ -403,6 +404,7 @@ pub(super) fn render_timeline(
         view_end,
         zoom,
         detail_level,
+        dark,
     );
 
     // -- Render sweep track (only at Sweeps detail) --
