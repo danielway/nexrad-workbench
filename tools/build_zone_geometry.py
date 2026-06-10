@@ -49,11 +49,19 @@ SOURCES = {
     "marine": {"file": "WSOM/mz16ap26.zip", "prefix": "forecast", "id": "idfield"},
 }
 
-# Douglas-Peucker tolerance in degrees (~0.012° ≈ 1.3 km) and coordinate
-# rounding. Generous enough to shrink the asset substantially while keeping
-# zone outlines visually faithful at the zoom levels alerts are viewed.
+# Simplification is *topology-aware* (TopoJSON-style): we find junction vertices
+# — where the set of zones touching changes (a vertex with ≠2 distinct
+# neighbours across all rings) — then Douglas-Peucker each "arc" between
+# junctions. A border arc shared by two adjacent zones is the identical vertex
+# sequence on both, so it simplifies identically and the shared border stays
+# shared. The runtime dissolve can then merge a multi-zone alert into one clean
+# region with no internal borders. (A naive per-ring DP simplified each zone
+# independently, breaking the sharing and leaving gaps the union couldn't bridge.)
 SIMPLIFY_EPSILON = float(os.environ.get("ZONE_EPS", "0.02"))
-COORD_DECIMALS = int(os.environ.get("ZONE_DEC", "3"))
+# Decimals for vertex matching (the source shares exact border vertices) and for
+# the emitted coordinates.
+MATCH_DECIMALS = 6
+OUT_DECIMALS = 4
 # Drop rings whose bbox is smaller than this (degrees) — tiny offshore islands
 # and slivers that add points but are invisible at alert-viewing zoom.
 MIN_RING_EXTENT = float(os.environ.get("ZONE_MINEXT", "0.02"))
@@ -137,11 +145,24 @@ def signed_area(ring):
     return a * 0.5
 
 
-def dp_simplify(ring, eps):
-    """Douglas-Peucker on a closed ring; preserves closure and >=4 points."""
-    if len(ring) <= 4:
-        return ring
-    pts = ring
+def normalize_ring(ring):
+    """Round to `MATCH_DECIMALS` and drop consecutive duplicates. Returns an
+    *open* list of (x, y) tuples (no repeated closing vertex), or [] if degenerate.
+    """
+    pts = []
+    for x, y in ring:
+        p = (round(x, MATCH_DECIMALS), round(y, MATCH_DECIMALS))
+        if not pts or pts[-1] != p:
+            pts.append(p)
+    if len(pts) > 1 and pts[0] == pts[-1]:
+        pts.pop()
+    return pts if len(pts) >= 3 else []
+
+
+def dp_arc(pts, eps):
+    """Douglas-Peucker on an open polyline; always keeps both endpoints."""
+    if len(pts) <= 2:
+        return list(pts)
     keep = [False] * len(pts)
     keep[0] = keep[-1] = True
     stack = [(0, len(pts) - 1)]
@@ -157,8 +178,7 @@ def dp_simplify(ring, eps):
             if seg2 == 0.0:
                 d = ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
             else:
-                t = ((px - ax) * dx + (py - ay) * dy) / seg2
-                t = max(0.0, min(1.0, t))
+                t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
                 cx, cy = ax + t * dx, ay + t * dy
                 d = ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
             if d > dmax:
@@ -167,20 +187,44 @@ def dp_simplify(ring, eps):
             keep[idx] = True
             stack.append((lo, idx))
             stack.append((idx, hi))
-    out = [pts[i] for i in range(len(pts)) if keep[i]]
-    if len(out) >= 4:
-        return out
-    # Over-collapsed (a big ring reduced below a usable closed loop): decimate
-    # the original to a small floor rather than reverting to the full ring.
-    step = max(1, len(pts) // 8)
-    out = pts[::step]
-    if out[-1] != pts[-1]:
-        out.append(pts[-1])
-    return out
+    return [pts[i] for i in range(len(pts)) if keep[i]]
 
 
-def round_ring(ring):
-    return [[round(x, COORD_DECIMALS), round(y, COORD_DECIMALS)] for x, y in ring]
+def simplify_ring_topo(pts, is_junction):
+    """Simplify an open ring (list of tuples) arc-by-arc between junctions.
+
+    Each maximal run between two junction vertices is DP-simplified as a unit.
+    Because a shared border is the identical sequence on both adjacent zones and
+    its endpoints are junctions kept on both, the simplified arc is identical too
+    — so the shared border survives. Returns a closed ring of [x, y] lists.
+    """
+    n = len(pts)
+    jidx = [i for i in range(n) if is_junction(pts[i])]
+
+    if len(jidx) < 2:
+        # No shared topology (an isolated loop): DP the whole ring from a
+        # deterministic anchor (its lexicographically smallest vertex) so any
+        # duplicate of this ring simplifies identically.
+        start = min(range(n), key=lambda i: pts[i])
+        rot = pts[start:] + pts[:start]
+        simp = dp_arc(rot + [rot[0]], SIMPLIFY_EPSILON)
+        if simp[-1] == simp[0]:
+            simp.pop()
+        out = simp
+    else:
+        out = []
+        for k in range(len(jidx)):
+            a = jidx[k]
+            b = jidx[(k + 1) % len(jidx)]
+            arc = [pts[(a + t) % n] for t in range(((b - a) % n) + 1)]  # inclusive
+            simp = dp_arc(arc, SIMPLIFY_EPSILON)
+            out.extend(simp[:-1])  # drop shared endpoint (next arc starts there)
+
+    if len(out) < 3:
+        return []
+    ring = [[round(x, OUT_DECIMALS), round(y, OUT_DECIMALS)] for x, y in out]
+    ring.append([ring[0][0], ring[0][1]])
+    return ring
 
 
 def zone_id(id_rule, rec):
@@ -192,7 +236,10 @@ def zone_id(id_rule, rec):
 
 
 def build():
-    out = {}
+    from collections import defaultdict
+
+    # Pass 1: read and normalize every zone's rings (no simplification yet).
+    zones = []  # (key, [open_ring_tuples, ...])
     for kind, cfg in SOURCES.items():
         rel, prefix, id_rule = cfg["file"], cfg["prefix"], cfg["id"]
         print(f"fetching {kind}: {rel}")
@@ -204,33 +251,57 @@ def build():
         for rec, rings in zip(dbf_records(dbf), shp_polygons(shp)):
             if not rings:
                 continue
-            # Group rings into polygons: a clockwise (outer) ring starts a new
-            # polygon; counter-clockwise (hole) rings attach to the current one.
-            polygons = []
+            norm = []
             for ring in rings:
                 xs = [p[0] for p in ring]
                 ys = [p[1] for p in ring]
                 if max(xs) - min(xs) < MIN_RING_EXTENT and max(ys) - min(ys) < MIN_RING_EXTENT:
                     continue  # negligible sliver/island
-                simp = round_ring(dp_simplify(ring, SIMPLIFY_EPSILON))
-                if len(simp) < 4:
-                    continue
-                if signed_area(ring) < 0 or not polygons:  # outer (CW) or first
-                    polygons.append([simp])
-                else:  # hole (CCW)
-                    polygons[-1].append(simp)
-            if not polygons:
+                nr = normalize_ring(ring)
+                if nr:
+                    norm.append(nr)
+            if norm:
+                zones.append((f"{prefix}/{zone_id(id_rule, rec)}", norm))
+                count += 1
+        print(f"  {count} zones read")
+
+    # Junctions: a vertex whose adjacency across all rings isn't a simple
+    # pass-through (≠2 distinct neighbours) — i.e. where the touching set of
+    # zones changes. Arcs run between junctions; shared arcs are identical on
+    # both adjacent zones, so DP-simplifying them keeps the shared border shared.
+    neighbors = defaultdict(set)
+    for _, rings in zones:
+        for r in rings:
+            m = len(r)
+            for i in range(m):
+                a = r[i]
+                b = r[(i + 1) % m]
+                neighbors[a].add(b)
+                neighbors[b].add(a)
+    junctions = {v for v, nb in neighbors.items() if len(nb) != 2}
+    print(f"  {len(junctions)} junction vertices of {len(neighbors)}")
+
+    # Pass 2: simplify each ring arc-by-arc, group into polygons, output.
+    out = {}
+    for key, rings in zones:
+        polygons = []
+        for r in rings:
+            simp = simplify_ring_topo(r, lambda v: v in junctions)
+            if len(simp) < 4:
                 continue
-            # Skip antimeridian-spanning zones (Alaska Aleutians / Pacific
-            # marine, with parts at both +179° and -179°): their bbox spans the
-            # globe, so they'd register as "in view" everywhere and project as
-            # lines clear across the map. Irrelevant to a CONUS radar tool.
-            all_x = [x for poly in polygons for ring in poly for x, _ in ring]
-            if max(all_x) - min(all_x) > 180.0:
-                continue
-            out[f"{prefix}/{zone_id(id_rule, rec)}"] = polygons
-            count += 1
-        print(f"  {count} zones")
+            if signed_area(r) < 0 or not polygons:  # outer (CW) or first
+                polygons.append([simp])
+            else:  # hole (CCW)
+                polygons[-1].append(simp)
+        if not polygons:
+            continue
+        # Skip antimeridian-spanning zones (Alaska Aleutians / Pacific marine,
+        # with parts at both +179° and -179°): their bbox spans the globe, so
+        # they'd register as "in view" everywhere. Irrelevant to a CONUS tool.
+        all_x = [x for poly in polygons for ring in poly for x, _ in ring]
+        if max(all_x) - min(all_x) > 180.0:
+            continue
+        out[key] = polygons
 
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     with open(OUT_PATH, "w") as f:

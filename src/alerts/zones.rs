@@ -130,11 +130,18 @@ fn dissolve_polygons(polygons: Vec<Vec<Ring>>) -> Vec<Vec<Ring>> {
     if polygons.len() < 2 {
         return polygons;
     }
-    // Feed every ring (across all input polygons) as a flat list of open
-    // contours. i_overlay arranges them all together; with the NonZero fill
-    // rule, same-wound exteriors union and oppositely-wound holes subtract by
-    // winding — so input holes survive and adjacent zone borders dissolve.
-    let contours: Vec<Vec<[f64; 2]>> = polygons.iter().flatten().map(open_contour).collect();
+    // Feed every ring as a flat list of open contours. i_overlay arranges them
+    // together; with the NonZero fill rule, same-wound exteriors union and
+    // oppositely-wound holes subtract. The baked data is *not* consistently
+    // wound (a handful of zones have CCW exteriors), which would cancel under
+    // NonZero and split contiguous regions — so force exteriors clockwise and
+    // holes counter-clockwise here.
+    let mut contours: Vec<Vec<[f64; 2]>> = Vec::new();
+    for rings in &polygons {
+        for (i, ring) in rings.iter().enumerate() {
+            contours.push(oriented_open_contour(ring, /* clockwise = */ i == 0));
+        }
+    }
 
     // Union all contours (NonZero) against an empty clip — dissolves shared
     // borders and merges overlaps.
@@ -190,11 +197,23 @@ fn is_sliver(contour: &[[f64; 2]]) -> bool {
     perim <= 0.0 || 2.0 * area / perim < MIN_RING_WIDTH
 }
 
-/// Our closed ring (first == last) → an i_overlay open contour.
-fn open_contour(ring: &Ring) -> Vec<[f64; 2]> {
+/// Our closed ring → an i_overlay open contour, reoriented to the requested
+/// winding (clockwise when `clockwise`, else counter-clockwise).
+fn oriented_open_contour(ring: &Ring, clockwise: bool) -> Vec<[f64; 2]> {
     let mut c: Vec<[f64; 2]> = ring.iter().map(|&(x, y)| [x, y]).collect();
     if c.len() > 1 && c.first() == c.last() {
         c.pop();
+    }
+    // Shoelace sign: negative = clockwise in (lon, lat) space.
+    let mut area2 = 0.0;
+    for i in 0..c.len() {
+        let a = c[i];
+        let b = c[(i + 1) % c.len()];
+        area2 += a[0] * b[1] - b[0] * a[1];
+    }
+    let is_cw = area2 < 0.0;
+    if is_cw != clockwise {
+        c.reverse();
     }
     c
 }
