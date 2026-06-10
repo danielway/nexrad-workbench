@@ -5,7 +5,7 @@ use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interact
 use super::canvas_overlays::{
     draw_globe, draw_national_mosaic, render_alerts, render_chrome_overlays, render_gps_location,
     render_mping_detail, render_mping_reports, render_nexrad_sites, render_radar_sweep,
-    OverlayContext, RadarCutout,
+    AlertRenderPhase, OverlayContext, RadarCutout,
 };
 use super::colors::canvas as canvas_colors;
 use crate::geo::{GeoLayerSet, MapProjection};
@@ -174,6 +174,23 @@ pub fn render_canvas_with_geo(
                     crate::geo::GeoPass::Lines,
                 );
 
+                // Warning fills paint *under* the radar so storm data stays
+                // readable over them; their outlines and the watch layer paint
+                // over the radar below.
+                let show_warnings = state.layer_state.geo.alerts_warnings;
+                let show_other = state.layer_state.geo.alerts_other;
+                let alerts_active = derived.data_is_live && !diagnostics.alerts.alerts.is_empty();
+                if show_warnings && alerts_active {
+                    render_alerts(
+                        &painter,
+                        &projection,
+                        &diagnostics.alerts.alerts,
+                        show_warnings,
+                        show_other,
+                        AlertRenderPhase::UnderRadar,
+                    );
+                }
+
                 let sweep_info = compute_sweep_line_azimuth(state, timeline, playback);
                 let (gpu_sweep, between_sweeps) =
                     compute_gpu_sweep_state(state, timeline, live, playback, derived, sweep_info);
@@ -228,18 +245,14 @@ pub fn render_canvas_with_geo(
                     }
                 }
 
-                let show_warnings = state.layer_state.geo.alerts_warnings;
-                let show_other = state.layer_state.geo.alerts_other;
-                if (show_warnings || show_other)
-                    && derived.data_is_live
-                    && !diagnostics.alerts.alerts.is_empty()
-                {
+                if (show_warnings || show_other) && alerts_active {
                     render_alerts(
                         &painter,
                         &projection,
                         &diagnostics.alerts.alerts,
                         show_warnings,
                         show_other,
+                        AlertRenderPhase::OverRadar,
                     );
                 }
 

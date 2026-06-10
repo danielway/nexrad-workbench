@@ -32,7 +32,7 @@ mod scale_bar;
 mod sites;
 mod sweep;
 
-pub(crate) use alerts::render_alerts;
+pub(crate) use alerts::{render_alerts, AlertRenderPhase};
 pub(crate) use globe::draw_globe;
 pub(crate) use gps_location::render_gps_location;
 pub(crate) use mping::{render_mping_detail, render_mping_reports};

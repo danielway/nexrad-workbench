@@ -4,6 +4,11 @@
 //! translucent fill plus an event-type-colored outline. Only runs in 2D flat
 //! mode.
 //!
+//! Rendering is split into two phases around the radar texture (see
+//! [`AlertRenderPhase`]): warning *fills* paint underneath the radar so storm
+//! data stays readable over them, while warning outlines and the entire
+//! watch/advisory layer paint on top.
+//!
 //! The outline is drawn **segment by segment** rather than as one stroked path:
 //! simplified zone geometry contains near-180° "needle" vertices, and a mitered
 //! closed path turns those into long screen-spanning spikes (a miter length
@@ -20,7 +25,22 @@ use geo_types::Coord;
 /// vertices left by simplification, which add nothing and risk artifacts.
 const MIN_SEG_SQ: f32 = 0.5;
 
-/// Render alert fills + outlines on top of the radar view.
+/// Fill opacity (0–255): warnings paint under the radar so they can be richer;
+/// watches/advisories paint over it, so kept lighter but still legible.
+const WARNING_FILL_ALPHA: u8 = 70;
+const WATCH_FILL_ALPHA: u8 = 45;
+
+/// Which pass of the radar sandwich to draw. Warning fills go beneath the radar;
+/// everything else goes above it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AlertRenderPhase {
+    /// Before the radar texture: warning fills only.
+    UnderRadar,
+    /// After the radar texture: watch/advisory fills and all outlines.
+    OverRadar,
+}
+
+/// Render the alert overlay for one phase of the radar sandwich.
 ///
 /// `show_warnings` / `show_other` gate the two product classes independently so
 /// the layers panel can toggle warnings and watches/advisories separately.
@@ -30,6 +50,7 @@ pub(crate) fn render_alerts(
     alerts: &[Alert],
     show_warnings: bool,
     show_other: bool,
+    phase: AlertRenderPhase,
 ) {
     let bounds = projection.visible_bounds();
 
@@ -56,41 +77,46 @@ pub(crate) fn render_alerts(
         let warning = alert.is_warning();
         let (r, g, b) = alert.color();
 
-        // Translucent fill (under the outline): warnings more opaque so the
-        // urgent areas read first.
-        let fill_alpha = if warning { 55 } else { 25 };
-        draw_fill(
-            painter,
-            projection,
-            bounds,
-            &alert.fill_triangles,
-            Color32::from_rgba_unmultiplied(r, g, b, fill_alpha),
-        );
-
-        // Outline, segment by segment (no miter joins → no spikes).
-        let (width, alpha) = if warning { (2.5, 220) } else { (1.5, 110) };
-        let stroke = Stroke::new(width, Color32::from_rgba_unmultiplied(r, g, b, alpha));
-        for polygon in &alert.geometry.polygons {
-            for ring in polygon {
-                let pts: Vec<Pos2> = ring
-                    .iter()
-                    .map(|&(lon, lat)| projection.geo_to_screen(Coord { x: lon, y: lat }))
-                    .collect();
-                let n = pts.len();
-                if n < 2 {
-                    continue;
+        match phase {
+            // Beneath the radar: warning backgrounds only.
+            AlertRenderPhase::UnderRadar => {
+                if warning {
+                    let fill = Color32::from_rgba_unmultiplied(r, g, b, WARNING_FILL_ALPHA);
+                    draw_fill(painter, projection, bounds, &alert.fill_triangles, fill);
                 }
-                for i in 0..n {
-                    let p1 = pts[i];
-                    let p2 = pts[(i + 1) % n]; // (i+1)%n closes the ring
-                    let (dx, dy) = (p2.x - p1.x, p2.y - p1.y);
-                    if dx * dx + dy * dy < MIN_SEG_SQ {
-                        continue;
+            }
+            // Over the radar: watch fills, then every outline.
+            AlertRenderPhase::OverRadar => {
+                if !warning {
+                    let fill = Color32::from_rgba_unmultiplied(r, g, b, WATCH_FILL_ALPHA);
+                    draw_fill(painter, projection, bounds, &alert.fill_triangles, fill);
+                }
+                // Outline, segment by segment (no miter joins → no spikes).
+                let (width, alpha) = if warning { (2.5, 220) } else { (2.0, 190) };
+                let stroke = Stroke::new(width, Color32::from_rgba_unmultiplied(r, g, b, alpha));
+                for polygon in &alert.geometry.polygons {
+                    for ring in polygon {
+                        let pts: Vec<Pos2> = ring
+                            .iter()
+                            .map(|&(lon, lat)| projection.geo_to_screen(Coord { x: lon, y: lat }))
+                            .collect();
+                        let n = pts.len();
+                        if n < 2 {
+                            continue;
+                        }
+                        for i in 0..n {
+                            let p1 = pts[i];
+                            let p2 = pts[(i + 1) % n]; // (i+1)%n closes the ring
+                            let (dx, dy) = (p2.x - p1.x, p2.y - p1.y);
+                            if dx * dx + dy * dy < MIN_SEG_SQ {
+                                continue;
+                            }
+                            if warning {
+                                painter.line_segment([p1, p2], halo);
+                            }
+                            painter.line_segment([p1, p2], stroke);
+                        }
                     }
-                    if warning {
-                        painter.line_segment([p1, p2], halo);
-                    }
-                    painter.line_segment([p1, p2], stroke);
                 }
             }
         }

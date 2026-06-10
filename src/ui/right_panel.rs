@@ -298,21 +298,14 @@ pub(super) fn render_layers_section(
                 });
             }
             ui.add_enabled_ui(live, |ui| {
-                ui.checkbox(
-                    &mut state.layer_state.geo.alerts_warnings,
-                    "Warning Polygons",
-                )
-                .on_hover_text(
-                    "Show active NWS warning polygons on the 2D map (click polygon for details)",
-                )
-                .on_disabled_hover_text(stale_tip);
+                ui.checkbox(&mut state.layer_state.geo.alerts_warnings, "Alert Warnings")
+                    .on_hover_text("NWS warnings (tornado, severe thunderstorm, flood, …). Click an area for details.")
+                    .on_disabled_hover_text(stale_tip);
                 ui.checkbox(
                     &mut state.layer_state.geo.alerts_other,
-                    "Watches & Advisories",
+                    "Alert Watches & Advisories",
                 )
-                .on_hover_text(
-                    "Show NWS watch, advisory, and statement areas on the 2D map (click for details)",
-                )
+                .on_hover_text("NWS watches, advisories, and statements. Click an area for details.")
                 .on_disabled_hover_text(stale_tip);
             });
 
