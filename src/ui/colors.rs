@@ -178,24 +178,6 @@ pub mod timeline {
     /// Base RGB for archive data not yet downloaded (desaturated slate).
     const AVAILABLE_RGB: (u8, u8, u8) = (130, 150, 185);
 
-    /// Base RGB for a VCP category. Warmer and more saturated than the old
-    /// single-lane palette so scan blocks pop against the dark background.
-    pub fn vcp_base_rgb(vcp: u16) -> (u8, u8, u8) {
-        match vcp {
-            // Precipitation modes — warm green
-            215 => (55, 130, 75),
-            212 => (60, 120, 80),
-            // Clear air modes — warm blue
-            31 | 32 | 35 => (55, 100, 155),
-            // Severe weather modes — warm orange
-            12 | 121 => (175, 100, 50),
-            // Other known VCPs — teal
-            _ if vcp > 0 => (60, 110, 110),
-            // Unknown — gray
-            _ => (80, 80, 80),
-        }
-    }
-
     /// Fill for an on-device scan block. Partial scans (some sweeps still
     /// missing) keep the same hue at reduced alpha — two tiers only; the
     /// exact count is carried by the block label and tooltip.
@@ -263,6 +245,55 @@ pub mod timeline {
     //
     // Download-ghost colors live in [`super::acquisition`] so the timeline
     // ghosts and the acquisition drawer share one palette.
+
+    /// Elapsed portion of the live in-progress volume — the same steel
+    /// blue as a cached block at reduced alpha, so the block visually
+    /// "becomes" a cached block as it fills in.
+    pub fn live_elapsed_fill() -> Color32 {
+        let (r, g, b) = CACHED_RGB;
+        Color32::from_rgba_unmultiplied(r, g, b, 160)
+    }
+    pub fn live_elapsed_border() -> Color32 {
+        let (r, g, b) = CACHED_RGB;
+        Color32::from_rgba_unmultiplied(r, g, b, 180)
+    }
+
+    /// Projected remainder of the live in-progress volume.
+    pub fn live_projected_fill() -> Color32 {
+        let (r, g, b) = CACHED_RGB;
+        Color32::from_rgba_unmultiplied(r, g, b, 55)
+    }
+    pub fn live_projected_border() -> Color32 {
+        let (r, g, b) = CACHED_RGB;
+        Color32::from_rgba_unmultiplied(r, g, b, 90)
+    }
+
+    /// Projected next-volume ghost — available-style slate, since the
+    /// volume doesn't exist yet.
+    pub fn next_volume_fill() -> Color32 {
+        let (r, g, b) = AVAILABLE_RGB;
+        Color32::from_rgba_unmultiplied(r, g, b, 28)
+    }
+    pub fn next_volume_border() -> Color32 {
+        let (r, g, b) = AVAILABLE_RGB;
+        Color32::from_rgba_unmultiplied(r, g, b, 70)
+    }
+
+    /// Received chunk slot inside a downloading sweep.
+    pub fn rt_chunk_fill() -> Color32 {
+        Color32::from_rgba_unmultiplied(80, 170, 230, 70)
+    }
+    pub fn rt_chunk_border() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 180, 255, 90)
+    }
+    /// Dashed border of a still-accumulating (partial) chunk slot.
+    pub fn rt_chunk_partial_border() -> Color32 {
+        Color32::from_rgba_unmultiplied(100, 180, 255, 70)
+    }
+    /// Dashed border around an entire downloading sweep block.
+    pub fn rt_downloading_sweep_border() -> Color32 {
+        Color32::from_rgba_unmultiplied(60, 140, 200, 100)
+    }
 
     /// Pending (expected but not yet received) sweep placeholder.
     pub fn rt_pending_sweep_border() -> Color32 {

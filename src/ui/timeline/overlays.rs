@@ -213,9 +213,8 @@ pub(super) fn render_realtime_progress(
         Pos2::new(x_vol_end, scan_rect.bottom() - 2.0),
     );
 
-    // VCP-colored fill -- use the same warm palette as completed scans but
-    // with reduced alpha to indicate in-progress.
-    let (vr, vg, vb) = tl_colors::vcp_base_rgb(vcp);
+    // Cached-block steel blue at reduced alpha — the in-progress volume
+    // reads as a cached block that is still filling in.
 
     // Elapsed portion: solid fill
     if x_now > x_vol_start {
@@ -223,21 +222,13 @@ pub(super) fn render_realtime_progress(
             scan_block.min,
             Pos2::new(x_now.min(x_vol_end), scan_block.max.y),
         );
-        painter.rect_filled(
-            elapsed_rect,
-            2.0,
-            Color32::from_rgba_unmultiplied(vr, vg, vb, 160),
-        );
+        painter.rect_filled(elapsed_rect, 2.0, tl_colors::live_elapsed_fill());
     }
 
     // Projected remainder: subtle fill indicating estimated extent
     if x_vol_end > x_now && x_now >= scan_rect.left() {
         let future_rect = Rect::from_min_max(Pos2::new(x_now, scan_block.min.y), scan_block.max);
-        painter.rect_filled(
-            future_rect,
-            2.0,
-            Color32::from_rgba_unmultiplied(vr, vg, vb, 55),
-        );
+        painter.rect_filled(future_rect, 2.0, tl_colors::live_projected_fill());
     }
 
     // Border: solid on elapsed side, dashed on projected side
@@ -250,13 +241,13 @@ pub(super) fn render_realtime_progress(
         painter.rect_stroke(
             elapsed_rect,
             2.0,
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(vr, vg, vb, 180)),
+            Stroke::new(1.0, tl_colors::live_elapsed_border()),
             StrokeKind::Inside,
         );
     }
     // Dashed border for projected remainder
     if x_vol_end > x_now && x_now >= scan_rect.left() {
-        let dash_color = Color32::from_rgba_unmultiplied(vr, vg, vb, 90);
+        let dash_color = tl_colors::live_projected_border();
         let remainder = Rect::from_min_max(
             Pos2::new(x_now, scan_block.min.y),
             Pos2::new(x_vol_end, scan_block.max.y),
@@ -465,14 +456,10 @@ pub(super) fn render_realtime_progress(
                                 slot_rect.max.y,
                             ),
                         );
-                        painter.rect_filled(
-                            partial_rect,
-                            1.0,
-                            Color32::from_rgba_unmultiplied(80, 170, 230, 70),
-                        );
+                        painter.rect_filled(partial_rect, 1.0, tl_colors::rt_chunk_fill());
                     }
                     // Dashed border for the partial slot (top + bottom only)
-                    let border_color = Color32::from_rgba_unmultiplied(100, 180, 255, 70);
+                    let border_color = tl_colors::rt_chunk_partial_border();
                     stroke_dashed_rect(
                         painter,
                         slot_rect,
@@ -481,15 +468,11 @@ pub(super) fn render_realtime_progress(
                     );
                 } else if slot < chunks_received {
                     // ── Received (complete) chunk slot ──
-                    painter.rect_filled(
-                        slot_rect,
-                        1.0,
-                        Color32::from_rgba_unmultiplied(80, 170, 230, 70),
-                    );
+                    painter.rect_filled(slot_rect, 1.0, tl_colors::rt_chunk_fill());
                     painter.rect_stroke(
                         slot_rect,
                         1.0,
-                        Stroke::new(0.5, Color32::from_rgba_unmultiplied(100, 180, 255, 90)),
+                        Stroke::new(0.5, tl_colors::rt_chunk_border()),
                         StrokeKind::Inside,
                     );
                 } else if slot == chunks_received && countdown.is_some() {
@@ -519,7 +502,7 @@ pub(super) fn render_realtime_progress(
             }
 
             // Dashed border around the entire sweep block
-            let border_color = Color32::from_rgba_unmultiplied(60, 140, 200, 100);
+            let border_color = tl_colors::rt_downloading_sweep_border();
             stroke_dashed_rect(
                 painter,
                 block,
@@ -685,15 +668,14 @@ fn render_ghost_volume_overlay(
         return;
     }
 
-    // Scan-track ghost block: faded VCP color with a dashed outline so it
-    // visibly reads as "projected, not live."
-    let (vr, vg, vb) = tl_colors::vcp_base_rgb(ghost.vcp_number);
+    // Scan-track ghost block: available-style slate with a dashed outline
+    // so it visibly reads as "projected, not live."
     let block = Rect::from_min_max(
         Pos2::new(x_start, scan_rect.top() + 2.0),
         Pos2::new(x_end, scan_rect.bottom() - 2.0),
     );
-    painter.rect_filled(block, 2.0, Color32::from_rgba_unmultiplied(vr, vg, vb, 28));
-    let dash_color = Color32::from_rgba_unmultiplied(vr, vg, vb, 70);
+    painter.rect_filled(block, 2.0, tl_colors::next_volume_fill());
+    let dash_color = tl_colors::next_volume_border();
     stroke_dashed_rect(
         painter,
         block,
