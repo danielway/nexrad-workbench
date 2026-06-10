@@ -162,7 +162,7 @@ pub(super) fn render_download_ghosts(
 /// Render real-time streaming progress on the timeline.
 ///
 /// Draws a unified view of the in-progress volume:
-/// - **Scan track**: Single VCP-colored block spanning vol_start -> expected_end,
+/// - **Scan track**: Single cached-blue block spanning vol_start -> expected_end,
 ///   with solid fill for elapsed time and dashed outline for projected remainder.
 /// - **Sweep track**: All elevation sweeps with per-sweep state:
 ///   - Complete (downloaded & persisted): filled with cool elevation colors
