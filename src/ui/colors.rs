@@ -229,6 +229,17 @@ pub mod timeline {
         Color32::from_rgba_unmultiplied(r, g, b, 110)
     }
 
+    /// Tooltip status-word tint for on-device data — a brighter, readable
+    /// take on the cached steel blue.
+    pub fn status_cached() -> Color32 {
+        Color32::from_rgb(125, 170, 220)
+    }
+
+    /// Tooltip status-word tint for cloud-available data.
+    pub fn status_available() -> Color32 {
+        Color32::from_rgb(150, 165, 200)
+    }
+
     // ── Sweep track colors (cool palette) ─────────────────────────────
 
     /// Fill color for a sweep block. Maps elevation angle (0–20 deg)

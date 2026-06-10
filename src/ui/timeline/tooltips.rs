@@ -1,10 +1,71 @@
-//! Tooltip rendering for timeline elements: scans, sweeps, and realtime volumes.
+//! Tooltip rendering for timeline elements: scans, sweeps, available
+//! (not-yet-downloaded) regions, and realtime volumes.
+//!
+//! Every tooltip follows the same shape: a status header answering
+//! "what is this and do I have it", the time/availability essentials,
+//! then a separator and the expert detail (VCP, waveform, products)
+//! in weak text.
 
-use super::{format_timestamp_full, DetailLevel};
+use super::{format_timestamp_full, DateTimeComponents, DetailLevel};
 use crate::data::ScanCompleteness;
 use crate::nexrad::projection::SweepAvailability;
 use crate::state::TimelineView;
+use crate::ui::colors::timeline as tl_colors;
+use crate::ui::colors::ui as ui_colors;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
+
+/// Shared tooltip header: `<title> · <status>`, with the status word
+/// tinted to match the visual language of the block being hovered.
+fn tooltip_header(ui: &mut egui::Ui, title: &str, status: &str, status_color: Color32) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(RichText::new(title).strong().size(12.0));
+        ui.label(RichText::new("\u{00B7}").size(12.0).weak());
+        ui.label(
+            RichText::new(status)
+                .strong()
+                .size(12.0)
+                .color(status_color),
+        );
+    });
+}
+
+/// `2026-06-10 21:36:05 → 21:42:11 (366s)` — date once, start and end
+/// times, duration. The essentials line of scan/sweep tooltips.
+fn format_time_range(start: f64, end: f64, use_local: bool) -> String {
+    let s = DateTimeComponents::from_timestamp(start.floor() as i64, use_local);
+    let e = DateTimeComponents::from_timestamp(end.floor() as i64, use_local);
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} \u{2192} {:02}:{:02}:{:02} ({:.0}s)",
+        s.year,
+        s.month,
+        s.day,
+        s.hour,
+        s.minute,
+        s.second,
+        e.hour,
+        e.minute,
+        e.second,
+        (end - start).max(0.0)
+    )
+}
+
+/// Human description of a VCP for the expert-detail section.
+fn vcp_detail_line(vcp: u16) -> String {
+    let mode = match vcp {
+        215 | 212 => "Precipitation Mode",
+        31 | 32 | 35 => "Clear Air Mode",
+        12 | 121 => "Severe Weather Mode",
+        _ => "",
+    };
+    if vcp == 0 {
+        "VCP unknown".to_string()
+    } else if mode.is_empty() {
+        format!("VCP {}", vcp)
+    } else {
+        format!("VCP {} \u{2014} {}", vcp, mode)
+    }
+}
 
 /// Render hover tooltip for timeline elements.
 ///
@@ -20,7 +81,7 @@ pub(super) fn render_timeline_tooltip(
     live: &crate::subsystem::Live,
     hover_ts: f64,
     hover_pos: Pos2,
-    scan_rect: &Rect,
+    _scan_rect: &Rect,
     sweep_rect: &Rect,
     detail_level: DetailLevel,
     use_local: bool,
@@ -71,7 +132,22 @@ pub(super) fn render_timeline_tooltip(
         (None, None)
     };
 
-    if scan.is_none() && sweep.is_none() && !in_active_volume {
+    // Nothing cached/live under the cursor — check for an available
+    // (in-archive, not downloaded) region on the scan track.
+    let shadow = if scan.is_none() && sweep.is_none() && !in_active_volume && !in_sweep_track {
+        view.shadow_boundaries()
+            .iter()
+            .find(|b| {
+                (b.start as f64) <= hover_ts
+                    && hover_ts <= (b.end as f64)
+                    && !view.is_covered_by_cached(b.start)
+            })
+            .copied()
+    } else {
+        None
+    };
+
+    if scan.is_none() && sweep.is_none() && !in_active_volume && shadow.is_none() {
         return;
     }
 
@@ -89,7 +165,6 @@ pub(super) fn render_timeline_tooltip(
                 render_realtime_volume_tooltip(
                     ui,
                     position,
-                    live_state,
                     countdown,
                     hover_ts,
                     now_secs,
@@ -105,10 +180,37 @@ pub(super) fn render_timeline_tooltip(
                 live.radar_model.volume.as_ref().map(|v| &v.roster),
                 use_local,
             );
+        } else if let Some(boundary) = shadow {
+            render_available_tooltip_content(ui, &boundary, use_local);
         }
     });
+}
 
-    let _ = scan_rect; // suppress unused warning when not in sweep mode
+/// Tooltip for an available (in cloud archive, not downloaded) region.
+fn render_available_tooltip_content(
+    ui: &mut egui::Ui,
+    boundary: &crate::nexrad::ScanBoundary,
+    use_local: bool,
+) {
+    tooltip_header(
+        ui,
+        "Volume scan",
+        "In cloud archive",
+        tl_colors::status_available(),
+    );
+
+    // Boundary times come from S3 listing gaps, so they're approximate.
+    let s = DateTimeComponents::from_timestamp(boundary.start, use_local);
+    let e = DateTimeComponents::from_timestamp(boundary.end, use_local);
+    ui.label(format!(
+        "~{:04}-{:02}-{:02} {:02}:{:02} \u{2192} {:02}:{:02}",
+        s.year, s.month, s.day, s.hour, s.minute, e.hour, e.minute
+    ));
+    ui.label(
+        RichText::new("Not downloaded \u{2014} click here and it loads automatically.")
+            .size(10.0)
+            .weak(),
+    );
 }
 
 /// Render tooltip content when hovering over a sweep block.
@@ -118,44 +220,35 @@ fn render_sweep_tooltip_content(
     parent_scan: Option<&crate::state::radar_data::Scan>,
     use_local: bool,
 ) {
-    ui.label(
-        RichText::new(format!("Elevation Sweep #{}", sweep.elevation_number))
-            .strong()
-            .size(12.0),
+    let display_angle = parent_scan
+        .map(|s| s.display_angle(sweep))
+        .unwrap_or(sweep.elevation);
+    tooltip_header(
+        ui,
+        &format!(
+            "Tilt {} \u{00B7} {:.1}\u{00B0}",
+            sweep.elevation_number, display_angle
+        ),
+        "On device",
+        tl_colors::status_cached(),
     );
-    ui.label(
-        RichText::new("One 360\u{00B0} rotation at a single antenna tilt angle.")
-            .size(10.0)
-            .weak(),
-    );
-    ui.separator();
 
     let sweep_count = parent_scan
         .and_then(|s| s.vcp_pattern.as_ref().map(|v| v.elevations.len()))
         .or_else(|| parent_scan.map(|s| s.sweeps.len()))
         .unwrap_or(0);
-    let display_angle = parent_scan
-        .map(|s| s.display_angle(sweep))
-        .unwrap_or(sweep.elevation);
+
+    ui.label(format_time_range(
+        sweep.start_time,
+        sweep.end_time,
+        use_local,
+    ));
     if sweep_count > 0 {
         ui.label(format!(
-            "Elevation: {:.1}\u{00B0} (cut #{} of {})",
-            display_angle, sweep.elevation_number, sweep_count
-        ));
-    } else {
-        ui.label(format!(
-            "Elevation: {:.1}\u{00B0} (cut #{})",
-            display_angle, sweep.elevation_number
+            "Cut {} of {} in this volume",
+            sweep.elevation_number, sweep_count
         ));
     }
-
-    let duration = sweep.end_time - sweep.start_time;
-    let start_str = format_timestamp_full(sweep.start_time, use_local);
-    let end_str = format_timestamp_full(sweep.end_time, use_local);
-    ui.label(format!(
-        "Time: {} \u{2192} {} ({:.0}s)",
-        start_str, end_str, duration
-    ));
 
     // Warn if sweep extends outside its parent scan
     if let Some(ps) = parent_scan {
@@ -169,12 +262,13 @@ fn render_sweep_tooltip_content(
         }
     }
 
-    // Waveform and products from VCP
+    // Expert detail: waveform and products from the VCP definition.
     if let Some(vcp) = parent_scan.and_then(|s| s.vcp_pattern.as_ref()) {
         if let Some(vcp_elev) = vcp
             .elevations
             .get(sweep.elevation_number.saturating_sub(1) as usize)
         {
+            ui.separator();
             let wf_label = match vcp_elev.waveform.as_str() {
                 "CS" | "ContiguousSurveillance" => "Contiguous Surveillance",
                 "CDW" | "ContiguousDopplerWithGating" => "Contiguous Doppler (Gated)",
@@ -193,8 +287,16 @@ fn render_sweep_tooltip_content(
                 "SPP" | "StaggeredPulsePair" => "Reflectivity / Velocity / Differential",
                 _ => "Unknown",
             };
-            ui.label(format!("Waveform: {}", wf_label));
-            ui.label(format!("Products: {}", products));
+            ui.label(
+                RichText::new(format!("Waveform: {}", wf_label))
+                    .size(10.0)
+                    .weak(),
+            );
+            ui.label(
+                RichText::new(format!("Products: {}", products))
+                    .size(10.0)
+                    .weak(),
+            );
 
             let mut flags = Vec::new();
             if vcp_elev.is_sails {
@@ -207,7 +309,11 @@ fn render_sweep_tooltip_content(
                 flags.push("Base Tilt");
             }
             if !flags.is_empty() {
-                ui.label(format!("Flags: {}", flags.join(", ")));
+                ui.label(
+                    RichText::new(format!("Flags: {}", flags.join(", ")))
+                        .size(10.0)
+                        .weak(),
+                );
             }
         }
     }
@@ -222,7 +328,6 @@ fn render_sweep_tooltip_content(
 fn render_realtime_volume_tooltip(
     ui: &mut egui::Ui,
     model: &crate::nexrad::projection::ScanProjection,
-    live_state: &crate::state::LiveModeState,
     countdown: Option<f64>,
     hover_ts: f64,
     now_secs: f64,
@@ -272,29 +377,29 @@ fn render_realtime_volume_tooltip(
         if let Some(sp) = hovered_sweep {
             let elev_num = sp.elevation_number;
 
-            let state_label = match sp.availability() {
-                SweepAvailability::Cached => "Complete",
-                SweepAvailability::Collecting => "Collecting",
-                SweepAvailability::Available => "Available",
-                SweepAvailability::Projected => "Pending",
+            let (state_label, state_color) = match sp.availability() {
+                SweepAvailability::Cached => ("On device", tl_colors::status_cached()),
+                SweepAvailability::Collecting => ("Collecting now", ui_colors::ACTIVE),
+                SweepAvailability::Available => ("Available", tl_colors::status_available()),
+                SweepAvailability::Projected => ("Projected", tl_colors::status_available()),
             };
-            ui.label(
-                RichText::new(format!(
-                    "Elevation Sweep #{} \u{2014} {}",
-                    elev_num, state_label
-                ))
-                .strong()
-                .size(12.0),
+            tooltip_header(
+                ui,
+                &format!(
+                    "Tilt {} \u{00B7} {:.1}\u{00B0}",
+                    elev_num, sp.elevation_angle
+                ),
+                state_label,
+                state_color,
             );
             ui.label(
                 RichText::new(format!(
-                    "{:.1}\u{00B0} (cut #{} of {})",
-                    sp.elevation_angle, elev_num, expected_count
+                    "Cut {} of {} in this volume",
+                    elev_num, expected_count
                 ))
                 .size(10.0)
                 .weak(),
             );
-            ui.separator();
 
             if sp.is_complete() {
                 if sp.is_observed() {
@@ -305,58 +410,37 @@ fn render_realtime_volume_tooltip(
                 ui.label(
                     RichText::new("Data received and stored.")
                         .size(10.0)
-                        .color(Color32::from_rgb(100, 200, 100)),
+                        .color(ui_colors::SUCCESS),
                 );
             } else if sp.is_in_progress() {
-                let (total_radials, completed_chunks) = if sp.is_in_progress() {
-                    (sp.radials_received, sp.chunks_received as usize)
-                } else {
-                    (0, 0)
-                };
+                let completed_chunks = sp.chunks_received as usize;
                 let in_progress_radials = model.in_progress_radials.unwrap_or(0);
 
-                ui.label(format!("Radials: {}/360 collected", total_radials));
+                ui.label(format!("Radials: {}/360 collected", sp.radials_received));
 
-                let total_volume_chunks = live_state.chunks_received;
-
-                if completed_chunks > 0 || in_progress_radials > 0 {
-                    ui.separator();
-                    // The last chunk in chunk_elev_spans may still be accumulating
-                    // radials — show it as "collecting" instead of "collected".
-                    let is_last_partial = in_progress_radials > 0 && completed_chunks > 0;
+                // One line of chunk progress — the per-chunk breakdown
+                // belongs to the chunk slots drawn on the track itself.
+                let is_last_partial = in_progress_radials > 0 && completed_chunks > 0;
+                if is_last_partial {
+                    let total = if sp.chunks_in_sweep > 0 {
+                        format!(" of {}", sp.chunks_in_sweep)
+                    } else {
+                        String::new()
+                    };
                     ui.label(
                         RichText::new(format!(
-                            "Chunks for this elevation ({} total in volume):",
-                            total_volume_chunks
+                            "Chunk {}{} collecting \u{2014} {} radials",
+                            completed_chunks, total, in_progress_radials
                         ))
                         .size(10.0)
-                        .weak(),
+                        .color(ui_colors::ACTIVE),
                     );
-                    for (i, chunk) in sp.chunks.iter().enumerate() {
-                        let chunk_num = i + 1;
-                        let is_active_chunk = is_last_partial && i == sp.chunks.len() - 1;
-                        if is_active_chunk {
-                            let label = format!(
-                                "  Chunk {}/{}: {} radials, collecting\u{2026}",
-                                chunk_num, completed_chunks, in_progress_radials
-                            );
-                            ui.label(
-                                RichText::new(label)
-                                    .size(10.0)
-                                    .color(Color32::from_rgb(100, 180, 255)),
-                            );
-                        } else {
-                            let label = format!(
-                                "  Chunk {}/{}: {} radials, collected",
-                                chunk_num, completed_chunks, chunk.radial_count
-                            );
-                            ui.label(RichText::new(label).size(10.0));
-                        }
-                    }
+                } else if completed_chunks > 0 {
+                    ui.label(format!("{} chunks received", completed_chunks));
                 }
 
                 if let Some(remaining) = countdown {
-                    ui.label(format!("Next chunk in ~{}s", remaining.ceil() as i32));
+                    ui.label(format!("Next data in ~{}s", remaining.ceil() as i32));
                 }
             } else {
                 let duration = sp.duration();
@@ -381,7 +465,11 @@ fn render_realtime_volume_tooltip(
                         "SPP" | "StaggeredPulsePair" => "Staggered Pulse Pair",
                         other => other,
                     };
-                    ui.label(format!("Waveform: {}", wf_label));
+                    ui.label(
+                        RichText::new(format!("Waveform: {}", wf_label))
+                            .size(10.0)
+                            .weak(),
+                    );
                 }
             }
 
@@ -390,60 +478,28 @@ fn render_realtime_volume_tooltip(
     }
 
     // -- Volume-level tooltip (scan track or no sweep match) --
-    let vcp_label = if vcp_num > 0 {
-        format!("VCP {}", vcp_num)
-    } else {
-        "Unknown VCP".to_string()
-    };
-    ui.label(
-        RichText::new(format!("Volume Scan In Progress ({})", vcp_label))
-            .strong()
-            .size(12.0),
-    );
-
-    let mode_desc = match vcp_num {
-        215 | 212 => "Precipitation Mode",
-        31 | 32 | 35 => "Clear Air Mode",
-        12 | 121 => "Severe Weather Mode",
-        _ if vcp_num > 0 => "Known Mode",
-        _ => "Unknown Mode",
-    };
-    ui.label(
-        RichText::new(format!(
-            "Radar is actively collecting data. ({})",
-            mode_desc
-        ))
-        .size(10.0)
-        .weak(),
-    );
-    ui.separator();
+    tooltip_header(ui, "Live volume", "Collecting now", ui_colors::ACTIVE);
 
     let start_str = format_timestamp_full(vol_start, use_local);
     ui.label(format!("Started: {}", start_str));
     let elapsed = (now - vol_start).floor();
     let remaining = (expected_end - now).ceil();
-    if remaining > 0.0 {
-        ui.label(format!(
-            "Elapsed: {}s / est. {:.0}s total",
-            elapsed as i64, expected_dur
-        ));
-    } else {
-        ui.label(format!(
-            "Elapsed: {}s (expected ~{:.0}s)",
-            elapsed as i64, expected_dur
-        ));
-    }
+    ui.label(format!(
+        "Elapsed: {}s / est. {:.0}s total",
+        elapsed as i64, expected_dur
+    ));
 
     let received = model.completed_count();
-    let expected = model.sweeps.len();
-    if expected > 0 {
-        ui.label(format!("Elevations: {}/{} received", received, expected));
+    if expected_count > 0 {
+        ui.label(format!("{} of {} tilts received", received, expected_count));
     } else if received > 0 {
-        ui.label(format!("Elevations: {} received", received));
+        ui.label(format!("{} tilts received", received));
+    }
+    if let Some(remaining_cd) = countdown {
+        ui.label(format!("Next data in ~{}s", remaining_cd.ceil() as i32));
     }
 
     if past_now {
-        ui.separator();
         ui.label(
             RichText::new("Projected area \u{2014} data not yet collected")
                 .size(10.0)
@@ -453,16 +509,10 @@ fn render_realtime_volume_tooltip(
         if remaining > 0.0 {
             ui.label(format!("Est. ~{}s remaining", remaining as i64));
         }
-    } else {
-        ui.separator();
-        ui.label(
-            RichText::new(format!(
-                "Live: {}/{} elevations received",
-                received, expected
-            ))
-            .color(Color32::from_rgb(100, 200, 100)),
-        );
     }
+
+    ui.separator();
+    ui.label(RichText::new(vcp_detail_line(vcp_num)).size(10.0).weak());
 }
 
 /// Render tooltip content when hovering over a scan block.
@@ -473,65 +523,33 @@ fn render_scan_tooltip_content(
     live_roster: Option<&crate::state::VolumeElevationRoster>,
     use_local: bool,
 ) {
-    let vcp_label = if scan.vcp > 0 {
-        format!("VCP {}", scan.vcp)
-    } else {
-        "Unknown VCP".to_string()
+    let (status, status_color) = match scan.completeness {
+        Some(ScanCompleteness::Missing) => ("In cloud archive", tl_colors::status_available()),
+        Some(ScanCompleteness::PartialWithVcp | ScanCompleteness::PartialNoVcp) => {
+            ("Partially on device", tl_colors::status_cached())
+        }
+        Some(ScanCompleteness::Complete) | None => ("On device", tl_colors::status_cached()),
     };
-    ui.label(
-        RichText::new(format!("Volume Scan ({})", vcp_label))
-            .strong()
-            .size(12.0),
-    );
+    tooltip_header(ui, "Volume scan", status, status_color);
 
-    let mode_desc = match scan.vcp {
-        215 | 212 => "Precipitation Mode",
-        31 | 32 | 35 => "Clear Air Mode",
-        12 | 121 => "Severe Weather Mode",
-        _ if scan.vcp > 0 => "Known Mode",
-        _ => "Unknown Mode",
-    };
+    ui.label(format_time_range(scan.start_time, scan.end_time, use_local));
+
     let elev_count = scan
         .vcp_pattern
         .as_ref()
         .map(|v| v.elevations.len())
         .unwrap_or(scan.sweeps.len());
-    let desc = if elev_count > 0 {
-        format!(
-            "A complete 360\u{00B0} survey at {} elevation angles. ({})",
-            elev_count, mode_desc
-        )
-    } else {
-        format!("A volume scan using {}.", mode_desc)
-    };
-    ui.label(RichText::new(desc).size(10.0).weak());
-    ui.separator();
-
-    let duration = scan.end_time - scan.start_time;
-    let start_str = format_timestamp_full(scan.start_time, use_local);
-    let end_str = format_timestamp_full(scan.end_time, use_local);
-    ui.label(format!("Start: {}", start_str));
-    ui.label(format!("End:   {} ({:.0}s)", end_str, duration));
-
-    if elev_count > 0 {
-        ui.label(format!("Elevations: {} sweeps", elev_count));
-    }
-
-    // Completeness
-    let completeness_str = match scan.completeness {
-        Some(ScanCompleteness::Complete) => "Complete",
-        Some(ScanCompleteness::PartialWithVcp) => "Partial (VCP known)",
-        Some(ScanCompleteness::PartialNoVcp) => "Partial (no VCP)",
-        Some(ScanCompleteness::Missing) => "Missing",
-        None => "Unknown",
-    };
     if let (Some(present), Some(expected)) = (scan.cached_sweep_count, scan.planned_sweep_count) {
-        ui.label(format!(
-            "Records: {}/{} ({})",
-            present, expected, completeness_str
-        ));
-    } else {
-        ui.label(format!("Status: {}", completeness_str));
+        ui.label(format!("{} of {} tilts on device", present, expected));
+    } else if elev_count > 0 {
+        ui.label(format!("{} tilts", elev_count));
+    }
+    if scan.completeness == Some(ScanCompleteness::Missing) {
+        ui.label(
+            RichText::new("Not downloaded \u{2014} click here and it loads automatically.")
+                .size(10.0)
+                .weak(),
+        );
     }
 
     // Live mode info if this scan matches the active volume
@@ -542,17 +560,27 @@ fn render_scan_tooltip_content(
             .map(|a| a.best_start_secs())
         {
             if (scan.start_time - vol_start).abs() < 30.0 {
-                ui.separator();
                 let received = live_roster.map(|r| r.received.len()).unwrap_or(0);
                 let expected = live_roster.and_then(|r| r.expected_count()).unwrap_or(0);
                 ui.label(
-                    RichText::new(format!(
-                        "Live: {}/{} elevations received",
-                        received, expected
-                    ))
-                    .color(Color32::from_rgb(100, 200, 100)),
+                    RichText::new(format!("Live: {}/{} tilts received", received, expected))
+                        .color(ui_colors::SUCCESS),
                 );
             }
         }
+    }
+
+    // Expert detail: VCP identity and survey shape.
+    ui.separator();
+    ui.label(RichText::new(vcp_detail_line(scan.vcp)).size(10.0).weak());
+    if elev_count > 0 {
+        ui.label(
+            RichText::new(format!(
+                "A complete 360\u{00B0} survey at {} elevation angles.",
+                elev_count
+            ))
+            .size(10.0)
+            .weak(),
+        );
     }
 }
