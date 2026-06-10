@@ -146,11 +146,7 @@ impl<'a> TimelineView<'a> {
 
         // Coverage set: every cached scan key, plus the live volume (which is
         // also "data we have / are getting" for ghost/shadow suppression).
-        let mut coverage_keys: BTreeSet<i64> = cache
-            .scans
-            .iter()
-            .map(|s| (s.key_timestamp * 1000.0).round() as i64)
-            .collect();
+        let mut coverage_keys: BTreeSet<i64> = cache.scans.iter().map(|s| s.key_ms()).collect();
         if let Some(ms) = live_volume_ms {
             coverage_keys.insert(ms);
         }
@@ -292,17 +288,14 @@ fn clamped_display_end(scans: &[Scan], shadows: &[ScanBoundary], i: usize) -> f6
 /// Whether `scan` is the in-progress live volume identified by `live_ms`.
 fn is_live_scan(scan: &Scan, live_ms: Option<i64>) -> bool {
     match live_ms {
-        Some(ms) => (scan.key_timestamp * 1000.0).round() as i64 == ms,
+        Some(ms) => scan.key_ms() == ms,
         None => false,
     }
 }
 
 /// Find the cached scan whose key matches `key_ms` (exact, rounded millis).
 fn scan_with_key_ms(cache: &RadarTimeline, key_ms: i64) -> Option<&Scan> {
-    cache
-        .scans
-        .iter()
-        .find(|s| (s.key_timestamp * 1000.0).round() as i64 == key_ms)
+    cache.scans.iter().find(|s| s.key_ms() == key_ms)
 }
 
 /// Overlay the already-cached sweeps of a volume onto its in-progress

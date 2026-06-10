@@ -397,7 +397,7 @@ pub(crate) fn resolve_desired_display(
     // from cache, which is what makes a completed cut visible during live.
     if let Some((elev, anchor_ms)) = live_cut {
         if let Some(scan) = timeline.find_recent_scan(playback_position, max_scan_age_secs) {
-            let scan_ms = (scan.key_timestamp * 1000.0).round() as i64;
+            let scan_ms = scan.key_ms();
             let intent_is_live_cut = scan_ms == anchor_ms
                 && match elevation_selection {
                     crate::state::ElevationSelection::Fixed {

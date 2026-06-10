@@ -872,6 +872,12 @@ mod tests {
         assert_eq!(ms.0, 1_700_000_000_789);
         let back = ms.as_secs_f64();
         assert!((back - 1_700_000_000.789).abs() < 1e-6);
+        // Whole seconds agree with the integer constructor — the property the
+        // scan coverage-key matching (Scan::key_ms) relies on.
+        assert_eq!(
+            UnixMillis::from_secs_f64(1_700_000_000.0),
+            UnixMillis::from_secs(1_700_000_000)
+        );
     }
 
     /// Pin the property the worker boundary now relies on: the dispatch

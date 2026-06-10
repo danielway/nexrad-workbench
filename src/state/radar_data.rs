@@ -102,6 +102,13 @@ impl Scan {
         self.end_time - self.start_time
     }
 
+    /// The scan's storage-key timestamp in milliseconds — the same value
+    /// encoded in its `ScanKey`. Use this (not ad-hoc `* 1000.0` math) when
+    /// matching against millisecond keys from IDB or the live stream.
+    pub fn key_ms(&self) -> i64 {
+        crate::data::UnixMillis::from_secs_f64(self.key_timestamp).0
+    }
+
     /// Full VCP-projected volume end for timeline block rendering.
     ///
     /// A scan's stored sweeps can be sparse — a live stream that ended
