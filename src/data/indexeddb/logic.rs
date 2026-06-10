@@ -3,32 +3,9 @@
 //! Extracted from `indexeddb.rs` so callers can be tested without a real
 //! IDB. Every function here is `pub(super)` and stateless.
 
-use super::{DataError, StorageQuotaEstimate, PREFIX_RANGE_UPPER};
-use crate::data::keys::{ScanIndexEntry, ScanKey, SiteId, UnixMillis};
+use super::{DataError, StorageQuotaEstimate};
+use crate::data::keys::{ScanIndexEntry, ScanKey, UnixMillis};
 use std::collections::HashMap;
-
-/// Inclusive lower / exclusive-by-construction upper bounds for the
-/// scan-index key range covering all entries for `site`.
-///
-/// Real IDB uses these via `IdbKeyRange::bound`. `\u{FFFF}` sorts after
-/// any character that appears in real keys (decimal digits + `|`), so
-/// the upper bound captures every `"SITE|<ms>"` without spilling into
-/// the next site.
-pub(super) fn site_prefix_bounds(site: &SiteId) -> (String, String) {
-    let lower = format!("{}|", site.0);
-    let upper = format!("{}|{}", site.0, PREFIX_RANGE_UPPER);
-    (lower, upper)
-}
-
-/// Bounds for the sweep-store key range covering every blob belonging
-/// to a single scan (`"SITE|MS|<elev>|<product>"`). Used to delete an
-/// entire scan's blobs in one IDB range-delete without enumerating
-/// product names.
-pub(super) fn scan_prefix_bounds(scan: &ScanKey) -> (String, String) {
-    let prefix = format!("{}|", scan.to_storage_key());
-    let upper = format!("{}{}", prefix, PREFIX_RANGE_UPPER);
-    (prefix, upper)
-}
 
 /// Decides whether a `touch_scan` call should be deduplicated against
 /// an in-memory record of the previous touch.
@@ -120,72 +97,6 @@ mod tests {
             file_name: None,
             cached_sweeps: Vec::new(),
             total_size_bytes: size,
-        }
-    }
-
-    // ===== site_prefix_bounds =====
-
-    #[wasm_bindgen_test]
-    fn site_prefix_bounds_format() {
-        let (lo, hi) = site_prefix_bounds(&SiteId::new("KDMX"));
-        assert_eq!(lo, "KDMX|");
-        assert_eq!(hi, format!("KDMX|{}", PREFIX_RANGE_UPPER));
-    }
-
-    #[wasm_bindgen_test]
-    fn site_prefix_bounds_includes_all_timestamps_lex() {
-        // Every realistic `SITE|<13-digit-ms>` key falls strictly
-        // between the two bounds.
-        let (lo, hi) = site_prefix_bounds(&SiteId::new("KTLX"));
-        for ms in ["1000000000000", "1700000000000", "9999999999999"] {
-            let k = format!("KTLX|{}", ms);
-            assert!(lo.as_str() < k.as_str(), "{} should be > {}", k, lo);
-            assert!(k.as_str() < hi.as_str(), "{} should be < {}", k, hi);
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn site_prefix_bounds_excludes_other_sites() {
-        let (lo, hi) = site_prefix_bounds(&SiteId::new("KDMX"));
-        // "KDMY|0" must NOT fall inside KDMX's range.
-        let other = "KDMY|1700000000000";
-        assert!(!(lo.as_str() < other && other < hi.as_str()));
-        // The lex predecessor "KDMW|..." also outside.
-        let earlier = "KDMW|1700000000000";
-        assert!(!(lo.as_str() < earlier && earlier < hi.as_str()));
-    }
-
-    // ===== scan_prefix_bounds =====
-
-    #[wasm_bindgen_test]
-    fn scan_prefix_bounds_includes_all_elev_product_pairs() {
-        let scan = key("KDMX", 1700000000000);
-        let (lo, hi) = scan_prefix_bounds(&scan);
-        assert_eq!(lo, "KDMX|1700000000000|");
-        for sweep_key in [
-            "KDMX|1700000000000|1|reflectivity",
-            "KDMX|1700000000000|3|velocity",
-            "KDMX|1700000000000|17|differential_phase",
-        ] {
-            assert!(lo.as_str() < sweep_key && sweep_key < hi.as_str());
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn scan_prefix_bounds_excludes_neighboring_scans() {
-        let scan = key("KDMX", 1700000000000);
-        let (lo, hi) = scan_prefix_bounds(&scan);
-        // Adjacent ms -> different prefix, must not match.
-        for foreign in [
-            "KDMX|1700000000001|1|reflectivity",
-            "KDMX|1699999999999|1|reflectivity",
-            "KDMY|1700000000000|1|reflectivity",
-        ] {
-            assert!(
-                !(lo.as_str() < foreign && foreign < hi.as_str()),
-                "{} should be outside the scan range",
-                foreign
-            );
         }
     }
 

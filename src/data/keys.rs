@@ -9,6 +9,32 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// Upper-bound sentinel for IDB prefix ranges. Sorts after any character
+/// that appears in real storage keys (decimal digits + `|`), so
+/// `"PREFIX|" .. "PREFIX|\u{FFFF}"` captures every key with that prefix
+/// without spilling into the lexicographic neighbor.
+pub const PREFIX_RANGE_UPPER: char = '\u{FFFF}';
+
+/// Why a storage-key string failed to parse back into a typed key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyParseError {
+    WrongFieldCount { expected: usize, got: usize },
+    BadTimestamp(String),
+    BadElevation(String),
+}
+
+impl fmt::Display for KeyParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KeyParseError::WrongFieldCount { expected, got } => {
+                write!(f, "expected {expected} '|'-separated fields, got {got}")
+            }
+            KeyParseError::BadTimestamp(s) => write!(f, "bad timestamp field {s:?}"),
+            KeyParseError::BadElevation(s) => write!(f, "bad elevation field {s:?}"),
+        }
+    }
+}
+
 /// Radar site identifier (4-character ICAO code).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SiteId(pub String);
@@ -16,6 +42,15 @@ pub struct SiteId(pub String);
 impl SiteId {
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    /// Inclusive lower / sentinel upper bounds for the scan-index key range
+    /// covering all entries for this site (`"SITE|<ms>"`). Real IDB uses
+    /// these via `IdbKeyRange::bound`.
+    pub fn idb_prefix_bounds(&self) -> (String, String) {
+        let lower = format!("{}|", self.0);
+        let upper = format!("{}|{}", self.0, PREFIX_RANGE_UPPER);
+        (lower, upper)
     }
 }
 
@@ -115,16 +150,31 @@ impl ScanKey {
     }
 
     /// Parse from storage key string.
-    pub fn from_storage_key(key: &str) -> Option<Self> {
+    pub fn from_storage_key(key: &str) -> Result<Self, KeyParseError> {
         let parts: Vec<&str> = key.split('|').collect();
         if parts.len() != 2 {
-            return None;
+            return Err(KeyParseError::WrongFieldCount {
+                expected: 2,
+                got: parts.len(),
+            });
         }
-        let scan_start = parts[1].parse::<i64>().ok()?;
-        Some(Self {
+        let scan_start = parts[1]
+            .parse::<i64>()
+            .map_err(|_| KeyParseError::BadTimestamp(parts[1].to_string()))?;
+        Ok(Self {
             site: SiteId(parts[0].to_string()),
             scan_start: UnixMillis(scan_start),
         })
+    }
+
+    /// Bounds for the sweep-store key range covering every blob belonging
+    /// to this scan (`"SITE|MS|<elev>|<product>"`). Used to delete an
+    /// entire scan's blobs in one IDB range-delete without enumerating
+    /// product names.
+    pub fn idb_prefix_bounds(&self) -> (String, String) {
+        let prefix = format!("{}|", self.to_storage_key());
+        let upper = format!("{prefix}{PREFIX_RANGE_UPPER}");
+        (prefix, upper)
     }
 
     /// Creates a ScanKey from a site ID and timestamp in seconds.
@@ -249,6 +299,38 @@ impl SweepDataKey {
             "{}|{}|{}|{}",
             self.scan.site.0, self.scan.scan_start.0, self.elevation_number, self.product
         )
+    }
+
+    /// Parse from storage key string ("SITE|SCAN_MS|ELEV_NUM|PRODUCT").
+    /// The product is the final field and may itself contain `|`.
+    ///
+    /// Symmetric inverse of [`Self::to_storage_key`]. No production caller
+    /// reconstructs sweep keys today (the worker boundary ships scan keys);
+    /// kept so the key vocabulary parses both ways — exercised by the
+    /// `data::keys` tests.
+    #[allow(dead_code)]
+    pub fn from_storage_key(key: &str) -> Result<Self, KeyParseError> {
+        let parts: Vec<&str> = key.splitn(4, '|').collect();
+        if parts.len() != 4 {
+            return Err(KeyParseError::WrongFieldCount {
+                expected: 4,
+                got: parts.len(),
+            });
+        }
+        let scan_start = parts[1]
+            .parse::<i64>()
+            .map_err(|_| KeyParseError::BadTimestamp(parts[1].to_string()))?;
+        let elevation_number = parts[2]
+            .parse::<u8>()
+            .map_err(|_| KeyParseError::BadElevation(parts[2].to_string()))?;
+        Ok(Self {
+            scan: ScanKey {
+                site: SiteId(parts[0].to_string()),
+                scan_start: UnixMillis(scan_start),
+            },
+            elevation_number,
+            product: parts[3].to_string(),
+        })
     }
 }
 
@@ -974,10 +1056,103 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn test_scan_key_from_storage_key_invalid() {
-        assert!(ScanKey::from_storage_key("").is_none());
-        assert!(ScanKey::from_storage_key("KDMX").is_none());
-        assert!(ScanKey::from_storage_key("KDMX|not_a_number").is_none());
-        assert!(ScanKey::from_storage_key("A|B|C").is_none());
+        assert_eq!(
+            ScanKey::from_storage_key(""),
+            Err(KeyParseError::WrongFieldCount {
+                expected: 2,
+                got: 1
+            })
+        );
+        assert_eq!(
+            ScanKey::from_storage_key("KDMX"),
+            Err(KeyParseError::WrongFieldCount {
+                expected: 2,
+                got: 1
+            })
+        );
+        assert_eq!(
+            ScanKey::from_storage_key("KDMX|not_a_number"),
+            Err(KeyParseError::BadTimestamp("not_a_number".into()))
+        );
+        assert_eq!(
+            ScanKey::from_storage_key("A|B|C"),
+            Err(KeyParseError::WrongFieldCount {
+                expected: 2,
+                got: 3
+            })
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn test_sweep_data_key_from_storage_key() {
+        // Round trip.
+        let scan = ScanKey::new("KLOT", UnixMillis(1700000000000));
+        let key = SweepDataKey::new(scan, 3, "velocity");
+        let parsed = SweepDataKey::from_storage_key(&key.to_storage_key()).unwrap();
+        assert_eq!(parsed, key);
+
+        // Malformed inputs.
+        assert_eq!(
+            SweepDataKey::from_storage_key("KDMX|1700000000000|1"),
+            Err(KeyParseError::WrongFieldCount {
+                expected: 4,
+                got: 3
+            })
+        );
+        assert_eq!(
+            SweepDataKey::from_storage_key("KDMX|nope|1|reflectivity"),
+            Err(KeyParseError::BadTimestamp("nope".into()))
+        );
+        assert_eq!(
+            SweepDataKey::from_storage_key("KDMX|1700000000000|999|reflectivity"),
+            Err(KeyParseError::BadElevation("999".into()))
+        );
+        // The product field is last and tolerates embedded separators.
+        let odd = SweepDataKey::from_storage_key("KDMX|1700000000000|1|weird|product").unwrap();
+        assert_eq!(odd.product, "weird|product");
+    }
+
+    #[wasm_bindgen_test]
+    fn site_idb_prefix_bounds_cover_site_and_exclude_neighbors() {
+        let (lo, hi) = SiteId::new("KDMX").idb_prefix_bounds();
+        assert_eq!(lo, "KDMX|");
+        assert_eq!(hi, format!("KDMX|{}", PREFIX_RANGE_UPPER));
+        // Every realistic `SITE|<13-digit-ms>` key falls strictly between
+        // the two bounds.
+        for ms in ["1000000000000", "1700000000000", "9999999999999"] {
+            let k = format!("KDMX|{}", ms);
+            assert!(lo.as_str() < k.as_str() && k.as_str() < hi.as_str());
+        }
+        // Lexicographic neighbors stay outside.
+        for other in ["KDMY|1700000000000", "KDMW|1700000000000"] {
+            assert!(!(lo.as_str() < other && other < hi.as_str()));
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_idb_prefix_bounds_cover_blobs_and_exclude_neighbors() {
+        let scan = ScanKey::new("KDMX", UnixMillis(1700000000000));
+        let (lo, hi) = scan.idb_prefix_bounds();
+        assert_eq!(lo, "KDMX|1700000000000|");
+        for sweep_key in [
+            "KDMX|1700000000000|1|reflectivity",
+            "KDMX|1700000000000|3|velocity",
+            "KDMX|1700000000000|17|differential_phase",
+        ] {
+            assert!(lo.as_str() < sweep_key && sweep_key < hi.as_str());
+        }
+        // Adjacent ms / other sites -> different prefix, must not match.
+        for foreign in [
+            "KDMX|1700000000001|1|reflectivity",
+            "KDMX|1699999999999|1|reflectivity",
+            "KDMY|1700000000000|1|reflectivity",
+        ] {
+            assert!(
+                !(lo.as_str() < foreign && foreign < hi.as_str()),
+                "{} should be outside the scan range",
+                foreign
+            );
+        }
     }
 
     #[wasm_bindgen_test]

@@ -175,10 +175,6 @@ pub(super) const STORE_SCAN_INDEX: &str = "scan_index";
 /// race with chunk-ingest's read-modify-write of the scan-index entry.
 pub(super) const STORE_SCAN_TOUCHES: &str = "scan_touches";
 
-/// Sentinel character used as the upper bound of prefix key ranges.
-/// `\u{FFFF}` sorts after any reasonable storage-key character.
-pub(super) const PREFIX_RANGE_UPPER: char = '\u{FFFF}';
-
 /// Minimum interval between in-memory touch deduplications. Limits how often
 /// a single scan's `last_accessed_at` is rewritten to IDB during fast scrub.
 const TOUCH_THROTTLE_MS: i64 = 60_000;
@@ -631,8 +627,12 @@ impl IndexedDbStore {
             let Some(key_str) = keys.get(i).as_string() else {
                 continue;
             };
-            let Some(scan) = ScanKey::from_storage_key(&key_str) else {
-                continue;
+            let scan = match ScanKey::from_storage_key(&key_str) {
+                Ok(scan) => scan,
+                Err(e) => {
+                    log::warn!("Skipping unparseable scan_touches key {key_str:?}: {e}");
+                    continue;
+                }
             };
             let Some(ms) = vals.get(i).as_f64() else {
                 continue;

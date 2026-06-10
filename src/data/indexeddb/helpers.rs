@@ -6,8 +6,8 @@
 //! checks, key construction) without low-level promise/cursor plumbing.
 
 use super::{
-    js_err, logic, DataError, ScanKey, SiteId, StorageQuotaEstimate, DATABASE_VERSION,
-    STORE_SCAN_INDEX, STORE_SCAN_TOUCHES, STORE_SWEEPS,
+    js_err, DataError, ScanKey, SiteId, StorageQuotaEstimate, DATABASE_VERSION, STORE_SCAN_INDEX,
+    STORE_SCAN_TOUCHES, STORE_SWEEPS,
 };
 use js_sys::Array;
 use serde::de::DeserializeOwned;
@@ -59,17 +59,17 @@ impl<'a> WriteTransaction<'a> {
 // Key range helpers
 // ============================================================================
 
-/// Wraps `logic::site_prefix_bounds` in an `IdbKeyRange` for actual
-/// IDB queries. The bound math is tested in `mod logic`.
+/// Wraps `SiteId::idb_prefix_bounds` in an `IdbKeyRange` for actual
+/// IDB queries. The bound math is tested in `data::keys`.
 pub(super) fn site_prefix_range(site: &SiteId) -> Result<IdbKeyRange, DataError> {
-    let (lower, upper) = logic::site_prefix_bounds(site);
+    let (lower, upper) = site.idb_prefix_bounds();
     IdbKeyRange::bound(&JsValue::from_str(&lower), &JsValue::from_str(&upper))
         .map_err(|e| DataError::RequestFailed(js_err(e)))
 }
 
-/// Wraps `logic::scan_prefix_bounds` in an `IdbKeyRange`.
+/// Wraps `ScanKey::idb_prefix_bounds` in an `IdbKeyRange`.
 pub(super) fn scan_prefix_range(scan: &ScanKey) -> Result<IdbKeyRange, DataError> {
-    let (lower, upper) = logic::scan_prefix_bounds(scan);
+    let (lower, upper) = scan.idb_prefix_bounds();
     IdbKeyRange::bound(&JsValue::from_str(&lower), &JsValue::from_str(&upper))
         .map_err(|e| DataError::RequestFailed(js_err(e)))
 }

@@ -22,7 +22,7 @@ pub fn worker_render(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let product_str = p.product;
 
         let scan_key = ScanKey::from_storage_key(&scan_key_str)
-            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Invalid scanKey format"))?;
+            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Invalid scanKey: {e}")))?;
 
         let store = idb_store().await?;
 
@@ -184,7 +184,7 @@ pub fn worker_render_volume(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let elevation_numbers = p.elevation_numbers;
 
         let scan_key = ScanKey::from_storage_key(&scan_key_str)
-            .ok_or_else(|| wasm_bindgen::JsValue::from_str("Invalid scanKey format"))?;
+            .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Invalid scanKey: {e}")))?;
 
         let store = idb_store().await?;
 

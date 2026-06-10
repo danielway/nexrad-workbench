@@ -273,8 +273,13 @@ fn handle_ingested_message(
     // keyed under (`r.scan_key`), NOT the dispatch-time filename key carried
     // in `context`. Parse the worker's storage-key string; fall back to the
     // context key only if it's somehow unparseable (shouldn't happen).
-    let scan_key = crate::data::ScanKey::from_storage_key(&r.scan_key)
-        .unwrap_or_else(|| context.scan_key.clone());
+    let scan_key = crate::data::ScanKey::from_storage_key(&r.scan_key).unwrap_or_else(|e| {
+        log::warn!(
+            "Worker ingest returned unparseable scan key {:?} ({e}); using dispatch key",
+            r.scan_key
+        );
+        context.scan_key.clone()
+    });
     results
         .borrow_mut()
         .push(WorkerOutcome::Ingested(IngestResult {
