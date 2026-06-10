@@ -53,7 +53,7 @@ pub(super) fn render_scan_track(
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
     match detail_level {
-        DetailLevel::Solid => {
+        DetailLevel::Coverage => {
             // Draw solid regions for each contiguous time range
             for range in view.cache().time_ranges() {
                 let x_start = ts_to_x(range.start).max(rect.left());
@@ -78,7 +78,7 @@ pub(super) fn render_scan_track(
                 }
             }
         }
-        DetailLevel::Scans | DetailLevel::Sweeps => {
+        DetailLevel::Volumes | DetailLevel::Tilts => {
             for (scan, clamped_end) in view.settled_scans_in_range(view_start, view_end) {
                 let x_start = ts_to_x(scan.start_time).max(rect.left());
                 let x_end = ts_to_x(clamped_end).min(rect.right());
@@ -165,7 +165,7 @@ pub(super) fn render_shadow_boundaries(
     let view_end_i64 = view_end as i64;
 
     match detail_level {
-        DetailLevel::Solid => {
+        DetailLevel::Coverage => {
             // At solid detail, merge all visible shadow boundaries into contiguous regions
             let visible: Vec<_> = view
                 .shadow_boundaries()
@@ -210,7 +210,7 @@ pub(super) fn render_shadow_boundaries(
                 }
             }
         }
-        DetailLevel::Scans | DetailLevel::Sweeps => {
+        DetailLevel::Volumes | DetailLevel::Tilts => {
             for b in view
                 .shadow_boundaries()
                 .iter()

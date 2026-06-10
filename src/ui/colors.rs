@@ -157,6 +157,20 @@ pub mod timeline {
     pub fn track_separator() -> Color32 {
         Color32::from_rgba_unmultiplied(100, 100, 130, 80)
     }
+    /// Lane-name header text (VOLUMES / TILTS).
+    pub fn track_header(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgba_unmultiplied(150, 155, 175, 130)
+        } else {
+            Color32::from_rgba_unmultiplied(70, 75, 95, 150)
+        }
+    }
+    /// Backdrop chip behind lane-name headers so they stay readable on
+    /// top of block content.
+    pub fn track_header_backdrop(dark: bool) -> Color32 {
+        let c = background(dark);
+        Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 180)
+    }
     /// Connector line from scan boundary into sweep track.
     pub fn connector() -> Color32 {
         Color32::from_rgba_unmultiplied(120, 120, 150, 60)

@@ -28,7 +28,7 @@ pub(super) fn render_timeline_tooltip(
     _playback: &crate::subsystem::Playback,
 ) {
     let live_state = &live.mode_state;
-    let in_sweep_track = detail_level == DetailLevel::Sweeps && hover_pos.y > sweep_rect.top();
+    let in_sweep_track = detail_level == DetailLevel::Tilts && hover_pos.y > sweep_rect.top();
 
     // Find the cached (settled) scan at the hovered timestamp. The in-progress
     // volume is excluded here — it is handled by the realtime path below so

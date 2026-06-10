@@ -28,15 +28,16 @@ pub(super) fn current_timestamp_secs() -> f64 {
     js_sys::Date::now() / 1000.0
 }
 
-/// Level of detail for radar data rendering
+/// Level of detail for radar data rendering, selected by zoom.
+/// The names match the on-screen track headers (VOLUMES / TILTS).
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum DetailLevel {
-    /// Just show solid color where data exists
-    Solid,
-    /// Show individual scan blocks
-    Scans,
-    /// Show sweep blocks within scans
-    Sweeps,
+    /// Zoomed far out: just show solid color where data exists
+    Coverage,
+    /// Show individual volume-scan blocks
+    Volumes,
+    /// Show tilt (sweep) blocks within volume scans
+    Tilts,
 }
 
 /// Time intervals for tick marks, from coarsest to finest
@@ -238,6 +239,23 @@ pub(super) fn format_timestamp_full(ts: f64, use_local: bool) -> String {
     )
 }
 
+/// Draw a small lane-name header pinned to the bottom-left inside a track,
+/// over a background-colored chip so it stays readable above block content.
+fn draw_track_header(painter: &egui::Painter, track_rect: &Rect, text: &str, dark: bool) {
+    let galley = painter.layout_no_wrap(
+        text.to_owned(),
+        style::header_font(),
+        tl_colors::track_header(dark),
+    );
+    let pos = Pos2::new(
+        track_rect.left() + 4.0,
+        track_rect.bottom() - 2.0 - galley.size().y,
+    );
+    let chip = Rect::from_min_size(pos, galley.size()).expand2(Vec2::new(3.0, 1.0));
+    painter.rect_filled(chip, 2.0, tl_colors::track_header_backdrop(dark));
+    painter.galley(pos, galley, tl_colors::track_header(dark));
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_timeline(
     ui: &mut egui::Ui,
@@ -254,11 +272,11 @@ pub(super) fn render_timeline(
 
     let zoom = playback.state.timeline_zoom;
     let detail_level = if zoom < 0.2 {
-        DetailLevel::Solid
+        DetailLevel::Coverage
     } else if zoom < 1.0 {
-        DetailLevel::Scans
+        DetailLevel::Volumes
     } else {
-        DetailLevel::Sweeps
+        DetailLevel::Tilts
     };
 
     // Track heights — timestamp lane sits above the scan track so labels
@@ -268,7 +286,7 @@ pub(super) fn render_timeline(
     // the scan track expands to fill the same total so the bottom
     // panel doesn't reflow when zooming. All dimensions live in `style`.
     let tick_lane_h = style::TICK_LANE_H;
-    let (scan_track_h, separator_h, sweep_track_h) = if detail_level == DetailLevel::Sweeps {
+    let (scan_track_h, separator_h, sweep_track_h) = if detail_level == DetailLevel::Tilts {
         (
             style::SCAN_TRACK_H,
             style::TRACK_SEPARATOR_H,
@@ -294,7 +312,7 @@ pub(super) fn render_timeline(
         Pos2::new(full_rect.min.x, tick_rect.max.y),
         Pos2::new(full_rect.max.x, tick_rect.max.y + scan_track_h),
     );
-    let sweep_rect = if detail_level == DetailLevel::Sweeps {
+    let sweep_rect = if detail_level == DetailLevel::Tilts {
         Rect::from_min_max(
             Pos2::new(full_rect.min.x, scan_rect.max.y + separator_h),
             Pos2::new(
@@ -318,7 +336,7 @@ pub(super) fn render_timeline(
     );
 
     // Background for sweep track (when visible)
-    if detail_level == DetailLevel::Sweeps {
+    if detail_level == DetailLevel::Tilts {
         painter.rect_filled(sweep_rect, 0.0, tl_colors::background(dark));
         painter.rect_stroke(
             sweep_rect,
@@ -351,7 +369,7 @@ pub(super) fn render_timeline(
     // a successful update_data() in handle_decoded_outcome, so the highlight
     // matches the pixels the user is actually looking at (not the resolver's
     // intent, which may have a render in flight).
-    let active_sweep = if detail_level == DetailLevel::Sweeps {
+    let active_sweep = if detail_level == DetailLevel::Tilts {
         state.viz_state.displayed.as_ref().map(|d| {
             (
                 d.identity.scan_timestamp_secs(),
@@ -421,7 +439,7 @@ pub(super) fn render_timeline(
     } else {
         None
     };
-    if detail_level == DetailLevel::Sweeps {
+    if detail_level == DetailLevel::Tilts {
         render_sweep_track(
             &painter,
             &sweep_rect,
@@ -471,7 +489,7 @@ pub(super) fn render_timeline(
         render_realtime_progress(
             &painter,
             &scan_rect,
-            if detail_level == DetailLevel::Sweeps {
+            if detail_level == DetailLevel::Tilts {
                 Some(&sweep_rect)
             } else {
                 None
@@ -493,7 +511,16 @@ pub(super) fn render_timeline(
         }
     }
 
-    // VCP track removed — the scan lane already represents VCP via color.
+    // -- Track headers --
+    // Tiny lane-name labels pinned bottom-left inside each track, the only
+    // legend-like element: they name structure, not color. Bottom-left
+    // stays clear of the LIVE edge chip and tick labels (both at the top).
+    if detail_level != DetailLevel::Coverage {
+        draw_track_header(&painter, &scan_rect, "VOLUMES", dark);
+    }
+    if detail_level == DetailLevel::Tilts {
+        draw_track_header(&painter, &sweep_rect, "TILTS", dark);
+    }
 
     // Select appropriate tick configuration
     let tick_config = select_tick_config(zoom);
@@ -540,7 +567,7 @@ pub(super) fn render_timeline(
         scan_rect.min,
         Pos2::new(
             scan_rect.max.x,
-            if detail_level == DetailLevel::Sweeps {
+            if detail_level == DetailLevel::Tilts {
                 sweep_rect.max.y
             } else {
                 scan_rect.max.y

@@ -27,7 +27,7 @@ pub(super) fn render_download_ghosts(
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
-    if detail_level == DetailLevel::Solid {
+    if detail_level == DetailLevel::Coverage {
         // At solid detail, combine all ghosts into one region
         let all: Vec<_> = progress
             .pending_scans

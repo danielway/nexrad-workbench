@@ -29,3 +29,8 @@ pub(crate) fn block_font() -> FontId {
 pub(crate) fn tick_font() -> FontId {
     FontId::monospace(9.0)
 }
+
+/// Font for the lane-name track headers (VOLUMES / TILTS).
+pub(crate) fn header_font() -> FontId {
+    FontId::proportional(8.0)
+}
