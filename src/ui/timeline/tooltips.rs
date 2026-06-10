@@ -30,13 +30,14 @@ fn tooltip_header(ui: &mut egui::Ui, title: &str, status: &str, status_color: Co
     });
 }
 
-/// `2026-06-10 21:36:05 → 21:42:11 (366s)` — date once, start and end
+/// `2026-06-10 21:36:05 - 21:42:11 (366s)` — date once, start and end
 /// times, duration. The essentials line of scan/sweep tooltips.
+/// (ASCII dash: the default egui font has no glyph for an arrow here.)
 fn format_time_range(start: f64, end: f64, use_local: bool) -> String {
     let s = DateTimeComponents::from_timestamp(start.floor() as i64, use_local);
     let e = DateTimeComponents::from_timestamp(end.floor() as i64, use_local);
     format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} \u{2192} {:02}:{:02}:{:02} ({:.0}s)",
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02} - {:02}:{:02}:{:02} ({:.0}s)",
         s.year,
         s.month,
         s.day,
@@ -91,13 +92,17 @@ pub(super) fn render_timeline_tooltip(
     let live_state = &live.mode_state;
     let in_sweep_track = detail_level == DetailLevel::Tilts && hover_pos.y > sweep_rect.top();
 
-    // Find the cached (settled) scan at the hovered timestamp. The in-progress
-    // volume is excluded here — it is handled by the realtime path below so
-    // its merged sweep states (cached + collecting + projected) drive the
-    // tooltip rather than a stale cached-scan snapshot.
+    // Find the cached (settled) scan at the hovered timestamp, using the
+    // same clamped block extents the scan track draws — a sparse scan's
+    // raw end_time can be seconds after its start while its block spans
+    // the full VCP-projected width. The in-progress volume is excluded
+    // here — it is handled by the realtime path below so its merged sweep
+    // states (cached + collecting + projected) drive the tooltip rather
+    // than a stale cached-scan snapshot.
     let scan = view
-        .settled_scan_at(hover_ts)
-        .filter(|s| s.start_time <= hover_ts && s.end_time >= hover_ts);
+        .settled_scans_in_range(hover_ts - 600.0, hover_ts + 600.0)
+        .find(|(s, clamped_end)| s.start_time <= hover_ts && hover_ts <= *clamped_end)
+        .map(|(s, _)| s);
 
     // Check if hovering within the active real-time volume (including projected future)
     let live_position = view.live_volume();
@@ -203,7 +208,7 @@ fn render_available_tooltip_content(
     let s = DateTimeComponents::from_timestamp(boundary.start, use_local);
     let e = DateTimeComponents::from_timestamp(boundary.end, use_local);
     ui.label(format!(
-        "~{:04}-{:02}-{:02} {:02}:{:02} \u{2192} {:02}:{:02}",
+        "~{:04}-{:02}-{:02} {:02}:{:02} - {:02}:{:02}",
         s.year, s.month, s.day, s.hour, s.minute, e.hour, e.minute
     ));
     ui.label(
