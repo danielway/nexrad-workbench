@@ -259,20 +259,10 @@ pub mod timeline {
         Color32::from_rgba_unmultiplied(r, g, b, 100)
     }
 
-    // ── Ghost / process state colors ──────────────────────────────────
-
-    /// Ghost block for pending (queued) downloads — blue tint outline.
-    pub fn ghost_pending_fill() -> Color32 {
-        Color32::from_rgba_unmultiplied(100, 150, 255, 30)
-    }
-    pub fn ghost_pending_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(100, 150, 255, 55)
-    }
-
-    /// Ghost block for processing (ingesting after download) — amber.
-    pub fn ghost_processing_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(200, 160, 60, 70)
-    }
+    // ── Realtime (live volume) overlay colors ─────────────────────────
+    //
+    // Download-ghost colors live in [`super::acquisition`] so the timeline
+    // ghosts and the acquisition drawer share one palette.
 
     /// Pending (expected but not yet received) sweep placeholder.
     pub fn rt_pending_sweep_border() -> Color32 {

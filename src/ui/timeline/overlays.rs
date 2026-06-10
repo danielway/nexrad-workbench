@@ -1,18 +1,18 @@
 //! Overlay rendering: download ghosts, realtime progress, and saved events.
 
-use super::strokes::{fill_diagonal_hatch, stroke_dashed_rect, DashedBorder, DashedEdges};
+use super::strokes::{stroke_dashed_rect, DashedBorder, DashedEdges};
 use super::DetailLevel;
 use crate::state::{LiveOverlayContext, SavedEvents, TimelineView};
+use crate::ui::colors::acquisition as acq_colors;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
 
-/// Render ghost blocks on the scan track for pending/active/processing downloads.
-///
-/// Distinct visual styles per state:
-/// - Pending (queued): blue outline with diagonal stripe pattern
-/// - Active (downloading): pulsing blue fill
-/// - Processing (in_flight after download): amber tint
-/// - Recently completed: brief green flash
+/// Render ghost blocks on the scan track for in-progress downloads, using
+/// the same palette as the acquisition drawer so the two surfaces tell one
+/// story:
+/// - Queued: dotted outline in the drawer's QUEUED blue-gray
+/// - Downloading/ingesting: pulsing fill in the drawer's ACTIVE blue
+/// - Recently completed: brief flash in the drawer's COMPLETED green
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_download_ghosts(
     painter: &Painter,
@@ -45,13 +45,14 @@ pub(super) fn render_download_ghosts(
         if x_end > x_start {
             let pulse = (0.5 + 0.5 * (anim_time * 3.0).sin()) as f32;
             let alpha = (25.0 + 15.0 * pulse) as u8;
+            let base = acq_colors::ACTIVE;
             painter.rect_filled(
                 Rect::from_min_max(
                     Pos2::new(x_start, rect.top() + 2.0),
                     Pos2::new(x_end, rect.bottom() - 2.0),
                 ),
                 2.0,
-                Color32::from_rgba_unmultiplied(100, 150, 255, alpha),
+                Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha),
             );
         }
         return;
@@ -76,17 +77,18 @@ pub(super) fn render_download_ghosts(
                     Pos2::new(x_start, rect.top() + 2.0),
                     Pos2::new(x_end, rect.bottom() - 2.0),
                 );
+                let base = acq_colors::COMPLETED;
                 painter.rect_filled(
                     flash_rect,
                     2.0,
-                    Color32::from_rgba_unmultiplied(100, 220, 120, flash_alpha),
+                    Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), flash_alpha),
                 );
             }
         }
     }
 
     // Helper: draw a ghost block for a scan boundary
-    let draw_ghost = |scan_start: i64, scan_end: i64, is_active: bool, is_processing: bool| {
+    let draw_ghost = |scan_start: i64, scan_end: i64, is_active: bool| {
         let start_f64 = scan_start as f64;
         let end_f64 = scan_end as f64;
         if end_f64 < view_start || start_f64 > view_end {
@@ -110,70 +112,50 @@ pub(super) fn render_download_ghosts(
         );
 
         if is_active {
-            // Active download: pulsing blue fill
+            // Downloading or ingesting: pulsing fill in the drawer's ACTIVE blue
+            let base = acq_colors::ACTIVE;
             let pulse = (0.5 + 0.5 * (anim_time * 3.0).sin()) as f32;
             let fill_alpha = (35.0 + 30.0 * pulse) as u8;
             let border_alpha = (60.0 + 35.0 * pulse) as u8;
             painter.rect_filled(
                 ghost_rect,
                 2.0,
-                Color32::from_rgba_unmultiplied(100, 160, 255, fill_alpha),
+                Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), fill_alpha),
             );
             painter.rect_stroke(
                 ghost_rect,
                 2.0,
                 Stroke::new(
                     1.5,
-                    Color32::from_rgba_unmultiplied(100, 160, 255, border_alpha),
+                    Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), border_alpha),
                 ),
                 StrokeKind::Inside,
             );
-        } else if is_processing {
-            // Processing (ingesting): amber tint with subtle pulse
-            let pulse = (0.5 + 0.5 * (anim_time * 2.0).sin()) as f32;
-            let fill_alpha = (30.0 + 20.0 * pulse) as u8;
-            painter.rect_filled(
-                ghost_rect,
-                2.0,
-                Color32::from_rgba_unmultiplied(200, 160, 60, fill_alpha),
-            );
-            painter.rect_stroke(
-                ghost_rect,
-                2.0,
-                Stroke::new(1.0, tl_colors::ghost_processing_border()),
-                StrokeKind::Inside,
-            );
         } else {
-            // Pending: blue outline with diagonal stripe pattern
-            painter.rect_stroke(
-                ghost_rect,
-                2.0,
-                Stroke::new(1.0, tl_colors::ghost_pending_border()),
-                StrokeKind::Inside,
-            );
-            fill_diagonal_hatch(
+            // Queued: dotted outline in the drawer's QUEUED blue-gray
+            let base = acq_colors::QUEUED;
+            let border = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 130);
+            stroke_dashed_rect(
                 painter,
                 ghost_rect,
-                8.0,
-                0.0,
-                Stroke::new(0.5, tl_colors::ghost_pending_fill()),
+                DashedBorder::uniform(Stroke::new(1.0, border), 2.0, 4.0),
             );
         }
     };
 
-    // Draw pending scans
+    // Draw queued scans
     for &(s, e) in &progress.pending_scans {
-        draw_ghost(s, e, false, false);
+        draw_ghost(s, e, false);
     }
 
-    // Draw active scans
-    for &(s, e) in &progress.active_scans {
-        draw_ghost(s, e, true, false);
-    }
-
-    // Draw in-flight (processing) scans
-    for &(s, e) in &progress.in_flight_scans {
-        draw_ghost(s, e, false, true);
+    // Draw downloading and ingesting scans — one visual state; the split
+    // only matters to the acquisition drawer's per-operation detail rows.
+    for &(s, e) in progress
+        .active_scans
+        .iter()
+        .chain(progress.in_flight_scans.iter())
+    {
+        draw_ghost(s, e, true);
     }
 }
 

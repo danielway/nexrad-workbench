@@ -1,12 +1,11 @@
-//! Batched helpers for dashed borders and diagonal hatches.
+//! Batched helper for dashed rectangle borders.
 //!
-//! The timeline overlays draw a lot of dotted/dashed/hatched rectangles
-//! — one per visible sweep, per frame. Each `painter.line_segment` call
-//! locks the egui graphics buffer, so emitting ~50 individual segments
-//! per border per sweep was showing up in idle-frame profiles. These
-//! helpers pre-size a `Vec<Shape>` and push everything in one
-//! `painter.extend` call, amortizing the lock and reducing paint-list
-//! churn.
+//! The timeline overlays draw a lot of dotted/dashed rectangles — one per
+//! visible sweep, per frame. Each `painter.line_segment` call locks the
+//! egui graphics buffer, so emitting ~50 individual segments per border
+//! per sweep was showing up in idle-frame profiles. This helper pre-sizes
+//! a `Vec<Shape>` and pushes everything in one `painter.extend` call,
+//! amortizing the lock and reducing paint-list churn.
 
 use eframe::egui::{Painter, Pos2, Rect, Shape, Stroke};
 
@@ -148,56 +147,6 @@ pub(super) fn stroke_dashed_rect(painter: &Painter, rect: Rect, border: DashedBo
             }
             y += v_period;
         }
-    }
-
-    if !shapes.is_empty() {
-        painter.extend(shapes);
-    }
-}
-
-/// Fill a rectangle with 45° diagonal stripes in a single batched add.
-///
-/// Used for the scan-track hatch pattern and download-ghost stripes.
-/// `phase` lets multiple adjacent rects align their stripes by passing
-/// a shared x-origin (e.g. `rect.left() % spacing`), matching the
-/// existing appearance.
-pub(super) fn fill_diagonal_hatch(
-    painter: &Painter,
-    rect: Rect,
-    spacing: f32,
-    phase: f32,
-    stroke: Stroke,
-) {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 || spacing <= 0.0 {
-        return;
-    }
-
-    let h = rect.height();
-    let w = rect.width();
-    let step_count = ((w + h) / spacing).ceil() as usize + 1;
-    let mut shapes = Vec::with_capacity(step_count);
-
-    let mut offset = -phase;
-    while offset < w + h {
-        let x0 = rect.left() + offset;
-        let x1 = x0 - h;
-        let (cx0, cy0) = if x0 > rect.right() {
-            (rect.right(), rect.top() + (x0 - rect.right()))
-        } else {
-            (x0, rect.top())
-        };
-        let (cx1, cy1) = if x1 < rect.left() {
-            (rect.left(), rect.bottom() - (rect.left() - x1))
-        } else {
-            (x1, rect.bottom())
-        };
-        if cy0 < cy1 {
-            shapes.push(Shape::line_segment(
-                [Pos2::new(cx0, cy0), Pos2::new(cx1, cy1)],
-                stroke,
-            ));
-        }
-        offset += spacing;
     }
 
     if !shapes.is_empty() {
