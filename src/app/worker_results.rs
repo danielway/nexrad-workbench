@@ -81,12 +81,6 @@ impl WorkbenchApp {
                 // Get time ranges (may be non-contiguous)
                 let ranges = self.timeline.scans.time_ranges();
                 if !ranges.is_empty() {
-                    // Set overall bounds from first to last
-                    let start = ranges.first().unwrap().start;
-                    let end = ranges.last().unwrap().end;
-                    self.playback.state.data_start_timestamp = Some(start as i64);
-                    self.playback.state.data_end_timestamp = Some(end as i64);
-
                     // Position playback at the end of the most recent range
                     let most_recent_end = ranges.last().unwrap().end;
 

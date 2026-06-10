@@ -78,10 +78,6 @@ pub(super) fn handle_timeline_interaction(
 
             playback.state.set_playback_position(clicked_ts);
             playback.state.clear_selection();
-
-            if let Some(frame) = playback.state.timestamp_to_frame(clicked_ts as i64) {
-                playback.state.current_frame = frame;
-            }
         }
     }
 

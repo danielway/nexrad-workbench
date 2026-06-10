@@ -16,6 +16,26 @@ pub enum PlaybackMode {
     Micro,
 }
 
+/// Inputs the macro `sweep_frames` list is built from. Compared against the
+/// previous build's inputs to decide whether a rebuild is needed.
+#[derive(PartialEq, Clone, Default)]
+pub struct MacroFrameInputs {
+    pub elevation: super::viz::ElevationSelection,
+    pub bounds: Option<(f64, f64)>,
+    pub scan_count: usize,
+}
+
+/// Why the macro frame list needs rebuilding. The elevation case is
+/// distinguished because it additionally snaps the playback position to the
+/// resolved frame (see `render_loop`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RebuildCause {
+    ElevationChanged,
+    /// Bounds or scan count changed (streaming, selection edits) — rebuild
+    /// without teleporting the cursor.
+    WindowChanged,
+}
+
 /// State for macro (frame-stepping) playback.
 pub struct MacroPlaybackState {
     /// Sorted sweep end-times matching the user's elevation filter.
@@ -24,12 +44,10 @@ pub struct MacroPlaybackState {
     pub current_frame_index: usize,
     /// Fractional frame accumulator for sub-frame advancement.
     pub frame_accumulator: f64,
-    /// Cached filter params for dirty-checking.
-    pub cached_elevation_selection: super::viz::ElevationSelection,
-    pub cached_bounds: Option<(f64, f64)>,
-    pub cached_scan_count: usize,
+    /// Inputs the current `sweep_frames` list was built from (dirty check).
+    built_from: MacroFrameInputs,
     /// Last known playback position, used to detect manual seeks.
-    pub cached_playback_position: f64,
+    pub last_seen_position: f64,
     /// Whether the previous frame was in macro mode (for transition detection).
     pub was_macro: bool,
 }
@@ -40,12 +58,34 @@ impl Default for MacroPlaybackState {
             sweep_frames: Vec::new(),
             current_frame_index: 0,
             frame_accumulator: 0.0,
-            cached_elevation_selection: super::viz::ElevationSelection::default(),
-            cached_bounds: None,
-            cached_scan_count: 0,
-            cached_playback_position: 0.0,
+            built_from: MacroFrameInputs::default(),
+            last_seen_position: 0.0,
             was_macro: false,
         }
+    }
+}
+
+impl MacroPlaybackState {
+    /// `None` = the frame list is current; `Some(cause)` = the owner must
+    /// rebuild. An elevation change wins over a simultaneous window change
+    /// because it carries the snap-to-frame side effect.
+    pub fn rebuild_cause(&self, inputs: &MacroFrameInputs) -> Option<RebuildCause> {
+        if self.built_from.elevation != inputs.elevation {
+            Some(RebuildCause::ElevationChanged)
+        } else if self.built_from.bounds != inputs.bounds
+            || self.built_from.scan_count != inputs.scan_count
+        {
+            Some(RebuildCause::WindowChanged)
+        } else {
+            None
+        }
+    }
+
+    /// Install a freshly built frame list and remember the inputs it was
+    /// built from.
+    pub fn store_rebuilt(&mut self, inputs: MacroFrameInputs, frames: Vec<f64>) {
+        self.sweep_frames = frames;
+        self.built_from = inputs;
     }
 }
 
@@ -381,19 +421,6 @@ pub struct PlaybackState {
     /// Whether a drag selection is currently in progress
     pub selection_in_progress: bool,
 
-    // Legacy fields maintained for compatibility during transition
-    /// Start timestamp of loaded data (Unix seconds), if any
-    pub data_start_timestamp: Option<i64>,
-
-    /// End timestamp of loaded data (Unix seconds), if any
-    pub data_end_timestamp: Option<i64>,
-
-    /// Current frame index (legacy, used by some displays)
-    pub current_frame: usize,
-
-    /// Total frames (legacy, used by some displays)
-    pub total_frames: usize,
-
     /// Actual pixel width of the timeline widget (set by render_timeline each frame).
     /// Used for accurate view centering calculations outside the render function.
     pub timeline_width_px: f64,
@@ -423,10 +450,6 @@ impl Default for PlaybackState {
             selection_start: None,
             selection_end: None,
             selection_in_progress: false,
-            data_start_timestamp: None,
-            data_end_timestamp: None,
-            current_frame: 0,
-            total_frames: 0,
             timeline_width_px: 1000.0,
             macro_playback: MacroPlaybackState::default(),
             lookback_active: false,
@@ -681,29 +704,6 @@ impl PlaybackState {
             self.time_model.set_bounds_from_selection(start, end);
         }
     }
-
-    /// Get data duration in seconds.
-    pub fn data_duration_secs(&self) -> f64 {
-        match (self.data_start_timestamp, self.data_end_timestamp) {
-            (Some(start), Some(end)) => (end - start) as f64,
-            _ => 0.0,
-        }
-    }
-
-    /// Convert timestamp to frame index (legacy compatibility).
-    pub fn timestamp_to_frame(&self, timestamp: i64) -> Option<usize> {
-        let start = self.data_start_timestamp?;
-        let duration = self.data_duration_secs();
-        if self.total_frames == 0 || duration <= 0.0 {
-            return Some(0);
-        }
-        let position = (timestamp - start) as f64 / duration;
-        Some(
-            (position * self.total_frames as f64)
-                .round()
-                .clamp(0.0, (self.total_frames.saturating_sub(1)) as f64) as usize,
-        )
-    }
 }
 
 #[cfg(test)]
@@ -775,6 +775,57 @@ mod tests {
         ps.advance_macro(2.0 / 5.0);
         assert_eq!(ps.macro_playback.current_frame_index, 0);
         assert_eq!(ps.time_model.playback_position, 100.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn rebuild_cause_distinguishes_elevation_from_window_changes() {
+        let mut mp = MacroPlaybackState::default();
+        let base = MacroFrameInputs {
+            elevation: crate::state::ElevationSelection::default(),
+            bounds: None,
+            scan_count: 3,
+        };
+        // Fresh state vs non-default inputs: scan count differs → window change.
+        assert_eq!(mp.rebuild_cause(&base), Some(RebuildCause::WindowChanged));
+        mp.store_rebuilt(base.clone(), vec![1.0, 2.0]);
+        assert_eq!(mp.sweep_frames, vec![1.0, 2.0]);
+        // Same inputs → clean.
+        assert_eq!(mp.rebuild_cause(&base), None);
+
+        // Bounds change alone → window change (no cursor snap).
+        let bounds_changed = MacroFrameInputs {
+            bounds: Some((10.0, 20.0)),
+            ..base.clone()
+        };
+        assert_eq!(
+            mp.rebuild_cause(&bounds_changed),
+            Some(RebuildCause::WindowChanged)
+        );
+
+        // Scan count change alone → window change.
+        let scans_changed = MacroFrameInputs {
+            scan_count: 4,
+            ..base.clone()
+        };
+        assert_eq!(
+            mp.rebuild_cause(&scans_changed),
+            Some(RebuildCause::WindowChanged)
+        );
+
+        // Elevation change → ElevationChanged, even when the window moved too
+        // (elevation wins because it carries the snap-to-frame side effect).
+        let elev_changed = MacroFrameInputs {
+            elevation: crate::state::ElevationSelection::Fixed {
+                elevation_number: 2,
+                angle: 1.45,
+            },
+            scan_count: 9,
+            ..base.clone()
+        };
+        assert_eq!(
+            mp.rebuild_cause(&elev_changed),
+            Some(RebuildCause::ElevationChanged)
+        );
     }
 
     #[wasm_bindgen_test]

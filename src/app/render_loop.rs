@@ -22,34 +22,28 @@ impl WorkbenchApp {
         // scan count changed). Uses the *effective* mode so the list is also
         // built during a lookback replay (which frame-steps regardless of zoom).
         if self.playback.state.effective_playback_mode() == crate::state::PlaybackMode::Macro {
-            let mp = &self.playback.state.macro_playback;
-            let elev_sel = self.state.viz_state.elevation_selection.clone();
-            let bounds = self.playback.state.time_model.playback_bounds;
-            let scan_count = self.timeline.scans.scans.len();
+            let inputs = crate::state::MacroFrameInputs {
+                elevation: self.state.viz_state.elevation_selection.clone(),
+                bounds: self.playback.state.time_model.playback_bounds,
+                scan_count: self.timeline.scans.scans.len(),
+            };
 
-            let elev_changed = mp.cached_elevation_selection != elev_sel;
-            let dirty =
-                elev_changed || mp.cached_bounds != bounds || mp.cached_scan_count != scan_count;
-
-            if dirty {
-                let frames = match &elev_sel {
+            if let Some(cause) = self.playback.state.macro_playback.rebuild_cause(&inputs) {
+                let frames = match &inputs.elevation {
                     crate::state::ElevationSelection::Fixed {
                         elevation_number, ..
                     } => self
                         .timeline
                         .scans
-                        .matching_sweep_end_times_by_number(*elevation_number, bounds),
+                        .matching_sweep_end_times_by_number(*elevation_number, inputs.bounds),
                     crate::state::ElevationSelection::Latest => {
-                        self.timeline.scans.all_sweep_end_times(bounds)
+                        self.timeline.scans.all_sweep_end_times(inputs.bounds)
                     }
                 };
-                self.playback.state.macro_playback.sweep_frames = frames;
                 self.playback
                     .state
                     .macro_playback
-                    .cached_elevation_selection = elev_sel;
-                self.playback.state.macro_playback.cached_bounds = bounds;
-                self.playback.state.macro_playback.cached_scan_count = scan_count;
+                    .store_rebuilt(inputs, frames);
                 self.playback.state.sync_macro_frame_index();
                 // When the elevation filter changes, snap playback_position
                 // to the resolved frame so the canvas resolver picks a sweep
@@ -60,7 +54,7 @@ impl WorkbenchApp {
                 // sweep at the new elevation in the current scan, blanking
                 // the canvas. Skip on bounds/scan_count changes so
                 // streaming and selection edits don't teleport the cursor.
-                if elev_changed {
+                if cause == crate::state::RebuildCause::ElevationChanged {
                     self.playback.state.snap_playback_to_macro_frame();
                 }
             }
@@ -68,12 +62,12 @@ impl WorkbenchApp {
             // Detect manual seek: if playback position changed externally
             // (user clicked timeline, jog, etc.) re-sync frame index.
             let pos = self.playback.state.playback_position();
-            let cached_pos = self.playback.state.macro_playback.cached_playback_position;
-            if (pos - cached_pos).abs() > 0.5 {
+            let last_pos = self.playback.state.macro_playback.last_seen_position;
+            if (pos - last_pos).abs() > 0.5 {
                 self.playback.state.sync_macro_frame_index();
                 self.playback.state.macro_playback.frame_accumulator = 0.0;
             }
-            self.playback.state.macro_playback.cached_playback_position = pos;
+            self.playback.state.macro_playback.last_seen_position = pos;
         }
 
         // Auto-load scan when scrubbing: find the most recent scan within 15 minutes.
