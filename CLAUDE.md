@@ -116,11 +116,12 @@ The decode worker is pooled — multiple worker instances share the load and one
 
 ### IndexedDB Schema
 
-Two object stores under database `nexrad-workbench` (current schema version 3):
+Three object stores under database `nexrad-workbench` (current schema version 5):
 - `sweeps` — pre-computed sweep blobs (raw gate values + metadata), keyed `SITE|SCAN_MS|ELEV_NUM|PRODUCT`
 - `scan_index` — per-scan metadata for fast timeline queries, keyed `SITE|SCAN_MS`
+- `scan_touches` — per-scan last-access timestamps for LRU eviction, keyed `SITE|SCAN_MS`; kept in its own store so fire-and-forget touch bumps from `get_sweep` don't race chunk-ingest's read-modify-write of the index entry
 
-Earlier schemas had `records` / `record_index` stores; those are dropped on upgrade and the render path is exclusively sweep-blob based.
+Schema upgrades are destructive (all stores dropped and recreated). Earlier schemas had `records` / `record_index` stores; the render path is exclusively sweep-blob based.
 
 ## Timestamps
 

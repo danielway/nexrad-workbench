@@ -8,6 +8,11 @@
 //! 2. `scan_index` - Per-scan metadata (`ScanIndexEntry`, structured-cloned)
 //!    - Key: "SITE|SCAN_START_MS"
 //!
+//! 3. `scan_touches` - Per-scan last-access timestamp (f64 unix ms) for LRU
+//!    eviction; separate store so touch bumps don't race ingest's
+//!    read-modify-write of the index entry
+//!    - Key: "SITE|SCAN_START_MS"
+//!
 //! ## Concurrency
 //!
 //! - `open()` coalesces concurrent calls behind a single `indexedDB.open` via

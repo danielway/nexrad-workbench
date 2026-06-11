@@ -19,8 +19,9 @@
 //! ### Storage Hierarchy
 //! ```text
 //! IndexedDB "nexrad-workbench"
-//! ├── sweeps     - Pre-computed sweep blobs (binary, GPU-ready)
-//! └── scan_index - Per-scan metadata with completeness tracking
+//! ├── sweeps       - Pre-computed sweep blobs (binary, GPU-ready)
+//! ├── scan_index   - Per-scan metadata with completeness tracking
+//! └── scan_touches - Per-scan last-access timestamps (LRU eviction)
 //! ```
 
 pub mod facade;

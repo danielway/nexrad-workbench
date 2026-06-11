@@ -261,14 +261,6 @@ impl LiveVolumeAnchor {
         self.confirmed.map(|c| c.0).unwrap_or(self.provisional.0)
     }
 
-    /// `true` once the worker has reported a confirmed start time. Useful
-    /// for diagnostics and for distinguishing "we're guessing" from "we
-    /// know" in debug overlays.
-    #[allow(dead_code)]
-    pub fn is_confirmed(&self) -> bool {
-        self.confirmed.is_some()
-    }
-
     /// Record the confirmed (radial-parsed) start time. Idempotent.
     pub fn confirm(&mut self, confirmed: ConfirmedStart) {
         self.confirmed = Some(confirmed);
@@ -799,21 +791,6 @@ impl ExtractedVcp {
             .sum();
 
         Some(total)
-    }
-
-    /// Compute cumulative start offsets (in seconds from volume start) for each elevation.
-    ///
-    /// Returns a `Vec<f64>` where entry `i` is the estimated start time offset of elevation `i`.
-    #[allow(dead_code)]
-    pub fn sweep_start_offsets(&self, total_volume_duration: f64) -> Vec<f64> {
-        let durations = self.sweep_durations(total_volume_duration);
-        let mut offsets = Vec::with_capacity(durations.len());
-        let mut cumulative = 0.0;
-        for dur in &durations {
-            offsets.push(cumulative);
-            cumulative += dur;
-        }
-        offsets
     }
 }
 
