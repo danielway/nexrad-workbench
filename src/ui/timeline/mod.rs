@@ -11,7 +11,7 @@ mod sweep_track;
 mod tooltips;
 
 use super::colors::timeline as tl_colors;
-use crate::state::{AppState, LivePhase};
+use crate::state::{AppState, LivePhase, WidthTier};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
@@ -286,6 +286,28 @@ pub(super) fn format_timestamp_full(ts: f64, use_local: bool) -> String {
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
         dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, millis
     )
+}
+
+/// Format a timestamp for the playback readout, shortening it as horizontal
+/// space tightens so it doesn't crowd the transport controls:
+/// - [`WidthTier::Full`]: full date + time + milliseconds (same as
+///   [`format_timestamp_full`]).
+/// - [`WidthTier::Compact`]: date + time, milliseconds dropped.
+/// - [`WidthTier::Cramped`]: time only (`HH:MM:SS`), date dropped.
+pub(super) fn format_timestamp_compact(ts: f64, use_local: bool, tier: WidthTier) -> String {
+    if tier >= WidthTier::Full {
+        return format_timestamp_full(ts, use_local);
+    }
+    let secs = ts.floor() as i64;
+    let dt = DateTimeComponents::from_timestamp(secs, use_local);
+    if tier == WidthTier::Compact {
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
+        )
+    } else {
+        format!("{:02}:{:02}:{:02}", dt.hour, dt.minute, dt.second)
+    }
 }
 
 /// Draw a small lane-name header pinned to the bottom-left inside a track,

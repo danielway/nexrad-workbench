@@ -31,6 +31,7 @@ mod modal_helper;
 mod modal_states;
 mod mping_modal;
 mod network_panel;
+mod overflow_menu;
 mod playback_controls;
 mod right_panel;
 mod shortcuts;

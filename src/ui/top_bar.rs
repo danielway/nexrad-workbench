@@ -1,8 +1,9 @@
 //! Top bar UI: app title, status, and site context.
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
+use super::overflow_menu::overflow_menu;
 use crate::alerts::{event_color, AlertSeverity};
-use crate::state::{AppCommand, AppMode, AppState, CameraMode, ErrorContext, ViewMode};
+use crate::state::{AppCommand, AppMode, AppState, CameraMode, ErrorContext, ViewMode, WidthTier};
 use eframe::egui::{self, Color32, Frame, RichText};
 
 pub(super) struct TopBarLayer;
@@ -71,15 +72,17 @@ fn draw_top_bar(
                     chrome.left_sidebar_visible = !chrome.left_sidebar_visible;
                 }
 
-                // App title
-                ui.label(
-                    RichText::new("NEXRAD Workbench")
-                        .strong()
-                        .size(16.0)
-                        .color(ui.visuals().strong_text_color()),
-                );
-
-                ui.separator();
+                // App title — dropped at the narrowest tier to make room; it's
+                // non-interactive so it's the first thing to go.
+                if state.width_tier >= WidthTier::Compact {
+                    ui.label(
+                        RichText::new("NEXRAD Workbench")
+                            .strong()
+                            .size(16.0)
+                            .color(ui.visuals().strong_text_color()),
+                    );
+                    ui.separator();
+                }
 
                 // Site context button — opens site selection modal
                 let site_label = format!("Site: {}", state.viz_state.site_id);
@@ -127,8 +130,12 @@ fn draw_top_bar(
                 render_mode_badge(ui, live, playback);
 
                 // Status message (Idle/Archive only — Live has its own trailing
-                // text with chunk counts/countdown).
-                if live.app_mode != AppMode::Live && !state.status_message.is_empty() {
+                // text with chunk counts/countdown). Suppressed below the full
+                // tier: it's transient and would crowd the narrow bar.
+                if state.width_tier >= WidthTier::Full
+                    && live.app_mode != AppMode::Live
+                    && !state.status_message.is_empty()
+                {
                     // Auto-dismiss: fade out after 8 seconds, clear after 10
                     let now = state.frame_now.millis();
                     let age_ms = now - state.status_message_set_ms;
@@ -159,8 +166,21 @@ fn draw_top_bar(
                     }
                 }
 
-                // Right-aligned: right panel toggle + help + view/camera mode
+                // Right-aligned cluster: right panel toggle, view/camera mode,
+                // and a ⋯ overflow menu that absorbs lower-priority chrome as
+                // the window narrows. Because the surviving inline items are
+                // chosen to fit each width tier, the cluster never collides
+                // with the left-anchored content above.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let tier = state.width_tier;
+                    let help_inline = tier >= WidthTier::Full;
+                    let version_inline = tier >= WidthTier::Full;
+                    let pill_inline = tier >= WidthTier::Compact;
+                    // The Advanced view selector is four pills, so it only stays
+                    // inline at the narrowest tier when Basic (two pills).
+                    let view_pills_inline = tier >= WidthTier::Compact || !state.show_advanced();
+
+                    // Right panel toggle — always the rightmost item.
                     if ui
                         .button(RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE).size(14.0))
                         .on_hover_text("Toggle right panel")
@@ -169,162 +189,61 @@ fn draw_top_bar(
                         chrome.right_sidebar_visible = !chrome.right_sidebar_visible;
                     }
 
-                    // Help button — toggles keyboard shortcut overlay
-                    if ui
-                        .button(RichText::new(egui_phosphor::regular::QUESTION).size(14.0))
-                        .on_hover_text("Keyboard shortcuts (?)")
-                        .clicked()
+                    // Overflow menu — holds whatever this tier demotes. Placed
+                    // just left of the panel toggle so it's always reachable.
+                    let any_overflow =
+                        !help_inline || !version_inline || !pill_inline || !view_pills_inline;
+                    if any_overflow {
+                        overflow_menu(ui, |ui| {
+                            if !view_pills_inline {
+                                ui.label(RichText::new("View").size(11.0).weak());
+                                ui.horizontal(|ui| render_view_mode_pills(ui, state));
+                            }
+                            if !pill_inline {
+                                ui.label(RichText::new("Mode").size(11.0).weak());
+                                ui.horizontal(|ui| render_ui_mode_pill(ui, state));
+                            }
+                            if !help_inline
+                                && ui
+                                    .button(format!(
+                                        "{}  Keyboard shortcuts",
+                                        egui_phosphor::regular::QUESTION
+                                    ))
+                                    .clicked()
+                            {
+                                chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible;
+                            }
+                            if !version_inline {
+                                render_version_link(ui);
+                            }
+                        });
+                    }
+
+                    // Inline survivors — right-to-left order matching the
+                    // original full-width layout (help, mode pill, version,
+                    // separator, view pills).
+                    if help_inline
+                        && ui
+                            .button(RichText::new(egui_phosphor::regular::QUESTION).size(14.0))
+                            .on_hover_text("Keyboard shortcuts (?)")
+                            .clicked()
                     {
                         chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible;
                     }
 
-                    // Basic / Advanced pill — toggles UI complexity. Same
-                    // segmented-pill idiom as the view-mode selector below.
-                    render_ui_mode_pill(ui, state);
-
-                    // Version stamp — clickable link to GitHub releases
-                    {
-                        const MAX_LEN: usize = 24;
-                        let version = env!("NEXRAD_VERSION");
-                        let full_version = env!("NEXRAD_VERSION_FULL");
-                        let display = if version.len() > MAX_LEN {
-                            let mut truncated = String::with_capacity(MAX_LEN + 3);
-                            for (i, ch) in version.char_indices() {
-                                if i >= MAX_LEN {
-                                    break;
-                                }
-                                truncated.push(ch);
-                            }
-                            truncated.push('\u{2026}');
-                            truncated
-                        } else {
-                            version.to_string()
-                        };
-
-                        let response = ui.add(
-                            egui::Button::new(
-                                RichText::new(&display)
-                                    .size(11.0)
-                                    .color(Color32::from_rgb(80, 80, 80)),
-                            )
-                            .frame(false),
-                        );
-
-                        if response.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-
-                        let clicked = response.clicked();
-
-                        response
-                            .on_hover_text(format!("{} — click to view changelog", full_version));
-
-                        if clicked {
-                            if let Some(window) = web_sys::window() {
-                                let _ = window.open_with_url_and_target(
-                                    "https://github.com/danielway/nexrad-workbench/releases",
-                                    "_blank",
-                                );
-                            }
-                        }
+                    if pill_inline {
+                        // Basic / Advanced pill — toggles UI complexity. Same
+                        // segmented-pill idiom as the view-mode selector.
+                        render_ui_mode_pill(ui, state);
                     }
 
-                    ui.separator();
+                    if version_inline {
+                        render_version_link(ui);
+                    }
 
-                    // View mode selector. In Basic, collapse to a single
-                    // 2D / 3D toggle (3D picks SiteOrbit as the sensible
-                    // default for radar viewing). In Advanced, expose all
-                    // three 3D camera modes as separate pills.
-                    let dim = Color32::from_rgb(100, 100, 100);
-
-                    let modes: &[(&str, ViewMode, Option<CameraMode>, Color32, &str)] =
-                        if state.show_advanced() {
-                            &[
-                                (
-                                    "2D",
-                                    ViewMode::Flat2D,
-                                    None,
-                                    Color32::from_rgb(100, 180, 255),
-                                    "1",
-                                ),
-                                (
-                                    "3D Site",
-                                    ViewMode::Globe3D,
-                                    Some(CameraMode::SiteOrbit),
-                                    Color32::from_rgb(255, 200, 80),
-                                    "2",
-                                ),
-                                (
-                                    "3D Planet",
-                                    ViewMode::Globe3D,
-                                    Some(CameraMode::PlanetOrbit),
-                                    Color32::from_rgb(120, 200, 120),
-                                    "3",
-                                ),
-                                (
-                                    "3D Free",
-                                    ViewMode::Globe3D,
-                                    Some(CameraMode::FreeLook),
-                                    Color32::from_rgb(200, 140, 255),
-                                    "4",
-                                ),
-                            ]
-                        } else {
-                            &[
-                                (
-                                    "2D",
-                                    ViewMode::Flat2D,
-                                    None,
-                                    Color32::from_rgb(100, 180, 255),
-                                    "1",
-                                ),
-                                (
-                                    "3D",
-                                    ViewMode::Globe3D,
-                                    Some(CameraMode::SiteOrbit),
-                                    Color32::from_rgb(255, 200, 80),
-                                    "2",
-                                ),
-                            ]
-                        };
-
-                    for &(label, view, cam, color, key) in modes {
-                        let is_active = match (view, cam) {
-                            (ViewMode::Flat2D, _) => state.viz_state.view_mode == ViewMode::Flat2D,
-                            (ViewMode::Globe3D, Some(cm)) => {
-                                if state.show_advanced() {
-                                    state.viz_state.view_mode == ViewMode::Globe3D
-                                        && state.viz_state.camera.mode == cm
-                                } else {
-                                    // In Basic the single 3D pill is active
-                                    // for any 3D camera mode.
-                                    state.viz_state.view_mode == ViewMode::Globe3D
-                                }
-                            }
-                            _ => false,
-                        };
-
-                        let text = if is_active {
-                            RichText::new(label).size(13.0).strong().color(color)
-                        } else {
-                            RichText::new(label).size(13.0).color(dim)
-                        };
-
-                        let response = ui.add(egui::Button::new(text).frame(is_active));
-
-                        if !is_active && response.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-
-                        if response
-                            .on_hover_text(format!("Switch to {} ({})", label, key))
-                            .clicked()
-                        {
-                            state.viz_state.view_mode = view;
-                            if let Some(cm) = cam {
-                                state.viz_state.camera.switch_mode(cm);
-                            }
-                        }
+                    if view_pills_inline {
+                        ui.separator();
+                        render_view_mode_pills(ui, state);
                     }
                 });
             });
@@ -358,6 +277,150 @@ fn render_ui_mode_pill(ui: &mut egui::Ui, state: &mut AppState) {
             .clicked()
         {
             state.advanced_mode = advanced_value;
+        }
+    }
+}
+
+/// View-mode selector pills. In Basic, a single 2D / 3D toggle (3D picks
+/// SiteOrbit as the sensible default for radar viewing). In Advanced, all
+/// three 3D camera modes are exposed as separate pills. Rendered both inline
+/// in the top bar and, when space is tight, inside the overflow menu.
+fn render_view_mode_pills(ui: &mut egui::Ui, state: &mut AppState) {
+    let dim = Color32::from_rgb(100, 100, 100);
+
+    let modes: &[(&str, ViewMode, Option<CameraMode>, Color32, &str)] = if state.show_advanced() {
+        &[
+            (
+                "2D",
+                ViewMode::Flat2D,
+                None,
+                Color32::from_rgb(100, 180, 255),
+                "1",
+            ),
+            (
+                "3D Site",
+                ViewMode::Globe3D,
+                Some(CameraMode::SiteOrbit),
+                Color32::from_rgb(255, 200, 80),
+                "2",
+            ),
+            (
+                "3D Planet",
+                ViewMode::Globe3D,
+                Some(CameraMode::PlanetOrbit),
+                Color32::from_rgb(120, 200, 120),
+                "3",
+            ),
+            (
+                "3D Free",
+                ViewMode::Globe3D,
+                Some(CameraMode::FreeLook),
+                Color32::from_rgb(200, 140, 255),
+                "4",
+            ),
+        ]
+    } else {
+        &[
+            (
+                "2D",
+                ViewMode::Flat2D,
+                None,
+                Color32::from_rgb(100, 180, 255),
+                "1",
+            ),
+            (
+                "3D",
+                ViewMode::Globe3D,
+                Some(CameraMode::SiteOrbit),
+                Color32::from_rgb(255, 200, 80),
+                "2",
+            ),
+        ]
+    };
+
+    for &(label, view, cam, color, key) in modes {
+        let is_active = match (view, cam) {
+            (ViewMode::Flat2D, _) => state.viz_state.view_mode == ViewMode::Flat2D,
+            (ViewMode::Globe3D, Some(cm)) => {
+                if state.show_advanced() {
+                    state.viz_state.view_mode == ViewMode::Globe3D
+                        && state.viz_state.camera.mode == cm
+                } else {
+                    // In Basic the single 3D pill is active for any 3D camera mode.
+                    state.viz_state.view_mode == ViewMode::Globe3D
+                }
+            }
+            _ => false,
+        };
+
+        let text = if is_active {
+            RichText::new(label).size(13.0).strong().color(color)
+        } else {
+            RichText::new(label).size(13.0).color(dim)
+        };
+
+        let response = ui.add(egui::Button::new(text).frame(is_active));
+
+        if !is_active && response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+
+        if response
+            .on_hover_text(format!("Switch to {} ({})", label, key))
+            .clicked()
+        {
+            state.viz_state.view_mode = view;
+            if let Some(cm) = cam {
+                state.viz_state.camera.switch_mode(cm);
+            }
+        }
+    }
+}
+
+/// Version stamp — a frameless, clickable link that opens the GitHub releases
+/// page. Rendered inline in the top bar and, when space is tight, inside the
+/// overflow menu.
+fn render_version_link(ui: &mut egui::Ui) {
+    const MAX_LEN: usize = 24;
+    let version = env!("NEXRAD_VERSION");
+    let full_version = env!("NEXRAD_VERSION_FULL");
+    let display = if version.len() > MAX_LEN {
+        let mut truncated = String::with_capacity(MAX_LEN + 3);
+        for (i, ch) in version.char_indices() {
+            if i >= MAX_LEN {
+                break;
+            }
+            truncated.push(ch);
+        }
+        truncated.push('\u{2026}');
+        truncated
+    } else {
+        version.to_string()
+    };
+
+    let response = ui.add(
+        egui::Button::new(
+            RichText::new(&display)
+                .size(11.0)
+                .color(Color32::from_rgb(80, 80, 80)),
+        )
+        .frame(false),
+    );
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let clicked = response.clicked();
+
+    response.on_hover_text(format!("{} — click to view changelog", full_version));
+
+    if clicked {
+        if let Some(window) = web_sys::window() {
+            let _ = window.open_with_url_and_target(
+                "https://github.com/danielway/nexrad-workbench/releases",
+                "_blank",
+            );
         }
     }
 }

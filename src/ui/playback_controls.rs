@@ -1,8 +1,11 @@
 //! Playback controls: play/pause, speed, datetime picker, live indicator, and session stats.
 
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
-use super::timeline::format_timestamp_full;
-use crate::state::{AppMode, AppState, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed};
+use super::overflow_menu::overflow_menu;
+use super::timeline::format_timestamp_compact;
+use crate::state::{
+    AppMode, AppState, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed, WidthTier,
+};
 use crate::subsystem::Acquisition;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
@@ -182,7 +185,7 @@ pub(super) fn render_playback_controls(
         let tz_suffix = if use_local { "" } else { " Z" };
         let text = RichText::new(format!(
             "{}{}",
-            format_timestamp_full(selected_ts, use_local),
+            format_timestamp_compact(selected_ts, use_local, state.width_tier),
             tz_suffix
         ))
         .monospace()
@@ -352,12 +355,18 @@ pub(super) fn render_playback_controls(
             });
     });
 
-    // Loop mode + clear-selection. Show the loop combo only in Advanced.
-    // Always show the clear-selection X when bounds are set so a Basic
-    // user landing on a `?selection=…` URL has a way to clear it.
-    if playback.state.time_model.playback_bounds.is_some() {
+    // Below the full width tier, the Advanced-only loop combo and UTC toggle
+    // are demoted into a ⋯ overflow menu so they don't crowd the transport row.
+    let compact = state.width_tier < WidthTier::Full;
+    let has_bounds = playback.state.time_model.playback_bounds.is_some();
+
+    // Loop mode + clear-selection. The loop combo is Advanced-only and only
+    // inline at full width; the clear-selection X always stays inline when
+    // bounds are set so a Basic user landing on a `?selection=…` URL can clear
+    // it.
+    if has_bounds {
         ui.separator();
-        if advanced {
+        if advanced && !compact {
             egui::ComboBox::from_id_salt("loop_mode_selector")
                 .selected_text(playback.state.time_model.loop_mode.label())
                 .width(55.0)
@@ -381,24 +390,58 @@ pub(super) fn render_playback_controls(
         }
     }
 
-    if advanced {
+    // UTC/Local toggle — Advanced-only, inline only at full width.
+    if advanced && !compact {
         ui.separator();
+        render_utc_toggle(ui, state);
+    }
 
-        // UTC/Local toggle
-        let label = if state.use_local_time { "Local" } else { "UTC" };
-        if ui
-            .button(RichText::new(label).size(10.0).monospace())
-            .on_hover_text("Toggle between UTC and local time")
-            .clicked()
-        {
-            state.use_local_time = !state.use_local_time;
-        }
+    // Overflow menu for the demoted Advanced controls (UTC toggle, and the
+    // loop mode when a selection is active). Nothing is demoted in Basic, so
+    // the menu only appears in Advanced at narrow widths.
+    if advanced && compact {
+        ui.separator();
+        overflow_menu(ui, |ui| {
+            ui.label(RichText::new("Time zone").size(11.0).weak());
+            render_utc_toggle(ui, state);
+            if has_bounds {
+                ui.separator();
+                ui.label(RichText::new("Loop").size(11.0).weak());
+                // Listed as rows rather than a nested combo: a ComboBox inside
+                // a close-on-click menu would dismiss the menu on its first
+                // click before its own popup could open.
+                for mode in LoopMode::all() {
+                    if ui
+                        .selectable_label(
+                            playback.state.time_model.loop_mode == *mode,
+                            mode.label(),
+                        )
+                        .clicked()
+                    {
+                        playback.state.time_model.loop_mode = *mode;
+                    }
+                }
+            }
+        });
     }
 
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         render_session_stats(ui, state, playback, acquisition, chrome);
     });
+}
+
+/// UTC/Local time-zone toggle. Rendered inline in the transport row at full
+/// width and inside the overflow menu when space is tight.
+fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
+    let label = if state.use_local_time { "Local" } else { "UTC" };
+    if ui
+        .button(RichText::new(label).size(10.0).monospace())
+        .on_hover_text("Toggle between UTC and local time")
+        .clicked()
+    {
+        state.use_local_time = !state.use_local_time;
+    }
 }
 
 /// Render live mode indicator badge with pulsing dot.

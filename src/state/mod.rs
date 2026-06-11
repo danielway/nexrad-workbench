@@ -228,9 +228,33 @@ pub struct AppState {
     /// force mobile, `Some(false)` = force desktop. Persisted via preferences.
     pub mobile_override: Option<bool>,
 
+    /// Resolved desktop width tier for the current frame. Computed alongside
+    /// [`AppState::is_mobile`] in [`AppState::refresh_mobile_mode`]. Drives
+    /// progressive collapse of low-priority chrome into overflow menus so the
+    /// top/bottom bars don't overlap when the window is narrow.
+    pub width_tier: WidthTier,
+
     /// Per-frame render caches: camera-motion tracking for label-tier
     /// debouncing, prev-sweep lookup memoization, and theme-gating state.
     pub render_cache: RenderCache,
+}
+
+/// Desktop horizontal-space tier, ordered narrowest → widest. Drives how much
+/// chrome the top/bottom bars keep inline vs. fold into an overflow `⋯` menu.
+/// Mobile has its own dedicated chrome and ignores this; these tiers apply only
+/// to the desktop layout. Breakpoints are sized against the tightest case (the
+/// Advanced top bar) so the surviving inline content provably fits each tier's
+/// smallest viewport, which is what structurally prevents overlap.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub enum WidthTier {
+    /// `< 640px` (down to the ~500px floor before mobile takes over):
+    /// aggressive overflow, timestamp compacted to time-only.
+    Cramped,
+    /// `640..860px`: moderate overflow (help/version/UTC/loop demoted).
+    Compact,
+    /// `>= 860px`: full desktop layout, nothing collapsed.
+    #[default]
+    Full,
 }
 
 /// Tabs in the mobile settings modal. Order matches the tab strip layout.
@@ -441,6 +465,18 @@ impl AppState {
         }
         let auto = width < 600.0 && (self.touch_seen_ever || width < 500.0);
         self.is_mobile = self.mobile_override.unwrap_or(auto);
+
+        // Desktop width tier — used by the top/bottom bars to fold low-priority
+        // controls into overflow menus before they collide. Only meaningful when
+        // not mobile (mobile uses its own chrome), but computing it
+        // unconditionally is harmless and keeps the field always current.
+        self.width_tier = if width >= 860.0 {
+            WidthTier::Full
+        } else if width >= 640.0 {
+            WidthTier::Compact
+        } else {
+            WidthTier::Cramped
+        };
 
         // Mobile v1 is 2D-only. If the user was in globe mode on desktop and
         // the layout flipped to mobile (browser resize, forced override),
