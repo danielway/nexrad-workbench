@@ -211,12 +211,6 @@ pub struct ScanProjection {
     pub in_progress_radials: Option<u32>,
     pub volume_start: f64,
     pub volume_end: f64,
-    /// `true` for completed archive scans. Set for completeness; unread today.
-    #[allow(dead_code)]
-    pub complete: bool,
-    /// Storage scan key, when known. Set for completeness; unread today.
-    #[allow(dead_code)]
-    pub scan_key: Option<String>,
     /// Current-scan sweeps (`scan_role == CurrentInProgress`).
     pub sweeps: Vec<SweepProjection>,
     pub extrapolation: Option<ExtrapolationState>,
@@ -301,7 +295,6 @@ pub fn assemble_live_scan(
     in_progress_radials: Option<u32>,
     volume_start: f64,
     volume_end: f64,
-    scan_key: Option<String>,
 ) -> ScanProjection {
     let current: Vec<SweepProjection> = sweeps
         .iter()
@@ -332,8 +325,6 @@ pub fn assemble_live_scan(
             in_progress_radials: None,
             volume_start: gs,
             volume_end: ge,
-            complete: false,
-            scan_key: None,
             sweeps: next,
             extrapolation: None,
             next_scan_ghost: None,
@@ -347,8 +338,6 @@ pub fn assemble_live_scan(
         in_progress_radials,
         volume_start,
         volume_end,
-        complete: false,
-        scan_key,
         sweeps: current,
         extrapolation: None,
         next_scan_ghost,
@@ -363,10 +352,6 @@ pub struct Projection {
     /// The wrapped producer output — the math carrier (per-chunk forecasts)
     /// the acquisition loop reads for `next_target` and sleep targets.
     pub plan: StreamingPlan,
-    /// Mirror of `plan.revision` — bumped by the projector on every build, for
-    /// consumers to skip redraws / detect a fresher projection.
-    #[allow(dead_code)] // Change-detection mirror; no consumer reads it yet.
-    pub revision: u64,
     /// The live current-scan container the display consumers read (current-scan
     /// sweeps + next-scan ghost). `None` until the engine assembles it.
     pub live_scan: Option<ScanProjection>,
@@ -376,12 +361,7 @@ pub struct Projection {
 impl Projection {
     /// Wrap a plan together with its assembled live-scan container.
     pub fn from_parts(plan: StreamingPlan, live_scan: Option<ScanProjection>) -> Self {
-        let revision = plan.revision;
-        Self {
-            plan,
-            revision,
-            live_scan,
-        }
+        Self { plan, live_scan }
     }
 
     /// The immediate next chunk the streaming loop plans to download.
@@ -418,10 +398,10 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     #[wasm_bindgen_test]
-    fn from_parts_mirrors_revision_and_delegates() {
+    fn from_parts_delegates_to_the_wrapped_plan() {
         let plan = StreamingPlan::empty_for_test(StreamingFilter::All, 42);
         let projection = Projection::from_parts(plan, None);
-        assert_eq!(projection.revision, 42);
+        assert_eq!(projection.plan.revision, 42);
         // Delegating accessors resolve against the wrapped plan.
         assert!(projection.next_target().is_none());
         assert!(!projection.next_target_in_next_volume());

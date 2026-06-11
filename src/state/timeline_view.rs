@@ -367,8 +367,6 @@ mod tests {
             in_progress_radials: None,
             volume_start: 1_700_000_000.0,
             volume_end: 1_700_000_300.0,
-            complete: false,
-            scan_key: None,
             sweeps,
             extrapolation: None,
             next_scan_ghost: None,

@@ -7,20 +7,23 @@
 //! serialized to plain text and pasted into a chat message so the forecasting
 //! algorithms can be iterated on from real session data.
 
-/// How a forecast sweep's time bounds were derived (diagnostic label). Some
-/// variants are matched by the diagnostics UI but only produced for completed
-/// (`Observed`) / predicted (`Estimated`) cuts today.
+/// How a forecast sweep's time bounds were derived (diagnostic label).
+/// Display vocabulary: the modal renders all variants, but the derive path
+/// only produces `Observed` today — `Anchored`/`Estimated` await the
+/// accuracy-tuning work that will label partially-derived bounds.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
+#[allow(dead_code)] // Unproduced variants are display vocabulary (see above).
 pub enum SweepTiming {
     Observed,
     Anchored,
     Estimated,
 }
 
-/// Completion status of a forecast sweep (diagnostic label).
+/// Completion status of a forecast sweep (diagnostic label). The modal
+/// renders all variants; the derive path currently produces only
+/// `Complete`/`Future` (`InProgress` awaits a mid-volume derive pass).
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)]
+#[allow(dead_code)] // `InProgress` is display vocabulary (see above).
 pub enum SweepStatus {
     Complete,
     InProgress {
@@ -56,49 +59,30 @@ impl RateSource {
 }
 
 /// Per-elevation predicted values captured at volume start, with slots for
-/// actuals filled in as the sweep completes.
-///
-/// Several structural fields (`prf_number`, `is_sails`, etc.) are populated
-/// from the VCP message but no longer rendered in the diagnostics modal —
-/// they're retained for symmetry with the upstream `ExtractedVcp` and so the
-/// snapshot can survive a future feature that needs them. `#[allow(dead_code)]`
-/// keeps the warning quiet without forcing us to gut the construction site.
+/// actuals filled in as the sweep completes. Carries exactly what the
+/// diagnostics modal and clipboard serializer render — structural VCP
+/// detail (PRF, SAILS/MRLE flags, raw rates) lives on `ExtractedVcp` and
+/// is re-derivable from the [`CompletedVolumeRecord`]'s `vcp` when a
+/// future column needs it.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct SweepForecast {
     pub elev_number: u8,
     pub elev_angle: f32,
     pub waveform: String,
-    pub prf_number: u8,
-    pub is_sails: bool,
-    pub is_mrle: bool,
-    pub is_base_tilt: bool,
 
-    /// Raw rate from the VCP message, if present.
-    pub vcp_azimuth_rate: Option<f32>,
-    /// Fallback rate computed from (waveform, prf, clear_air).
-    pub fallback_azimuth_rate: f64,
     /// Rate actually used for the prediction (from VCP, fallback, or library).
     pub azimuth_rate_used: f64,
     pub rate_source: RateSource,
 
     pub predicted_start: f64,
-    pub predicted_end: f64,
     pub predicted_duration: f64,
     /// `None` when no `ChunkProjectionInfo` was available at snapshot time
     /// (we didn't guess a chunk count then).
     pub predicted_chunks: Option<u32>,
 
-    /// Re-projected start when this elevation first becomes in-progress —
-    /// what the forecaster would predict once a chunk for it has arrived.
-    pub mid_predicted_start: Option<f64>,
-    pub mid_predicted_end: Option<f64>,
-
     pub actual_start: Option<f64>,
     pub actual_end: Option<f64>,
     pub actual_chunks: Option<u32>,
-    /// `360 / actual_duration` for completed sweeps — comparable to `azimuth_rate_used`.
-    pub observed_rate_dps: Option<f64>,
 
     pub timing_source: Option<SweepTiming>,
     pub status: SweepStatus,
@@ -114,14 +98,7 @@ impl SweepForecast {
 }
 
 /// Volume-level snapshot. Serialized into the clipboard text.
-///
-/// `chunk_projections_available_at_start` and `previous_volume_end` are
-/// populated by the live-mode capture path but no longer rendered — they
-/// gave context to columns that have since been removed. Kept on the struct
-/// to keep the capture site compact; `#[allow(dead_code)]` silences the
-/// resulting unused-field warnings.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct VolumeForecastSnapshot {
     pub vcp_number: u16,
     /// Name from the static `get_vcp_definition` table; `None` for unknown VCPs.
@@ -134,12 +111,6 @@ pub struct VolumeForecastSnapshot {
     pub actual_volume_end: Option<f64>,
     pub expected_elevation_count: u8,
     pub sweeps: Vec<SweepForecast>,
-    /// Whether `chunk_projections` were present at snapshot time — useful
-    /// context when reading the `predicted_chunks` column.
-    pub chunk_projections_available_at_start: bool,
-
-    /// Prior volume's observed end timestamp (Unix seconds), if we saw one.
-    pub previous_volume_end: Option<f64>,
     /// `volume_start - previous_volume_end` when both are known.
     pub inter_volume_gap_secs: Option<f64>,
     /// Forecaster's predicted gap: `predicted_available_at` on the new
@@ -284,18 +255,14 @@ pub fn derive_volume_forecast(
         let actual = completed_sweep_metas
             .iter()
             .find(|m| m.elevation_number == elev_number);
-        let (actual_start, actual_end, observed_rate_dps, timing_source, status) = match actual {
-            Some(meta) => {
-                let dur = meta.end - meta.start;
-                (
-                    Some(meta.start),
-                    Some(meta.end),
-                    if dur > 0.0 { Some(360.0 / dur) } else { None },
-                    Some(SweepTiming::Observed),
-                    SweepStatus::Complete,
-                )
-            }
-            None => (None, None, None, None, SweepStatus::Future),
+        let (actual_start, actual_end, timing_source, status) = match actual {
+            Some(meta) => (
+                Some(meta.start),
+                Some(meta.end),
+                Some(SweepTiming::Observed),
+                SweepStatus::Complete,
+            ),
+            None => (None, None, None, SweepStatus::Future),
         };
         let actual_chunks = actual.map(|_| {
             chunk_elev_spans
@@ -308,24 +275,14 @@ pub fn derive_volume_forecast(
             elev_number,
             elev_angle: elev.angle,
             waveform: elev.waveform.clone(),
-            prf_number: elev.prf_number,
-            is_sails: elev.is_sails,
-            is_mrle: elev.is_mrle,
-            is_base_tilt: elev.is_base_tilt,
-            vcp_azimuth_rate: elev.azimuth_rate,
-            fallback_azimuth_rate: fallback_rate,
             azimuth_rate_used: rate_used,
             rate_source,
             predicted_start,
-            predicted_end,
             predicted_duration,
             predicted_chunks,
-            mid_predicted_start: None,
-            mid_predicted_end: None,
             actual_start,
             actual_end,
             actual_chunks,
-            observed_rate_dps,
             timing_source,
             status,
         });
@@ -351,8 +308,6 @@ pub fn derive_volume_forecast(
         actual_volume_end,
         expected_elevation_count: vcp.elevations.len() as u8,
         sweeps,
-        chunk_projections_available_at_start: true,
-        previous_volume_end: previous_volume_end_secs,
         inter_volume_gap_secs,
         predicted_inter_volume_gap_secs,
     }

@@ -44,8 +44,6 @@ pub fn scan_to_projection(scan: &Scan) -> ScanProjection {
         in_progress_radials: None,
         volume_start: scan.start_time,
         volume_end: scan.end_time,
-        complete: true,
-        scan_key: None,
         sweeps,
         extrapolation: None,
         next_scan_ghost: None,
@@ -87,7 +85,6 @@ mod tests {
         assert_eq!(p.vcp_number, 215);
         assert_eq!(p.volume_start, 1000.0);
         assert_eq!(p.volume_end, 1300.0);
-        assert!(p.complete);
         assert!(p.next_scan_ghost.is_none());
         assert!(p.extrapolation.is_none());
         assert_eq!(p.sweeps.len(), 2);

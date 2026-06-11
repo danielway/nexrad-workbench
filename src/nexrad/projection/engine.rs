@@ -355,7 +355,6 @@ impl ProjectionEngine {
                 obs.current_in_progress_radials,
                 current_scan_start,
                 volume_end,
-                None,
             );
             self.cached = Some((key, Projection::from_parts(plan, Some(live_scan))));
         }
