@@ -23,8 +23,12 @@ pub enum ListingResult {
         date: NaiveDate,
         listing: ArchiveListing,
     },
-    /// Listing request failed
-    Error(String),
+    /// Listing request failed (site/date identify the request for backoff).
+    Error {
+        site_id: String,
+        date: NaiveDate,
+        message: String,
+    },
 }
 
 /// Shared network statistics for live tracking.
@@ -249,7 +253,11 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
     {
         Ok(files) => files,
         Err(msg) => {
-            return ListingResult::Error(format!("Failed to list files: {}", msg));
+            return ListingResult::Error {
+                site_id: site_owned,
+                date,
+                message: format!("Failed to list files: {}", msg),
+            };
         }
     };
 

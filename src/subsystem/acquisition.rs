@@ -35,6 +35,12 @@ pub struct Acquisition {
     /// Wall-clock ms before which the lookback backfill pump should not
     /// recompute (a light 1 Hz throttle; the enqueue is idempotent anyway).
     pub lookback_backfill_next_ms: f64,
+    /// Wall-clock ms before which the visible-range listing pump may not
+    /// issue another S3 LIST (rate limit: one new listing per interval).
+    pub visible_listing_next_ms: f64,
+    /// Per-(site, date) wall-clock ms before which a failed listing may be
+    /// retried — keeps a failing day from being re-LISTed at the pump rate.
+    pub listing_backoff: std::collections::HashMap<(String, chrono::NaiveDate), f64>,
 }
 
 impl Acquisition {
@@ -49,6 +55,8 @@ impl Acquisition {
             coordinator: AcquisitionCoordinator::new(data_facade),
             prefetch_settle: PrefetchSettle::default(),
             lookback_backfill_next_ms: 0.0,
+            visible_listing_next_ms: 0.0,
+            listing_backoff: std::collections::HashMap::new(),
         }
     }
 }

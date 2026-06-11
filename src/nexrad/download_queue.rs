@@ -37,6 +37,13 @@ pub(crate) struct QueueItem {
     /// either way — a NEXRAD archive object is a single blob — so this scopes
     /// decode/storage, not the network transfer.
     pub elevation_filter: Option<u8>,
+    /// Acquisition-drawer operation representing this item, created by the
+    /// enqueuer. Carried on the item (rather than paired FIFO at dispatch)
+    /// so priority-ordered dispatch and pruning stay correlated.
+    pub operation_id: Option<crate::state::OperationId>,
+    /// Dispatch priority — lower dispatches sooner. Recomputed against the
+    /// playhead by [`DownloadQueueManager::reprioritize`] each pump.
+    pub priority: i64,
 }
 
 impl QueueItem {
@@ -54,7 +61,70 @@ impl QueueItem {
             scan_end,
             state: QueueItemState::Pending,
             elevation_filter,
+            operation_id: None,
+            priority: 0,
         }
+    }
+
+    /// Attach the acquisition operation that tracks this item.
+    pub fn with_operation(mut self, id: crate::state::OperationId) -> Self {
+        self.operation_id = Some(id);
+        self
+    }
+}
+
+/// Dispatch priority of a queued scan relative to the playhead — lower is
+/// sooner. A scan covering the playhead is most urgent (0); otherwise the
+/// distance in seconds to the nearest edge, with scans *against* the playback
+/// direction penalized 4x so the queue serves where the cursor is heading
+/// without ever fully starving the trail behind it.
+pub(crate) fn playhead_priority(
+    scan_start: i64,
+    scan_end: i64,
+    playhead: i64,
+    forward: bool,
+) -> i64 {
+    let dist = if playhead < scan_start {
+        scan_start - playhead
+    } else if playhead > scan_end {
+        playhead - scan_end
+    } else {
+        return 0;
+    };
+    let ahead = if forward {
+        scan_start >= playhead
+    } else {
+        scan_end <= playhead
+    };
+    if ahead {
+        dist
+    } else {
+        dist.saturating_mul(4)
+    }
+}
+
+/// The `[start, end]` window (Unix seconds) of scans worth having queued for
+/// a playhead at `pos`. Ahead of the playback direction: the configured
+/// lookahead, scaled with speed while playing so fast playback buffers
+/// proportionally further. Behind: a fixed ~2-scan trail so a small backward
+/// jog doesn't hit a cold cache. `forward` flips the asymmetry.
+pub(crate) fn prefetch_window(
+    pos: f64,
+    speed_secs_per_sec: f64,
+    playing: bool,
+    forward: bool,
+) -> (i64, i64) {
+    let lead = if playing {
+        crate::PREFETCH_LOOKAHEAD_SECS_PAUSED
+            .max(speed_secs_per_sec * crate::PREFETCH_PLAY_LEAD_SECS)
+    } else {
+        crate::PREFETCH_LOOKAHEAD_SECS_PAUSED
+    };
+    let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
+    if forward {
+        ((pos - trail) as i64, (pos + lead) as i64)
+    } else {
+        ((pos - lead) as i64, (pos + trail) as i64)
     }
 }
 
@@ -69,6 +139,7 @@ pub(crate) enum QueueAction {
         scan_start: i64,
         scan_end: i64,
         elevation_filter: Option<u8>,
+        operation_id: Option<crate::state::OperationId>,
         remaining: usize,
     },
     /// All items are done/failed — queue is drained.
@@ -158,8 +229,38 @@ impl DownloadQueueManager {
             .filter(|item| matches!(item.state, QueueItemState::Active))
     }
 
-    /// Advance the queue: start the next pending item if a concurrency slot
-    /// is available and the queue is not paused.
+    /// Recompute every Pending item's dispatch priority against the playhead.
+    /// Call once per pump, before the fill loop, so `advance` serves the
+    /// scans nearest the cursor (in playback direction) first.
+    pub fn reprioritize(&mut self, playhead: i64, forward: bool) {
+        for item in &mut self.queue {
+            if matches!(item.state, QueueItemState::Pending) {
+                item.priority =
+                    playhead_priority(item.scan_start, item.scan_end, playhead, forward);
+            }
+        }
+    }
+
+    /// Drop Pending items the predicate rejects (e.g. scans the playhead has
+    /// scrubbed far away from), returning them so the caller can cancel their
+    /// acquisition operations. Active items always survive — in-flight HTTP
+    /// is left to finish and free its slot naturally.
+    pub fn prune_pending(&mut self, keep: impl Fn(&QueueItem) -> bool) -> Vec<QueueItem> {
+        let mut pruned = Vec::new();
+        self.queue.retain(|item| {
+            if matches!(item.state, QueueItemState::Pending) && !keep(item) {
+                pruned.push(item.clone());
+                false
+            } else {
+                true
+            }
+        });
+        pruned
+    }
+
+    /// Advance the queue: start the highest-priority (lowest value) pending
+    /// item if a concurrency slot is available and the queue is not paused.
+    /// Ties dispatch in enqueue order.
     pub fn advance(&mut self, is_paused: bool) -> QueueAction {
         if is_paused {
             return QueueAction::Paused;
@@ -172,7 +273,10 @@ impl DownloadQueueManager {
         let next_pending = self
             .queue
             .iter()
-            .position(|item| matches!(item.state, QueueItemState::Pending));
+            .enumerate()
+            .filter(|(_, item)| matches!(item.state, QueueItemState::Pending))
+            .min_by_key(|(_, item)| item.priority)
+            .map(|(idx, _)| idx);
 
         if let Some(idx) = next_pending {
             let remaining = self
@@ -188,6 +292,7 @@ impl DownloadQueueManager {
                 scan_start: item.scan_start,
                 scan_end: item.scan_end,
                 elevation_filter: item.elevation_filter,
+                operation_id: item.operation_id,
                 remaining,
             };
             self.queue[idx].state = QueueItemState::Active;
@@ -277,6 +382,81 @@ mod tests {
             assert!(started.insert(scan_start), "a scan was dispatched twice");
         }
         assert_eq!(started.len(), 3); // 100, 400, 700 — the duplicate 100 skipped
+    }
+
+    #[wasm_bindgen_test]
+    fn playhead_priority_orders_nearest_first_with_direction_bias() {
+        // Covering the playhead = most urgent.
+        assert_eq!(playhead_priority(100, 400, 200, true), 0);
+        // Ahead (forward): plain distance.
+        assert_eq!(playhead_priority(500, 800, 200, true), 300);
+        // Behind (forward): distance penalized 4x.
+        assert_eq!(playhead_priority(100, 150, 200, true), 200);
+        // Same scan ahead when playing backward: now it's against direction.
+        assert_eq!(playhead_priority(500, 800, 200, false), 1200);
+        // And the behind scan becomes "ahead" backward: plain distance.
+        assert_eq!(playhead_priority(100, 150, 200, false), 50);
+        // Nearest-first: closer ahead beats farther ahead.
+        assert!(playhead_priority(300, 600, 200, true) < playhead_priority(900, 1200, 200, true));
+    }
+
+    #[wasm_bindgen_test]
+    fn prefetch_window_shapes() {
+        let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
+        // Paused forward: fixed lead, fixed trail.
+        let (s, e) = prefetch_window(10_000.0, 300.0, false, true);
+        assert_eq!(s, (10_000.0 - trail) as i64);
+        assert_eq!(e, (10_000.0 + crate::PREFETCH_LOOKAHEAD_SECS_PAUSED) as i64);
+        // Playing fast forward: lead scales with speed.
+        let (_, e_fast) = prefetch_window(10_000.0, 1200.0, true, true);
+        assert_eq!(
+            e_fast,
+            (10_000.0 + 1200.0 * crate::PREFETCH_PLAY_LEAD_SECS) as i64
+        );
+        // Backward play mirrors the asymmetry.
+        let (s_b, e_b) = prefetch_window(10_000.0, 300.0, false, false);
+        assert_eq!(
+            s_b,
+            (10_000.0 - crate::PREFETCH_LOOKAHEAD_SECS_PAUSED) as i64
+        );
+        assert_eq!(e_b, (10_000.0 + trail) as i64);
+    }
+
+    #[wasm_bindgen_test]
+    fn advance_dispatches_by_priority_not_fifo() {
+        let mut q = DownloadQueueManager::new();
+        // Enqueued far-first, near-last.
+        q.enqueue([item(9000, None), item(3000, None), item(600, None)]);
+        // Playhead at 500, forward: 600 is nearest, then 3000, then 9000.
+        q.reprioritize(500, true);
+        let mut order = Vec::new();
+        while let QueueAction::StartDownload { scan_start, .. } = q.advance(false) {
+            order.push(scan_start);
+        }
+        assert_eq!(order, vec![600, 3000, 9000]);
+    }
+
+    #[wasm_bindgen_test]
+    fn prune_pending_keeps_active_and_returns_dropped() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None), item(5000, None), item(9000, None)]);
+        // Activate the first item (playhead near 100).
+        q.reprioritize(100, true);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload {
+                scan_start: 100,
+                ..
+            }
+        ));
+        // Scrub far away and prune everything outside [8000, 10000].
+        let pruned = q.prune_pending(|i| i.scan_start >= 8000 && i.scan_start <= 10_000);
+        let pruned_starts: Vec<i64> = pruned.iter().map(|i| i.scan_start).collect();
+        assert_eq!(pruned_starts, vec![5000]);
+        // The Active item (100) survives; 9000 stays pending.
+        assert!(q.find_by_scan_start(100).is_some());
+        assert!(q.find_by_scan_start(9000).is_some());
+        assert!(q.find_by_scan_start(5000).is_none());
     }
 
     #[wasm_bindgen_test]

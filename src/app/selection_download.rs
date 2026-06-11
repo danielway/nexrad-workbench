@@ -20,6 +20,36 @@ impl WorkbenchApp {
             return;
         }
 
+        // 0. Serve the playhead: drop pending work the cursor has scrubbed
+        // far away from (cancelling its drawer operations), then order what
+        // remains nearest-first in the playback direction. Active downloads
+        // are never cancelled — they finish and free their slots naturally.
+        let playhead = self.playback.state.playback_position();
+        let forward =
+            self.playback.state.time_model.direction == crate::state::PlaybackDirection::Forward;
+        let speed = self.playback.state.speed.timeline_seconds_per_real_second();
+        let playing = self.playback.state.playing;
+        let (win_start, win_end) =
+            crate::nexrad::download_queue::prefetch_window(playhead, speed, playing, forward);
+        // Keep a generous 3x margin around the prefetch window so small
+        // scrubs don't churn the queue.
+        let span = win_end - win_start;
+        let (keep_start, keep_end) = (win_start - span, win_end + span);
+        let pruned = self
+            .acquisition
+            .coordinator
+            .download_queue
+            .prune_pending(|item| item.scan_end >= keep_start && item.scan_start <= keep_end);
+        for item in pruned {
+            if let Some(op_id) = item.operation_id {
+                self.acquisition.state.cancel_operation(op_id);
+            }
+        }
+        self.acquisition
+            .coordinator
+            .download_queue
+            .reprioritize(playhead as i64, forward);
+
         // 1. Sweep all Active items and mark any whose download has finished.
         let finished_starts: Vec<i64> = self
             .acquisition
@@ -72,6 +102,7 @@ impl WorkbenchApp {
                     scan_start,
                     scan_end,
                     elevation_filter,
+                    operation_id,
                     remaining,
                 } => {
                     self.state.status_message =
@@ -83,10 +114,11 @@ impl WorkbenchApp {
                         .active_scans
                         .push((scan_start, scan_end));
 
-                    // Mark next acquisition operation as active and pin it to
-                    // this download's scan_start so correlation survives
-                    // concurrent completions.
-                    if let Some(op_id) = self.acquisition.state.next_queued_id() {
+                    // Mark the item's own acquisition operation active and pin
+                    // it to this download's scan_start. The id rides on the
+                    // queue item (not FIFO order) so priority dispatch and
+                    // pruning can't mis-pair operations with downloads.
+                    if let Some(op_id) = operation_id {
                         self.acquisition.state.mark_active(op_id);
                         self.acquisition
                             .coordinator

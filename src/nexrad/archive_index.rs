@@ -134,6 +134,11 @@ impl ArchiveListing {
     }
 }
 
+/// How long today's listing stays fresh (seconds). The archive only grows at
+/// the live edge, so non-today listings never expire; today's is re-listed on
+/// this cadence so the shadow track keeps growing near "now".
+pub const TODAY_LISTING_TTL_SECS: f64 = 120.0;
+
 /// In-memory cache for archive listings.
 ///
 /// Caches all listings for the current session. Today's listings are stored
@@ -152,6 +157,26 @@ impl ArchiveIndex {
     pub fn get(&self, site_id: &str, date: &NaiveDate) -> Option<&ArchiveListing> {
         let key = ArchiveIndexKey::new(site_id, *date);
         self.listings.get(&key)
+    }
+
+    /// Whether a *fresh* listing exists: any cached listing for a past date,
+    /// or one younger than [`TODAY_LISTING_TTL_SECS`] when `date == today`.
+    /// Stale-but-present listings are still served by [`Self::get`] (better
+    /// stale shadows than none); this only tells the listing pump whether a
+    /// refresh is worthwhile.
+    pub fn has_fresh(
+        &self,
+        site_id: &str,
+        date: &NaiveDate,
+        now_secs: f64,
+        today: NaiveDate,
+    ) -> bool {
+        match self.get(site_id, date) {
+            None => false,
+            Some(listing) => {
+                *date != today || now_secs - listing.fetched_at < TODAY_LISTING_TTL_SECS
+            }
+        }
     }
 
     /// Store a listing in the cache.
@@ -320,6 +345,45 @@ mod tests {
     }
 
     // --- ArchiveIndex ---
+
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn has_fresh_ttl_only_applies_to_today() {
+        let mut idx = ArchiveIndex::new();
+        let today = NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+        let yesterday = NaiveDate::from_ymd_opt(2026, 6, 10).unwrap();
+        let now = 10_000.0;
+
+        // Nothing cached → never fresh.
+        assert!(!idx.has_fresh("KDMX", &yesterday, now, today));
+
+        // A past date is fresh forever once cached, regardless of age.
+        idx.listings.insert(
+            ArchiveIndexKey::new("KDMX", yesterday),
+            ArchiveListing {
+                files: vec![file("a", 1000)],
+                fetched_at: 0.0,
+            },
+        );
+        assert!(idx.has_fresh("KDMX", &yesterday, now, today));
+
+        // Today's listing expires after the TTL.
+        idx.listings.insert(
+            ArchiveIndexKey::new("KDMX", today),
+            ArchiveListing {
+                files: vec![file("b", 2000)],
+                fetched_at: now - TODAY_LISTING_TTL_SECS - 1.0,
+            },
+        );
+        assert!(!idx.has_fresh("KDMX", &today, now, today));
+        idx.listings.insert(
+            ArchiveIndexKey::new("KDMX", today),
+            ArchiveListing {
+                files: vec![file("b", 2000)],
+                fetched_at: now - 1.0,
+            },
+        );
+        assert!(idx.has_fresh("KDMX", &today, now, today));
+    }
 
     #[test]
     fn archive_index_get() {

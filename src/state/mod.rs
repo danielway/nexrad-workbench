@@ -47,8 +47,8 @@ pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
 pub use mping::MpingState;
 pub use playback::{
-    FreezeAt, LoopMode, MacroFrameInputs, PlaybackMode, PlaybackSpeed, PlaybackState, RebuildCause,
-    TimeModel, MICRO_ZOOM_THRESHOLD,
+    FreezeAt, LoopMode, MacroFrameInputs, PlaybackDirection, PlaybackMode, PlaybackSpeed,
+    PlaybackState, RebuildCause, TimeModel, MICRO_ZOOM_THRESHOLD,
 };
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;

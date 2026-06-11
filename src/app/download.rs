@@ -206,6 +206,9 @@ impl WorkbenchApp {
                     .coordinator
                     .archive_index
                     .insert(&site_id, date, listing);
+                self.acquisition
+                    .listing_backoff
+                    .remove(&(site_id.clone(), date));
 
                 // Rebuild shadow scan boundaries for the timeline. Reactive
                 // prefetch re-evaluates on the next settle and will pick up the
@@ -218,10 +221,23 @@ impl WorkbenchApp {
                         .all_boundaries_for_site(&site_id);
                 }
             }
-            nexrad::ListingResult::Error(msg) => {
+            nexrad::ListingResult::Error {
+                site_id,
+                date,
+                message,
+            } => {
                 // A failed listing just means prefetch finds no scans for that
-                // date; it retries on a later settle. Log rather than surface.
-                log::error!("Listing request failed: {}", msg);
+                // date; back the (site, date) off so the listing pumps don't
+                // re-LIST a failing day at their full rate. Log, don't surface.
+                log::error!(
+                    "Listing request failed for {}/{}: {}",
+                    site_id,
+                    date,
+                    message
+                );
+                self.acquisition
+                    .listing_backoff
+                    .insert((site_id, date), js_sys::Date::now() + 30_000.0);
             }
         }
     }

@@ -723,6 +723,10 @@ impl eframe::App for WorkbenchApp {
         // archive volumes the loop needs (pump_implicit_prefetch is off during
         // live and only looks forward).
         self.pump_lookback_backfill(ctx);
+        // Listing counterpart: keep archive listings (→ timeline shadows)
+        // populated for whatever date range the user is looking at, so the
+        // timeline itself is the browsing surface.
+        self.pump_visible_listings(ctx);
         self.sync_prev_sweep_texture();
         self.request_render_if_needed();
         self.update_network_stats();
