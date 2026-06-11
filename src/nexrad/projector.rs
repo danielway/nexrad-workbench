@@ -16,7 +16,7 @@ use super::streaming_filter::StreamingFilter;
 use super::streaming_plan::StreamingPlan;
 use super::timing::{
     project_scan_timing_with_next, AnchorSource, ChunkCharacteristics, ChunkTimingStats,
-    ElevationChunkMapper,
+    ElevationChunkMapper, TimingTuning,
 };
 use chrono::Duration as ChronoDuration;
 use nexrad_data::aws::realtime::ChunkIdentifier;
@@ -64,6 +64,9 @@ pub struct Projector {
     /// chunks on the timeline.
     latest_chunk_collection_end_secs: Option<f64>,
     filter: StreamingFilter,
+    /// Estimation tuning knobs (default values; the accuracy-tuning work
+    /// varies these — see `TimingTuning`).
+    tuning: TimingTuning,
     /// Monotonically-incrementing per-projector revision counter, bumped
     /// on every [`Projector::build_plan`] call. The bumped value is
     /// stamped onto the plan's `revision` field so consumers can
@@ -124,6 +127,7 @@ impl Projector {
             Some(&self.timing_stats),
             include_next_volume,
             next_volume_anchor,
+            &self.tuning,
         )?;
 
         self.next_revision = self.next_revision.wrapping_add(1);

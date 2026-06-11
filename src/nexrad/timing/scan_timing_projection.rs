@@ -1,6 +1,6 @@
 use super::{
     chunk_characteristics, estimate_interval, ChunkCharacteristics, ChunkTimingStats,
-    ElevationChunkMapper, PhysicsBreakdown,
+    ElevationChunkMapper, PhysicsBreakdown, TimingTuning,
 };
 use chrono::{DateTime, Duration, Utc};
 use nexrad_data::aws::realtime::{ChunkIdentifier, ChunkType, VolumeIndex};
@@ -68,12 +68,6 @@ pub struct ScanTimingProjection {
     /// Projected total remaining duration from anchor to volume end.
     remaining_duration: Duration,
 }
-
-/// Fallback NEXRAD ingest lag (Unix seconds) used when we have no observed
-/// anchor lag yet. Chosen to roughly match typical S3 upload latencies
-/// observed during live streaming (~5-15 s). A later commit replaces this
-/// with a median from the split `ChunkTimingStats`.
-const DEFAULT_AVAILABILITY_LAG_SECS: f64 = 5.0;
 
 impl ScanTimingProjection {
     /// The sequence number of the anchor chunk this projection is relative to.
@@ -286,6 +280,7 @@ pub fn project_scan_timing(
     vcp: &volume_coverage_pattern::Message,
     mapper: &ElevationChunkMapper,
     timing_stats: Option<&ChunkTimingStats>,
+    tuning: &TimingTuning,
 ) -> Option<ScanTimingProjection> {
     project_scan_timing_with_next(
         anchor_chunk,
@@ -295,6 +290,7 @@ pub fn project_scan_timing(
         timing_stats,
         false,
         None,
+        tuning,
     )
 }
 
@@ -325,6 +321,7 @@ pub fn project_scan_timing_with_next(
     timing_stats: Option<&ChunkTimingStats>,
     include_next_volume: bool,
     next_volume_anchor: Option<(usize, f64)>,
+    tuning: &TimingTuning,
 ) -> Option<ScanTimingProjection> {
     let anchor_sequence = anchor_chunk.sequence();
     let anchor_available_at = anchor_chunk.upload_date_time().unwrap_or_else(Utc::now);
@@ -362,9 +359,9 @@ pub fn project_scan_timing_with_next(
                     AnchorSource::UploadMinusMedian,
                 ),
                 None => (
-                    anchor_available_at_secs - DEFAULT_AVAILABILITY_LAG_SECS,
+                    anchor_available_at_secs - tuning.default_availability_lag_secs,
                     None,
-                    DEFAULT_AVAILABILITY_LAG_SECS,
+                    tuning.default_availability_lag_secs,
                     AnchorSource::UploadMinusDefault,
                 ),
             },
@@ -396,9 +393,14 @@ pub fn project_scan_timing_with_next(
         // availability / poll) from one calculation so the scheduler and the
         // UI stay in lock-step.
         let bucket = chunk_characteristics(next_metadata, _vcp);
-        let estimate =
-            estimate_interval(prev_metadata, next_metadata, bucket.as_ref(), timing_stats);
-        let times = estimate.project_times(prev_collection_secs, availability_lag_secs);
+        let estimate = estimate_interval(
+            prev_metadata,
+            next_metadata,
+            bucket.as_ref(),
+            timing_stats,
+            tuning,
+        );
+        let times = estimate.project_times(prev_collection_secs, availability_lag_secs, tuning);
 
         let interval_ms = (estimate.seconds * 1000.0) as i64;
         cumulative_offset_ms += interval_ms;
@@ -510,6 +512,7 @@ pub fn project_full_scan_timing(
     vcp: &volume_coverage_pattern::Message,
     mapper: &ElevationChunkMapper,
     timing_stats: Option<&ChunkTimingStats>,
+    tuning: &TimingTuning,
 ) -> Option<ScanTimingProjection> {
     let start_chunk = ChunkIdentifier::new(
         site.to_string(),
@@ -520,7 +523,7 @@ pub fn project_full_scan_timing(
         Some(start_time),
     );
 
-    project_scan_timing(&start_chunk, None, vcp, mapper, timing_stats)
+    project_scan_timing(&start_chunk, None, vcp, mapper, timing_stats, tuning)
 }
 
 #[cfg(test)]

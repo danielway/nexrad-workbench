@@ -19,7 +19,10 @@ use crate::state::VolumeElevationRoster;
 
 /// Default expected volume duration (seconds) when neither a completed volume
 /// nor a VCP estimate is available — mirrors the worker's old `unwrap_or(300.0)`.
-const DEFAULT_VOLUME_DURATION_SECS: f64 = 300.0;
+/// Sourced from the global tuning default (`TimingTuning`), the single home
+/// for timing constants.
+const DEFAULT_VOLUME_DURATION_SECS: f64 =
+    crate::nexrad::timing::TimingTuning::DEFAULT.default_volume_duration_secs;
 
 /// Accumulated observations for the in-progress volume. Reset to `default()` at
 /// each volume boundary via [`super::ProjectionEngine::reset_volume_observations`].

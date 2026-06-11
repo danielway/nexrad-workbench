@@ -21,13 +21,10 @@
 
 use super::{
     ChunkCharacteristics, ChunkMetadata, ChunkTimingModel, ChunkTimingStats, PhysicsBreakdown,
+    TimingTuning,
 };
 use nexrad_data::aws::realtime::ChunkType;
 use nexrad_decode::messages::volume_coverage_pattern;
-
-/// Weight applied to historical samples in the physics/historical blend.
-/// `seconds = (1 − HIST_WEIGHT) * physics + HIST_WEIGHT * historical`.
-const HIST_WEIGHT: f64 = 0.3;
 
 /// Result of [`estimate_interval`]: a blended interval prediction with the
 /// physics decomposition, the sample count we drew from, whether historical
@@ -74,23 +71,19 @@ pub struct ProjectedTimes {
 }
 
 impl IntervalEstimate {
-    /// Bias applied between expected availability and the scheduler's first
-    /// poll, so the first attempt lands slightly after the upload rather
-    /// than racing it. Was `POLL_DELAY_AFTER_PREDICTED_MS` at the streaming
-    /// loop's call site; consolidated here so projector, scheduler, and any
-    /// UI surface that wants to display the poll axis use the same value.
-    pub const POLL_BIAS_SECS: f64 = 0.750;
-
     /// Project the three time axes for the next chunk given the previous
     /// chunk's collection time and the empirical availability lag.
+    /// `tuning.poll_bias_secs` shifts the poll axis so the first attempt
+    /// lands slightly after the expected upload rather than racing it.
     pub fn project_times(
         &self,
         anchor_collection_secs: f64,
         availability_lag_secs: f64,
+        tuning: &TimingTuning,
     ) -> ProjectedTimes {
         let collection_at_secs = anchor_collection_secs + self.seconds;
         let available_at_secs = collection_at_secs + availability_lag_secs;
-        let poll_at_secs = available_at_secs + self.retry_budget_secs + Self::POLL_BIAS_SECS;
+        let poll_at_secs = available_at_secs + self.retry_budget_secs + tuning.poll_bias_secs;
         ProjectedTimes {
             collection_at_secs,
             available_at_secs,
@@ -100,14 +93,15 @@ impl IntervalEstimate {
 }
 
 /// Single-hop interval estimate. When stats hold a historical average for
-/// `next_bucket`, blends `0.7 * physics + 0.3 * historical`; otherwise
-/// returns pure physics. Retry budget is read from the same bucket's
-/// attempts average.
+/// `next_bucket`, blends physics and historical per `tuning.hist_weight`
+/// (default 70/30); otherwise returns pure physics. Retry budget is read
+/// from the same bucket's attempts average.
 pub fn estimate_interval(
     prev: &ChunkMetadata,
     next: &ChunkMetadata,
     next_bucket: Option<&ChunkCharacteristics>,
     stats: Option<&ChunkTimingStats>,
+    tuning: &TimingTuning,
 ) -> IntervalEstimate {
     let physics = ChunkTimingModel::estimate_chunk_interval_breakdown(prev, next);
     let stats_n = match (next_bucket, stats) {
@@ -121,7 +115,7 @@ pub fn estimate_interval(
 
     let (seconds, used_historical) = match historical_secs {
         Some(hist) => (
-            physics.total_secs * (1.0 - HIST_WEIGHT) + hist * HIST_WEIGHT,
+            physics.total_secs * (1.0 - tuning.hist_weight) + hist * tuning.hist_weight,
             true,
         ),
         None => (physics.total_secs, false),
@@ -183,37 +177,84 @@ mod tests {
     #[wasm_bindgen_test]
     fn project_times_collection_is_anchor_plus_interval() {
         let est = estimate(3.0, 0.0);
-        let t = est.project_times(1000.0, 0.5);
+        let t = est.project_times(1000.0, 0.5, &TimingTuning::DEFAULT);
         assert!((t.collection_at_secs - 1003.0).abs() < 1e-9);
     }
 
     #[wasm_bindgen_test]
     fn project_times_available_includes_lag() {
         let est = estimate(3.0, 0.0);
-        let t = est.project_times(1000.0, 0.5);
+        let t = est.project_times(1000.0, 0.5, &TimingTuning::DEFAULT);
         assert!((t.available_at_secs - 1003.5).abs() < 1e-9);
     }
 
     #[wasm_bindgen_test]
     fn project_times_poll_includes_retry_budget_and_bias() {
         let est = estimate(3.0, 1.25);
-        let t = est.project_times(1000.0, 0.5);
-        let expected = 1003.5 + 1.25 + IntervalEstimate::POLL_BIAS_SECS;
+        let t = est.project_times(1000.0, 0.5, &TimingTuning::DEFAULT);
+        let expected = 1003.5 + 1.25 + TimingTuning::DEFAULT.poll_bias_secs;
         assert!((t.poll_at_secs - expected).abs() < 1e-9);
     }
 
     #[wasm_bindgen_test]
     fn project_times_zero_retry_budget_only_adds_bias() {
         let est = estimate(2.0, 0.0);
-        let t = est.project_times(0.0, 0.0);
-        assert!((t.poll_at_secs - (2.0 + IntervalEstimate::POLL_BIAS_SECS)).abs() < 1e-9);
+        let t = est.project_times(0.0, 0.0, &TimingTuning::DEFAULT);
+        assert!((t.poll_at_secs - (2.0 + TimingTuning::DEFAULT.poll_bias_secs)).abs() < 1e-9);
     }
 
     #[wasm_bindgen_test]
     fn project_times_axes_are_monotonic() {
         let est = estimate(5.0, 0.75);
-        let t = est.project_times(2000.0, 0.4);
+        let t = est.project_times(2000.0, 0.4, &TimingTuning::DEFAULT);
         assert!(t.collection_at_secs <= t.available_at_secs);
         assert!(t.available_at_secs <= t.poll_at_secs);
+    }
+
+    #[wasm_bindgen_test]
+    fn estimate_interval_blend_follows_hist_weight() {
+        use chrono::Duration;
+        use nexrad_decode::messages::volume_coverage_pattern::{
+            ChannelConfiguration, WaveformType,
+        };
+
+        // Two intra-sweep chunks at 18°/s.
+        let prev = ChunkMetadata::for_test(5, Some(1), 1, 6, false, 18.0);
+        let next = ChunkMetadata::for_test(6, Some(1), 2, 6, false, 18.0);
+        let bucket = ChunkCharacteristics {
+            chunk_type: nexrad_data::aws::realtime::ChunkType::Intermediate,
+            waveform_type: WaveformType::CS,
+            channel_configuration: ChannelConfiguration::ConstantPhase,
+            is_first_in_sweep: false,
+        };
+        // Historical samples deliberately far from physics so the blend
+        // weight is observable.
+        let mut stats = ChunkTimingStats::new();
+        stats.add_timing(bucket, Duration::seconds(30), None, 1);
+
+        let physics_only =
+            estimate_interval(&prev, &next, Some(&bucket), None, &TimingTuning::DEFAULT);
+        assert!(!physics_only.used_historical);
+
+        let default_blend = estimate_interval(
+            &prev,
+            &next,
+            Some(&bucket),
+            Some(&stats),
+            &TimingTuning::DEFAULT,
+        );
+        assert!(default_blend.used_historical);
+        let expected_default = physics_only.seconds * 0.7 + 30.0 * 0.3;
+        assert!((default_blend.seconds - expected_default).abs() < 1e-9);
+
+        // A heavier historical weight pulls the estimate toward the samples.
+        let heavy = TimingTuning {
+            hist_weight: 0.9,
+            ..TimingTuning::DEFAULT
+        };
+        let heavy_blend = estimate_interval(&prev, &next, Some(&bucket), Some(&stats), &heavy);
+        let expected_heavy = physics_only.seconds * 0.1 + 30.0 * 0.9;
+        assert!((heavy_blend.seconds - expected_heavy).abs() < 1e-9);
+        assert!(heavy_blend.seconds > default_blend.seconds);
     }
 }

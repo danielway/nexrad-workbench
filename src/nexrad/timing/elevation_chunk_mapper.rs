@@ -31,6 +31,31 @@ pub struct ChunkMetadata {
 }
 
 impl ChunkMetadata {
+    /// Test-only constructor — estimation tests need metadata pairs without
+    /// building a full VCP message.
+    #[cfg(test)]
+    pub(super) fn for_test(
+        sequence: usize,
+        elevation_number: Option<usize>,
+        chunk_index_in_sweep: usize,
+        chunks_in_sweep: usize,
+        is_first_in_sweep: bool,
+        azimuth_rate_dps: f64,
+    ) -> Self {
+        Self {
+            sequence,
+            elevation_number,
+            chunk_index_in_sweep,
+            chunks_in_sweep,
+            is_first_in_sweep,
+            is_last_in_sweep: chunk_index_in_sweep + 1 == chunks_in_sweep,
+            azimuth_rate_dps,
+            elevation_angle_deg: 0.5,
+            waveform_type: None,
+            is_start_chunk: sequence == 1,
+        }
+    }
+
     /// The sequence number of this chunk (1-based).
     pub fn sequence(&self) -> usize {
         self.sequence

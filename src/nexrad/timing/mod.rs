@@ -21,6 +21,7 @@
 
 mod chunk_timing_model;
 mod chunk_timing_stats;
+mod config;
 mod elevation_chunk_mapper;
 mod estimate_next_chunk_time;
 mod interval_estimate;
@@ -28,6 +29,7 @@ mod scan_timing_projection;
 
 pub use chunk_timing_model::{ChunkTimingModel, IntervalCase, PhysicsBreakdown};
 pub use chunk_timing_stats::{BucketStats, ChunkCharacteristics, ChunkTimingStats};
+pub use config::TimingTuning;
 pub use elevation_chunk_mapper::{ChunkMetadata, ElevationChunkMapper};
 pub use estimate_next_chunk_time::{
     estimate_chunk_availability_time, estimate_chunk_processing_diagnostics,

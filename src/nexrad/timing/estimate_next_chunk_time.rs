@@ -1,6 +1,6 @@
 use super::{
     chunk_characteristics, estimate_interval, ChunkCharacteristics, ChunkTimingModel,
-    ChunkTimingStats, ElevationChunkMapper, PhysicsBreakdown,
+    ChunkTimingStats, ElevationChunkMapper, PhysicsBreakdown, TimingTuning,
 };
 use chrono::Duration as ChronoDuration;
 use chrono::{DateTime, Utc};
@@ -135,11 +135,12 @@ pub fn estimate_chunk_processing_diagnostics(
             next_metadata,
             bucket.as_ref(),
             timing_stats,
+            &TimingTuning::DEFAULT,
         );
 
         // Wait until the chunk is expected to be available *and* a typical
         // retry budget has elapsed. Poll bias is applied separately by the
-        // streaming loop via `IntervalEstimate::POLL_BIAS_SECS`.
+        // streaming loop via `TimingTuning::poll_bias_secs`.
         let wait_secs = estimate.seconds + estimate.retry_budget_secs;
 
         let path = if estimate.used_historical {
@@ -246,7 +247,13 @@ pub fn estimate_chunk_processing_time_to_target(
         let prev_meta = elevation_chunk_mapper.get_chunk_metadata(seq)?;
         let next_meta = elevation_chunk_mapper.get_chunk_metadata(seq + 1)?;
         let bucket = chunk_characteristics(next_meta, vcp);
-        let estimate = estimate_interval(prev_meta, next_meta, bucket.as_ref(), timing_stats);
+        let estimate = estimate_interval(
+            prev_meta,
+            next_meta,
+            bucket.as_ref(),
+            timing_stats,
+            &TimingTuning::DEFAULT,
+        );
         total_secs += estimate.seconds;
         last_breakdown = Some(estimate.physics);
         if estimate.used_historical {
@@ -266,6 +273,7 @@ pub fn estimate_chunk_processing_time_to_target(
         target_meta,
         target_bucket.as_ref(),
         timing_stats,
+        &TimingTuning::DEFAULT,
     );
     let stats_n_at_prediction = target_estimate.stats_n;
     total_secs += target_estimate.retry_budget_secs;

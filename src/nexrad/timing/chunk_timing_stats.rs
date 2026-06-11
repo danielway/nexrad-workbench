@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 
-/// Maximum number of timing samples to keep per chunk characteristics
-const MAX_TIMING_SAMPLES: usize = 10;
+/// Maximum number of timing samples to keep per chunk characteristics.
+/// Read from the global tuning default — the rolling window is a property
+/// of the stats store itself, not per-projector.
+const MAX_TIMING_SAMPLES: usize = super::TimingTuning::DEFAULT.max_timing_samples;
 
 /// Schema version for the serialized `ChunkTimingStats` payload in localStorage.
 /// Bump when the on-disk shape changes so old caches are ignored rather than
