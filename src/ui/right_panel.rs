@@ -652,8 +652,9 @@ fn navigate_to_event(
     }
 
     // Set selection to event bounds
-    playback.state.selection_start = Some(event.start_time);
-    playback.state.selection_end = Some(event.end_time);
+    playback
+        .state
+        .set_selection(event.start_time, event.end_time);
 
     // Center timeline on the event
     let mid = (event.start_time + event.end_time) / 2.0;

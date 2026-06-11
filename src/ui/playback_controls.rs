@@ -84,7 +84,27 @@ pub(super) fn render_datetime_picker_popup(
                         ui.label(tz_label);
                     });
 
-                    ui.add_space(12.0);
+                    ui.add_space(8.0);
+
+                    // Quick jumps relative to now — the common "what was
+                    // happening recently" cases without typing a timestamp.
+                    // Phase 2's anchor fast-path fetches the landing scan
+                    // automatically, so these are true one-click jumps.
+                    let mut jump_target: Option<f64> = None;
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Quick:").size(10.0));
+                        for (label, secs_ago) in [
+                            ("1h ago", 3_600.0),
+                            ("6h ago", 21_600.0),
+                            ("24h ago", 86_400.0),
+                        ] {
+                            if ui.small_button(label).clicked() {
+                                jump_target = Some(state.frame_now.secs() - secs_ago);
+                            }
+                        }
+                    });
+
+                    ui.add_space(8.0);
 
                     // Validation feedback
                     let valid_ts = state.datetime_picker.to_timestamp(use_local);
@@ -106,29 +126,27 @@ pub(super) fn render_datetime_picker_popup(
 
                         ui.add_enabled_ui(valid_ts.is_some(), |ui| {
                             if ui.button("Jump").clicked() || enter_pressed {
-                                if let Some(ts) = valid_ts {
-                                    // Detach the playhead first — a seek while
-                                    // pinned would be rejected. The stream (if
-                                    // any) keeps running in the background.
-                                    live.detach_playhead(
-                                        &mut playback.state,
-                                        state.frame_now.secs(),
-                                    );
-
-                                    playback.state.set_playback_position(ts);
-
-                                    // Left-align timeline view on new position
-                                    // Place the jumped-to position at ~5% from the left edge
-                                    let view_width_secs = playback.state.view_width_secs();
-                                    playback.state.timeline_view_start =
-                                        ts - view_width_secs * 0.05;
-
-                                    state.datetime_picker.close();
-                                    log::debug!("Jumped to timestamp: {}", ts);
-                                }
+                                jump_target = valid_ts;
                             }
                         });
                     });
+
+                    if let Some(ts) = jump_target {
+                        // Detach the playhead first — a seek while pinned
+                        // would be rejected. The stream (if any) keeps
+                        // running in the background.
+                        live.detach_playhead(&mut playback.state, state.frame_now.secs());
+
+                        playback.state.set_playback_position(ts);
+
+                        // Left-align the view: place the jumped-to position
+                        // at ~5% from the left edge.
+                        let view_width_secs = playback.state.view_width_secs();
+                        playback.state.timeline_view_start = ts - view_width_secs * 0.05;
+
+                        state.datetime_picker.close();
+                        log::debug!("Jumped to timestamp: {}", ts);
+                    }
                 });
             });
         });

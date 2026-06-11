@@ -20,8 +20,8 @@ pub(super) fn handle_timeline_interaction(
         if let Some(pos) = response.interact_pointer_pos() {
             let clicked_ts = frame.x_to_ts(pos.x);
             let current_pos = playback.state.playback_position();
-            playback.state.selection_start = Some(current_pos);
-            playback.state.selection_end = Some(clicked_ts);
+            playback.state.set_selection(current_pos, clicked_ts);
+            maybe_anchor_to_live(live, playback, frame.now_secs);
             playback.state.apply_selection_as_bounds();
             let duration_mins = (clicked_ts - current_pos).abs() / 60.0;
             log::debug!("Shift+click range: {:.0} minutes", duration_mins);
@@ -30,26 +30,21 @@ pub(super) fn handle_timeline_interaction(
 
     if shift_held && response.drag_started() {
         if let Some(pos) = response.interact_pointer_pos() {
-            let drag_start_ts = frame.x_to_ts(pos.x);
-            playback.state.selection_start = Some(drag_start_ts);
-            playback.state.selection_end = Some(drag_start_ts);
-            playback.state.selection_in_progress = true;
+            playback.state.begin_selection_drag(frame.x_to_ts(pos.x));
         }
     }
 
-    if shift_held && response.dragged() && playback.state.selection_in_progress {
+    if shift_held && response.dragged() && playback.state.selection_in_progress() {
         if let Some(pos) = response.interact_pointer_pos() {
-            let current_ts = frame.x_to_ts(pos.x);
-            playback.state.selection_end = Some(current_ts);
+            playback.state.update_selection_drag(frame.x_to_ts(pos.x));
         }
     }
 
-    if response.drag_stopped() && playback.state.selection_in_progress {
-        playback.state.selection_in_progress = false;
+    if response.drag_stopped() && playback.state.end_selection_drag() {
+        maybe_anchor_to_live(live, playback, frame.now_secs);
+        playback.state.apply_selection_as_bounds();
         if let Some((start, end)) = playback.state.selection_range() {
-            let duration_mins = (end - start) / 60.0;
-            log::debug!("Selected time range: {:.0} minutes", duration_mins);
-            playback.state.apply_selection_as_bounds();
+            log::debug!("Selected time range: {:.0} minutes", (end - start) / 60.0);
         }
     }
 
@@ -68,13 +63,19 @@ pub(super) fn handle_timeline_interaction(
             // timeline keeps growing at the right edge.
             live.detach_playhead(&mut playback.state, state.frame_now.secs());
 
+            // Selection survival: a click *inside* the selection seeks within
+            // it (loop bounds intact); a click outside clears it. Pan/zoom
+            // never clear.
+            let inside = playback.state.selection_contains(clicked_ts);
             playback.state.set_playback_position(clicked_ts);
-            playback.state.clear_selection();
+            if !inside {
+                playback.state.clear_selection();
+            }
         }
     }
 
     // Drag to pan
-    if response.dragged() && !shift_held && !playback.state.selection_in_progress {
+    if response.dragged() && !shift_held && !playback.state.selection_in_progress() {
         let delta_secs = -response.drag_delta().x as f64 / zoom;
         playback.state.timeline_view_start += delta_secs;
     }
@@ -85,19 +86,17 @@ pub(super) fn handle_timeline_interaction(
         if scroll_delta.y != 0.0 {
             let zoom_factor = 1.0 + scroll_delta.y as f64 * 0.002;
             let old_zoom = playback.state.timeline_zoom;
+            let new_zoom = (old_zoom * zoom_factor).clamp(0.000001, 1000.0);
 
-            // While the playhead is attached to the live edge (pinned or
-            // replaying), don't let the user zoom out into macro mode — the
-            // live stream is about individual sweeps/chunks, which only make
-            // sense at micro zoom. A detached playhead zooms freely.
-            let realtime =
+            // Zooming out past the micro threshold while attached to the
+            // live edge is a browsing gesture: detach (the stream keeps
+            // running) instead of silently clamping the zoom. No hidden
+            // zoom floor remains.
+            let attached =
                 playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback();
-            let min_zoom = if realtime {
-                crate::state::MICRO_ZOOM_THRESHOLD
-            } else {
-                0.000001
-            };
-            let new_zoom = (old_zoom * zoom_factor).clamp(min_zoom, 1000.0);
+            if attached && new_zoom < crate::state::MICRO_ZOOM_THRESHOLD {
+                live.detach_playhead(&mut playback.state, state.frame_now.secs());
+            }
 
             if let Some(cursor_pos) = response.hover_pos() {
                 let cursor_ts = frame.x_to_ts(cursor_pos.x);
@@ -108,5 +107,25 @@ pub(super) fn handle_timeline_interaction(
 
             playback.state.timeline_zoom = new_zoom;
         }
+    }
+}
+
+/// Implicit live-anchoring: a fresh selection whose later edge lands within
+/// one volume of "now" while streaming reads as "from then up to now" — make
+/// it follow the live edge as new data arrives. No extra chrome needed.
+fn maybe_anchor_to_live(
+    live: &crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    now_secs: f64,
+) {
+    if !live.mode_state.is_active() {
+        return;
+    }
+    let near_now = playback
+        .state
+        .selection_range()
+        .is_some_and(|(_, end)| (now_secs - end).abs() < crate::FALLBACK_SCAN_DURATION_SECS as f64);
+    if near_now {
+        playback.state.anchor_selection_to_live();
     }
 }

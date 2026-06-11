@@ -112,12 +112,23 @@ impl WorkbenchApp {
                 .state
                 .time_model
                 .set_bounds_preserving(start, end);
+            // Surface the replay window as a live-anchored selection so it
+            // renders like any other selection (one concept, one overlay).
+            self.playback.state.selection = Some(state::TimeSelection {
+                a: start,
+                b: end,
+                in_progress: false,
+                anchored_to_live: true,
+            });
         } else {
             // Detached: free browsing while the stream ingests in the
-            // background. No pin, no auto-scroll — but bound the background
-            // S3 polling with an idle stop. `handle_streaming_results`
-            // reconciles the channel off on the next frame; `playing` is
-            // deliberately untouched so an archive replay keeps running.
+            // background. No pin, no auto-scroll — but a live-anchored
+            // selection (a loop "up to now") keeps following the live edge,
+            // and the background S3 polling is bounded by an idle stop.
+            // `handle_streaming_results` reconciles the channel off on the
+            // next frame; `playing` is deliberately untouched so an archive
+            // replay keeps running.
+            self.playback.state.slide_anchored_selection(now);
             let detached_for = self
                 .live
                 .mode_state

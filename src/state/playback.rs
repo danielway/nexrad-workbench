@@ -260,6 +260,58 @@ pub enum FreezeAt {
     Keep,
 }
 
+/// A user time selection on the timeline — ONE concept serving loop/playback
+/// bounds, the live replay window, and event ranges. Replaces the old
+/// `selection_start`/`selection_end`/`selection_in_progress` field triple.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct TimeSelection {
+    /// First-placed endpoint (drag origin). Unordered relative to `b`.
+    pub a: f64,
+    /// Second endpoint — the one a drag moves.
+    pub b: f64,
+    /// True while a shift-drag is still moving `b`.
+    pub in_progress: bool,
+    /// The selection's later edge tracks the live edge: while streaming, the
+    /// per-frame live tick slides it forward as time passes, so a loop over
+    /// "the recent past up to now" keeps following now. The lookback replay
+    /// is exactly an anchored selection being played.
+    pub anchored_to_live: bool,
+}
+
+impl TimeSelection {
+    /// A plain static selection between two timestamps.
+    pub fn between(a: f64, b: f64) -> Self {
+        Self {
+            a,
+            b,
+            in_progress: false,
+            anchored_to_live: false,
+        }
+    }
+
+    /// Normalized `(start, end)`, or `None` until the selection has
+    /// meaningful width (> 1 second).
+    pub fn range(&self) -> Option<(f64, f64)> {
+        let (start, end) = (self.a.min(self.b), self.a.max(self.b));
+        ((end - start).abs() > 1.0).then_some((start, end))
+    }
+
+    /// Whether a timestamp falls inside the (normalized) selection.
+    pub fn contains(&self, ts: f64) -> bool {
+        self.range().is_some_and(|(s, e)| ts >= s && ts <= e)
+    }
+
+    /// Slide the later edge to `end` (live-anchored follow). The earlier
+    /// edge keeps its place so the window's extent grows/slides naturally.
+    pub fn slide_end_to(&mut self, end: f64) {
+        if self.a <= self.b {
+            self.b = end;
+        } else {
+            self.a = end;
+        }
+    }
+}
+
 /// Time model per PRODUCT.md specification.
 ///
 /// Separates playback position (the moment in radar time being displayed)
@@ -424,14 +476,8 @@ pub struct PlaybackState {
     /// Timeline view position - absolute timestamp of left edge (Unix seconds)
     pub timeline_view_start: f64,
 
-    /// Start of user's timeline selection (Unix seconds), if selecting
-    pub selection_start: Option<f64>,
-
-    /// End of user's timeline selection (Unix seconds), if selecting
-    pub selection_end: Option<f64>,
-
-    /// Whether a drag selection is currently in progress
-    pub selection_in_progress: bool,
+    /// The user's timeline selection, if any (see [`TimeSelection`]).
+    pub selection: Option<TimeSelection>,
 
     /// Actual pixel width of the timeline widget (set by render_timeline each frame).
     /// Used for accurate view centering calculations outside the render function.
@@ -453,9 +499,7 @@ impl Default for PlaybackState {
             speed: PlaybackSpeed::default(),
             timeline_zoom: zoom,
             timeline_view_start: now - view_width_secs / 2.0,
-            selection_start: None,
-            selection_end: None,
-            selection_in_progress: false,
+            selection: None,
             timeline_width_px: 1000.0,
             macro_playback: MacroPlaybackState::default(),
         }
@@ -507,12 +551,13 @@ impl PlaybackState {
         self.time_model.playback_position = now;
     }
 
-    /// LIVE-* → ARCHIVE (`Free`). Clears the lookback loop window if one
-    /// was active; a user's shift-drag selection bounds (only settable in
-    /// `Free`) are untouched. `freeze` picks the landing position.
-    /// Idempotent when already `Free`.
+    /// LIVE-* → ARCHIVE (`Free`). Clears the lookback replay's anchored
+    /// selection + window if one was active; a user's static shift-drag
+    /// selection (only settable in `Free`) is untouched. `freeze` picks the
+    /// landing position. Idempotent when already `Free`.
     pub fn exit_live(&mut self, freeze: FreezeAt) {
         if self.time_model.mode == PlayheadMode::LookbackLoop {
+            self.clear_anchored_selection();
             self.time_model.clear_bounds();
         }
         self.time_model.mode = PlayheadMode::Free;
@@ -545,8 +590,10 @@ impl PlaybackState {
     }
 
     /// LIVE-LOOKBACK → LIVE-NOW (pause during replay): drop the loop window
-    /// and re-pin to `now`. The stream is untouched.
+    /// (its anchored selection included) and re-pin to `now`. The stream is
+    /// untouched.
     pub fn exit_lookback_to_now(&mut self, now: f64) {
+        self.clear_anchored_selection();
         self.time_model.clear_bounds();
         self.time_model.mode = PlayheadMode::PinnedToNow;
         self.time_model.playback_position = now;
@@ -736,26 +783,92 @@ impl PlaybackState {
 
     /// Get the normalized selection range (start <= end), if any.
     pub fn selection_range(&self) -> Option<(f64, f64)> {
-        match (self.selection_start, self.selection_end) {
-            (Some(a), Some(b)) => {
-                let start = a.min(b);
-                let end = a.max(b);
-                // Only return if selection has meaningful width (> 1 second)
-                if (end - start).abs() > 1.0 {
-                    Some((start, end))
-                } else {
-                    None
-                }
+        self.selection.as_ref().and_then(|s| s.range())
+    }
+
+    /// Whether a shift-drag selection is currently being drawn.
+    pub fn selection_in_progress(&self) -> bool {
+        self.selection.as_ref().is_some_and(|s| s.in_progress)
+    }
+
+    /// Whether a timestamp falls inside the current selection.
+    pub fn selection_contains(&self, ts: f64) -> bool {
+        self.selection.as_ref().is_some_and(|s| s.contains(ts))
+    }
+
+    /// Replace the selection with a static range (event jump, shift+click).
+    pub fn set_selection(&mut self, a: f64, b: f64) {
+        self.selection = Some(TimeSelection::between(a, b));
+    }
+
+    /// Start a shift-drag selection at `ts` (both endpoints collapsed).
+    pub fn begin_selection_drag(&mut self, ts: f64) {
+        self.selection = Some(TimeSelection {
+            a: ts,
+            b: ts,
+            in_progress: true,
+            anchored_to_live: false,
+        });
+    }
+
+    /// Move the dragged endpoint while a shift-drag is in progress.
+    pub fn update_selection_drag(&mut self, ts: f64) {
+        if let Some(sel) = self.selection.as_mut() {
+            if sel.in_progress {
+                sel.b = ts;
             }
-            _ => None,
+        }
+    }
+
+    /// Finish a shift-drag. Returns true when the settled selection has a
+    /// meaningful range (callers then apply it as bounds / anchor it).
+    pub fn end_selection_drag(&mut self) -> bool {
+        match self.selection.as_mut() {
+            Some(sel) if sel.in_progress => {
+                sel.in_progress = false;
+                sel.range().is_some()
+            }
+            _ => false,
+        }
+    }
+
+    /// Anchor the selection's later edge to the live edge (it slides
+    /// forward with now while streaming).
+    pub fn anchor_selection_to_live(&mut self) {
+        if let Some(sel) = self.selection.as_mut() {
+            sel.anchored_to_live = true;
+        }
+    }
+
+    /// Per-frame follow for a live-anchored selection: slide its later edge
+    /// to `end` and keep playback bounds in step (without resetting the
+    /// loop's direction or clamping the position).
+    pub fn slide_anchored_selection(&mut self, end: f64) {
+        let Some(sel) = self.selection.as_mut() else {
+            return;
+        };
+        if !sel.anchored_to_live || sel.in_progress {
+            return;
+        }
+        sel.slide_end_to(end);
+        if self.time_model.playback_bounds.is_some() {
+            if let Some((s, e)) = sel.range() {
+                self.time_model.set_bounds_preserving(s, e);
+            }
+        }
+    }
+
+    /// Drop a live-anchored selection (stream stopped / re-pinned to now).
+    /// A static user selection is left untouched.
+    pub fn clear_anchored_selection(&mut self) {
+        if self.selection.is_some_and(|s| s.anchored_to_live) {
+            self.clear_selection();
         }
     }
 
     /// Clear the current selection.
     pub fn clear_selection(&mut self) {
-        self.selection_start = None;
-        self.selection_end = None;
-        self.selection_in_progress = false;
+        self.selection = None;
         self.time_model.clear_bounds();
     }
 
@@ -926,6 +1039,65 @@ mod tests {
             mp.rebuild_cause(&elev_changed),
             Some(RebuildCause::ElevationChanged)
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn selection_drag_lifecycle_and_contains() {
+        let mut ps = PlaybackState::default();
+        ps.begin_selection_drag(100.0);
+        assert!(ps.selection_in_progress());
+        // Sub-second drag: no meaningful range yet.
+        ps.update_selection_drag(100.5);
+        assert!(!ps.end_selection_drag());
+        // A real drag yields a range; endpoints normalize either direction.
+        ps.begin_selection_drag(500.0);
+        ps.update_selection_drag(200.0);
+        assert!(ps.end_selection_drag());
+        assert_eq!(ps.selection_range(), Some((200.0, 500.0)));
+        assert!(ps.selection_contains(300.0));
+        assert!(!ps.selection_contains(600.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn anchored_selection_slides_and_clears_separately_from_static() {
+        let mut ps = PlaybackState::default();
+        ps.set_selection(100.0, 400.0);
+        ps.apply_selection_as_bounds();
+        // Not anchored: slide is a no-op.
+        ps.slide_anchored_selection(500.0);
+        assert_eq!(ps.selection_range(), Some((100.0, 400.0)));
+        // clear_anchored_selection leaves a static selection alone.
+        ps.clear_anchored_selection();
+        assert!(ps.selection.is_some());
+
+        // Anchored: the later edge follows, bounds slide without resetting
+        // direction, and clear_anchored_selection removes it.
+        ps.anchor_selection_to_live();
+        ps.time_model.direction = PlaybackDirection::Backward;
+        ps.slide_anchored_selection(550.0);
+        assert_eq!(ps.selection_range(), Some((100.0, 550.0)));
+        assert_eq!(ps.time_model.playback_bounds, Some((100.0, 550.0)));
+        assert!(ps.time_model.direction == PlaybackDirection::Backward);
+        ps.clear_anchored_selection();
+        assert!(ps.selection.is_none());
+        assert_eq!(ps.time_model.playback_bounds, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn exit_live_from_lookback_drops_anchored_selection() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
+        ps.enter_lookback(Some(940.0));
+        ps.selection = Some(TimeSelection {
+            a: 940.0,
+            b: 1000.0,
+            in_progress: false,
+            anchored_to_live: true,
+        });
+        ps.time_model.set_bounds_preserving(940.0, 1000.0);
+        ps.exit_live(FreezeAt::Keep);
+        assert!(ps.selection.is_none());
+        assert_eq!(ps.time_model.playback_bounds, None);
     }
 
     #[wasm_bindgen_test]
