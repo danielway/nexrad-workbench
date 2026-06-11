@@ -26,13 +26,15 @@ pub(super) fn should_skip_touch(
 }
 
 /// Decides whether a sweep-blob batch should be admitted given the
-/// browser's current storage estimate, with 5 MB of headroom for IDB
-/// overhead. Returning `Ok(())` when the estimate is unavailable
-/// matches real-IDB behaviour: if we can't ask, we let IDB itself
-/// reject the write at commit time.
+/// browser's current storage estimate, requiring
+/// `QuotaPolicy::ingest_headroom_bytes` of slack for IDB overhead.
+/// Returning `Ok(())` when the estimate is unavailable matches real-IDB
+/// behaviour: if we can't ask, we let IDB itself reject the write at
+/// commit time.
 pub(super) fn decide_quota(
     batch_bytes: u64,
     estimate: Option<StorageQuotaEstimate>,
+    policy: &crate::data::quota::QuotaPolicy,
 ) -> Result<(), DataError> {
     if batch_bytes == 0 {
         return Ok(());
@@ -41,7 +43,7 @@ pub(super) fn decide_quota(
         return Ok(());
     };
     let remaining = estimate.remaining();
-    let required = batch_bytes + 5 * 1024 * 1024;
+    let required = batch_bytes + policy.ingest_headroom_bytes;
     if remaining < required {
         return Err(DataError::QuotaExceeded {
             available_mb: remaining as f64 / (1024.0 * 1024.0),
@@ -84,6 +86,7 @@ pub(super) fn filter_scans_by_time_window(
 mod tests {
     use super::*;
     use crate::data::keys::{CachedSweep, ExtractedVcp, ScanCompleteness};
+    use crate::data::quota::QuotaPolicy;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     // --- helpers ---
@@ -155,13 +158,13 @@ mod tests {
             quota: 100,
             usage: 100,
         };
-        assert!(decide_quota(0, Some(est)).is_ok());
+        assert!(decide_quota(0, Some(est), &QuotaPolicy::DEFAULT).is_ok());
     }
 
     #[wasm_bindgen_test]
     fn decide_quota_no_estimate_passes_through() {
         // Storage API unavailable → defer to IDB itself.
-        assert!(decide_quota(1024 * 1024 * 1024, None).is_ok());
+        assert!(decide_quota(1024 * 1024 * 1024, None, &QuotaPolicy::DEFAULT).is_ok());
     }
 
     #[wasm_bindgen_test]
@@ -171,7 +174,7 @@ mod tests {
             usage: 0,
         };
         // 1 MB batch + 5 MB headroom = 6 MB; 100 MB available.
-        assert!(decide_quota(1024 * 1024, Some(est)).is_ok());
+        assert!(decide_quota(1024 * 1024, Some(est), &QuotaPolicy::DEFAULT).is_ok());
     }
 
     #[wasm_bindgen_test]
@@ -182,7 +185,7 @@ mod tests {
             usage: 0,
         };
         // batch_bytes > 0 to trigger the check.
-        let err = decide_quota(1, Some(est)).unwrap_err();
+        let err = decide_quota(1, Some(est), &QuotaPolicy::DEFAULT).unwrap_err();
         assert!(matches!(err, DataError::QuotaExceeded { .. }));
     }
 
@@ -193,7 +196,7 @@ mod tests {
             quota: 100 * 1024 * 1024,
             usage: 96 * 1024 * 1024,
         };
-        assert!(decide_quota(1, Some(est)).is_err());
+        assert!(decide_quota(1, Some(est), &QuotaPolicy::DEFAULT).is_err());
     }
 
     // ===== eviction_order =====

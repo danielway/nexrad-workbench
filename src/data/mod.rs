@@ -27,6 +27,7 @@
 pub mod facade;
 pub mod indexeddb;
 pub mod keys;
+pub mod quota;
 pub mod sites;
 pub mod vcp;
 

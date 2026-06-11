@@ -15,10 +15,12 @@ pub struct StorageSettings {
 
 impl Default for StorageSettings {
     fn default() -> Self {
-        Self {
-            quota_bytes: 2 * 1024 * 1024 * 1024,       // 2 GB
-            eviction_target_bytes: 1600 * 1024 * 1024, // 1.6 GB (80% of quota)
-        }
+        let mut s = Self {
+            quota_bytes: 0,
+            eviction_target_bytes: 0,
+        };
+        s.set_quota(2 * 1024 * 1024 * 1024); // 2 GB
+        s
     }
 }
 
@@ -26,10 +28,13 @@ impl StorageSettings {
     /// localStorage key for persisting settings.
     const STORAGE_KEY: &'static str = "nexrad_storage_settings";
 
-    /// Sets the quota and automatically calculates eviction target (80% of quota).
+    /// Sets the quota and derives the eviction target from
+    /// `QuotaPolicy::eviction_target_fraction`.
     pub fn set_quota(&mut self, quota_bytes: u64) {
         self.quota_bytes = quota_bytes;
-        self.eviction_target_bytes = (quota_bytes as f64 * 0.8) as u64;
+        self.eviction_target_bytes = (quota_bytes as f64
+            * crate::data::quota::QuotaPolicy::DEFAULT.eviction_target_fraction)
+            as u64;
     }
 
     /// Load settings from localStorage.

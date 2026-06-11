@@ -418,7 +418,11 @@ impl IndexedDbStore {
         } else {
             None
         };
-        logic::decide_quota(batch_size, estimate)
+        logic::decide_quota(
+            batch_size,
+            estimate,
+            &crate::data::quota::QuotaPolicy::DEFAULT,
+        )
     }
 
     /// Atomically writes blobs + scan-index entry for a scan, creating the

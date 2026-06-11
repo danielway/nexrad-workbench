@@ -670,6 +670,48 @@ async fn evict_to_size_no_op_when_already_under_target() {
 }
 
 // ---------------------------------------------------------------------------
+// DataFacade::check_and_evict (decision → execution orchestration)
+// ---------------------------------------------------------------------------
+
+#[wasm_bindgen_test]
+async fn check_and_evict_enforces_app_quota_over_real_db() {
+    use nexrad_workbench::data::facade::DataFacade;
+
+    let store = fresh_store();
+    let facade = DataFacade::with_store(store.clone());
+    let oldest = scan_key("KDMX", 1700000000000);
+    let newest = scan_key("KDMX", 1700000060000);
+    store
+        .upsert_scan(
+            &header(oldest.clone()),
+            &[upload(1, &[("reflectivity", 100)])],
+        )
+        .await
+        .unwrap();
+    gloo_timers::future::TimeoutFuture::new(15).await;
+    store
+        .upsert_scan(
+            &header(newest.clone()),
+            &[upload(1, &[("reflectivity", 100)])],
+        )
+        .await
+        .unwrap();
+
+    // Under quota → no eviction, everything stays.
+    let (did_evict, count, _warning) = facade.check_and_evict(1_000_000, 150).await.unwrap();
+    assert!(!did_evict);
+    assert_eq!(count, 0);
+    assert!(store.scan_availability(&oldest).await.unwrap().is_some());
+
+    // Over quota (200 > 150) → evict oldest down to the 150 target.
+    let (did_evict, count, _warning) = facade.check_and_evict(150, 150).await.unwrap();
+    assert!(did_evict);
+    assert_eq!(count, 1);
+    assert!(store.scan_availability(&oldest).await.unwrap().is_none());
+    assert!(store.scan_availability(&newest).await.unwrap().is_some());
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
