@@ -374,14 +374,15 @@ fn jog_fallback(_state: &AppState, playback: &crate::subsystem::Playback) -> f64
 
 fn handle_step_backward(
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
+    _live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    // Jogging is unavailable in live (matches the hidden jog buttons).
-    if live.mode_state.is_active() {
+    // Jogging is unavailable while the playhead is attached to the live
+    // edge (matches the hidden jog buttons); a detached playhead jogs freely.
+    if playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback() {
         return;
     }
     let pos = current_pos(state, playback);
@@ -403,14 +404,15 @@ fn handle_step_backward(
 
 fn handle_step_forward(
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
+    _live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    // Jogging is unavailable in live (matches the hidden jog buttons).
-    if live.mode_state.is_active() {
+    // Jogging is unavailable while the playhead is attached to the live
+    // edge (matches the hidden jog buttons); a detached playhead jogs freely.
+    if playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback() {
         return;
     }
     let pos = current_pos(state, playback);

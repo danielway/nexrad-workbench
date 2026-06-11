@@ -78,24 +78,23 @@ impl LivePhase {
 /// Reason why live mode was exited.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LiveExitReason {
-    /// User clicked on timeline or used seek controls.
-    UserSeeked,
-    /// User used jog forward/backward buttons.
-    UserJogged,
     /// Network or connection error.
     ConnectionError,
     /// User explicitly stopped live mode.
     UserStopped,
+    /// Stream auto-stopped after the playhead stayed detached too long.
+    DetachedTimeout,
 }
 
 impl LiveExitReason {
     /// Human-readable message for the exit reason.
     pub fn message(&self) -> &'static str {
         match self {
-            LiveExitReason::UserSeeked => "Live mode exited: timeline seek",
-            LiveExitReason::UserJogged => "Live mode exited: manual step",
             LiveExitReason::ConnectionError => "Live mode error: connection lost",
             LiveExitReason::UserStopped => "Live mode stopped",
+            LiveExitReason::DetachedTimeout => {
+                "Live stream stopped after extended browsing — GO LIVE to resume"
+            }
         }
     }
 }
@@ -116,6 +115,12 @@ pub struct LiveModeState {
 
     /// Number of chunks received in current session
     pub chunks_received: u32,
+
+    /// Wall-clock time (Unix seconds) when the playhead detached from the
+    /// live edge while the stream stayed running. `None` while pinned /
+    /// replaying or when not streaming. Drives the detached idle-stop
+    /// timeout so a backgrounded stream doesn't poll S3 forever.
+    pub detached_since: Option<f64>,
 
     /// Animation pulse phase (0.0 to 1.0, wraps)
     pub pulse_phase: f32,
@@ -193,6 +198,7 @@ impl Default for LiveModeState {
             error_message: None,
             last_exit_reason: None,
             chunks_received: 0,
+            detached_since: None,
             pulse_phase: 0.0,
             auto_scroll_enabled: true,
             current_volume: None,
@@ -249,6 +255,7 @@ impl LiveModeState {
         self.phase = LivePhase::AcquiringLock;
         self.phase_started_at = Some(now);
         self.chunks_received = 0;
+        self.detached_since = None;
         self.error_message = None;
         self.last_exit_reason = None;
         self.pulse_phase = 0.0;
@@ -259,6 +266,7 @@ impl LiveModeState {
         self.phase = LivePhase::Idle;
         self.phase_started_at = None;
         self.last_exit_reason = Some(reason);
+        self.detached_since = None;
         self.current_volume = None;
         self.sweep_start_azimuth = None;
         self.live_data_azimuth_range = None;

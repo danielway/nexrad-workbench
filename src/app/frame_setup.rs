@@ -85,6 +85,18 @@ impl WorkbenchApp {
             .persistence
             .detect_site_change(&self.state.viz_state.site_id)
         {
+            // A running stream targets the old site — stop it. If the user
+            // was actively live (playhead attached), restart on the new site
+            // so a site switch doesn't silently drop them out of live; the
+            // command dispatches later this same frame.
+            if self.live.mode_state.is_active() {
+                let was_attached = self.playback.state.time_model.is_pinned()
+                    || self.playback.state.time_model.is_lookback();
+                self.stop_live_mode(crate::state::LiveExitReason::UserStopped);
+                if was_attached {
+                    self.state.push_command(crate::state::AppCommand::StartLive);
+                }
+            }
             if let Some(ref renderer) = self.gpu.gpu {
                 if let Ok(mut r) = renderer.lock() {
                     r.clear_data();

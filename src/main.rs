@@ -72,6 +72,12 @@ const LOOKBACK_SPAN_SECS: f64 = (LOOKBACK_FRAMES as f64 + 1.0) * FALLBACK_SCAN_D
 /// 60 s allows for minor clock drift and timestamp rounding.
 const SCAN_CACHE_MATCH_TOLERANCE_SECS: i64 = 60;
 
+/// How long a live stream keeps ingesting after the playhead detaches (the
+/// user scrubbed away to browse) before it auto-stops. Bounds background S3
+/// chunk polling while still making "return to live" instant for any
+/// realistic browsing detour.
+const LIVE_DETACHED_STOP_SECS: f64 = 15.0 * 60.0;
+
 fn main() {}
 
 // Worker exports (worker_ingest, worker_render) are in nexrad::worker_api.
@@ -582,11 +588,14 @@ impl WorkbenchApp {
 
     /// Push current app state to the URL bar and save user preferences (throttled).
     fn persist_url_state(&mut self) {
+        // Encode `rt=` (reload re-enters live) only while the playhead is
+        // attached to the live edge — a detached background stream's "current
+        // view" is the scrubbed archive position, which the URL captures.
         self.persistence.persist_if_due(
             &self.state,
             &self.playback.state,
             self.diagnostics.mping.api_key.clone(),
-            self.live.mode_state.is_active(),
+            self.live.app_mode == state::AppMode::Live,
         );
     }
 
@@ -692,8 +701,16 @@ impl eframe::App for WorkbenchApp {
         // live edge moves continuously, so request a repaint to keep it smooth
         // even when the user isn't interacting.
         self.tick_live();
-        if self.live.mode_state.is_active() && self.playback.state.time_model.is_pinned() {
-            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        if self.live.mode_state.is_active() {
+            // Pinned: the live edge moves every frame — repaint fast. Detached
+            // (background stream while browsing): the now-line and in-progress
+            // overlay still advance, just at a relaxed cadence.
+            let cadence_ms = if self.playback.state.time_model.is_pinned() {
+                100
+            } else {
+                1000
+            };
+            ctx.request_repaint_after(std::time::Duration::from_millis(cadence_ms));
         }
         self.advance_playback();
         // 9.5. REACTIVE ACQUISITION: now that advance_playback has settled the

@@ -4,13 +4,15 @@
 //! streaming indicator, and it *is* the control to start/stop streaming.
 //!
 //! - When "now" is within the visible window it renders as a vertical
-//!   now-line topped by a clickable cap (`◉ GO LIVE` when idle, `◉ LIVE`
-//!   while streaming). Clicking the cap starts streaming; clicking it while
-//!   live stops.
+//!   now-line topped by a clickable cap. Three states: `◉ GO LIVE` when no
+//!   stream is running (click starts one), `◉ LIVE` while streaming with
+//!   the playhead attached (click stops the stream), and `◉ REJOIN` while
+//!   the stream ingests in the background with the playhead detached
+//!   (click re-pins instantly — no re-acquisition).
 //! - When "now" is scrolled off-screen (browsing the archive) it collapses
 //!   into a chip pinned to the timeline edge that points back toward now.
-//!   Clicking the chip scrolls the view to now and starts streaming in one
-//!   action.
+//!   Clicking the chip scrolls the view to now and attaches to live in one
+//!   action (instant if a stream is already running).
 //!
 //! Red is reserved exclusively for this concept: muted red ([`NOW_IDLE`]) as
 //! an invitation, bright pulsing red ([`LIVE_ACTIVE`]) while live.
@@ -34,7 +36,13 @@ pub(super) fn render_now_affordance(
     let overlay_rect = &frame.rects.overlay;
     let now_ts = frame.now_secs;
     let now_x = frame.ts_to_x(now_ts);
-    let is_live = live.mode_state.is_active();
+    let live_state = if live.is_detached(&playback.state) {
+        NowCapState::Detached
+    } else if live.mode_state.is_active() {
+        NowCapState::Attached
+    } else {
+        NowCapState::Idle
+    };
     let pulse = live.mode_state.pulse_alpha();
 
     if now_x >= overlay_rect.left() && now_x <= overlay_rect.right() {
@@ -46,7 +54,7 @@ pub(super) fn render_now_affordance(
             playback,
             overlay_rect,
             now_x,
-            is_live,
+            live_state,
             pulse,
         )
     } else {
@@ -61,9 +69,26 @@ pub(super) fn render_now_affordance(
             playback,
             overlay_rect,
             now_ts,
-            is_live,
+            live_state,
             on_left,
         )
+    }
+}
+
+/// The three states of the live-edge affordance.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NowCapState {
+    /// No stream session.
+    Idle,
+    /// Streaming with the playhead attached (pinned to now or replaying).
+    Attached,
+    /// Streaming in the background with the playhead detached (browsing).
+    Detached,
+}
+
+impl NowCapState {
+    fn is_streaming(self) -> bool {
+        !matches!(self, NowCapState::Idle)
     }
 }
 
@@ -77,9 +102,10 @@ fn render_inline_now(
     playback: &mut crate::subsystem::Playback,
     overlay_rect: &Rect,
     now_x: f32,
-    is_live: bool,
+    live_state: NowCapState,
     pulse: f32,
 ) -> Option<Rect> {
+    let is_live = live_state.is_streaming();
     let base = if is_live { LIVE_ACTIVE } else { NOW_IDLE };
 
     // Faint wash over the "future" region (right of now) so the live edge —
@@ -114,19 +140,19 @@ fn render_inline_now(
     // The cap — the clickable handle. Always present when now is in view, so
     // the affordance is glanceable and its hit target no longer depends on an
     // invisible, zoom-dependent band.
-    let label = if is_live {
-        format!("{} LIVE", egui_phosphor::regular::BROADCAST)
-    } else {
-        format!("{} GO LIVE", egui_phosphor::regular::BROADCAST)
+    let label = match live_state {
+        NowCapState::Attached => format!("{} LIVE", egui_phosphor::regular::BROADCAST),
+        NowCapState::Detached => format!("{} REJOIN", egui_phosphor::regular::BROADCAST),
+        NowCapState::Idle => format!("{} GO LIVE", egui_phosphor::regular::BROADCAST),
     };
     let cap_rect = cap_geometry(painter, overlay_rect, now_x, &label);
 
     let resp = ui
         .interact(cap_rect, ui.id().with("now_live_cap"), Sense::click())
-        .on_hover_text(if is_live {
-            "Streaming live — click to stop"
-        } else {
-            "Stream live from now"
+        .on_hover_text(match live_state {
+            NowCapState::Attached => "Streaming live — click to stop",
+            NowCapState::Detached => "Stream running in background — click to rejoin live",
+            NowCapState::Idle => "Stream live from now",
         });
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -136,10 +162,11 @@ fn render_inline_now(
     draw_cap(painter, cap_rect, &label, fill);
 
     if resp.clicked() {
-        if is_live {
-            stop_live(state, live, playback);
-        } else {
-            go_live(state, playback);
+        match live_state {
+            NowCapState::Attached => stop_live(state, live, playback),
+            // Instant re-pin — the stream never stopped.
+            NowCapState::Detached => state.push_command(AppCommand::ReturnToLive),
+            NowCapState::Idle => go_live(state, playback),
         }
     }
 
@@ -157,9 +184,10 @@ fn render_edge_chip(
     playback: &mut crate::subsystem::Playback,
     overlay_rect: &Rect,
     now_ts: f64,
-    is_live: bool,
+    live_state: NowCapState,
     on_left: bool,
 ) -> Option<Rect> {
+    let is_live = live_state.is_streaming();
     let base = if is_live { LIVE_ACTIVE } else { NOW_IDLE };
     let label = if on_left {
         format!(
@@ -188,7 +216,10 @@ fn render_edge_chip(
 
     let resp = ui
         .interact(chip_rect, ui.id().with("now_live_chip"), Sense::click())
-        .on_hover_text("Jump to now and stream live");
+        .on_hover_text(match live_state {
+            NowCapState::Detached => "Stream running — jump back to live",
+            _ => "Jump to now and stream live",
+        });
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -205,11 +236,13 @@ fn render_edge_chip(
     painter.galley(chip_rect.min + pad, galley, Color32::WHITE);
 
     if resp.clicked() {
-        // Scroll the view to now, then stream — one action from anywhere in
-        // the archive (the chosen "scroll + stream" behavior).
+        // Scroll the view to now, then attach — one action from anywhere in
+        // the archive. Instant when a background stream is already running.
         playback.state.center_view_on(now_ts);
-        if !is_live {
-            go_live(state, playback);
+        match live_state {
+            NowCapState::Detached => state.push_command(AppCommand::ReturnToLive),
+            NowCapState::Idle => go_live(state, playback),
+            NowCapState::Attached => {}
         }
     }
 

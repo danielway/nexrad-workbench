@@ -79,6 +79,28 @@ impl Live {
         self.engine.borrow_mut().reset_volume_observations();
     }
 
+    /// Detach the playhead from the live edge WITHOUT stopping the stream.
+    ///
+    /// This is what every seek/jog/jump gesture does while live: the user
+    /// goes browsing, ingestion continues at the right edge (the timeline
+    /// keeps growing), and the now-cap offers an instant return. The stream
+    /// only stops on an explicit stop, an error, a site change, or the
+    /// detached idle timeout. No-op when already detached or not streaming.
+    pub fn detach_playhead(&mut self, playback: &mut PlaybackState, now: f64) {
+        playback.exit_live(crate::state::FreezeAt::Keep);
+        if self.mode_state.is_active() && self.mode_state.detached_since.is_none() {
+            self.mode_state.detached_since = Some(now);
+        }
+    }
+
+    /// Whether the stream is running but the playhead has detached from the
+    /// live edge (the user is browsing while ingestion continues).
+    pub fn is_detached(&self, playback: &PlaybackState) -> bool {
+        self.mode_state.is_active()
+            && !playback.time_model.is_pinned()
+            && !playback.time_model.is_lookback()
+    }
+
     /// Seconds until the next chunk is expected to be available in S3 — drives
     /// the "next in Xs" countdown. `Some` only while waiting for a chunk, read
     /// from this frame's projection (no `LiveModeState.plan`).
@@ -123,16 +145,15 @@ impl Live {
             None
         };
         self.radar_model = self.mode_state.compute_model(now, live_scan);
-        self.app_mode = if self.mode_state.is_active() {
-            AppMode::Live
-        } else if inputs
-            .radar_timeline
-            .find_scan_at_timestamp(inputs.playback.playback_position())
-            .is_some()
-        {
-            AppMode::Archive
-        } else {
-            AppMode::Idle
-        };
+        let playhead_live =
+            inputs.playback.time_model.is_pinned() || inputs.playback.time_model.is_lookback();
+        self.app_mode = crate::state::derive_app_mode(
+            self.mode_state.is_active(),
+            playhead_live,
+            inputs
+                .radar_timeline
+                .find_scan_at_timestamp(inputs.playback.playback_position())
+                .is_some(),
+        );
     }
 }

@@ -47,6 +47,29 @@ impl WorkbenchApp {
         );
     }
 
+    /// Re-pin the playhead to the live edge (the `ReturnToLive` command).
+    ///
+    /// Instant when the stream is already running — detached browsing snaps
+    /// straight back to LIVE-NOW with no re-acquisition. Starts a fresh
+    /// stream otherwise. Unlike `start_live_mode` this preserves the user's
+    /// zoom (only raising it to the micro floor if they zoomed out past it
+    /// while detached).
+    pub(crate) fn return_to_live(&mut self, ctx: &egui::Context) {
+        if !self.live.mode_state.is_active() {
+            self.start_live_mode(ctx);
+            return;
+        }
+        let now = self.state.frame_now.secs();
+        self.live.mode_state.detached_since = None;
+        self.playback.state.clear_selection();
+        self.playback.state.enter_pinned_live(now);
+        self.playback.state.speed = state::PlaybackSpeed::Realtime;
+        if self.playback.state.timeline_zoom < state::MICRO_ZOOM_THRESHOLD {
+            self.playback.state.timeline_zoom = state::MICRO_ZOOM_THRESHOLD;
+            self.playback.state.center_view_on(now);
+        }
+    }
+
     /// Per-frame live tick — drives the playhead while streaming, independent
     /// of the `playing` flag (which now belongs to playback/lookback).
     ///
@@ -54,8 +77,12 @@ impl WorkbenchApp {
     /// - `LookbackLoop` (LIVE-LOOKBACK): slide the loop window so its end
     ///   follows the latest frame as new volumes complete. `advance` (driven
     ///   by `playing` in the bottom panel) does the actual looping.
+    /// - Detached (`Free` while streaming): the user is browsing; leave the
+    ///   playhead and view alone, but stop the stream once the detour
+    ///   exceeds [`crate::LIVE_DETACHED_STOP_SECS`].
     ///
-    /// In both states, keep the live edge on-screen. No-op when not live.
+    /// In the two live states, keep the live edge on-screen. No-op when not
+    /// streaming.
     pub(crate) fn tick_live(&mut self) {
         if !self.live.mode_state.is_active() {
             return;
@@ -85,6 +112,24 @@ impl WorkbenchApp {
                 .state
                 .time_model
                 .set_bounds_preserving(start, end);
+        } else {
+            // Detached: free browsing while the stream ingests in the
+            // background. No pin, no auto-scroll — but bound the background
+            // S3 polling with an idle stop. `handle_streaming_results`
+            // reconciles the channel off on the next frame; `playing` is
+            // deliberately untouched so an archive replay keeps running.
+            let detached_for = self
+                .live
+                .mode_state
+                .detached_since
+                .map(|t| now - t)
+                .unwrap_or(0.0);
+            if detached_for > crate::LIVE_DETACHED_STOP_SECS {
+                self.live.stop(state::LiveExitReason::DetachedTimeout);
+                self.state.status_message =
+                    state::LiveExitReason::DetachedTimeout.message().to_string();
+            }
+            return;
         }
 
         self.keep_now_on_screen(now);
@@ -167,9 +212,11 @@ impl WorkbenchApp {
                 // Don't clear a valid live partial: in a between-chunks frame
                 // the in-progress elevation can momentarily read `None` and
                 // resolve to `Blank` even though the GPU holds a good `live|*`
-                // sweep. Only blank when archive owns the canvas.
-                let protecting_live_partial =
-                    self.live.mode_state.is_active() && self.gpu_holds_live_sweep();
+                // sweep. Only blank when archive owns the canvas — which it
+                // does whenever the playhead is detached from the live edge.
+                let protecting_live_partial = self.live.mode_state.is_active()
+                    && !self.live.is_detached(&self.playback.state)
+                    && self.gpu_holds_live_sweep();
                 if !protecting_live_partial {
                     self.clear_display_no_sweep();
                 }
@@ -179,11 +226,13 @@ impl WorkbenchApp {
 
     /// The live cut feeding [`state::playback_manager::resolve_desired_display`]:
     /// `Some((collecting_elevation, anchor_key_ms))` while streaming with a
-    /// fully-known volume, else `None` (which collapses the resolver to the
-    /// cache path). Shared by `request_worker_render` and the `Decoded` upload
-    /// gate in `handle_decoded_outcome`.
+    /// fully-known volume AND the playhead attached to the live edge, else
+    /// `None` (which collapses the resolver to the cache path — a detached
+    /// playhead resolves whatever's cached under the cursor, untouched by
+    /// the background stream). Shared by `request_worker_render` and the
+    /// `Decoded` upload gate in `handle_decoded_outcome`.
     pub(crate) fn live_render_sources(&self) -> Option<(u8, i64)> {
-        if !self.live.mode_state.is_active() {
+        if !self.live.mode_state.is_active() || self.live.is_detached(&self.playback.state) {
             return None;
         }
         let anchor_ms = self
@@ -234,16 +283,11 @@ impl WorkbenchApp {
         self.playback.state.exit_live(state::FreezeAt::Keep);
         self.live.channel.stop();
 
-        // Halt playback unless the user is actively scrubbing/jogging — those
-        // paths set the new position themselves. Without this, we leave
-        // playing=true at Realtime speed and position=wall-clock, so the
-        // cursor keeps pace with "now" and mimics still being locked.
-        if !matches!(
-            reason,
-            state::LiveExitReason::UserSeeked | state::LiveExitReason::UserJogged
-        ) {
-            self.playback.state.playing = false;
-        }
+        // Halt playback: every remaining stop path (explicit stop, error,
+        // site change) lands the cursor where it was, and leaving
+        // playing=true at Realtime speed would keep it pacing "now" as if
+        // still pinned. (Seek/jog no longer stop the stream — they detach.)
+        self.playback.state.playing = false;
 
         self.state.status_message = self
             .live

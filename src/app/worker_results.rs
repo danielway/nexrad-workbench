@@ -814,6 +814,13 @@ impl WorkbenchApp {
             result.total_ms,
         );
 
+        // While the playhead is detached (browsing the archive with the
+        // stream ingesting in the background), the canvas belongs to the
+        // scrubbed position — skip the GPU upload, `displayed` mutation,
+        // and overlay refresh. The azimuth bookkeeping below still runs so
+        // sweep compositing is correct the instant the user re-pins.
+        let playhead_attached = !self.live.is_detached(&self.playback.state);
+
         // VCP target angle for the cut (mirrors archived path).
         let display_angle = self
             .live
@@ -823,7 +830,9 @@ impl WorkbenchApp {
             .and_then(|v| v.target_elevation_angle(result.context.elevation_number))
             .unwrap_or(result.mean_elevation);
 
-        if let (Some(ref renderer), Some(ref gl)) = (&self.gpu.gpu, &self.gpu.gl) {
+        if let (true, Some(ref renderer), Some(ref gl)) =
+            (playhead_attached, &self.gpu.gpu, &self.gpu.gl)
+        {
             if let Ok(mut r) = renderer.lock() {
                 // Build a live sweep ID so we can detect elevation transitions
                 let live_elev = result.context.elevation_number;
@@ -896,7 +905,7 @@ impl WorkbenchApp {
 
         // Update overlay staleness so the age counter reflects
         // the most recently received live data.
-        if result.sweep_end_secs > 0.0 {
+        if playhead_attached && result.sweep_end_secs > 0.0 {
             self.update_overlay_from_sweep(
                 result.sweep_start_secs,
                 result.sweep_end_secs,

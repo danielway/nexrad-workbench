@@ -63,6 +63,7 @@ impl WorkbenchApp {
 
             // ---- Live mode --------------------------------------------
             AppCommand::StartLive => self.start_live_mode(ctx),
+            AppCommand::ReturnToLive => self.return_to_live(ctx),
 
             // ---- Queue management -------------------------------------
             // Mutations that may unblock work flip `pump_queue` so the

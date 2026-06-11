@@ -38,7 +38,7 @@ pub use acquisition::{
     QueueState,
 };
 pub use alerts::AlertsState;
-pub use app_mode::AppMode;
+pub use app_mode::{derive_app_mode, AppMode};
 pub use errors::{AppError, ErrorContext};
 pub use frame_clock::FrameNow;
 pub use gps::GpsState;
@@ -88,6 +88,9 @@ pub enum AppCommand {
     ClearCache,
     /// Start live/real-time streaming.
     StartLive,
+    /// Re-pin the playhead to the live edge. Instant when the stream is
+    /// already running (detached browsing); otherwise starts a stream.
+    ReturnToLive,
     /// Check and run eviction after a storage operation.
     CheckEviction,
     /// Wipe all data (IndexedDB + localStorage) and reload.

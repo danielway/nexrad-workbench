@@ -2,9 +2,7 @@
 
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use super::timeline::format_timestamp_full;
-use crate::state::{
-    AppMode, AppState, LiveExitReason, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed,
-};
+use crate::state::{AppMode, AppState, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed};
 use crate::subsystem::Acquisition;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
@@ -109,12 +107,13 @@ pub(super) fn render_datetime_picker_popup(
                         ui.add_enabled_ui(valid_ts.is_some(), |ui| {
                             if ui.button("Jump").clicked() || enter_pressed {
                                 if let Some(ts) = valid_ts {
-                                    // Exit live mode first — a seek while the
-                                    // playhead is pinned would be rejected.
-                                    if live.mode_state.is_active() {
-                                        live.stop(LiveExitReason::UserSeeked);
-                                        playback.state.exit_live(crate::state::FreezeAt::Keep);
-                                    }
+                                    // Detach the playhead first — a seek while
+                                    // pinned would be rejected. The stream (if
+                                    // any) keeps running in the background.
+                                    live.detach_playhead(
+                                        &mut playback.state,
+                                        state.frame_now.secs(),
+                                    );
 
                                     playback.state.set_playback_position(ts);
 
@@ -193,8 +192,10 @@ pub(super) fn render_playback_controls(
     // Datetime picker popup
     render_datetime_picker_popup(ui, state, live, playback);
 
-    // Live mode indicator badge (when active)
-    if live.mode_state.is_active() {
+    // Live mode indicator badge — only while the playhead is attached to the
+    // live edge. A detached background stream is surfaced by the timeline's
+    // now-cap ("REJOIN") instead, so browsing doesn't read as "LIVE".
+    if live.app_mode == AppMode::Live {
         render_live_indicator(ui, state, live, playback);
         ui.separator();
     }
@@ -210,7 +211,7 @@ pub(super) fn render_playback_controls(
     } else {
         egui_phosphor::regular::PLAY
     };
-    let play_hover = if live.mode_state.is_active() {
+    let play_hover = if live.app_mode == AppMode::Live {
         if playback.state.playing {
             "Return to live (stop replay)"
         } else {

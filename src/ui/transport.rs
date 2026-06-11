@@ -36,7 +36,9 @@ pub(crate) fn toggle_play_pause(
     // missing recent volumes — so we enter unconditionally even when few/no
     // frames are cached yet (the loop fills in as they land). Seed the playhead
     // at the oldest cached frame so the first pass runs oldest→newest.
-    if live.mode_state.is_active() {
+    // Requires a *pinned* playhead: with the stream detached (background
+    // ingest while browsing), play is ordinary archive playback below.
+    if live.mode_state.is_active() && playback.state.time_model.is_pinned() {
         let now = state.frame_now.secs();
         let seed = match timeline.scans.lookback_window(
             &state.viz_state.elevation_selection,

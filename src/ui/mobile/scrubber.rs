@@ -11,7 +11,7 @@
 //! Interaction: tap-to-seek, drag-to-scrub. Scrubbing pauses playback so
 //! the thumb stays where the user put it.
 
-use crate::state::{AppState, LiveExitReason};
+use crate::state::AppState;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
@@ -160,11 +160,9 @@ pub(super) fn render_scrubber(
         .filter(|_| response.dragged() || response.clicked());
     if let Some(pos) = interact_pos {
         let new_ts = x_to_ts(pos.x);
-        // Exit live mode when the user seeks manually.
-        if live.mode_state.is_active() {
-            live.stop(LiveExitReason::UserSeeked);
-            playback.state.exit_live(crate::state::FreezeAt::Keep);
-        }
+        // Detach the playhead on a manual seek — the stream (if running)
+        // keeps ingesting in the background.
+        live.detach_playhead(&mut playback.state, frame_now);
         // Scrubbing pauses playback so the thumb stays where the user dropped
         // it — otherwise a running playback loop would immediately snap it
         // forward on the next frame.

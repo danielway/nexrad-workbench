@@ -79,8 +79,10 @@ fn render_radar_operations_section(
 
     let radar_state = query_radar_state_at_timestamp(state, timeline, live, playback);
 
-    // Top-down and side views side-by-side
-    let is_live = live.mode_state.is_active();
+    // Top-down and side views side-by-side. The "future data" sector only
+    // makes sense while the playhead tracks the live edge — a detached
+    // background stream renders the archive state under the cursor.
+    let is_live = live.app_mode == crate::state::AppMode::Live;
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(RichText::new("Azimuth").small());
