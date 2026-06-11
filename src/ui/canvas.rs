@@ -763,9 +763,8 @@ pub(super) fn format_unix_timestamp_with_date(ts: f64, use_local: bool) -> Strin
     }
 }
 
-pub(super) fn format_age_compact(ts_secs: f64) -> Option<String> {
-    let now = js_sys::Date::now() / 1000.0;
-    let age = now - ts_secs;
+pub(super) fn format_age_compact(now_secs: f64, ts_secs: f64) -> Option<String> {
+    let age = now_secs - ts_secs;
     if (0.0..1.5).contains(&age) {
         Some("(now)".to_string())
     } else if (0.0..300.0).contains(&age) {

@@ -53,12 +53,10 @@ pub(super) fn render_scrubber(
             None => Some((b.start as f64, b.end as f64)),
         };
     }
+    let frame_now = state.frame_now.secs();
     let (t_start, t_end) = match data_range {
         Some((s, e)) if e > s => (s, e),
-        _ => {
-            let now = js_sys::Date::now() / 1000.0;
-            (now - 1800.0, now + 1800.0)
-        }
+        _ => (frame_now - 1800.0, frame_now + 1800.0),
     };
     let span = t_end - t_start;
 
@@ -98,7 +96,7 @@ pub(super) fn render_scrubber(
             None,
             None,
             None,
-            js_sys::Date::now() / 1000.0,
+            frame_now,
         );
         for b in view.shadow_boundaries() {
             if view.is_covered_by_cached(b.start) {
@@ -122,7 +120,7 @@ pub(super) fn render_scrubber(
 
     // "Now" marker in live mode.
     if live.mode_state.is_active() {
-        let now = js_sys::Date::now() / 1000.0;
+        let now = frame_now;
         if now >= t_start && now <= t_end {
             let x = ts_to_x(now);
             painter.line_segment(

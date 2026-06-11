@@ -23,11 +23,6 @@ use scan_track::{render_scan_track, render_shadow_boundaries};
 use sweep_track::{render_connector_lines, render_sweep_track};
 use tooltips::render_timeline_tooltip;
 
-/// Get current Unix timestamp in seconds.
-pub(super) fn current_timestamp_secs() -> f64 {
-    js_sys::Date::now() / 1000.0
-}
-
 /// Level of detail for radar data rendering, selected by zoom.
 /// The names match the on-screen track headers (VOLUMES / TILTS).
 #[derive(Clone, Copy, PartialEq)]
@@ -387,7 +382,7 @@ pub(super) fn render_timeline(
     // collecting? is this covered?") and never read a raw source directly.
     // The cache↔live merge that keeps a resumed volume's already-downloaded
     // sweeps visible lives entirely inside `TimelineView::build`.
-    let frame_now_secs = js_sys::Date::now() / 1000.0;
+    let frame_now_secs = state.frame_now.secs();
     let elevation_filter = state.viz_state.elevation_selection.elevation_number();
     let view = crate::state::TimelineView::build(
         &timeline.scans,
@@ -475,6 +470,7 @@ pub(super) fn render_timeline(
             zoom,
             detail_level,
             anim_time,
+            frame_now_secs,
         );
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(67));

@@ -15,7 +15,6 @@
 //! Red is reserved exclusively for this concept: muted red ([`NOW_IDLE`]) as
 //! an invitation, bright pulsing red ([`LIVE_ACTIVE`]) while live.
 
-use super::current_timestamp_secs;
 use crate::state::{AppCommand, AppState, LiveExitReason, PlaybackSpeed};
 use crate::ui::colors::timeline::{LIVE_ACTIVE, NOW_IDLE};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Sense, Stroke, StrokeKind};
@@ -35,7 +34,7 @@ pub(super) fn render_now_affordance(
     view_start: f64,
     zoom: f64,
 ) -> Option<Rect> {
-    let now_ts = current_timestamp_secs();
+    let now_ts = state.frame_now.secs();
     let now_x = overlay_rect.left() + ((now_ts - view_start) * zoom) as f32;
     let is_live = live.mode_state.is_active();
     let pulse = live.mode_state.pulse_alpha();

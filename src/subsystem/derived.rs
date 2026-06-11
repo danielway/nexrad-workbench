@@ -52,7 +52,7 @@ impl Derived {
     /// downstream reads the same values.
     pub fn for_frame(state: &AppState, playback: &Playback) -> Self {
         Self {
-            frame_now_secs: js_sys::Date::now() / 1000.0,
+            frame_now_secs: state.frame_now.secs(),
             visible_bounds: state.viz_state.last_visible_bounds,
             data_is_live: crate::state::recency::data_is_live(&playback.state),
             effective_sweep_animation: state.effective_sweep_animation(&playback.state),

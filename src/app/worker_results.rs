@@ -560,7 +560,7 @@ impl WorkbenchApp {
                         r.promote_current_to_previous(gl);
                     }
                 }
-                let now = js_sys::Date::now() / 1000.0;
+                let now = self.state.frame_now.secs();
                 {
                     // Seal the diagnostics record from the engine's observations,
                     // then reset them for the next volume (seal-before-reset).
@@ -575,7 +575,7 @@ impl WorkbenchApp {
                     self.render.coordinator.available_elevations().len()
                 );
             } else {
-                let now = js_sys::Date::now() / 1000.0;
+                let now = self.state.frame_now.secs();
                 self.playback.state.set_playback_position(now);
             }
 

@@ -210,7 +210,7 @@ pub(crate) fn render_radar_sweep(
                 // elevation the antenna is on even when the worker is still
                 // downloading a previous elevation's data.
                 let now_label_radius = radius + 4.0 + 6.0 + 14.0; // donut_outer + offset
-                let now_secs = js_sys::Date::now() / 1000.0;
+                let now_secs = state.frame_now.secs();
                 let collecting_label = live
                     .radar_model
                     .position
@@ -444,9 +444,10 @@ fn draw_sweep_donut(
 
     // ── Gather sweep metadata for both slices ─────────────────────────
     // Helper to format a timestamp with age
+    let frame_now = state.frame_now.secs();
     let fmt_time = |ts: f64| -> String {
         let mut s = format_time_short(ts, use_local);
-        if let Some(age) = format_age_compact(ts) {
+        if let Some(age) = format_age_compact(frame_now, ts) {
             s.push(' ');
             s.push_str(&age);
         }

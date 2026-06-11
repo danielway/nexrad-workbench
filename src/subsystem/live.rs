@@ -26,6 +26,8 @@ pub struct LiveRefreshInputs<'a> {
     /// Available archive scan boundaries — fed to the engine for authoritative
     /// next-scan extent.
     pub archive_boundaries: &'a [crate::nexrad::ScanBoundary],
+    /// This frame's wall clock (from `AppState::frame_now`).
+    pub now: crate::state::FrameNow,
 }
 
 /// Owner of the real-time streaming pipeline and the derived
@@ -95,7 +97,7 @@ impl Live {
     /// Call once at the start of each UI frame so all consumers see
     /// consistent state derived from the same `now` timestamp.
     pub fn refresh(&mut self, inputs: LiveRefreshInputs<'_>) {
-        let now = js_sys::Date::now() / 1000.0;
+        let now = inputs.now.secs();
         // Adopt the engine's latest projection each frame while streaming, so
         // re-anchors and listing updates the loop fed between chunk arrivals
         // (e.g. during a long cross-volume wait) propagate to every surface —

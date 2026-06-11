@@ -14,8 +14,7 @@ impl WorkbenchApp {
         let site_id = self.state.viz_state.site_id.clone();
         log::info!("Starting live mode for site: {}", site_id);
 
-        // Get current time
-        let now = js_sys::Date::now() / 1000.0;
+        let now = self.state.frame_now.secs();
 
         // Initialize live mode state. Going live pins the playhead to "now"
         // (the realtime lock) but does NOT start playback — play/pause is
@@ -63,7 +62,7 @@ impl WorkbenchApp {
         if !self.live.mode_state.is_active() {
             return;
         }
-        let now = crate::state::TimeModel::wall_clock_time();
+        let now = self.state.frame_now.secs();
 
         if self.playback.state.time_model.locked_to_realtime {
             // LIVE-NOW: pin to wall-clock now.
@@ -120,9 +119,13 @@ impl WorkbenchApp {
 
     /// Update the canvas overlay text with sweep timing and elevation info.
     pub(crate) fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
-        self.state
-            .viz_state
-            .update_overlay(start, end, elevation_deg, self.state.use_local_time);
+        self.state.viz_state.update_overlay(
+            start,
+            end,
+            elevation_deg,
+            self.state.use_local_time,
+            self.state.frame_now.secs(),
+        );
     }
 
     /// Send a render request to the worker for the current scan/elevation/product.
@@ -259,8 +262,7 @@ impl WorkbenchApp {
         result: nexrad::RealtimeResult,
         _ctx: &egui::Context,
     ) {
-        // Get current time
-        let now = js_sys::Date::now() / 1000.0;
+        let now = self.state.frame_now.secs();
 
         match result {
             nexrad::RealtimeResult::Started { site_id } => {

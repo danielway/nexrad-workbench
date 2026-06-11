@@ -464,12 +464,14 @@ impl VizState {
     /// Update the canvas overlay text with sweep timing and elevation info.
     /// Sweep start/end times are stored on `displayed` (set by the decode
     /// handler); staleness is recomputed each frame from there.
+    /// `now_secs` is the frame clock (`AppState::frame_now`).
     pub fn update_overlay(
         &mut self,
         start: f64,
         end: f64,
         elevation_deg: f32,
         use_local_time: bool,
+        now_secs: f64,
     ) {
         self.elevation = format!("{:.1}\u{00B0}", elevation_deg);
 
@@ -502,9 +504,8 @@ impl VizState {
 
         // Seed staleness for immediate display; the per-frame recompute
         // in `update()` keeps it ticking from `displayed`.
-        let now = js_sys::Date::now() / 1000.0;
-        let staleness_end = now - end;
-        let staleness_start = now - start;
+        let staleness_end = now_secs - end;
+        let staleness_start = now_secs - start;
         self.data_staleness_secs = (staleness_end >= 0.0).then_some(staleness_end);
         self.data_staleness_start_secs = (staleness_start >= 0.0).then_some(staleness_start);
     }

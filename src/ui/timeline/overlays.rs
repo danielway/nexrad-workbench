@@ -24,6 +24,7 @@ pub(super) fn render_download_ghosts(
     zoom: f64,
     detail_level: DetailLevel,
     anim_time: f64,
+    now_wall: f64,
 ) {
     let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
 
@@ -57,8 +58,6 @@ pub(super) fn render_download_ghosts(
         }
         return;
     }
-
-    let now_wall = js_sys::Date::now() / 1000.0;
 
     // Recently completed scans — brief green flash
     for &(scan_start, completion_time) in &progress.recently_completed {

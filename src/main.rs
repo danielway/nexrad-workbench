@@ -712,11 +712,12 @@ impl eframe::App for WorkbenchApp {
         self.persist_url_state();
 
         // 14-17. FRAME SNAPSHOT: materialize the per-frame state UI reads.
-        // Live::refresh captures a consistent `now` for every consumer.
+        // Live::refresh derives everything from this frame's shared `now`.
         self.live.refresh(subsystem::live::LiveRefreshInputs {
             radar_timeline: &self.timeline.scans,
             playback: &self.playback.state,
             archive_boundaries: &self.timeline.shadow_scan_boundaries,
+            now: self.state.frame_now,
         });
         self.state.refresh_mobile_mode(ctx);
 

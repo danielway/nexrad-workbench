@@ -10,6 +10,11 @@ impl WorkbenchApp {
     /// Per-frame bookkeeping: record stats, apply theme, recompute staleness,
     /// update storm cells, and detect site changes.
     pub(crate) fn apply_frame_setup(&mut self, ctx: &egui::Context) {
+        // THE wall-clock capture for this frame. Every frame-path consumer
+        // (staleness, live tick, timeline, countdowns) reads this value so
+        // they can't drift against each other within a frame.
+        self.state.frame_now = crate::state::FrameNow::capture();
+
         // Record frame time for FPS meter (dev mode only)
         if self.state.dev_mode {
             let dt = ctx.input(|i| i.stable_dt);
@@ -38,7 +43,7 @@ impl WorkbenchApp {
         // This ensures archive data correctly shows its true age (days/years)
         // rather than a misleading "few minutes" relative to playback position.
         if let Some(displayed) = self.state.viz_state.displayed.as_ref() {
-            let now = js_sys::Date::now() / 1000.0;
+            let now = self.state.frame_now.secs();
             let end_age = now - displayed.end_time;
             let start_age = now - displayed.start_time;
             self.state.viz_state.data_staleness_secs = (end_age >= 0.0).then_some(end_age);

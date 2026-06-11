@@ -110,7 +110,7 @@ fn draw_overlay_info(
             // ── Previous sweep section ───────────────────────────────
             if let Some(prev) = state.viz_state.previous_displayed.as_ref() {
                 ui.add_space(2.0);
-                let now = js_sys::Date::now() / 1000.0;
+                let now = state.frame_now.secs();
                 let prev_age_end = now - prev.end_time;
                 let prev_age_start = now - prev.start_time;
 

@@ -9,6 +9,7 @@ pub(crate) mod acquisition;
 mod alerts;
 mod app_mode;
 mod errors;
+mod frame_clock;
 mod gps;
 mod layer;
 mod live_mode;
@@ -39,6 +40,7 @@ pub use acquisition::{
 pub use alerts::AlertsState;
 pub use app_mode::AppMode;
 pub use errors::{AppError, ErrorContext};
+pub use frame_clock::FrameNow;
 pub use gps::GpsState;
 pub use layer::{GeoLayerVisibility, LayerState};
 pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
@@ -116,6 +118,10 @@ pub enum AppCommand {
 /// Root application state containing all sub-states.
 #[derive(Default)]
 pub struct AppState {
+    /// Wall-clock "now" for this frame, captured once in
+    /// `apply_frame_setup` before any consumer runs.
+    pub frame_now: FrameNow,
+
     /// Visualization state (canvas, zoom/pan, product selection)
     pub viz_state: VizState,
 
@@ -373,6 +379,7 @@ impl AppState {
         });
 
         let mut state = Self {
+            frame_now: FrameNow(now),
             status_message: "Ready".to_string(),
             session_stats: SessionStats::new(),
             storage_settings,

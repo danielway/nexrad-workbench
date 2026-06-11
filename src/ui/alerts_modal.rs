@@ -143,7 +143,7 @@ fn render_list_modal(
                                         ui.label(
                                             RichText::new(format!(
                                                 "Expires {}",
-                                                format_relative(*exp)
+                                                format_relative(derived.frame_now_secs, *exp)
                                             ))
                                             .size(10.0)
                                             .color(Color32::from_rgb(140, 140, 140)),
@@ -406,9 +406,8 @@ fn format_absolute(ts_secs: f64) -> String {
     )
 }
 
-fn format_relative(ts_secs: f64) -> String {
-    let now = js_sys::Date::now() / 1000.0;
-    let delta = ts_secs - now;
+fn format_relative(now_secs: f64, ts_secs: f64) -> String {
+    let delta = ts_secs - now_secs;
     if delta < 0.0 {
         return "in the past".to_string();
     }

@@ -112,7 +112,7 @@ fn query_radar_state_at_timestamp<'a>(
     // excluded from `settled_scan_at` and surfaced via `live_volume()` (with
     // its already-cached cuts merged in) — this replaces the bespoke
     // archive-vs-live reconciliation this function used to do itself.
-    let now = js_sys::Date::now() / 1000.0;
+    let now = state.frame_now.secs();
     let view = crate::state::TimelineView::build(
         &timeline.scans,
         &timeline.shadow_scan_boundaries,

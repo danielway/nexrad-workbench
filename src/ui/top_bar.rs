@@ -43,7 +43,7 @@ fn draw_top_bar(
     let status_id = egui::Id::new("__last_status_msg");
     let prev_msg: Option<String> = ctx.data(|d| d.get_temp(status_id));
     if prev_msg.as_deref() != Some(&state.status_message) {
-        state.status_message_set_ms = js_sys::Date::now();
+        state.status_message_set_ms = state.frame_now.millis();
         ctx.data_mut(|d| d.insert_temp(status_id, state.status_message.clone()));
     }
 
@@ -100,7 +100,7 @@ fn draw_top_bar(
                 // Recent-errors chip — surfaces failures from the unified
                 // ErrorContext aggregator. Quiet when no errors have been
                 // pushed; a click pops a small log with the latest entries.
-                render_errors_chip(ui, &mut state.errors);
+                render_errors_chip(ui, &mut state.errors, state.frame_now.millis());
 
                 // Persistent worker initialization error banner
                 if let Some(ref error_msg) = state.worker_init_error {
@@ -130,7 +130,7 @@ fn draw_top_bar(
                 // text with chunk counts/countdown).
                 if live.app_mode != AppMode::Live && !state.status_message.is_empty() {
                     // Auto-dismiss: fade out after 8 seconds, clear after 10
-                    let now = js_sys::Date::now();
+                    let now = state.frame_now.millis();
                     let age_ms = now - state.status_message_set_ms;
                     const FADE_START_MS: f64 = 8000.0;
                     const DISMISS_MS: f64 = 10000.0;
@@ -499,7 +499,7 @@ pub(super) fn render_alerts_chip(
 /// [`ErrorContext`], a warning chip with a count appears; clicking it
 /// pops a small log showing the most recent entries (newest first) and
 /// a Clear button to dismiss the ring.
-pub(super) fn render_errors_chip(ui: &mut egui::Ui, errors: &mut ErrorContext) {
+pub(super) fn render_errors_chip(ui: &mut egui::Ui, errors: &mut ErrorContext, now_ms: f64) {
     if errors.is_empty() {
         return;
     }
@@ -533,7 +533,6 @@ pub(super) fn render_errors_chip(ui: &mut egui::Ui, errors: &mut ErrorContext) {
         // Show newest first, capped at 10 entries to keep the popup
         // compact. The ring buffer retains 50 total — opening a full
         // log view is left to a future Modal if appetite arises.
-        let now_ms = js_sys::Date::now();
         let entries: Vec<_> = errors.iter().rev().take(10).cloned().collect();
         for entry in &entries {
             ui.horizontal(|ui| {
