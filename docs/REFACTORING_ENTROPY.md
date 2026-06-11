@@ -1,5 +1,16 @@
 # Timeline / IDB Cache / Projection — Entropy-Reduction Refactor Plan
 
+> **Status (2026-06-11):** All 14 planned workstreams are implemented and
+> committed on `simplify-user-interface` (T4, T2, T1, T3, T5; I1, I2, I3,
+> I4; P2, P1, P3, P4, P5 — see `git log` from "Add entropy-reduction
+> refactor plan…"). Only **P6** (decompose `realtime/streaming.rs` into
+> persistence/probe/backfill modules — pure moves) remains, as the optional
+> stretch item. **Outstanding before building on this:** the manual
+> `trunk serve` live-session smoke test below — T1 (playhead transitions),
+> T2 (frame clock), P1 (collection-domain estimates, behavior-changing),
+> P3 (volume rollover), P4 (diagnostics modals) have no automated UI
+> coverage.
+
 ## Context
 
 Three subsystems have accumulated entropy through feature development and bug fixes: the **timeline/playback** stack, the **IndexedDB cache**, and the **sweep/chunk projection & estimation** pipeline. An architecture review (3 explorer passes + verification against code) found the bones are healthy — `TimelineView` as a per-frame adapter, the `write_tx` no-await enforcement, the recently-landed single-owner `ProjectionEngine` — but interfaces have rotted at the edges: implicit mode flags with 9-file write fan-out, asymmetric key parse APIs, quota thresholds in three places, a verified time-domain conflation in timing stats, dead "transition compatibility" state, and five words for one concept.
