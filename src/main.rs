@@ -692,7 +692,7 @@ impl eframe::App for WorkbenchApp {
         // live edge moves continuously, so request a repaint to keep it smooth
         // even when the user isn't interacting.
         self.tick_live();
-        if self.live.mode_state.is_active() && self.playback.state.time_model.locked_to_realtime {
+        if self.live.mode_state.is_active() && self.playback.state.time_model.is_pinned() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         self.advance_playback();

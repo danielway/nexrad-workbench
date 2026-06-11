@@ -229,6 +229,37 @@ pub enum PlaybackDirection {
     Backward,
 }
 
+/// Playhead position semantics. Replaces the old `locked_to_realtime` +
+/// `lookback_active` flag pair with one explicit mode; all transitions go
+/// through the named methods on [`PlaybackState`], which own the
+/// invariants (bounds ownership, position snapping, macro-cursor resets).
+///
+/// The live *stream session* is a separate bit (`live.mode_state`): the
+/// stream keeps running across `PinnedToNow` ↔ `LookbackLoop`, and the
+/// `playing` flag keeps its ordinary meaning in `Free`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PlayheadMode {
+    /// Archive: free seeking; `playing` drives `advance()`.
+    #[default]
+    Free,
+    /// Live: the per-frame tick pins the position to wall-clock via
+    /// [`PlaybackState::pin_tick`]. Position writes require a transition
+    /// out of this mode first.
+    PinnedToNow,
+    /// Live replay: bounds are owned by the tick's sliding lookback
+    /// window; always macro frame-stepping; `playing` is true.
+    LookbackLoop,
+}
+
+/// Where the playhead lands when leaving live ([`PlaybackState::exit_live`]).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum FreezeAt {
+    /// Snap to the given wall-clock now (predictable stop on the live edge).
+    Now(f64),
+    /// Keep the current position (seek/jog paths set it themselves).
+    Keep,
+}
+
 /// Time model per PRODUCT.md specification.
 ///
 /// Separates playback position (the moment in radar time being displayed)
@@ -240,9 +271,8 @@ pub struct TimeModel {
     /// Unix seconds with sub-second precision.
     pub playback_position: f64,
 
-    /// Whether playback is locked to wall-clock (real-time mode).
-    /// When true, playback_position tracks wall_clock_time().
-    pub locked_to_realtime: bool,
+    /// Playhead mode (archive / pinned-live / lookback replay).
+    pub mode: PlayheadMode,
 
     /// Playback range constraints (from selection or real-time window).
     /// When set, playback position is constrained to (start, end).
@@ -259,7 +289,7 @@ impl Default for TimeModel {
     fn default() -> Self {
         Self {
             playback_position: Self::wall_clock_time(),
-            locked_to_realtime: false,
+            mode: PlayheadMode::Free,
             playback_bounds: None,
             loop_mode: LoopMode::Loop,
             direction: PlaybackDirection::Forward,
@@ -281,11 +311,21 @@ impl TimeModel {
         }
     }
 
+    /// Whether the playhead is pinned to "now" (LIVE-NOW).
+    pub fn is_pinned(&self) -> bool {
+        self.mode == PlayheadMode::PinnedToNow
+    }
+
+    /// Whether the playhead is replaying the lookback window (LIVE-LOOKBACK).
+    pub fn is_lookback(&self) -> bool {
+        self.mode == PlayheadMode::LookbackLoop
+    }
+
     /// Advance playback position by delta time, respecting bounds and loop mode.
     pub fn advance(&mut self, delta_secs: f64, speed: PlaybackSpeed) {
-        if self.locked_to_realtime {
-            // Real-time mode: track wall clock
-            self.playback_position = Self::wall_clock_time();
+        if self.is_pinned() {
+            // LIVE-NOW: the position is owned by the per-frame pin_tick;
+            // nothing to advance.
             return;
         }
 
@@ -351,34 +391,6 @@ impl TimeModel {
         self.direction = PlaybackDirection::Forward;
     }
 
-    /// Enable real-time lock (playback tracks wall clock).
-    pub fn enable_realtime_lock(&mut self) {
-        self.locked_to_realtime = true;
-        self.playback_position = Self::wall_clock_time();
-        self.playback_bounds = None; // Real-time mode has its own constraints
-    }
-
-    /// Disable real-time lock.
-    pub fn disable_realtime_lock(&mut self) {
-        self.locked_to_realtime = false;
-    }
-
-    /// Seek to a specific position.
-    pub fn seek_to(&mut self, position: f64) {
-        if self.locked_to_realtime {
-            return; // Can't seek in real-time mode
-        }
-
-        self.playback_position = position;
-    }
-
-    /// Snap the playhead to wall-clock now. Used by the live tick to pin the
-    /// position in LIVE-NOW independent of the `playing` flag (bypasses
-    /// `seek_to`, which no-ops under the realtime lock).
-    pub fn snap_to_now(&mut self) {
-        self.playback_position = Self::wall_clock_time();
-    }
-
     /// Update playback bounds *without* resetting direction or clamping the
     /// position. Used by the sliding lookback window: as new frames complete,
     /// the window end follows the latest frame while the loop keeps its
@@ -427,12 +439,6 @@ pub struct PlaybackState {
 
     /// State for macro (frame-stepping) playback mode.
     pub macro_playback: MacroPlaybackState,
-
-    /// True while the play button is replaying the recent "lookback" window
-    /// during live streaming (last-N frames, looping). Distinguishes lookback
-    /// bounds — transient, owned by the transport — from a user's shift-drag
-    /// selection bounds. Cleared on pause, stop-live, and seek.
-    pub lookback_active: bool,
 }
 
 impl Default for PlaybackState {
@@ -452,7 +458,6 @@ impl Default for PlaybackState {
             selection_in_progress: false,
             timeline_width_px: 1000.0,
             macro_playback: MacroPlaybackState::default(),
-            lookback_active: false,
         }
     }
 }
@@ -474,32 +479,88 @@ impl PlaybackState {
         self.time_model.playback_position
     }
 
-    /// Set playback position (convenience method).
+    /// Seek: write the playback position. Position writes while live must
+    /// go through a transition out of `PinnedToNow`/`LookbackLoop` first
+    /// (`exit_live`) — every UI seek path does, and this assert keeps it
+    /// that way.
     pub fn set_playback_position(&mut self, position: f64) {
-        self.time_model.seek_to(position);
+        debug_assert!(
+            self.time_model.mode == PlayheadMode::Free,
+            "seek while {:?} — exit live first",
+            self.time_model.mode
+        );
+        self.time_model.playback_position = position;
     }
 
-    /// Enter lookback: discretely step + loop the recent matching frames. The
-    /// caller must disable the realtime lock first. The frame window
-    /// (`playback_bounds`) is owned by `tick_live`, which `render_loop` turns
-    /// into the macro `sweep_frames` list that `advance_macro` steps over —
-    /// lookback is just macro frame-stepping forced on regardless of zoom (see
-    /// [`Self::effective_playback_mode`]).
-    pub fn start_lookback(&mut self) {
+    // ------------------------------------------------------------------
+    // Playhead mode transitions — the ONLY mutation points for
+    // `TimeModel::mode`. Each owns its invariants so call sites can't
+    // half-apply a mode switch.
+    // ------------------------------------------------------------------
+
+    /// → LIVE-NOW. Pins the playhead to `now`; the per-frame live tick
+    /// keeps it there via [`Self::pin_tick`]. Drops any bounds (live owns
+    /// its own constraints).
+    pub fn enter_pinned_live(&mut self, now: f64) {
+        self.time_model.playback_bounds = None;
+        self.time_model.mode = PlayheadMode::PinnedToNow;
+        self.time_model.playback_position = now;
+    }
+
+    /// LIVE-* → ARCHIVE (`Free`). Clears the lookback loop window if one
+    /// was active; a user's shift-drag selection bounds (only settable in
+    /// `Free`) are untouched. `freeze` picks the landing position.
+    /// Idempotent when already `Free`.
+    pub fn exit_live(&mut self, freeze: FreezeAt) {
+        if self.time_model.mode == PlayheadMode::LookbackLoop {
+            self.time_model.clear_bounds();
+        }
+        self.time_model.mode = PlayheadMode::Free;
+        if let FreezeAt::Now(now) = freeze {
+            self.time_model.playback_position = now;
+        }
+    }
+
+    /// LIVE-NOW → LIVE-LOOKBACK: discretely step + loop the recent matching
+    /// frames. The window (`playback_bounds`) is owned by `tick_live`, which
+    /// `render_loop` turns into the macro `sweep_frames` list that
+    /// `advance_macro` steps over — lookback is macro frame-stepping forced
+    /// on regardless of zoom (see [`Self::effective_playback_mode`]).
+    /// `seed` places the playhead (oldest cached frame) so the first pass
+    /// runs oldest→newest.
+    pub fn enter_lookback(&mut self, seed: Option<f64>) {
+        debug_assert!(
+            self.time_model.mode == PlayheadMode::PinnedToNow,
+            "lookback starts from pinned live, not {:?}",
+            self.time_model.mode
+        );
+        self.time_model.mode = PlayheadMode::LookbackLoop;
         self.time_model.loop_mode = LoopMode::Loop;
-        self.lookback_active = true;
+        if let Some(ts) = seed {
+            self.time_model.playback_position = ts;
+        }
         self.playing = true;
         self.macro_playback.current_frame_index = 0;
         self.macro_playback.frame_accumulator = 0.0;
     }
 
-    /// Exit lookback: drop the window bounds + marker. Leaves `playing` to the
-    /// caller (pause re-locks to now; stop freezes). Idempotent.
-    pub fn clear_lookback(&mut self) {
-        if self.lookback_active {
-            self.time_model.clear_bounds();
-            self.lookback_active = false;
-        }
+    /// LIVE-LOOKBACK → LIVE-NOW (pause during replay): drop the loop window
+    /// and re-pin to `now`. The stream is untouched.
+    pub fn exit_lookback_to_now(&mut self, now: f64) {
+        self.time_model.clear_bounds();
+        self.time_model.mode = PlayheadMode::PinnedToNow;
+        self.time_model.playback_position = now;
+    }
+
+    /// Per-frame position pin while LIVE-NOW (called from the live tick,
+    /// independent of the `playing` flag).
+    pub fn pin_tick(&mut self, now: f64) {
+        debug_assert!(
+            self.time_model.mode == PlayheadMode::PinnedToNow,
+            "pin_tick outside PinnedToNow ({:?})",
+            self.time_model.mode
+        );
+        self.time_model.playback_position = now;
     }
 
     /// Visible time width in seconds, using the real timeline widget width.
@@ -536,7 +597,7 @@ impl PlaybackState {
     /// sweeps as frames; otherwise this is the zoom-derived
     /// [`Self::playback_mode`].
     pub fn effective_playback_mode(&self) -> PlaybackMode {
-        if self.lookback_active {
+        if self.time_model.is_lookback() {
             PlaybackMode::Macro
         } else {
             self.playback_mode()
@@ -712,47 +773,86 @@ mod tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     #[wasm_bindgen_test]
-    fn start_lookback_sets_loop_marker_and_resets_macro_cursor() {
+    fn enter_lookback_sets_loop_seed_and_resets_macro_cursor() {
         let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
         // Pretend a prior macro session left a non-zero cursor.
         ps.macro_playback.current_frame_index = 7;
         ps.macro_playback.frame_accumulator = 0.4;
-        ps.start_lookback();
+        ps.enter_lookback(Some(940.0));
         assert!(ps.time_model.loop_mode == LoopMode::Loop);
-        assert!(ps.lookback_active);
+        assert!(ps.time_model.is_lookback());
         assert!(ps.playing);
+        assert_eq!(ps.playback_position(), 940.0);
         assert_eq!(ps.macro_playback.current_frame_index, 0);
         assert_eq!(ps.macro_playback.frame_accumulator, 0.0);
     }
 
     #[wasm_bindgen_test]
-    fn effective_mode_is_macro_iff_lookback_active() {
+    fn effective_mode_is_macro_iff_lookback() {
         let mut ps = PlaybackState::default();
         ps.timeline_zoom = 2.0; // micro zoom (live)
         assert!(ps.effective_playback_mode() == PlaybackMode::Micro);
-        ps.lookback_active = true;
+        ps.enter_pinned_live(1000.0);
+        ps.enter_lookback(None);
         assert!(ps.effective_playback_mode() == PlaybackMode::Macro);
     }
 
     #[wasm_bindgen_test]
-    fn clear_lookback_clears_bounds_and_flag_but_not_playing() {
+    fn exit_lookback_to_now_clears_window_and_repins() {
         let mut ps = PlaybackState::default();
-        ps.time_model.set_bounds_from_selection(100.0, 160.0);
-        ps.start_lookback();
-        ps.clear_lookback();
+        ps.enter_pinned_live(1000.0);
+        ps.enter_lookback(Some(940.0));
+        ps.time_model.set_bounds_preserving(940.0, 1000.0); // tick's window
+        ps.exit_lookback_to_now(1010.0);
         assert_eq!(ps.time_model.playback_bounds, None);
-        assert!(!ps.lookback_active);
+        assert!(ps.time_model.is_pinned());
+        assert_eq!(ps.playback_position(), 1010.0);
         assert!(ps.playing); // caller owns `playing`
     }
 
     #[wasm_bindgen_test]
-    fn clear_lookback_is_idempotent_when_inactive() {
+    fn exit_live_keep_preserves_position_and_clears_lookback_window() {
         let mut ps = PlaybackState::default();
-        // A user selection's bounds must survive clear_lookback when no
-        // lookback is active.
+        ps.enter_pinned_live(1000.0);
+        ps.enter_lookback(Some(940.0));
+        ps.time_model.set_bounds_preserving(940.0, 1000.0);
+        ps.exit_live(FreezeAt::Keep);
+        assert_eq!(ps.time_model.mode, PlayheadMode::Free);
+        assert_eq!(ps.time_model.playback_bounds, None);
+        assert_eq!(ps.playback_position(), 940.0); // untouched
+    }
+
+    #[wasm_bindgen_test]
+    fn exit_live_now_freezes_on_the_live_edge() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
+        ps.pin_tick(1005.0);
+        ps.exit_live(FreezeAt::Now(1006.0));
+        assert_eq!(ps.time_model.mode, PlayheadMode::Free);
+        assert_eq!(ps.playback_position(), 1006.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn exit_live_is_idempotent_and_keeps_user_selection_bounds() {
+        let mut ps = PlaybackState::default();
+        // A user selection's bounds (set in Free mode) must survive an
+        // exit_live no-op.
         ps.time_model.set_bounds_from_selection(10.0, 20.0);
-        ps.clear_lookback();
+        ps.exit_live(FreezeAt::Keep);
         assert_eq!(ps.time_model.playback_bounds, Some((10.0, 20.0)));
+        assert_eq!(ps.time_model.mode, PlayheadMode::Free);
+    }
+
+    #[wasm_bindgen_test]
+    fn pinned_advance_is_inert_and_pin_tick_moves_position() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
+        ps.playing = true;
+        ps.advance(10.0); // micro advance must not move a pinned playhead
+        assert_eq!(ps.playback_position(), 1000.0);
+        ps.pin_tick(1000.5);
+        assert_eq!(ps.playback_position(), 1000.5);
     }
 
     #[wasm_bindgen_test]

@@ -109,7 +109,13 @@ pub(super) fn render_datetime_picker_popup(
                         ui.add_enabled_ui(valid_ts.is_some(), |ui| {
                             if ui.button("Jump").clicked() || enter_pressed {
                                 if let Some(ts) = valid_ts {
-                                    // Update playback position
+                                    // Exit live mode first — a seek while the
+                                    // playhead is pinned would be rejected.
+                                    if live.mode_state.is_active() {
+                                        live.stop(LiveExitReason::UserSeeked);
+                                        playback.state.exit_live(crate::state::FreezeAt::Keep);
+                                    }
+
                                     playback.state.set_playback_position(ts);
 
                                     // Left-align timeline view on new position
@@ -117,13 +123,6 @@ pub(super) fn render_datetime_picker_popup(
                                     let view_width_secs = playback.state.view_width_secs();
                                     playback.state.timeline_view_start =
                                         ts - view_width_secs * 0.05;
-
-                                    // Exit live mode if active
-                                    if live.mode_state.is_active() {
-                                        live.stop(LiveExitReason::UserSeeked);
-                                        playback.state.time_model.disable_realtime_lock();
-                                        playback.state.clear_lookback();
-                                    }
 
                                     state.datetime_picker.close();
                                     log::debug!("Jumped to timestamp: {}", ts);

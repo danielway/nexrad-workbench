@@ -472,8 +472,7 @@ fn handle_toggle_live(
 ) {
     if live.mode_state.is_active() {
         live.stop(LiveExitReason::UserStopped);
-        playback.state.time_model.disable_realtime_lock();
-        playback.state.clear_lookback();
+        playback.state.exit_live(crate::state::FreezeAt::Keep);
         playback.state.playing = false;
         state.status_message = live
             .mode_state

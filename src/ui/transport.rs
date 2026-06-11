@@ -25,10 +25,9 @@ pub(crate) fn toggle_play_pause(
 ) {
     // LIVE-LOOKBACK → LIVE-NOW: stop the replay and re-pin to now. The stream
     // stays active (we never call mode_state.stop), so streaming continues.
-    if playback.state.lookback_active {
+    if playback.state.time_model.is_lookback() {
         playback.state.playing = false;
-        playback.state.clear_lookback();
-        playback.state.time_model.enable_realtime_lock(); // snaps pos=now, clears bounds
+        playback.state.exit_lookback_to_now(state.frame_now.secs());
         return;
     }
 
@@ -38,17 +37,19 @@ pub(crate) fn toggle_play_pause(
     // frames are cached yet (the loop fills in as they land). Seed the playhead
     // at the oldest cached frame so the first pass runs oldest→newest.
     if live.mode_state.is_active() {
-        playback.state.time_model.disable_realtime_lock();
-        let now = crate::state::TimeModel::wall_clock_time();
-        match timeline.scans.lookback_window(
+        let now = state.frame_now.secs();
+        let seed = match timeline.scans.lookback_window(
             &state.viz_state.elevation_selection,
             now,
             crate::LOOKBACK_FRAMES,
         ) {
-            Some((oldest, _)) => playback.state.set_playback_position(oldest),
-            None => state.status_message = "Acquiring recent frames…".to_string(),
-        }
-        playback.state.start_lookback();
+            Some((oldest, _)) => Some(oldest),
+            None => {
+                state.status_message = "Acquiring recent frames…".to_string();
+                None
+            }
+        };
+        playback.state.enter_lookback(seed);
         return;
     }
 

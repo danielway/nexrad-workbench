@@ -17,13 +17,11 @@ impl WorkbenchApp {
         let now = self.state.frame_now.secs();
 
         // Initialize live mode state. Going live pins the playhead to "now"
-        // (the realtime lock) but does NOT start playback — play/pause is
-        // decoupled and, while live, drives the lookback replay instead. The
-        // playhead is kept on "now" by `tick_live`, independent of `playing`.
+        // but does NOT start playback — play/pause is decoupled and, while
+        // live, drives the lookback replay instead. The playhead is kept on
+        // "now" by `tick_live`, independent of `playing`.
         self.live.mode_state.start(now);
-        self.playback.state.clear_lookback();
-        self.playback.state.set_playback_position(now);
-        self.playback.state.time_model.enable_realtime_lock();
+        self.playback.state.enter_pinned_live(now);
 
         // Ensure the timeline is zoomed in far enough to show individual sweeps
         // and chunks. Live mode enforces micro-mode as the widest allowed zoom.
@@ -52,10 +50,10 @@ impl WorkbenchApp {
     /// Per-frame live tick — drives the playhead while streaming, independent
     /// of the `playing` flag (which now belongs to playback/lookback).
     ///
-    /// - LIVE-NOW (realtime lock on): pin the playhead to wall-clock now.
-    /// - LIVE-LOOKBACK (lock off, `lookback_active`): slide the loop window so
-    ///   its end follows the latest frame as new volumes complete. `advance`
-    ///   (driven by `playing` in the bottom panel) does the actual looping.
+    /// - `PinnedToNow` (LIVE-NOW): pin the playhead to this frame's now.
+    /// - `LookbackLoop` (LIVE-LOOKBACK): slide the loop window so its end
+    ///   follows the latest frame as new volumes complete. `advance` (driven
+    ///   by `playing` in the bottom panel) does the actual looping.
     ///
     /// In both states, keep the live edge on-screen. No-op when not live.
     pub(crate) fn tick_live(&mut self) {
@@ -64,10 +62,10 @@ impl WorkbenchApp {
         }
         let now = self.state.frame_now.secs();
 
-        if self.playback.state.time_model.locked_to_realtime {
-            // LIVE-NOW: pin to wall-clock now.
-            self.playback.state.time_model.snap_to_now();
-        } else if self.playback.state.lookback_active {
+        if self.playback.state.time_model.is_pinned() {
+            // LIVE-NOW: pin to this frame's now.
+            self.playback.state.pin_tick(now);
+        } else if self.playback.state.time_model.is_lookback() {
             // LIVE-LOOKBACK: own the frame window. Prefer the exact last-N-frame
             // span; before any matching frame is cached, fall back to a time
             // window of ~N volumes so `render_loop` builds `sweep_frames` from
@@ -233,8 +231,7 @@ impl WorkbenchApp {
         log::info!("Stopping live mode: {:?}", reason);
 
         self.live.stop(reason);
-        self.playback.state.time_model.disable_realtime_lock();
-        self.playback.state.clear_lookback();
+        self.playback.state.exit_live(state::FreezeAt::Keep);
         self.live.channel.stop();
 
         // Halt playback unless the user is actively scrubbing/jogging — those

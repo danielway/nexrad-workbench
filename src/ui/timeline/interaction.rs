@@ -67,8 +67,7 @@ pub(super) fn handle_timeline_interaction(
 
             if live.mode_state.is_active() {
                 live.stop(LiveExitReason::UserSeeked);
-                playback.state.time_model.disable_realtime_lock();
-                playback.state.clear_lookback();
+                playback.state.exit_live(crate::state::FreezeAt::Keep);
                 state.status_message = live
                     .mode_state
                     .last_exit_reason
@@ -98,8 +97,7 @@ pub(super) fn handle_timeline_interaction(
             // user zoom out into macro mode — the live stream is about individual
             // sweeps/chunks, which only make sense at micro zoom. Floor the
             // minimum at the micro threshold so the timeline stays in micro mode.
-            let realtime =
-                live.mode_state.is_active() || playback.state.time_model.locked_to_realtime;
+            let realtime = live.mode_state.is_active() || playback.state.time_model.is_pinned();
             let min_zoom = if realtime {
                 crate::state::MICRO_ZOOM_THRESHOLD
             } else {

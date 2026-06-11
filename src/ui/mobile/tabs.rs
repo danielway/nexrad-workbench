@@ -145,8 +145,7 @@ fn render_action_bar(
         {
             if is_live {
                 live.stop(LiveExitReason::UserStopped);
-                playback.state.time_model.disable_realtime_lock();
-                playback.state.clear_lookback();
+                playback.state.exit_live(crate::state::FreezeAt::Keep);
                 playback.state.playing = false;
             } else {
                 state.push_command(crate::state::AppCommand::StartLive);
@@ -237,8 +236,7 @@ pub(super) fn step_frame(
     let current_pos = playback.state.playback_position();
     if live.mode_state.is_active() {
         live.stop(LiveExitReason::UserJogged);
-        playback.state.time_model.disable_realtime_lock();
-        playback.state.clear_lookback();
+        playback.state.exit_live(crate::state::FreezeAt::Keep);
     }
     match playback.state.playback_mode() {
         PlaybackMode::Macro => {

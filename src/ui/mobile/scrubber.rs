@@ -163,8 +163,7 @@ pub(super) fn render_scrubber(
         // Exit live mode when the user seeks manually.
         if live.mode_state.is_active() {
             live.stop(LiveExitReason::UserSeeked);
-            playback.state.time_model.disable_realtime_lock();
-            playback.state.clear_lookback();
+            playback.state.exit_live(crate::state::FreezeAt::Keep);
         }
         // Scrubbing pauses playback so the thumb stays where the user dropped
         // it — otherwise a running playback loop would immediately snap it

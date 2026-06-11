@@ -281,11 +281,11 @@ impl WorkbenchApp {
     /// Backward backfill for the live lookback replay: while replaying, ensure
     /// the last ~[`crate::LOOKBACK_FRAMES`] volumes (matching elevation) ending
     /// at "now" are fetched from the archive, so the loop has frames. Lazy — it
-    /// runs only while `lookback_active` — and idempotent via the same dedup as
+    /// runs only in `LookbackLoop` mode — and idempotent via the same dedup as
     /// the forward pump. The live stream itself only fetches the in-progress
     /// volume, so previous volumes must come from the archive.
     pub(crate) fn pump_lookback_backfill(&mut self, ctx: &egui::Context) {
-        if !self.playback.state.lookback_active
+        if !self.playback.state.time_model.is_lookback()
             || !self.render.coordinator.has_worker()
             || self.acquisition.state.is_paused()
             || self
