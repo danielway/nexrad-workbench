@@ -106,7 +106,13 @@ impl CacheLoadChannel {
                     }
                 }
                 Err(e) => {
-                    log::error!("Failed to load cache metadata: {}", e);
+                    // Transient IDB errors (open still settling, aborted txn)
+                    // resolve on the next refresh — don't log them as errors.
+                    if e.kind() == crate::data::indexeddb::ErrorKind::Transient {
+                        log::warn!("Cache metadata load hit a transient error: {}", e);
+                    } else {
+                        log::error!("Failed to load cache metadata: {}", e);
+                    }
                     CacheLoadResult::Error(e.to_string())
                 }
             };

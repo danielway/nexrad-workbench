@@ -81,6 +81,51 @@ impl std::fmt::Display for DataError {
     }
 }
 
+/// Coarse classification of a [`DataError`] for callers that need to pick
+/// retry / give-up / evict behavior without matching every variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// Likely to succeed on retry: open still in flight, an aborted or
+    /// timed-out transaction, or losing the per-scan upsert race.
+    Transient,
+    /// Will not succeed without a code or data change: missing key,
+    /// corrupt/unreadable entry, schema mismatch.
+    Permanent,
+    /// Browser storage pressure — succeeds only after eviction frees space.
+    Quota,
+}
+
+impl DataError {
+    /// Classify this error. IDB transaction/request failures are classified
+    /// by the DOMException name that [`js_err`] places at the front of the
+    /// formatted message.
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            DataError::NotOpen | DataError::ConcurrentUpsert { .. } => ErrorKind::Transient,
+            DataError::QuotaExceeded { .. } => ErrorKind::Quota,
+            DataError::NotFound | DataError::SerdeError(_) => ErrorKind::Permanent,
+            DataError::TransactionFailed(msg) | DataError::RequestFailed(msg) => {
+                classify_js_error(msg)
+            }
+        }
+    }
+}
+
+/// Classify a `js_err`-formatted message by its leading DOMException name
+/// (`js_err` emits `"Name: message"` when the JS error carried a name).
+/// Unknown names default to `Permanent` — better to surface a real failure
+/// than to retry blindly.
+fn classify_js_error(msg: &str) -> ErrorKind {
+    let name = msg.split(':').next().unwrap_or("").trim();
+    match name {
+        "QuotaExceededError" => ErrorKind::Quota,
+        "AbortError" | "TimeoutError" | "TransactionInactiveError" | "UnknownError" => {
+            ErrorKind::Transient
+        }
+        _ => ErrorKind::Permanent,
+    }
+}
+
 /// RAII token enforcing the single-writer invariant on
 /// [`IndexedDbStore::upsert_scan`]. The store's read-then-write split is
 /// not atomic across its two IDB transactions, so two concurrent async
@@ -871,5 +916,56 @@ mod tests {
         let _ga = UpsertScanGuard::try_acquire(&scan_a).expect("acquire A");
         let _gb =
             UpsertScanGuard::try_acquire(&scan_b).expect("acquire B independent of A succeeds");
+    }
+
+    #[wasm_bindgen_test]
+    fn error_kind_classifies_structured_variants() {
+        assert_eq!(DataError::NotOpen.kind(), ErrorKind::Transient);
+        assert_eq!(
+            DataError::ConcurrentUpsert {
+                scan_key: "KDMX|0".into()
+            }
+            .kind(),
+            ErrorKind::Transient
+        );
+        assert_eq!(
+            DataError::QuotaExceeded {
+                available_mb: 1.0,
+                required_mb: 2.0
+            }
+            .kind(),
+            ErrorKind::Quota
+        );
+        assert_eq!(DataError::NotFound.kind(), ErrorKind::Permanent);
+        assert_eq!(
+            DataError::SerdeError("bad".into()).kind(),
+            ErrorKind::Permanent
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn error_kind_classifies_domexception_names_in_js_messages() {
+        // `js_err` formats DOMException-like values as "Name: message".
+        let cases = [
+            ("QuotaExceededError: out of space", ErrorKind::Quota),
+            ("AbortError: transaction aborted", ErrorKind::Transient),
+            ("TimeoutError: took too long", ErrorKind::Transient),
+            ("TransactionInactiveError: too late", ErrorKind::Transient),
+            ("UnknownError: disk hiccup", ErrorKind::Transient),
+            ("DataError: bad key", ErrorKind::Permanent),
+            ("free-form message with no name", ErrorKind::Permanent),
+        ];
+        for (msg, expected) in cases {
+            assert_eq!(
+                DataError::TransactionFailed(msg.to_string()).kind(),
+                expected,
+                "TransactionFailed({msg:?})"
+            );
+            assert_eq!(
+                DataError::RequestFailed(msg.to_string()).kind(),
+                expected,
+                "RequestFailed({msg:?})"
+            );
+        }
     }
 }
