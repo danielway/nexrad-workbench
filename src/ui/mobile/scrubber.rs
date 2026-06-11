@@ -54,6 +54,11 @@ pub(super) fn render_scrubber(
         };
     }
     let frame_now = state.frame_now.secs();
+    // While streaming, the track must reach "now" so the live edge (and its
+    // growth) stays visible even when the cached range trails behind.
+    if live.mode_state.is_active() {
+        data_range = data_range.map(|(s, e)| (s, e.max(frame_now)));
+    }
     let (t_start, t_end) = match data_range {
         Some((s, e)) if e > s => (s, e),
         _ => (frame_now - 1800.0, frame_now + 1800.0),
@@ -154,11 +159,46 @@ pub(super) fn render_scrubber(
         StrokeKind::Inside,
     );
 
-    // Interaction: drag or click to seek.
+    // Rejoin pill — while a background stream ingests with the playhead
+    // detached, a tap re-pins to the live edge instantly (mobile twin of
+    // the desktop now-cap's REJOIN state). Owns its taps: a tap on the
+    // pill is never also a track seek.
+    let mut pill_rect: Option<Rect> = None;
+    if live.is_detached(&playback.state) {
+        let label = "REJOIN";
+        let font = egui::FontId::proportional(9.0);
+        let galley = painter.layout_no_wrap(label.to_string(), font.clone(), Color32::WHITE);
+        let pad = Vec2::new(6.0, 2.5);
+        let size = galley.size() + pad * 2.0;
+        let rect = Rect::from_min_size(
+            Pos2::new(
+                full_rect.right() - 4.0 - size.x,
+                full_rect.top() + (full_rect.height() - size.y) / 2.0,
+            ),
+            size,
+        );
+        let pulse = live.mode_state.pulse_alpha();
+        let alpha = (200.0 + 55.0 * pulse) as u8;
+        let fill = Color32::from_rgba_unmultiplied(
+            tl_colors::LIVE_ACTIVE.r(),
+            tl_colors::LIVE_ACTIVE.g(),
+            tl_colors::LIVE_ACTIVE.b(),
+            alpha,
+        );
+        painter.rect_filled(rect, 3.0, fill);
+        painter.galley(rect.min + pad, galley, Color32::WHITE);
+        pill_rect = Some(rect);
+    }
+
+    // Interaction: drag or click to seek (or tap the rejoin pill).
     let interact_pos = response
         .interact_pointer_pos()
         .filter(|_| response.dragged() || response.clicked());
     if let Some(pos) = interact_pos {
+        if response.clicked() && pill_rect.is_some_and(|r| r.contains(pos)) {
+            state.push_command(crate::state::AppCommand::ReturnToLive);
+            return;
+        }
         let new_ts = x_to_ts(pos.x);
         // Detach the playhead on a manual seek — the stream (if running)
         // keeps ingesting in the background.

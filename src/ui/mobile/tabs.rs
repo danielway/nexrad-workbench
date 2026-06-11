@@ -83,8 +83,9 @@ fn render_action_bar(
     let slot_w = total_w / 4.0;
     let icon_size = ((slot_h - 10.0) * 0.55).clamp(18.0, 24.0);
 
-    let is_live = live.mode_state.is_active();
-    let live_color = if is_live {
+    let is_streaming = live.mode_state.is_active();
+    let is_attached = live.app_mode == crate::state::AppMode::Live;
+    let live_color = if is_streaming {
         Color32::from_rgb(220, 60, 60)
     } else {
         ui.visuals().strong_text_color()
@@ -131,7 +132,9 @@ fn render_action_bar(
             chrome.mobile_settings_open = false;
         }
 
-        // 3. Broadcast → toggle live mode.
+        // 3. Broadcast → live control, detach-aware: attached stops the
+        // stream; detached (background ingest while browsing) re-pins
+        // instantly; idle starts a stream.
         if icon_slot(
             ui,
             slot_w,
@@ -139,14 +142,16 @@ fn render_action_bar(
             egui_phosphor::regular::BROADCAST,
             icon_size,
             live_color,
-            is_live,
+            is_streaming,
         )
         .clicked()
         {
-            if is_live {
+            if is_attached {
                 live.stop(LiveExitReason::UserStopped);
                 playback.state.exit_live(crate::state::FreezeAt::Keep);
                 playback.state.playing = false;
+            } else if is_streaming {
+                state.push_command(crate::state::AppCommand::ReturnToLive);
             } else {
                 state.push_command(crate::state::AppCommand::StartLive);
                 playback.state.speed = PlaybackSpeed::Realtime;
