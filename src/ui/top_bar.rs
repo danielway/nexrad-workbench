@@ -167,24 +167,14 @@ fn draw_top_bar(
                 }
 
                 // Right-aligned cluster: right panel toggle, view/camera mode,
-                // and a ⋯ overflow menu that absorbs lower-priority chrome as
-                // the window narrows. Because the surviving inline items are
-                // chosen to fit each width tier, the cluster never collides
-                // with the left-anchored content above.
+                // and a ⋯ overflow menu that absorbs lower-priority chrome when
+                // it doesn't fit. The fit decision is driven by the *measured*
+                // width remaining after the (variable-width) left content, so
+                // items collapse exactly when there's no room — no fixed-width
+                // band where the cluster overlaps the left content.
+                let advanced = state.show_advanced();
+                let fit = decide_right_cluster(ui, advanced, ui.available_width());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let tier = state.width_tier;
-                    let help_inline = tier >= WidthTier::Full;
-                    let version_inline = tier >= WidthTier::Full;
-                    let pill_inline = tier >= WidthTier::Compact;
-                    // The Advanced view selector is four wide pills, so it only
-                    // stays inline at full width. The Basic selector is two
-                    // small pills and stays inline down to the Cramped tier.
-                    let view_pills_inline = if state.show_advanced() {
-                        tier >= WidthTier::Full
-                    } else {
-                        tier >= WidthTier::Compact
-                    };
-
                     // Right panel toggle — always the rightmost item.
                     if ui
                         .button(RichText::new(egui_phosphor::regular::SIDEBAR_SIMPLE).size(14.0))
@@ -194,21 +184,19 @@ fn draw_top_bar(
                         chrome.right_sidebar_visible = !chrome.right_sidebar_visible;
                     }
 
-                    // Overflow menu — holds whatever this tier demotes. Placed
-                    // just left of the panel toggle so it's always reachable.
-                    let any_overflow =
-                        !help_inline || !version_inline || !pill_inline || !view_pills_inline;
-                    if any_overflow {
+                    // Overflow menu — holds whatever didn't fit. Placed just
+                    // left of the panel toggle so it's always reachable.
+                    if fit.any_overflow() {
                         overflow_menu(ui, |ui| {
-                            if !view_pills_inline {
+                            if !fit.views {
                                 ui.label(RichText::new("View").size(11.0).weak());
                                 ui.horizontal(|ui| render_view_mode_pills(ui, state));
                             }
-                            if !pill_inline {
+                            if !fit.pill {
                                 ui.label(RichText::new("Mode").size(11.0).weak());
                                 ui.horizontal(|ui| render_ui_mode_pill(ui, state));
                             }
-                            if !help_inline
+                            if !fit.help
                                 && ui
                                     .button(format!(
                                         "{}  Keyboard shortcuts",
@@ -218,7 +206,7 @@ fn draw_top_bar(
                             {
                                 chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible;
                             }
-                            if !version_inline {
+                            if !fit.version {
                                 render_version_link(ui);
                             }
                         });
@@ -227,7 +215,7 @@ fn draw_top_bar(
                     // Inline survivors — right-to-left order matching the
                     // original full-width layout (help, mode pill, version,
                     // separator, view pills).
-                    if help_inline
+                    if fit.help
                         && ui
                             .button(RichText::new(egui_phosphor::regular::QUESTION).size(14.0))
                             .on_hover_text("Keyboard shortcuts (?)")
@@ -236,17 +224,17 @@ fn draw_top_bar(
                         chrome.shortcuts_help_visible = !chrome.shortcuts_help_visible;
                     }
 
-                    if pill_inline {
+                    if fit.pill {
                         // Basic / Advanced pill — toggles UI complexity. Same
                         // segmented-pill idiom as the view-mode selector.
                         render_ui_mode_pill(ui, state);
                     }
 
-                    if version_inline {
+                    if fit.version {
                         render_version_link(ui);
                     }
 
-                    if view_pills_inline {
+                    if fit.views {
                         ui.separator();
                         render_view_mode_pills(ui, state);
                     }
@@ -382,14 +370,12 @@ fn render_view_mode_pills(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// Version stamp — a frameless, clickable link that opens the GitHub releases
-/// page. Rendered inline in the top bar and, when space is tight, inside the
-/// overflow menu.
-fn render_version_link(ui: &mut egui::Ui) {
+/// The (possibly truncated) version string shown by [`render_version_link`].
+/// Factored out so the right-cluster fit logic can measure it.
+fn version_display_text() -> String {
     const MAX_LEN: usize = 24;
     let version = env!("NEXRAD_VERSION");
-    let full_version = env!("NEXRAD_VERSION_FULL");
-    let display = if version.len() > MAX_LEN {
+    if version.len() > MAX_LEN {
         let mut truncated = String::with_capacity(MAX_LEN + 3);
         for (i, ch) in version.char_indices() {
             if i >= MAX_LEN {
@@ -401,7 +387,116 @@ fn render_version_link(ui: &mut egui::Ui) {
         truncated
     } else {
         version.to_string()
+    }
+}
+
+/// Which demotable items in the top bar's right cluster fit inline this frame.
+/// Anything `false` is rendered inside the `⋯` overflow menu instead.
+#[derive(Clone, Copy)]
+struct RightClusterFit {
+    help: bool,
+    pill: bool,
+    version: bool,
+    views: bool,
+}
+
+impl RightClusterFit {
+    fn any_overflow(&self) -> bool {
+        !(self.help && self.pill && self.version && self.views)
+    }
+}
+
+/// Width a text/icon button occupies for `text` at `size`. Frame on or off
+/// doesn't change the footprint — the horizontal padding is the same — so this
+/// works for both the framed icon buttons and the frameless version link.
+fn button_width(ui: &egui::Ui, text: &str, size: f32) -> f32 {
+    let font = egui::FontId::proportional(size);
+    let galley_w = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font, Color32::WHITE)
+        .size()
+        .x;
+    galley_w + 2.0 * ui.spacing().button_padding.x
+}
+
+/// Decide which right-cluster items fit inline given the measured width
+/// remaining after the left content. Demotes lowest-priority items first
+/// (version → help → view pills → Basic/Advanced pill) until the cluster fits,
+/// accounting for the `⋯` button once anything is demoted. Slightly
+/// conservative (a small margin plus rounded-up estimates) so the bias is
+/// toward collapsing one frame early rather than ever overlapping.
+fn decide_right_cluster(ui: &egui::Ui, advanced: bool, avail: f32) -> RightClusterFit {
+    let sp = ui.spacing().item_spacing.x;
+    let icon = |g: &str| button_width(ui, g, 14.0);
+    let w_toggle = icon(egui_phosphor::regular::SIDEBAR_SIMPLE);
+    let w_menu = icon(egui_phosphor::regular::DOTS_THREE);
+    let w_help = icon(egui_phosphor::regular::QUESTION);
+    let w_pill = button_width(ui, "Basic", 13.0) + sp + button_width(ui, "Advanced", 13.0);
+    let w_version = button_width(ui, &version_display_text(), 11.0);
+
+    let view_labels: &[&str] = if advanced {
+        &["2D", "3D Site", "3D Planet", "3D Free"]
+    } else {
+        &["2D", "3D"]
     };
+    // A leading separator (a Separator widget plus its spacing) precedes the pills.
+    let mut w_views = 6.0 + sp;
+    for (i, label) in view_labels.iter().enumerate() {
+        if i > 0 {
+            w_views += sp;
+        }
+        w_views += button_width(ui, label, 13.0);
+    }
+
+    let mut fit = RightClusterFit {
+        help: true,
+        pill: true,
+        version: true,
+        views: true,
+    };
+    const MARGIN: f32 = 6.0;
+    loop {
+        let mut used = w_toggle;
+        if fit.any_overflow() {
+            used += sp + w_menu;
+        }
+        if fit.help {
+            used += sp + w_help;
+        }
+        if fit.pill {
+            used += sp + w_pill;
+        }
+        if fit.version {
+            used += sp + w_version;
+        }
+        if fit.views {
+            used += sp + w_views;
+        }
+        if used <= avail - MARGIN {
+            break;
+        }
+        // Demote the lowest-priority item still inline.
+        if fit.version {
+            fit.version = false;
+        } else if fit.help {
+            fit.help = false;
+        } else if fit.views {
+            fit.views = false;
+        } else if fit.pill {
+            fit.pill = false;
+        } else {
+            break; // nothing left to demote
+        }
+    }
+    fit
+}
+
+/// Version stamp — a frameless, clickable link that opens the GitHub releases
+/// page. Rendered inline in the top bar and, when space is tight, inside the
+/// overflow menu.
+fn render_version_link(ui: &mut egui::Ui) {
+    let full_version = env!("NEXRAD_VERSION_FULL");
+    let display = version_display_text();
 
     let response = ui.add(
         egui::Button::new(
