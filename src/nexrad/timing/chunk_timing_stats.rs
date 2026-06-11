@@ -14,9 +14,11 @@ const MAX_TIMING_SAMPLES: usize = super::TimingTuning::DEFAULT.max_timing_sample
 /// Bump when the on-disk shape changes so old caches are ignored rather than
 /// silently misinterpreted.
 ///
-/// v2 added `availability_lag_ms` to every sample; v1 payloads are discarded
-/// because the field can't be backfilled from S3 deltas alone.
-const PERSIST_SCHEMA_VERSION: u32 = 2;
+/// v2 added `availability_lag_ms`; v3 renamed `duration_ms` to
+/// `availability_interval_ms` and added `collection_interval_ms` — older
+/// payloads are discarded because the collection-domain samples can't be
+/// backfilled from S3 deltas alone.
+const PERSIST_SCHEMA_VERSION: u32 = 3;
 
 /// Characteristics of a chunk that affect timing.
 ///
@@ -93,15 +95,23 @@ fn channel_order(c: ChannelConfiguration) -> u8 {
 
 /// Statistics for a single timing sample.
 ///
-/// `duration` is the legacy S3-upload→S3-upload delta (AVAILABILITY-to-
-/// AVAILABILITY), used by the scheduler via `get_average_timing`.
-/// `availability_lag` is the empirical (upload − ACTUAL collection) delay
-/// for this chunk when the collection time could be recorded; used by the
-/// projector to estimate the availability-lag tail per characteristics.
-/// `None` indicates the sample predates collection-time plumbing.
+/// Each field is named by its time domain:
+/// - `availability_interval`: S3-upload→S3-upload delta (AVAILABILITY-to-
+///   AVAILABILITY) measured by the streaming loop at download time.
+///   Diagnostics-only — systematically biased by upload jitter, so it must
+///   NOT proxy for the collection interval.
+/// - `collection_interval`: delta between consecutive parsed radial
+///   collection-end times (COLLECTION-to-COLLECTION), attached once the
+///   worker decodes the chunk. Feeds the interval-estimate blend.
+/// - `availability_lag`: empirical (upload − ACTUAL collection) delay for
+///   this chunk; estimates the availability-lag tail per characteristics.
+///
+/// `None` on the optional fields indicates the observation never arrived
+/// for that sample (decode failed, predates plumbing, …).
 #[derive(Debug, Clone, Copy)]
 pub(super) struct TimingStat {
-    duration: Duration,
+    availability_interval: Duration,
+    collection_interval: Option<Duration>,
     availability_lag: Option<Duration>,
     attempts: usize,
 }
@@ -124,18 +134,21 @@ impl ChunkTimingStats {
     /// Add an S3-upload-delta timing sample for the given chunk characteristics.
     /// `availability_lag` is optional; pass `Some` when the per-chunk lag
     /// (S3 upload − ACTUAL collection time) can be computed from a successful
-    /// worker ingest, `None` when only the S3 delta is known.
+    /// worker ingest, `None` when only the S3 delta is known. The
+    /// collection-interval observation arrives later (worker decode) via
+    /// [`Self::attach_collection_interval`].
     pub fn add_timing(
         &mut self,
         characteristics: ChunkCharacteristics,
-        duration: Duration,
+        availability_interval: Duration,
         availability_lag: Option<Duration>,
         attempts: usize,
     ) {
         let entry = self.timings.entry(characteristics).or_default();
 
         entry.push_back(TimingStat {
-            duration,
+            availability_interval,
+            collection_interval: None,
             availability_lag,
             attempts,
         });
@@ -143,6 +156,22 @@ impl ChunkTimingStats {
         // Maintain the rolling window by removing oldest if we exceed the max
         if entry.len() > MAX_TIMING_SAMPLES {
             entry.pop_front();
+        }
+    }
+
+    /// Update the most recent sample for the given characteristics to attach
+    /// a COLLECTION-domain inter-chunk interval (delta of consecutive parsed
+    /// radial collection-end times). Recorded once the worker decodes the
+    /// chunk, mirroring [`Self::attach_availability_lag`].
+    pub fn attach_collection_interval(
+        &mut self,
+        characteristics: &ChunkCharacteristics,
+        collection_interval: Duration,
+    ) {
+        if let Some(entry) = self.timings.get_mut(characteristics) {
+            if let Some(latest) = entry.back_mut() {
+                latest.collection_interval = Some(collection_interval);
+            }
         }
     }
 
@@ -186,8 +215,9 @@ impl ChunkTimingStats {
         Some(median_ms as f64 / 1000.0)
     }
 
-    /// Get the average timing for the given chunk characteristics
-    pub(super) fn get_average_timing(
+    /// Average AVAILABILITY-domain (S3-upload→S3-upload) interval for the
+    /// given chunk characteristics. Diagnostics-only — see [`TimingStat`].
+    pub(super) fn average_availability_interval(
         &self,
         characteristics: &ChunkCharacteristics,
     ) -> Option<Duration> {
@@ -198,11 +228,33 @@ impl ChunkTimingStats {
 
             let total_millis: i64 = timings
                 .iter()
-                .map(|timing| timing.duration.num_milliseconds())
+                .map(|timing| timing.availability_interval.num_milliseconds())
                 .sum();
 
             let avg_millis = total_millis / timings.len() as i64;
             Some(Duration::milliseconds(avg_millis))
+        })
+    }
+
+    /// Average COLLECTION-domain inter-chunk interval for the given chunk
+    /// characteristics, over the samples that carry one. `None` when no
+    /// sample in the bucket has a collection observation yet — callers fall
+    /// back to pure physics, never to the availability deltas (that would
+    /// re-conflate the domains).
+    pub(super) fn average_collection_interval(
+        &self,
+        characteristics: &ChunkCharacteristics,
+    ) -> Option<Duration> {
+        self.timings.get(characteristics).and_then(|timings| {
+            let intervals_ms: Vec<i64> = timings
+                .iter()
+                .filter_map(|t| t.collection_interval.map(|d| d.num_milliseconds()))
+                .collect();
+            if intervals_ms.is_empty() {
+                return None;
+            }
+            let avg = intervals_ms.iter().sum::<i64>() / intervals_ms.len() as i64;
+            Some(Duration::milliseconds(avg))
         })
     }
 
@@ -228,7 +280,7 @@ impl ChunkTimingStats {
             .map(|characteristics| {
                 (
                     *characteristics,
-                    self.get_average_timing(characteristics),
+                    self.average_availability_interval(characteristics),
                     self.get_average_attempts(characteristics),
                 )
             })
@@ -260,8 +312,11 @@ impl ChunkTimingStats {
                     return None;
                 }
                 let n = q.len();
-                let mean_duration_ms =
-                    q.iter().map(|s| s.duration.num_milliseconds()).sum::<i64>() / n as i64;
+                let mean_duration_ms = q
+                    .iter()
+                    .map(|s| s.availability_interval.num_milliseconds())
+                    .sum::<i64>()
+                    / n as i64;
                 let mut lags: Vec<i64> = q
                     .iter()
                     .filter_map(|s| s.availability_lag.map(|d| d.num_milliseconds()))
@@ -320,7 +375,10 @@ impl ChunkTimingStats {
                     let samples = v
                         .iter()
                         .map(|t| TimingStatDto {
-                            duration_ms: t.duration.num_milliseconds(),
+                            availability_interval_ms: t.availability_interval.num_milliseconds(),
+                            collection_interval_ms: t
+                                .collection_interval
+                                .map(|d| d.num_milliseconds()),
                             availability_lag_ms: t.availability_lag.map(|d| d.num_milliseconds()),
                             attempts: t.attempts,
                         })
@@ -351,7 +409,8 @@ impl ChunkTimingStats {
                 VecDeque::with_capacity(samples.len().min(MAX_TIMING_SAMPLES));
             for sample in samples.into_iter().rev().take(MAX_TIMING_SAMPLES).rev() {
                 queue.push_back(TimingStat {
-                    duration: Duration::milliseconds(sample.duration_ms),
+                    availability_interval: Duration::milliseconds(sample.availability_interval_ms),
+                    collection_interval: sample.collection_interval_ms.map(Duration::milliseconds),
                     availability_lag: sample.availability_lag_ms.map(Duration::milliseconds),
                     attempts: sample.attempts,
                 });
@@ -382,7 +441,9 @@ struct ChunkCharacteristicsDto {
 
 #[derive(Serialize, Deserialize)]
 struct TimingStatDto {
-    duration_ms: i64,
+    availability_interval_ms: i64,
+    #[serde(default)]
+    collection_interval_ms: Option<i64>,
     #[serde(default)]
     availability_lag_ms: Option<i64>,
     attempts: usize,
@@ -462,5 +523,71 @@ fn channel_configuration_from_str(s: &str) -> Option<ChannelConfiguration> {
         "sz2_phase" => Some(ChannelConfiguration::SZ2Phase),
         "unknown_phase" => Some(ChannelConfiguration::UnknownPhase),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn bucket() -> ChunkCharacteristics {
+        ChunkCharacteristics {
+            chunk_type: ChunkType::Intermediate,
+            waveform_type: WaveformType::CS,
+            channel_configuration: ChannelConfiguration::ConstantPhase,
+            is_first_in_sweep: false,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn average_collection_interval_ignores_samples_without_one() {
+        let mut stats = ChunkTimingStats::new();
+        let b = bucket();
+        // Two availability-only samples → no collection average.
+        stats.add_timing(b, Duration::seconds(10), None, 1);
+        stats.add_timing(b, Duration::seconds(12), None, 1);
+        assert_eq!(stats.average_collection_interval(&b), None);
+        // Attach a collection interval to the latest sample → averaged over
+        // the carrying samples only.
+        stats.attach_collection_interval(&b, Duration::seconds(4));
+        assert_eq!(
+            stats.average_collection_interval(&b),
+            Some(Duration::seconds(4))
+        );
+        // The availability average is unaffected and stays in its own domain.
+        assert_eq!(
+            stats.average_availability_interval(&b),
+            Some(Duration::seconds(11))
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn persist_round_trips_collection_interval_at_current_version() {
+        let mut stats = ChunkTimingStats::new();
+        let b = bucket();
+        stats.add_timing(b, Duration::seconds(10), Some(Duration::seconds(3)), 2);
+        stats.attach_collection_interval(&b, Duration::seconds(9));
+
+        let json = stats.to_json().expect("serializes");
+        let back = ChunkTimingStats::from_json(&json).expect("parses at current version");
+        assert_eq!(
+            back.average_collection_interval(&b),
+            Some(Duration::seconds(9))
+        );
+        assert_eq!(
+            back.average_availability_interval(&b),
+            Some(Duration::seconds(10))
+        );
+        assert_eq!(back.median_availability_lag_secs(), Some(3.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn persist_rejects_previous_schema_version() {
+        // A v2 payload (pre-domain-split shape) must be discarded — its
+        // `duration_ms` samples can't be reinterpreted as collection
+        // intervals.
+        let v2 = r#"{"version":2,"timings":[[{"chunk_type":"I","waveform_type":"CS","channel_configuration":"constant_phase","is_first_in_sweep":false},[{"duration_ms":10000,"availability_lag_ms":null,"attempts":1}]]]}"#;
+        assert!(ChunkTimingStats::from_json(v2).is_none());
     }
 }

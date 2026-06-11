@@ -335,7 +335,9 @@ fn drain_pending_observations(
     while let Ok(obs) = observations_rx.try_recv() {
         match obs {
             crate::nexrad::ProjectorObservation::CollectionEndSecs(secs) => {
-                engine.borrow_mut().set_collection_anchor_secs(secs);
+                engine
+                    .borrow_mut()
+                    .set_collection_anchor(iter.current_id(), secs);
             }
             crate::nexrad::ProjectorObservation::AvailabilityLagSecs(lag_secs) => {
                 engine

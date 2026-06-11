@@ -151,7 +151,24 @@ impl Projector {
         self.filter
     }
 
-    pub fn record_chunk_collection_end_secs(&mut self, secs: f64) {
+    /// Record the collection-end time (parsed radial timestamp) of the
+    /// chunk the loop just ingested. When a previous collection end is
+    /// known for this volume, the delta is attached to the chunk's stats
+    /// bucket as a COLLECTION-domain interval sample — the historical term
+    /// of the interval-estimate blend. The anchor resets at volume
+    /// boundaries, so no sample ever spans two volumes.
+    pub fn record_collection_end(&mut self, chunk_id: &ChunkIdentifier, secs: f64) {
+        if let Some(prev) = self.latest_chunk_collection_end_secs {
+            let delta = secs - prev;
+            if delta > 0.0 {
+                if let Some(characteristics) = self.characteristics_for_sequence(chunk_id) {
+                    self.timing_stats.attach_collection_interval(
+                        &characteristics,
+                        ChronoDuration::milliseconds((delta * 1000.0) as i64),
+                    );
+                }
+            }
+        }
         self.latest_chunk_collection_end_secs = Some(secs);
     }
 

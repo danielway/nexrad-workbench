@@ -93,11 +93,13 @@ impl ProjectionEngine {
         }
     }
 
-    /// Set the ACTUAL collection-end anchor (parsed radial time). No-op when
-    /// unchanged.
-    pub fn set_collection_anchor_secs(&mut self, secs: f64) {
+    /// Set the ACTUAL collection-end anchor (parsed radial time) for the
+    /// chunk just ingested. No-op when unchanged. The chunk id keys the
+    /// COLLECTION-interval stats sample the projector derives from
+    /// consecutive anchors.
+    pub fn set_collection_anchor(&mut self, chunk_id: &ChunkIdentifier, secs: f64) {
         if self.projector.latest_chunk_collection_end_secs() != Some(secs) {
-            self.projector.record_chunk_collection_end_secs(secs);
+            self.projector.record_collection_end(chunk_id, secs);
             self.bump();
         }
     }
@@ -366,6 +368,18 @@ mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
+    fn chunk(sequence: usize) -> ChunkIdentifier {
+        let when = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        ChunkIdentifier::new(
+            "KDMX".to_string(),
+            nexrad_data::aws::realtime::VolumeIndex::new(1),
+            when.naive_utc(),
+            sequence,
+            nexrad_data::aws::realtime::ChunkType::Intermediate,
+            Some(when),
+        )
+    }
+
     #[wasm_bindgen_test]
     fn setters_bump_revision_only_on_change() {
         let mut eng = ProjectionEngine::new();
@@ -382,9 +396,9 @@ mod tests {
         assert_eq!(eng.input_revision, 2);
 
         // Collection anchor: first set bumps, repeat does not.
-        eng.set_collection_anchor_secs(1000.0);
+        eng.set_collection_anchor(&chunk(5), 1000.0);
         assert_eq!(eng.input_revision, 3);
-        eng.set_collection_anchor_secs(1000.0);
+        eng.set_collection_anchor(&chunk(5), 1000.0);
         assert_eq!(eng.input_revision, 3);
         // Reset clears it → bump; reset again is a no-op.
         eng.reset_collection_anchor();

@@ -92,10 +92,13 @@ impl IntervalEstimate {
     }
 }
 
-/// Single-hop interval estimate. When stats hold a historical average for
-/// `next_bucket`, blends physics and historical per `tuning.hist_weight`
-/// (default 70/30); otherwise returns pure physics. Retry budget is read
-/// from the same bucket's attempts average.
+/// Single-hop interval estimate. When stats hold a COLLECTION-domain
+/// historical average for `next_bucket` (deltas of parsed radial
+/// collection-end times), blends physics and historical per
+/// `tuning.hist_weight` (default 70/30); otherwise returns pure physics.
+/// AVAILABILITY-domain (S3 upload→upload) samples are never used as the
+/// historical term — upload jitter would bias the collection axis.
+/// Retry budget is read from the same bucket's attempts average.
 pub fn estimate_interval(
     prev: &ChunkMetadata,
     next: &ChunkMetadata,
@@ -110,7 +113,7 @@ pub fn estimate_interval(
     };
     let historical_secs = next_bucket
         .zip(stats)
-        .and_then(|(b, s)| s.get_average_timing(b))
+        .and_then(|(b, s)| s.average_collection_interval(b))
         .map(|d| d.num_milliseconds() as f64 / 1000.0);
 
     let (seconds, used_historical) = match historical_secs {
@@ -230,12 +233,27 @@ mod tests {
         // Historical samples deliberately far from physics so the blend
         // weight is observable.
         let mut stats = ChunkTimingStats::new();
-        stats.add_timing(bucket, Duration::seconds(30), None, 1);
+        stats.add_timing(bucket, Duration::seconds(99), None, 1);
 
         let physics_only =
             estimate_interval(&prev, &next, Some(&bucket), None, &TimingTuning::DEFAULT);
         assert!(!physics_only.used_historical);
 
+        // An AVAILABILITY-only sample (no collection observation attached)
+        // must NOT count as history — that would re-conflate the domains.
+        let availability_only = estimate_interval(
+            &prev,
+            &next,
+            Some(&bucket),
+            Some(&stats),
+            &TimingTuning::DEFAULT,
+        );
+        assert!(!availability_only.used_historical);
+        assert!((availability_only.seconds - physics_only.seconds).abs() < 1e-9);
+
+        // Once the worker reports collection ends, the COLLECTION-domain
+        // interval becomes the historical term.
+        stats.attach_collection_interval(&bucket, Duration::seconds(30));
         let default_blend = estimate_interval(
             &prev,
             &next,
