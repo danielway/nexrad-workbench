@@ -72,9 +72,9 @@ fn draw_top_bar(
                     chrome.left_sidebar_visible = !chrome.left_sidebar_visible;
                 }
 
-                // App title — dropped at the narrowest tier to make room; it's
-                // non-interactive so it's the first thing to go.
-                if state.width_tier >= WidthTier::Compact {
+                // App title — non-interactive, so it's the first thing to go:
+                // shown only at full width, dropped once space tightens.
+                if state.width_tier >= WidthTier::Full {
                     ui.label(
                         RichText::new("NEXRAD Workbench")
                             .strong()
@@ -176,9 +176,14 @@ fn draw_top_bar(
                     let help_inline = tier >= WidthTier::Full;
                     let version_inline = tier >= WidthTier::Full;
                     let pill_inline = tier >= WidthTier::Compact;
-                    // The Advanced view selector is four pills, so it only stays
-                    // inline at the narrowest tier when Basic (two pills).
-                    let view_pills_inline = tier >= WidthTier::Compact || !state.show_advanced();
+                    // The Advanced view selector is four wide pills, so it only
+                    // stays inline at full width. The Basic selector is two
+                    // small pills and stays inline down to the Cramped tier.
+                    let view_pills_inline = if state.show_advanced() {
+                        tier >= WidthTier::Full
+                    } else {
+                        tier >= WidthTier::Compact
+                    };
 
                     // Right panel toggle — always the rightmost item.
                     if ui

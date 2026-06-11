@@ -247,12 +247,15 @@ pub struct AppState {
 /// smallest viewport, which is what structurally prevents overlap.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum WidthTier {
-    /// `< 640px` (down to the ~500px floor before mobile takes over):
-    /// aggressive overflow, timestamp compacted to time-only.
+    /// `< 720px` (down to the ~500px floor before mobile takes over):
+    /// aggressive overflow — title dropped, status hidden, the Basic/Advanced
+    /// pill and all view pills demoted, timestamp compacted to time-only.
     Cramped,
-    /// `640..860px`: moderate overflow (help/version/UTC/loop demoted).
+    /// `720..1080px`: moderate overflow — help/version/UTC/loop demoted, and
+    /// the wide four-pill Advanced view selector folded into the menu.
     Compact,
-    /// `>= 860px`: full desktop layout, nothing collapsed.
+    /// `>= 1080px`: full desktop layout, nothing collapsed. The ceiling leaves
+    /// headroom for a wide NWS alerts chip (many active warnings/watches).
     #[default]
     Full,
 }
@@ -470,9 +473,9 @@ impl AppState {
         // controls into overflow menus before they collide. Only meaningful when
         // not mobile (mobile uses its own chrome), but computing it
         // unconditionally is harmless and keeps the field always current.
-        self.width_tier = if width >= 860.0 {
+        self.width_tier = if width >= 1080.0 {
             WidthTier::Full
-        } else if width >= 640.0 {
+        } else if width >= 720.0 {
             WidthTier::Compact
         } else {
             WidthTier::Cramped
