@@ -5,7 +5,7 @@
 //! [`super::streaming_state::StreamingState::build_plan`] and consumed by:
 //!
 //! - The streaming loop's sleep target (via [`StreamingPlan::next_target`]'s
-//!   [`ChunkForecast::poll_at_secs`]).
+//!   [`ChunkProjectedTimes::poll_at_secs`]).
 //! - The timeline's countdown and future-chunk markers.
 //! - The VCP forecast panel.
 //! - Per-chunk arrival diagnostics ([`crate::state::ChunkArrivalStat`]).
@@ -22,7 +22,7 @@
 
 use super::streaming_filter::StreamingFilter;
 use super::timing::{ScanTimingProjection, SchedulerPath};
-use super::{ChunkForecast, ChunkProjectionInfo};
+use super::{ChunkProjectedTimes, ChunkProjectionInfo};
 
 /// Canonical projection of the real-time stream's near future.
 ///
@@ -94,7 +94,7 @@ impl StreamingPlan {
         // Per-(volume_offset, sequence) forecast lookup. Built in one pass
         // over the projection chunks so structural metadata can later look
         // up its forecast in O(1).
-        let mut forecasts: HashMap<(u8, usize), ChunkForecast> = HashMap::new();
+        let mut forecasts: HashMap<(u8, usize), ChunkProjectedTimes> = HashMap::new();
         let mut has_next_volume = false;
         for c in projection.chunks() {
             let key = (c.volume_offset(), c.sequence());
@@ -105,7 +105,7 @@ impl StreamingPlan {
             };
             forecasts.insert(
                 key,
-                ChunkForecast {
+                ChunkProjectedTimes {
                     collection_time_secs: c.projected_collection_time_secs(),
                     available_at_secs: c.projected_available_at().timestamp_millis() as f64
                         / 1000.0,
@@ -128,7 +128,7 @@ impl StreamingPlan {
                 azimuth_rate_dps: meta.azimuth_rate_dps(),
                 chunk_index_in_sweep: meta.chunk_index_in_sweep(),
                 chunks_in_sweep: meta.chunks_in_sweep(),
-                forecast: forecasts.remove(&(volume_offset, meta.sequence())),
+                projected: forecasts.remove(&(volume_offset, meta.sequence())),
             };
 
         let current_volume_chunks: Vec<ChunkProjectionInfo> = current_volume_chunk_meta
@@ -148,7 +148,7 @@ impl StreamingPlan {
         let current_volume_end_collection_secs = current_volume_chunks
             .iter()
             .rev()
-            .find_map(|c| c.forecast.as_ref().map(|f| f.collection_time_secs));
+            .find_map(|c| c.projected.as_ref().map(|f| f.collection_time_secs));
 
         // Immediate next download: first projection chunk the filter accepts.
         // Start chunks (no elevation) are always accepted. Stored as a
@@ -216,7 +216,7 @@ impl StreamingPlan {
     /// `None` when no next target exists.
     pub fn next_available_in_secs(&self, now_secs: f64) -> Option<f64> {
         self.next_target()
-            .and_then(|t| t.forecast.as_ref())
+            .and_then(|t| t.projected.as_ref())
             .map(|f| (f.available_at_secs - now_secs).max(0.0))
     }
 
@@ -225,7 +225,7 @@ impl StreamingPlan {
     #[allow(dead_code)] // Public-surface accessor; UI debug overlay consumes it.
     pub fn next_poll_in_secs(&self, now_secs: f64) -> Option<f64> {
         self.next_target()
-            .and_then(|t| t.forecast.as_ref())
+            .and_then(|t| t.projected.as_ref())
             .map(|f| (f.poll_at_secs - now_secs).max(0.0))
     }
 
@@ -257,7 +257,7 @@ mod tests {
             azimuth_rate_dps: 0.0,
             chunk_index_in_sweep: 0,
             chunks_in_sweep: 3,
-            forecast: None,
+            projected: None,
         }
     }
 

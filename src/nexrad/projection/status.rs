@@ -63,7 +63,7 @@ pub fn published_in_inventory(
 
 /// Inputs to [`build_sweeps`], bundled to keep the signature manageable.
 pub struct SweepBuildCtx<'a> {
-    /// Every chunk of the current volume (past chunks carry `forecast: None`).
+    /// Every chunk of the current volume (past chunks carry `projected: None`).
     pub current_chunks: &'a [ChunkProjectionInfo],
     /// Every chunk of the next volume, when the projection extends into it.
     pub next_chunks: Option<&'a [ChunkProjectionInfo]>,
@@ -115,7 +115,7 @@ fn group_sweeps(chunks: &[ChunkProjectionInfo]) -> Vec<(u8, Agg)> {
             continue;
         };
         let elev = elev as u8;
-        let Some(f) = c.forecast.as_ref() else {
+        let Some(f) = c.projected.as_ref() else {
             continue;
         };
         aggs.entry(elev)
@@ -214,7 +214,7 @@ pub fn cascade_current_sweeps(inp: &CascadeInputs) -> Vec<SweepBounds> {
                 0,
             ));
             entry.3 += 1;
-            if let Some(t) = chunk.forecast.as_ref().map(|f| f.collection_time_secs) {
+            if let Some(t) = chunk.projected.as_ref().map(|f| f.collection_time_secs) {
                 entry.0 = entry.0.min(t);
                 entry.1 = entry.1.max(t);
             }
@@ -555,7 +555,7 @@ pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nexrad::realtime::ChunkForecast;
+    use crate::nexrad::realtime::ChunkProjectedTimes;
     use crate::nexrad::timing::{IntervalCase, PhysicsBreakdown, SchedulerPath};
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -563,8 +563,8 @@ mod tests {
         VolumeIndex::new(n)
     }
 
-    fn forecast(collection: f64, available: f64) -> ChunkForecast {
-        ChunkForecast {
+    fn forecast(collection: f64, available: f64) -> ChunkProjectedTimes {
+        ChunkProjectedTimes {
             collection_time_secs: collection,
             available_at_secs: available,
             poll_at_secs: available + 1.0,
@@ -581,14 +581,18 @@ mod tests {
         }
     }
 
-    fn chunk(seq: usize, elev: Option<usize>, fc: Option<ChunkForecast>) -> ChunkProjectionInfo {
+    fn chunk(
+        seq: usize,
+        elev: Option<usize>,
+        fc: Option<ChunkProjectedTimes>,
+    ) -> ChunkProjectionInfo {
         ChunkProjectionInfo {
             sequence: seq,
             elevation_number: elev,
             azimuth_rate_dps: 20.0,
             chunk_index_in_sweep: 0,
             chunks_in_sweep: 3,
-            forecast: fc,
+            projected: fc,
         }
     }
 

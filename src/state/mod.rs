@@ -64,8 +64,8 @@ pub use theme::ThemeMode;
 pub use timeline_view::{LiveOverlayContext, TimelineView};
 pub use vcp::get_vcp_definition;
 pub use vcp_forecast::{
-    derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord, SweepForecast,
-    SweepStatus, SweepTiming, VolumeForecastSnapshot, WaitResolution,
+    derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord,
+    ForecastTimingLabel, SweepForecast, SweepStatus, VolumeForecastSnapshot, WaitResolution,
 };
 pub use viz::{
     DisplayedSweep, ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct,

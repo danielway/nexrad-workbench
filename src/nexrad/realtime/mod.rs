@@ -50,13 +50,13 @@ impl From<&crate::state::ElevationSelection> for StreamingFilter {
 /// Projected timing & diagnostics for a single future chunk.
 ///
 /// Present iff the parent [`ChunkProjectionInfo`] describes a chunk that
-/// hasn't been observed yet — past chunks have `forecast: None`. Carries
+/// hasn't been observed yet — past chunks have `projected: None`. Carries
 /// the diagnostic bundle the projector computed for this chunk so
 /// downstream surfaces (per-sweep confidence display, prediction-error
 /// attribution, the diagnostics modal) can read attribution data per chunk
 /// rather than only for the immediate next download target.
 #[derive(Clone, Debug)]
-pub struct ChunkForecast {
+pub struct ChunkProjectedTimes {
     /// COLLECTION category: projected Unix-seconds time the radar physically
     /// emits/receives for this chunk.
     pub collection_time_secs: f64,
@@ -85,7 +85,7 @@ pub struct ChunkForecast {
 /// Projected timing and structural info for a single chunk in the volume.
 ///
 /// Combines structural metadata from `ChunkMetadata` (available for every
-/// chunk in the volume) with an optional `forecast` ([`ChunkForecast`])
+/// chunk in the volume) with an optional `forecast` ([`ChunkProjectedTimes`])
 /// that's present iff the chunk is in the future from the streaming loop's
 /// anchor. Past chunks carry only structural fields.
 #[derive(Clone, Debug)]
@@ -103,7 +103,7 @@ pub struct ChunkProjectionInfo {
     /// Projected timing & projector diagnostics. `Some` iff this chunk is
     /// in the future (the projector emitted a [`super::timing::ChunkProjection`]
     /// for it); `None` for past chunks.
-    pub forecast: Option<ChunkForecast>,
+    pub projected: Option<ChunkProjectedTimes>,
 }
 
 /// Result type for realtime streaming events.

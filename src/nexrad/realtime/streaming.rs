@@ -723,10 +723,10 @@ pub(super) async fn streaming_loop(
     let mut none_retries: u32 = 0;
     let mut cur_predicted_at: Option<f64> = None; // absolute Unix seconds
     let mut cur_last_empty_at: Option<f64> = None;
-    // Captures `target.forecast.clone()` on a chunk's first attempt so retry
+    // Captures `target.projected.clone()` on a chunk's first attempt so retry
     // iterations don't overwrite it with a fresh (post-anchor-advance)
     // projection. Read at success time into the per-chunk arrival stat.
-    let mut cur_forecast: Option<super::ChunkForecast> = None;
+    let mut cur_forecast: Option<super::ChunkProjectedTimes> = None;
     let mut cur_predicted_wait_secs: Option<f64> = None;
     // How the wait before this chunk's fetch resolved. Set by the adaptive
     // cross-volume wait helper (early-fire / re-anchor); stays
@@ -814,7 +814,7 @@ pub(super) async fn streaming_loop(
         let time_until_next_opt = plan
             .as_ref()
             .and_then(|p| p.next_target())
-            .and_then(|t| t.forecast.as_ref())
+            .and_then(|t| t.projected.as_ref())
             .map(|f| std::time::Duration::from_secs_f64((f.poll_at_secs - now_secs).max(0.0)));
 
         // Capture the prediction once per chunk so retry iterations don't
@@ -822,7 +822,7 @@ pub(super) async fn streaming_loop(
         let is_first_iter_for_chunk = cur_predicted_at.is_none();
         if is_first_iter_for_chunk {
             if let Some(plan_ref) = plan.as_ref() {
-                if let Some(forecast) = plan_ref.next_target().and_then(|t| t.forecast.as_ref()) {
+                if let Some(forecast) = plan_ref.next_target().and_then(|t| t.projected.as_ref()) {
                     cur_predicted_at = Some(forecast.available_at_secs);
                     cur_predicted_wait_secs = Some(forecast.poll_at_secs - now_secs);
                     cur_forecast = Some(forecast.clone());
@@ -1524,7 +1524,7 @@ async fn wait_for_next_target(
             .projection(cursor_anchor, now2)
             .and_then(|p| {
                 p.next_target()
-                    .and_then(|t| t.forecast.as_ref())
+                    .and_then(|t| t.projected.as_ref())
                     .map(|f| f.poll_at_secs)
             });
         if let Some(new_poll_at) = new_poll {

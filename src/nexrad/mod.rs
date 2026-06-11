@@ -53,7 +53,7 @@ pub use network_monitor::{
 };
 pub use persistence_manager::PersistenceManager;
 pub use projector::ProjectorObservation;
-pub use realtime::{ChunkForecast, ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
+pub use realtime::{ChunkProjectedTimes, ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
 pub use render_coordinator::RenderCoordinator;
 pub use streaming_plan::StreamingPlan;
 pub use types::{DownloadResult, ScanMetadata};

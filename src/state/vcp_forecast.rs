@@ -13,7 +13,7 @@
 /// accuracy-tuning work that will label partially-derived bounds.
 #[derive(Clone, Debug, PartialEq)]
 #[allow(dead_code)] // Unproduced variants are display vocabulary (see above).
-pub enum SweepTiming {
+pub enum ForecastTimingLabel {
     Observed,
     Anchored,
     Estimated,
@@ -84,7 +84,7 @@ pub struct SweepForecast {
     pub actual_end: Option<f64>,
     pub actual_chunks: Option<u32>,
 
-    pub timing_source: Option<SweepTiming>,
+    pub timing_source: Option<ForecastTimingLabel>,
     pub status: SweepStatus,
 }
 
@@ -194,7 +194,7 @@ pub fn derive_volume_forecast(
                     chunk.azimuth_rate_dps,
                 ));
                 entry.2 += 1;
-                if let Some(t) = chunk.forecast.as_ref().map(|f| f.collection_time_secs) {
+                if let Some(t) = chunk.projected.as_ref().map(|f| f.collection_time_secs) {
                     entry.0 = entry.0.min(t);
                     entry.1 = entry.1.max(t);
                 }
@@ -259,7 +259,7 @@ pub fn derive_volume_forecast(
             Some(meta) => (
                 Some(meta.start),
                 Some(meta.end),
-                Some(SweepTiming::Observed),
+                Some(ForecastTimingLabel::Observed),
                 SweepStatus::Complete,
             ),
             None => (None, None, None, SweepStatus::Future),

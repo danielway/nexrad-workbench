@@ -296,7 +296,7 @@ impl ProjectionEngine {
             let current_scan_start = self.current_scan_start_secs.unwrap_or_else(|| {
                 plan.current_volume_chunks
                     .iter()
-                    .find_map(|c| c.forecast.as_ref().map(|f| f.collection_time_secs))
+                    .find_map(|c| c.projected.as_ref().map(|f| f.collection_time_secs))
                     .unwrap_or(now_secs)
             });
             let current_volume = *anchor.volume();

@@ -11,7 +11,9 @@ use super::vcp_forecast_modal::{
     fmt_elev, fmt_physics, format_anchor_tally, format_path_tally, format_time,
     scheduler_path_tally, stats_on, total_empty_polls,
 };
-use crate::state::{BucketKey, ChunkArrivalStat, SweepStatus, SweepTiming, VolumeForecastSnapshot};
+use crate::state::{
+    BucketKey, ChunkArrivalStat, ForecastTimingLabel, SweepStatus, VolumeForecastSnapshot,
+};
 use std::fmt::Write as _;
 
 pub fn serialize_forecast(
@@ -104,9 +106,9 @@ pub fn serialize_forecast(
                 _ => "—".into(),
             },
             match s.timing_source {
-                Some(SweepTiming::Observed) => "Obs",
-                Some(SweepTiming::Anchored) => "Anch",
-                Some(SweepTiming::Estimated) => "Est",
+                Some(ForecastTimingLabel::Observed) => "Obs",
+                Some(ForecastTimingLabel::Anchored) => "Anch",
+                Some(ForecastTimingLabel::Estimated) => "Est",
                 None => "—",
             },
             match s.status {

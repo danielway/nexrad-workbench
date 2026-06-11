@@ -17,7 +17,7 @@ use super::colors::ui as ui_colors;
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::nexrad::timing::{AnchorSource, IntervalCase, PhysicsBreakdown, SchedulerPath};
 use crate::state::{
-    AppState, BucketKey, ChunkArrivalStat, SweepForecast, SweepStatus, SweepTiming,
+    AppState, BucketKey, ChunkArrivalStat, ForecastTimingLabel, SweepForecast, SweepStatus,
     VolumeForecastSnapshot,
 };
 use eframe::egui::{self, RichText, Vec2};
@@ -788,9 +788,9 @@ fn grid_row(
     mono_label(
         ui,
         match s.timing_source {
-            Some(SweepTiming::Observed) => "Obs",
-            Some(SweepTiming::Anchored) => "Anch",
-            Some(SweepTiming::Estimated) => "Est",
+            Some(ForecastTimingLabel::Observed) => "Obs",
+            Some(ForecastTimingLabel::Anchored) => "Anch",
+            Some(ForecastTimingLabel::Estimated) => "Est",
             None => "—",
         },
         label_color,
