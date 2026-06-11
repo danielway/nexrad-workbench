@@ -1058,19 +1058,21 @@ pub(super) async fn streaming_loop(
                     cache_volume_number(&site_id, *chunk.identifier.volume());
                     emitted_sequences_this_volume.clear();
 
-                    // Install the new volume's VCP: rebuild the navigation
-                    // mapper (StreamingState) AND feed the shared engine
-                    // (new VCP structure + reset the collection anchor). Bound
-                    // inventory memory to the current + next volume.
+                    // Volume boundary: rebuild the navigation mapper
+                    // (StreamingState) AND hand the shared engine its
+                    // stream-side boundary in one call (new VCP, anchor
+                    // reset, inventory bound, scan start).
                     if let Some(vcp) = iter.install_vcp_from_start(&chunk.chunk) {
-                        let mut eng = engine.borrow_mut();
-                        eng.set_vcp(vcp);
-                        eng.reset_collection_anchor();
-                        eng.retain_inventory_from(*chunk.identifier.volume());
+                        engine.borrow_mut().begin_volume(
+                            vcp,
+                            current_scan_start_secs.0,
+                            *chunk.identifier.volume(),
+                        );
+                    } else {
+                        engine
+                            .borrow_mut()
+                            .set_current_scan_start_secs(current_scan_start_secs.0);
                     }
-                    engine
-                        .borrow_mut()
-                        .set_current_scan_start_secs(current_scan_start_secs.0);
                 }
 
                 chunks_in_volume += 1;

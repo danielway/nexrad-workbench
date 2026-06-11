@@ -85,6 +85,30 @@ impl ProjectionEngine {
         self.bump();
     }
 
+    /// Stream-side volume boundary, called when the loop ingests a Start
+    /// chunk: install the new volume's VCP, clear the collection anchor
+    /// (the previous volume's last-radial time no longer applies), bound
+    /// inventory memory to the current + next volume, and set the scan
+    /// start that anchors the live overlay.
+    ///
+    /// This is one of the engine's two boundary phases. The other —
+    /// [`Self::reset_volume_observations`] — is the *ingest-side* boundary,
+    /// intentionally later: the main thread seals the diagnostics record
+    /// from the observations before resetting them (seal-before-reset)
+    /// once the worker reports the volume complete, or when the session
+    /// stops.
+    pub fn begin_volume(
+        &mut self,
+        vcp: volume_coverage_pattern::Message<'static>,
+        scan_start_secs: f64,
+        keep_inventory_from: VolumeIndex,
+    ) {
+        self.set_vcp(vcp);
+        self.reset_collection_anchor();
+        self.retain_inventory_from(keep_inventory_from);
+        self.set_current_scan_start_secs(scan_start_secs);
+    }
+
     /// Set the active streaming filter. No-op (no bump) when unchanged.
     pub fn set_filter(&mut self, filter: StreamingFilter) {
         if self.projector.filter() != filter {
