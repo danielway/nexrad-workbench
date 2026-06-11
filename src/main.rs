@@ -72,6 +72,22 @@ const LOOKBACK_SPAN_SECS: f64 = (LOOKBACK_FRAMES as f64 + 1.0) * FALLBACK_SCAN_D
 /// 60 s allows for minor clock drift and timestamp rounding.
 const SCAN_CACHE_MATCH_TOLERANCE_SECS: i64 = 60;
 
+/// A finalized timeline selection at or under this span downloads its scans
+/// immediately; a longer span first asks for confirmation (the bulk download
+/// could be large). 6 hours ≈ 70+ volumes — a sensible "are you sure" line.
+const SELECTION_BULK_CONFIRM_SECS: f64 = 6.0 * 3600.0;
+
+/// Hard backstop for the selection-fetch pump: if a date's listing never
+/// arrives within this window, the pump disarms rather than staying armed
+/// forever. Guarantees termination regardless of network outcome.
+const SELECTION_FETCH_DEADLINE_SECS: f64 = 30.0;
+
+/// Approximate compressed bytes per volume scan, used only to estimate a
+/// selection's download size in the confirm modal. `ArchiveFileMeta.size` is
+/// not populated from S3 listings, so this is a rough, tunable constant rather
+/// than a measured value.
+const AVG_SCAN_BYTES: u64 = 5 * 1024 * 1024;
+
 /// How long a live stream keeps ingesting after the playhead detaches (the
 /// user scrubbed away to browse) before it auto-stops. Bounds background S3
 /// chunk polling while still making "return to live" instant for any
@@ -727,6 +743,11 @@ impl eframe::App for WorkbenchApp {
         // populated for whatever date range the user is looking at, so the
         // timeline itself is the browsing surface.
         self.pump_visible_listings(ctx);
+        // Selection = the fetch: resolve any range the user just selected
+        // (arm the bulk fetch directly, or open the confirm modal if the span
+        // is large), then pump the armed target's scans into the queue.
+        self.resolve_selection_fetch_gate();
+        self.pump_selection_fetch(ctx);
         self.sync_prev_sweep_texture();
         self.request_render_if_needed();
         self.update_network_stats();

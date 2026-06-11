@@ -33,6 +33,7 @@ mod mping_modal;
 mod network_panel;
 mod overflow_menu;
 mod playback_controls;
+mod range_download_modal;
 mod right_panel;
 mod shortcuts;
 mod site_modal;

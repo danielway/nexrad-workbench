@@ -23,6 +23,9 @@ pub(super) fn handle_timeline_interaction(
             playback.state.set_selection(current_pos, clicked_ts);
             maybe_anchor_to_live(live, playback, frame.now_secs);
             playback.state.apply_selection_as_bounds();
+            if let Some(range) = playback.state.selection_range() {
+                state.selection_just_finalized = Some(range);
+            }
             let duration_mins = (clicked_ts - current_pos).abs() / 60.0;
             log::debug!("Shift+click range: {:.0} minutes", duration_mins);
         }
@@ -44,6 +47,7 @@ pub(super) fn handle_timeline_interaction(
         maybe_anchor_to_live(live, playback, frame.now_secs);
         playback.state.apply_selection_as_bounds();
         if let Some((start, end)) = playback.state.selection_range() {
+            state.selection_just_finalized = Some((start, end));
             log::debug!("Selected time range: {:.0} minutes", (end - start) / 60.0);
         }
     }

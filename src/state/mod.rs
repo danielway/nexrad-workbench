@@ -148,6 +148,12 @@ pub struct AppState {
     /// UI code pushes commands; the main update loop drains and dispatches them.
     pub commands: std::collections::VecDeque<AppCommand>,
 
+    /// A timeline range selection finalized this frame (shift+click/drag),
+    /// snapshotted as `(start, end)` seconds. The main update loop consumes it,
+    /// applies the duration gate, and either arms the bulk-fetch pump or opens
+    /// the confirm modal. `None` when no selection was just finalized.
+    pub selection_just_finalized: Option<(f64, f64)>,
+
     /// Whether the next timeline load should auto-position the playback cursor.
     /// Set to true on initial startup and site changes; false for download-triggered refreshes.
     pub auto_position_on_timeline_load: bool,

@@ -25,6 +25,11 @@ pub struct Chrome {
     pub site_modal_open: bool,
     /// Whether the wipe-all-data confirmation modal is open.
     pub wipe_modal_open: bool,
+    /// When set, the range-download confirm modal is open and carries the
+    /// pending `(start, end)` selection range to bulk-download on confirm.
+    /// `Some` doubles as the open flag; the range is the modal's own snapshot,
+    /// independent of the live selection.
+    pub range_download_modal: Option<(f64, f64)>,
     /// Whether the stats/perf modal is open.
     pub stats_detail_open: bool,
     /// Whether the VCP forecast diagnostics modal is open.

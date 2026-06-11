@@ -41,6 +41,24 @@ pub struct Acquisition {
     /// Per-(site, date) wall-clock ms before which a failed listing may be
     /// retried — keeps a failing day from being re-LISTed at the pump rate.
     pub listing_backoff: std::collections::HashMap<(String, chrono::NaiveDate), f64>,
+    /// A timeline range the user explicitly selected for bulk download (the
+    /// "selection = the fetch" contract). `None` when idle. Set at selection
+    /// finalization (or via the confirm modal for long spans) and drained by
+    /// `pump_selection_fetch`, which fetches every scan in the range.
+    pub selection_fetch_target: Option<SelectionFetchTarget>,
+}
+
+/// A committed bulk-download request for a selected timeline range.
+///
+/// `armed_at_secs` records when the request was armed so the pump can disarm
+/// after [`crate::SELECTION_FETCH_DEADLINE_SECS`] if a listing never arrives —
+/// the hard backstop that keeps the pump from staying armed forever.
+#[derive(Clone, Copy, Debug)]
+pub struct SelectionFetchTarget {
+    /// Selected `(start, end)` in seconds-since-epoch (normalized start <= end).
+    pub range: (f64, f64),
+    /// Wall-clock "now" (seconds) when this request was armed.
+    pub armed_at_secs: f64,
 }
 
 impl Acquisition {
@@ -57,6 +75,7 @@ impl Acquisition {
             lookback_backfill_next_ms: 0.0,
             visible_listing_next_ms: 0.0,
             listing_backoff: std::collections::HashMap::new(),
+            selection_fetch_target: None,
         }
     }
 }
