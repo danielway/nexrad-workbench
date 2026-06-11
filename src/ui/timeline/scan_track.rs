@@ -7,9 +7,8 @@
 //! and the tooltip, not by hue.
 
 use super::strokes::{stroke_dashed_rect, DashedBorder};
-use super::DetailLevel;
+use super::{DetailLevel, TimelineFrame};
 use crate::data::ScanCompleteness;
-use crate::state::TimelineView;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Painter, Pos2, Rect, Stroke, StrokeKind};
 
@@ -39,20 +38,13 @@ pub(super) fn draw_available_block(painter: &Painter, block: Rect, dark: bool) {
 }
 
 /// Render scan blocks on the scan track.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_scan_track(
-    painter: &Painter,
-    rect: &Rect,
-    view: &TimelineView<'_>,
-    view_start: f64,
-    view_end: f64,
-    zoom: f64,
-    detail_level: DetailLevel,
-    dark: bool,
-) {
-    let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
+pub(super) fn render_scan_track(painter: &Painter, frame: &TimelineFrame<'_>) {
+    let rect = &frame.rects.scan;
+    let view = &frame.view;
+    let (view_start, view_end, dark) = (frame.view_start, frame.view_end, frame.dark);
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
 
-    match detail_level {
+    match frame.detail {
         DetailLevel::Coverage => {
             // Draw solid regions for each contiguous time range
             for range in view.cache().time_ranges() {
@@ -146,25 +138,18 @@ pub(super) fn render_scan_track(
 }
 
 /// Render shadow scan boundaries from the archive index as first-class
-/// "available, not downloaded" blocks. The [`TimelineView`] supplies the
-/// dedup against already-downloaded scans.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_shadow_boundaries(
-    painter: &Painter,
-    rect: &Rect,
-    view: &TimelineView<'_>,
-    view_start: f64,
-    view_end: f64,
-    zoom: f64,
-    detail_level: DetailLevel,
-    dark: bool,
-) {
-    let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
+/// "available, not downloaded" blocks. The view supplies the dedup against
+/// already-downloaded scans.
+pub(super) fn render_shadow_boundaries(painter: &Painter, frame: &TimelineFrame<'_>) {
+    let rect = &frame.rects.scan;
+    let view = &frame.view;
+    let dark = frame.dark;
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
 
-    let view_start_i64 = view_start as i64;
-    let view_end_i64 = view_end as i64;
+    let view_start_i64 = frame.view_start as i64;
+    let view_end_i64 = frame.view_end as i64;
 
-    match detail_level {
+    match frame.detail {
         DetailLevel::Coverage => {
             // At solid detail, merge all visible shadow boundaries into contiguous regions
             let visible: Vec<_> = view

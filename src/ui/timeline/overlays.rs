@@ -1,8 +1,8 @@
 //! Overlay rendering: download ghosts, realtime progress, and saved events.
 
 use super::strokes::{stroke_dashed_rect, DashedBorder, DashedEdges};
-use super::DetailLevel;
-use crate::state::{LiveOverlayContext, SavedEvents, TimelineView};
+use super::{DetailLevel, TimelineFrame};
+use crate::state::{LiveOverlayContext, SavedEvents};
 use crate::ui::colors::acquisition as acq_colors;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
@@ -13,22 +13,19 @@ use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
 /// - Queued: dotted outline in the drawer's QUEUED blue-gray
 /// - Downloading/ingesting: pulsing fill in the drawer's ACTIVE blue
 /// - Recently completed: brief flash in the drawer's COMPLETED green
-#[allow(clippy::too_many_arguments)]
 pub(super) fn render_download_ghosts(
     painter: &Painter,
-    rect: &Rect,
+    frame: &TimelineFrame<'_>,
     progress: &crate::state::DownloadProgress,
-    view: &TimelineView<'_>,
-    view_start: f64,
-    view_end: f64,
-    zoom: f64,
-    detail_level: DetailLevel,
     anim_time: f64,
-    now_wall: f64,
 ) {
-    let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
+    let rect = &frame.rects.scan;
+    let view = &frame.view;
+    let (view_start, view_end) = (frame.view_start, frame.view_end);
+    let now_wall = frame.now_secs;
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
 
-    if detail_level == DetailLevel::Coverage {
+    if frame.detail == DetailLevel::Coverage {
         // At solid detail, combine all ghosts into one region
         let all: Vec<_> = progress
             .pending_scans
@@ -170,24 +167,20 @@ pub(super) fn render_download_ghosts(
 ///
 ///   Each non-complete sweep shows chunk subdivision where downloaded chunks
 ///   are clipped to the sweep's time range.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn render_realtime_progress(
     painter: &Painter,
-    scan_rect: &Rect,
-    sweep_rect: Option<&Rect>,
+    frame: &TimelineFrame<'_>,
     model: &crate::nexrad::projection::ScanProjection,
     ctx: &LiveOverlayContext,
-    view_start: f64,
-    view_end: f64,
-    zoom: f64,
     _anim_time: f64,
-    now_secs: f64,
-    selected_elevation_number: Option<u8>,
-    active_sweep: Option<(f64, u8)>,
-    prev_active_sweep: Option<(f64, u8)>,
 ) {
-    let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
-    let now = now_secs;
+    let scan_rect = &frame.rects.scan;
+    let sweep_rect = frame.rects.sweep.as_ref();
+    let (view_start, view_end) = (frame.view_start, frame.view_end);
+    let selected_elevation_number = frame.view.elevation_filter();
+    let (active_sweep, prev_active_sweep) = (frame.active_sweep, frame.prev_active_sweep);
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
+    let now = frame.now_secs;
 
     let vol_start = model.volume_start;
     let vcp = model.vcp_number;
@@ -622,13 +615,9 @@ pub(super) fn render_realtime_progress(
     if let Some(ghost) = model.next_scan_ghost.as_deref() {
         render_ghost_volume_overlay(
             painter,
-            scan_rect,
+            frame,
             sweep_rect,
             ghost,
-            view_start,
-            view_end,
-            zoom,
-            selected_elevation_number,
             // The next-chunk countdown predicts the next-volume target, so
             // it rides along with the ghost's matching sweep rather than a
             // current-volume placeholder.
@@ -642,20 +631,18 @@ pub(super) fn render_realtime_progress(
 /// dashed-outlined future sweeps. The matching target sweep (if the user
 /// has an elevation filter active) is rendered with the same target tint as
 /// in the current scan, just at lower alpha.
-#[allow(clippy::too_many_arguments)]
 fn render_ghost_volume_overlay(
     painter: &Painter,
-    scan_rect: &Rect,
+    frame: &TimelineFrame<'_>,
     sweep_rect: &Rect,
     ghost: &crate::nexrad::projection::ScanProjection,
-    view_start: f64,
-    view_end: f64,
-    zoom: f64,
-    selected_elevation_number: Option<u8>,
     countdown: Option<f64>,
     next_target_elevation: Option<u8>,
 ) {
-    let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
+    let scan_rect = &frame.rects.scan;
+    let (view_start, view_end) = (frame.view_start, frame.view_end);
+    let selected_elevation_number = frame.view.elevation_filter();
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
     let vol_start = ghost.volume_start;
     let vol_end = ghost.volume_end;
     if vol_end <= vol_start || vol_end < view_start || vol_start > view_end {
@@ -788,13 +775,12 @@ fn render_ghost_volume_overlay(
 /// Render saved event overlays on the timeline.
 pub(super) fn render_saved_events(
     painter: &Painter,
-    overlay_rect: &Rect,
+    frame: &TimelineFrame<'_>,
     saved_events: &SavedEvents,
     current_site: &str,
-    view_start: f64,
-    zoom: f64,
 ) {
-    let ts_to_x = |ts: f64| -> f32 { overlay_rect.left() + ((ts - view_start) * zoom) as f32 };
+    let overlay_rect = &frame.rects.overlay;
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
 
     for event in saved_events.events.iter() {
         if event.site_id != current_site {

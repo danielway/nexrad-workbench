@@ -35,6 +35,60 @@ pub(super) enum DetailLevel {
     Tilts,
 }
 
+/// Sub-rects of the timeline widget's stacked tracks.
+pub(super) struct TrackRects {
+    /// Timestamp lane above the data tracks.
+    pub tick: Rect,
+    /// Volume-scan track.
+    pub scan: Rect,
+    /// Tilt (sweep) track — present only at [`DetailLevel::Tilts`].
+    pub sweep: Option<Rect>,
+    /// Scan + sweep span: cursor, selection, and now-affordance overlays.
+    pub overlay: Rect,
+}
+
+/// Read-only per-frame context shared by every timeline renderer.
+///
+/// Bundles the view adapter, the frame clock, and the view geometry so
+/// child renderers take `(painter, &TimelineFrame, <specifics>)` instead of
+/// re-threading a dozen positional args. Borrows only the `Timeline`
+/// subsystem (via [`TimelineView`]), so `&mut` access to state / live /
+/// playback stays available alongside it for the interaction paths.
+pub(super) struct TimelineFrame<'a> {
+    pub view: crate::state::TimelineView<'a>,
+    /// This frame's wall clock (`AppState::frame_now`).
+    pub now_secs: f64,
+    /// Absolute timestamp of the view's left edge (Unix seconds).
+    pub view_start: f64,
+    /// Absolute timestamp of the view's right edge (Unix seconds).
+    pub view_end: f64,
+    /// Pixels per second.
+    pub zoom: f64,
+    pub rects: TrackRects,
+    pub detail: DetailLevel,
+    pub dark: bool,
+    pub use_local: bool,
+    /// On-GPU sweep `(scan_key_ts, elevation_number)` for the active border
+    /// highlight. `None` below [`DetailLevel::Tilts`].
+    pub active_sweep: Option<(f64, u8)>,
+    /// Prior on-GPU sweep while sweep animation blends, snapshotted so it
+    /// flips atomically with `active_sweep`.
+    pub prev_active_sweep: Option<(f64, u8)>,
+}
+
+impl TimelineFrame<'_> {
+    /// Timestamp → x pixel. The single definition all renderers share.
+    pub fn ts_to_x(&self, ts: f64) -> f32 {
+        self.rects.scan.left() + ((ts - self.view_start) * self.zoom) as f32
+    }
+
+    /// X pixel → timestamp (inverse of [`Self::ts_to_x`]); used by the
+    /// interaction handlers to resolve clicks/drags.
+    pub fn x_to_ts(&self, x: f32) -> f64 {
+        self.view_start + (x - self.rects.scan.left()) as f64 / self.zoom
+    }
+}
+
 /// Time intervals for tick marks, from coarsest to finest
 #[derive(Clone, Copy)]
 pub(super) struct TickConfig {
@@ -251,7 +305,6 @@ fn draw_track_header(painter: &egui::Painter, track_rect: &Rect, text: &str, dar
     painter.galley(pos, galley, tl_colors::track_header(dark));
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn render_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -259,7 +312,6 @@ pub(super) fn render_timeline(
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     derived: &crate::subsystem::Derived,
-    _chrome: &crate::subsystem::Chrome,
 ) {
     let use_local = state.use_local_time;
     let available_width = ui.available_width() as f64;
@@ -307,7 +359,7 @@ pub(super) fn render_timeline(
         Pos2::new(full_rect.min.x, tick_rect.max.y),
         Pos2::new(full_rect.max.x, tick_rect.max.y + scan_track_h),
     );
-    let sweep_rect = if detail_level == DetailLevel::Tilts {
+    let sweep_rect = (detail_level == DetailLevel::Tilts).then(|| {
         Rect::from_min_max(
             Pos2::new(full_rect.min.x, scan_rect.max.y + separator_h),
             Pos2::new(
@@ -315,9 +367,7 @@ pub(super) fn render_timeline(
                 scan_rect.max.y + separator_h + sweep_track_h,
             ),
         )
-    } else {
-        Rect::NOTHING // not used
-    };
+    });
 
     let dark = state.is_dark;
 
@@ -331,7 +381,7 @@ pub(super) fn render_timeline(
     );
 
     // Background for sweep track (when visible)
-    if detail_level == DetailLevel::Tilts {
+    if let Some(sweep_rect) = sweep_rect {
         painter.rect_filled(sweep_rect, 0.0, tl_colors::background(dark));
         painter.rect_stroke(
             sweep_rect,
@@ -357,9 +407,6 @@ pub(super) fn render_timeline(
     let visible_secs = available_width / zoom;
     let view_end = view_start + visible_secs;
 
-    // Use scan_rect for ts_to_x since it spans the full width
-    let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
-
     // Active border tracks the on-GPU sweep — `displayed` is set only after
     // a successful update_data() in handle_decoded_outcome, so the highlight
     // matches the pixels the user is actually looking at (not the resolver's
@@ -374,53 +421,6 @@ pub(super) fn render_timeline(
     } else {
         None
     };
-
-    // -- Build the per-frame TimelineView --
-    // One adapter merges every timeline source (cache, archive shadows, the
-    // live stream + its projection) into a single source-agnostic view. The
-    // renderers ask it availability questions ("what's cached? what's
-    // collecting? is this covered?") and never read a raw source directly.
-    // The cache↔live merge that keeps a resumed volume's already-downloaded
-    // sweeps visible lives entirely inside `TimelineView::build`.
-    let frame_now_secs = state.frame_now.secs();
-    let elevation_filter = state.viz_state.elevation_selection.elevation_number();
-    let view = crate::state::TimelineView::build(
-        &timeline.scans,
-        &timeline.shadow_scan_boundaries,
-        Some(&live.mode_state),
-        live.radar_model.position.as_ref(),
-        live.frame_projection.as_ref(),
-        elevation_filter,
-        frame_now_secs,
-    );
-
-    // -- Render shadow scan boundaries from archive index --
-    if !view.shadow_boundaries().is_empty() {
-        render_shadow_boundaries(
-            &painter,
-            &scan_rect,
-            &view,
-            view_start,
-            view_end,
-            zoom,
-            detail_level,
-            dark,
-        );
-    }
-
-    // -- Render scan track --
-    render_scan_track(
-        &painter,
-        &scan_rect,
-        &view,
-        view_start,
-        view_end,
-        zoom,
-        detail_level,
-        dark,
-    );
-
-    // -- Render sweep track (only at Sweeps detail) --
     // Previous border tracks the prior on-GPU sweep — snapshotted from
     // `displayed` at the moment a new sweep is uploaded, so it flips
     // atomically with `active_sweep`.
@@ -434,73 +434,83 @@ pub(super) fn render_timeline(
     } else {
         None
     };
+
+    // The overlay rect spans all data tracks (scan + sweep, not the ticks).
+    let overlay_rect = Rect::from_min_max(
+        scan_rect.min,
+        Pos2::new(
+            scan_rect.max.x,
+            sweep_rect.map_or(scan_rect.max.y, |r| r.max.y),
+        ),
+    );
+
+    // -- Build the per-frame TimelineFrame --
+    // One adapter (`TimelineView`) merges every timeline source (cache,
+    // archive shadows, the live stream + its projection) into a single
+    // source-agnostic view; the frame bundles it with the view geometry and
+    // the frame clock. Renderers ask the view availability questions
+    // ("what's cached? what's collecting? is this covered?") and never read
+    // a raw source directly. The cache↔live merge that keeps a resumed
+    // volume's already-downloaded sweeps visible lives inside
+    // `TimelineView::build`.
+    let frame = TimelineFrame {
+        view: crate::state::TimelineView::build(
+            &timeline.scans,
+            &timeline.shadow_scan_boundaries,
+            Some(&live.mode_state),
+            live.radar_model.position.as_ref(),
+            live.frame_projection.as_ref(),
+            state.viz_state.elevation_selection.elevation_number(),
+            state.frame_now.secs(),
+        ),
+        now_secs: state.frame_now.secs(),
+        view_start,
+        view_end,
+        zoom,
+        rects: TrackRects {
+            tick: tick_rect,
+            scan: scan_rect,
+            sweep: sweep_rect,
+            overlay: overlay_rect,
+        },
+        detail: detail_level,
+        dark,
+        use_local,
+        active_sweep,
+        prev_active_sweep,
+    };
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
+
+    // -- Render shadow scan boundaries from archive index --
+    if !frame.view.shadow_boundaries().is_empty() {
+        render_shadow_boundaries(&painter, &frame);
+    }
+
+    // -- Render scan track --
+    render_scan_track(&painter, &frame);
+
+    // -- Render sweep track (only at Tilts detail) --
     if detail_level == DetailLevel::Tilts {
-        render_sweep_track(
-            &painter,
-            &sweep_rect,
-            &view,
-            view_start,
-            view_end,
-            zoom,
-            active_sweep,
-            view.elevation_filter(),
-            prev_active_sweep,
-        );
-        render_connector_lines(
-            &painter,
-            &scan_rect,
-            &sweep_rect,
-            &view,
-            view_start,
-            view_end,
-            zoom,
-        );
+        render_sweep_track(&painter, &frame);
+        render_connector_lines(&painter, &frame);
     }
 
     // -- Render ghost markers for pending downloads --
     if state.download_progress.is_active() {
         let anim_time = ui.ctx().input(|i| i.time);
-        render_download_ghosts(
-            &painter,
-            &scan_rect,
-            &state.download_progress,
-            &view,
-            view_start,
-            view_end,
-            zoom,
-            detail_level,
-            anim_time,
-            frame_now_secs,
-        );
+        render_download_ghosts(&painter, &frame, &state.download_progress, anim_time);
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(67));
     }
 
     // -- Render real-time partial scan progress --
     // The merged in-progress volume and its overlay context come from the
-    // view; `frame_now_secs` (computed above when the view was built) keeps
-    // render + tooltip on a consistent boundary.
-    if let (Some(position), Some(overlay_ctx)) = (view.live_volume(), view.live_context()) {
+    // view; `frame.now_secs` keeps render + tooltip on a consistent boundary.
+    if let (Some(position), Some(overlay_ctx)) =
+        (frame.view.live_volume(), frame.view.live_context())
+    {
         let anim_time = ui.ctx().input(|i| i.time);
-        render_realtime_progress(
-            &painter,
-            &scan_rect,
-            if detail_level == DetailLevel::Tilts {
-                Some(&sweep_rect)
-            } else {
-                None
-            },
-            position,
-            overlay_ctx,
-            view_start,
-            view_end,
-            zoom,
-            anim_time,
-            frame_now_secs,
-            view.elevation_filter(),
-            active_sweep,
-            prev_active_sweep,
-        );
+        render_realtime_progress(&painter, &frame, position, overlay_ctx, anim_time);
         if live.mode_state.phase == LivePhase::WaitingForChunk {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(250));
@@ -514,71 +524,21 @@ pub(super) fn render_timeline(
     if detail_level != DetailLevel::Coverage {
         draw_track_header(&painter, &scan_rect, "VOLUMES", dark);
     }
-    if detail_level == DetailLevel::Tilts {
+    if let Some(sweep_rect) = sweep_rect {
         draw_track_header(&painter, &sweep_rect, "TILTS", dark);
     }
 
-    // Select appropriate tick configuration
-    let tick_config = select_tick_config(zoom);
-    let major_interval = tick_config.major_interval;
-    let minor_interval = (major_interval / tick_config.minor_divisions as i64).max(1);
-
-    // When displaying local time, align ticks to local boundaries instead of
-    // UTC boundaries.  For example, day ticks should land on local midnight,
-    // not UTC midnight.  We obtain the browser's timezone offset and shift
-    // into local seconds for alignment, then shift back to UTC for plotting.
-    let tz_offset_secs: i64 = if use_local {
-        let d = js_sys::Date::new_0();
-        d.set_time(view_start * 1000.0);
-        // getTimezoneOffset() returns minutes positive-west; convert to
-        // seconds-east so that local = utc + tz_offset_secs.
-        -(d.get_timezone_offset() as i64) * 60
-    } else {
-        0
-    };
-
-    let local_start = view_start as i64 + tz_offset_secs;
-    let local_end = view_end as i64 + tz_offset_secs;
-    let first_tick = (local_start / minor_interval) * minor_interval - tz_offset_secs;
-    let last_tick = ((local_end / minor_interval) + 1) * minor_interval - tz_offset_secs;
-
-    // Draw tick marks and labels in the dedicated tick lane above the scan track
-    render_tick_marks(
-        &painter,
-        &tick_rect,
-        first_tick,
-        last_tick,
-        minor_interval,
-        major_interval,
-        tz_offset_secs,
-        tick_config,
-        dark,
-        use_local,
-        view_start,
-        zoom,
-    );
-
-    // The overlay_rect spans all data tracks (scan + sweep, not VCP)
-    let overlay_rect = Rect::from_min_max(
-        scan_rect.min,
-        Pos2::new(
-            scan_rect.max.x,
-            if detail_level == DetailLevel::Tilts {
-                sweep_rect.max.y
-            } else {
-                scan_rect.max.y
-            },
-        ),
-    );
+    // Draw tick marks and labels in the dedicated tick lane above the scan
+    // track. Tick spacing/alignment is derived inside from the frame's zoom
+    // and view bounds.
+    render_tick_marks(&painter, &frame);
 
     // Draw saved event overlays (behind the selection range)
     render_saved_events(
         &painter,
-        &overlay_rect,
+        &frame,
         &state.saved_events,
         &state.viz_state.site_id,
-        view_start,
-        zoom,
     );
 
     // Draw selection range (if user has selected a range via shift+drag)
@@ -618,29 +578,13 @@ pub(super) fn render_timeline(
     }
 
     // Draw the playback-position cursor (the neutral "needle").
-    render_playback_cursor(
-        &painter,
-        &overlay_rect,
-        playback.state.playback_position(),
-        view_start,
-        zoom,
-        dark,
-    );
+    render_playback_cursor(&painter, &frame, playback.state.playback_position());
 
     // The now affordance: the live edge of the timeline — both the streaming
     // indicator and the control to start/stop it. When now is on-screen it's
     // an inline line + clickable cap; when scrolled off it's an edge chip.
     // Returns the rect it occupies so the seek handler ignores clicks on it.
-    let now_affordance_rect = render_now_affordance(
-        ui,
-        &painter,
-        state,
-        live,
-        playback,
-        &overlay_rect,
-        view_start,
-        zoom,
-    );
+    let now_affordance_rect = render_now_affordance(ui, &painter, state, live, playback, &frame);
 
     // Draw selection range labels (boundaries and duration)
     if let Some((range_start, range_end)) = playback.state.selection_range() {
@@ -697,21 +641,8 @@ pub(super) fn render_timeline(
     // -- Hover tooltips --
     if response.hovered() {
         if let Some(hover_pos) = response.hover_pos() {
-            let hover_ts = view_start + (hover_pos.x - full_rect.left()) as f64 / zoom;
-            render_timeline_tooltip(
-                ui,
-                &view,
-                state,
-                live,
-                hover_ts,
-                hover_pos,
-                &scan_rect,
-                &sweep_rect,
-                detail_level,
-                use_local,
-                frame_now_secs,
-                playback,
-            );
+            let hover_ts = frame.x_to_ts(hover_pos.x);
+            render_timeline_tooltip(ui, &frame, live, hover_ts, hover_pos);
         }
     }
 
@@ -722,9 +653,7 @@ pub(super) fn render_timeline(
         live,
         playback,
         &response,
-        &full_rect,
-        view_start,
-        zoom,
+        &frame,
         now_affordance_rect,
     );
 }

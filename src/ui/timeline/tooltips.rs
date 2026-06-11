@@ -6,10 +6,9 @@
 //! then a separator and the expert detail (VCP, waveform, products)
 //! in weak text.
 
-use super::{format_timestamp_full, DateTimeComponents, DetailLevel};
+use super::{format_timestamp_full, DateTimeComponents, TimelineFrame};
 use crate::data::ScanCompleteness;
 use crate::nexrad::projection::SweepAvailability;
-use crate::state::TimelineView;
 use crate::ui::colors::timeline as tl_colors;
 use crate::ui::colors::ui as ui_colors;
 use eframe::egui::{self, Color32, Pos2, Rect, RichText, Vec2};
@@ -70,27 +69,24 @@ fn vcp_detail_line(vcp: u16) -> String {
 
 /// Render hover tooltip for timeline elements.
 ///
-/// Reads only the [`TimelineView`]: cached ("settled") scans for the
+/// Reads only the frame's view: cached ("settled") scans for the
 /// non-live volumes, and the merged in-progress volume for the live one —
 /// so the tooltip stays consistent with what the tracks draw (in particular,
 /// a resumed volume's already-cached cuts read as "Complete").
-#[allow(clippy::too_many_arguments)]
 pub(super) fn render_timeline_tooltip(
     ui: &mut egui::Ui,
-    view: &TimelineView<'_>,
-    _state: &crate::state::AppState,
+    frame: &TimelineFrame<'_>,
     live: &crate::subsystem::Live,
     hover_ts: f64,
     hover_pos: Pos2,
-    _scan_rect: &Rect,
-    sweep_rect: &Rect,
-    detail_level: DetailLevel,
-    use_local: bool,
-    now_secs: f64,
-    _playback: &crate::subsystem::Playback,
 ) {
+    let view = &frame.view;
+    let (use_local, now_secs) = (frame.use_local, frame.now_secs);
     let live_state = &live.mode_state;
-    let in_sweep_track = detail_level == DetailLevel::Tilts && hover_pos.y > sweep_rect.top();
+    let in_sweep_track = frame
+        .rects
+        .sweep
+        .is_some_and(|sweep_rect| hover_pos.y > sweep_rect.top());
 
     // Find the cached (settled) scan at the hovered timestamp, using the
     // same clamped block extents the scan track draws — a sparse scan's
@@ -329,7 +325,6 @@ fn render_sweep_tooltip_content(
 /// When hovering the sweep track, this identifies which realtime sweep block
 /// is under the cursor and shows per-sweep details including chunk progress.
 /// When hovering the scan track, it shows the volume-level summary.
-#[allow(clippy::too_many_arguments)]
 fn render_realtime_volume_tooltip(
     ui: &mut egui::Ui,
     model: &crate::nexrad::projection::ScanProjection,

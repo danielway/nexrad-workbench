@@ -1,25 +1,21 @@
 //! Sweep track rendering: sweep blocks (cool palette) and connector lines.
 
-use crate::state::TimelineView;
+use super::TimelineFrame;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Painter, Pos2, Rect, Stroke, StrokeKind};
 
 /// Render sweep blocks on the sweep track (cool indigo-to-cyan palette).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_sweep_track(
-    painter: &Painter,
-    rect: &Rect,
-    view: &TimelineView<'_>,
-    view_start: f64,
-    view_end: f64,
-    zoom: f64,
-    active_sweep: Option<(f64, u8)>,
-    selected_elevation_number: Option<u8>,
-    prev_active_sweep: Option<(f64, u8)>,
-) {
-    let ts_to_x = |ts: f64| -> f32 { rect.left() + ((ts - view_start) * zoom) as f32 };
+/// Only called at [`super::DetailLevel::Tilts`] (when the sweep rect exists).
+pub(super) fn render_sweep_track(painter: &Painter, frame: &TimelineFrame<'_>) {
+    let Some(rect) = frame.rects.sweep.as_ref() else {
+        return;
+    };
+    let view = &frame.view;
+    let (active_sweep, prev_active_sweep) = (frame.active_sweep, frame.prev_active_sweep);
+    let selected_elevation_number = view.elevation_filter();
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
 
-    for (scan, _) in view.settled_scans_in_range(view_start, view_end) {
+    for (scan, _) in view.settled_scans_in_range(frame.view_start, frame.view_end) {
         if scan.sweeps.is_empty() {
             continue;
         }
@@ -126,18 +122,17 @@ pub(super) fn render_sweep_track(
 }
 
 /// Draw thin connector lines from scan boundaries into the sweep track.
-pub(super) fn render_connector_lines(
-    painter: &Painter,
-    scan_rect: &Rect,
-    sweep_rect: &Rect,
-    view: &TimelineView<'_>,
-    view_start: f64,
-    view_end: f64,
-    zoom: f64,
-) {
-    let ts_to_x = |ts: f64| -> f32 { scan_rect.left() + ((ts - view_start) * zoom) as f32 };
+pub(super) fn render_connector_lines(painter: &Painter, frame: &TimelineFrame<'_>) {
+    let scan_rect = &frame.rects.scan;
+    let Some(sweep_rect) = frame.rects.sweep.as_ref() else {
+        return;
+    };
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
 
-    for (scan, clamped_end) in view.visual_scans_in_range(view_start, view_end) {
+    for (scan, clamped_end) in frame
+        .view
+        .visual_scans_in_range(frame.view_start, frame.view_end)
+    {
         if scan.sweeps.is_empty() {
             continue;
         }

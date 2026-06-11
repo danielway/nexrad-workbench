@@ -4,23 +4,21 @@ use crate::state::{AppState, LiveExitReason};
 use eframe::egui::{self, Rect};
 
 /// Handle mouse interaction on the timeline: click, shift+click, drag-to-pan, scroll-to-zoom.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_timeline_interaction(
     ui: &mut egui::Ui,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     response: &egui::Response,
-    full_rect: &Rect,
-    view_start: f64,
-    zoom: f64,
+    frame: &super::TimelineFrame<'_>,
     now_rect: Option<Rect>,
 ) {
+    let zoom = frame.zoom;
     let shift_held = ui.input(|i| i.modifiers.shift);
 
     if shift_held && response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
-            let clicked_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
+            let clicked_ts = frame.x_to_ts(pos.x);
             let current_pos = playback.state.playback_position();
             playback.state.selection_start = Some(current_pos);
             playback.state.selection_end = Some(clicked_ts);
@@ -32,7 +30,7 @@ pub(super) fn handle_timeline_interaction(
 
     if shift_held && response.drag_started() {
         if let Some(pos) = response.interact_pointer_pos() {
-            let drag_start_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
+            let drag_start_ts = frame.x_to_ts(pos.x);
             playback.state.selection_start = Some(drag_start_ts);
             playback.state.selection_end = Some(drag_start_ts);
             playback.state.selection_in_progress = true;
@@ -41,7 +39,7 @@ pub(super) fn handle_timeline_interaction(
 
     if shift_held && response.dragged() && playback.state.selection_in_progress {
         if let Some(pos) = response.interact_pointer_pos() {
-            let current_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
+            let current_ts = frame.x_to_ts(pos.x);
             playback.state.selection_end = Some(current_ts);
         }
     }
@@ -63,7 +61,7 @@ pub(super) fn handle_timeline_interaction(
                 return;
             }
 
-            let clicked_ts = view_start + (pos.x - full_rect.left()) as f64 / zoom;
+            let clicked_ts = frame.x_to_ts(pos.x);
 
             if live.mode_state.is_active() {
                 live.stop(LiveExitReason::UserSeeked);
@@ -106,9 +104,9 @@ pub(super) fn handle_timeline_interaction(
             let new_zoom = (old_zoom * zoom_factor).clamp(min_zoom, 1000.0);
 
             if let Some(cursor_pos) = response.hover_pos() {
-                let cursor_ts = view_start + (cursor_pos.x - full_rect.left()) as f64 / old_zoom;
+                let cursor_ts = frame.x_to_ts(cursor_pos.x);
                 let new_view_start =
-                    cursor_ts - (cursor_pos.x - full_rect.left()) as f64 / new_zoom;
+                    cursor_ts - (cursor_pos.x - frame.rects.scan.left()) as f64 / new_zoom;
                 playback.state.timeline_view_start = new_view_start;
             }
 

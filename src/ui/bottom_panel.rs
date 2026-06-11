@@ -158,7 +158,7 @@ fn draw_bottom_panel(
 
             ui.vertical(|ui| {
                 // Timeline row
-                render_timeline(ui, state, timeline, live, playback, derived, chrome);
+                render_timeline(ui, state, timeline, live, playback, derived);
 
                 ui.add_space(2.0);
 

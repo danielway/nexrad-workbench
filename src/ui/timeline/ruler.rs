@@ -1,26 +1,37 @@
 //! Ruler rendering: tick marks and playback cursor.
 
-use super::{format_timestamp, style, TickConfig};
+use super::{format_timestamp, select_tick_config, style, TimelineFrame};
 use crate::ui::colors::timeline as tl_colors;
-use eframe::egui::{self, Painter, Pos2, Rect, Stroke};
+use eframe::egui::{self, Painter, Pos2, Stroke};
 
-/// Draw tick marks (major + minor) and labels in the tick lane.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_tick_marks(
-    painter: &Painter,
-    tick_rect: &Rect,
-    first_tick: i64,
-    last_tick: i64,
-    minor_interval: i64,
-    major_interval: i64,
-    tz_offset_secs: i64,
-    tick_config: &TickConfig,
-    dark: bool,
-    use_local: bool,
-    view_start: f64,
-    zoom: f64,
-) {
-    let ts_to_x = |ts: f64| -> f32 { tick_rect.left() + ((ts - view_start) * zoom) as f32 };
+/// Draw tick marks (major + minor) and labels in the tick lane. Tick
+/// spacing comes from the zoom level; when displaying local time, ticks
+/// align to local boundaries (e.g. day ticks land on local midnight, not
+/// UTC midnight) by shifting into local seconds for alignment and back to
+/// UTC for plotting.
+pub(super) fn render_tick_marks(painter: &Painter, frame: &TimelineFrame<'_>) {
+    let tick_rect = &frame.rects.tick;
+    let (dark, use_local) = (frame.dark, frame.use_local);
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
+
+    let tick_config = select_tick_config(frame.zoom);
+    let major_interval = tick_config.major_interval;
+    let minor_interval = (major_interval / tick_config.minor_divisions as i64).max(1);
+
+    // getTimezoneOffset() returns minutes positive-west; convert to
+    // seconds-east so that local = utc + tz_offset_secs.
+    let tz_offset_secs: i64 = if use_local {
+        let d = js_sys::Date::new_0();
+        d.set_time(frame.view_start * 1000.0);
+        -(d.get_timezone_offset() as i64) * 60
+    } else {
+        0
+    };
+
+    let local_start = frame.view_start as i64 + tz_offset_secs;
+    let local_end = frame.view_end as i64 + tz_offset_secs;
+    let first_tick = (local_start / minor_interval) * minor_interval - tz_offset_secs;
+    let last_tick = ((local_end / minor_interval) + 1) * minor_interval - tz_offset_secs;
 
     let mut tick = first_tick;
     while tick <= last_tick {
@@ -67,18 +78,16 @@ pub(super) fn render_tick_marks(
 /// never reads as "now". The now-line itself is owned by [`super::now_edge`].
 pub(super) fn render_playback_cursor(
     painter: &Painter,
-    overlay_rect: &Rect,
+    frame: &TimelineFrame<'_>,
     selected_ts: f64,
-    view_start: f64,
-    zoom: f64,
-    dark: bool,
 ) {
-    let sel_x = overlay_rect.left() + ((selected_ts - view_start) * zoom) as f32;
+    let overlay_rect = &frame.rects.overlay;
+    let sel_x = frame.ts_to_x(selected_ts);
     if sel_x < overlay_rect.left() || sel_x > overlay_rect.right() {
         return;
     }
 
-    let marker_color = tl_colors::selection(dark);
+    let marker_color = tl_colors::selection(frame.dark);
     painter.line_segment(
         [
             Pos2::new(sel_x, overlay_rect.top()),

@@ -23,19 +23,17 @@ use eframe::egui::{self, Color32, Painter, Pos2, Rect, Sense, Stroke, StrokeKind
 ///
 /// Returns the interactive rect (cap or chip) when one was drawn, so the
 /// caller can suppress an ordinary timeline seek when the click landed on it.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn render_now_affordance(
     ui: &mut egui::Ui,
     painter: &Painter,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
-    overlay_rect: &Rect,
-    view_start: f64,
-    zoom: f64,
+    frame: &super::TimelineFrame<'_>,
 ) -> Option<Rect> {
-    let now_ts = state.frame_now.secs();
-    let now_x = overlay_rect.left() + ((now_ts - view_start) * zoom) as f32;
+    let overlay_rect = &frame.rects.overlay;
+    let now_ts = frame.now_secs;
+    let now_x = frame.ts_to_x(now_ts);
     let is_live = live.mode_state.is_active();
     let pulse = live.mode_state.pulse_alpha();
 
