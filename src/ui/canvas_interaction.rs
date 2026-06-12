@@ -138,7 +138,7 @@ pub(crate) fn handle_canvas_interaction(
     response: &egui::Response,
     rect: &Rect,
     state: &mut AppState,
-    _playback: &crate::subsystem::Playback,
+    playback: &crate::subsystem::Playback,
     chrome: &mut crate::subsystem::Chrome,
     diagnostics: &mut crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
@@ -166,10 +166,13 @@ pub(crate) fn handle_canvas_interaction(
                 apply_site_selection(state, chrome, site_id, lat, lon);
                 handled = true;
             }
-            if !handled && state.layer_state.geo.mping && derived.data_is_live {
-                if let Some(id) =
-                    pick_mping_report_at(click_pos, projection, &diagnostics.mping.reports)
-                {
+            if !handled && state.layer_state.geo.mping {
+                if let Some(id) = pick_mping_report_at(
+                    click_pos,
+                    projection,
+                    &diagnostics.mping.reports,
+                    playback.state.playback_position(),
+                ) {
                     diagnostics.mping.selected_report_id = Some(id);
                     handled = true;
                 }
@@ -303,6 +306,7 @@ fn pick_mping_report_at(
     click_pos: egui::Pos2,
     projection: &MapProjection,
     reports: &[StormReport],
+    playback_secs: f64,
 ) -> Option<i64> {
     let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
     let padding = 0.5;
@@ -310,6 +314,10 @@ fn pick_mping_report_at(
 
     let mut best: Option<(i64, f32)> = None;
     for report in reports {
+        // Don't hit-test markers that aren't drawn (future of the playhead).
+        if !report.visible_at(playback_secs) {
+            continue;
+        }
         if report.lat < min_lat - padding
             || report.lat > max_lat + padding
             || report.lon < min_lon - padding

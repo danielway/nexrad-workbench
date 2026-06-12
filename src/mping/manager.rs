@@ -1,8 +1,21 @@
 //! Owns the mPING fetch lifecycle.
 //!
-//! Polls when the active site, playback time (quantized to a minute), or
-//! API key change. Does nothing while the layer is hidden or no key is
-//! configured. Results are drained from the channel each frame.
+//! Polls under two regimes selected by the playback mode:
+//!
+//! * **Live-tailing** (playhead pinned to now or replaying the lookback
+//!   loop): refetch on a fixed time interval so newly-submitted reports
+//!   surface as wall-clock advances.
+//! * **Historical** (playhead parked or scrubbing through the archive):
+//!   the data is static, so refetch only when the playhead nears the edge
+//!   of the window we already hold. Scrubbing within a covered span costs
+//!   no requests, and forward playback rolls through the pre-fetched
+//!   forward half before the next refetch is due.
+//!
+//! In both regimes a single fetch covers a symmetric ±30 min window around
+//! the playhead; the future half is buffer (never displayed — see
+//! `StormReport::visible_at`) so forward motion doesn't refetch per minute.
+//! Does nothing while the layer is hidden or no key is configured. Results
+//! are drained from the channel each frame.
 
 use eframe::egui;
 
@@ -11,8 +24,23 @@ use super::channel::{MpingChannel, MpingEvent};
 use crate::data::get_site;
 use crate::state::MpingState;
 
-/// Half-window around the current playback position, in seconds.
-const TIME_WINDOW_SECS: i64 = 30 * 60;
+/// Half-window around the current playback position, in seconds. A fetch
+/// spans `[p - HALF_WINDOW, p + HALF_WINDOW]`.
+const HALF_WINDOW_SECS: i64 = 30 * 60;
+
+/// How close (in seconds) the playhead may come to either edge of the
+/// covered window before a refetch is triggered. With a 30-min half-window
+/// this leaves 15 min of headroom, so steady forward playback refetches
+/// once per ~15 min of content.
+const REFETCH_MARGIN_SECS: f64 = 15.0 * 60.0;
+
+/// How often (wall-clock ms) to refetch while live-tailing, to pick up
+/// reports submitted since the last poll.
+const LIVE_POLL_INTERVAL_MS: f64 = 60_000.0;
+
+/// Minimum wall-clock ms between retries after a fetch error, so a
+/// misconfigured key or a CORS failure doesn't hammer the server.
+const ERROR_RETRY_MS: f64 = 30_000.0;
 
 /// Radius around the active radar site, in meters.
 const RADIUS_METERS: u32 = 300_000;
@@ -22,27 +50,29 @@ const RADIUS_METERS: u32 = 300_000;
 pub struct MpingTickInputs<'a> {
     /// Whether the mPING overlay layer is currently visible.
     pub layer_visible: bool,
-    /// Whether data is "live" (within the recency window). When false,
-    /// the manager skips polling.
-    pub is_live: bool,
+    /// Whether the playhead is tracking the live edge (pinned to now or
+    /// replaying the lookback loop). Selects the live-tailing regime.
+    pub pinned_to_now: bool,
     /// Active radar site id (any case; manager uppercases for lookup).
     pub site_id: &'a str,
     /// Current playback position in Unix seconds.
     pub playback_secs: f64,
 }
 
-/// Inputs that determine whether a refetch is required.
+/// The time window we currently hold reports for, plus the identity it was
+/// fetched under. A change in site or key invalidates coverage.
 #[derive(Clone, Debug, PartialEq)]
-struct CacheKey {
+struct Covered {
+    lo_ms: f64,
+    hi_ms: f64,
     site_id: String,
-    playback_minute: i64,
-    api_key_fingerprint: u64,
+    key_fingerprint: u64,
 }
 
 pub struct MpingManager {
     channel: MpingChannel,
     fetch_in_flight: bool,
-    last_fetched: Option<CacheKey>,
+    covered: Option<Covered>,
 }
 
 impl Default for MpingManager {
@@ -56,7 +86,7 @@ impl MpingManager {
         Self {
             channel: MpingChannel::new(),
             fetch_in_flight: false,
-            last_fetched: None,
+            covered: None,
         }
     }
 
@@ -80,10 +110,10 @@ impl MpingManager {
             self.apply_event(mping, event, errors);
         }
 
-        // Bail early if the layer is off, the user is viewing archive data far
-        // behind wall-clock (the overlay is hidden then), or no key has been
-        // configured.
-        if !inputs.layer_visible || !inputs.is_live {
+        // Bail early if the layer is off or no key has been configured.
+        // Unlike before, we no longer gate on data recency: historical
+        // playback shows reports for the time being viewed.
+        if !inputs.layer_visible {
             return;
         }
         let api_key = match mping.api_key.as_deref() {
@@ -98,48 +128,57 @@ impl MpingManager {
             None => return,
         };
 
-        // Quantize playback position to whole minutes for dedup so that
-        // sub-second scrubbing doesn't trigger a fetch storm.
-        let playback_minute = (inputs.playback_secs / 60.0) as i64;
-
-        let key = CacheKey {
-            site_id: site_id.clone(),
-            playback_minute,
-            api_key_fingerprint: hash_str(&api_key),
-        };
-
         if self.fetch_in_flight {
             return;
         }
-        if self.last_fetched.as_ref() == Some(&key) && mping.last_error.is_none() {
+
+        let key_fingerprint = hash_str(&api_key);
+        let playback_ms = inputs.playback_secs * 1000.0;
+        let now_ms = js_sys::Date::now();
+
+        let needs = refetch_needed(
+            self.covered.as_ref(),
+            &site_id,
+            key_fingerprint,
+            playback_ms,
+            inputs.pinned_to_now,
+            now_ms,
+            mping.last_poll_ms,
+        );
+
+        // A pending error overrides coverage: retry on the fixed backoff
+        // regardless of where the playhead sits. Otherwise honor the
+        // regime decision.
+        if mping.last_error.is_some() {
+            if now_ms - mping.last_poll_ms < ERROR_RETRY_MS {
+                return;
+            }
+        } else if !needs {
             return;
         }
 
-        // Throttle retries after errors — wait at least 30 s before retrying
-        // the same key/site/minute so a misconfigured key doesn't hammer the
-        // server every frame.
-        if mping.last_error.is_some() {
-            let now_ms = js_sys::Date::now();
-            if now_ms - mping.last_poll_ms < 30_000.0 {
-                return;
-            }
-        }
-
-        let center_secs_i64 = inputs.playback_secs as i64;
+        let center_secs = inputs.playback_secs as i64;
+        let min_ms = (center_secs - HALF_WINDOW_SECS) * 1000;
+        let max_ms = (center_secs + HALF_WINDOW_SECS) * 1000;
         let params = FetchParams {
             center_lon: site.lon,
             center_lat: site.lat,
             radius_m: RADIUS_METERS,
-            min_obtime_ms: (center_secs_i64 - TIME_WINDOW_SECS) * 1000,
-            max_obtime_ms: (center_secs_i64 + TIME_WINDOW_SECS) * 1000,
+            min_obtime_ms: min_ms,
+            max_obtime_ms: max_ms,
         };
 
         self.fetch_in_flight = true;
         mping.fetch_in_flight = true;
-        mping.last_poll_ms = js_sys::Date::now();
-        mping.window_min_ms = params.min_obtime_ms as f64;
-        mping.window_max_ms = params.max_obtime_ms as f64;
-        self.last_fetched = Some(key);
+        mping.last_poll_ms = now_ms;
+        mping.window_min_ms = min_ms as f64;
+        mping.window_max_ms = max_ms as f64;
+        self.covered = Some(Covered {
+            lo_ms: min_ms as f64,
+            hi_ms: max_ms as f64,
+            site_id,
+            key_fingerprint,
+        });
         api::spawn_fetch(ctx.clone(), self.channel.clone(), api_key, params);
     }
 
@@ -189,7 +228,43 @@ impl MpingManager {
     /// Force a refetch on the next tick — used after the user saves a new
     /// API key.
     pub fn invalidate(&mut self) {
-        self.last_fetched = None;
+        self.covered = None;
+    }
+}
+
+/// Decide whether the next tick should issue a fetch, from pure inputs
+/// (no clock or network access) so the regime logic is unit-testable.
+///
+/// `playback_ms` is the playhead in epoch ms; `pinned` selects the
+/// live-tailing regime; `now_ms`/`last_poll_ms` drive the live poll
+/// interval. Error-retry backoff is handled by the caller.
+fn refetch_needed(
+    covered: Option<&Covered>,
+    site_id: &str,
+    key_fingerprint: u64,
+    playback_ms: f64,
+    pinned: bool,
+    now_ms: f64,
+    last_poll_ms: f64,
+) -> bool {
+    let Some(c) = covered else {
+        // Nothing held yet.
+        return true;
+    };
+    // Identity change always forces a refetch.
+    if c.site_id != site_id || c.key_fingerprint != key_fingerprint {
+        return true;
+    }
+    if pinned {
+        // Live-tailing: refetch on the poll interval to pick up
+        // newly-submitted reports as wall-clock advances.
+        now_ms - last_poll_ms >= LIVE_POLL_INTERVAL_MS
+    } else {
+        // Historical: refetch only when the playhead nears either edge of
+        // the covered window — the comfortable zone is
+        // `[lo + margin, hi - margin]`.
+        let margin = REFETCH_MARGIN_SECS * 1000.0;
+        playback_ms < c.lo_ms + margin || playback_ms > c.hi_ms - margin
     }
 }
 
@@ -201,4 +276,92 @@ fn hash_str(s: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const MIN_MS: f64 = 60_000.0;
+
+    fn covered_at(center_min: f64) -> Covered {
+        // A window centred `center_min` minutes past epoch, ±30 min.
+        let center = center_min * MIN_MS;
+        Covered {
+            lo_ms: center - 30.0 * MIN_MS,
+            hi_ms: center + 30.0 * MIN_MS,
+            site_id: "KTLX".to_string(),
+            key_fingerprint: 7,
+        }
+    }
+
+    // Historical regime: scrubbing inside the comfortable zone holds.
+    #[wasm_bindgen_test]
+    fn no_refetch_inside_zone() {
+        let c = covered_at(100.0);
+        // 5 min forward of centre — well inside [70, 130] minus 15-min margins.
+        let p = 105.0 * MIN_MS;
+        assert!(!refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+    }
+
+    // Historical regime: nearing the low (early) edge refetches.
+    #[wasm_bindgen_test]
+    fn refetch_near_low_edge() {
+        let c = covered_at(100.0);
+        // Window is [70, 130] min; comfortable low edge is 70 + 15 = 85 min.
+        let p = 84.0 * MIN_MS;
+        assert!(refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+    }
+
+    // Historical regime: forward playback nearing the high edge refetches.
+    #[wasm_bindgen_test]
+    fn refetch_near_high_edge() {
+        let c = covered_at(100.0);
+        // Comfortable high edge is 130 - 15 = 115 min.
+        let p = 116.0 * MIN_MS;
+        assert!(refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+    }
+
+    // Identity change forces a refetch even when the playhead is centred.
+    #[wasm_bindgen_test]
+    fn refetch_on_site_or_key_change() {
+        let c = covered_at(100.0);
+        let p = 100.0 * MIN_MS;
+        assert!(refetch_needed(Some(&c), "KFWS", 7, p, false, 0.0, 0.0));
+        assert!(refetch_needed(Some(&c), "KTLX", 9, p, false, 0.0, 0.0));
+    }
+
+    // Nothing held yet always refetches.
+    #[wasm_bindgen_test]
+    fn refetch_when_uncovered() {
+        assert!(refetch_needed(None, "KTLX", 7, 0.0, false, 0.0, 0.0));
+    }
+
+    // Live-tailing ignores coverage and refetches only on the interval.
+    #[wasm_bindgen_test]
+    fn live_tailing_refetches_on_interval() {
+        let c = covered_at(100.0);
+        let p = 100.0 * MIN_MS;
+        // Just polled — not yet due even though pinned.
+        assert!(!refetch_needed(
+            Some(&c),
+            "KTLX",
+            7,
+            p,
+            true,
+            LIVE_POLL_INTERVAL_MS - 1.0,
+            0.0
+        ));
+        // Interval elapsed — due.
+        assert!(refetch_needed(
+            Some(&c),
+            "KTLX",
+            7,
+            p,
+            true,
+            LIVE_POLL_INTERVAL_MS,
+            0.0
+        ));
+    }
 }

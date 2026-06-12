@@ -23,12 +23,17 @@ pub(crate) fn render_mping_reports(
     reports: &[StormReport],
     window_min_ms: f64,
     window_max_ms: f64,
+    playback_secs: f64,
     selected_report_id: Option<i64>,
 ) {
     let (min_lon, min_lat, max_lon, max_lat) = projection.visible_bounds();
     let padding = 0.5;
 
     for report in reports {
+        // Never show a report observed after the time being rendered.
+        if !report.visible_at(playback_secs) {
+            continue;
+        }
         if window_max_ms > window_min_ms
             && (report.obtime_ms < window_min_ms || report.obtime_ms > window_max_ms)
         {
@@ -79,7 +84,13 @@ pub(crate) fn render_mping_detail(
     let Some(id) = selected_report_id else {
         return;
     };
-    let Some(report) = reports.iter().find(|r| r.id == id) else {
+    // Close the popover if its report sits in the future of the current
+    // playhead (e.g. after the user scrubbed back past its observation
+    // time) — consistent with the marker no longer being drawn.
+    let Some(report) = reports
+        .iter()
+        .find(|r| r.id == id && r.visible_at(playback_secs))
+    else {
         return;
     };
 

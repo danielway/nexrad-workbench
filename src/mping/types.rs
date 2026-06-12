@@ -17,6 +17,16 @@ pub struct StormReport {
     pub lon: f64,
 }
 
+impl StormReport {
+    /// Whether this report should be visible at the given playback
+    /// position (Unix seconds). We never show a report observed *after*
+    /// the time being rendered — surfacing a future report would be a
+    /// lie about what was known at that moment.
+    pub fn visible_at(&self, playback_secs: f64) -> bool {
+        self.obtime_ms <= playback_secs * 1000.0
+    }
+}
+
 /// Coarse category bucket used for color coding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReportCategory {
@@ -54,5 +64,34 @@ impl ReportCategory {
             Self::ReducedVisibility => "Reduced Visibility",
             Self::Other => "Other",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn report_at(obtime_ms: f64) -> StormReport {
+        StormReport {
+            id: 1,
+            obtime_ms,
+            category: ReportCategory::Other,
+            description: String::new(),
+            lat: 0.0,
+            lon: 0.0,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn visible_at_boundary() {
+        // playback at 1000 s == 1_000_000 ms.
+        let p = 1000.0;
+        // Exactly at the playhead is visible.
+        assert!(report_at(1_000_000.0).visible_at(p));
+        // One ms before is visible.
+        assert!(report_at(999_999.0).visible_at(p));
+        // One ms after (the future) is hidden.
+        assert!(!report_at(1_000_001.0).visible_at(p));
     }
 }

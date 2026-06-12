@@ -256,16 +256,14 @@ pub fn render_canvas_with_geo(
                     );
                 }
 
-                if state.layer_state.geo.mping
-                    && derived.data_is_live
-                    && !diagnostics.mping.reports.is_empty()
-                {
+                if state.layer_state.geo.mping && !diagnostics.mping.reports.is_empty() {
                     render_mping_reports(
                         &painter,
                         &projection,
                         &diagnostics.mping.reports,
                         diagnostics.mping.window_min_ms,
                         diagnostics.mping.window_max_ms,
+                        playback.state.playback_position(),
                         diagnostics.mping.selected_report_id,
                     );
                 }
@@ -367,10 +365,7 @@ pub fn render_canvas_with_geo(
                     }
                 }
 
-                if state.layer_state.geo.mping
-                    && derived.data_is_live
-                    && diagnostics.mping.selected_report_id.is_some()
-                {
+                if state.layer_state.geo.mping && diagnostics.mping.selected_report_id.is_some() {
                     render_mping_detail(
                         &painter,
                         rect,

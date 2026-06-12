@@ -23,15 +23,18 @@ use eframe::egui;
 /// Computed by the caller from `AppState` so this subsystem stays
 /// decoupled from the god struct.
 pub struct DiagnosticsInputs<'a> {
-    /// Recency gate. Managers skip polling when false because their
-    /// overlays are hidden while viewing far-past archive data.
+    /// Recency gate for the alerts overlay. (mPING no longer gates on
+    /// this — it shows reports for historical playback too.)
     pub is_live: bool,
     /// Whether the mPING overlay layer is currently visible.
     pub mping_layer_visible: bool,
+    /// Whether the playhead is tracking the live edge (pinned to now or
+    /// replaying the lookback loop). Selects mPING's live-tailing regime.
+    pub mping_pinned_to_now: bool,
     /// Active radar site id.
     pub site_id: &'a str,
-    /// Current playback position in Unix seconds (used by the mPING
-    /// fetch cache key).
+    /// Current playback position in Unix seconds (drives the mPING fetch
+    /// window and refetch decision).
     pub playback_secs: f64,
 }
 
@@ -91,7 +94,7 @@ impl Diagnostics {
             &mut self.mping,
             MpingTickInputs {
                 layer_visible: inputs.mping_layer_visible,
-                is_live: inputs.is_live,
+                pinned_to_now: inputs.mping_pinned_to_now,
                 site_id: inputs.site_id,
                 playback_secs: inputs.playback_secs,
             },

@@ -701,6 +701,8 @@ impl eframe::App for WorkbenchApp {
         let diagnostics_inputs = subsystem::diagnostics::DiagnosticsInputs {
             is_live: early_derived.data_is_live,
             mping_layer_visible: self.state.layer_state.geo.mping,
+            mping_pinned_to_now: self.playback.state.time_model.is_pinned()
+                || self.playback.state.time_model.is_lookback(),
             site_id: &self.state.viz_state.site_id,
             playback_secs: self.playback.state.playback_position(),
         };

@@ -37,7 +37,13 @@ impl super::layout::Layer for MpingModalLayer {
         ctx.diagnostics.mping.settings_modal_open || ctx.modals.mping.seeded
     }
     fn render(&self, ctx: &mut super::layout::LayoutCtx) {
-        draw_mping_modal(ctx.ctx, ctx.diagnostics, &mut ctx.modals.mping);
+        let playback_secs = ctx.playback.state.playback_position();
+        draw_mping_modal(
+            ctx.ctx,
+            ctx.diagnostics,
+            playback_secs,
+            &mut ctx.modals.mping,
+        );
     }
 }
 
@@ -47,6 +53,7 @@ impl super::layout::Layer for MpingModalLayer {
 fn draw_mping_modal(
     ctx: &egui::Context,
     diagnostics: &mut crate::subsystem::Diagnostics,
+    playback_secs: f64,
     modal_state: &mut MpingModalState,
 ) -> bool {
     if !diagnostics.mping.settings_modal_open {
@@ -120,7 +127,14 @@ fn draw_mping_modal(
             } else if diagnostics.mping.fetch_in_flight {
                 ui.label(RichText::new("Fetching reports\u{2026}").small().weak());
             } else if diagnostics.mping.last_success_ms > 0.0 {
-                let n = diagnostics.mping.reports.len();
+                // Count only reports visible at the current playhead — the
+                // marker layer hides any observed after the rendered time.
+                let n = diagnostics
+                    .mping
+                    .reports
+                    .iter()
+                    .filter(|r| r.visible_at(playback_secs))
+                    .count();
                 let total = diagnostics.mping.total_count;
                 let extra = if total > n {
                     format!(" (showing {} of {})", n, total)
