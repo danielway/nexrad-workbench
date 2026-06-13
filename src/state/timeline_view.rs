@@ -377,7 +377,7 @@ impl<'a> TimelineView<'a> {
         //    and the nearest-ghost countdown logic can target them.
         if let Some(pos) = self.live_position.as_ref() {
             if pos.volume_end >= start && pos.volume_start <= end {
-                containers.push(container_from_live(pos, &join, self.now_secs));
+                containers.push(container_from_live(pos, &join));
             }
             if let Some(ghost) = pos.next_scan_ghost.as_deref() {
                 if ghost.volume_end >= start && ghost.volume_start <= end {
@@ -441,6 +441,34 @@ impl<'a> TimelineView<'a> {
             cells.push(self.make_cell(scan, sw, state, None, join));
         }
 
+        // A scan indexed but with no cached sweeps (completeness Missing) is
+        // semantically "available, not downloaded" — match the Macro track and
+        // the old `draw_available_block`. Render the container hollow and, when
+        // it produced no cells (its sweeps are empty), surface one assumed
+        // Available cell for the selected tilt so the container reads as a
+        // tappable frame, not an empty box.
+        let is_available =
+            scan.completeness == Some(crate::data::ScanCompleteness::Missing) && cells.is_empty();
+        if is_available {
+            let state = if in_flight {
+                FrameCellState::InFlight
+            } else if failed {
+                FrameCellState::Failed
+            } else {
+                FrameCellState::Available
+            };
+            cells.push(FrameCell {
+                start_secs: scan.start_time,
+                end_secs: clamped_end,
+                elevation_number: join.tilt.unwrap_or(0),
+                elevation_angle: 0.0,
+                state,
+                chunks: None,
+                is_active: false,
+                is_prev_active: false,
+            });
+        }
+
         ScanContainer {
             start_secs: scan.start_time,
             end_secs: clamped_end,
@@ -448,7 +476,7 @@ impl<'a> TimelineView<'a> {
             vcp: scan.vcp,
             cells,
             sweep_spans,
-            is_available: false,
+            is_available,
             is_live: false,
         }
     }
@@ -509,6 +537,16 @@ fn ring_flags(join: &FrameJoinInputs<'_>, key_secs: f64, elev: u8) -> (bool, boo
     (is_active, is_prev_active)
 }
 
+/// Ring flags keyed by ELEVATION only — for the live volume, which is unique,
+/// so the on-GPU cut is identified by its elevation without a timestamp match
+/// (whose tolerance the collection-adjusted `volume_start` can exceed).
+fn ring_flags_by_elevation(join: &FrameJoinInputs<'_>, elev: u8) -> (bool, bool) {
+    let matches = |o: Option<(f64, u8)>| o.is_some_and(|(_, en)| en == elev);
+    let is_active = matches(join.active);
+    let is_prev_active = !is_active && matches(join.prev_active);
+    (is_active, is_prev_active)
+}
+
 /// Build an Available container from an archive shadow boundary. The selected
 /// tilt is assumed to exist (one hollow cell); download/failure inputs upgrade
 /// it to InFlight / Queued / Failed as appropriate.
@@ -551,12 +589,7 @@ fn container_from_shadow(b: &ScanBoundary, join: &FrameJoinInputs<'_>) -> ScanCo
 /// pulsing) matching cell for the collecting cut, cached matching cells, and
 /// dashed projected ghosts for matching tilts not yet collected. Non-matching
 /// sweeps contribute only to `sweep_spans` (the faint sub-texture).
-fn container_from_live(
-    pos: &ScanProjection,
-    join: &FrameJoinInputs<'_>,
-    now_secs: f64,
-) -> ScanContainer {
-    let _ = now_secs;
+fn container_from_live(pos: &ScanProjection, join: &FrameJoinInputs<'_>) -> ScanContainer {
     let key_secs = pos.volume_start;
     let sweep_spans: Vec<(f64, f64)> = pos
         .sweeps
@@ -582,7 +615,12 @@ fn container_from_live(
             SweepProjectionStatus::AvailableNotCollected => (FrameCellState::Available, None),
             SweepProjectionStatus::FutureExpected => (FrameCellState::Projected, None),
         };
-        let (is_active, is_prev_active) = ring_flags(join, key_secs, sp.elevation_number);
+        // The live volume is unique, so its on-GPU cut is identified by
+        // ELEVATION alone — `pos.volume_start` (collection-adjusted) can drift
+        // from the displayed cut's storage-key timestamp by more than the ring
+        // tolerance, which would otherwise drop the active highlight while
+        // streaming.
+        let (is_active, is_prev_active) = ring_flags_by_elevation(join, sp.elevation_number);
         cells.push(FrameCell {
             start_secs: sp.collection_start_secs,
             end_secs: sp.collection_end_secs,
@@ -1106,6 +1144,26 @@ mod tests {
         // Same scan resolved for velocity → Cached.
         let c = view.frame_containers_in_range(0.0, 5_000.0, empty_join("velocity", Some(1)));
         assert_eq!(c[0].cells[0].state, FrameCellState::Cached);
+    }
+
+    /// A cached scan whose completeness is `Missing` (indexed, nothing
+    /// downloaded, no sweeps) renders as an Available container with one
+    /// assumed Available cell for the selected tilt — not a solid empty box.
+    #[wasm_bindgen_test]
+    fn join_missing_scan_is_available() {
+        let mut missing = cached_scan(1_000.0, Vec::new());
+        missing.completeness = Some(crate::data::ScanCompleteness::Missing);
+        let cache = RadarTimeline {
+            scans: vec![missing],
+        };
+        let shadows: Vec<ScanBoundary> = Vec::new();
+        let view = TimelineView::build(&cache, &shadows, None, None, Some(1), 2_000.0);
+        let c = view.frame_containers_in_range(0.0, 5_000.0, empty_join("reflectivity", Some(1)));
+        assert_eq!(c.len(), 1);
+        assert!(c[0].is_available);
+        assert_eq!(c[0].cells.len(), 1);
+        assert_eq!(c[0].cells[0].state, FrameCellState::Available);
+        assert_eq!(c[0].cells[0].elevation_number, 1);
     }
 
     /// The live in-progress volume becomes one container: collecting cut →

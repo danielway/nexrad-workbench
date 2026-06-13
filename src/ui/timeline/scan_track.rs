@@ -111,9 +111,9 @@ pub(super) fn render_macro_track(
     // Shadow (server-available) regions: hollow/dashed, merged like before.
     render_shadow_regions(painter, frame, fade);
 
-    // In-flight / queued acquisition ghosts at this tier: a faint combined
-    // region so the user still sees something is downloading (the per-cell
-    // detail is the Micro tier's job).
+    // In-flight acquisition at this tier: a faint combined region so the user
+    // still sees something is downloading. Queued/per-cell detail is the Micro
+    // tier's job (zoom in to see the hatch + chunk segmentation).
     render_macro_acquisition(painter, frame, progress, fade);
 }
 

@@ -48,9 +48,10 @@ pub(super) struct CellAnim {
 }
 
 /// Paint one scan container and its frame cells onto the main track. Appends
-/// any failed-cell ticks to `failed_ticks`. `nearest_ghost_key` identifies the
-/// container whose first projected cell should carry the countdown (the nearest
-/// future ghost); `countdown_secs` is its remaining time.
+/// any failed-cell ticks to `failed_ticks`. When `carries_countdown` is set,
+/// the container owns the "next data" countdown: it lands on the in-flight cell
+/// (next chunk) if one has chunk telemetry, otherwise on the first projected
+/// cell ("0.5° in ~Ns"). `countdown_secs` is the remaining time.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_container(
     painter: &Painter,
@@ -201,8 +202,12 @@ fn paint_cell(
         }
         FrameCellState::InFlight => {
             paint_inflight(painter, frame, cell, rect, anim, countdown_secs);
-            // Live in-flight cells may carry the next-chunk countdown; that is
-            // separate from the projected-ghost countdown, so don't mark it.
+            // A live in-flight cell with chunk telemetry draws the next-chunk
+            // "Ns" in its filling slot; consume the container's countdown so a
+            // later projected cell in the same container doesn't double it.
+            if countdown_secs.is_some() && cell.chunks.is_some() {
+                consumed_countdown = true;
+            }
         }
         FrameCellState::Queued => {
             // Faint diagonal hatch — distinct from the dashed Available outline.
@@ -342,9 +347,16 @@ fn paint_inflight(
                     painter.rect_filled(slot_rect, 1.0, tl_colors::cell_inflight(dark));
                 } else if slot == received {
                     // Partial fill for the currently-accumulating chunk, plus
-                    // the next-chunk countdown.
+                    // the next-chunk countdown. `partial_radials` counts the
+                    // whole in-progress sweep, so subtract the radials already
+                    // accounted for by completed chunks to get this chunk's
+                    // progress (otherwise the slot saturates after one chunk's
+                    // worth of radials).
                     let radials_per_chunk = (360.0 / n as f32).max(1.0);
-                    let frac = (chunks.partial_radials as f32 / radials_per_chunk).clamp(0.0, 1.0);
+                    let in_this_chunk = (chunks.partial_radials as f32
+                        - received as f32 * radials_per_chunk)
+                        .max(0.0);
+                    let frac = (in_this_chunk / radials_per_chunk).clamp(0.0, 1.0);
                     if frac > 0.0 {
                         let partial = Rect::from_min_max(
                             slot_rect.min,

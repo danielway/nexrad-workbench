@@ -464,7 +464,12 @@ pub(super) fn render_timeline(
     // Micro path (frames-first). Drawn when in Micro or morphing into/out of
     // it; cell heights + alpha scale by `micro_t` so they collapse/expand.
     if tier == TimelineTier::Micro || morphing {
-        let pulse = live.mode_state.pulse_alpha();
+        // Free-running pulse for archive in-flight cells — independent of the
+        // live-stream pulse (which is frozen at 0 when not streaming), so a
+        // pure archive download still animates. Same 0..1 sine the old
+        // download ghosts used.
+        let anim_time = ui.ctx().input(|i| i.time);
+        let pulse = (0.5 + 0.5 * (anim_time * 3.0).sin()) as f32;
         let anim = CellAnim {
             pulse,
             reduced_motion: reduced,
@@ -488,29 +493,44 @@ pub(super) fn render_timeline(
             .view
             .frame_containers_in_range(view_start, view_end, join);
 
-        // The nearest projected ghost (smallest start in the future) carries
-        // the countdown including tilt identity.
+        // Which container carries the "next data" countdown (tilt + seconds).
+        // It is whichever has the next matching cell still to receive data: the
+        // live in-progress container (its in-flight cut, or its first projected
+        // cut when waiting between cuts) wins; otherwise the nearest projected
+        // ghost (e.g. the next-volume ghost). Identified by INDEX so two
+        // containers can't both claim it via f64-equal keys.
         let countdown = live.countdown_remaining_secs(frame.now_secs);
-        let nearest_ghost_key = containers
+        use crate::state::FrameCellState;
+        let countdown_idx = containers
             .iter()
-            .filter(|c| {
-                c.cells
-                    .iter()
-                    .any(|cell| cell.state == crate::state::FrameCellState::Projected)
-                    && c.start_secs >= frame.now_secs - 1.0
+            .enumerate()
+            .filter(|(_, c)| {
+                // Eligible: the live container, or a future ghost container, that
+                // has a matching cell still awaiting data.
+                let has_pending = c.cells.iter().any(|cell| {
+                    matches!(
+                        cell.state,
+                        FrameCellState::InFlight | FrameCellState::Projected
+                    )
+                });
+                has_pending && (c.is_live || c.start_secs >= frame.now_secs - 1.0)
             })
-            .min_by(|a, b| {
-                a.start_secs
-                    .partial_cmp(&b.start_secs)
-                    .unwrap_or(std::cmp::Ordering::Equal)
+            // The live container sorts before future ghosts (its start is now/past
+            // but it owns the live edge); among ghosts, the soonest.
+            .min_by(|(_, a), (_, b)| {
+                b.is_live.cmp(&a.is_live).then(
+                    a.start_secs
+                        .partial_cmp(&b.start_secs)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
             })
-            .map(|c| c.key_secs);
+            .map(|(i, _)| i);
 
         // The morph cross-fade is the cell-height collapse applied inside
         // `paint_container` (cells fold into ticks), keyed on `micro_t` via
         // `anim.morph`. The Macro layer fades in opposite via its `fade`.
-        for container in &containers {
-            let carries = nearest_ghost_key == Some(container.key_secs);
+        for (i, container) in containers.iter().enumerate() {
+            let carries = countdown_idx == Some(i);
             paint_container(
                 &painter,
                 &frame,
