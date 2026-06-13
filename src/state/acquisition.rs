@@ -463,11 +463,29 @@ impl AcquisitionState {
             OperationKind::ArchiveDownload {
                 site_id, file_name, ..
             } => {
-                // Extract time portion from file name if possible
+                // Extract the HHMMSS time portion following the first `_`.
+                // Every slice is taken with `get` (char-boundary-safe): the
+                // outer `get(..i+7)` only guarantees a 6-byte string, but a
+                // multi-byte char inside it would make the inner byte offsets
+                // (0/2/4) land mid-codepoint, so byte-indexing `&t[0..2]` would
+                // panic the egui frame on a malformed (non-ASCII) name. Any
+                // `None` falls back to the raw file name.
+                //
+                // NB: this anchors on the first `_` (variable position),
+                // whereas `archive_index::parse_timestamp_from_name` reads a
+                // fixed position-13 window — different rules, so not factored
+                // into a shared helper.
                 let time_part = file_name
                     .find('_')
                     .and_then(|i| file_name.get(i + 1..i + 7))
-                    .map(|t| format!("{}:{}:{}", &t[0..2], &t[2..4], &t[4..6]))
+                    .and_then(|t| {
+                        Some(format!(
+                            "{}:{}:{}",
+                            t.get(0..2)?,
+                            t.get(2..4)?,
+                            t.get(4..6)?
+                        ))
+                    })
                     .unwrap_or_else(|| file_name.clone());
                 format!("{} {}", site_id, time_part)
             }
@@ -678,5 +696,286 @@ mod tests {
         acq.retry_failed(a);
         assert_eq!(acq.find(a).unwrap().status, OperationStatus::Queued);
         assert!(!acq.is_paused());
+    }
+
+    // ── operation_description: UTF-8 guard ──────────────────────────────────
+
+    /// The HHMMSS extraction must never panic on a multi-byte filename. A name
+    /// whose 6-byte window after the first `_` straddles a multi-byte char makes
+    /// the interior byte offsets land mid-codepoint; byte-slicing would panic the
+    /// egui frame, so we degrade to the raw file name instead.
+    #[wasm_bindgen_test]
+    fn operation_description_does_not_panic_on_multibyte_name() {
+        // "é" is two bytes (0xC3 0xA9). After the first '_', the 6-byte window
+        // is "1é234?" with multi-byte boundaries inside — get(0..2) splits 'é'.
+        let kind = OperationKind::ArchiveDownload {
+            site_id: "KDMX".to_string(),
+            file_name: "KDMX_1é2345_V06".to_string(),
+            scan_start: 1000,
+            scan_end: 1300,
+        };
+        let desc = AcquisitionState::operation_description(&kind);
+        // No panic, and it falls back to including the raw file name.
+        assert!(desc.contains("KDMX_1é2345_V06"), "got: {desc}");
+
+        // A clean ASCII name still parses to HH:MM:SS.
+        let ascii = OperationKind::ArchiveDownload {
+            site_id: "KDMX".to_string(),
+            file_name: "KDMX20240501_123456_V06".to_string(),
+            scan_start: 1000,
+            scan_end: 1300,
+        };
+        // First '_' is at the date/time boundary, so the 6 chars after it are
+        // "123456" → "12:34:56".
+        assert_eq!(
+            AcquisitionState::operation_description(&ascii),
+            "KDMX 12:34:56"
+        );
+    }
+
+    // ── latency_summary: percentile / average math ──────────────────────────
+
+    fn latency(fetch_ms: f64, e2e_ms: Option<f64>) -> ChunkLatencyMetrics {
+        ChunkLatencyMetrics {
+            chunk_index: 0,
+            first_radial_time_secs: None,
+            last_radial_time_secs: None,
+            fetch_latency_ms: fetch_ms,
+            download_complete_time_ms: 0.0,
+            end_to_end_latency_ms: e2e_ms,
+        }
+    }
+
+    /// Empty latency buffer yields no summary at all (not a zeroed/NaN one).
+    #[wasm_bindgen_test]
+    fn latency_summary_empty_is_none() {
+        let acq = AcquisitionState::default();
+        assert!(acq.latency_summary().is_none());
+    }
+
+    /// A single sample: avg == p50 == p95 == that value (n=1 → both percentile
+    /// indices resolve to 0).
+    #[wasm_bindgen_test]
+    fn latency_summary_single_sample() {
+        let mut acq = AcquisitionState::default();
+        acq.chunk_latencies.push(latency(42.0, Some(7.0)));
+        let s = acq.latency_summary().unwrap();
+        assert_eq!(s.avg_fetch_ms, 42.0);
+        assert_eq!(s.p50_fetch_ms, 42.0); // sorted[1/2] = sorted[0]
+        assert_eq!(s.p95_fetch_ms, 42.0); // sorted[(1*0.95)=0]
+        assert_eq!(s.avg_e2e_ms, Some(7.0));
+    }
+
+    /// n=2: the implementation indexes p50 = sorted[2/2] = sorted[1] = the MAX,
+    /// and p95 = sorted[(2*0.95)=1.9→1] = the max too. Pin that exact (slightly
+    /// asymmetric) indexing so a refactor can't silently shift it.
+    #[wasm_bindgen_test]
+    fn latency_summary_two_samples_index_the_upper() {
+        let mut acq = AcquisitionState::default();
+        acq.chunk_latencies.push(latency(10.0, None));
+        acq.chunk_latencies.push(latency(30.0, None));
+        let s = acq.latency_summary().unwrap();
+        assert_eq!(s.avg_fetch_ms, 20.0);
+        assert_eq!(s.p50_fetch_ms, 30.0); // sorted = [10,30]; index 1
+        assert_eq!(s.p95_fetch_ms, 30.0);
+    }
+
+    /// A known multi-sample set with hand-computed indices. 20 samples
+    /// 5,10,15,…,100 sorted. p50 = sorted[20/2] = sorted[10] = 55.
+    /// p95 = sorted[(20*0.95)=19.0→19] = sorted[19] = 100. avg = mean = 52.5.
+    #[wasm_bindgen_test]
+    fn latency_summary_multi_sample_hand_computed() {
+        let mut acq = AcquisitionState::default();
+        // Insert out of order to exercise the internal sort.
+        for k in [4u32, 0, 2, 1, 3] {
+            for j in 0..4 {
+                let v = (k * 4 + j + 1) as f64 * 5.0;
+                acq.chunk_latencies.push(latency(v, None));
+            }
+        }
+        assert_eq!(acq.chunk_latencies.len(), 20);
+        let s = acq.latency_summary().unwrap();
+        assert_eq!(s.avg_fetch_ms, 52.5);
+        assert_eq!(s.p50_fetch_ms, 55.0);
+        assert_eq!(s.p95_fetch_ms, 100.0);
+    }
+
+    /// When every chunk lacks an end-to-end latency, avg_e2e is None — never a
+    /// NaN from dividing a zero-length sum — while fetch stats still populate.
+    #[wasm_bindgen_test]
+    fn latency_summary_all_none_e2e_is_none_not_nan() {
+        let mut acq = AcquisitionState::default();
+        acq.chunk_latencies.push(latency(10.0, None));
+        acq.chunk_latencies.push(latency(20.0, None));
+        let s = acq.latency_summary().unwrap();
+        assert_eq!(s.avg_e2e_ms, None);
+        assert!(!s.avg_e2e_ms.unwrap_or(0.0).is_nan());
+        // Fetch stats still computed.
+        assert_eq!(s.avg_fetch_ms, 15.0);
+    }
+
+    // ── lifecycle transitions ───────────────────────────────────────────────
+
+    /// `cancel_all` cancels Active+Queued and forces Empty, but leaves
+    /// already-terminal (Completed/Failed) operations untouched.
+    #[wasm_bindgen_test]
+    fn cancel_all_cancels_active_and_queued_not_completed() {
+        let mut acq = AcquisitionState::default();
+        let active = acq.create_operation(download_kind(1000));
+        let queued = acq.create_operation(download_kind(2000));
+        let completed = acq.create_operation(download_kind(3000));
+        let failed = acq.create_operation(download_kind(4000));
+        acq.mark_active(active);
+        acq.mark_active(completed);
+        acq.mark_completed(completed, 10);
+        acq.mark_active(failed);
+        acq.mark_failed(failed, "boom".to_string());
+        // `queued` is left Queued.
+
+        acq.cancel_all();
+
+        assert_eq!(acq.find(active).unwrap().status, OperationStatus::Cancelled);
+        assert_eq!(acq.find(queued).unwrap().status, OperationStatus::Cancelled);
+        assert!(matches!(
+            acq.find(completed).unwrap().status,
+            OperationStatus::Completed { .. }
+        ));
+        assert!(matches!(
+            acq.find(failed).unwrap().status,
+            OperationStatus::Failed { .. }
+        ));
+        assert_eq!(acq.queue_state, QueueState::Empty);
+    }
+
+    /// `cancel_all_queued` cancels only Queued items and routes through
+    /// `update_queue_state`, which must NOT clobber a user Paused queue.
+    #[wasm_bindgen_test]
+    fn cancel_all_queued_leaves_paused_queue_paused() {
+        let mut acq = AcquisitionState::default();
+        let active = acq.create_operation(download_kind(1000));
+        let queued = acq.create_operation(download_kind(2000));
+        acq.mark_active(active);
+        acq.pause();
+        assert!(acq.is_paused());
+
+        acq.cancel_all_queued();
+
+        // Only the queued item was cancelled; the active one survives.
+        assert_eq!(acq.find(queued).unwrap().status, OperationStatus::Cancelled);
+        assert_eq!(acq.find(active).unwrap().status, OperationStatus::Active);
+        // Pause survives even though there's still an active op.
+        assert!(acq.is_paused());
+    }
+
+    /// `reorder_operation` clamps the delta at both ends of the deque, so moving
+    /// the first item up or the last item down is a no-op (no panic, no wrap).
+    #[wasm_bindgen_test]
+    fn reorder_operation_clamps_at_ends() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(1000));
+        let b = acq.create_operation(download_kind(2000));
+        let c = acq.create_operation(download_kind(3000));
+        let order = |acq: &AcquisitionState| -> Vec<OperationId> {
+            acq.operations.iter().map(|o| o.id).collect()
+        };
+        assert_eq!(order(&acq), vec![a, b, c]);
+
+        // Move the first item further up — clamped, no change.
+        acq.reorder_operation(a, -5);
+        assert_eq!(order(&acq), vec![a, b, c]);
+        // Move the last item further down — clamped, no change.
+        acq.reorder_operation(c, 5);
+        assert_eq!(order(&acq), vec![a, b, c]);
+        // A real in-bounds move still works (b down one → a, c, b).
+        acq.reorder_operation(b, 1);
+        assert_eq!(order(&acq), vec![a, c, b]);
+    }
+
+    /// `correlate_network_request` matches the NEWEST Active/Completed op and
+    /// ignores Queued/Cancelled ones.
+    #[wasm_bindgen_test]
+    fn correlate_returns_newest_active_match_ignoring_queued() {
+        let mut acq = AcquisitionState::default();
+        // Two downloads of the same file; only the second is Active. The first
+        // (`_old`) stays Queued and must be ignored by the correlator.
+        let _old = acq.create_operation(OperationKind::ArchiveDownload {
+            site_id: "KDMX".to_string(),
+            file_name: "KDMX20240501_120000_V06".to_string(),
+            scan_start: 1000,
+            scan_end: 1300,
+        });
+        let new = acq.create_operation(OperationKind::ArchiveDownload {
+            site_id: "KDMX".to_string(),
+            file_name: "KDMX20240501_120000_V06".to_string(),
+            scan_start: 1000,
+            scan_end: 1300,
+        });
+        // `old` stays Queued; `new` goes Active.
+        acq.mark_active(new);
+        let url = "https://s3/.../KDMX20240501_120000_V06";
+        assert_eq!(acq.correlate_network_request(url), Some(new));
+
+        // A Cancelled op is never correlated.
+        acq.cancel_operation(new);
+        assert_eq!(acq.correlate_network_request(url), None);
+    }
+
+    /// `url_matches_operation` table: ArchiveDownload by file-name substring,
+    /// ArchiveListing by date-prefix AND site, RealtimeChunk by the chunks
+    /// bucket AND site — plus a non-matching URL for each.
+    #[wasm_bindgen_test]
+    fn url_matches_operation_rules() {
+        let acq = AcquisitionState::default();
+
+        let dl = OperationKind::ArchiveDownload {
+            site_id: "KDMX".to_string(),
+            file_name: "KDMX20240501_120000_V06".to_string(),
+            scan_start: 0,
+            scan_end: 0,
+        };
+        assert!(acq.url_matches_operation("https://s3/KDMX20240501_120000_V06", &dl));
+        assert!(!acq.url_matches_operation("https://s3/KDMX20240501_999999_V06", &dl));
+
+        let listing = OperationKind::ArchiveListing {
+            site_id: "KDMX".to_string(),
+            date: chrono::NaiveDate::from_ymd_opt(2024, 5, 1).unwrap(),
+        };
+        // Needs BOTH the date prefix and the site.
+        assert!(acq.url_matches_operation("https://s3/?prefix=2024/05/01/KDMX/", &listing));
+        // Right date, wrong site → no match (AND rule).
+        assert!(!acq.url_matches_operation("https://s3/?prefix=2024/05/01/KABR/", &listing));
+        // Right site, wrong date → no match.
+        assert!(!acq.url_matches_operation("https://s3/?prefix=2024/05/02/KDMX/", &listing));
+
+        let chunk = OperationKind::RealtimeChunk {
+            site_id: "KDMX".to_string(),
+            chunk_index: 3,
+            is_start: false,
+            is_end: false,
+            scan_timestamp: 1000,
+        };
+        // Needs BOTH the chunks bucket and the site.
+        assert!(acq.url_matches_operation("https://nexrad-level2-chunks/KDMX/...", &chunk));
+        // Chunks bucket but a different site → no match.
+        assert!(!acq.url_matches_operation("https://nexrad-level2-chunks/KABR/...", &chunk));
+        // Right site but the archive (not chunks) bucket → no match.
+        assert!(!acq.url_matches_operation("https://nexrad-level2/KDMX/...", &chunk));
+    }
+
+    /// `mark_completed` with no recorded start time falls back to a 0.0 duration
+    /// rather than producing a negative/garbage value.
+    #[wasm_bindgen_test]
+    fn mark_completed_without_start_uses_zero_duration() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(1000));
+        // Skip mark_active → started_at_ms stays None.
+        acq.mark_completed(a, 123);
+        match acq.find(a).unwrap().status {
+            OperationStatus::Completed { duration_ms, bytes } => {
+                assert_eq!(duration_ms, 0.0);
+                assert_eq!(bytes, 123);
+            }
+            ref other => panic!("expected Completed, got {other:?}"),
+        }
     }
 }
