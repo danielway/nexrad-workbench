@@ -241,7 +241,18 @@ impl WorkbenchApp {
                 let protecting_live_partial = self.live.mode_state.is_active()
                     && !self.live.is_detached(&self.playback.state)
                     && self.gpu_holds_live_sweep();
-                if !protecting_live_partial {
+                // Don't blank merely because the playhead drifted into a gap
+                // (spec §11.2): a Blank with NO scan covering the playhead is the
+                // "drifted away in time" case — keep the held frame and let the
+                // canvas caption surface the discrepancy. Blank only when a scan
+                // IS present but the selected elevation/product isn't in it (the
+                // honest "nothing here for your filter" case).
+                let scan_covers_playhead = self
+                    .timeline
+                    .scans
+                    .find_recent_scan(self.playback.state.playback_position(), MAX_SCAN_AGE_SECS)
+                    .is_some();
+                if !protecting_live_partial && scan_covers_playhead {
                     self.clear_display_no_sweep();
                 }
             }
