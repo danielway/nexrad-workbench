@@ -344,6 +344,104 @@ mod tests {
         assert_eq!(result[1].0.name, "b");
     }
 
+    /// Half-open boundary inclusivity: the filter is `b.start < range_end &&
+    /// b.end > range_start`. A range whose `end` equals a scan's `start` excludes
+    /// that scan; a range whose `start` equals a scan's `end` excludes the
+    /// earlier scan.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn scans_intersecting_half_open_boundaries() {
+        // Boundaries: a [1000,1300), b [1300,1600), c [1600,1900).
+        let l = listing(vec![file("a", 1000), file("b", 1300), file("c", 1600)]);
+
+        // range_end == b.start (1300): b is excluded (1300 < 1300 is false); only
+        // a intersects.
+        let r = l.scans_intersecting(1100, 1300);
+        let names: Vec<&str> = r.iter().map(|(f, _)| f.name.as_str()).collect();
+        assert_eq!(names, vec!["a"]);
+
+        // range_start == a.end (1300 == b.start, but a.end is also 1300): a is
+        // excluded (a.end 1300 > 1300 is false); b is the first match.
+        let r = l.scans_intersecting(1300, 1500);
+        let names: Vec<&str> = r.iter().map(|(f, _)| f.name.as_str()).collect();
+        assert_eq!(names, vec!["b"]);
+
+        // A range fully inside a single scan returns just that scan.
+        let r = l.scans_intersecting(1350, 1400);
+        let names: Vec<&str> = r.iter().map(|(f, _)| f.name.as_str()).collect();
+        assert_eq!(names, vec!["b"]);
+    }
+
+    /// The single-file zero-margin case: one file → boundary [start, start+300).
+    /// A range touching the synthetic end is excluded; a range inside is matched.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn scans_intersecting_single_file_estimated_end() {
+        let l = listing(vec![file("a", 1000)]); // [1000, 1300)
+        assert_eq!(l.scans_intersecting(1000, 1300).len(), 1); // overlaps start
+        assert_eq!(l.scans_intersecting(1300, 1400).len(), 0); // range_start==end
+        assert_eq!(l.scans_intersecting(500, 900).len(), 0); // entirely before
+    }
+
+    // --- all_boundaries_for_site ---
+
+    /// Merges every cached listing for one site, sorts ascending by start,
+    /// dedups identical (start,end) pairs, and excludes other sites' listings.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn all_boundaries_merges_sorts_dedups_and_filters_site() {
+        let mut idx = ArchiveIndex::new();
+        let day1 = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        let day2 = NaiveDate::from_ymd_opt(2024, 5, 2).unwrap();
+
+        // Two KDMX listings on different dates, inserted out of start order.
+        // Listing on day2 starts later (3000+) than day1 (1000+).
+        idx.listings.insert(
+            ArchiveIndexKey::new("KDMX", day2),
+            listing(vec![file("c", 3000), file("d", 3300)]),
+        );
+        idx.listings.insert(
+            ArchiveIndexKey::new("KDMX", day1),
+            // 'a' shares its (start,end) with 'b' below to exercise dedup:
+            // both [1000,1300).
+            listing(vec![file("a", 1000), file("b", 1300)]),
+        );
+        // A second day1-equivalent listing under a DIFFERENT key would overwrite
+        // in the map; instead add an overlapping duplicate within KDMX by reusing
+        // the same boundaries via another date that yields the same (start,end).
+        // Simpler: another site's listing must be excluded entirely.
+        idx.listings.insert(
+            ArchiveIndexKey::new("KABR", day1),
+            listing(vec![file("x", 5000), file("y", 5300)]),
+        );
+
+        let b = idx.all_boundaries_for_site("KDMX");
+        // KDMX boundaries only (KABR's 5000/5300 excluded), sorted ascending.
+        let starts: Vec<i64> = b.iter().map(|sb| sb.start).collect();
+        assert_eq!(starts, vec![1000, 1300, 3000, 3300]);
+        // None of KABR's boundaries leaked in.
+        assert!(b.iter().all(|sb| sb.start != 5000 && sb.start != 5300));
+    }
+
+    /// Identical (start,end) boundaries appearing across listings collapse to a
+    /// single entry after the ascending sort + dedup.
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    fn all_boundaries_dedups_identical_pairs() {
+        let mut idx = ArchiveIndex::new();
+        let day1 = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        let day2 = NaiveDate::from_ymd_opt(2024, 5, 2).unwrap();
+        // Two listings that each yield the exact same two-file boundaries
+        // [1000,1300) and [1300,1600).
+        let same = || listing(vec![file("a", 1000), file("b", 1300), file("c", 1600)]);
+        idx.listings
+            .insert(ArchiveIndexKey::new("KDMX", day1), same());
+        idx.listings
+            .insert(ArchiveIndexKey::new("KDMX", day2), same());
+
+        let b = idx.all_boundaries_for_site("KDMX");
+        // Without dedup there would be 6 entries; identical (start,end) pairs
+        // collapse → 3 unique boundaries.
+        let pairs: Vec<(i64, i64)> = b.iter().map(|sb| (sb.start, sb.end)).collect();
+        assert_eq!(pairs, vec![(1000, 1300), (1300, 1600), (1600, 1900)]);
+    }
+
     // --- ArchiveIndex ---
 
     #[wasm_bindgen_test::wasm_bindgen_test]

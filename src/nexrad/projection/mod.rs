@@ -410,4 +410,140 @@ mod tests {
         assert!(!projection.next_target_in_next_volume());
         assert!(projection.current_volume_chunks().is_empty());
     }
+
+    // ── ScanProjection per-frame query methods ──────────────────────────────
+
+    fn sweep(elev: u8, start: f64, end: f64) -> SweepProjection {
+        SweepProjection {
+            elevation_number: elev,
+            elevation_angle: 0.5 * elev as f32,
+            scan_role: ProjectionScanRole::CurrentInProgress,
+            status: SweepProjectionStatus::FutureExpected,
+            timing: SweepTimingProvenance::Estimated,
+            collection_start_secs: start,
+            collection_end_secs: end,
+            chunks_in_sweep: 0,
+            chunks_received: 0,
+            radials_received: 0,
+            azimuth_rate_dps: 20.0,
+            chunks: Vec::new(),
+        }
+    }
+
+    fn scan(sweeps: Vec<SweepProjection>, vol_start: f64, vol_end: f64) -> ScanProjection {
+        ScanProjection {
+            vcp_number: 0,
+            vcp_pattern: None,
+            roster: crate::state::VolumeElevationRoster::default(),
+            in_progress_elevation: None,
+            in_progress_radials: None,
+            volume_start: vol_start,
+            volume_end: vol_end,
+            sweeps,
+            extrapolation: None,
+            next_scan_ghost: None,
+        }
+    }
+
+    /// With live extrapolation present, azimuth is `last_az + dt*rate` wrapped to
+    /// [0,360); outside the (0..=120s) dt window it returns None.
+    #[wasm_bindgen_test]
+    fn estimated_azimuth_extrapolation_window_and_wrap() {
+        let mut sp = scan(vec![sweep(1, 1000.0, 1010.0)], 1000.0, 1010.0);
+        sp.extrapolation = Some(ExtrapolationState {
+            last_radial_azimuth: 350.0,
+            last_radial_time: 1000.0,
+            degrees_per_sec: 20.0,
+        });
+        // dt = 1.0 → 350 + 20 = 370 → wraps to 10.
+        let az = sp.estimated_azimuth_at(1001.0).unwrap();
+        assert!((az - 10.0).abs() < 1e-3, "got {az}");
+
+        // dt = 0 (boundary, inclusive) → 350.
+        assert!((sp.estimated_azimuth_at(1000.0).unwrap() - 350.0).abs() < 1e-3);
+        // dt = 120 (upper boundary, inclusive) → 350 + 2400 = 2750 → 2750%360=230.
+        assert!((sp.estimated_azimuth_at(1120.0).unwrap() - 230.0).abs() < 1e-3);
+
+        // dt just outside the window (negative and >120) → None.
+        assert!(sp.estimated_azimuth_at(999.0).is_none());
+        assert!(sp.estimated_azimuth_at(1121.0).is_none());
+    }
+
+    /// Negative arithmetic wraps positively: a backward azimuth never goes
+    /// negative (the `(x%360+360)%360` normalization).
+    #[wasm_bindgen_test]
+    fn estimated_azimuth_negative_wraps_positive() {
+        let mut sp = scan(vec![sweep(1, 1000.0, 1010.0)], 1000.0, 1010.0);
+        sp.extrapolation = Some(ExtrapolationState {
+            last_radial_azimuth: 10.0,
+            last_radial_time: 1000.0,
+            degrees_per_sec: -20.0, // rotating "backward"
+        });
+        // dt=1 → 10 - 20 = -10 → wraps to 350.
+        let az = sp.estimated_azimuth_at(1001.0).unwrap();
+        assert!((az - 350.0).abs() < 1e-3, "got {az}");
+    }
+
+    /// Without extrapolation, azimuth interpolates within the containing sweep
+    /// by progress fraction — and does NOT extrapolate outside any sweep.
+    #[wasm_bindgen_test]
+    fn estimated_azimuth_archive_interpolation_no_extrapolation() {
+        let sp = scan(vec![sweep(1, 1000.0, 1010.0)], 1000.0, 1010.0);
+        // Halfway through the 10s sweep → 180°.
+        let az = sp.estimated_azimuth_at(1005.0).unwrap();
+        assert!((az - 180.0).abs() < 1e-3, "got {az}");
+        // Start of sweep → 0°.
+        assert!((sp.estimated_azimuth_at(1000.0).unwrap() - 0.0).abs() < 1e-3);
+        // Outside every sweep → None (no extrapolation in the archive path).
+        assert!(sp.estimated_azimuth_at(2000.0).is_none());
+
+        // A zero-duration sweep can't interpolate → None.
+        let degenerate = scan(vec![sweep(1, 1000.0, 1000.0)], 1000.0, 1000.0);
+        assert!(degenerate.estimated_azimuth_at(1000.0).is_none());
+    }
+
+    /// `elevation_index_at` four-tier fallback: containment → next not-yet-ended
+    /// → last → None for an empty scan.
+    #[wasm_bindgen_test]
+    fn elevation_index_fallback_tiers() {
+        let sweeps = vec![
+            sweep(1, 1000.0, 1010.0),
+            sweep(2, 1020.0, 1030.0),
+            sweep(3, 1040.0, 1050.0),
+        ];
+        let sp = scan(sweeps, 1000.0, 1050.0);
+
+        // Tier 1 — containment.
+        assert_eq!(sp.elevation_index_at(1025.0), Some(1));
+        // Tier 1 boundary (end inclusive) still contains.
+        assert_eq!(sp.elevation_index_at(1010.0), Some(0));
+        // Tier 2 — in the gap before sweep 2 (1015 < sweep2.end), picks the next
+        // not-yet-ended sweep, which is index 1 (its end 1030 > 1015).
+        assert_eq!(sp.elevation_index_at(1015.0), Some(1));
+        // Before everything → first sweep (next not-yet-ended).
+        assert_eq!(sp.elevation_index_at(500.0), Some(0));
+        // Tier 3 — past the last sweep's end → last index.
+        assert_eq!(sp.elevation_index_at(9999.0), Some(2));
+
+        // Tier 4 — empty scan → None.
+        let empty = scan(vec![], 1000.0, 1050.0);
+        assert_eq!(empty.elevation_index_at(1000.0), None);
+    }
+
+    /// `progress_at` is the volume fraction, clamped to [0,1], and 0.0 for a
+    /// zero/negative-duration volume.
+    #[wasm_bindgen_test]
+    fn progress_at_boundaries_and_clamp() {
+        let sp = scan(vec![sweep(1, 1000.0, 1100.0)], 1000.0, 1100.0);
+        assert_eq!(sp.progress_at(1000.0), 0.0);
+        assert_eq!(sp.progress_at(1100.0), 1.0);
+        assert!((sp.progress_at(1050.0) - 0.5).abs() < 1e-6);
+        // Clamp below and above.
+        assert_eq!(sp.progress_at(900.0), 0.0);
+        assert_eq!(sp.progress_at(2000.0), 1.0);
+
+        // Zero-duration volume → 0.0 (no divide-by-zero).
+        let degenerate = scan(vec![], 1000.0, 1000.0);
+        assert_eq!(degenerate.progress_at(1000.0), 0.0);
+    }
 }

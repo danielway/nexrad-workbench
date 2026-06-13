@@ -891,4 +891,126 @@ mod tests {
         assert_eq!(out[2].start, 1100.0);
         assert_eq!(out[2].timing, SweepTimingProvenance::Projected);
     }
+
+    // ── anchor-interpolation branch (no chunk data, no projection) ──────────
+
+    /// Prior-meta-only: a not-yet-collected forecast cut with no chunk data and
+    /// no library projection interpolates its start from the most recent
+    /// completed sweep's end, weighted across the remaining cuts → Anchored,
+    /// within the volume bounds. Hand-computed for 3 cuts, 100s each.
+    #[wasm_bindgen_test]
+    fn cascade_anchor_interpolates_from_prior_meta() {
+        // elev 1 complete (anchor at end=1010); elev 2 & 3 forecast-only.
+        let metas = vec![crate::data::CachedSweep {
+            start: 1000.0,
+            end: 1010.0,
+            elevation: 0.5,
+            elevation_number: 1,
+            start_azimuth: 0.0,
+            cached_products: vec![],
+        }];
+        let received = [true, false, false];
+        let durs = [100.0, 100.0, 100.0];
+        let out = cascade_current_sweeps(&CascadeInputs {
+            vol_start: 1000.0,
+            expected_count: 3,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            expected_dur: 300.0,
+            current_volume_chunks: &[], // no projection
+            completed_sweep_metas: &metas,
+            chunk_elev_spans: &[], // no chunk data
+            current_elev_chunks: &[],
+            in_progress_elevation: None,
+            in_progress_radials: None,
+            fallback_sweep_durations: &durs,
+        });
+        assert_eq!(out.len(), 3);
+        // elev 1: observed from meta.
+        assert_eq!((out[0].start, out[0].end), (1000.0, 1010.0));
+        assert_eq!(out[0].timing, SweepTimingProvenance::Observed);
+
+        // elev 2: anchor end 1010, offset 0 (first remaining cut) → 1010..1110.
+        assert_eq!(out[1].timing, SweepTimingProvenance::Anchored);
+        assert!((out[1].start - 1010.0).abs() < 1e-9, "got {}", out[1].start);
+        assert!((out[1].end - 1110.0).abs() < 1e-9, "got {}", out[1].end);
+
+        // elev 3: remaining_dur = 1300-1010 = 290, remaining_weight = 200,
+        // offset = (100/200)*290 = 145 → start 1155, end 1255.
+        assert_eq!(out[2].timing, SweepTimingProvenance::Anchored);
+        assert!((out[2].start - 1155.0).abs() < 1e-9, "got {}", out[2].start);
+        assert!((out[2].end - 1255.0).abs() < 1e-9, "got {}", out[2].end);
+
+        // All Anchored starts stay inside the volume bounds.
+        for b in &out {
+            assert!(b.start >= 1000.0 && b.end <= 1300.0 + 1e-9);
+        }
+    }
+
+    /// No prior meta and no chunk/projection data → the cut can't be anchored;
+    /// it falls back to a purely VCP-weighted Estimated bound from `vol_start`.
+    #[wasm_bindgen_test]
+    fn cascade_no_prior_meta_yields_estimated() {
+        let received = [false, false];
+        let durs = [100.0, 100.0];
+        let out = cascade_current_sweeps(&CascadeInputs {
+            vol_start: 1000.0,
+            expected_count: 2,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            expected_dur: 200.0,
+            current_volume_chunks: &[],
+            completed_sweep_metas: &[], // no anchor available
+            chunk_elev_spans: &[],
+            current_elev_chunks: &[],
+            in_progress_elevation: None,
+            in_progress_radials: None,
+            fallback_sweep_durations: &durs,
+        });
+        assert_eq!(out.len(), 2);
+        // weighted_durations = [100,100]; offsets = [0,100].
+        assert_eq!(out[0].timing, SweepTimingProvenance::Estimated);
+        assert!((out[0].start - 1000.0).abs() < 1e-9);
+        assert!((out[0].end - 1100.0).abs() < 1e-9);
+        assert_eq!(out[1].timing, SweepTimingProvenance::Estimated);
+        assert!((out[1].start - 1100.0).abs() < 1e-9);
+        assert!((out[1].end - 1200.0).abs() < 1e-9);
+    }
+
+    /// Zero remaining weight (degenerate: expected_dur 0 with no fallback
+    /// durations → all weighted durations 0): the anchor-interpolation collapses
+    /// to the anchor end itself, still Anchored.
+    #[wasm_bindgen_test]
+    fn cascade_zero_remaining_weight_falls_back_to_anchor_end() {
+        let metas = vec![crate::data::CachedSweep {
+            start: 1000.0,
+            end: 1010.0,
+            elevation: 0.5,
+            elevation_number: 1,
+            start_azimuth: 0.0,
+            cached_products: vec![],
+        }];
+        let received = [true, false];
+        let out = cascade_current_sweeps(&CascadeInputs {
+            vol_start: 1000.0,
+            expected_count: 2,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            expected_dur: 0.0, // → weighted_durations all 0
+            current_volume_chunks: &[],
+            completed_sweep_metas: &metas,
+            chunk_elev_spans: &[],
+            current_elev_chunks: &[],
+            in_progress_elevation: None,
+            in_progress_radials: None,
+            fallback_sweep_durations: &[], // empty → even distribution of 0
+        });
+        // elev 2: remaining_weight_sum == 0 → (ae, ae + 0) = (1010, 1010).
+        assert_eq!(out[1].timing, SweepTimingProvenance::Anchored);
+        assert!((out[1].start - 1010.0).abs() < 1e-9, "got {}", out[1].start);
+        assert!((out[1].end - 1010.0).abs() < 1e-9, "got {}", out[1].end);
+    }
 }

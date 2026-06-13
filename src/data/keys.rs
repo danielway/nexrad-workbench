@@ -1031,6 +1031,167 @@ mod tests {
         assert!(!empty.has_elevation(1));
     }
 
+    /// `completeness()` can never produce the (planned=Some, has_vcp=false)
+    /// combination that `from_counts` accepts as a public input: both are
+    /// derived from `self.vcp`, so `planned_sweep_count()` is `Some` iff
+    /// `has_vcp()`. Pins the contract divergence noted in the audit.
+    #[wasm_bindgen_test]
+    fn completeness_never_produces_planned_without_vcp() {
+        let mk = |vcp: Option<ExtractedVcp>, cached: usize| ScanIndexEntry {
+            scan: ScanKey::from_secs("KDMX", 1_700_000_000),
+            vcp,
+            file_name: None,
+            cached_sweeps: (0..cached)
+                .map(|i| CachedSweep {
+                    start: 0.0,
+                    end: 0.0,
+                    elevation: 0.5,
+                    elevation_number: i as u8 + 1,
+                    start_azimuth: 0.0,
+                    cached_products: vec![],
+                })
+                .collect(),
+            total_size_bytes: 0,
+        };
+        // No VCP → planned is None, regardless of cached count.
+        let no_vcp = mk(None, 5);
+        assert!(!no_vcp.has_vcp());
+        assert_eq!(no_vcp.planned_sweep_count(), None);
+        assert_eq!(no_vcp.completeness(), ScanCompleteness::PartialNoVcp);
+
+        // With a VCP → planned is Some and has_vcp is true together.
+        let with_vcp = mk(
+            Some(ExtractedVcp {
+                number: 212,
+                elevations: vec![elev(Some(20.0)), elev(Some(20.0))],
+            }),
+            1,
+        );
+        assert!(with_vcp.has_vcp());
+        assert_eq!(with_vcp.planned_sweep_count(), Some(2));
+        assert_eq!(with_vcp.completeness(), ScanCompleteness::PartialWithVcp);
+    }
+
+    // ── ExtractedVcp::sweep_durations / estimated_volume_duration ────────────
+
+    fn elev(rate: Option<f32>) -> ExtractedVcpElevation {
+        ExtractedVcpElevation {
+            angle: 0.5,
+            waveform: "CS".to_string(),
+            prf_number: 1,
+            is_sails: false,
+            is_mrle: false,
+            is_base_tilt: false,
+            azimuth_rate: rate,
+        }
+    }
+
+    /// Method A: with explicit azimuth rates the per-cut durations are
+    /// proportional to 1/rate and sum to the total volume duration. A faster
+    /// rate yields a shorter sweep.
+    #[wasm_bindgen_test]
+    fn sweep_durations_method_a_proportional_to_inverse_rate() {
+        let vcp = ExtractedVcp {
+            number: 212, // precip (not clear-air)
+            elevations: vec![elev(Some(20.0)), elev(Some(10.0))],
+        };
+        let durs = vcp.sweep_durations(300.0);
+        // weights = [1/20, 1/10] = [0.05, 0.10]; total 0.15.
+        // durations = [0.05/0.15*300, 0.10/0.15*300] = [100, 200].
+        assert!((durs[0] - 100.0).abs() < 1e-9, "got {}", durs[0]);
+        assert!((durs[1] - 200.0).abs() < 1e-9, "got {}", durs[1]);
+        // Sums to the total (weights normalize).
+        assert!((durs.iter().sum::<f64>() - 300.0).abs() < 1e-9);
+        // Faster rate (cut 0) → shorter duration.
+        assert!(durs[0] < durs[1]);
+    }
+
+    /// Method B fallback: a `None` rate falls through to the category-based
+    /// `fallback_azimuth_rate`. Two identical fallback cuts split the total
+    /// evenly, and the rate used matches the hand-computed table value.
+    #[wasm_bindgen_test]
+    fn sweep_durations_method_b_uses_fallback_rate() {
+        let vcp = ExtractedVcp {
+            number: 212, // precip → fallback_azimuth_rate(false, "CS", 1) == 21.1
+            elevations: vec![elev(None), elev(None)],
+        };
+        let durs = vcp.sweep_durations(300.0);
+        // Equal fallback weights → even split.
+        assert!((durs[0] - 150.0).abs() < 1e-9, "got {}", durs[0]);
+        assert!((durs[1] - 150.0).abs() < 1e-9);
+        assert!((durs.iter().sum::<f64>() - 300.0).abs() < 1e-9);
+
+        // estimated_volume_duration uses the same fallback: 2 * (360 / 21.1).
+        let expected = 2.0 * (360.0 / 21.1);
+        let est = vcp.estimated_volume_duration().unwrap();
+        assert!((est - expected).abs() < 1e-9, "got {est}, want {expected}");
+    }
+
+    /// A cut with `azimuth_rate = Some(0.0)` (non-positive) is demoted to the
+    /// fallback, exactly like `None`.
+    #[wasm_bindgen_test]
+    fn sweep_durations_zero_rate_demoted_to_fallback() {
+        let zero = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(Some(0.0)), elev(Some(0.0))],
+        };
+        let none = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(None), elev(None)],
+        };
+        // Zero rate and None produce identical durations (both use fallback).
+        assert_eq!(zero.sweep_durations(300.0), none.sweep_durations(300.0));
+        assert_eq!(
+            zero.estimated_volume_duration(),
+            none.estimated_volume_duration()
+        );
+    }
+
+    /// Mixed VCP: some cuts carry rates, others don't — Method A and Method B
+    /// weights coexist and the durations still sum to the total.
+    #[wasm_bindgen_test]
+    fn sweep_durations_mixed_rates_sum_to_total() {
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(Some(20.0)), elev(None), elev(Some(10.0))],
+        };
+        let durs = vcp.sweep_durations(300.0);
+        assert_eq!(durs.len(), 3);
+        assert!((durs.iter().sum::<f64>() - 300.0).abs() < 1e-9);
+        // The explicit-rate cuts retain their ordering (20 dps shorter than 10).
+        assert!(durs[0] < durs[2]);
+
+        // estimated_volume_duration = 360/20 + 360/21.1 + 360/10.
+        let expected = 360.0 / 20.0 + 360.0 / 21.1 + 360.0 / 10.0;
+        let est = vcp.estimated_volume_duration().unwrap();
+        assert!((est - expected).abs() < 1e-9, "got {est}, want {expected}");
+    }
+
+    /// Empty VCP: no elevations → an empty duration vec and `None` estimate.
+    #[wasm_bindgen_test]
+    fn sweep_durations_empty_vcp() {
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![],
+        };
+        assert!(vcp.sweep_durations(300.0).is_empty());
+        assert_eq!(vcp.estimated_volume_duration(), None);
+    }
+
+    /// `estimated_volume_duration` is the positive sum of 360/rate over the
+    /// cuts, for a hand-computed all-rates VCP.
+    #[wasm_bindgen_test]
+    fn estimated_volume_duration_sum_of_360_over_rate() {
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(Some(20.0)), elev(Some(10.0)), elev(Some(18.0))],
+        };
+        // 360/20 + 360/10 + 360/18 = 18 + 36 + 20 = 74.
+        let est = vcp.estimated_volume_duration().unwrap();
+        assert!((est - 74.0).abs() < 1e-9, "got {est}");
+        assert!(est > 0.0);
+    }
+
     #[wasm_bindgen_test]
     fn test_scan_key_from_storage_key_invalid() {
         assert_eq!(
