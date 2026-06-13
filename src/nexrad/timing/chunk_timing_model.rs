@@ -143,7 +143,8 @@ impl ChunkTimingModel {
     }
 
     /// Predicted gap in seconds from the Start chunk to the first intermediate chunk
-    /// within the same volume (constant 3.0s).
+    /// within the same volume (constant 1.5s — see
+    /// [`START_TO_FIRST_INTERMEDIATE_GAP_SECS`]).
     ///
     /// Distinct from [`inter_volume_gap_secs`]: that measures End → Start across volumes,
     /// whereas this measures Start → first intermediate within a single volume.
@@ -277,5 +278,182 @@ fn waveform_transition_penalty_secs(from: Option<WaveformType>, to: Option<Wavef
         (_, WaveformType::B) => 1.0,
         // Catch-all for untabulated waveform changes: conservative middle ground.
         _ => 2.0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const EPS: f64 = 1e-9;
+
+    #[wasm_bindgen_test]
+    fn sweep_duration_normal_rate() {
+        // 360/18 - 0.67 = 20 - 0.67 = 19.33.
+        let d = ChunkTimingModel::sweep_duration_secs(18.0).unwrap();
+        assert!((d - 19.33).abs() < EPS, "got {d}");
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_duration_zero_and_negative_rate_is_none() {
+        assert_eq!(ChunkTimingModel::sweep_duration_secs(0.0), None);
+        assert_eq!(ChunkTimingModel::sweep_duration_secs(-5.0), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_duration_high_rate_goes_negative() {
+        // KNOWN UNCLAMPED EDGE: a rate above 360/0.67 ≈ 537.3 dps makes
+        // 360/rate < 0.67, so the bias subtraction yields a NEGATIVE duration.
+        // This pins the current (unclamped) behavior; if a lower clamp is ever
+        // added this test should change deliberately rather than silently.
+        let d = ChunkTimingModel::sweep_duration_secs(600.0).unwrap();
+        // 360/600 - 0.67 = 0.6 - 0.67 = -0.07.
+        assert!((d - (-0.07)).abs() < EPS, "got {d}");
+        assert!(d < 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn chunk_duration_divides_sweep_evenly() {
+        // sweep = 19.33; / 6 chunks.
+        let d = ChunkTimingModel::chunk_duration_secs(18.0, 6).unwrap();
+        assert!((d - 19.33 / 6.0).abs() < EPS, "got {d}");
+    }
+
+    #[wasm_bindgen_test]
+    fn chunk_duration_zero_chunks_is_none() {
+        assert_eq!(ChunkTimingModel::chunk_duration_secs(18.0, 0), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn chunk_duration_bad_rate_is_none() {
+        assert_eq!(ChunkTimingModel::chunk_duration_secs(0.0, 6), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn inter_sweep_gap_base_plus_slew_plus_waveform() {
+        // Same elevation, no waveform change → just the 0.7 base.
+        let g = ChunkTimingModel::inter_sweep_gap_secs(1.0, 1.0, None, None);
+        assert!((g - 0.7).abs() < EPS, "got {g}");
+        // 5° elevation change, no waveform info → 0.7 + 5*0.08 = 1.1.
+        let g = ChunkTimingModel::inter_sweep_gap_secs(1.0, 6.0, None, None);
+        assert!((g - 1.1).abs() < EPS, "got {g}");
+        // 5° change + CS→CDW waveform penalty (4.0) → 1.1 + 4.0 = 5.1.
+        let g = ChunkTimingModel::inter_sweep_gap_secs(
+            1.0,
+            6.0,
+            Some(WaveformType::CS),
+            Some(WaveformType::CDW),
+        );
+        assert!((g - 5.1).abs() < EPS, "got {g}");
+    }
+
+    #[wasm_bindgen_test]
+    fn inter_volume_and_start_gap_constants() {
+        assert!((ChunkTimingModel::inter_volume_gap_secs() - 8.5).abs() < EPS);
+        assert!((ChunkTimingModel::start_to_first_intermediate_gap_secs() - 1.5).abs() < EPS);
+    }
+
+    #[wasm_bindgen_test]
+    fn breakdown_inter_volume_when_next_is_start() {
+        // next is a Start chunk (sequence 1) → fixed inter-volume gap, no
+        // chunk-duration / inter-sweep / waveform components.
+        let prev = ChunkMetadata::for_test(20, Some(3), 5, 6, false, 18.0);
+        let next = ChunkMetadata::for_test(1, None, 0, 1, false, 0.0);
+        let b = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+        assert_eq!(b.case, IntervalCase::InterVolume);
+        assert!((b.total_secs - 8.5).abs() < EPS);
+        assert_eq!(b.chunk_duration_secs, None);
+        assert_eq!(b.inter_sweep_gap_secs, None);
+        assert_eq!(b.waveform_penalty_secs, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn breakdown_inter_sweep_first_in_sweep() {
+        // next is the first chunk in a new sweep (same elevation angle 0.5 as
+        // the for_test default, so no slew term), no waveform info on either
+        // chunk → gap = base 0.7, total = chunk_duration + 0.7.
+        let prev = ChunkMetadata::for_test(7, Some(1), 5, 6, false, 18.0);
+        let next = ChunkMetadata::for_test(8, Some(2), 0, 6, true, 18.0);
+        let b = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+        assert_eq!(b.case, IntervalCase::InterSweep);
+        let chunk_dur = 19.33 / 6.0;
+        assert!((b.chunk_duration_secs.unwrap() - chunk_dur).abs() < EPS);
+        assert!((b.inter_sweep_gap_secs.unwrap() - 0.7).abs() < EPS);
+        // for_test sets waveform_type=None, so no penalty is recorded.
+        assert_eq!(b.waveform_penalty_secs, None);
+        assert!(
+            (b.total_secs - (chunk_dur + 0.7)).abs() < EPS,
+            "got {}",
+            b.total_secs
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn breakdown_inter_sweep_falls_back_when_rate_unavailable() {
+        // azimuth rate 0 → chunk_duration None → fallback 4.0 added to the gap,
+        // and chunk_duration_secs in the breakdown stays None to signal it.
+        let prev = ChunkMetadata::for_test(7, Some(1), 5, 6, false, 0.0);
+        let next = ChunkMetadata::for_test(8, Some(2), 0, 6, true, 0.0);
+        let b = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+        assert_eq!(b.case, IntervalCase::InterSweep);
+        assert_eq!(b.chunk_duration_secs, None);
+        assert!((b.inter_sweep_gap_secs.unwrap() - 0.7).abs() < EPS);
+        // total = gap (0.7) + fallback (4.0) = 4.7.
+        assert!((b.total_secs - 4.7).abs() < EPS, "got {}", b.total_secs);
+    }
+
+    #[wasm_bindgen_test]
+    fn breakdown_intra_sweep_is_pure_chunk_duration() {
+        // next is not start, not first-in-sweep → pure chunk duration.
+        let prev = ChunkMetadata::for_test(9, Some(2), 1, 6, false, 18.0);
+        let next = ChunkMetadata::for_test(10, Some(2), 2, 6, false, 18.0);
+        let b = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+        assert_eq!(b.case, IntervalCase::IntraSweep);
+        let chunk_dur = 19.33 / 6.0;
+        assert!(
+            (b.total_secs - chunk_dur).abs() < EPS,
+            "got {}",
+            b.total_secs
+        );
+        assert!((b.chunk_duration_secs.unwrap() - chunk_dur).abs() < EPS);
+        assert_eq!(b.inter_sweep_gap_secs, None);
+        assert_eq!(b.waveform_penalty_secs, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn breakdown_intra_sweep_fallback_when_rate_unavailable() {
+        let prev = ChunkMetadata::for_test(9, Some(2), 1, 6, false, 0.0);
+        let next = ChunkMetadata::for_test(10, Some(2), 2, 6, false, 0.0);
+        let b = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+        assert_eq!(b.case, IntervalCase::IntraSweep);
+        assert_eq!(b.chunk_duration_secs, None);
+        assert!((b.total_secs - 4.0).abs() < EPS); // fallback
+    }
+
+    #[wasm_bindgen_test]
+    fn waveform_penalty_table() {
+        use WaveformType::*;
+        let pen = waveform_transition_penalty_secs;
+        // None on either side → 0.0.
+        assert_eq!(pen(None, None), 0.0);
+        assert_eq!(pen(Some(CS), None), 0.0);
+        assert_eq!(pen(None, Some(CDW)), 0.0);
+        // Same discriminant → 0.0.
+        assert_eq!(pen(Some(CS), Some(CS)), 0.0);
+        assert_eq!(pen(Some(B), Some(B)), 0.0);
+        // Tabulated specific pairs.
+        assert_eq!(pen(Some(CS), Some(CDW)), 4.0);
+        assert_eq!(pen(Some(CDW), Some(CS)), 1.0);
+        assert_eq!(pen(Some(B), Some(CDWO)), 3.5);
+        // CDWO leaving to any other → 1.0 (matches before the catch-all).
+        assert_eq!(pen(Some(CDWO), Some(CS)), 1.0);
+        assert_eq!(pen(Some(CDWO), Some(B)), 1.0);
+        // Anything arriving at B → 1.0.
+        assert_eq!(pen(Some(CS), Some(B)), 1.0);
+        assert_eq!(pen(Some(SPP), Some(B)), 1.0);
+        // Catch-all for an untabulated change → 2.0.
+        assert_eq!(pen(Some(CS), Some(SPP)), 2.0);
+        assert_eq!(pen(Some(CDW), Some(CDWO)), 2.0);
     }
 }
