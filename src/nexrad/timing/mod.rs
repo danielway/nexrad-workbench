@@ -26,6 +26,8 @@ mod elevation_chunk_mapper;
 mod estimate_next_chunk_time;
 mod interval_estimate;
 mod scan_timing_projection;
+#[cfg(test)]
+mod test_vcp;
 
 pub use chunk_timing_model::{ChunkTimingModel, IntervalCase, PhysicsBreakdown};
 pub use chunk_timing_stats::{BucketStats, ChunkCharacteristics, ChunkTimingStats};
