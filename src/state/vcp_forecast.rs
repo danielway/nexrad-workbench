@@ -408,6 +408,349 @@ pub struct ChunkArrivalStat {
     pub predicted_with_plan_revision: Option<u64>,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+    use crate::data::CachedSweep;
+    use crate::nexrad::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// One elevation cut. `rate` is the VCP-message azimuth rate; `waveform`
+    /// drives the Method-B fallback when no projection/VCP rate is available.
+    fn elev(angle: f32, waveform: &str, rate: Option<f32>) -> ExtractedVcpElevation {
+        ExtractedVcpElevation {
+            angle,
+            waveform: waveform.to_string(),
+            prf_number: 1,
+            is_sails: false,
+            is_mrle: false,
+            is_base_tilt: false,
+            azimuth_rate: rate,
+        }
+    }
+
+    /// A projection chunk mapped to `elevation_number` (1-based) with library
+    /// `rate` and, when `collection` is `Some`, a `projected` collection time.
+    /// Chunks without a `projected` time exercise the `min_t == f64::MAX`
+    /// cum-offset fallback even though they still carry a rate/count.
+    fn chunk(
+        sequence: usize,
+        elevation_number: u8,
+        rate: f64,
+        collection: Option<f64>,
+    ) -> ChunkProjectionInfo {
+        ChunkProjectionInfo {
+            sequence,
+            elevation_number: Some(elevation_number as usize),
+            azimuth_rate_dps: rate,
+            chunk_index_in_sweep: 0,
+            chunks_in_sweep: 3,
+            projected: collection.map(|c| ChunkProjectedTimes {
+                collection_time_secs: c,
+                available_at_secs: c,
+                poll_at_secs: c,
+                physics_breakdown: test_support::physics_stub(),
+                stats_n: 0,
+                scheduler_path: crate::nexrad::timing::SchedulerPath::Physics,
+                bucket: None,
+            }),
+        }
+    }
+
+    fn cached(elev_number: u8, start: f64, end: f64) -> CachedSweep {
+        CachedSweep {
+            start,
+            end,
+            elevation: 0.5,
+            elevation_number: elev_number,
+            start_azimuth: 0.0,
+            cached_products: Vec::new(),
+        }
+    }
+
+    /// Reconstruct a sweep's predicted end from the stored start + duration —
+    /// `SweepForecast` keeps duration, not end.
+    fn predicted_end(s: &SweepForecast) -> f64 {
+        s.predicted_start + s.predicted_duration
+    }
+
+    /// Projection-library branch: a chunk with a positive library rate and a
+    /// `projected` collection time selects `RateSource::ProjectionLibrary` and
+    /// derives `predicted_end = max_t + sweep_dur/chunk_count`, where
+    /// `sweep_dur = (360/rate - 0.67).max(0)`. Hand-derived against a single
+    /// one-chunk elevation so `min_t == max_t`.
+    #[wasm_bindgen_test]
+    fn rate_source_projection_library_and_last_chunk_bucket() {
+        let rate = 20.0;
+        let collection = 1000.0;
+        let vcp = ExtractedVcp {
+            number: 212, // precip
+            elevations: vec![elev(0.5, "CS", Some(15.0))],
+        };
+        // One projection chunk for elev 1 at t=1000, library rate 20 dps.
+        let plan =
+            StreamingPlan::for_test(vec![chunk(1, 1, rate, Some(collection))], Some(collection));
+        let snap = derive_volume_forecast(&vcp, &plan, 500.0, &[], &[], None, &[], None);
+
+        assert_eq!(snap.sweeps.len(), 1);
+        let s = &snap.sweeps[0];
+        // Library rate (20) wins over the VCP-message rate (15).
+        assert_eq!(s.rate_source, RateSource::ProjectionLibrary);
+        assert!((s.azimuth_rate_used - rate).abs() < 1e-9);
+        // min_t == max_t == 1000; sweep_dur = 360/20 - 0.67 = 17.33; one chunk
+        // → bucket = 17.33; predicted_end = 1000 + 17.33.
+        let sweep_dur = 360.0 / rate - 0.67;
+        assert!((s.predicted_start - collection).abs() < 1e-9);
+        assert!(
+            (predicted_end(s) - (collection + sweep_dur)).abs() < 1e-9,
+            "end {}",
+            predicted_end(s)
+        );
+        assert!((s.predicted_duration - sweep_dur).abs() < 1e-9);
+        assert_eq!(s.predicted_chunks, Some(1));
+    }
+
+    /// Two projection chunks for one elevation: `min_t`/`max_t` span both, the
+    /// bucket extension divides by the chunk count (2), and the rate seeds from
+    /// the first chunk.
+    #[wasm_bindgen_test]
+    fn projection_two_chunk_bucket_division() {
+        let rate = 18.0;
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(0.5, "CS", None)],
+        };
+        let plan = StreamingPlan::for_test(
+            vec![
+                chunk(1, 1, rate, Some(2000.0)),
+                chunk(2, 1, rate, Some(2003.0)),
+            ],
+            Some(2003.0),
+        );
+        let snap = derive_volume_forecast(&vcp, &plan, 1500.0, &[], &[], None, &[], None);
+        let s = &snap.sweeps[0];
+        assert_eq!(s.rate_source, RateSource::ProjectionLibrary);
+        // min_t=2000, max_t=2003, chunk_count=2.
+        // sweep_dur = 360/18 - 0.67 = 19.33; bucket = 19.33/2 = 9.665.
+        let bucket = (360.0 / rate - 0.67) / 2.0;
+        assert!((s.predicted_start - 2000.0).abs() < 1e-9);
+        assert!((predicted_end(s) - (2003.0 + bucket)).abs() < 1e-9);
+        assert_eq!(s.predicted_chunks, Some(2));
+    }
+
+    /// VCP-message branch: no projection chunk maps to the elevation, but the
+    /// VCP message carries a positive `azimuth_rate`, so the rate source is
+    /// `VcpMessage` and the bounds fall back to the cumulative VCP offset.
+    #[wasm_bindgen_test]
+    fn rate_source_vcp_message_with_cum_offset_fallback() {
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(0.5, "CS", Some(25.0))],
+        };
+        // No current-volume chunks → no projection → cum-offset path.
+        let plan = StreamingPlan::for_test(vec![], None);
+        let volume_start = 700.0;
+        let snap = derive_volume_forecast(&vcp, &plan, volume_start, &[], &[], None, &[], None);
+        let s = &snap.sweeps[0];
+        assert_eq!(s.rate_source, RateSource::VcpMessage);
+        assert!((s.azimuth_rate_used - 25.0).abs() < 1e-9);
+        // Single elevation → weighted_dur == total_vol_dur; cum_offset starts 0.
+        let total = vcp.estimated_volume_duration().unwrap();
+        assert!((s.predicted_start - volume_start).abs() < 1e-9);
+        assert!((predicted_end(s) - (volume_start + total)).abs() < 1e-6);
+        // No projection chunk → predicted_chunks is None.
+        assert_eq!(s.predicted_chunks, None);
+    }
+
+    /// Method-B fallback branch: neither a projection chunk nor a positive
+    /// VCP-message rate, so the rate comes from `fallback_azimuth_rate`.
+    #[wasm_bindgen_test]
+    fn rate_source_method_b_fallback() {
+        let vcp = ExtractedVcp {
+            number: 212, // precip → fallback_azimuth_rate(false, "CS", 1) == 21.1
+            elevations: vec![elev(0.5, "CS", None)],
+        };
+        let plan = StreamingPlan::for_test(vec![], None);
+        let snap = derive_volume_forecast(&vcp, &plan, 0.0, &[], &[], None, &[], None);
+        let s = &snap.sweeps[0];
+        assert_eq!(s.rate_source, RateSource::MethodBFallback);
+        assert!((s.azimuth_rate_used - 21.1).abs() < 1e-9);
+    }
+
+    /// The cum-offset path accumulates across elevations: a two-elevation VCP
+    /// with no projections places sweep 2's predicted start at the end of
+    /// sweep 1's weighted duration.
+    #[wasm_bindgen_test]
+    fn cum_offset_accumulates_across_elevations() {
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(0.5, "CS", Some(20.0)), elev(1.5, "CS", Some(10.0))],
+        };
+        let plan = StreamingPlan::for_test(vec![], None);
+        let volume_start = 100.0;
+        let snap = derive_volume_forecast(&vcp, &plan, volume_start, &[], &[], None, &[], None);
+        let total = vcp.estimated_volume_duration().unwrap();
+        let durs = vcp.sweep_durations(total);
+        assert_eq!(snap.sweeps.len(), 2);
+        // Sweep 1 starts at volume_start, runs durs[0].
+        assert!((snap.sweeps[0].predicted_start - volume_start).abs() < 1e-9);
+        assert!((snap.sweeps[0].predicted_duration - durs[0]).abs() < 1e-6);
+        // Sweep 2 starts where sweep 1 ended.
+        assert!((snap.sweeps[1].predicted_start - (volume_start + durs[0])).abs() < 1e-6);
+        assert!((snap.sweeps[1].predicted_duration - durs[1]).abs() < 1e-6);
+    }
+
+    /// Actuals: a `Complete` sweep with a matching `CachedSweep` carries
+    /// observed start/end and an `Observed` timing label, while an elevation
+    /// with no matching meta stays `Future` with `None` actuals.
+    #[wasm_bindgen_test]
+    fn actuals_observed_vs_future() {
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(0.5, "CS", Some(20.0)), elev(1.5, "CS", Some(20.0))],
+        };
+        let plan = StreamingPlan::for_test(vec![], None);
+        // Only elevation 1 completed; it contributed 3 chunk spans.
+        let metas = vec![cached(1, 1000.0, 1015.0)];
+        let spans = vec![
+            (1u8, 1000.0, 1005.0, 0u32),
+            (1u8, 1005.0, 1010.0, 0u32),
+            (1u8, 1010.0, 1015.0, 0u32),
+        ];
+        let snap = derive_volume_forecast(&vcp, &plan, 500.0, &metas, &spans, None, &[], None);
+
+        let s1 = &snap.sweeps[0];
+        assert_eq!(s1.status, SweepStatus::Complete);
+        assert_eq!(s1.timing_source, Some(ForecastTimingLabel::Observed));
+        assert_eq!(s1.actual_start, Some(1000.0));
+        assert_eq!(s1.actual_end, Some(1015.0));
+        // 3 spans matched elevation 1.
+        assert_eq!(s1.actual_chunks, Some(3));
+
+        let s2 = &snap.sweeps[1];
+        assert_eq!(s2.status, SweepStatus::Future);
+        assert_eq!(s2.timing_source, None);
+        assert_eq!(s2.actual_start, None);
+        assert_eq!(s2.actual_chunks, None);
+    }
+
+    /// `actual_chunks` is `Some(0)` when a sweep is `Complete` (has a matching
+    /// meta) but `chunk_elev_spans` has no span for it — the archive path,
+    /// where sweeps are observed without per-chunk arrival spans.
+    #[wasm_bindgen_test]
+    fn actual_chunks_zero_when_complete_but_no_spans() {
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(0.5, "CS", Some(20.0))],
+        };
+        let plan = StreamingPlan::for_test(vec![], None);
+        let metas = vec![cached(1, 1000.0, 1015.0)];
+        // No spans at all.
+        let snap = derive_volume_forecast(&vcp, &plan, 500.0, &metas, &[], None, &[], None);
+        let s = &snap.sweeps[0];
+        assert_eq!(s.status, SweepStatus::Complete);
+        assert_eq!(s.actual_chunks, Some(0));
+    }
+
+    /// `inter_volume_gap_secs` = `volume_start - previous_volume_end` when the
+    /// previous end is known; `None` otherwise.
+    #[wasm_bindgen_test]
+    fn inter_volume_gap_present_only_with_previous_end() {
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(0.5, "CS", Some(20.0))],
+        };
+        let plan = StreamingPlan::for_test(vec![], None);
+
+        let with_prev =
+            derive_volume_forecast(&vcp, &plan, 1000.0, &[], &[], Some(990.0), &[], None);
+        assert_eq!(with_prev.inter_volume_gap_secs, Some(10.0));
+
+        let no_prev = derive_volume_forecast(&vcp, &plan, 1000.0, &[], &[], None, &[], None);
+        assert_eq!(no_prev.inter_volume_gap_secs, None);
+    }
+
+    /// `predicted_inter_volume_gap_secs` fires only when the previous volume's
+    /// end is known AND the first arrival is a `"Start"` chunk carrying a
+    /// `predicted_available_at`. A non-Start first arrival suppresses it.
+    #[wasm_bindgen_test]
+    fn predicted_inter_volume_gap_requires_start_first_arrival() {
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(0.5, "CS", Some(20.0))],
+        };
+        let plan = StreamingPlan::for_test(vec![], None);
+
+        let mut start = ChunkArrivalStat::minimal_for_test(1, 1005.0);
+        start.chunk_type = "Start";
+        start.predicted_available_at = Some(1002.0);
+        let snap = derive_volume_forecast(
+            &vcp,
+            &plan,
+            1000.0,
+            &[],
+            &[],
+            Some(990.0),
+            &[start.clone()],
+            None,
+        );
+        // 1002 (predicted available) − 990 (prev end) = 12.
+        assert_eq!(snap.predicted_inter_volume_gap_secs, Some(12.0));
+
+        // First arrival is Intermediate → suppressed even with a prediction.
+        let mut inter = ChunkArrivalStat::minimal_for_test(1, 1005.0);
+        inter.chunk_type = "Intermediate";
+        inter.predicted_available_at = Some(1002.0);
+        let snap2 =
+            derive_volume_forecast(&vcp, &plan, 1000.0, &[], &[], Some(990.0), &[inter], None);
+        assert_eq!(snap2.predicted_inter_volume_gap_secs, None);
+
+        // No previous end → suppressed even with a Start arrival.
+        let snap3 = derive_volume_forecast(&vcp, &plan, 1000.0, &[], &[], None, &[start], None);
+        assert_eq!(snap3.predicted_inter_volume_gap_secs, None);
+    }
+
+    /// `predicted_volume_end` uses the plan's captured end-of-volume collection
+    /// time when present, else `volume_start + estimated duration`.
+    #[wasm_bindgen_test]
+    fn predicted_volume_end_prefers_plan_then_estimate() {
+        let vcp = ExtractedVcp {
+            number: 212,
+            elevations: vec![elev(0.5, "CS", Some(20.0))],
+        };
+        // Plan knows the end-of-volume collection time.
+        let plan = StreamingPlan::for_test(vec![], Some(1234.0));
+        let snap = derive_volume_forecast(&vcp, &plan, 500.0, &[], &[], None, &[], None);
+        assert!((snap.predicted_volume_end - 1234.0).abs() < 1e-9);
+
+        // Plan has no end → volume_start + estimated_volume_duration.
+        let plan2 = StreamingPlan::for_test(vec![], None);
+        let snap2 = derive_volume_forecast(&vcp, &plan2, 500.0, &[], &[], None, &[], None);
+        let total = vcp.estimated_volume_duration().unwrap();
+        assert!((snap2.predicted_volume_end - (500.0 + total)).abs() < 1e-6);
+    }
+}
+
+/// Test-only constructors that need access to upstream timing types but are
+/// kept out of the `tests` module so they read clearly.
+#[cfg(test)]
+mod test_support {
+    use crate::nexrad::timing::{IntervalCase, PhysicsBreakdown};
+
+    /// A throwaway `PhysicsBreakdown` for building `ChunkProjectedTimes` in
+    /// tests — its fields are never read by `derive_volume_forecast`.
+    pub(super) fn physics_stub() -> PhysicsBreakdown {
+        PhysicsBreakdown {
+            case: IntervalCase::IntraSweep,
+            total_secs: 0.0,
+            chunk_duration_secs: None,
+            inter_sweep_gap_secs: None,
+            waveform_penalty_secs: None,
+        }
+    }
+}
+
 /// How the streaming loop's wait before a chunk fetch was resolved.
 ///
 /// The adaptive cross-volume wait (filtered streaming, target in the next

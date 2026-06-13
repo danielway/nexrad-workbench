@@ -244,6 +244,30 @@ impl StreamingPlan {
         }
     }
 
+    /// Test plan with explicit current-volume chunks and end-of-volume
+    /// collection time — the two fields [`crate::state::derive_volume_forecast`]
+    /// reads to build its library-projection bounds. The filter defaults to
+    /// `All` (forecast derivation never reads `plan.filter`), and
+    /// `next_volume_chunks` / `next_target_key` are left empty. Lets the
+    /// `vcp_forecast` test module — which can't name the crate-private
+    /// `StreamingFilter` — exercise the projection-library vs. cum-offset
+    /// branches without standing up a full projection.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        current_volume_chunks: Vec<ChunkProjectionInfo>,
+        current_volume_end_collection_secs: Option<f64>,
+    ) -> Self {
+        StreamingPlan {
+            filter: StreamingFilter::All,
+            built_at_secs: 0.0,
+            revision: 0,
+            current_volume_chunks,
+            next_volume_chunks: None,
+            current_volume_end_collection_secs,
+            next_target_key: None,
+        }
+    }
+
     /// Minimal test plan with an explicit `next_target_key` — lets tests in
     /// other modules (e.g. `state::live_mode`) exercise the
     /// `next_target().is_some()` phase gating without building a full
