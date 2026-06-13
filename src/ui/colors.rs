@@ -36,11 +36,16 @@ pub mod ui {
 pub mod live {
     use super::Color32;
 
-    /// Orange - acquiring lock/connecting.
+    /// Orange - acquiring lock/connecting. Part of the live palette; the
+    /// transport-row badge moved to a stateful LIVE button, so this is reserved
+    /// for the queue sheet / connection detail next phase.
+    #[allow(dead_code)]
     pub const ACQUIRING: Color32 = Color32::from_rgb(255, 180, 50);
     /// Red - actively streaming.
     pub const STREAMING: Color32 = Color32::from_rgb(255, 80, 80);
-    /// Blue - waiting for next chunk.
+    /// Blue - waiting for next chunk. Reserved alongside [`ACQUIRING`] for the
+    /// next-phase queue sheet / countdown chrome.
+    #[allow(dead_code)]
     pub const WAITING: Color32 = Color32::from_rgb(100, 180, 255);
 }
 

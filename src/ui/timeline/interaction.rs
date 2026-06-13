@@ -118,7 +118,11 @@ pub(super) fn handle_timeline_interaction(
     // detaches the tether. Button-filtered so right/alt drags don't scrub.
     if response.drag_started_by(PointerButton::Primary) && !selection_mod && !selecting {
         playback.state.playing = false;
-        live.detach_playhead(&mut playback.state, state.frame_now.secs());
+        live.detach_playhead(
+            &mut playback.state,
+            state.frame_now.secs(),
+            state.pause_stream_while_reviewing,
+        );
     }
     if response.dragged_by(PointerButton::Primary) && !selection_mod && !selecting {
         if let Some(pos) = response.interact_pointer_pos() {
@@ -172,7 +176,11 @@ fn seek_to(
     playback: &mut crate::subsystem::Playback,
     ts: f64,
 ) {
-    live.detach_playhead(&mut playback.state, state.frame_now.secs());
+    live.detach_playhead(
+        &mut playback.state,
+        state.frame_now.secs(),
+        state.pause_stream_while_reviewing,
+    );
     let inside = playback.state.selection_contains(ts);
     playback.state.set_playback_position(ts);
     if !inside {
@@ -202,7 +210,11 @@ fn apply_zoom(
 
     let attached = playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback();
     if attached && playback.state.zoom_would_exit_micro(new_zoom, width) {
-        live.detach_playhead(&mut playback.state, state.frame_now.secs());
+        live.detach_playhead(
+            &mut playback.state,
+            state.frame_now.secs(),
+            state.pause_stream_while_reviewing,
+        );
     }
 
     // Keep the timestamp under the anchor fixed while scaling.

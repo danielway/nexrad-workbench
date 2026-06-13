@@ -130,6 +130,13 @@ pub(super) fn apply_site_selection(
     state.push_command(crate::state::AppCommand::RefreshAlerts);
     state.preferred_site = Some(site_id.to_string());
     chrome.site_modal_open = false;
+
+    // Boot-tether deferred from a first visit (no site at launch): now that a
+    // site exists, open tethered to live (spec §7). One-shot — consumed here so
+    // later mid-session site re-selections don't auto-tether.
+    if std::mem::take(&mut state.start_live_on_site_select) {
+        state.push_command(crate::state::AppCommand::StartLive);
+    }
 }
 
 /// Start browser geolocation lookup.

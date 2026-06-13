@@ -97,8 +97,10 @@ const AVG_SCAN_BYTES: u64 = 5 * 1024 * 1024;
 /// How long a live stream keeps ingesting after the playhead detaches (the
 /// user scrubbed away to browse) before it auto-stops. Bounds background S3
 /// chunk polling while still making "return to live" instant for any
-/// realistic browsing detour.
-const LIVE_DETACHED_STOP_SECS: f64 = 15.0 * 60.0;
+/// realistic browsing detour. The `pause_stream_while_reviewing` preference
+/// stops immediately instead; this is the safety backstop for the default-off
+/// case (alignment §5: raised from 15 to 60 min).
+const LIVE_DETACHED_STOP_SECS: f64 = 60.0 * 60.0;
 
 fn main() {}
 
@@ -348,16 +350,17 @@ fn apply_url_params(
         state.viz_state.volume_density_cutoff = vdc;
     }
 
-    // If the URL indicates real-time mode was active, re-enter live on boot.
-    // Queued behind the initial RefreshTimeline so the timeline populates first.
-    if url_params.view.rt == Some(true) {
-        state.push_command(state::AppCommand::StartLive);
-    }
     if let Some(ref product_code) = url_params.product {
         if let Some(product) = state::RadarProduct::from_short_code(product_code) {
             state.viz_state.product = product;
         }
     }
+
+    // A deep link carries an explicit playback time WITHOUT `rt=true`: honor it
+    // as a detached archive view (the user shared "this moment"), and do NOT
+    // auto-tether. With `rt=true`, the boot-live path below re-tethers and the
+    // restored time is irrelevant (the playhead snaps to now).
+    let explicit_deep_link = url_params.time.is_some() && url_params.view.rt != Some(true);
     if let Some(time) = url_params.time {
         playback.state.set_playback_position(time);
         // Center view on the restored position. timeline_width_px may
@@ -380,6 +383,21 @@ fn apply_url_params(
             }
         } else {
             chrome.site_modal_open = true;
+        }
+    }
+
+    // Session start: open tethered to live (spec §7 DECIDED, alignment §5),
+    // unless the user followed an explicit detached deep link. With a site
+    // already known (URL or preferred), tether now. On a true first visit (no
+    // site, modal open), defer: tether once the user picks a site.
+    if !explicit_deep_link {
+        let site_known = url_params.site.is_some() || state.preferred_site.is_some();
+        if site_known {
+            // Queued behind the initial RefreshTimeline so the timeline
+            // populates first (same as the legacy `rt=true` restore).
+            state.push_command(state::AppCommand::StartLive);
+        } else {
+            state.start_live_on_site_select = true;
         }
     }
 }

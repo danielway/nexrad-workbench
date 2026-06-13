@@ -374,19 +374,21 @@ fn jog_fallback(_state: &AppState, playback: &crate::subsystem::Playback) -> f64
 
 fn handle_step_backward(
     state: &mut AppState,
-    _live: &mut crate::subsystem::Live,
+    live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    // Jogging is unavailable while the playhead is attached to the live
-    // edge (matches the hidden jog buttons); a detached playhead jogs freely.
-    if playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback() {
-        return;
-    }
     let pos = current_pos(state, playback);
     let fallback = jog_fallback(state, playback);
+    // Stepping is a seek gesture: detach the tether first (spec §7/§12), then
+    // step. The stream keeps ingesting unless the data-saver policy stops it.
+    live.detach_playhead(
+        &mut playback.state,
+        state.frame_now.secs(),
+        state.pause_stream_while_reviewing,
+    );
     let new_pos = match &state.viz_state.elevation_selection {
         crate::state::ElevationSelection::Fixed {
             elevation_number, ..
@@ -404,19 +406,21 @@ fn handle_step_backward(
 
 fn handle_step_forward(
     state: &mut AppState,
-    _live: &mut crate::subsystem::Live,
+    live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    // Jogging is unavailable while the playhead is attached to the live
-    // edge (matches the hidden jog buttons); a detached playhead jogs freely.
-    if playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback() {
-        return;
-    }
     let pos = current_pos(state, playback);
     let fallback = jog_fallback(state, playback);
+    // Stepping is a seek gesture: detach the tether first (spec §7/§12), then
+    // step. The stream keeps ingesting unless the data-saver policy stops it.
+    live.detach_playhead(
+        &mut playback.state,
+        state.frame_now.secs(),
+        state.pause_stream_while_reviewing,
+    );
     let new_pos = match &state.viz_state.elevation_selection {
         crate::state::ElevationSelection::Fixed {
             elevation_number, ..

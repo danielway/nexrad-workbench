@@ -47,7 +47,7 @@ pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
 pub use mping::MpingState;
 pub use playback::{
-    DetailLevel, FreezeAt, LoopMode, MacroFrameInputs, PlaybackDirection, PlaybackMode,
+    format_lag, DetailLevel, FreezeAt, LoopMode, MacroFrameInputs, PlaybackDirection, PlaybackMode,
     PlaybackSpeed, PlaybackState, RebuildCause, TimeModel, TimeSelection, TimelineTier,
     TIMELINE_ZOOM_MAX, TIMELINE_ZOOM_MIN,
 };
@@ -196,6 +196,19 @@ pub struct AppState {
     /// Persisted in `UserPreferences`; existing users are migrated to `true`.
     /// Override via `?ui=basic` or `?ui=advanced`.
     pub advanced_mode: bool,
+
+    /// Data-saver policy: when `true`, detaching the playhead stops the live
+    /// stream immediately rather than letting it ingest in the background
+    /// (spec §7). Default off; persisted in `UserPreferences`. Read by
+    /// `Live::detach_playhead` (the single policy site).
+    pub pause_stream_while_reviewing: bool,
+
+    /// One-shot boot intent: when set, the app should open tethered to live as
+    /// soon as a site is established. Set at boot (no deep-link time) when the
+    /// first-visit site modal is open; consumed by the site modal's
+    /// `apply_site_selection` to queue `StartLive` once the user picks a site
+    /// (spec §7 / alignment §5 — open tethered on first visit too).
+    pub start_live_on_site_select: bool,
 
     /// User-saved weather event bookmarks.
     pub saved_events: SavedEvents,

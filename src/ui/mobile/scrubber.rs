@@ -200,8 +200,13 @@ pub(super) fn render_scrubber(
         }
         let new_ts = x_to_ts(pos.x);
         // Detach the playhead on a manual seek — the stream (if running)
-        // keeps ingesting in the background.
-        live.detach_playhead(&mut playback.state, frame_now);
+        // keeps ingesting in the background unless the data-saver policy
+        // stops it.
+        live.detach_playhead(
+            &mut playback.state,
+            frame_now,
+            state.pause_stream_while_reviewing,
+        );
         // Scrubbing pauses playback so the thumb stays where the user dropped
         // it — otherwise a running playback loop would immediately snap it
         // forward on the next frame.

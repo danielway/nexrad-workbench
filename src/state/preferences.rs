@@ -70,6 +70,13 @@ pub struct UserPreferences {
     /// see [`UserPreferences::load`].
     #[serde(default)]
     pub advanced_mode: bool,
+
+    /// Data-saver policy (spec §7 / alignment §5): when `true`, detaching the
+    /// playhead (scrubbing away to review) stops the background live stream
+    /// immediately rather than letting it keep filling the cache. Default off;
+    /// the settings UI lands next phase, but the behavior is wired now.
+    #[serde(default)]
+    pub pause_stream_while_reviewing: bool,
 }
 
 fn default_true() -> bool {
@@ -109,6 +116,7 @@ impl Default for UserPreferences {
             data_age_desaturation: true,
             mobile_override: None,
             advanced_mode: false,
+            pause_stream_while_reviewing: false,
         }
     }
 }
@@ -149,6 +157,7 @@ impl UserPreferences {
             data_age_desaturation: state.render_processing.data_age_desaturation,
             mobile_override: state.mobile_override,
             advanced_mode: state.advanced_mode,
+            pause_stream_while_reviewing: state.pause_stream_while_reviewing,
         }
     }
 
@@ -188,6 +197,7 @@ impl UserPreferences {
         state.render_processing.data_age_desaturation = self.data_age_desaturation;
         state.mobile_override = self.mobile_override;
         state.advanced_mode = self.advanced_mode;
+        state.pause_stream_while_reviewing = self.pause_stream_while_reviewing;
         self.mping_api_key.clone()
     }
 

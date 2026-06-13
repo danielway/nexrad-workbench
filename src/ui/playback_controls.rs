@@ -3,9 +3,7 @@
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use super::overflow_menu::overflow_menu;
 use super::timeline::format_timestamp_compact;
-use crate::state::{
-    AppMode, AppState, LivePhase, LoopMode, PlaybackMode, PlaybackSpeed, WidthTier,
-};
+use crate::state::{AppMode, AppState, LoopMode, PlaybackMode, PlaybackSpeed, WidthTier};
 use crate::subsystem::Acquisition;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
@@ -137,8 +135,13 @@ pub(super) fn render_datetime_picker_popup(
                     if let Some(ts) = jump_target {
                         // Detach the playhead first — a seek while pinned
                         // would be rejected. The stream (if any) keeps
-                        // running in the background.
-                        live.detach_playhead(&mut playback.state, state.frame_now.secs());
+                        // running in the background unless the data-saver
+                        // policy stops it.
+                        live.detach_playhead(
+                            &mut playback.state,
+                            state.frame_now.secs(),
+                            state.pause_stream_while_reviewing,
+                        );
 
                         playback.state.set_playback_position(ts);
 
@@ -213,31 +216,32 @@ pub(super) fn render_playback_controls(
     // Datetime picker popup
     render_datetime_picker_popup(ui, state, live, playback);
 
-    // Live mode indicator badge — only while the playhead is attached to the
-    // live edge. A detached background stream is surfaced by the timeline's
-    // now-cap ("REJOIN") instead, so browsing doesn't read as "LIVE".
-    if live.app_mode == AppMode::Live {
-        render_live_indicator(ui, state, live, playback);
-        ui.separator();
-    }
-    // Entering/leaving live is owned by the timeline now-line (cap / edge chip)
-    // and Ctrl+L. The play/pause button below is decoupled from the stream.
+    // Persistent, stateful LIVE button (spec §7). Always present in the
+    // transport row: solid "● LIVE" while tethered, hollow "● LIVE · m:ss
+    // behind" while a background stream runs detached (click re-tethers), and
+    // hollow "● GO LIVE" with no stream (click starts one). Stopping the stream
+    // is still owned by the timeline now-line cap / Ctrl+L.
+    render_live_button(ui, state, live, playback);
+    ui.separator();
 
-    // Play/Stop button — disabled in Idle (no data to play). In live it toggles
-    // the lookback replay (Play = replay the recent window, Stop = back to
-    // now); in archive it's ordinary play/pause. All branching lives in
+    // Play/Pause button — disabled in Idle (no data to play). While tethered
+    // (LIVE-NOW) the live feed is conceptually playing, so the button reads
+    // PAUSE and pressing it FREEZES (drops to archive at the live edge,
+    // detached). In archive it's ordinary play/pause; resuming after a freeze
+    // plays from the pause point. All branching lives in
     // `transport::toggle_play_pause`.
-    let play_text = if playback.state.playing {
-        egui_phosphor::regular::STOP
+    let tethered = playback.state.time_model.is_pinned();
+    // Show PAUSE when the live feed is running (tethered) or archive playback
+    // is active; PLAY otherwise.
+    let play_text = if tethered || playback.state.playing {
+        egui_phosphor::regular::PAUSE
     } else {
         egui_phosphor::regular::PLAY
     };
-    let play_hover = if live.app_mode == AppMode::Live {
-        if playback.state.playing {
-            "Return to live (stop replay)"
-        } else {
-            "Replay the last 5 frames"
-        }
+    let play_hover = if tethered {
+        "Freeze (pause the live feed)"
+    } else if playback.state.time_model.is_lookback() {
+        "Return to live"
     } else if playback.state.playing {
         "Pause"
     } else {
@@ -255,75 +259,29 @@ pub(super) fn render_playback_controls(
         super::transport::toggle_play_pause(state, timeline, live, playback);
     }
 
-    // Jog buttons step between sweeps. Hidden entirely in Live — stepping is a
-    // seek gesture that doesn't belong while pinned to / replaying around now.
-    let show_jog = live.app_mode != AppMode::Live;
-    let current_pos = playback.state.playback_position();
-
+    // Jog buttons step between sweeps. Stepping is a seek gesture, so while
+    // tethered/replaying it detaches first (handled by `step_jog`), then steps
+    // — the buttons stay visible in Live (spec §7/§12).
     // Step backward
-    if show_jog
-        && ui
-            .add_enabled(
-                interactive,
-                egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_BACK).size(14.0)),
-            )
-            .clicked()
+    if ui
+        .add_enabled(
+            interactive,
+            egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_BACK).size(14.0)),
+        )
+        .clicked()
     {
-        match playback.state.playback_mode() {
-            PlaybackMode::Macro => {
-                playback.state.step_macro_frame(-1);
-            }
-            PlaybackMode::Micro => {
-                let fallback =
-                    current_pos - playback.state.speed.timeline_seconds_per_real_second();
-                let new_pos = match &state.viz_state.elevation_selection {
-                    crate::state::ElevationSelection::Fixed {
-                        elevation_number, ..
-                    } => timeline
-                        .scans
-                        .prev_matching_sweep_end_by_number(current_pos, *elevation_number)
-                        .unwrap_or(fallback),
-                    crate::state::ElevationSelection::Latest => timeline
-                        .scans
-                        .prev_any_sweep_end(current_pos)
-                        .unwrap_or(fallback),
-                };
-                playback.state.set_playback_position(new_pos);
-            }
-        }
+        step_jog(state, timeline, live, playback, -1);
     }
 
     // Step forward
-    if show_jog
-        && ui
-            .add_enabled(
-                interactive,
-                egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_FORWARD).size(14.0)),
-            )
-            .clicked()
+    if ui
+        .add_enabled(
+            interactive,
+            egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_FORWARD).size(14.0)),
+        )
+        .clicked()
     {
-        match playback.state.playback_mode() {
-            PlaybackMode::Macro => {
-                playback.state.step_macro_frame(1);
-            }
-            PlaybackMode::Micro => {
-                let fallback =
-                    current_pos + playback.state.speed.timeline_seconds_per_real_second();
-                let new_pos = match &state.viz_state.elevation_selection {
-                    crate::state::ElevationSelection::Fixed {
-                        elevation_number, ..
-                    } => timeline
-                        .scans
-                        .next_matching_sweep_end_by_number(current_pos, *elevation_number)
-                        .unwrap_or(fallback),
-                    crate::state::ElevationSelection::Latest => timeline
-                        .scans
-                        .next_any_sweep_end(current_pos)
-                        .unwrap_or(fallback),
-                };
-                playback.state.set_playback_position(new_pos);
-            }
-        }
+        step_jog(state, timeline, live, playback, 1);
     }
 
     ui.separator();
@@ -431,6 +389,68 @@ pub(super) fn render_playback_controls(
     });
 }
 
+/// Step the playhead one frame in `direction` (-1 back, +1 forward). Stepping is
+/// a seek, so it detaches the playhead first (the stream, if any, keeps ingesting
+/// unless the data-saver policy stops it) and then steps — exactly like the
+/// mobile jog (`mobile::tabs::step_frame`). Macro frame-steps the index; Micro
+/// seeks to the prev/next matching sweep end, falling back to a speed-sized time
+/// nudge when no neighbor exists.
+fn step_jog(
+    state: &mut AppState,
+    timeline: &crate::subsystem::Timeline,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    direction: isize,
+) {
+    let current_pos = playback.state.playback_position();
+    // Detach before any `set_playback_position` (which debug-asserts Free mode).
+    live.detach_playhead(
+        &mut playback.state,
+        state.frame_now.secs(),
+        state.pause_stream_while_reviewing,
+    );
+    match playback.state.playback_mode() {
+        PlaybackMode::Macro => {
+            playback.state.step_macro_frame(direction);
+        }
+        PlaybackMode::Micro => {
+            let step = playback.state.speed.timeline_seconds_per_real_second();
+            let fallback = current_pos + step * direction as f64;
+            let new_pos = match &state.viz_state.elevation_selection {
+                crate::state::ElevationSelection::Fixed {
+                    elevation_number, ..
+                } => {
+                    if direction < 0 {
+                        timeline
+                            .scans
+                            .prev_matching_sweep_end_by_number(current_pos, *elevation_number)
+                            .unwrap_or(fallback)
+                    } else {
+                        timeline
+                            .scans
+                            .next_matching_sweep_end_by_number(current_pos, *elevation_number)
+                            .unwrap_or(fallback)
+                    }
+                }
+                crate::state::ElevationSelection::Latest => {
+                    if direction < 0 {
+                        timeline
+                            .scans
+                            .prev_any_sweep_end(current_pos)
+                            .unwrap_or(fallback)
+                    } else {
+                        timeline
+                            .scans
+                            .next_any_sweep_end(current_pos)
+                            .unwrap_or(fallback)
+                    }
+                }
+            };
+            playback.state.set_playback_position(new_pos);
+        }
+    }
+}
+
 /// UTC/Local time-zone toggle. Rendered inline in the transport row at full
 /// width and inside the overflow menu when space is tight.
 fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
@@ -444,88 +464,83 @@ fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// Render live mode indicator badge with pulsing dot.
-fn render_live_indicator(
+/// Persistent, stateful LIVE button (spec §7). Three states, always present so
+/// the live edge is one glance/one tap away no matter where the user is:
+///
+/// - **Tethered** (playhead attached, `AppMode::Live`): solid red "● LIVE".
+///   Stopping the stream stays with the now-line cap / Ctrl+L, so this state is
+///   an indicator — clicking is a no-op.
+/// - **Detached** (stream running, playhead browsing): hollow "● LIVE · m:ss
+///   behind" where the lag is wall-now − playhead. Click re-tethers
+///   (`ReturnToLive`).
+/// - **No stream** (idle): hollow "● GO LIVE". Click starts a stream.
+///
+/// If the stream dies underneath a detached state, `mode_state.is_active()`
+/// flips false and the button falls through to GO LIVE (risk 4).
+fn render_live_button(
     ui: &mut egui::Ui,
-    state: &AppState,
+    state: &mut AppState,
     live: &crate::subsystem::Live,
-    playback: &crate::subsystem::Playback,
+    playback: &mut crate::subsystem::Playback,
 ) {
-    let phase = live.mode_state.phase;
-    let pulse_alpha = live.mode_state.pulse_alpha();
+    let dot = egui_phosphor::regular::BROADCAST;
+    let tethered = live.app_mode == AppMode::Live;
+    let streaming = live.mode_state.is_active();
 
-    // Get current time for status text
-    let now = playback.state.playback_position();
+    if tethered {
+        // Solid red badge — tethered to the live edge. Pulse the fill subtly so
+        // it reads as "live" without being an alarm.
+        let pulse = live.mode_state.pulse_alpha();
+        let alpha = (200.0 + 55.0 * pulse) as u8;
+        let fill = Color32::from_rgba_unmultiplied(
+            live::STREAMING.r(),
+            live::STREAMING.g(),
+            live::STREAMING.b(),
+            alpha,
+        );
+        let label = RichText::new(format!("{dot} LIVE"))
+            .size(11.0)
+            .strong()
+            .color(Color32::WHITE);
+        ui.add(egui::Button::new(label).fill(fill))
+            .on_hover_text("Tethered to the live edge");
+        return;
+    }
 
-    match phase {
-        LivePhase::AcquiringLock => {
-            // Show "CONNECTING" with orange pulsing
-            let pulsed_color = Color32::from_rgba_unmultiplied(
-                live::ACQUIRING.r(),
-                live::ACQUIRING.g(),
-                live::ACQUIRING.b(),
-                (128.0 + 127.0 * pulse_alpha) as u8,
-            );
-            ui.label(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(16.0)
-                    .color(pulsed_color),
-            );
-
-            let elapsed = live.mode_state.phase_elapsed_secs(now) as i32;
-            ui.label(
-                RichText::new(format!("CONNECTING {}s", elapsed))
-                    .size(11.0)
-                    .strong()
-                    .color(live::ACQUIRING),
-            );
+    if streaming {
+        // Detached background stream: hollow outline + lag readout. One click
+        // snaps back to the live edge.
+        let lag = state.frame_now.secs() - playback.state.playback_position();
+        let label = RichText::new(format!(
+            "{dot} LIVE · {} behind",
+            crate::state::format_lag(lag)
+        ))
+        .size(11.0)
+        .strong()
+        .color(live::STREAMING);
+        if ui
+            .add(egui::Button::new(label).fill(Color32::TRANSPARENT))
+            .on_hover_text("Stream running in background — click to rejoin live")
+            .clicked()
+        {
+            state.push_command(crate::state::AppCommand::ReturnToLive);
         }
-        LivePhase::Streaming | LivePhase::WaitingForChunk => {
-            // Show red "LIVE" indicator (always visible once streaming)
-            let pulsed_color = Color32::from_rgba_unmultiplied(
-                live::STREAMING.r(),
-                live::STREAMING.g(),
-                live::STREAMING.b(),
-                (128.0 + 127.0 * pulse_alpha) as u8,
-            );
-            ui.label(
-                RichText::new(egui_phosphor::regular::BROADCAST)
-                    .size(16.0)
-                    .color(pulsed_color),
-            );
-            ui.label(
-                RichText::new("LIVE")
-                    .size(11.0)
-                    .strong()
-                    .color(live::STREAMING),
-            );
+        return;
+    }
 
-            // Show chunk count
-            if live.mode_state.chunks_received > 0 {
-                ui.label(
-                    RichText::new(format!("({})", live.mode_state.chunks_received))
-                        .size(10.0)
-                        .color(ui_colors::value(state.is_dark)),
-                );
-            }
-
-            // Show status: downloading or waiting
-            if phase == LivePhase::Streaming {
-                ui.label(
-                    RichText::new("receiving...")
-                        .size(10.0)
-                        .italics()
-                        .color(ui_colors::SUCCESS),
-                );
-            } else if let Some(remaining) = live.countdown_remaining_secs(now) {
-                ui.label(
-                    RichText::new(format!("next in {}s", remaining.ceil() as i32))
-                        .size(10.0)
-                        .color(live::WAITING),
-                );
-            }
-        }
-        _ => {}
+    // No stream: hollow GO LIVE invitation.
+    let label = RichText::new(format!("{dot} GO LIVE"))
+        .size(11.0)
+        .strong()
+        .color(tl_colors::NOW_IDLE);
+    if ui
+        .add(egui::Button::new(label).fill(Color32::TRANSPARENT))
+        .on_hover_text("Stream live from now")
+        .clicked()
+    {
+        playback.state.clear_selection();
+        state.push_command(crate::state::AppCommand::StartLive);
+        playback.state.speed = PlaybackSpeed::Realtime;
     }
 }
 

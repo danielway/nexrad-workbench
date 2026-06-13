@@ -239,8 +239,13 @@ pub(super) fn step_frame(
     use crate::state::PlaybackMode;
 
     let current_pos = playback.state.playback_position();
-    // Jogging detaches the playhead; a running stream keeps ingesting.
-    live.detach_playhead(&mut playback.state, state.frame_now.secs());
+    // Jogging detaches the playhead; a running stream keeps ingesting unless
+    // the data-saver policy stops it.
+    live.detach_playhead(
+        &mut playback.state,
+        state.frame_now.secs(),
+        state.pause_stream_while_reviewing,
+    );
     match playback.state.playback_mode() {
         PlaybackMode::Macro => {
             playback.state.step_macro_frame(direction);

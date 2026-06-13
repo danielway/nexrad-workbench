@@ -190,17 +190,20 @@ pub enum PlaybackSpeed {
 }
 
 impl PlaybackSpeed {
+    /// Micro-mode label: realtime multiple in `×` notation (spec §9). The
+    /// multiple is `timeline_seconds_per_real_second()` — 1 timeline-second per
+    /// real second is 1×, 1200 is 1200×, etc.
     pub fn label(&self) -> &'static str {
         match self {
-            PlaybackSpeed::Realtime => "1x (real)",
-            PlaybackSpeed::RealtimeDouble => "2x (real)",
-            PlaybackSpeed::FifteenToOne => "15s/s",
-            PlaybackSpeed::ThirtyToOne => "30s/s",
-            PlaybackSpeed::Quarter => "1 min/s",
-            PlaybackSpeed::Half => "2 min/s",
-            PlaybackSpeed::Normal => "5 min/s",
-            PlaybackSpeed::Double => "10 min/s",
-            PlaybackSpeed::Quadruple => "20 min/s",
+            PlaybackSpeed::Realtime => "1×",
+            PlaybackSpeed::RealtimeDouble => "2×",
+            PlaybackSpeed::FifteenToOne => "15×",
+            PlaybackSpeed::ThirtyToOne => "30×",
+            PlaybackSpeed::Quarter => "60×",
+            PlaybackSpeed::Half => "120×",
+            PlaybackSpeed::Normal => "300×",
+            PlaybackSpeed::Double => "600×",
+            PlaybackSpeed::Quadruple => "1200×",
         }
     }
 
@@ -315,6 +318,21 @@ impl PlaybackSpeed {
             })
             .map(|(s, _)| *s)
             .unwrap_or_else(|| candidates.first().copied().unwrap_or_default())
+    }
+}
+
+/// Format a "behind live" lag (seconds) for the LIVE button readout (spec §7,
+/// e.g. "2:14 behind"). `m:ss` under an hour, `h:mm:ss` at/above one hour.
+/// Negative or sub-second lags clamp to `0:00`.
+pub fn format_lag(secs: f64) -> String {
+    let total = secs.max(0.0) as u64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
     }
 }
 
@@ -704,6 +722,11 @@ impl PlaybackState {
     /// on regardless of zoom (see [`Self::effective_playback_mode`]).
     /// `seed` places the playhead (oldest cached frame) so the first pass
     /// runs oldest→newest.
+    ///
+    /// Currently unreachable: Phase 4 removed the Play-while-pinned → lookback
+    /// wiring (pause-while-tethered freezes instead). The loop-presets phase
+    /// re-enters lookback through this transition, so the machinery stays.
+    #[allow(dead_code)]
     pub fn enter_lookback(&mut self, seed: Option<f64>) {
         debug_assert!(
             self.time_model.mode == PlayheadMode::PinnedToNow,
