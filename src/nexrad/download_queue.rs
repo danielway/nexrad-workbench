@@ -357,13 +357,25 @@ impl DownloadQueueManager {
     /// `enqueue` would treat as "already queued" and silently drop the retry.
     /// If an item for `scan_start` exists it is reset to `Pending` (refreshing
     /// its operation id + elevation filter); otherwise the new item is appended.
-    /// Returns whether work is now pending for that scan (always true).
+    ///
+    /// An item already `Active` is left untouched: resetting an in-flight
+    /// download to `Pending` (e.g. an inspector per-tilt fetch colliding with a
+    /// whole-volume reactive fetch) would orphan its completion bookkeeping —
+    /// `mark_active_done` only acts on `Active` items, so the reset item would
+    /// stay Pending and get redundantly redispatched, and the elevation-filter
+    /// swap could re-scope the in-flight ingest. Returns whether work is now
+    /// pending (or already in flight) for that scan (always true).
     pub fn requeue(&mut self, item: QueueItem) -> bool {
         if let Some(existing) = self
             .queue
             .iter_mut()
             .find(|i| i.scan_start == item.scan_start)
         {
+            // A download already in flight finishes on its own terms; don't
+            // clobber it (see the doc comment).
+            if matches!(existing.state, QueueItemState::Active) {
+                return true;
+            }
             existing.state = QueueItemState::Pending;
             existing.operation_id = item.operation_id;
             existing.elevation_filter = item.elevation_filter;
@@ -534,6 +546,35 @@ mod tests {
             }
             other => panic!("expected the requeued item to dispatch, got {other:?}"),
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn requeue_does_not_clobber_an_in_flight_item() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(2000, None)]);
+        // Dispatch it → the item is now Active (in flight).
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload {
+                scan_start: 2000,
+                ..
+            }
+        ));
+
+        // An inspector per-tilt requeue lands while the whole-volume download is
+        // still in flight. It must NOT reset the Active item to Pending.
+        let retry = item(2000, Some(3)).with_operation(99);
+        assert!(q.requeue(retry));
+        // No second dispatch: the item is still Active (nothing Pending), so the
+        // queue reports Saturated, not a fresh StartDownload.
+        assert!(
+            matches!(q.advance(false), QueueAction::Saturated),
+            "requeue must not redispatch an in-flight download"
+        );
+
+        // The original completion bookkeeping still applies to the Active item.
+        q.mark_active_done(2000);
+        assert!(matches!(q.advance(false), QueueAction::Complete));
     }
 
     #[wasm_bindgen_test]
