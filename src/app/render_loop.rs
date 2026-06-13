@@ -25,7 +25,7 @@ impl WorkbenchApp {
             let product = self.state.viz_state.product.to_worker_string();
             let inputs = crate::state::MacroFrameInputs {
                 elevation: self.state.viz_state.elevation_selection.clone(),
-                product: product.to_string(),
+                product,
                 bounds: self.playback.state.time_model.playback_bounds,
                 scan_count: self.timeline.scans.scans.len(),
             };

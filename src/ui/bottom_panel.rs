@@ -66,6 +66,12 @@ fn draw_bottom_panel(
     // state machine (PlaybackState::set_timeline_zoom / reconcile_tier), so it
     // runs on every transition regardless of `playing` — paused transitions and
     // mobile get it too. Here we only dispatch to the right advance path.
+    if playback.state.playing && !playback.state.is_playback_allowed() {
+        // The Archive tier is a navigator only (spec §6.4): zooming out into
+        // Archive while playing halts the advance and reflects that in the play
+        // button, instead of silently stepping frames behind a calendar.
+        playback.state.playing = false;
+    }
     if playback.state.playing {
         // Effective mode: a lookback replay frame-steps (Macro) regardless of
         // tier, so it dispatches to advance_macro and gets the macro fps speeds.

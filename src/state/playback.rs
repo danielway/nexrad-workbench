@@ -116,8 +116,10 @@ pub struct MacroFrameInputs {
     pub elevation: super::viz::ElevationSelection,
     /// Selected product (worker-string). A frame is a sweep matching the
     /// product AND tilt, so the list must rebuild when the product changes —
-    /// otherwise a stale list survives a product switch.
-    pub product: String,
+    /// otherwise a stale list survives a product switch. Borrowed `&'static str`
+    /// (from `RadarProduct::to_worker_string`) so the per-frame dirty check
+    /// doesn't heap-allocate during macro/lookback playback.
+    pub product: &'static str,
     pub bounds: Option<(f64, f64)>,
     pub scan_count: usize,
 }
@@ -1731,7 +1733,7 @@ mod tests {
         let mut mp = MacroPlaybackState::default();
         let base = MacroFrameInputs {
             elevation: crate::state::ElevationSelection::default(),
-            product: "reflectivity".to_string(),
+            product: "reflectivity",
             bounds: None,
             scan_count: 3,
         };
@@ -1754,7 +1756,7 @@ mod tests {
 
         // Product change alone → window change (re-filter, no cursor snap).
         let product_changed = MacroFrameInputs {
-            product: "velocity".to_string(),
+            product: "velocity",
             ..base.clone()
         };
         assert_eq!(
