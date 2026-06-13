@@ -51,7 +51,7 @@ pub use mping::MpingState;
 pub use playback::{
     format_lag, DetailLevel, FreezeAt, LoopBasis, LoopMode, LoopPreset, MacroFrameInputs,
     PlaybackDirection, PlaybackMode, PlaybackSpeed, PlaybackState, RebuildCause, TimeModel,
-    TimeSelection, TimelineTier, TIMELINE_ZOOM_MAX, TIMELINE_ZOOM_MIN,
+    TimeSelection, TimelineTier, TIMELINE_ZOOM_MAX,
 };
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
