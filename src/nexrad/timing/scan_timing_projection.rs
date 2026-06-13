@@ -142,9 +142,16 @@ pub struct ChunkProjection {
     /// so a debug overlay can show poll fire vs. expected availability
     /// without re-deriving the math.
     projected_poll_at: DateTime<Utc>,
-    /// Duration from the anchor to this chunk's projected availability.
+    /// Duration from the anchor to this chunk's projected availability. Kept
+    /// in lock-step with `projected_available_at` when a next-volume anchor
+    /// shifts the offset-1 timeline (see `apply_next_volume_anchor`), so
+    /// `offset_from_anchor == projected_available_at − anchor` always holds.
     offset_from_anchor: Duration,
-    /// Duration from the previous chunk to this chunk.
+    /// Duration from the previous chunk to this chunk, as estimated by the
+    /// chained physics model. NOT adjusted by a next-volume anchor shift, so
+    /// for the first offset-1 chunk this reflects the pre-anchor inter-volume
+    /// estimate rather than the shifted gap; consumers needing the realized
+    /// gap should difference consecutive `projected_collection_time_secs`.
     interval_from_previous: Duration,
     /// Whether this chunk starts a new sweep (useful for UI grouping).
     starts_new_sweep: bool,
@@ -449,7 +456,17 @@ pub fn project_scan_timing_with_next(
         .last()
         .map(|p| p.projected_available_at)
         .unwrap_or(anchor_available_at);
-    let remaining_duration = Duration::milliseconds(cumulative_offset_ms);
+    // Derive `remaining_duration` from the (possibly anchor-shifted) last
+    // projection's `offset_from_anchor` rather than the pre-shift
+    // `cumulative_offset_ms`, so the invariant
+    // `anchor + remaining_duration == volume_end` survives an anchor shift.
+    // `apply_next_volume_anchor` shifts `offset_from_anchor` in lock-step with
+    // the projected times, so this stays consistent in both the shifted and
+    // unshifted cases.
+    let remaining_duration = projections
+        .last()
+        .map(|p| p.offset_from_anchor)
+        .unwrap_or_else(|| Duration::milliseconds(cumulative_offset_ms));
 
     Some(ScanTimingProjection {
         anchor_sequence,
@@ -496,6 +513,11 @@ fn apply_next_volume_anchor(
         p.projected_collection_time_secs += delta_secs;
         p.projected_available_at += delta;
         p.projected_poll_at += delta;
+        // Keep `offset_from_anchor` in lock-step with the shifted projected
+        // times so `offset_from_anchor == projected - anchor` holds for the
+        // shifted (offset-1) chunks, and so the caller can derive
+        // `remaining_duration`/`volume_end` consistently from the last chunk.
+        p.offset_from_anchor += delta;
     }
 }
 
@@ -528,8 +550,39 @@ pub fn project_full_scan_timing(
 
 #[cfg(test)]
 mod tests {
-    use super::next_volume_shift_secs;
+    use super::super::test_vcp::{build_vcp, TestElevation};
+    use super::super::ChunkCharacteristics;
+    use super::*;
+    use chrono::DateTime;
+    use nexrad_data::aws::realtime::VolumeIndex;
+    use nexrad_decode::messages::volume_coverage_pattern as vcpmsg;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn upload_at(secs: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(secs, 0).unwrap()
+    }
+
+    fn anchor(sequence: usize, chunk_type: ChunkType, upload_secs: i64) -> ChunkIdentifier {
+        ChunkIdentifier::new(
+            "KDMX".to_string(),
+            VolumeIndex::new(1),
+            upload_at(upload_secs).naive_utc(),
+            sequence,
+            chunk_type,
+            Some(upload_at(upload_secs)),
+        )
+    }
+
+    /// One super-res CS elevation at 22.5 dps → 6 chunks (seqs 2..=7), final 7.
+    fn vcp_1elev() -> vcpmsg::Message<'static> {
+        build_vcp(&[TestElevation {
+            super_res: true,
+            elevation_angle_raw: 0,
+            azimuth_rate_raw: 1 << 14, // 22.5 dps
+            waveform_raw: 1,           // CS
+            channel_raw: 0,            // ConstantPhase
+        }])
+    }
 
     #[wasm_bindgen_test]
     fn shift_is_measured_minus_projected() {
@@ -540,5 +593,255 @@ mod tests {
         assert_eq!(next_volume_shift_secs(Some(1100.0), 1130.0), Some(30.0));
         // Anchor sequence not present in the projection → no shift.
         assert_eq!(next_volume_shift_secs(None, 1090.0), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn anchor_source_observed_collection_when_collection_supplied() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let a = anchor(3, ChunkType::Intermediate, 1000);
+        let p = project_scan_timing(
+            &a,
+            Some(995.0), // ACTUAL collection time
+            &vcp,
+            &mapper,
+            None,
+            &TimingTuning::DEFAULT,
+        )
+        .unwrap();
+        assert_eq!(p.anchor_source(), AnchorSource::ObservedCollection);
+        // Observed lag = upload(1000) − collection(995) = 5.
+        assert_eq!(p.observed_anchor_lag_secs(), Some(5.0));
+        assert!((p.anchor_collection_time_secs() - 995.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn anchor_source_upload_minus_median_when_lag_stats_present() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        // Stats with a recorded availability lag → median is available.
+        let mut stats = ChunkTimingStats::new();
+        let b = ChunkCharacteristics {
+            chunk_type: ChunkType::Intermediate,
+            waveform_type: vcpmsg::WaveformType::CS,
+            channel_configuration: vcpmsg::ChannelConfiguration::ConstantPhase,
+            is_first_in_sweep: false,
+        };
+        stats.add_timing(b, Duration::seconds(10), Some(Duration::seconds(4)), 1);
+
+        let a = anchor(3, ChunkType::Intermediate, 1000);
+        let p = project_scan_timing(
+            &a,
+            None,
+            &vcp,
+            &mapper,
+            Some(&stats),
+            &TimingTuning::DEFAULT,
+        )
+        .unwrap();
+        assert_eq!(p.anchor_source(), AnchorSource::UploadMinusMedian);
+        // collection = upload(1000) − median_lag(4) = 996.
+        assert!((p.anchor_collection_time_secs() - 996.0).abs() < 1e-9);
+        assert_eq!(p.observed_anchor_lag_secs(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn anchor_source_upload_minus_default_when_no_lag() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let a = anchor(3, ChunkType::Intermediate, 1000);
+        let p = project_scan_timing(&a, None, &vcp, &mapper, None, &TimingTuning::DEFAULT).unwrap();
+        assert_eq!(p.anchor_source(), AnchorSource::UploadMinusDefault);
+        // collection = upload(1000) − default_lag(5) = 995.
+        assert!(
+            (p.anchor_collection_time_secs()
+                - (1000.0 - TimingTuning::DEFAULT.default_availability_lag_secs))
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn none_at_volume_boundary_without_next_volume() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        // Anchor at the final sequence (7), no next-volume pass requested.
+        let a = anchor(7, ChunkType::End, 1000);
+        assert!(
+            project_scan_timing(&a, None, &vcp, &mapper, None, &TimingTuning::DEFAULT).is_none()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn chaining_emits_offset1_starting_with_a_start_chunk_at_inter_volume_gap() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        // Anchor at the final sequence so the only remaining work is the next
+        // volume; request the chained pass.
+        let a = anchor(7, ChunkType::End, 1000);
+        let p = project_scan_timing_with_next(
+            &a,
+            Some(990.0),
+            &vcp,
+            &mapper,
+            None,
+            true,
+            None,
+            &TimingTuning::DEFAULT,
+        )
+        .unwrap();
+        // All chunks are next-volume (offset 1), seqs 1..=7.
+        assert!(p.chunks().iter().all(|c| c.volume_offset() == 1));
+        let seqs: Vec<usize> = p.chunks().iter().map(|c| c.sequence()).collect();
+        assert_eq!(seqs, (1..=7).collect::<Vec<_>>());
+
+        // The first offset-1 chunk is the next volume's Start chunk (seq 1).
+        let first = &p.chunks()[0];
+        assert_eq!(first.sequence(), 1);
+        assert_eq!(first.elevation_number(), None);
+        // The hop into it is the InterVolume case (fixed 8.5s gap).
+        assert_eq!(
+            first.physics_breakdown().case,
+            crate::nexrad::timing::IntervalCase::InterVolume
+        );
+        assert!((first.physics_breakdown().total_secs - 8.5).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn next_volume_anchor_shifts_only_offset1_and_keeps_invariants() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        // Anchor mid-volume so we have both offset-0 and offset-1 chunks.
+        let a = anchor(3, ChunkType::Intermediate, 1000);
+        let lag = 5.0; // default lag (no collection supplied, no stats)
+
+        // Baseline chained projection (no measured next-volume anchor).
+        let base = project_scan_timing_with_next(
+            &a,
+            None,
+            &vcp,
+            &mapper,
+            None,
+            true,
+            None,
+            &TimingTuning::DEFAULT,
+        )
+        .unwrap();
+        // Pick the next-volume seq-2 chunk's baseline projected collection.
+        let base_seq2 = base
+            .chunks()
+            .iter()
+            .find(|c| c.volume_offset() == 1 && c.sequence() == 2)
+            .unwrap();
+        let base_seq2_collection = base_seq2.projected_collection_time_secs();
+
+        // Supply a measured next-volume anchor for seq 2 that is 12s LATER than
+        // the chained estimate would place it. measured_collection = upload−lag,
+        // so pick upload so that upload − lag == base_seq2_collection + 12.
+        let measured_collection = base_seq2_collection + 12.0;
+        let upload_secs = measured_collection + lag;
+        let p = project_scan_timing_with_next(
+            &a,
+            None,
+            &vcp,
+            &mapper,
+            None,
+            true,
+            Some((2, upload_secs)),
+            &TimingTuning::DEFAULT,
+        )
+        .unwrap();
+
+        // Offset-0 chunks are unchanged vs baseline.
+        for (b, c) in base
+            .chunks()
+            .iter()
+            .filter(|c| c.volume_offset() == 0)
+            .zip(p.chunks().iter().filter(|c| c.volume_offset() == 0))
+        {
+            assert_eq!(b.sequence(), c.sequence());
+            assert!(
+                (b.projected_collection_time_secs() - c.projected_collection_time_secs()).abs()
+                    < 1e-6
+            );
+        }
+
+        // The anchored offset-1 seq-2 chunk now lands at the measured collection.
+        let seq2 = p
+            .chunks()
+            .iter()
+            .find(|c| c.volume_offset() == 1 && c.sequence() == 2)
+            .unwrap();
+        assert!(
+            (seq2.projected_collection_time_secs() - measured_collection).abs() < 1e-2,
+            "got {}",
+            seq2.projected_collection_time_secs()
+        );
+
+        // Every offset-1 chunk shifted by ~+12s vs baseline.
+        for (b, c) in base
+            .chunks()
+            .iter()
+            .filter(|c| c.volume_offset() == 1)
+            .zip(p.chunks().iter().filter(|c| c.volume_offset() == 1))
+        {
+            let delta = c.projected_collection_time_secs() - b.projected_collection_time_secs();
+            assert!(
+                (delta - 12.0).abs() < 1e-2,
+                "seq {} delta {}",
+                b.sequence(),
+                delta
+            );
+        }
+
+        // Invariant: offset_from_anchor == projected_available_at − anchor for
+        // the shifted offset-1 chunks (the fix keeps these in lock-step).
+        let anchor_avail = p.anchor_available_at();
+        for c in p.chunks().iter().filter(|c| c.volume_offset() == 1) {
+            let from_times = c.projected_available_at() - anchor_avail;
+            let diff = (from_times - c.offset_from_anchor())
+                .num_milliseconds()
+                .abs();
+            assert!(
+                diff <= 1,
+                "offset mismatch for seq {}: {diff}ms",
+                c.sequence()
+            );
+        }
+
+        // Invariant: anchor_available_at + remaining_duration == volume_end.
+        let recomputed_end = p.anchor_available_at() + p.remaining_duration();
+        let diff = (recomputed_end - p.volume_end_available_at())
+            .num_milliseconds()
+            .abs();
+        assert!(diff <= 1, "remaining/volume_end mismatch: {diff}ms");
+    }
+
+    #[wasm_bindgen_test]
+    fn blend_path_used_when_collection_stats_present() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        // Seed a collection-domain interval for the seq-4 bucket so the hop
+        // 3->4 blends physics with history.
+        let next_meta = mapper.get_chunk_metadata(4).unwrap();
+        let bucket = chunk_characteristics(next_meta, &vcp).unwrap();
+        let mut stats = ChunkTimingStats::new();
+        stats.add_timing(bucket, Duration::seconds(30), None, 1);
+        stats.attach_collection_interval(&bucket, Duration::seconds(30));
+
+        let a = anchor(3, ChunkType::Intermediate, 1000);
+        let p = project_scan_timing(
+            &a,
+            Some(995.0),
+            &vcp,
+            &mapper,
+            Some(&stats),
+            &TimingTuning::DEFAULT,
+        )
+        .unwrap();
+        let seq4 = p.chunks().iter().find(|c| c.sequence() == 4).unwrap();
+        assert!(seq4.used_historical());
+        assert_eq!(seq4.stats_n(), 1);
+        assert_eq!(seq4.bucket(), Some(&bucket));
     }
 }
