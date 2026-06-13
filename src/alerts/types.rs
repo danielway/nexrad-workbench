@@ -255,3 +255,143 @@ impl Alert {
         matches!(end, Some(t) if t < now_secs)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn alert(event: &str, ends: Option<f64>, expires: Option<f64>) -> Alert {
+        Alert {
+            id: "t".into(),
+            event: event.into(),
+            headline: String::new(),
+            description: String::new(),
+            instruction: String::new(),
+            severity: AlertSeverity::Unknown,
+            urgency: String::new(),
+            certainty: String::new(),
+            area_desc: String::new(),
+            sender: String::new(),
+            effective_secs: None,
+            onset_secs: None,
+            expires_secs: expires,
+            ends_secs: ends,
+            geometry: AlertGeometry::default(),
+            affected_zones: Vec::new(),
+            fill_triangles: Vec::new(),
+        }
+    }
+
+    /// `parse` is case-insensitive and defaults to `Unknown`; rank orders the
+    /// severities highest-first.
+    #[wasm_bindgen_test]
+    fn severity_parse_and_rank() {
+        assert_eq!(AlertSeverity::parse("Extreme"), AlertSeverity::Extreme);
+        assert_eq!(AlertSeverity::parse("SEVERE"), AlertSeverity::Severe);
+        assert_eq!(AlertSeverity::parse("  moderate "), AlertSeverity::Moderate);
+        assert_eq!(AlertSeverity::parse("minor"), AlertSeverity::Minor);
+        // Garbage / empty → Unknown.
+        assert_eq!(AlertSeverity::parse("???"), AlertSeverity::Unknown);
+        assert_eq!(AlertSeverity::parse(""), AlertSeverity::Unknown);
+        // Rank order is strictly descending by severity.
+        assert!(
+            AlertSeverity::Extreme.rank() > AlertSeverity::Severe.rank()
+                && AlertSeverity::Severe.rank() > AlertSeverity::Moderate.rank()
+                && AlertSeverity::Moderate.rank() > AlertSeverity::Minor.rank()
+                && AlertSeverity::Minor.rank() > AlertSeverity::Unknown.rank()
+        );
+    }
+
+    /// `event_color` picks a hue family per hazard keyword.
+    #[wasm_bindgen_test]
+    fn event_color_hue_families() {
+        // Tornado warning → red (R dominant).
+        let (r, g, b) = event_color("Tornado Warning");
+        assert!(r > g && r > b, "tornado not red: {r},{g},{b}");
+        // Thunderstorm → yellow (R and G high, B low).
+        let (r, g, b) = event_color("Severe Thunderstorm Warning");
+        assert!(
+            r > 100 && g > 100 && b < 100,
+            "tstorm not yellow: {r},{g},{b}"
+        );
+        // Flood → green (G dominant).
+        let (r, g, b) = event_color("Flood Warning");
+        assert!(g > r && g > b, "flood not green: {r},{g},{b}");
+        // Unmapped → neutral blue-gray (B highest of the three).
+        let (r, g, b) = event_color("Earthquake Warning");
+        assert!(b >= r && b >= g, "default not blue-gray: {r},{g},{b}");
+    }
+
+    /// For the same hazard family, warnings render brighter than watches,
+    /// which render brighter than advisories/statements.
+    #[wasm_bindgen_test]
+    fn event_color_brightness_warning_gt_watch_gt_advisory() {
+        let warn = event_color("Flood Warning");
+        let watch = event_color("Flood Watch");
+        let adv = event_color("Flood Advisory");
+        // Compare on the dominant green channel.
+        assert!(
+            warn.1 > watch.1,
+            "warning {} not > watch {}",
+            warn.1,
+            watch.1
+        );
+        assert!(
+            watch.1 > adv.1,
+            "watch {} not > advisory {}",
+            watch.1,
+            adv.1
+        );
+    }
+
+    /// `is_warning` is case-insensitive and false for watches/advisories.
+    #[wasm_bindgen_test]
+    fn is_warning_case_insensitive() {
+        assert!(alert("Tornado WARNING", None, None).is_warning());
+        assert!(alert("flood warning", None, None).is_warning());
+        assert!(!alert("Flood Watch", None, None).is_warning());
+        assert!(!alert("Winter Weather Advisory", None, None).is_warning());
+    }
+
+    /// `is_expired` uses `ends_secs` first, falling back to `expires_secs`, and
+    /// the comparison is strict (`< now`).
+    #[wasm_bindgen_test]
+    fn is_expired_prefers_ends_then_expires() {
+        // ends in the past → expired (expires irrelevant).
+        assert!(alert("e", Some(100.0), Some(9999.0)).is_expired(200.0));
+        // ends in the future → not expired even though expires is past.
+        assert!(!alert("e", Some(9999.0), Some(50.0)).is_expired(200.0));
+        // no ends → fall back to expires (past).
+        assert!(alert("e", None, Some(100.0)).is_expired(200.0));
+        // no ends, expires in the future → not expired.
+        assert!(!alert("e", None, Some(300.0)).is_expired(200.0));
+        // neither → never expired.
+        assert!(!alert("e", None, None).is_expired(200.0));
+        // boundary: end exactly == now is NOT expired (strict <).
+        assert!(!alert("e", Some(200.0), None).is_expired(200.0));
+        // one tick before now → expired.
+        assert!(alert("e", Some(199.9), None).is_expired(200.0));
+    }
+
+    /// `recompute_bbox` is `None` for empty geometry and a tight AABB
+    /// otherwise.
+    #[wasm_bindgen_test]
+    fn recompute_bbox_empty_and_aabb() {
+        let mut empty = AlertGeometry::default();
+        empty.recompute_bbox();
+        assert_eq!(empty.bbox, None);
+
+        let mut g = AlertGeometry {
+            polygons: vec![vec![vec![
+                (-100.0, 40.0),
+                (-90.0, 40.0),
+                (-95.0, 45.0),
+                (-100.0, 40.0),
+            ]]],
+            bbox: None,
+        };
+        g.recompute_bbox();
+        assert_eq!(g.bbox, Some((-100.0, 40.0, -90.0, 45.0)));
+    }
+}
