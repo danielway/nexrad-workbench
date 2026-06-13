@@ -209,6 +209,13 @@ pub struct AppState {
     /// `Live::detach_playhead` (the single policy site).
     pub pause_stream_while_reviewing: bool,
 
+    /// Acquisition policy: when `true` (default), playhead-driven reactive
+    /// prefetch + the anchor fast-path run as the user scrubs/seeks. When
+    /// `false` (data-saver), that automatic fetch is suppressed — explicit
+    /// range selections and the inspector's tap-to-fetch still work (spec §10).
+    /// Persisted in `UserPreferences`; read by `pump_implicit_prefetch`.
+    pub autofetch_while_scrubbing: bool,
+
     /// One-shot boot intent: when set, the app should open tethered to live as
     /// soon as a site is established. Set at boot (no deep-link time) when the
     /// first-visit site modal is open; consumed by the site modal's

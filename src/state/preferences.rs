@@ -77,6 +77,16 @@ pub struct UserPreferences {
     /// the settings UI lands next phase, but the behavior is wired now.
     #[serde(default)]
     pub pause_stream_while_reviewing: bool,
+
+    /// Acquisition policy (spec §10 / alignment §5 queue-sheet toggles): when
+    /// `true` (default), the playhead-driven reactive prefetch + anchor
+    /// fast-path run as the user scrubs/seeks, so the canvas fills
+    /// automatically. When `false` (data-saver), that automatic fetch is
+    /// suppressed — explicit range-selection fetches and the inspector's
+    /// tap-to-fetch still work, because the user asked for those. Migrates to
+    /// `true` for existing stored preferences (see [`UserPreferences::load`]).
+    #[serde(default = "default_true")]
+    pub autofetch_while_scrubbing: bool,
 }
 
 fn default_true() -> bool {
@@ -117,6 +127,7 @@ impl Default for UserPreferences {
             mobile_override: None,
             advanced_mode: false,
             pause_stream_while_reviewing: false,
+            autofetch_while_scrubbing: true,
         }
     }
 }
@@ -158,6 +169,7 @@ impl UserPreferences {
             mobile_override: state.mobile_override,
             advanced_mode: state.advanced_mode,
             pause_stream_while_reviewing: state.pause_stream_while_reviewing,
+            autofetch_while_scrubbing: state.autofetch_while_scrubbing,
         }
     }
 
@@ -198,6 +210,7 @@ impl UserPreferences {
         state.mobile_override = self.mobile_override;
         state.advanced_mode = self.advanced_mode;
         state.pause_stream_while_reviewing = self.pause_stream_while_reviewing;
+        state.autofetch_while_scrubbing = self.autofetch_while_scrubbing;
         self.mping_api_key.clone()
     }
 
@@ -318,5 +331,30 @@ mod tests {
         let json = serde_json::to_string(&prefs).expect("serialize");
         let back: UserPreferences = serde_json::from_str(&json).expect("deserialize");
         assert!(back.pause_stream_while_reviewing);
+    }
+
+    #[wasm_bindgen_test]
+    fn autofetch_while_scrubbing_defaults_on() {
+        // The default is ON — automatic fetch is the ~95% path (spec §10).
+        assert!(UserPreferences::default().autofetch_while_scrubbing);
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_prefs_without_autofetch_field_migrate_to_on() {
+        // A stored blob from before the field existed must keep autofetch ON
+        // (the serde default), so existing users' navigation still fills the
+        // canvas — the field's default IS the migration target.
+        let legacy = r#"{"speed":"Normal","advanced_mode":true}"#;
+        let prefs: UserPreferences = serde_json::from_str(legacy).expect("legacy parse");
+        assert!(prefs.autofetch_while_scrubbing);
+    }
+
+    #[wasm_bindgen_test]
+    fn autofetch_while_scrubbing_round_trips_when_disabled() {
+        let mut prefs = UserPreferences::default();
+        prefs.autofetch_while_scrubbing = false;
+        let json = serde_json::to_string(&prefs).expect("serialize");
+        let back: UserPreferences = serde_json::from_str(&json).expect("deserialize");
+        assert!(!back.autofetch_while_scrubbing);
     }
 }

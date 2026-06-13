@@ -53,9 +53,16 @@ impl WorkbenchApp {
         // normally); the queue not paused.
         let playhead_attached = self.playback.state.time_model.is_pinned()
             || self.playback.state.time_model.is_lookback();
+        // Data-saver: with autofetch-while-scrubbing off, the playhead no longer
+        // drives downloads. Explicit range selections (`pump_selection_fetch`)
+        // and the inspector's tap-to-fetch still fetch — the user asked for
+        // those — but seeking/scrubbing does not.
         if !self.render.coordinator.has_worker()
-            || playhead_attached
-            || self.acquisition.state.is_paused()
+            || !reactive_prefetch_allowed(
+                playhead_attached,
+                self.acquisition.state.is_paused(),
+                self.state.autofetch_while_scrubbing,
+            )
         {
             return;
         }
@@ -679,6 +686,19 @@ impl WorkbenchApp {
     }
 }
 
+/// Whether the playhead-driven reactive prefetch (settled window + anchor
+/// fast-path) may run this frame. It is suppressed while the playhead is
+/// attached to the live edge (the stream owns acquisition there), while the
+/// queue is manually paused, or when the data-saver `autofetch_while_scrubbing`
+/// policy is off. Pure so the policy gate is unit-tested without a full app.
+fn reactive_prefetch_allowed(
+    playhead_attached: bool,
+    queue_paused: bool,
+    autofetch_while_scrubbing: bool,
+) -> bool {
+    !playhead_attached && !queue_paused && autofetch_while_scrubbing
+}
+
 /// The distinct UTC dates a `[start, end]` second-range touches (one, or two
 /// across a midnight boundary — the prefetch window is always well under 24h).
 fn dates_spanning(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
@@ -713,4 +733,32 @@ fn dates_in_range(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
         date = next;
     }
     dates
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reactive_prefetch_allowed;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// With everything nominal (detached/free playhead, queue running, autofetch
+    /// on) the reactive prefetch runs.
+    #[wasm_bindgen_test]
+    fn prefetch_runs_when_free_and_autofetch_on() {
+        assert!(reactive_prefetch_allowed(false, false, true));
+    }
+
+    /// Data-saver: autofetch off suppresses the playhead-driven prefetch even
+    /// when the playhead is free and the queue is running.
+    #[wasm_bindgen_test]
+    fn prefetch_suppressed_when_autofetch_off() {
+        assert!(!reactive_prefetch_allowed(false, false, false));
+    }
+
+    /// The pre-existing gates still hold independently of the new policy: an
+    /// attached playhead or a paused queue both suppress prefetch.
+    #[wasm_bindgen_test]
+    fn prefetch_suppressed_when_attached_or_paused() {
+        assert!(!reactive_prefetch_allowed(true, false, true));
+        assert!(!reactive_prefetch_allowed(false, true, true));
+    }
 }
