@@ -323,9 +323,11 @@ impl super::layout::Layer for SiteModalLayer {
 
 /// Returns `true` if a site was selected (so the caller can trigger acquisition).
 ///
-/// Currently the caller ignores the return value — the site-selection flow
-/// dispatches `AppCommand::ChangeSite` via `apply_site_selection` instead.
-/// Kept for the standalone-call-site path used by tests.
+/// Currently the caller ignores the return value — selection runs through
+/// `apply_site_selection`, which sets `viz_state.site_id`, centers the camera,
+/// and pushes `RefreshTimeline` + `RefreshAlerts` (plus `StartLive` when a
+/// boot-tether was deferred). Kept for the standalone-call-site path used by
+/// tests.
 fn draw_site_modal(
     ctx: &egui::Context,
     state: &mut AppState,

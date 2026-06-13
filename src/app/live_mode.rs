@@ -113,22 +113,16 @@ impl WorkbenchApp {
             // Get to PinnedToNow without tripping enter_lookback's assert.
             if !self.playback.state.time_model.is_pinned() {
                 // Re-tether: instant if a stream is already running, otherwise
-                // start one. `return_to_live` lands the playhead in PinnedToNow.
+                // start one. `return_to_live` lands the playhead in PinnedToNow
+                // synchronously (it calls `enter_pinned_live` in both the
+                // active-stream and cold-start paths), even when the cold path
+                // also queued a StartLive command for the channel.
                 self.return_to_live(ctx);
             }
-            // `return_to_live`/`start_live_mode` may have queued a StartLive
-            // command (no stream yet) and left us not-yet-pinned this frame; only
-            // enter lookback once actually pinned.
-            if self.playback.state.time_model.is_pinned() {
-                let seed = self.resolve_pinned_window(basis, now).0;
-                self.playback.state.enter_lookback(Some(seed), basis);
-            } else {
-                // Stream is still starting; remember the intent so the loop
-                // engages once we're pinned. Stored as a pinned loop window the
-                // next pin can read — but for simplicity we just leave the
-                // preset to be re-applied by the user if the stream was cold.
-                log::debug!("Pin-to-live preset deferred: stream still starting");
-            }
+            // PinnedToNow is guaranteed here, so enter_lookback's `is_pinned`
+            // assert holds.
+            let seed = self.resolve_pinned_window(basis, now).0;
+            self.playback.state.enter_lookback(Some(seed), basis);
             return;
         }
 
