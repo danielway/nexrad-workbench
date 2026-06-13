@@ -28,12 +28,6 @@ use ruler::{render_playback_cursor, render_tick_marks};
 use scan_track::render_macro_track;
 use tooltips::render_timeline_tooltip;
 
-/// Level of detail for radar data rendering. Now mapped from the stored
-/// timeline tier (see [`crate::state::PlaybackState::detail_level`]) rather
-/// than re-derived from raw zoom here. Re-exported from `state` so the many
-/// `match` arms in the track renderers keep their short path.
-pub(super) use crate::state::DetailLevel;
-
 /// Sub-rects of the timeline widget. One main track now (frames-first), with
 /// a tick rail above. The `overlay` rect spans the main track for the cursor,
 /// selection, and now-affordance.
@@ -73,7 +67,9 @@ pub(super) struct TimelineFrame<'a> {
     /// Pixels per second.
     pub zoom: f64,
     pub rects: TrackRects,
-    pub detail: DetailLevel,
+    /// The stored timeline tier (single source of truth, with hysteresis) this
+    /// frame renders at. Renderers branch on it directly.
+    pub tier: TimelineTier,
     pub dark: bool,
     pub use_local: bool,
 }
@@ -317,10 +313,8 @@ pub(super) fn render_timeline(
 
     let zoom = playback.state.timeline_zoom;
     let tier = playback.state.timeline_tier;
-    // The renderer's visual detail still maps from the stored tier (single
-    // source of truth, with hysteresis), but the strip is now ONE main track
-    // at constant height across every tier — no panel reflow.
-    let detail_level = playback.state.detail_level();
+    // The strip is ONE main track at constant height across every tier — no
+    // panel reflow — and renderers branch on `tier` directly.
 
     let tick_lane_h = style::TICK_LANE_H;
     let main_track_h = style::MAIN_TRACK_H;
@@ -426,7 +420,7 @@ pub(super) fn render_timeline(
             scan: scan_rect,
             overlay: overlay_rect,
         },
-        detail: detail_level,
+        tier,
         dark,
         use_local,
     };

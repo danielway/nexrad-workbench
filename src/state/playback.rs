@@ -97,18 +97,6 @@ fn mode_of_tier(tier: TimelineTier, is_lookback: bool) -> PlaybackMode {
     }
 }
 
-/// The renderer's per-frame visual detail, mapped from the stored tier (with
-/// a Macro sub-detail kept for Phase 1; Phase 2 reworks Macro rendering).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum DetailLevel {
-    /// Far out: solid coverage fill only.
-    Coverage,
-    /// Volume-scan blocks.
-    Volumes,
-    /// Tilt (sweep) blocks within volume scans.
-    Tilts,
-}
-
 /// Inputs the macro `sweep_frames` list is built from. Compared against the
 /// previous build's inputs to decide whether a rebuild is needed.
 #[derive(PartialEq, Clone, Default)]
@@ -1138,20 +1126,6 @@ impl PlaybackState {
         mode_of_tier(self.timeline_tier, self.time_model.is_lookback())
     }
 
-    /// The renderer's visual detail for this frame, derived from the stored
-    /// tier (not raw zoom). Micro → Tilts (frames-first cells); Macro →
-    /// Volumes (uniform ticks, with the renderer deciding tick-vs-coverage by
-    /// density); Archive → Coverage. The former `MACRO_VOLUMES_ZOOM` sub-detail
-    /// stopgap is gone — the Macro track now merges to coverage by tick
-    /// density, not a zoom threshold.
-    pub fn detail_level(&self) -> DetailLevel {
-        match self.timeline_tier {
-            TimelineTier::Micro => DetailLevel::Tilts,
-            TimelineTier::Macro => DetailLevel::Volumes,
-            TimelineTier::Archive => DetailLevel::Coverage,
-        }
-    }
-
     /// Median frame spacing (seconds) of the current macro frame list, for
     /// cadence conversion. Derived from consecutive `sweep_frames` deltas when
     /// ≥2 frames exist; otherwise the typical volume interval. Tiny lists are
@@ -2064,26 +2038,6 @@ mod tests {
         // Uneven spacing → true median of the deltas (100, 200, 300 → 200).
         ps.macro_playback.sweep_frames = vec![0.0, 100.0, 300.0, 600.0];
         assert_eq!(ps.median_frame_spacing(), 200.0);
-    }
-
-    #[wasm_bindgen_test]
-    fn detail_level_maps_from_tier() {
-        let mut ps = PlaybackState::default();
-        // Micro → Tilts (frames-first cells).
-        ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.detail_level(), DetailLevel::Tilts);
-        // Macro → Volumes regardless of the in-tier zoom; the Macro renderer
-        // decides tick-vs-coverage by density now (the MACRO_VOLUMES_ZOOM
-        // sub-detail stopgap was removed).
-        ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.detail_level(), DetailLevel::Volumes);
-        ps.set_timeline_zoom(0.1, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.detail_level(), DetailLevel::Volumes);
-        // Archive → Coverage.
-        let zoom_61h = 1000.0 / (61.0 * 3600.0);
-        ps.set_timeline_zoom(zoom_61h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
-        assert_eq!(ps.detail_level(), DetailLevel::Coverage);
     }
 
     // ---------------------------------------------------------------
