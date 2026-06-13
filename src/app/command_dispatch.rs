@@ -78,7 +78,7 @@ impl WorkbenchApp {
                 outcome.pump_queue = true;
             }
             AppCommand::RetryFailed(op_id) => {
-                self.acquisition.state.retry_failed(op_id);
+                self.handle_retry_failed(op_id);
                 outcome.pump_queue = true;
             }
             AppCommand::SkipFailed(op_id) => {
@@ -100,6 +100,68 @@ impl WorkbenchApp {
                 self.diagnostics.alerts.selected_alert_id = None;
                 self.diagnostics.alerts.list_modal_open = false;
             }
+        }
+    }
+
+    /// Retry a failed archive download — the documented two-state-machine
+    /// trap. `AcquisitionState::retry_failed` resets the *operation* to Queued,
+    /// but the download pump dispatches from `DownloadQueueManager` items, whose
+    /// failed item was marked Done. So we must ALSO re-enqueue a `QueueItem`
+    /// (reusing the same operation id so both machines stay correlated). Without
+    /// the requeue the retry resets the drawer row but never re-fetches.
+    fn handle_retry_failed(&mut self, op_id: state::OperationId) {
+        // Reconstruct the scan's download params from the operation kind before
+        // we flip it back to Queued.
+        let scan_params = self.acquisition.state.find(op_id).and_then(|op| {
+            if let state::OperationKind::ArchiveDownload {
+                file_name,
+                scan_start,
+                scan_end,
+                ..
+            } = &op.kind
+            {
+                Some((file_name.clone(), *scan_start, *scan_end))
+            } else {
+                None
+            }
+        });
+
+        // Reset the operation row (Queued, front of pending) regardless.
+        self.acquisition.state.retry_failed(op_id);
+
+        let Some((file_name, scan_start, scan_end)) = scan_params else {
+            // Non-download operations (listings/realtime) have no queue item to
+            // re-enqueue; the status reset is all retry means for them.
+            return;
+        };
+
+        // Derive the UTC date the archive file lives under, and scope the fetch
+        // to the active elevation filter (mirroring the reactive-prefetch path).
+        let Some(date) = chrono::DateTime::from_timestamp(scan_start, 0).map(|dt| dt.date_naive())
+        else {
+            return;
+        };
+        let elevation_filter = self.active_elevation_filter();
+
+        let item = crate::nexrad::download_queue::QueueItem::new(
+            date,
+            file_name,
+            scan_start,
+            scan_end,
+            elevation_filter,
+        )
+        .with_operation(op_id);
+        self.acquisition.coordinator.download_queue.requeue(item);
+    }
+
+    /// The active elevation filter for fetch scoping: a Fixed cut scopes ingest
+    /// to that elevation; Latest fetches the whole volume.
+    fn active_elevation_filter(&self) -> Option<u8> {
+        match &self.state.viz_state.elevation_selection {
+            state::ElevationSelection::Fixed {
+                elevation_number, ..
+            } => Some(*elevation_number),
+            state::ElevationSelection::Latest => None,
         }
     }
 

@@ -226,16 +226,21 @@ impl AcquisitionState {
         self.update_queue_state();
     }
 
-    /// Mark an operation as failed and enter error-pause.
+    /// Mark an operation as failed.
+    ///
+    /// Failures are **local and recoverable** (alignment §5 failure model):
+    /// one scan's failure does not pause the whole queue — other queued items
+    /// keep dispatching, and the failed cell surfaces an alert tick + retry on
+    /// the strip / queue sheet. We deliberately do NOT flip `queue_state` to
+    /// `ErrorPaused` or auto-expand the drawer here; `update_queue_state` keeps
+    /// the queue Running/Empty as appropriate.
     pub fn mark_failed(&mut self, id: OperationId, error: String) {
         if let Some(op) = self.find_mut(id) {
             op.status = OperationStatus::Failed { error };
             op.completed_at_ms = Some(js_sys::Date::now());
             op.phase = DownloadPhase::Done;
         }
-        self.queue_state = QueueState::ErrorPaused;
-        self.error_pause_operation_id = Some(id);
-        self.drawer_expanded = true;
+        self.update_queue_state();
     }
 
     /// Cancel a specific operation.
@@ -622,5 +627,77 @@ impl AcquisitionState {
             self.queue_state,
             QueueState::Paused | QueueState::ErrorPaused
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn download_kind(scan_start: i64) -> OperationKind {
+        OperationKind::ArchiveDownload {
+            site_id: "KDMX".to_string(),
+            file_name: format!("KDMX_{scan_start}"),
+            scan_start,
+            scan_end: scan_start + 300,
+        }
+    }
+
+    /// A single failure must NOT pause the whole queue (alignment §5 failure
+    /// model: failures are local and recoverable). With another item still
+    /// queued, the queue stays Running and dispatch keeps flowing.
+    #[wasm_bindgen_test]
+    fn failure_does_not_globally_pause_queue() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(1000));
+        let b = acq.create_operation(download_kind(2000));
+        acq.mark_active(a);
+        acq.mark_active(b);
+
+        // a fails — must not error-pause, must not block b.
+        acq.mark_failed(a, "boom".to_string());
+
+        assert!(
+            !acq.is_paused(),
+            "a single failure must not pause the queue"
+        );
+        assert_ne!(acq.queue_state, QueueState::ErrorPaused);
+        // b is still active and dispatchable.
+        assert_eq!(acq.active_count(), 1);
+        assert!(matches!(
+            acq.find(a).unwrap().status,
+            OperationStatus::Failed { .. }
+        ));
+    }
+
+    /// When the failing op was the only work, the queue settles to Empty (not
+    /// ErrorPaused) so the next reactive prefetch can run unobstructed.
+    #[wasm_bindgen_test]
+    fn lone_failure_settles_to_empty_not_paused() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(1000));
+        acq.mark_active(a);
+        acq.mark_failed(a, "boom".to_string());
+        assert!(!acq.is_paused());
+        assert_eq!(acq.queue_state, QueueState::Empty);
+    }
+
+    /// `failed_operation_for_scan_start` locates the right op so the strip's
+    /// failed-cell tick can target `RetryFailed`, and `retry_failed` flips it
+    /// back to Queued (the operation side of the two-machine retry).
+    #[wasm_bindgen_test]
+    fn retry_resets_failed_operation_to_queued() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(5000));
+        acq.mark_active(a);
+        acq.mark_failed(a, "boom".to_string());
+
+        let found = acq.failed_operation_for_scan_start(5000, 60);
+        assert_eq!(found, Some(a));
+
+        acq.retry_failed(a);
+        assert_eq!(acq.find(a).unwrap().status, OperationStatus::Queued);
+        assert!(!acq.is_paused());
     }
 }

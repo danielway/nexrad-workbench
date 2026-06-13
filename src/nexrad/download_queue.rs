@@ -130,6 +130,7 @@ pub(crate) fn prefetch_window(
 
 /// Action the caller should take after a queue operation.
 #[allow(dead_code)]
+#[derive(Debug)]
 pub(crate) enum QueueAction {
     /// Start downloading a specific file.
     StartDownload {
@@ -349,6 +350,32 @@ impl DownloadQueueManager {
         }
     }
 
+    /// Re-enqueue a scan for download, used by explicit retry/fetch (the
+    /// failed-cell tick, the queue sheet, the inspector). Unlike [`Self::enqueue`]
+    /// this does **not** skip a scan already present — a failed download leaves a
+    /// `Done` item behind (failures are marked Done so the slot frees), which
+    /// `enqueue` would treat as "already queued" and silently drop the retry.
+    /// If an item for `scan_start` exists it is reset to `Pending` (refreshing
+    /// its operation id + elevation filter); otherwise the new item is appended.
+    /// Returns whether work is now pending for that scan (always true).
+    pub fn requeue(&mut self, item: QueueItem) -> bool {
+        if let Some(existing) = self
+            .queue
+            .iter_mut()
+            .find(|i| i.scan_start == item.scan_start)
+        {
+            existing.state = QueueItemState::Pending;
+            existing.operation_id = item.operation_id;
+            existing.elevation_filter = item.elevation_filter;
+            existing.file_name = item.file_name;
+            existing.date = item.date;
+            existing.scan_end = item.scan_end;
+        } else {
+            self.queue.push(item);
+        }
+        true
+    }
+
     /// Whether the session auto-fetch volume cap has been reached.
     pub fn auto_fetch_cap_reached(&self) -> bool {
         self.auto_fetched_bytes >= self.max_auto_fetch_bytes
@@ -466,6 +493,61 @@ mod tests {
         assert!(q.find_by_scan_start(100).is_some());
         assert!(q.find_by_scan_start(9000).is_some());
         assert!(q.find_by_scan_start(5000).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn requeue_resets_a_done_item_so_retry_actually_redownloads() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(1000, Some(1))]);
+        // Dispatch it, then mark it Done — the state a *failed* download leaves
+        // behind (failures are marked Done so the concurrency slot frees).
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload {
+                scan_start: 1000,
+                ..
+            }
+        ));
+        q.mark_active_done(1000);
+        // A plain enqueue would see the existing item and skip — no re-fetch.
+        q.enqueue([item(1000, Some(1))]);
+        assert!(
+            matches!(q.advance(false), QueueAction::Complete),
+            "enqueue must NOT resurrect a Done item (the retry bug)"
+        );
+
+        // requeue resets the existing item to Pending → it dispatches again,
+        // carrying the fresh elevation filter.
+        let mut retry = item(1000, Some(3));
+        retry = retry.with_operation(42);
+        assert!(q.requeue(retry));
+        match q.advance(false) {
+            QueueAction::StartDownload {
+                scan_start,
+                elevation_filter,
+                operation_id,
+                ..
+            } => {
+                assert_eq!(scan_start, 1000);
+                assert_eq!(elevation_filter, Some(3));
+                assert_eq!(operation_id, Some(42));
+            }
+            other => panic!("expected the requeued item to dispatch, got {other:?}"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn requeue_appends_when_scan_absent() {
+        let mut q = DownloadQueueManager::new();
+        // Nothing queued yet — requeue behaves like an append.
+        assert!(q.requeue(item(7000, None)));
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload {
+                scan_start: 7000,
+                ..
+            }
+        ));
     }
 
     #[wasm_bindgen_test]
