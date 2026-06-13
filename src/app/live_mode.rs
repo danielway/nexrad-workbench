@@ -241,13 +241,11 @@ impl WorkbenchApp {
             // next frame; `playing` is deliberately untouched so an archive
             // replay keeps running.
             self.playback.state.slide_anchored_selection(now);
-            let detached_for = self
-                .live
-                .mode_state
-                .detached_since
-                .map(|t| now - t)
-                .unwrap_or(0.0);
-            if detached_for > crate::LIVE_DETACHED_STOP_SECS {
+            if state::should_stop_for_detached_idle(
+                self.live.mode_state.detached_since,
+                now,
+                crate::LIVE_DETACHED_STOP_SECS,
+            ) {
                 self.live.stop(state::LiveExitReason::DetachedTimeout);
                 self.state.status_message =
                     state::LiveExitReason::DetachedTimeout.message().to_string();
@@ -488,12 +486,9 @@ impl WorkbenchApp {
                     fetch_latency_ms,
                     plan.as_ref().and_then(|p| p.next_available_in_secs(now)),
                 );
-                self.live.mode_state.handle_realtime_chunk(
-                    chunks_in_volume,
-                    is_volume_end,
-                    now,
-                    plan.as_ref(),
-                );
+                self.live
+                    .mode_state
+                    .handle_realtime_chunk(chunks_in_volume, now, plan.as_ref());
 
                 if let Some(stat) = arrival_stat {
                     self.live.mode_state.record_chunk_arrival(stat);

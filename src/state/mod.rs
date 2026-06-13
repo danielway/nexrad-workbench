@@ -44,7 +44,7 @@ pub use errors::{AppError, ErrorContext};
 pub use frame_clock::FrameNow;
 pub use gps::GpsState;
 pub use layer::{GeoLayerVisibility, LayerState};
-pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
+pub use live_mode::{should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
 pub use mping::MpingState;
 pub use playback::{

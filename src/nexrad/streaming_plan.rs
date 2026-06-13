@@ -243,6 +243,38 @@ impl StreamingPlan {
             next_target_key: None,
         }
     }
+
+    /// Minimal test plan with an explicit `next_target_key` — lets tests in
+    /// other modules (e.g. `state::live_mode`) exercise the
+    /// `next_target().is_some()` phase gating without building a full
+    /// projection. When `next_target_key` is `Some`, a matching
+    /// `ChunkProjectionInfo` is placed in the current/next volume chunk list so
+    /// [`Self::next_target`] resolves to it.
+    #[cfg(test)]
+    pub(crate) fn with_next_target_key_for_test(next_target_key: Option<(u8, usize)>) -> Self {
+        let info = |seq: usize| ChunkProjectionInfo {
+            sequence: seq,
+            elevation_number: Some(1),
+            azimuth_rate_dps: 0.0,
+            chunk_index_in_sweep: 0,
+            chunks_in_sweep: 3,
+            projected: None,
+        };
+        let (current, next) = match next_target_key {
+            Some((0, seq)) => (vec![info(seq)], None),
+            Some((1, seq)) => (Vec::new(), Some(vec![info(seq)])),
+            _ => (Vec::new(), None),
+        };
+        StreamingPlan {
+            filter: StreamingFilter::All,
+            built_at_secs: 0.0,
+            revision: 0,
+            current_volume_chunks: current,
+            next_volume_chunks: next,
+            current_volume_end_collection_secs: None,
+            next_target_key,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -538,4 +538,33 @@ impl ChunkArrivalStat {
         let predicted = self.predicted_wait_secs?;
         Some((actual - predicted) * 1000.0)
     }
+
+    /// Minimal arrival sample for tests — all diagnostic fields empty except
+    /// `sequence` / `success_at`. Lets callers in other modules build a
+    /// `ChunkArrivalStat` without spelling out every field.
+    #[cfg(test)]
+    pub(crate) fn minimal_for_test(sequence: u32, success_at: f64) -> Self {
+        Self {
+            sequence,
+            wait_resolution: WaitResolution::default(),
+            chunk_type: "Intermediate",
+            elevation_number: None,
+            chunk_index_in_sweep: None,
+            chunks_in_sweep: None,
+            predicted_available_at: None,
+            empty_polls: 0,
+            last_empty_poll_at: None,
+            s3_last_modified_at: None,
+            success_at,
+            bucket_key: None,
+            stats_n_at_prediction: 0,
+            scheduler_path: None,
+            physics_breakdown: None,
+            anchor_source: None,
+            availability_lag_ms: None,
+            collection_time_secs: None,
+            predicted_wait_secs: None,
+            predicted_with_plan_revision: None,
+        }
+    }
 }

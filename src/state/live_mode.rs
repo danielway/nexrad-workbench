@@ -32,6 +32,25 @@
 //! snapshots come from [`LiveModeState::derive_current_volume_forecast`] / the
 //! [`crate::state::derive_volume_forecast`] free function.
 
+/// Whether a background (detached) live stream should auto-stop because the
+/// playhead has stayed detached longer than `threshold_secs`.
+///
+/// Pure decision extracted from the egui tick loop ([`crate::app`]'s
+/// `tick_live` Detached branch) so the auto-stop rule is testable in isolation.
+/// `detached_since` is the wall-clock time (Unix seconds) the playhead detached
+/// from the live edge; `None` (never detached) yields `0.0` elapsed and so
+/// `false`. A `detached_since` in the future likewise yields a non-positive
+/// elapsed and `false`. The comparison is strictly greater-than, so an elapsed
+/// exactly equal to the threshold does not yet stop.
+pub fn should_stop_for_detached_idle(
+    detached_since: Option<f64>,
+    now: f64,
+    threshold_secs: f64,
+) -> bool {
+    let detached_for = detached_since.map(|t| now - t).unwrap_or(0.0);
+    detached_for > threshold_secs
+}
+
 /// Live mode phase - current state in the streaming state machine.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LivePhase {
@@ -361,7 +380,6 @@ impl LiveModeState {
     pub fn handle_realtime_chunk(
         &mut self,
         chunks_in_volume: u32,
-        _is_volume_end: bool,
         now: f64,
         plan: Option<&crate::nexrad::StreamingPlan>,
     ) {
@@ -572,5 +590,459 @@ impl LiveModeState {
             &self.chunk_arrivals,
             None,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::{ScanKey, UnixMillis};
+    use crate::nexrad::projection::VolumeObservations;
+    use crate::nexrad::StreamingPlan;
+    use crate::state::ChunkArrivalStat;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn scan_key(start_ms: i64) -> ScanKey {
+        ScanKey::new("KDMX", UnixMillis(start_ms))
+    }
+
+    /// A `StreamingPlan` whose `next_target()` resolves to a current-volume
+    /// chunk (drives the WaitingForChunk branch).
+    fn plan_with_target() -> StreamingPlan {
+        StreamingPlan::with_next_target_key_for_test(Some((0, 1)))
+    }
+
+    /// A `StreamingPlan` with no `next_target` (drives the Streaming branch).
+    fn plan_without_target() -> StreamingPlan {
+        StreamingPlan::with_next_target_key_for_test(None)
+    }
+
+    fn vcp_with_one_elevation() -> crate::data::keys::ExtractedVcp {
+        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+        ExtractedVcp {
+            number: 215,
+            elevations: vec![ExtractedVcpElevation {
+                angle: 0.5,
+                waveform: "CS".to_string(),
+                prf_number: 1,
+                is_sails: false,
+                is_mrle: false,
+                is_base_tilt: false,
+                azimuth_rate: Some(20.0),
+            }],
+        }
+    }
+
+    // ── should_stop_for_detached_idle (extracted predicate) ──
+
+    #[wasm_bindgen_test]
+    fn detached_idle_none_is_never_stop() {
+        // Never detached → 0 elapsed → false regardless of threshold.
+        assert!(!should_stop_for_detached_idle(None, 10_000.0, 60.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn detached_idle_just_under_threshold_does_not_stop() {
+        // 59.9s detached, 60s threshold → false.
+        assert!(!should_stop_for_detached_idle(
+            Some(1000.0),
+            1000.0 + 59.9,
+            60.0
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn detached_idle_exactly_at_threshold_does_not_stop() {
+        // Strictly greater-than: == threshold is not yet a stop.
+        assert!(!should_stop_for_detached_idle(
+            Some(1000.0),
+            1000.0 + 60.0,
+            60.0
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn detached_idle_just_over_threshold_stops() {
+        assert!(should_stop_for_detached_idle(
+            Some(1000.0),
+            1000.0 + 60.1,
+            60.0
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn detached_idle_future_detached_since_does_not_stop() {
+        // detached_since in the future → negative elapsed → false.
+        assert!(!should_stop_for_detached_idle(Some(2000.0), 1000.0, 60.0));
+    }
+
+    // ── start() ──
+
+    #[wasm_bindgen_test]
+    fn start_resets_session_fields_and_lands_acquiring_lock() {
+        for phase in [
+            LivePhase::Idle,
+            LivePhase::AcquiringLock,
+            LivePhase::Streaming,
+            LivePhase::WaitingForChunk,
+            LivePhase::Error,
+        ] {
+            let mut s = LiveModeState::with_dummy_streaming(phase, 100.0);
+            // Dirty the session fields so we can prove start() clears them.
+            s.chunks_received = 42;
+            s.detached_since = Some(50.0);
+            s.error_message = Some("boom".to_string());
+            s.last_exit_reason = Some(LiveExitReason::ConnectionError);
+            s.pulse_phase = 0.7;
+
+            s.start(200.0);
+
+            assert_eq!(s.phase, LivePhase::AcquiringLock, "phase from {:?}", phase);
+            assert_eq!(s.phase_started_at, Some(200.0));
+            assert_eq!(s.chunks_received, 0);
+            assert_eq!(s.detached_since, None);
+            assert_eq!(s.error_message, None);
+            assert_eq!(s.last_exit_reason, None);
+            assert_eq!(s.pulse_phase, 0.0);
+        }
+    }
+
+    // ── stop() ──
+
+    #[wasm_bindgen_test]
+    fn stop_zeroes_volume_and_records_exit_reason() {
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::Streaming;
+        s.phase_started_at = Some(10.0);
+        s.detached_since = Some(20.0);
+        s.current_volume = Some(crate::data::LiveVolumeAnchor::new(
+            scan_key(1_700_000_000_000),
+            crate::data::ProvisionalStart(1.0),
+        ));
+        s.sweep_start_azimuth = Some(30.0);
+        s.live_data_azimuth_range = Some((0.0, 90.0));
+        s.last_radial_azimuth = Some(45.0);
+        s.last_radial_time_secs = Some(99.0);
+        s.volume_start_plan = Some(plan_without_target());
+        s.previous_volume_end_secs = Some(80.0);
+        s.chunk_arrivals
+            .push(ChunkArrivalStat::minimal_for_test(1, 5.0));
+        s.last_chunk_arrivals
+            .push(ChunkArrivalStat::minimal_for_test(2, 6.0));
+
+        s.stop(LiveExitReason::UserStopped);
+
+        assert_eq!(s.phase, LivePhase::Idle);
+        assert_eq!(s.phase_started_at, None);
+        assert_eq!(s.last_exit_reason, Some(LiveExitReason::UserStopped));
+        assert_eq!(s.detached_since, None);
+        assert!(s.current_volume.is_none());
+        assert_eq!(s.sweep_start_azimuth, None);
+        assert_eq!(s.live_data_azimuth_range, None);
+        assert_eq!(s.last_radial_azimuth, None);
+        assert_eq!(s.last_radial_time_secs, None);
+        assert!(s.volume_start_plan.is_none());
+        assert!(s.last_completed_volume.is_none());
+        assert_eq!(s.previous_volume_end_secs, None);
+        assert!(s.chunk_arrivals.is_empty());
+        assert!(s.last_chunk_arrivals.is_empty());
+    }
+
+    // ── start_streaming() ──
+
+    #[wasm_bindgen_test]
+    fn start_streaming_sets_phase_and_timestamp() {
+        let mut s = LiveModeState::new();
+        s.start_streaming(123.0);
+        assert_eq!(s.phase, LivePhase::Streaming);
+        assert_eq!(s.phase_started_at, Some(123.0));
+    }
+
+    // ── handle_streaming_started() ──
+
+    #[wasm_bindgen_test]
+    fn handle_streaming_started_only_promotes_acquiring_lock() {
+        // From AcquiringLock → Streaming, stamping now.
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::AcquiringLock;
+        s.phase_started_at = Some(1.0);
+        s.handle_streaming_started(50.0);
+        assert_eq!(s.phase, LivePhase::Streaming);
+        assert_eq!(s.phase_started_at, Some(50.0));
+
+        // No-op from any other phase (phase + timestamp untouched).
+        for phase in [
+            LivePhase::Idle,
+            LivePhase::Streaming,
+            LivePhase::WaitingForChunk,
+            LivePhase::Error,
+        ] {
+            let mut s = LiveModeState::new();
+            s.phase = phase;
+            s.phase_started_at = Some(7.0);
+            s.handle_streaming_started(50.0);
+            assert_eq!(s.phase, phase, "no-op from {:?}", phase);
+            assert_eq!(s.phase_started_at, Some(7.0), "timestamp from {:?}", phase);
+        }
+    }
+
+    // ── is_active() truth table ──
+
+    #[wasm_bindgen_test]
+    fn is_active_truth_table() {
+        let active = |p: LivePhase| {
+            let mut s = LiveModeState::new();
+            s.phase = p;
+            s.is_active()
+        };
+        assert!(!active(LivePhase::Idle));
+        assert!(active(LivePhase::AcquiringLock));
+        assert!(active(LivePhase::Streaming));
+        assert!(active(LivePhase::WaitingForChunk));
+        assert!(!active(LivePhase::Error));
+    }
+
+    // ── handle_realtime_chunk phase gating ──
+
+    #[wasm_bindgen_test]
+    fn handle_realtime_chunk_plan_none_goes_streaming() {
+        let mut s = LiveModeState::new();
+        s.chunks_received = 99;
+        s.handle_realtime_chunk(3, 200.0, None);
+        assert_eq!(s.phase, LivePhase::Streaming);
+        assert_eq!(s.chunks_received, 3, "overwritten, not incremented");
+        assert_eq!(s.phase_started_at, Some(200.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn handle_realtime_chunk_plan_without_target_goes_streaming() {
+        let mut s = LiveModeState::new();
+        s.chunks_received = 99;
+        let plan = plan_without_target();
+        s.handle_realtime_chunk(5, 200.0, Some(&plan));
+        assert_eq!(s.phase, LivePhase::Streaming);
+        assert_eq!(s.chunks_received, 5);
+        assert_eq!(s.phase_started_at, Some(200.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn handle_realtime_chunk_plan_with_target_waits_for_chunk() {
+        let mut s = LiveModeState::new();
+        s.chunks_received = 99;
+        let plan = plan_with_target();
+        assert!(plan.next_target().is_some(), "fixture sanity");
+        s.handle_realtime_chunk(7, 200.0, Some(&plan));
+        assert_eq!(s.phase, LivePhase::WaitingForChunk);
+        assert_eq!(s.chunks_received, 7);
+        assert_eq!(s.phase_started_at, Some(200.0));
+    }
+
+    // ── set_or_confirm_volume ──
+
+    #[wasm_bindgen_test]
+    fn set_or_confirm_volume_new_key_replaces_and_best_start_tracks() {
+        let mut s = LiveModeState::new();
+        s.set_or_confirm_volume(scan_key(1000), 100.0, None);
+        let a = s.current_volume.as_ref().unwrap();
+        assert_eq!(a.scan_key, scan_key(1000));
+        assert_eq!(a.best_start_secs(), 100.0, "provisional pre-confirm");
+        assert!(a.confirmed.is_none());
+
+        // A different key fully replaces the anchor.
+        s.set_or_confirm_volume(scan_key(2000), 200.0, Some(205.0));
+        let a = s.current_volume.as_ref().unwrap();
+        assert_eq!(a.scan_key, scan_key(2000));
+        assert_eq!(a.best_start_secs(), 205.0, "confirmed wins on new anchor");
+    }
+
+    #[wasm_bindgen_test]
+    fn set_or_confirm_volume_same_key_confirm_flips_best_start() {
+        let mut s = LiveModeState::new();
+        s.set_or_confirm_volume(scan_key(1000), 100.0, None);
+        assert_eq!(s.current_volume.as_ref().unwrap().best_start_secs(), 100.0);
+
+        // Same key + confirmed fills confirmed (was None) → best_start flips.
+        s.set_or_confirm_volume(scan_key(1000), 100.0, Some(102.0));
+        let a = s.current_volume.as_ref().unwrap();
+        assert_eq!(a.confirmed.map(|c| c.0), Some(102.0));
+        assert_eq!(a.best_start_secs(), 102.0, "confirmed post-confirm");
+        // scan_key stays stable across the provisional→confirmed transition.
+        assert_eq!(a.scan_key, scan_key(1000));
+    }
+
+    #[wasm_bindgen_test]
+    fn set_or_confirm_volume_does_not_overwrite_existing_confirmed() {
+        let mut s = LiveModeState::new();
+        s.set_or_confirm_volume(scan_key(1000), 100.0, Some(102.0));
+        // A second confirm with a different value must NOT overwrite.
+        s.set_or_confirm_volume(scan_key(1000), 100.0, Some(999.0));
+        assert_eq!(
+            s.current_volume.as_ref().unwrap().confirmed.map(|c| c.0),
+            Some(102.0),
+            "idempotent confirm preserves first value"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn set_or_confirm_volume_same_key_no_confirm_is_noop() {
+        let mut s = LiveModeState::new();
+        s.set_or_confirm_volume(scan_key(1000), 100.0, None);
+        // Same key, no confirmed → no-op; provisional stays as first set.
+        s.set_or_confirm_volume(scan_key(1000), 555.0, None);
+        let a = s.current_volume.as_ref().unwrap();
+        assert!(a.confirmed.is_none());
+        assert_eq!(a.provisional.0, 100.0, "provisional not re-set on same key");
+        assert_eq!(a.best_start_secs(), 100.0);
+    }
+
+    // ── try_capture_volume_start_plan ──
+
+    #[wasm_bindgen_test]
+    fn try_capture_volume_start_plan_gated_on_current_volume() {
+        let mut s = LiveModeState::new();
+        // No current_volume → cannot capture.
+        s.try_capture_volume_start_plan(&plan_without_target());
+        assert!(s.volume_start_plan.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn try_capture_volume_start_plan_captures_once_then_is_idempotent() {
+        let mut s = LiveModeState::new();
+        s.set_or_confirm_volume(scan_key(1000), 100.0, None);
+
+        // First call (with a volume present) captures, revision 0.
+        let first = StreamingPlan::with_next_target_key_for_test(None);
+        s.try_capture_volume_start_plan(&first);
+        assert!(s.volume_start_plan.is_some());
+        let captured_rev = s.volume_start_plan.as_ref().unwrap().revision;
+
+        // A second call with a *different* plan must NOT overwrite.
+        let mut second = StreamingPlan::with_next_target_key_for_test(None);
+        second.revision = 7;
+        s.try_capture_volume_start_plan(&second);
+        assert_eq!(
+            s.volume_start_plan.as_ref().unwrap().revision,
+            captured_rev,
+            "capture is idempotent; second plan ignored"
+        );
+    }
+
+    // ── handle_volume_complete ──
+
+    #[wasm_bindgen_test]
+    fn handle_volume_complete_seal_path() {
+        let mut s = LiveModeState::new();
+        s.set_or_confirm_volume(scan_key(1000), 100.0, Some(101.0));
+        s.volume_start_plan = Some(plan_without_target());
+        s.previous_volume_end_secs = Some(50.0);
+        s.chunk_arrivals
+            .push(ChunkArrivalStat::minimal_for_test(1, 5.0));
+        s.chunk_arrivals
+            .push(ChunkArrivalStat::minimal_for_test(2, 6.0));
+        // Dirty the azimuth fields to prove they're nulled on rollover.
+        s.sweep_start_azimuth = Some(10.0);
+        s.last_radial_azimuth = Some(20.0);
+        s.last_radial_time_secs = Some(30.0);
+
+        let mut obs = VolumeObservations::default();
+        obs.current_vcp_pattern = Some(vcp_with_one_elevation());
+
+        s.handle_volume_complete(300.0, &obs);
+
+        // Record sealed with the moved chunk arrivals.
+        let rec = s.last_completed_volume.as_ref().expect("sealed record");
+        assert_eq!(rec.chunk_arrivals.len(), 2);
+        assert_eq!(rec.volume_start_secs, 101.0);
+        assert_eq!(rec.volume_end_secs, 300.0);
+        assert_eq!(rec.previous_volume_end_secs, Some(50.0));
+        // chunk_arrivals moved out (now empty); copy preserved in last_chunk_arrivals.
+        assert!(s.chunk_arrivals.is_empty());
+        assert_eq!(s.last_chunk_arrivals.len(), 2);
+        // Rollover bookkeeping.
+        assert_eq!(s.previous_volume_end_secs, Some(300.0));
+        assert_eq!(s.phase, LivePhase::Streaming);
+        assert_eq!(s.phase_started_at, Some(300.0));
+        assert!(s.current_volume.is_none());
+        assert_eq!(s.sweep_start_azimuth, None);
+        assert_eq!(s.live_data_azimuth_range, None);
+        assert_eq!(s.last_radial_azimuth, None);
+        assert_eq!(s.last_radial_time_secs, None);
+        // volume_start_plan was taken into the record.
+        assert!(s.volume_start_plan.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn handle_volume_complete_drop_path_still_clears_arrivals() {
+        let mut s = LiveModeState::new();
+        s.set_or_confirm_volume(scan_key(1000), 100.0, Some(101.0));
+        // volume_start_plan ABSENT → cannot seal → drop path.
+        s.previous_volume_end_secs = Some(50.0);
+        s.chunk_arrivals
+            .push(ChunkArrivalStat::minimal_for_test(1, 5.0));
+        s.chunk_arrivals
+            .push(ChunkArrivalStat::minimal_for_test(2, 6.0));
+
+        let mut obs = VolumeObservations::default();
+        obs.current_vcp_pattern = Some(vcp_with_one_elevation());
+
+        s.handle_volume_complete(300.0, &obs);
+
+        // No record sealed, but arrivals MUST still be drained (the prior bug).
+        assert!(s.last_completed_volume.is_none());
+        assert!(
+            s.chunk_arrivals.is_empty(),
+            "drop path still clears arrivals"
+        );
+        assert!(s.last_chunk_arrivals.is_empty());
+        // The volume still rolls over.
+        assert_eq!(s.previous_volume_end_secs, Some(300.0));
+        assert_eq!(s.phase, LivePhase::Streaming);
+        assert_eq!(s.phase_started_at, Some(300.0));
+        assert!(s.current_volume.is_none());
+    }
+
+    // ── record_chunk_arrival cap ──
+
+    #[wasm_bindgen_test]
+    fn record_chunk_arrival_caps_at_1024() {
+        let mut s = LiveModeState::new();
+        for i in 0..1025u32 {
+            s.record_chunk_arrival(ChunkArrivalStat::minimal_for_test(i, i as f64));
+        }
+        assert_eq!(s.chunk_arrivals.len(), 1024);
+        // The 1025th (sequence 1024) was dropped; the last kept is sequence 1023.
+        assert_eq!(s.chunk_arrivals.last().unwrap().sequence, 1023);
+    }
+
+    // ── attach_collection_data_to_last_arrival ──
+
+    #[wasm_bindgen_test]
+    fn attach_collection_data_noop_on_empty() {
+        let mut s = LiveModeState::new();
+        // No arrivals → no-op (no panic).
+        s.attach_collection_data_to_last_arrival(123.0, Some(456));
+        assert!(s.chunk_arrivals.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn attach_collection_data_sets_fields_and_lag_only_when_some() {
+        let mut s = LiveModeState::new();
+        s.record_chunk_arrival(ChunkArrivalStat::minimal_for_test(1, 5.0));
+
+        // Some(lag) sets both collection time and lag.
+        s.attach_collection_data_to_last_arrival(123.0, Some(456));
+        let last = s.chunk_arrivals.last().unwrap();
+        assert_eq!(last.collection_time_secs, Some(123.0));
+        assert_eq!(last.availability_lag_ms, Some(456));
+
+        // A later None refreshes collection time but preserves the prior lag.
+        s.attach_collection_data_to_last_arrival(200.0, None);
+        let last = s.chunk_arrivals.last().unwrap();
+        assert_eq!(last.collection_time_secs, Some(200.0));
+        assert_eq!(
+            last.availability_lag_ms,
+            Some(456),
+            "None must not clear an existing lag"
+        );
     }
 }
