@@ -111,6 +111,14 @@ pub enum AppCommand {
     ResumeQueue,
     /// Retry a failed operation.
     RetryFailed(OperationId),
+    /// Explicitly fetch one archive scan (scan inspector's tap-to-fetch).
+    /// `elevation_filter = Some(n)` scopes the decode/store to one tilt
+    /// ("fetch this sweep"); `None` fetches the whole volume ("fetch whole
+    /// scan"). `scan_start` is the scan's start time in Unix seconds.
+    FetchScan {
+        scan_start: i64,
+        elevation_filter: Option<u8>,
+    },
     /// Skip a failed operation and continue.
     SkipFailed(OperationId),
     /// Cancel a specific operation.

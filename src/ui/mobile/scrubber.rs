@@ -24,6 +24,7 @@ pub(super) fn render_scrubber(
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     let available_w = ui.available_width();
     let (response, painter) = ui.allocate_painter(
@@ -187,6 +188,26 @@ pub(super) fn render_scrubber(
         painter.rect_filled(rect, 3.0, fill);
         painter.galley(rect.min + pad, galley, Color32::WHITE);
         pill_rect = Some(rect);
+    }
+
+    // Long-press → scan inspector (spec §12, mobile twin of the desktop
+    // right-click). Checked before seek so a held press opens the inspector
+    // instead of dropping the playhead. Resolves the press x to a scan-start
+    // via the merged view, then suppresses this frame's seek.
+    if let Some(pos) = crate::ui::long_press::detect(ui.ctx(), &response, response.id) {
+        let ts = x_to_ts(pos.x);
+        let view = crate::state::TimelineView::build(
+            &timeline.scans,
+            &timeline.shadow_scan_boundaries,
+            Some(&live.mode_state),
+            live.radar_model.position.as_ref(),
+            None,
+            frame_now,
+        );
+        if let Some(scan_start) = view.scan_start_at(ts) {
+            chrome.scan_inspector = Some(scan_start);
+        }
+        return;
     }
 
     // Interaction: drag or click to seek (or tap the rejoin pill).

@@ -81,6 +81,13 @@ impl WorkbenchApp {
                 self.handle_retry_failed(op_id);
                 outcome.pump_queue = true;
             }
+            AppCommand::FetchScan {
+                scan_start,
+                elevation_filter,
+            } => {
+                self.handle_fetch_scan(scan_start, elevation_filter);
+                outcome.pump_queue = true;
+            }
             AppCommand::SkipFailed(op_id) => {
                 self.acquisition.state.skip_failed(op_id);
                 outcome.pump_queue = true;
@@ -143,6 +150,60 @@ impl WorkbenchApp {
         };
         let elevation_filter = self.active_elevation_filter();
 
+        let item = crate::nexrad::download_queue::QueueItem::new(
+            date,
+            file_name,
+            scan_start,
+            scan_end,
+            elevation_filter,
+        )
+        .with_operation(op_id);
+        self.acquisition.coordinator.download_queue.requeue(item);
+    }
+
+    /// Explicitly fetch one scan (the inspector's tap-to-fetch / "fetch whole
+    /// scan"). `elevation_filter = Some(n)` scopes decode/storage to that tilt
+    /// ("fetch this sweep"); `None` stores the whole volume. Creates a tracked
+    /// operation and re-enqueues, reusing the same `requeue` path the failed-cell
+    /// retry uses so the two state machines stay correlated.
+    fn handle_fetch_scan(&mut self, scan_start: i64, elevation_filter: Option<u8>) {
+        let site_id = self.state.viz_state.site_id.clone();
+        let Some(date) = chrono::DateTime::from_timestamp(scan_start, 0).map(|dt| dt.date_naive())
+        else {
+            return;
+        };
+
+        // Resolve the archive file name + scan span from the listing. Without a
+        // listing there's nothing to fetch (the inspector only offers fetch when
+        // the scan is known to exist server-side).
+        let Some((file_name, scan_end)) = self
+            .acquisition
+            .coordinator
+            .archive_index
+            .get(&site_id, &date)
+            .and_then(|listing| {
+                listing
+                    .scan_at_or_before(scan_start)
+                    .filter(|(_, b)| {
+                        (b.start - scan_start).abs() <= crate::FALLBACK_SCAN_DURATION_SECS
+                    })
+                    .map(|(file, b)| (file.name.clone(), b.end))
+            })
+        else {
+            self.state.status_message =
+                "Can't fetch yet — still listing the archive for that time".to_string();
+            return;
+        };
+
+        let op_id =
+            self.acquisition
+                .state
+                .create_operation(state::OperationKind::ArchiveDownload {
+                    site_id: site_id.clone(),
+                    file_name: file_name.clone(),
+                    scan_start,
+                    scan_end,
+                });
         let item = crate::nexrad::download_queue::QueueItem::new(
             date,
             file_name,

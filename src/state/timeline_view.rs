@@ -329,6 +329,39 @@ impl<'a> TimelineView<'a> {
         self.elevation_filter
     }
 
+    /// Resolve a timestamp (seconds) to the scan-start key of the scan
+    /// container covering it — for opening the scan inspector from a
+    /// right-click / long-press at `ts`. Prefers the live in-progress volume,
+    /// then the cached scan at-or-before `ts`, then the nearest shadow boundary
+    /// whose span contains `ts`. Returns the scan-start the inspector keys on
+    /// (`container.key_secs`), or `None` when `ts` sits over empty timeline.
+    pub fn scan_start_at(&self, ts: f64) -> Option<f64> {
+        // Live in-progress volume wins when ts falls inside it.
+        if let Some(pos) = self.live_position.as_ref() {
+            if ts >= pos.volume_start && ts <= pos.volume_end {
+                return Some(pos.volume_start);
+            }
+        }
+        // Cached scan at-or-before ts whose displayed block contains it.
+        let cached = self
+            .visual_scans_in_range(ts - 1.0, ts + 1.0)
+            .filter(|(s, end)| s.start_time <= ts && ts <= *end)
+            .max_by(|a, b| {
+                a.0.start_time
+                    .partial_cmp(&b.0.start_time)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(s, _)| s.key_timestamp);
+        if cached.is_some() {
+            return cached;
+        }
+        // Otherwise a shadow boundary (server-only scan) containing ts.
+        self.shadows
+            .iter()
+            .find(|b| ts >= b.start as f64 && ts <= b.end as f64)
+            .map(|b| b.start as f64)
+    }
+
     #[allow(dead_code)] // Carried for consumers that need the frame's canonical `now`.
     pub fn now_secs(&self) -> f64 {
         self.now_secs
@@ -1231,6 +1264,36 @@ mod tests {
             .any(|c| c.state == FrameCellState::Projected));
         // All four sweeps contribute to the sub-texture.
         assert_eq!(lc.sweep_spans.len(), 4);
+    }
+
+    /// `scan_start_at` resolves a click/long-press timestamp to a scan-start
+    /// the inspector can key on: a cached scan covering the time, else a shadow
+    /// boundary, else `None` over empty timeline.
+    #[wasm_bindgen_test]
+    fn scan_start_at_resolves_cache_then_shadow_then_none() {
+        let cache = RadarTimeline {
+            scans: vec![{
+                let mut s = cached_scan(1_000.0, vec![cached_sweep(1, 1_000.0, 1_030.0)]);
+                s.start_time = 1_000.0;
+                s.end_time = 1_300.0;
+                s
+            }],
+        };
+        // A server-only scan after the cached one.
+        let shadows = vec![ScanBoundary {
+            start: 2_000,
+            end: 2_300,
+        }];
+        let view = TimelineView::build(&cache, &shadows, None, None, None, 3_000.0);
+
+        // Inside the cached scan's displayed span → its key.
+        assert_eq!(view.scan_start_at(1_100.0), Some(1_000.0));
+        // Inside the shadow boundary → its start.
+        assert_eq!(view.scan_start_at(2_100.0), Some(2_000.0));
+        // Over empty timeline (before any scan) → None.
+        assert_eq!(view.scan_start_at(500.0), None);
+        // In the gap between cached end and shadow start → None.
+        assert_eq!(view.scan_start_at(1_700.0), None);
     }
 
     /// The active-ring identity flags exactly the on-GPU cell.

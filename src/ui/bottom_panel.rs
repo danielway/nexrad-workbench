@@ -162,7 +162,16 @@ fn draw_bottom_panel(
                 ui.add_space(2.0);
 
                 // Timeline strip row
-                render_timeline(ui, state, timeline, live, playback, acquisition, derived);
+                render_timeline(
+                    ui,
+                    state,
+                    timeline,
+                    live,
+                    playback,
+                    acquisition,
+                    derived,
+                    chrome,
+                );
             });
         });
 

@@ -41,6 +41,12 @@ pub struct Chrome {
     /// chip near the transport (desktop) or the mobile top-bar acquiring
     /// indicator. Distinct from the dev-only acquisition drawer.
     pub queue_sheet_open: bool,
+    /// When set, the scan inspector (spec §5/§6.3: full per-scan volume
+    /// breakdown — every tilt with cache state, size, chunk progress, and
+    /// tap-to-fetch) is open for the scan whose container start time (Unix
+    /// seconds) this holds. Opened by right-click (desktop) / long-press
+    /// (touch) on a scan container. `Some` doubles as the open flag.
+    pub scan_inspector: Option<f64>,
     /// Whether the event create/edit modal is open.
     pub event_modal_open: bool,
     /// Event ID being edited (`None` = creating new).

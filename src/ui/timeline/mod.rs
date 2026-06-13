@@ -311,6 +311,7 @@ pub(super) fn format_timestamp_compact(ts: f64, use_local: bool, tier: WidthTier
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -319,6 +320,7 @@ pub(super) fn render_timeline(
     playback: &mut crate::subsystem::Playback,
     acquisition: &crate::subsystem::Acquisition,
     derived: &crate::subsystem::Derived,
+    chrome: &mut crate::subsystem::Chrome,
 ) {
     let use_local = state.use_local_time;
     let available_width = ui.available_width() as f64;
@@ -737,6 +739,7 @@ pub(super) fn render_timeline(
         state,
         live,
         playback,
+        chrome,
         &response,
         &frame,
         &suppress_rects,

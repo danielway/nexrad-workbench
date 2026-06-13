@@ -61,7 +61,7 @@ fn draw_mobile_chrome(
         .exact_height(SCRUBBER_AREA_HEIGHT)
         .show(ctx, |ui| {
             ui.add_space(2.0);
-            super::scrubber::render_scrubber(ui, state, timeline, live, playback);
+            super::scrubber::render_scrubber(ui, state, timeline, live, playback, chrome);
         });
 }
 

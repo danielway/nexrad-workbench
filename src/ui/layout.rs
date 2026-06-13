@@ -46,6 +46,7 @@ use super::network_panel::NetworkLogLayer;
 use super::queue_sheet::QueueSheetLayer;
 use super::range_download_modal::RangeDownloadModalLayer;
 use super::right_panel::RightPanelLayer;
+use super::scan_inspector::ScanInspectorLayer;
 use super::shortcuts::ShortcutsHelpLayer;
 use super::site_modal::SiteModalLayer;
 use super::stats_modal::StatsModalLayer;
@@ -134,6 +135,7 @@ pub fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &WipeModalLayer,           // z=30
             &RangeDownloadModalLayer,  // z=35
             &QueueSheetLayer,          // z=37
+            &ScanInspectorLayer,       // z=38
             &StatsModalLayer,          // z=40
             &VcpForecastModalLayer,    // z=50
             &NetworkLogLayer,          // z=60
@@ -155,6 +157,7 @@ pub fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &WipeModalLayer,           // z=30
             &RangeDownloadModalLayer,  // z=35
             &QueueSheetLayer,          // z=37
+            &ScanInspectorLayer,       // z=38
             &StatsModalLayer,          // z=40
             &VcpForecastModalLayer,    // z=50
             &NetworkLogLayer,          // z=60

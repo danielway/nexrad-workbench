@@ -29,11 +29,13 @@ pub(super) struct InteractionOutcome {
 }
 
 /// Handle mouse / touch interaction on the timeline strip.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn handle_timeline_interaction(
     ui: &mut egui::Ui,
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
+    chrome: &mut crate::subsystem::Chrome,
     response: &egui::Response,
     frame: &super::TimelineFrame<'_>,
     // Rects whose clicks/presses belong to another control (now-affordance
@@ -92,6 +94,28 @@ pub(super) fn handle_timeline_interaction(
         if let Some((start, end)) = playback.state.selection_range() {
             state.selection_just_finalized = Some((start, end));
             log::debug!("Selected time range: {:.0} minutes", (end - start) / 60.0);
+        }
+    }
+
+    // -- Scan inspector: right-click (desktop) / long-press (touch) ----------
+    // A right *click* without a drag opens the scan inspector for the scan
+    // under the pointer (a right *drag* selects, handled above — so we only
+    // open on a clean secondary click that did not become a drag). On touch
+    // there is no secondary button, so a long-press is the entry point. Both
+    // resolve the pointer x to a scan-start via the merged view, matching the
+    // strip's own join, and never seek.
+    let secondary_clicked =
+        response.clicked_by(PointerButton::Secondary) && !playback.state.selection_in_progress();
+    if secondary_clicked {
+        if let Some(pos) = response.interact_pointer_pos() {
+            open_inspector_at(state, chrome, frame, pos.x);
+        }
+    }
+    if let Some(pos) = crate::ui::long_press::detect(ui.ctx(), response, response.id) {
+        // A long-press that began as a selection drag is owned by the
+        // selection; only open the inspector when no selection is in progress.
+        if !playback.state.selection_in_progress() {
+            open_inspector_at(state, chrome, frame, pos.x);
         }
     }
 
@@ -195,6 +219,25 @@ pub(super) fn handle_timeline_interaction(
     }
 
     outcome
+}
+
+/// Open the scan inspector for the scan under screen-x `x`. Resolves the
+/// timestamp to a scan-start via the merged view (`scan_start_at`) — the same
+/// source the strip's containers come from — and stores it as the open flag.
+/// A no-op over empty timeline (nothing to inspect).
+fn open_inspector_at(
+    state: &mut AppState,
+    chrome: &mut crate::subsystem::Chrome,
+    frame: &super::TimelineFrame<'_>,
+    x: f32,
+) {
+    let ts = frame.x_to_ts(x);
+    if let Some(scan_start) = frame.view.scan_start_at(ts) {
+        chrome.scan_inspector = Some(scan_start);
+    } else {
+        // No scan there — surface a tiny hint instead of silently doing nothing.
+        state.status_message = "No scan to inspect at that time".to_string();
+    }
 }
 
 /// Seek the playhead to `ts`, detaching the tether first so the Free-mode
