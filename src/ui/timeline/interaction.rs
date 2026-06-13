@@ -90,15 +90,20 @@ pub(super) fn handle_timeline_interaction(
         if scroll_delta.y != 0.0 {
             let zoom_factor = 1.0 + scroll_delta.y as f64 * 0.002;
             let old_zoom = playback.state.timeline_zoom;
-            let new_zoom = (old_zoom * zoom_factor).clamp(0.000001, 1000.0);
+            let new_zoom = (old_zoom * zoom_factor).clamp(
+                crate::state::TIMELINE_ZOOM_MIN,
+                crate::state::TIMELINE_ZOOM_MAX,
+            );
+            let width = playback.state.timeline_width_px;
 
-            // Zooming out past the micro threshold while attached to the
-            // live edge is a browsing gesture: detach (the stream keeps
-            // running) instead of silently clamping the zoom. No hidden
-            // zoom floor remains.
+            // Zooming out far enough to leave the Micro tier while attached to
+            // the live edge is a browsing gesture: detach (the stream keeps
+            // running) instead of silently clamping. The decision is
+            // hysteresis-aware — it fires on the *tier* transition out of
+            // Micro, not a raw threshold crossing.
             let attached =
                 playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback();
-            if attached && new_zoom < crate::state::MICRO_ZOOM_THRESHOLD {
+            if attached && playback.state.zoom_would_exit_micro(new_zoom, width) {
                 live.detach_playhead(&mut playback.state, state.frame_now.secs());
             }
 
@@ -109,7 +114,11 @@ pub(super) fn handle_timeline_interaction(
                 playback.state.timeline_view_start = new_view_start;
             }
 
-            playback.state.timeline_zoom = new_zoom;
+            // The single zoom-mutation path: clamps, stores zoom, and advances
+            // the tier with hysteresis (preserving playback cadence on a
+            // behavioral flip).
+            let spacing = playback.state.median_frame_spacing();
+            playback.state.set_timeline_zoom(new_zoom, width, spacing);
         }
     }
 }

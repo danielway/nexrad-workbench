@@ -25,9 +25,14 @@ impl WorkbenchApp {
 
         // Ensure the timeline is zoomed in far enough to show individual sweeps
         // and chunks. Live mode enforces micro-mode as the widest allowed zoom.
-        const LIVE_DEFAULT_ZOOM: f64 = 2.0;
-        if self.playback.state.timeline_zoom < LIVE_DEFAULT_ZOOM {
-            self.playback.state.timeline_zoom = LIVE_DEFAULT_ZOOM;
+        // Route through the tier machine so the stored tier lands in Micro
+        // (LIVE_DEFAULT_ZOOM is comfortably above the Micro-enter threshold).
+        if self.playback.state.timeline_zoom < crate::LIVE_DEFAULT_ZOOM {
+            let width = self.playback.state.timeline_width_px;
+            let spacing = self.playback.state.median_frame_spacing();
+            self.playback
+                .state
+                .set_timeline_zoom(crate::LIVE_DEFAULT_ZOOM, width, spacing);
             self.playback.state.center_view_on(now);
         }
 
@@ -64,8 +69,15 @@ impl WorkbenchApp {
         self.playback.state.clear_selection();
         self.playback.state.enter_pinned_live(now);
         self.playback.state.speed = state::PlaybackSpeed::Realtime;
-        if self.playback.state.timeline_zoom < state::MICRO_ZOOM_THRESHOLD {
-            self.playback.state.timeline_zoom = state::MICRO_ZOOM_THRESHOLD;
+        // Return-to-live re-tethers, so the zoom floor must land the tier back
+        // in Micro. The Micro-enter threshold carries hysteresis (≥ 1.15),
+        // so floor to LIVE_DEFAULT_ZOOM (2.0) rather than the nominal 1.0.
+        if self.playback.state.timeline_tier != state::TimelineTier::Micro {
+            let width = self.playback.state.timeline_width_px;
+            let spacing = self.playback.state.median_frame_spacing();
+            self.playback
+                .state
+                .set_timeline_zoom(crate::LIVE_DEFAULT_ZOOM, width, spacing);
             self.playback.state.center_view_on(now);
         }
     }
@@ -104,6 +116,7 @@ impl WorkbenchApp {
                 .scans
                 .lookback_window(
                     &self.state.viz_state.elevation_selection,
+                    self.state.viz_state.product.to_worker_string(),
                     now,
                     crate::LOOKBACK_FRAMES,
                 )

@@ -3,17 +3,97 @@
 //! Implements a dual-time model separating playback position from wall-clock time,
 //! with timeline bounds enforcement and zoom-based feature restrictions.
 
-/// Zoom boundary between macro (scan blocks) and micro (individual sweeps) modes,
-/// in pixels per second.
+/// Nominal zoom boundary between macro (scan blocks) and micro (individual
+/// sweeps) tiers, in pixels per second. The tier state machine adds
+/// hysteresis around this value (see [`tier`]); this constant survives only
+/// as the seam used for deterministic tier seeding (boot / URL restore) and
+/// as the return-to-live floor's reference point.
 pub const MICRO_ZOOM_THRESHOLD: f64 = 1.0;
 
-/// Playback mode derived from timeline zoom level.
+/// Minimum / maximum timeline zoom (pixels per second). Every zoom mutation
+/// routes through [`PlaybackState::set_timeline_zoom`], which clamps here.
+pub const TIMELINE_ZOOM_MIN: f64 = 0.000001;
+pub const TIMELINE_ZOOM_MAX: f64 = 1000.0;
+
+/// Tunable tier thresholds. The timeline's zoom level maps to one of three
+/// behavioral+visual tiers; transitions carry hysteresis (distinct enter/exit
+/// thresholds) so a zoom hovering at a boundary never flickers. Values are
+/// the alignment-pass decisions (see docs/north_star_alignment.md §2); tune
+/// here, in one place.
+pub mod tier {
+    /// Enter Micro (from Macro) when zoom rises to/above this (px/sec).
+    pub const MICRO_ENTER_ZOOM: f64 = 1.15;
+    /// Exit Micro (to Macro) when zoom falls to/below this (px/sec).
+    pub const MICRO_EXIT_ZOOM: f64 = 0.87;
+    /// Enter Archive (from Macro) when the visible span exceeds this (seconds).
+    pub const ARCHIVE_ENTER_SPAN_SECS: f64 = 60.0 * 3600.0;
+    /// Exit Archive (to Macro) when the visible span falls below this (seconds).
+    pub const ARCHIVE_EXIT_SPAN_SECS: f64 = 48.0 * 3600.0;
+    /// Nominal Archive boundary used only for hysteresis-free seeding
+    /// (boot / URL restore), midway between the enter/exit spans.
+    pub const ARCHIVE_NOMINAL_SPAN_SECS: f64 = 54.0 * 3600.0;
+    /// Within Macro, the sub-detail boundary kept for Phase 1: above this the
+    /// strip draws proportional volume blocks, below it merged coverage fill.
+    /// (Phase 2 reworks Macro rendering; this is a stopgap, not a tier.)
+    pub const MACRO_VOLUMES_ZOOM: f64 = 0.2;
+}
+
+/// The single stored timeline tier. Replaces the two previously-uncoupled
+/// per-frame derivations (the behavioral [`PlaybackMode`] and the renderer's
+/// detail level). Transitions are owned by [`PlaybackState::set_timeline_zoom`]
+/// / the per-frame reconcile, which apply hysteresis; nothing else writes it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TimelineTier {
+    /// Zoomed in (minutes–hours visible): realtime-multiple playback, frame
+    /// cells / sweep detail on the strip.
+    #[default]
+    Micro,
+    /// Zoomed out (hours–days visible): equidistant frame (fps) playback.
+    Macro,
+    /// Far out (multi-day span): a navigator only — no playback.
+    Archive,
+}
+
+/// Playback mode derived from the stored timeline tier. The behavioral split
+/// the rest of the app reads: Micro tier → continuous realtime-multiple
+/// advance; Macro/Archive tier → equidistant frame stepping.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PlaybackMode {
-    /// Frame-stepping between matching sweeps (zoomed out, < 1.0 px/sec)
+    /// Frame-stepping between matching sweeps (Macro/Archive tier).
     Macro,
-    /// Continuous time-based playback (zoomed in, >= 1.0 px/sec)
+    /// Continuous time-based playback (Micro tier).
     Micro,
+}
+
+/// Fallback median frame spacing (seconds) for cadence conversion when the
+/// macro frame list is too short to derive one — a typical NEXRAD volume
+/// interval.
+pub const FALLBACK_FRAME_SPACING_SECS: f64 = 300.0;
+
+/// Map a tier (plus the lookback override) to the behavioral playback mode.
+/// Free function so it's callable from `apply_tier` before `&mut self`
+/// borrows settle, and shared by `playback_mode`/`effective_playback_mode`.
+/// Lookback always frame-steps regardless of tier.
+fn mode_of_tier(tier: TimelineTier, is_lookback: bool) -> PlaybackMode {
+    if is_lookback {
+        return PlaybackMode::Macro;
+    }
+    match tier {
+        TimelineTier::Micro => PlaybackMode::Micro,
+        TimelineTier::Macro | TimelineTier::Archive => PlaybackMode::Macro,
+    }
+}
+
+/// The renderer's per-frame visual detail, mapped from the stored tier (with
+/// a Macro sub-detail kept for Phase 1; Phase 2 reworks Macro rendering).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DetailLevel {
+    /// Far out: solid coverage fill only.
+    Coverage,
+    /// Volume-scan blocks.
+    Volumes,
+    /// Tilt (sweep) blocks within volume scans.
+    Tilts,
 }
 
 /// Inputs the macro `sweep_frames` list is built from. Compared against the
@@ -21,6 +101,10 @@ pub enum PlaybackMode {
 #[derive(PartialEq, Clone, Default)]
 pub struct MacroFrameInputs {
     pub elevation: super::viz::ElevationSelection,
+    /// Selected product (worker-string). A frame is a sweep matching the
+    /// product AND tilt, so the list must rebuild when the product changes —
+    /// otherwise a stale list survives a product switch.
+    pub product: String,
     pub bounds: Option<(f64, f64)>,
     pub scan_count: usize,
 }
@@ -48,8 +132,6 @@ pub struct MacroPlaybackState {
     built_from: MacroFrameInputs,
     /// Last known playback position, used to detect manual seeks.
     pub last_seen_position: f64,
-    /// Whether the previous frame was in macro mode (for transition detection).
-    pub was_macro: bool,
 }
 
 impl Default for MacroPlaybackState {
@@ -60,7 +142,6 @@ impl Default for MacroPlaybackState {
             frame_accumulator: 0.0,
             built_from: MacroFrameInputs::default(),
             last_seen_position: 0.0,
-            was_macro: false,
         }
     }
 }
@@ -72,9 +153,13 @@ impl MacroPlaybackState {
     pub fn rebuild_cause(&self, inputs: &MacroFrameInputs) -> Option<RebuildCause> {
         if self.built_from.elevation != inputs.elevation {
             Some(RebuildCause::ElevationChanged)
-        } else if self.built_from.bounds != inputs.bounds
+        } else if self.built_from.product != inputs.product
+            || self.built_from.bounds != inputs.bounds
             || self.built_from.scan_count != inputs.scan_count
         {
+            // A product switch re-filters the frame list (frame = product +
+            // tilt) but keeps the cursor where it is — no snap side-effect, so
+            // it's a window-class change.
             Some(RebuildCause::WindowChanged)
         } else {
             None
@@ -90,7 +175,7 @@ impl MacroPlaybackState {
 }
 
 /// Playback speed multiplier options.
-#[derive(Default, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum PlaybackSpeed {
     /// Real-time: 1 second of timeline = 1 second of real time
     Realtime,
@@ -192,6 +277,48 @@ impl PlaybackSpeed {
             PlaybackSpeed::Double => 600.0,
             PlaybackSpeed::Quadruple => 1200.0,
         }
+    }
+
+    /// The macro-capable variant whose fps is nearest `target_fps` (log-scale
+    /// nearness, so doublings read symmetrically). Used by cadence
+    /// preservation entering Macro. Defaults to the slowest macro speed when
+    /// the target is non-positive.
+    pub fn nearest_macro_fps(target_fps: f64) -> PlaybackSpeed {
+        Self::nearest_by_log(target_fps, Self::macro_speeds(), |s| {
+            s.macro_frames_per_second()
+        })
+    }
+
+    /// The variant whose timeline multiple is nearest `target_multiple`
+    /// (log-scale nearness). Used by cadence preservation entering Micro;
+    /// considers all variants since every one is a valid micro multiple.
+    pub fn nearest_micro_multiple(target_multiple: f64) -> PlaybackSpeed {
+        Self::nearest_by_log(target_multiple, Self::all(), |s| {
+            Some(s.timeline_seconds_per_real_second())
+        })
+    }
+
+    /// Pick the candidate whose `value(candidate)` is closest to `target` on a
+    /// log scale. Candidates whose value function returns `None` or a
+    /// non-positive value are skipped; falls back to the first candidate.
+    fn nearest_by_log(
+        target: f64,
+        candidates: &'static [PlaybackSpeed],
+        value: impl Fn(&PlaybackSpeed) -> Option<f64>,
+    ) -> PlaybackSpeed {
+        let target = target.max(f64::MIN_POSITIVE);
+        let log_target = target.ln();
+        candidates
+            .iter()
+            .filter_map(|s| value(s).filter(|v| *v > 0.0).map(|v| (s, v)))
+            .min_by(|(_, a), (_, b)| {
+                (a.ln() - log_target)
+                    .abs()
+                    .partial_cmp(&(b.ln() - log_target).abs())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(s, _)| *s)
+            .unwrap_or_else(|| candidates.first().copied().unwrap_or_default())
     }
 }
 
@@ -473,6 +600,13 @@ pub struct PlaybackState {
     /// Timeline zoom level (pixels per second)
     pub timeline_zoom: f64,
 
+    /// The single stored timeline tier (see [`TimelineTier`]). Seeded from
+    /// zoom+width at construction/URL restore and thereafter advanced with
+    /// hysteresis by [`Self::set_timeline_zoom`] / [`Self::reconcile_tier`].
+    /// Every behavioral+visual tier read derives from this — never from raw
+    /// `timeline_zoom`.
+    pub timeline_tier: TimelineTier,
+
     /// Timeline view position - absolute timestamp of left edge (Unix seconds)
     pub timeline_view_start: f64,
 
@@ -498,6 +632,7 @@ impl Default for PlaybackState {
             time_model: TimeModel::at_position(now),
             speed: PlaybackSpeed::default(),
             timeline_zoom: zoom,
+            timeline_tier: Self::seed_tier(zoom, 1000.0),
             timeline_view_start: now - view_width_secs / 2.0,
             selection: None,
             timeline_width_px: 1000.0,
@@ -624,30 +759,227 @@ impl PlaybackState {
         self.timeline_view_start = ts - self.view_width_secs() / 2.0;
     }
 
-    /// Check if playback is allowed at current zoom level.
-    /// Playback requires at least 0.1 px/sec (~3 hours visible in 1000px).
-    pub fn is_playback_allowed(&self) -> bool {
-        self.timeline_zoom >= 0.1
-    }
+    // ------------------------------------------------------------------
+    // Timeline tier state machine. `timeline_tier` is the single source of
+    // truth for both the behavioral split (Micro/Macro playback) and the
+    // renderer's detail level. The raw `timeline_zoom` scalar feeds it but
+    // is never read directly for tier decisions — that would lose the
+    // hysteresis memory the field carries.
+    // ------------------------------------------------------------------
 
-    /// Derive the current playback mode from timeline zoom level.
-    pub fn playback_mode(&self) -> PlaybackMode {
-        if self.timeline_zoom < MICRO_ZOOM_THRESHOLD {
-            PlaybackMode::Macro
+    /// Visible time span for a given zoom + widget width, in seconds. The
+    /// Archive boundary is span-based (a wide window of history) rather than
+    /// pure zoom, so it stays meaningful as the strip widens.
+    fn visible_span_secs(zoom: f64, width_px: f64) -> f64 {
+        if zoom > 0.0 {
+            width_px / zoom
         } else {
-            PlaybackMode::Micro
+            f64::INFINITY
         }
     }
 
+    /// Deterministically classify zoom+width into a tier with NO hysteresis
+    /// memory, using the nominal boundaries. For boot / URL restore, where
+    /// there is no prior tier to bias the decision.
+    pub fn seed_tier(zoom: f64, width_px: f64) -> TimelineTier {
+        if Self::visible_span_secs(zoom, width_px) > tier::ARCHIVE_NOMINAL_SPAN_SECS {
+            TimelineTier::Archive
+        } else if zoom >= MICRO_ZOOM_THRESHOLD {
+            TimelineTier::Micro
+        } else {
+            TimelineTier::Macro
+        }
+    }
+
+    /// Reseed the tier from the current zoom+width without hysteresis. Used at
+    /// boot / URL restore once `timeline_zoom` is set.
+    pub fn seed_tier_from_state(&mut self) {
+        self.timeline_tier = Self::seed_tier(self.timeline_zoom, self.timeline_width_px);
+    }
+
+    /// Compute the tier a zoom+width should land in, given the current tier
+    /// (so enter/exit thresholds differ — hysteresis). Pure: does not mutate.
+    fn next_tier(&self, zoom: f64, width_px: f64) -> TimelineTier {
+        let span = Self::visible_span_secs(zoom, width_px);
+        match self.timeline_tier {
+            TimelineTier::Micro => {
+                // Leave Micro only once zoom drops to the (lower) exit floor.
+                if zoom <= tier::MICRO_EXIT_ZOOM {
+                    if span > tier::ARCHIVE_ENTER_SPAN_SECS {
+                        TimelineTier::Archive
+                    } else {
+                        TimelineTier::Macro
+                    }
+                } else {
+                    TimelineTier::Micro
+                }
+            }
+            TimelineTier::Macro => {
+                if zoom >= tier::MICRO_ENTER_ZOOM {
+                    TimelineTier::Micro
+                } else if span > tier::ARCHIVE_ENTER_SPAN_SECS {
+                    TimelineTier::Archive
+                } else {
+                    TimelineTier::Macro
+                }
+            }
+            TimelineTier::Archive => {
+                // Leave Archive only once the span shrinks past the (lower)
+                // exit span; then re-evaluate Micro vs Macro by zoom.
+                if span < tier::ARCHIVE_EXIT_SPAN_SECS {
+                    if zoom >= tier::MICRO_ENTER_ZOOM {
+                        TimelineTier::Micro
+                    } else {
+                        TimelineTier::Macro
+                    }
+                } else {
+                    TimelineTier::Archive
+                }
+            }
+        }
+    }
+
+    /// Apply a tier change, running the side effects a transition owns:
+    /// preserve playback cadence across a Micro↔Macro flip (spec §9) and reset
+    /// the sub-frame accumulator on a behavioral flip. No-op when the tier is
+    /// unchanged. Runs regardless of `playing`, so paused (and mobile)
+    /// transitions get cadence preservation too.
+    fn apply_tier(&mut self, next: TimelineTier, median_frame_spacing: f64) {
+        let prev = self.timeline_tier;
+        if prev == next {
+            return;
+        }
+        let prev_mode = mode_of_tier(prev, self.time_model.is_lookback());
+        self.timeline_tier = next;
+        let new_mode = mode_of_tier(next, self.time_model.is_lookback());
+
+        if prev_mode != new_mode {
+            self.preserve_cadence_across_snap(prev_mode, new_mode, median_frame_spacing);
+            // Reset the sub-frame accumulator on any behavioral flip so the
+            // next advance starts clean.
+            self.macro_playback.frame_accumulator = 0.0;
+        }
+    }
+
+    /// The single zoom-mutation path. Clamps, stores the zoom, and advances
+    /// the tier with hysteresis (running the cadence-preservation side effect
+    /// on a behavioral flip). `width_px` is the current strip width; pass
+    /// `timeline_width_px` when unknown. `median_frame_spacing` feeds cadence
+    /// conversion (see [`Self::median_frame_spacing`]).
+    pub fn set_timeline_zoom(&mut self, zoom: f64, width_px: f64, median_frame_spacing: f64) {
+        self.timeline_zoom = zoom.clamp(TIMELINE_ZOOM_MIN, TIMELINE_ZOOM_MAX);
+        let next = self.next_tier(self.timeline_zoom, width_px);
+        self.apply_tier(next, median_frame_spacing);
+    }
+
+    /// Per-frame reconcile: the strip width can change (responsive layout)
+    /// even when zoom is untouched, which moves the Archive span boundary.
+    /// Re-evaluate the tier against the current width with hysteresis. Cheap
+    /// and idempotent when nothing moved.
+    pub fn reconcile_tier(&mut self, width_px: f64, median_frame_spacing: f64) {
+        let next = self.next_tier(self.timeline_zoom, width_px);
+        self.apply_tier(next, median_frame_spacing);
+    }
+
+    /// Whether a zoom change (at the current width) would transition *out of*
+    /// the Micro tier — i.e. the hysteresis-aware "zoomed out far enough to
+    /// detach" gesture. Pure; lets the interaction layer decide to detach
+    /// before committing the zoom.
+    pub fn zoom_would_exit_micro(&self, new_zoom: f64, width_px: f64) -> bool {
+        self.timeline_tier == TimelineTier::Micro
+            && self.next_tier(new_zoom, width_px) != TimelineTier::Micro
+    }
+
+    /// Check if playback is allowed at the current tier. The Archive tier is a
+    /// navigator only (spec §6.4); every other tier permits playback.
+    pub fn is_playback_allowed(&self) -> bool {
+        self.timeline_tier != TimelineTier::Archive
+    }
+
+    /// Derive the current playback mode from the stored tier.
+    pub fn playback_mode(&self) -> PlaybackMode {
+        mode_of_tier(self.timeline_tier, false)
+    }
+
     /// Playback mode for advance dispatch + speed UI. Lookback always
-    /// frame-steps (Macro) regardless of zoom so it snaps between the recent
-    /// sweeps as frames; otherwise this is the zoom-derived
+    /// frame-steps (Macro) regardless of tier so it snaps between the recent
+    /// sweeps as frames; otherwise this is the tier-derived
     /// [`Self::playback_mode`].
     pub fn effective_playback_mode(&self) -> PlaybackMode {
-        if self.time_model.is_lookback() {
-            PlaybackMode::Macro
+        mode_of_tier(self.timeline_tier, self.time_model.is_lookback())
+    }
+
+    /// The renderer's visual detail for this frame, derived from the stored
+    /// tier (not raw zoom). Micro → Tilts; Macro → Volumes when zoomed in
+    /// enough else Coverage (a Phase-1 sub-detail kept inside Macro);
+    /// Archive → Coverage.
+    pub fn detail_level(&self) -> DetailLevel {
+        match self.timeline_tier {
+            TimelineTier::Micro => DetailLevel::Tilts,
+            TimelineTier::Macro => {
+                if self.timeline_zoom >= tier::MACRO_VOLUMES_ZOOM {
+                    DetailLevel::Volumes
+                } else {
+                    DetailLevel::Coverage
+                }
+            }
+            TimelineTier::Archive => DetailLevel::Coverage,
+        }
+    }
+
+    /// Median frame spacing (seconds) of the current macro frame list, for
+    /// cadence conversion. Derived from consecutive `sweep_frames` deltas when
+    /// ≥2 frames exist; otherwise the typical volume interval. Tiny lists are
+    /// fine — the median of one delta is that delta.
+    pub fn median_frame_spacing(&self) -> f64 {
+        let frames = &self.macro_playback.sweep_frames;
+        if frames.len() < 2 {
+            return FALLBACK_FRAME_SPACING_SECS;
+        }
+        let mut deltas: Vec<f64> = frames.windows(2).map(|w| w[1] - w[0]).collect();
+        deltas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = deltas.len() / 2;
+        let median = if deltas.len().is_multiple_of(2) {
+            (deltas[mid - 1] + deltas[mid]) / 2.0
         } else {
-            self.playback_mode()
+            deltas[mid]
+        };
+        if median > 0.0 {
+            median
+        } else {
+            FALLBACK_FRAME_SPACING_SECS
+        }
+    }
+
+    /// Preserve perceived playback rhythm across a Micro↔Macro snap (spec §9).
+    /// Converts the current effective frame cadence to the nearest valid speed
+    /// in the new mode. Runs regardless of `playing` (paused transitions and
+    /// mobile get it too). The shared [`PlaybackSpeed`] enum is kept intact —
+    /// only the selected variant changes.
+    fn preserve_cadence_across_snap(
+        &mut self,
+        from: PlaybackMode,
+        to: PlaybackMode,
+        frame_spacing: f64,
+    ) {
+        let spacing = if frame_spacing > 0.0 {
+            frame_spacing
+        } else {
+            FALLBACK_FRAME_SPACING_SECS
+        };
+        match (from, to) {
+            (PlaybackMode::Micro, PlaybackMode::Macro) => {
+                // Micro multiple ÷ frame spacing = effective frames per second.
+                let target_fps = self.speed.timeline_seconds_per_real_second() / spacing;
+                self.speed = PlaybackSpeed::nearest_macro_fps(target_fps);
+            }
+            (PlaybackMode::Macro, PlaybackMode::Micro) => {
+                // Current fps × frame spacing = target timeline multiple.
+                let fps = self.speed.macro_frames_per_second().unwrap_or(5.0);
+                let target_multiple = fps * spacing;
+                self.speed = PlaybackSpeed::nearest_micro_multiple(target_multiple);
+            }
+            _ => {}
         }
     }
 
@@ -904,7 +1236,10 @@ mod tests {
     #[wasm_bindgen_test]
     fn effective_mode_is_macro_iff_lookback() {
         let mut ps = PlaybackState::default();
-        ps.timeline_zoom = 2.0; // micro zoom (live)
+        // Land the tier in Micro via the mutation path (zoom alone no longer
+        // drives the mode — the stored tier does).
+        ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
         assert!(ps.effective_playback_mode() == PlaybackMode::Micro);
         ps.enter_pinned_live(1000.0);
         ps.enter_lookback(None);
@@ -995,6 +1330,7 @@ mod tests {
         let mut mp = MacroPlaybackState::default();
         let base = MacroFrameInputs {
             elevation: crate::state::ElevationSelection::default(),
+            product: "reflectivity".to_string(),
             bounds: None,
             scan_count: 3,
         };
@@ -1012,6 +1348,16 @@ mod tests {
         };
         assert_eq!(
             mp.rebuild_cause(&bounds_changed),
+            Some(RebuildCause::WindowChanged)
+        );
+
+        // Product change alone → window change (re-filter, no cursor snap).
+        let product_changed = MacroFrameInputs {
+            product: "velocity".to_string(),
+            ..base.clone()
+        };
+        assert_eq!(
+            mp.rebuild_cause(&product_changed),
             Some(RebuildCause::WindowChanged)
         );
 
@@ -1111,5 +1457,228 @@ mod tests {
         assert_eq!(tm.playback_bounds, Some((120.0, 180.0)));
         assert!(tm.direction == PlaybackDirection::Backward);
         assert_eq!(tm.playback_position, 130.0);
+    }
+
+    // ---------------------------------------------------------------
+    // Timeline tier state machine
+    // ---------------------------------------------------------------
+
+    /// A 1000px-wide strip whose tier sits in Micro, as a clean starting point.
+    fn micro_state() -> PlaybackState {
+        let mut ps = PlaybackState::default();
+        ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        ps
+    }
+
+    #[wasm_bindgen_test]
+    fn tier_micro_macro_hysteresis_no_flicker_in_band() {
+        // Inside the dead band (0.87 .. 1.15 px/s) the tier must hold whatever
+        // it was: crossing the nominal 1.0 repeatedly never flips it.
+        let mut ps = micro_state();
+        for z in [1.10, 0.95, 1.05, 0.90, 1.14, 0.88] {
+            ps.set_timeline_zoom(z, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+            assert_eq!(ps.timeline_tier, TimelineTier::Micro, "zoom {z} held Micro");
+        }
+        // Drop below the exit floor → Macro; then bouncing in-band stays Macro.
+        ps.set_timeline_zoom(0.80, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        for z in [0.90, 1.05, 1.14, 0.88] {
+            ps.set_timeline_zoom(z, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+            assert_eq!(ps.timeline_tier, TimelineTier::Macro, "zoom {z} held Macro");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn tier_micro_enter_exit_thresholds() {
+        let mut ps = PlaybackState::default();
+        // Start in Macro (default zoom 0.15).
+        ps.set_timeline_zoom(0.15, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        // Just below the enter threshold: still Macro.
+        ps.set_timeline_zoom(1.14, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        // At the enter threshold: Micro.
+        ps.set_timeline_zoom(1.15, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        // Just above the exit floor: still Micro.
+        ps.set_timeline_zoom(0.88, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        // At the exit floor: Macro.
+        ps.set_timeline_zoom(0.87, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+    }
+
+    #[wasm_bindgen_test]
+    fn tier_archive_span_boundaries() {
+        // Width 1000px: span (s) = width / zoom. Archive enter > 60h, exit < 48h.
+        let mut ps = PlaybackState::default();
+        // Start in Macro.
+        ps.set_timeline_zoom(0.15, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+
+        // Span just under 60h → still Macro. zoom = 1000 / (59*3600).
+        let zoom_59h = 1000.0 / (59.0 * 3600.0);
+        ps.set_timeline_zoom(zoom_59h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+
+        // Span just over 60h → Archive. zoom = 1000 / (61*3600).
+        let zoom_61h = 1000.0 / (61.0 * 3600.0);
+        ps.set_timeline_zoom(zoom_61h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
+
+        // Span between 48h and 60h → hysteresis holds Archive (50h).
+        let zoom_50h = 1000.0 / (50.0 * 3600.0);
+        ps.set_timeline_zoom(zoom_50h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
+
+        // Span under 48h → exits Archive (back to Macro by zoom). 47h.
+        let zoom_47h = 1000.0 / (47.0 * 3600.0);
+        ps.set_timeline_zoom(zoom_47h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+
+        // Archive is a navigator only — no playback there, allowed elsewhere.
+        ps.set_timeline_zoom(zoom_61h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert!(!ps.is_playback_allowed());
+        ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert!(ps.is_playback_allowed());
+    }
+
+    #[wasm_bindgen_test]
+    fn tier_seeding_is_deterministic_from_zoom_and_width() {
+        // Seeding uses the nominal boundaries (no hysteresis memory): zoom >=
+        // 1.0 → Micro; span > 54h → Archive; otherwise Macro.
+        assert_eq!(PlaybackState::seed_tier(2.0, 1000.0), TimelineTier::Micro);
+        assert_eq!(PlaybackState::seed_tier(1.0, 1000.0), TimelineTier::Micro);
+        assert_eq!(PlaybackState::seed_tier(0.5, 1000.0), TimelineTier::Macro);
+        // 54h nominal Archive boundary at width 1000.
+        let zoom_55h = 1000.0 / (55.0 * 3600.0);
+        assert_eq!(
+            PlaybackState::seed_tier(zoom_55h, 1000.0),
+            TimelineTier::Archive
+        );
+        let zoom_53h = 1000.0 / (53.0 * 3600.0);
+        assert_eq!(
+            PlaybackState::seed_tier(zoom_53h, 1000.0),
+            TimelineTier::Macro
+        );
+        // Width matters: span = width / zoom, so at a fixed zoom a *wider*
+        // strip shows a *larger* span. A zoom that's Macro (50h) at 1000px
+        // tips into Archive once the strip is wide enough (50h × 1.2 = 60h).
+        let z = 1000.0 / (50.0 * 3600.0);
+        assert_eq!(PlaybackState::seed_tier(z, 1000.0), TimelineTier::Macro);
+        assert_eq!(PlaybackState::seed_tier(z, 1200.0), TimelineTier::Archive);
+    }
+
+    #[wasm_bindgen_test]
+    fn reconcile_tier_reacts_to_width_change() {
+        // A zoom that's Macro at 1000px becomes Archive when the strip narrows
+        // enough that the visible span grows past the enter threshold.
+        let mut ps = PlaybackState::default();
+        // zoom giving exactly 50h span at 1000px (Macro).
+        let zoom = 1000.0 / (50.0 * 3600.0);
+        ps.set_timeline_zoom(zoom, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        // Narrow to 1100px? span shrinks — stays Macro. Widen the *time* by
+        // narrowing pixels: at 1300px width the span is 1300/zoom > 60h.
+        ps.timeline_width_px = 1300.0;
+        ps.reconcile_tier(1300.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_would_exit_micro_is_hysteresis_aware() {
+        let ps = micro_state();
+        // A drop that stays above the exit floor does NOT exit Micro.
+        assert!(!ps.zoom_would_exit_micro(0.90, 1000.0));
+        // A drop to/below the exit floor exits Micro.
+        assert!(ps.zoom_would_exit_micro(0.87, 1000.0));
+        // From Macro it never reports a Micro exit.
+        let mut macro_ps = PlaybackState::default();
+        macro_ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert!(!macro_ps.zoom_would_exit_micro(0.2, 1000.0));
+    }
+
+    // ---------------------------------------------------------------
+    // Cadence preservation across the snap (spec §9)
+    // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn cadence_micro_to_macro_picks_nearest_fps() {
+        let mut ps = micro_state();
+        // Frame list with 300s spacing (median = 300).
+        ps.macro_playback.sweep_frames = vec![0.0, 300.0, 600.0, 900.0];
+        // Micro speed Normal = 300x. Effective fps = 300 / 300 = 1.0 → Quarter (1 fps).
+        ps.speed = PlaybackSpeed::Normal;
+        ps.set_timeline_zoom(0.5, 1000.0, ps.median_frame_spacing());
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        assert_eq!(ps.speed, PlaybackSpeed::Quarter);
+
+        // Back to Micro from a 5 fps macro speed: 5 * 300 = 1500x → nearest
+        // micro multiple is Quadruple (1200x), closer on log scale than 600x.
+        ps.speed = PlaybackSpeed::Normal; // 5 fps in macro
+        ps.set_timeline_zoom(2.0, 1000.0, ps.median_frame_spacing());
+        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        assert_eq!(ps.speed, PlaybackSpeed::Quadruple);
+    }
+
+    #[wasm_bindgen_test]
+    fn cadence_macro_to_micro_with_fast_macro_speed() {
+        let mut ps = PlaybackState::default();
+        ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        // 60s frame spacing.
+        ps.macro_playback.sweep_frames = vec![0.0, 60.0, 120.0, 180.0];
+        // Quadruple macro = 15 fps. 15 * 60 = 900x. On a log scale 900 sits
+        // closer to 1200x (Quadruple) than 600x (Double).
+        ps.speed = PlaybackSpeed::Quadruple;
+        ps.set_timeline_zoom(2.0, 1000.0, ps.median_frame_spacing());
+        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        assert_eq!(ps.speed, PlaybackSpeed::Quadruple);
+    }
+
+    #[wasm_bindgen_test]
+    fn cadence_conversion_runs_while_paused() {
+        // Not playing: the transition still converts the speed (the tier
+        // machine owns it, not the playing-gated advance dispatch).
+        let mut ps = micro_state();
+        assert!(!ps.playing);
+        ps.speed = PlaybackSpeed::Realtime; // 1x micro
+        ps.macro_playback.sweep_frames = vec![0.0, 300.0, 600.0];
+        // 1 / 300 ≈ 0.0033 fps → clamps to slowest macro speed Quarter.
+        ps.set_timeline_zoom(0.5, 1000.0, ps.median_frame_spacing());
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        assert_eq!(ps.speed, PlaybackSpeed::Quarter);
+    }
+
+    #[wasm_bindgen_test]
+    fn median_frame_spacing_falls_back_when_too_few_frames() {
+        let mut ps = PlaybackState::default();
+        ps.macro_playback.sweep_frames = vec![];
+        assert_eq!(ps.median_frame_spacing(), FALLBACK_FRAME_SPACING_SECS);
+        ps.macro_playback.sweep_frames = vec![100.0];
+        assert_eq!(ps.median_frame_spacing(), FALLBACK_FRAME_SPACING_SECS);
+        // Uneven spacing → true median of the deltas (100, 200, 300 → 200).
+        ps.macro_playback.sweep_frames = vec![0.0, 100.0, 300.0, 600.0];
+        assert_eq!(ps.median_frame_spacing(), 200.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn detail_level_maps_from_tier() {
+        let mut ps = PlaybackState::default();
+        // Micro → Tilts.
+        ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.detail_level(), DetailLevel::Tilts);
+        // Macro with zoom >= 0.2 → Volumes.
+        ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.detail_level(), DetailLevel::Volumes);
+        // Macro with zoom < 0.2 → Coverage.
+        ps.set_timeline_zoom(0.1, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.detail_level(), DetailLevel::Coverage);
+        // Archive → Coverage.
+        let zoom_61h = 1000.0 / (61.0 * 3600.0);
+        ps.set_timeline_zoom(zoom_61h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
+        assert_eq!(ps.detail_level(), DetailLevel::Coverage);
     }
 }

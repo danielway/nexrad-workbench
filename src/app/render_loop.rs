@@ -22,8 +22,10 @@ impl WorkbenchApp {
         // scan count changed). Uses the *effective* mode so the list is also
         // built during a lookback replay (which frame-steps regardless of zoom).
         if self.playback.state.effective_playback_mode() == crate::state::PlaybackMode::Macro {
+            let product = self.state.viz_state.product.to_worker_string();
             let inputs = crate::state::MacroFrameInputs {
                 elevation: self.state.viz_state.elevation_selection.clone(),
+                product: product.to_string(),
                 bounds: self.playback.state.time_model.playback_bounds,
                 scan_count: self.timeline.scans.scans.len(),
             };
@@ -32,13 +34,15 @@ impl WorkbenchApp {
                 let frames = match &inputs.elevation {
                     crate::state::ElevationSelection::Fixed {
                         elevation_number, ..
-                    } => self
+                    } => self.timeline.scans.matching_sweep_end_times_by_number(
+                        *elevation_number,
+                        product,
+                        inputs.bounds,
+                    ),
+                    crate::state::ElevationSelection::Latest => self
                         .timeline
                         .scans
-                        .matching_sweep_end_times_by_number(*elevation_number, inputs.bounds),
-                    crate::state::ElevationSelection::Latest => {
-                        self.timeline.scans.all_sweep_end_times(inputs.bounds)
-                    }
+                        .all_sweep_end_times(product, inputs.bounds),
                 };
                 self.playback
                     .state

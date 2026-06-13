@@ -59,6 +59,11 @@ const PREFETCH_PLAY_LEAD_SECS: f64 = 4.0;
 /// bound for a single volume scan.
 const FALLBACK_SCAN_DURATION_SECS: i64 = 300;
 
+/// Timeline zoom (px/sec) live mode floors to so the strip shows individual
+/// sweeps and chunks. Comfortably above the Micro-enter tier threshold so
+/// going/returning live lands the tier in Micro.
+const LIVE_DEFAULT_ZOOM: f64 = 2.0;
+
 /// Number of recent matching frames the live "lookback" replay covers.
 const LOOKBACK_FRAMES: usize = 5;
 
@@ -280,7 +285,11 @@ fn apply_url_params(
         state.viz_state.zoom = mz;
     }
     if let Some(tz) = url_params.view.tz {
-        playback.state.timeline_zoom = tz;
+        playback.state.timeline_zoom = tz.clamp(state::TIMELINE_ZOOM_MIN, state::TIMELINE_ZOOM_MAX);
+        // Seed the tier deterministically from the restored zoom+width (no
+        // hysteresis memory at boot). The per-frame reconcile corrects it once
+        // the real strip width is measured.
+        playback.state.seed_tier_from_state();
     }
 
     // Restore 3D view mode and camera parameters from URL
@@ -729,6 +738,16 @@ impl eframe::App for WorkbenchApp {
                 1000
             };
             ctx.request_repaint_after(std::time::Duration::from_millis(cadence_ms));
+        }
+        // Reconcile the timeline tier against this frame's strip width (which
+        // may have changed under responsive layout) before advance_playback
+        // reads the playback mode. Hysteresis-aware and idempotent when
+        // nothing moved. Width comes from last frame's measured strip; the
+        // Archive span boundary depends on it.
+        {
+            let width = self.playback.state.timeline_width_px;
+            let spacing = self.playback.state.median_frame_spacing();
+            self.playback.state.reconcile_tier(width, spacing);
         }
         self.advance_playback();
         // 9.5. REACTIVE ACQUISITION: now that advance_playback has settled the

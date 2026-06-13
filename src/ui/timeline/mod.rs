@@ -23,17 +23,11 @@ use scan_track::{render_scan_track, render_shadow_boundaries};
 use sweep_track::{render_connector_lines, render_sweep_track};
 use tooltips::render_timeline_tooltip;
 
-/// Level of detail for radar data rendering, selected by zoom.
-/// The names match the on-screen track headers (VOLUMES / TILTS).
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum DetailLevel {
-    /// Zoomed far out: just show solid color where data exists
-    Coverage,
-    /// Show individual volume-scan blocks
-    Volumes,
-    /// Show tilt (sweep) blocks within volume scans
-    Tilts,
-}
+/// Level of detail for radar data rendering. Now mapped from the stored
+/// timeline tier (see [`crate::state::PlaybackState::detail_level`]) rather
+/// than re-derived from raw zoom here. Re-exported from `state` so the many
+/// `match` arms in the track renderers keep their short path.
+pub(super) use crate::state::DetailLevel;
 
 /// Sub-rects of the timeline widget's stacked tracks.
 pub(super) struct TrackRects {
@@ -340,13 +334,10 @@ pub(super) fn render_timeline(
     playback.state.timeline_width_px = available_width;
 
     let zoom = playback.state.timeline_zoom;
-    let detail_level = if zoom < 0.2 {
-        DetailLevel::Coverage
-    } else if zoom < 1.0 {
-        DetailLevel::Volumes
-    } else {
-        DetailLevel::Tilts
-    };
+    // Detail now maps from the stored tier (single source of truth), not raw
+    // zoom — so it shares the tier's hysteresis and can't disagree with the
+    // playback mode at a boundary.
+    let detail_level = playback.state.detail_level();
 
     // Track heights — timestamp lane sits above the scan track so labels
     // never overlap scan block content. The total timeline height is

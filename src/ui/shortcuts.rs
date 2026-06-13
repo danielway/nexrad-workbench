@@ -432,6 +432,20 @@ fn handle_step_forward(
     playback.state.set_playback_position(new_pos);
 }
 
+/// The speed variants the keyboard cycles through, restricted to the active
+/// effective mode's setting space: in Macro only the macro-capable (fps)
+/// variants, in Micro all variants. Cycling outside this set would land on a
+/// variant whose combo label and actual playback disagree (advance_macro
+/// silently falls back). When the current speed isn't in the active set
+/// (e.g. just snapped modes), the nearest index is found by position in the
+/// fallback `all()` ordering.
+fn active_mode_speeds(playback: &crate::subsystem::Playback) -> &'static [PlaybackSpeed] {
+    match playback.state.effective_playback_mode() {
+        crate::state::PlaybackMode::Macro => PlaybackSpeed::macro_speeds(),
+        crate::state::PlaybackMode::Micro => PlaybackSpeed::all(),
+    }
+}
+
 fn handle_speed_down(
     _state: &mut AppState,
     _live: &mut crate::subsystem::Live,
@@ -440,11 +454,14 @@ fn handle_speed_down(
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    let speeds = PlaybackSpeed::all();
+    let speeds = active_mode_speeds(playback);
     if let Some(idx) = speeds.iter().position(|s| *s == playback.state.speed) {
         if idx > 0 {
             playback.state.speed = speeds[idx - 1];
         }
+    } else if let Some(&first) = speeds.first() {
+        // Current speed isn't valid in this mode — land on the slowest valid.
+        playback.state.speed = first;
     }
 }
 
@@ -456,11 +473,14 @@ fn handle_speed_up(
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    let speeds = PlaybackSpeed::all();
+    let speeds = active_mode_speeds(playback);
     if let Some(idx) = speeds.iter().position(|s| *s == playback.state.speed) {
         if idx + 1 < speeds.len() {
             playback.state.speed = speeds[idx + 1];
         }
+    } else if let Some(&first) = speeds.first() {
+        // Current speed isn't valid in this mode — land on the slowest valid.
+        playback.state.speed = first;
     }
 }
 

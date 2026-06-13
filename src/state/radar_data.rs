@@ -71,6 +71,15 @@ impl Sweep {
     }
 }
 
+/// Whether `sweep` has a cached blob for `product` (worker-string name).
+/// Empty `cached_products` means "nothing stored / unknown" and is treated as
+/// not-available — matching the render resolver
+/// ([`crate::state::playback_manager::resolve_active_sweep_target`]) so the
+/// macro frame list never lists a frame the canvas would blank.
+fn sweep_has_product(sweep: &Sweep, product: &str) -> bool {
+    sweep.cached_products.iter().any(|p| p == product)
+}
+
 /// A complete volume scan (multiple sweeps at different elevations)
 #[derive(Clone, Debug)]
 pub struct Scan {
@@ -354,14 +363,22 @@ impl RadarTimeline {
         Self { scans }
     }
 
-    /// Collect all sweep end-times matching the given elevation number.
+    /// Collect all sweep end-times matching the given elevation number AND
+    /// holding a cached blob for `product` (the worker-string product name).
     ///
-    /// Returns a sorted, deduplicated `Vec<f64>` of `end_time` values for sweeps
-    /// whose `elevation_number` matches exactly. If `bounds` is provided, only
-    /// sweeps within that time range are included.
+    /// A frame (spec §4) is a sweep matching the *selected product + tilt* —
+    /// something the canvas can render. Filtering by product here keeps macro
+    /// stepping/looping from dwelling on sweeps the resolver would blank.
+    /// `cached_products` follows the resolver's convention: a sweep counts
+    /// only when it lists `product`; an empty list ("nothing stored / unknown")
+    /// is excluded.
+    ///
+    /// Returns a sorted, deduplicated `Vec<f64>` of `end_time` values. If
+    /// `bounds` is provided, only sweeps within that time range are included.
     pub fn matching_sweep_end_times_by_number(
         &self,
         elevation_number: u8,
+        product: &str,
         bounds: Option<(f64, f64)>,
     ) -> Vec<f64> {
         let mut times: Vec<f64> = Vec::new();
@@ -372,7 +389,7 @@ impl RadarTimeline {
                 }
             }
             for sweep in &scan.sweeps {
-                if sweep.elevation_number == elevation_number {
+                if sweep.elevation_number == elevation_number && sweep_has_product(sweep, product) {
                     if let Some((start, end)) = bounds {
                         if sweep.end_time < start || sweep.end_time > end {
                             continue;
@@ -387,10 +404,11 @@ impl RadarTimeline {
         times
     }
 
-    /// Collect all sweep end-times (regardless of elevation).
-    ///
-    /// Used by Latest/auto mode where every sweep is a frame.
-    pub fn all_sweep_end_times(&self, bounds: Option<(f64, f64)>) -> Vec<f64> {
+    /// Collect all sweep end-times (regardless of elevation) holding a cached
+    /// blob for `product`. Used by Latest/auto mode where every matching sweep
+    /// is a frame. See [`Self::matching_sweep_end_times_by_number`] for the
+    /// product-filter contract.
+    pub fn all_sweep_end_times(&self, product: &str, bounds: Option<(f64, f64)>) -> Vec<f64> {
         let mut times: Vec<f64> = Vec::new();
         for scan in &self.scans {
             if let Some((start, end)) = bounds {
@@ -399,6 +417,9 @@ impl RadarTimeline {
                 }
             }
             for sweep in &scan.sweeps {
+                if !sweep_has_product(sweep, product) {
+                    continue;
+                }
                 if let Some((start, end)) = bounds {
                     if sweep.end_time < start || sweep.end_time > end {
                         continue;
@@ -426,14 +447,15 @@ impl RadarTimeline {
     pub fn lookback_window(
         &self,
         elevation_selection: &crate::state::ElevationSelection,
+        product: &str,
         now: f64,
         n: usize,
     ) -> Option<(f64, f64)> {
         let frames = match elevation_selection {
             crate::state::ElevationSelection::Fixed {
                 elevation_number, ..
-            } => self.matching_sweep_end_times_by_number(*elevation_number, None),
-            crate::state::ElevationSelection::Latest => self.all_sweep_end_times(None),
+            } => self.matching_sweep_end_times_by_number(*elevation_number, product, None),
+            crate::state::ElevationSelection::Latest => self.all_sweep_end_times(product, None),
         };
         // `frames` is sorted ascending; keep those at/<= now (small slack so a
         // just-completed frame whose end_time rounds a hair past `now` counts).
@@ -634,7 +656,20 @@ mod tests {
         }
     }
 
+    /// Test sweep with the default product ("reflectivity") cached, so it
+    /// counts as a frame under product filtering. Use [`sweep_products`] to
+    /// vary the cached set.
     fn sweep(start: f64, end: f64, elevation: f32, elev_num: u8) -> Sweep {
+        sweep_products(start, end, elevation, elev_num, &["reflectivity"])
+    }
+
+    fn sweep_products(
+        start: f64,
+        end: f64,
+        elevation: f32,
+        elev_num: u8,
+        products: &[&str],
+    ) -> Sweep {
         Sweep {
             start_time: start,
             end_time: end,
@@ -642,7 +677,7 @@ mod tests {
             elevation_number: elev_num,
             start_azimuth: 0.0,
             radials: Vec::new(),
-            cached_products: Vec::new(),
+            cached_products: products.iter().map(|p| p.to_string()).collect(),
         }
     }
 
@@ -672,7 +707,9 @@ mod tests {
     #[wasm_bindgen_test]
     fn lookback_window_takes_last_n_before_now() {
         let tl = elev1_timeline(10); // frames at 100..1000
-        let w = tl.lookback_window(&fixed(1), 1000.0, 5).unwrap();
+        let w = tl
+            .lookback_window(&fixed(1), "reflectivity", 1000.0, 5)
+            .unwrap();
         assert_eq!(w, (600.0, 1000.0)); // last 5: 600,700,800,900,1000
     }
 
@@ -680,28 +717,36 @@ mod tests {
     fn lookback_window_excludes_future_frames() {
         let tl = elev1_timeline(10); // frames at 100..1000
                                      // now=550 → only frames <= 550 (100..500) are usable; last 3 = 300..500
-        let w = tl.lookback_window(&fixed(1), 550.0, 3).unwrap();
+        let w = tl
+            .lookback_window(&fixed(1), "reflectivity", 550.0, 3)
+            .unwrap();
         assert_eq!(w, (300.0, 500.0));
     }
 
     #[wasm_bindgen_test]
     fn lookback_window_spans_all_when_fewer_than_n() {
         let tl = elev1_timeline(3); // frames at 100,200,300
-        let w = tl.lookback_window(&fixed(1), 10_000.0, 5).unwrap();
+        let w = tl
+            .lookback_window(&fixed(1), "reflectivity", 10_000.0, 5)
+            .unwrap();
         assert_eq!(w, (100.0, 300.0));
     }
 
     #[wasm_bindgen_test]
     fn lookback_window_single_frame_is_zero_width() {
         let tl = elev1_timeline(1); // single frame at 100
-        let w = tl.lookback_window(&fixed(1), 10_000.0, 5).unwrap();
+        let w = tl
+            .lookback_window(&fixed(1), "reflectivity", 10_000.0, 5)
+            .unwrap();
         assert_eq!(w, (100.0, 100.0)); // caller must reject zero width
     }
 
     #[wasm_bindgen_test]
     fn lookback_window_none_when_no_frames_before_now() {
         let tl = elev1_timeline(3); // earliest frame at 100
-        assert!(tl.lookback_window(&fixed(1), 10.0, 5).is_none());
+        assert!(tl
+            .lookback_window(&fixed(1), "reflectivity", 10.0, 5)
+            .is_none());
     }
 
     #[wasm_bindgen_test]
@@ -722,7 +767,7 @@ mod tests {
         let tl = RadarTimeline { scans };
         // 4 frames: 80,100,180,200 → last 3 = 100..200
         let w = tl
-            .lookback_window(&ElevationSelection::Latest, 10_000.0, 3)
+            .lookback_window(&ElevationSelection::Latest, "reflectivity", 10_000.0, 3)
             .unwrap();
         assert_eq!(w, (100.0, 200.0));
     }
@@ -961,11 +1006,11 @@ mod tests {
             ],
         };
         // All elev_num=1 sweeps, no bounds
-        let times = tl.matching_sweep_end_times_by_number(1, None);
+        let times = tl.matching_sweep_end_times_by_number(1, "reflectivity", None);
         assert_eq!(times, vec![1010.0, 1310.0]);
 
         // All elev_num=2 sweeps, no bounds
-        let times = tl.matching_sweep_end_times_by_number(2, None);
+        let times = tl.matching_sweep_end_times_by_number(2, "reflectivity", None);
         assert_eq!(times, vec![1020.0, 1320.0]);
     }
 
@@ -984,7 +1029,8 @@ mod tests {
             )],
         };
         // elev_num=1 sweeps within bounds [1005, 1025]
-        let times = tl.matching_sweep_end_times_by_number(1, Some((1005.0, 1025.0)));
+        let times =
+            tl.matching_sweep_end_times_by_number(1, "reflectivity", Some((1005.0, 1025.0)));
         assert_eq!(times, vec![1010.0]);
     }
 
@@ -1010,14 +1056,58 @@ mod tests {
             ],
         };
         // All sweeps (Latest mode): every sweep is a frame
-        let times = tl.all_sweep_end_times(None);
+        let times = tl.all_sweep_end_times("reflectivity", None);
         assert_eq!(times, vec![1010.0, 1020.0, 1030.0, 1040.0, 1310.0, 1320.0]);
+    }
+
+    #[wasm_bindgen_test]
+    fn frame_list_filters_by_product() {
+        // A frame is a sweep matching the selected product AND tilt. Sweeps
+        // missing the requested product (or with an empty/unknown set) are not
+        // frames — the canvas would blank on them.
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1040.0,
+                vec![
+                    // elev 1: only reflectivity cached.
+                    sweep_products(1000.0, 1010.0, 0.5, 1, &["reflectivity"]),
+                    // elev 1 (second cut): both reflectivity and velocity.
+                    sweep_products(1010.0, 1020.0, 0.5, 1, &["reflectivity", "velocity"]),
+                    // elev 1 (third cut): unknown/empty — never a frame.
+                    sweep_products(1020.0, 1030.0, 0.5, 1, &[]),
+                ],
+            )],
+        };
+
+        // Reflectivity: the two cuts that cached it.
+        assert_eq!(
+            tl.matching_sweep_end_times_by_number(1, "reflectivity", None),
+            vec![1010.0, 1020.0]
+        );
+        // Velocity: only the second cut cached it.
+        assert_eq!(
+            tl.matching_sweep_end_times_by_number(1, "velocity", None),
+            vec![1020.0]
+        );
+        // A product nobody cached: no frames.
+        assert!(tl
+            .matching_sweep_end_times_by_number(1, "spectrum_width", None)
+            .is_empty());
+
+        // Latest mode honours the same filter.
+        assert_eq!(tl.all_sweep_end_times("velocity", None), vec![1020.0]);
+        // Empty cached_products is excluded even in Latest mode.
+        assert_eq!(
+            tl.all_sweep_end_times("reflectivity", None),
+            vec![1010.0, 1020.0]
+        );
     }
 
     #[wasm_bindgen_test]
     fn matching_sweep_end_times_empty() {
         let tl = RadarTimeline { scans: vec![] };
-        let times = tl.matching_sweep_end_times_by_number(1, None);
+        let times = tl.matching_sweep_end_times_by_number(1, "reflectivity", None);
         assert!(times.is_empty());
     }
 

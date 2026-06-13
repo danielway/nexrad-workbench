@@ -42,6 +42,7 @@ pub(crate) fn toggle_play_pause(
         let now = state.frame_now.secs();
         let seed = match timeline.scans.lookback_window(
             &state.viz_state.elevation_selection,
+            state.viz_state.product.to_worker_string(),
             now,
             crate::LOOKBACK_FRAMES,
         ) {

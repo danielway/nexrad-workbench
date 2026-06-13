@@ -2,7 +2,7 @@
 
 use super::acquisition_drawer::render_acquisition_drawer;
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::state::{AppState, PlaybackMode, PlaybackSpeed};
+use crate::state::{AppState, PlaybackMode};
 use crate::subsystem::Acquisition;
 use eframe::egui;
 
@@ -60,29 +60,15 @@ fn draw_bottom_panel(
         super::transport::toggle_play_pause(state, timeline, live, playback);
     }
 
-    // Advance playback position when playing
-    // The time_model handles real-time lock mode internally
+    // Advance playback position when playing.
+    // Cadence preservation across a Micro↔Macro snap is owned by the tier
+    // state machine (PlaybackState::set_timeline_zoom / reconcile_tier), so it
+    // runs on every transition regardless of `playing` — paused transitions and
+    // mobile get it too. Here we only dispatch to the right advance path.
     if playback.state.playing {
         // Effective mode: a lookback replay frame-steps (Macro) regardless of
-        // zoom, so it dispatches to advance_macro and gets the macro fps speeds.
-        let mode = playback.state.effective_playback_mode();
-        let was_macro = playback.state.macro_playback.was_macro;
-
-        // Detect mode transitions and auto-adjust speed
-        if mode == PlaybackMode::Macro && !was_macro {
-            // Entering macro: promote disallowed speeds to nearest macro speed
-            if playback.state.speed.macro_frames_per_second().is_none() {
-                playback.state.speed = PlaybackSpeed::Quarter;
-            }
-            // Reset accumulator on transition
-            playback.state.macro_playback.frame_accumulator = 0.0;
-        } else if mode == PlaybackMode::Micro && was_macro {
-            // Entering micro: map fps-based speed to a reasonable timeline speed.
-            // Keep the same PlaybackSpeed variant — the labels just change.
-        }
-        playback.state.macro_playback.was_macro = mode == PlaybackMode::Macro;
-
-        match mode {
+        // tier, so it dispatches to advance_macro and gets the macro fps speeds.
+        match playback.state.effective_playback_mode() {
             PlaybackMode::Micro => playback.state.advance(dt as f64),
             PlaybackMode::Macro => playback.state.advance_macro(dt as f64),
         }
