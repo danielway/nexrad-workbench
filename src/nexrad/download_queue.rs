@@ -376,12 +376,21 @@ impl DownloadQueueManager {
             if matches!(existing.state, QueueItemState::Active) {
                 return true;
             }
+            let scan_start = item.scan_start;
             existing.state = QueueItemState::Pending;
             existing.operation_id = item.operation_id;
             existing.elevation_filter = item.elevation_filter;
             existing.file_name = item.file_name;
             existing.date = item.date;
             existing.scan_end = item.scan_end;
+            // Drop any operation-id correlation left over from a previous
+            // dispatch of this scan. In normal flow the prior completion's
+            // `take_operation_id` already removed it; clearing it here makes the
+            // new op id authoritative *by construction* rather than relying on
+            // that drain having happened, so a lingering stale entry can never
+            // be returned for the requeued retry. The next dispatch re-`set`s
+            // the fresh id.
+            self.active_operation_ids.remove(&scan_start);
         } else {
             self.queue.push(item);
         }
@@ -589,6 +598,132 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // ── active_operation_ids correlation channel ────────────────────────────
+
+    /// `set_operation_id` then `take_operation_id` returns the id exactly once;
+    /// a second take finds nothing. This is the channel that drives
+    /// `mark_completed`/`mark_failed` in `app/download.rs`.
+    #[wasm_bindgen_test]
+    fn set_then_take_operation_id_returns_once() {
+        let mut q = DownloadQueueManager::new();
+        q.set_operation_id(1000, 42);
+        assert_eq!(q.take_operation_id(1000), Some(42));
+        // Drained — a late second completion finds nothing.
+        assert_eq!(q.take_operation_id(1000), None);
+        // An unknown scan_start was never mapped.
+        assert_eq!(q.take_operation_id(9999), None);
+    }
+
+    /// `clear()` wipes the operation-id map. This documents the orphan: a late
+    /// completion arriving after a clear (e.g. a selection change) finds no id,
+    /// so its operation is never marked Completed/Failed by this channel.
+    #[wasm_bindgen_test]
+    fn clear_drops_pending_operation_id_entry() {
+        let mut q = DownloadQueueManager::new();
+        q.set_operation_id(1000, 42);
+        q.clear();
+        assert_eq!(
+            q.take_operation_id(1000),
+            None,
+            "clear() must drop pending op-id entries (orphaning a late completion)"
+        );
+    }
+
+    /// Regression: a requeue with a NEW op id must make `take` return the NEW
+    /// id, never a stale one left over from a previous dispatch of the same
+    /// scan_start. `requeue` drops the stale map entry, and the re-dispatch
+    /// re-`set`s the fresh id — so the correlation can't mis-attribute the
+    /// completion to the wrong operation.
+    #[wasm_bindgen_test]
+    fn requeue_with_new_op_id_takes_the_new_id_not_a_stale_one() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(1000, Some(1)).with_operation(7)]);
+        // Dispatch under the original op id 7, then map it (mirrors the
+        // selection_download dispatch path: StartDownload → set_operation_id).
+        match q.advance(false) {
+            QueueAction::StartDownload {
+                scan_start,
+                operation_id,
+                ..
+            } => {
+                assert_eq!(scan_start, 1000);
+                assert_eq!(operation_id, Some(7));
+                q.set_operation_id(scan_start, 7);
+            }
+            other => panic!("expected dispatch, got {other:?}"),
+        }
+        // The download finishes (Done) but — to model the fragile window — the
+        // stale map entry for op 7 is deliberately left behind.
+        q.mark_active_done(1000);
+
+        // A retry requeues the same scan under a NEW op id 99.
+        let retry = item(1000, Some(3)).with_operation(99);
+        assert!(q.requeue(retry));
+
+        // Re-dispatch carries the new op id, and the dispatch re-sets the map.
+        match q.advance(false) {
+            QueueAction::StartDownload {
+                scan_start,
+                operation_id,
+                ..
+            } => {
+                assert_eq!(operation_id, Some(99));
+                q.set_operation_id(scan_start, 99);
+            }
+            other => panic!("expected re-dispatch, got {other:?}"),
+        }
+
+        // The completion now correlates to the NEW op id, never the stale 7.
+        assert_eq!(q.take_operation_id(1000), Some(99));
+    }
+
+    /// `requeue` itself drops the stale map entry even before the re-dispatch,
+    /// so the new op id is authoritative by construction (not merely because the
+    /// next `set_operation_id` overwrites it). Without the fix, the stale id
+    /// would survive the requeue and a `take` in the pre-dispatch window would
+    /// return the WRONG operation.
+    #[wasm_bindgen_test]
+    fn requeue_clears_the_stale_op_id_entry() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(1000, Some(1)).with_operation(7)]);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload { .. }
+        ));
+        q.set_operation_id(1000, 7);
+        q.mark_active_done(1000);
+
+        // Requeue under a new op id — the stale 7 must be gone immediately.
+        assert!(q.requeue(item(1000, Some(3)).with_operation(99)));
+        assert_eq!(
+            q.take_operation_id(1000),
+            None,
+            "requeue must drop the stale op-id entry, not leak op 7"
+        );
+    }
+
+    /// An Active item's requeue leaves the in-flight op-id correlation intact:
+    /// the running download still completes against its original id.
+    #[wasm_bindgen_test]
+    fn requeue_on_active_item_keeps_in_flight_op_id() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(2000, None).with_operation(11)]);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload { .. }
+        ));
+        q.set_operation_id(2000, 11);
+
+        // A requeue lands while the item is Active → it's left untouched, and so
+        // is its op-id mapping.
+        assert!(q.requeue(item(2000, Some(3)).with_operation(22)));
+        assert_eq!(
+            q.take_operation_id(2000),
+            Some(11),
+            "an in-flight download keeps its original op id"
+        );
     }
 
     #[wasm_bindgen_test]
