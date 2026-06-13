@@ -345,10 +345,10 @@ pub struct VizState {
     /// Overlay info: radar site ID
     pub site_id: String,
 
-    /// Overlay info: current timestamp
-    pub timestamp: String,
-
-    /// Overlay info: current elevation/sweep
+    /// Overlay info: current elevation/sweep, e.g. "0.5°". Timezone-independent,
+    /// so it stays a baked string; the displayed-frame *timestamp* is NOT baked
+    /// here — it is formatted at render time from `displayed` (spec §11.4) so a
+    /// local/UTC flip reformats it the same frame.
     pub elevation: String,
 
     /// Geographic center latitude (radar site location)
@@ -516,7 +516,6 @@ impl Default for VizState {
             elevation_selection: ElevationSelection::default(),
             last_fixed_selection: None,
             site_id: "KDMX".to_string(),
-            timestamp: "--:--:-- UTC".to_string(),
             elevation: "-- deg".to_string(),
             center_lat: 41.7312,
             center_lon: -93.7229,
@@ -541,46 +540,14 @@ impl Default for VizState {
 }
 
 impl VizState {
-    /// Update the canvas overlay text with sweep timing and elevation info.
-    /// Sweep start/end times are stored on `displayed` (set by the decode
-    /// handler); staleness is recomputed each frame from there.
-    /// `now_secs` is the frame clock (`AppState::frame_now`).
-    pub fn update_overlay(
-        &mut self,
-        start: f64,
-        end: f64,
-        elevation_deg: f32,
-        use_local_time: bool,
-        now_secs: f64,
-    ) {
+    /// Update the canvas overlay's elevation text and seed staleness from a
+    /// freshly decoded sweep. The displayed-frame *timestamp* is no longer baked
+    /// here: it is formatted at render time from `displayed` so a local/UTC flip
+    /// reformats it the same frame (spec §11.4). Sweep start/end times live on
+    /// `displayed` (set by the decode handler); staleness is recomputed each
+    /// frame from there. `now_secs` is the frame clock (`AppState::frame_now`).
+    pub fn update_overlay(&mut self, start: f64, end: f64, elevation_deg: f32, now_secs: f64) {
         self.elevation = format!("{:.1}\u{00B0}", elevation_deg);
-
-        // Format midpoint timestamp with full date and time
-        let mid_ms = ((start + end) / 2.0) * 1000.0;
-        let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(mid_ms));
-        if use_local_time {
-            self.timestamp = format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-                date.get_full_year(),
-                date.get_month() + 1,
-                date.get_date(),
-                date.get_hours(),
-                date.get_minutes(),
-                date.get_seconds(),
-                date.get_milliseconds()
-            );
-        } else {
-            self.timestamp = format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03} UTC",
-                date.get_utc_full_year(),
-                date.get_utc_month() + 1,
-                date.get_utc_date(),
-                date.get_utc_hours(),
-                date.get_utc_minutes(),
-                date.get_utc_seconds(),
-                date.get_utc_milliseconds()
-            );
-        }
 
         // Seed staleness for immediate display; the per-frame recompute
         // in `update()` keeps it ticking from `displayed`.
@@ -588,6 +555,16 @@ impl VizState {
         let staleness_start = now_secs - start;
         self.data_staleness_secs = (staleness_end >= 0.0).then_some(staleness_end);
         self.data_staleness_start_secs = (staleness_start >= 0.0).then_some(staleness_start);
+    }
+
+    /// Representative (midpoint) collection time of the on-screen frame, in Unix
+    /// seconds, or `None` when the canvas holds no frame. This is the raw time
+    /// the primary readout and overlay format live each frame — never the
+    /// playhead (the canvas-honesty invariant).
+    pub fn displayed_midpoint_secs(&self) -> Option<f64> {
+        self.displayed
+            .as_ref()
+            .map(|d| (d.start_time + d.end_time) / 2.0)
     }
 }
 

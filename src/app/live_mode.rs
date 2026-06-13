@@ -319,13 +319,9 @@ impl WorkbenchApp {
 
     /// Update the canvas overlay text with sweep timing and elevation info.
     pub(crate) fn update_overlay_from_sweep(&mut self, start: f64, end: f64, elevation_deg: f32) {
-        self.state.viz_state.update_overlay(
-            start,
-            end,
-            elevation_deg,
-            self.state.use_local_time,
-            self.state.frame_now.secs(),
-        );
+        self.state
+            .viz_state
+            .update_overlay(start, end, elevation_deg, self.state.frame_now.secs());
     }
 
     /// Send a render request to the worker for the current scan/elevation/product.

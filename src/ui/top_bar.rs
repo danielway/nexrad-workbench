@@ -2,8 +2,11 @@
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::overflow_menu::overflow_menu;
+use super::time_format::{format_clock_12h, format_updated_ago, Compaction};
 use crate::alerts::{event_color, AlertSeverity};
-use crate::state::{AppCommand, AppMode, AppState, CameraMode, ErrorContext, ViewMode, WidthTier};
+use crate::state::{
+    AppCommand, AppMode, AppState, CameraMode, ErrorContext, RadarProduct, ViewMode, WidthTier,
+};
 use eframe::egui::{self, Color32, Frame, RichText};
 
 pub(super) struct TopBarLayer;
@@ -19,6 +22,7 @@ impl Layer for TopBarLayer {
         draw_top_bar(
             ctx.ctx,
             ctx.state,
+            ctx.timeline,
             ctx.live,
             ctx.playback,
             ctx.diagnostics,
@@ -32,6 +36,7 @@ impl Layer for TopBarLayer {
 fn draw_top_bar(
     ctx: &egui::Context,
     state: &mut AppState,
+    _timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
@@ -128,6 +133,14 @@ fn draw_top_bar(
                 }
 
                 render_mode_badge(ui, live, playback);
+
+                ui.separator();
+
+                // Primary top readout (spec §5/§11.1): the DISPLAYED frame's
+                // collection time + tilt — never the playhead — plus a compact
+                // product selector and, when tethered to live, a friendly
+                // "updated N ago" age. This is the product's most prominent time.
+                render_primary_readout(ui, state, live);
 
                 // Status message (Idle/Archive only — Live has its own trailing
                 // text with chunk counts/countdown). Suppressed below the full
@@ -241,6 +254,82 @@ fn draw_top_bar(
                 });
             });
         });
+}
+
+/// Width-driven compaction for the primary clock readout. The time is primary,
+/// so narrow bars shed seconds (Compact) then the zone suffix (Cramped) rather
+/// than dropping the readout.
+fn readout_compaction(tier: WidthTier) -> Compaction {
+    match tier {
+        WidthTier::Full => Compaction::Full,
+        WidthTier::Compact => Compaction::NoSeconds,
+        WidthTier::Cramped => Compaction::Bare,
+    }
+}
+
+/// The product's PRIMARY readout (spec §5/§11.1): the on-screen frame's actual
+/// collection time + tilt — never the playhead — formatted live so a local/UTC
+/// tap reformats it the same frame. Tapping the time toggles the timezone
+/// (spec §11.4 "UTC available on tap"); a compact product selector sits beside
+/// it, and while tethered to live a friendly "updated N ago" age trails it.
+fn render_primary_readout(ui: &mut egui::Ui, state: &mut AppState, live: &crate::subsystem::Live) {
+    let accent = Color32::from_rgb(225, 232, 240);
+    let dim = Color32::from_rgb(120, 130, 140);
+
+    // The displayed frame's representative collection time, or None when the
+    // canvas holds no frame.
+    match state.viz_state.displayed_midpoint_secs() {
+        Some(mid) => {
+            let compaction = readout_compaction(state.width_tier);
+            let time_str = format_clock_12h(mid, state.use_local_time, compaction);
+            // Tilt comes from the displayed frame's elevation (actual), already
+            // formatted as e.g. "0.5°".
+            let label = format!("{time_str} · {}", state.viz_state.elevation);
+            let resp = ui.add(
+                egui::Button::new(RichText::new(label).size(14.0).strong().color(accent))
+                    .frame(false),
+            );
+            if resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let to = if state.use_local_time { "UTC" } else { "local" };
+            if resp
+                .on_hover_text(format!("Displayed frame time — tap for {to} time"))
+                .clicked()
+            {
+                state.use_local_time = !state.use_local_time;
+            }
+        }
+        None => {
+            ui.add(egui::Button::new(RichText::new("--:--").size(14.0).color(dim)).frame(false))
+                .on_hover_text("No frame on screen yet");
+        }
+    }
+
+    // Compact product selector (the Level-0/1 always-visible affordance; the
+    // right panel keeps the full power surface). Drives the same state.
+    egui::ComboBox::from_id_salt("topbar_product")
+        .selected_text(RichText::new(state.viz_state.product.short_code()).size(13.0))
+        .width(56.0)
+        .show_ui(ui, |ui| {
+            for product in RadarProduct::all() {
+                ui.selectable_value(
+                    &mut state.viz_state.product,
+                    *product,
+                    format!("{} — {}", product.short_code(), product.label()),
+                );
+            }
+        });
+
+    // Data-age trust signal at the live edge (spec §5/§11.3). Only while
+    // tethered (attached + streaming, i.e. AppMode::Live); archive browsing
+    // lets the timestamp itself carry the meaning.
+    if live.app_mode == AppMode::Live {
+        if let Some(end) = state.viz_state.displayed.as_ref().map(|d| d.end_time) {
+            let age = (state.frame_now.secs() - end).max(0.0);
+            ui.label(RichText::new(format_updated_ago(age)).size(12.0).color(dim));
+        }
+    }
 }
 
 /// Two-segment Basic/Advanced pill matching the view-mode selector idiom.
@@ -836,5 +925,23 @@ pub(super) fn render_mode_badge(
                     .color(Color32::from_rgb(180, 180, 180)),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn readout_compaction_sheds_detail_as_width_narrows() {
+        // The time is primary, so narrower tiers drop detail rather than the
+        // readout: full → seconds+zone, compact → no seconds, cramped → bare.
+        assert_eq!(readout_compaction(WidthTier::Full), Compaction::Full);
+        assert_eq!(
+            readout_compaction(WidthTier::Compact),
+            Compaction::NoSeconds
+        );
+        assert_eq!(readout_compaction(WidthTier::Cramped), Compaction::Bare);
     }
 }

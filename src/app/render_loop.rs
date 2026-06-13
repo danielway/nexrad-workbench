@@ -479,11 +479,11 @@ impl WorkbenchApp {
         self.clear_active_scan();
         self.state.viz_state.data_staleness_secs = None;
         self.state.viz_state.data_staleness_start_secs = None;
-        self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
         self.state.viz_state.elevation = "-- deg".to_string();
         // clear_data() drops both GPU textures; match the prev-sweep state
         // so the timeline highlight and canvas overlay don't point at state
-        // that no longer has backing pixels.
+        // that no longer has backing pixels. `displayed = None` is the canonical
+        // "no frame" signal the overlay/readout read to drop the timestamp.
         self.state.viz_state.displayed = None;
         self.state.viz_state.previous_displayed = None;
         self.render.scrub_cache.last_active_scan_ts = None;
@@ -500,7 +500,6 @@ impl WorkbenchApp {
         }
         self.state.viz_state.data_staleness_secs = None;
         self.state.viz_state.data_staleness_start_secs = None;
-        self.state.viz_state.timestamp = "--:--:-- UTC".to_string();
         self.state.viz_state.elevation = "-- deg".to_string();
         // clear_data() drops both GPU textures. sync_prev_sweep_texture
         // early-returns while `displayed` is None, so clearing it here

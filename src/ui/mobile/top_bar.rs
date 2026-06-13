@@ -92,6 +92,34 @@ fn render_mobile_acquiring_chip(
     }
 }
 
+/// Compact displayed-frame time + tilt for the mobile bar. Bare 12-hour clock
+/// (no seconds/zone — the bar is narrow); tap toggles local/UTC. Shows a muted
+/// placeholder until a frame is on screen.
+fn render_mobile_time_readout(ui: &mut egui::Ui, state: &mut AppState) {
+    use super::super::time_format::{format_clock_12h, Compaction};
+
+    ui.add_space(6.0);
+    match state.viz_state.displayed_midpoint_secs() {
+        Some(mid) => {
+            let t = format_clock_12h(mid, state.use_local_time, Compaction::Bare);
+            let label = format!("{t} · {}", state.viz_state.elevation);
+            if ui
+                .add(egui::Button::new(RichText::new(label).size(13.0).strong()).frame(false))
+                .clicked()
+            {
+                state.use_local_time = !state.use_local_time;
+            }
+        }
+        None => {
+            ui.label(
+                RichText::new("--:--")
+                    .size(13.0)
+                    .color(Color32::from_rgb(120, 120, 120)),
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_mobile_top_bar(
     ctx: &egui::Context,
@@ -152,6 +180,11 @@ fn draw_mobile_top_bar(
                     AppMode::Live => egui_phosphor::regular::BROADCAST,
                 };
                 ui.label(RichText::new(icon).size(14.0).color(accent_color));
+
+                // Primary displayed-frame time + tilt (spec §5/§11.1), compact
+                // for the narrow bar. Formatted live from the frame's actual
+                // collection time; tap toggles local/UTC (spec §11.4).
+                render_mobile_time_readout(ui, state);
 
                 // Alerts chip (reuses the desktop helper).
                 super::super::top_bar::render_alerts_chip(ui, state, diagnostics, derived, chrome);

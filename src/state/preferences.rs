@@ -42,7 +42,9 @@ pub struct UserPreferences {
     /// integration survives reloads. Empty/None disables the layer.
     #[serde(default)]
     pub mping_api_key: Option<String>,
-    #[serde(default)]
+    // Local time is the primary display (spec §11.4); UTC is one tap away.
+    // `default_true` flips new stores and any predating this field to local.
+    #[serde(default = "default_true")]
     pub use_local_time: bool,
     /// Preferred NEXRAD site from first-visit selection. When `Some`, the
     /// first-visit modal is skipped and this site is used as the default.
@@ -118,7 +120,7 @@ impl Default for UserPreferences {
             layer_alerts_legacy: None,
             layer_mping: false,
             mping_api_key: None,
-            use_local_time: false,
+            use_local_time: true,
             preferred_site: None,
             interpolation: InterpolationMode::default(),
             opacity: 1.0,

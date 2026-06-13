@@ -4,10 +4,12 @@
 //! "Current" and "Previous" sections showing elevation, time, and age.
 //!
 //! INVARIANT: every time/age value shown here is ACTUAL — derived from
-//! real radial collection timestamps (via `viz_state.timestamp` and
-//! `data_staleness_*`) and the wall clock. No projected collection or
-//! availability times reach the canvas; principle 1 of the timing model
-//! requires the canvas and current-time indicator to show only actuals.
+//! real radial collection timestamps (the displayed frame's raw start/end on
+//! `viz_state.displayed`, formatted live each frame) and the wall clock. No
+//! projected collection or availability times reach the canvas; principle 1 of
+//! the timing model requires the canvas and current-time indicator to show only
+//! actuals. The displayed-frame timestamp is now PRIMARY in the top bar; this
+//! overlay is the secondary/Advanced detail (full date, age range, prev sweep).
 
 use crate::state::AppState;
 use eframe::egui::{self, Color32, Rect, RichText, Vec2};
@@ -74,6 +76,12 @@ fn draw_overlay_info(
             );
 
             // ── Current sweep section ────────────────────────────────
+            // Format the displayed frame's timestamp live from its raw
+            // collection time so a local/UTC flip reformats it this same frame.
+            let current_time = match state.viz_state.displayed_midpoint_secs() {
+                Some(mid) => format_unix_timestamp_with_date(mid, state.use_local_time),
+                None => "--:--:-- --".to_string(),
+            };
             draw_sweep_section(
                 ui,
                 "Current",
@@ -83,7 +91,7 @@ fn draw_overlay_info(
                     .as_ref()
                     .map(|d| d.identity.elevation_number),
                 &state.viz_state.elevation,
-                &state.viz_state.timestamp,
+                &current_time,
                 state.viz_state.data_staleness_secs,
                 state.viz_state.data_staleness_start_secs,
                 if is_live {
