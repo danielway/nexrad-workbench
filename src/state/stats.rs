@@ -277,3 +277,146 @@ impl DownloadProgress {
 }
 
 use super::settings::format_bytes;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ── SessionStats EMA recorders ──
+
+    #[wasm_bindgen_test]
+    fn record_frame_time_seeds_then_blends() {
+        // Power-of-two dts keep the f32→f64 cast and reciprocal exact, so the
+        // expected EMA can be asserted by exact equality.
+        let mut s = SessionStats::new();
+        // First sample seeds the average with the raw fps (1/dt). dt=0.25 → 4 fps.
+        s.record_frame_time(0.25);
+        assert_eq!(s.avg_fps, Some(4.0));
+        // Second sample blends with ALPHA = 0.05: avg*0.95 + fps*0.05.
+        // dt=0.5 → 2 fps.
+        s.record_frame_time(0.5);
+        let expected = 4.0 * 0.95 + 2.0 * 0.05;
+        assert_eq!(s.avg_fps, Some(expected));
+    }
+
+    #[wasm_bindgen_test]
+    fn record_frame_time_ignores_nonpositive_dt() {
+        let mut s = SessionStats::new();
+        s.record_frame_time(0.0);
+        assert_eq!(s.avg_fps, None, "dt == 0 is ignored");
+        s.record_frame_time(-1.0);
+        assert_eq!(s.avg_fps, None, "dt < 0 is ignored");
+        // A valid sample still seeds afterward.
+        s.record_frame_time(0.25); // 4 fps
+        assert_eq!(s.avg_fps, Some(4.0));
+        // And a subsequent non-positive dt leaves the seeded value untouched.
+        s.record_frame_time(0.0);
+        assert_eq!(s.avg_fps, Some(4.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn record_render_time_seeds_then_blends() {
+        let mut s = SessionStats::new();
+        s.record_render_time(100.0);
+        assert_eq!(s.avg_render_time_ms, Some(100.0));
+        // Blend mirrors the code's exact expression: avg*(1.0-ALPHA) + v*ALPHA.
+        s.record_render_time(200.0);
+        assert_eq!(
+            s.avg_render_time_ms,
+            Some(100.0 * (1.0 - 0.2) + 200.0 * 0.2)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn record_fetch_latency_seeds_then_blends() {
+        let mut s = SessionStats::new();
+        s.record_fetch_latency(50.0);
+        assert_eq!(s.median_chunk_latency_ms, Some(50.0));
+        // Blend mirrors the code's exact expression: avg*(1.0-ALPHA) + v*ALPHA.
+        s.record_fetch_latency(150.0);
+        assert_eq!(
+            s.median_chunk_latency_ms,
+            Some(50.0 * (1.0 - 0.2) + 150.0 * 0.2)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn record_processing_time_seeds_then_blends() {
+        let mut s = SessionStats::new();
+        s.record_processing_time(300.0);
+        assert_eq!(s.median_processing_time_ms, Some(300.0));
+        // Blend mirrors the code's exact expression: avg*(1.0-ALPHA) + v*ALPHA.
+        s.record_processing_time(800.0);
+        assert_eq!(
+            s.median_processing_time_ms,
+            Some(300.0 * (1.0 - 0.2) + 800.0 * 0.2)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn ema_converges_toward_steady_input() {
+        // Repeated identical samples after a different seed converge toward the input.
+        let mut s = SessionStats::new();
+        s.record_render_time(0.0);
+        for _ in 0..200 {
+            s.record_render_time(100.0);
+        }
+        let v = s.avg_render_time_ms.unwrap();
+        assert!((v - 100.0).abs() < 0.001, "EMA converged to {v}");
+    }
+
+    // ── DownloadProgress::is_batch ──
+
+    #[wasm_bindgen_test]
+    fn is_batch_boundary() {
+        let mut p = DownloadProgress::default();
+        p.batch_total = 0;
+        assert!(!p.is_batch());
+        p.batch_total = 1;
+        assert!(!p.is_batch(), "single file is not a batch");
+        p.batch_total = 2;
+        assert!(p.is_batch());
+    }
+
+    // ── DownloadProgress::is_active precedence matrix ──
+
+    #[wasm_bindgen_test]
+    fn is_active_idle_empty_is_false() {
+        let p = DownloadProgress::default();
+        assert_eq!(p.phase, DownloadPhase::Idle);
+        assert!(!p.is_active());
+    }
+
+    #[wasm_bindgen_test]
+    fn is_active_done_with_pending_is_true() {
+        // Done phase is inactive, but pending scans keep it active (|| branch).
+        let mut p = DownloadProgress::default();
+        p.phase = DownloadPhase::Done;
+        p.pending_scans.push((0, 10));
+        assert!(p.is_active());
+    }
+
+    #[wasm_bindgen_test]
+    fn is_active_downloading_empty_is_true() {
+        let mut p = DownloadProgress::default();
+        p.phase = DownloadPhase::Downloading;
+        assert!(p.is_active(), "active phase alone is enough");
+    }
+
+    #[wasm_bindgen_test]
+    fn is_active_idle_with_in_flight_is_true() {
+        // Idle phase is inactive, but in-flight scans keep it active (|| branch).
+        let mut p = DownloadProgress::default();
+        p.phase = DownloadPhase::Idle;
+        p.in_flight_scans.push((0, 10));
+        assert!(p.is_active());
+    }
+
+    #[wasm_bindgen_test]
+    fn is_active_done_empty_is_false() {
+        let mut p = DownloadProgress::default();
+        p.phase = DownloadPhase::Done;
+        assert!(!p.is_active(), "Done + empty is not active");
+    }
+}
