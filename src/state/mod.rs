@@ -329,6 +329,94 @@ impl MobileSettingsTab {
     }
 }
 
+/// Idle threshold (seconds) of no interaction before mobile chrome hides while
+/// playing (spec §13 phone: "chrome auto-hides during playback").
+pub const MOBILE_CHROME_IDLE_HIDE_SECS: f64 = 3.0;
+
+/// Per-frame bookkeeping for the mobile chrome auto-hide (spec §13 phone:
+/// "Canvas full-bleed; chrome auto-hides during playback, tap to reveal").
+///
+/// Lives on the [`Chrome`](crate::subsystem::Chrome) subsystem (its visibility
+/// domain) but is defined here, beside [`MobileSettingsTab`], so the `subsystem`
+/// layer doesn't have to reach into `ui`. The hide *policy* is the pure
+/// [`crate::ui::mobile::auto_hide::should_hide_chrome`]; this struct only holds
+/// the timer + a one-frame reveal latch it feeds.
+#[derive(Clone, Copy, Debug)]
+pub struct MobileChromeAutoHide {
+    /// egui `input.time` of the last interaction (chrome tap/drag or reveal
+    /// tap). Far-past sentinel by default so the first idle period while
+    /// playing still hides on schedule rather than instantly on launch.
+    pub last_interaction_secs: f64,
+    /// Whether the chrome is hidden as resolved for the current frame. Computed
+    /// once per frame (before layout) and read by the mobile layers' `visible()`
+    /// and the canvas, so all three agree. The canvas also uses last frame's
+    /// value to recognise a reveal tap (a press while hidden, when only the
+    /// canvas is on screen).
+    pub hidden: bool,
+    /// Set on the frame the user reveals hidden chrome by tapping the canvas —
+    /// consumed by the canvas so the same tap doesn't also pan/zoom.
+    pub revealed_this_frame: bool,
+}
+
+impl Default for MobileChromeAutoHide {
+    fn default() -> Self {
+        Self {
+            last_interaction_secs: f64::NEG_INFINITY,
+            hidden: false,
+            revealed_this_frame: false,
+        }
+    }
+}
+
+impl MobileChromeAutoHide {
+    /// Record an interaction at `now`, resetting the idle timer so chrome stays
+    /// visible for another [`MOBILE_CHROME_IDLE_HIDE_SECS`] window.
+    pub fn touch(&mut self, now_secs: f64) {
+        self.last_interaction_secs = now_secs;
+    }
+
+    /// Seconds remaining until chrome would auto-hide given `now` and whether
+    /// playback is advancing, or `None` if it won't hide (paused, or already
+    /// past the threshold). Used to schedule one repaint at the hide moment
+    /// rather than spinning every frame.
+    pub fn secs_until_hide(&self, now_secs: f64, is_playing: bool) -> Option<f64> {
+        if !is_playing {
+            return None;
+        }
+        let remaining = MOBILE_CHROME_IDLE_HIDE_SECS - (now_secs - self.last_interaction_secs);
+        (remaining > 0.0).then_some(remaining)
+    }
+}
+
+#[cfg(test)]
+mod mobile_auto_hide_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn secs_until_hide_none_when_paused() {
+        let h = MobileChromeAutoHide {
+            last_interaction_secs: 10.0,
+            ..Default::default()
+        };
+        assert!(h.secs_until_hide(11.0, false).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn secs_until_hide_counts_down_while_playing() {
+        let h = MobileChromeAutoHide {
+            last_interaction_secs: 10.0,
+            ..Default::default()
+        };
+        let remaining = h.secs_until_hide(11.0, true).expect("should be pending");
+        assert!((remaining - (MOBILE_CHROME_IDLE_HIDE_SECS - 1.0)).abs() < 1e-9);
+        // Past the threshold → no longer pending.
+        assert!(h
+            .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS, true)
+            .is_none());
+    }
+}
+
 /// State for the datetime jump picker popup.
 #[derive(Default)]
 pub struct DateTimePickerState {

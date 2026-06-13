@@ -60,6 +60,11 @@ pub struct Chrome {
     /// The main update loop consumes this flag and kicks off
     /// geolocation against `SiteModalState`.
     pub mobile_geolocate_requested: bool,
+    /// Mobile chrome auto-hide bookkeeping (spec §13 phone: chrome auto-hides
+    /// during playback, tap to reveal). The mobile layout reads this each frame
+    /// to decide whether to draw the top bar / bottom chrome; the canvas updates
+    /// it on a reveal tap. Inert on desktop (desktop chrome never auto-hides).
+    pub mobile_auto_hide: super::super::state::MobileChromeAutoHide,
 }
 
 impl Chrome {

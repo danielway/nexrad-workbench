@@ -263,6 +263,28 @@ impl PlaybackSpeed {
         ]
     }
 
+    /// Curated tap-cycle for the compact mobile speed button (spec §13 "speed"
+    /// control). A short, mode-appropriate ladder rather than the full combo:
+    /// Micro walks the realtime-multiple rungs people actually use; Macro walks
+    /// the fps rungs. Wraps at the end. Returns the next speed after `self`,
+    /// snapping to the first rung if `self` isn't on the ladder.
+    pub fn mobile_cycle(self, mode: PlaybackMode) -> PlaybackSpeed {
+        let ladder: &[PlaybackSpeed] = match mode {
+            PlaybackMode::Micro => &[
+                PlaybackSpeed::Realtime,
+                PlaybackSpeed::FifteenToOne,
+                PlaybackSpeed::Quarter,
+                PlaybackSpeed::Normal,
+                PlaybackSpeed::Quadruple,
+            ],
+            PlaybackMode::Macro => Self::macro_speeds(),
+        };
+        match ladder.iter().position(|s| *s == self) {
+            Some(i) => ladder[(i + 1) % ladder.len()],
+            None => ladder[0],
+        }
+    }
+
     /// Returns how many seconds of timeline time pass per real second.
     pub fn timeline_seconds_per_real_second(&self) -> f64 {
         match self {
@@ -1475,6 +1497,33 @@ fn order_pair(a: f64, b: f64) -> (f64, f64) {
 mod tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn mobile_speed_cycle_wraps_within_mode() {
+        // Micro ladder wraps from the fastest rung back to realtime.
+        assert_eq!(
+            PlaybackSpeed::Realtime.mobile_cycle(PlaybackMode::Micro),
+            PlaybackSpeed::FifteenToOne
+        );
+        assert_eq!(
+            PlaybackSpeed::Quadruple.mobile_cycle(PlaybackMode::Micro),
+            PlaybackSpeed::Realtime
+        );
+        // A speed not on the micro ladder snaps to its first rung.
+        assert_eq!(
+            PlaybackSpeed::ThirtyToOne.mobile_cycle(PlaybackMode::Micro),
+            PlaybackSpeed::Realtime
+        );
+        // Macro ladder is the fps rungs and also wraps.
+        assert_eq!(
+            PlaybackSpeed::Quadruple.mobile_cycle(PlaybackMode::Macro),
+            PlaybackSpeed::Quarter
+        );
+        assert_eq!(
+            PlaybackSpeed::Quarter.mobile_cycle(PlaybackMode::Macro),
+            PlaybackSpeed::Half
+        );
+    }
 
     #[wasm_bindgen_test]
     fn enter_lookback_sets_loop_seed_and_resets_macro_cursor() {

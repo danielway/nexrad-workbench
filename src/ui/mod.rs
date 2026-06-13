@@ -52,6 +52,7 @@ mod wipe_modal;
 pub use canvas::render_canvas_with_geo;
 pub use event_modal::EventModalState;
 pub use layout::{render_layout, LayoutCtx};
+pub(crate) use mobile::resolve_mobile_auto_hide;
 pub use modal_states::ModalStates;
 pub use mping_modal::MpingModalState;
 pub use shortcuts::handle_shortcuts;

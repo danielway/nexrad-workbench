@@ -409,16 +409,22 @@ pub fn render_canvas_with_geo(
                     state.use_local_time,
                 );
 
-                handle_canvas_interaction(
-                    &response,
-                    &rect,
-                    state,
-                    playback,
-                    chrome,
-                    diagnostics,
-                    derived,
-                    &projection,
-                );
+                // Mobile chrome reveal tap (spec §13): when the chrome was
+                // hidden, the resolver latched this frame's press as a reveal.
+                // Swallow it here so the same tap doesn't also pan/zoom the
+                // map — the chrome is already coming back this frame.
+                if !chrome.mobile_auto_hide.revealed_this_frame {
+                    handle_canvas_interaction(
+                        &response,
+                        &rect,
+                        state,
+                        playback,
+                        chrome,
+                        diagnostics,
+                        derived,
+                        &projection,
+                    );
+                }
             }
         }
     });

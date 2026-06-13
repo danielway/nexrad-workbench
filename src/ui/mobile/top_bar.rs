@@ -26,6 +26,12 @@ impl Layer for MobileTopBarLayer {
     fn z_order(&self) -> i32 {
         10
     }
+    fn visible(&self, ctx: &LayoutCtx) -> bool {
+        // Auto-hide in lockstep with the bottom chrome so the whole shell
+        // reveals/hides together (spec §13). The decision is resolved once per
+        // frame into `mobile_auto_hide.hidden` (see `main.rs`).
+        !ctx.chrome.mobile_auto_hide.hidden
+    }
     fn render(&self, ctx: &mut LayoutCtx) {
         draw_mobile_top_bar(
             ctx.ctx,

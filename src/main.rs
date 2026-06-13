@@ -841,6 +841,27 @@ impl eframe::App for WorkbenchApp {
             );
         }
 
+        // 19b. Resolve mobile chrome auto-hide for this frame (spec §13 phone:
+        // "Canvas full-bleed; chrome auto-hides during playback, tap to
+        // reveal"). Done once, before layout, so the top bar, bottom chrome,
+        // and the canvas all read the same resolved `hidden` flag. A press
+        // while the chrome was hidden last frame is a reveal tap (only the
+        // canvas is on screen then): it bumps the idle timer and latches
+        // `revealed_this_frame` so the canvas swallows that tap instead of
+        // panning. Inert on desktop.
+        if self.state.is_mobile {
+            ui::resolve_mobile_auto_hide(
+                ctx,
+                &mut self.state,
+                &mut self.playback,
+                &mut self.chrome,
+                &self.diagnostics,
+            );
+        } else {
+            self.chrome.mobile_auto_hide.hidden = false;
+            self.chrome.mobile_auto_hide.revealed_this_frame = false;
+        }
+
         // 20. RENDER (layout tree): chrome panels + all modals dispatched
         // through the declarative `Layer` registry. The desktop and
         // mobile layouts pick the chrome panel set; the modal set is

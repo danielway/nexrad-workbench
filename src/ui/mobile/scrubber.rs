@@ -1,22 +1,25 @@
 //! Compact mobile scrubber.
 //!
-//! A single-line (28px) horizontal track that shares the desktop
-//! timeline's visual language:
+//! A horizontal coverage track (~44px hit area, spec §13 phone) that shares the
+//! desktop timeline's visual language:
 //!   - Spans the union of cached and archive-listed data on the width
 //!   - Solid steel-blue segments = data on the device
 //!   - Faint slate segments = available in the cloud archive
 //!   - Neutral draggable thumb = playback position
 //!   - In live mode, a red "now" marker
 //!
-//! Interaction: tap-to-seek, drag-to-scrub. Scrubbing pauses playback so
-//! the thumb stays where the user put it.
+//! Interaction: tap-to-seek, drag-to-scrub (long-press opens the inspector).
+//! Scrubbing pauses playback so the thumb stays where the user put it. The
+//! whole strip is a 44pt-tall touch target per the spec, even though the
+//! painted bar is thin — the surrounding height is hittable.
 
 use crate::state::AppState;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
-/// Total scrubber height in egui logical pixels.
-pub(super) const SCRUBBER_HEIGHT: f32 = 28.0;
+/// Total scrubber height in egui logical pixels. Sized to the 44pt touch-target
+/// guidance (spec §13 phone: "~44px strip") so the whole hit area is thumb-safe.
+pub(super) const SCRUBBER_HEIGHT: f32 = 44.0;
 
 pub(super) fn render_scrubber(
     ui: &mut egui::Ui,
@@ -33,12 +36,13 @@ pub(super) fn render_scrubber(
     );
     let full_rect = response.rect;
 
-    // Track rect — a thin bar with a few pixels of vertical padding so the
-    // hit area extends above and below for easier touch targeting.
+    // Track rect — a low-profile bar centered in the tall (44pt) hit area so
+    // the surrounding height stays hittable for easy touch targeting while the
+    // painted bar keeps the calm coverage-strip look.
     let track_y = full_rect.center().y;
     let track_rect = Rect::from_min_max(
-        Pos2::new(full_rect.left() + 8.0, track_y - 3.0),
-        Pos2::new(full_rect.right() - 8.0, track_y + 3.0),
+        Pos2::new(full_rect.left() + 8.0, track_y - 4.0),
+        Pos2::new(full_rect.right() - 8.0, track_y + 4.0),
     );
     let dark = state.is_dark;
     painter.rect_filled(track_rect, 2.0, tl_colors::background(dark));
