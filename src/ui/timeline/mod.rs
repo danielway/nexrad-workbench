@@ -713,23 +713,16 @@ pub(super) fn render_timeline(
         }
     }
 
-    // -- Hover tooltips --
-    if response.hovered() {
-        if let Some(hover_pos) = response.hover_pos() {
-            let hover_ts = frame.x_to_ts(hover_pos.x);
-            render_timeline_tooltip(ui, &frame, live, hover_ts, hover_pos);
-        }
-    }
-
     // -- Interaction handling --
-    // Rects whose clicks are owned by another control and must not also seek:
-    // the now-affordance cap/chip, plus any failed-cell tick that just fired a
-    // retry this frame.
+    // Runs BEFORE the tooltip so a primary-drag scrub can suppress the hover
+    // popup. Rects whose presses are owned by another control and must not also
+    // seek: the now-affordance cap/chip, plus any failed-cell tick that just
+    // fired a retry this frame.
     let mut suppress_rects: Vec<Rect> = now_affordance_rect.into_iter().collect();
     if clicked_failed_tick {
         suppress_rects.extend(failed_ticks.iter().map(|t| t.rect));
     }
-    handle_timeline_interaction(
+    let interaction = handle_timeline_interaction(
         ui,
         state,
         live,
@@ -738,4 +731,13 @@ pub(super) fn render_timeline(
         &frame,
         &suppress_rects,
     );
+
+    // -- Hover tooltips --
+    // Suppressed during an active scrub so the popup doesn't chase the pointer.
+    if response.hovered() && !interaction.scrubbing {
+        if let Some(hover_pos) = response.hover_pos() {
+            let hover_ts = frame.x_to_ts(hover_pos.x);
+            render_timeline_tooltip(ui, &frame, live, hover_ts, hover_pos);
+        }
+    }
 }

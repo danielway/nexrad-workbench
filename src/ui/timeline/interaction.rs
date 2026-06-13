@@ -1,9 +1,34 @@
-//! Timeline interaction: click, shift+click, drag-to-pan, scroll-to-zoom.
+//! Timeline strip interaction (spec §12 rows 1, 2, 4).
+//!
+//! Gesture grammar:
+//!   - **Primary press** seeks the playhead immediately (on press, not
+//!     release); **primary drag** scrubs it continuously, following the
+//!     pointer. Starting a scrub pauses playback and detaches the tether.
+//!   - **Vertical scroll / pinch** zooms anchored at the cursor / pinch center
+//!     (routed through the hysteretic tier machine). **Horizontal scroll**
+//!     (trackpad two-finger) pans the view. View pan's primary home is the
+//!     minimap; horizontal scroll is the on-strip alias.
+//!   - **Alt-drag or right-drag** creates the loop/selection range; **shift**
+//!     is kept as an established alias. Selection creation never seeks and the
+//!     pan/zoom paths never clear a selection.
+//!
+//! Every seek path detaches the playhead first (`live.detach_playhead`, which
+//! keeps the stream ingesting) so `set_playback_position`'s Free-mode assert
+//! holds.
 
 use crate::state::AppState;
-use eframe::egui::{self, Rect};
+use eframe::egui::{self, PointerButton, Rect};
 
-/// Handle mouse interaction on the timeline: click, shift+click, drag-to-pan, scroll-to-zoom.
+/// Result of one frame of strip interaction, surfaced to the renderer so it can
+/// suppress conflicting affordances (tooltips during a scrub).
+#[derive(Clone, Copy, Default)]
+pub(super) struct InteractionOutcome {
+    /// A primary-drag scrub is active this frame — suppress hover tooltips and
+    /// press-seek re-triggering.
+    pub scrubbing: bool,
+}
+
+/// Handle mouse / touch interaction on the timeline strip.
 pub(super) fn handle_timeline_interaction(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -11,14 +36,25 @@ pub(super) fn handle_timeline_interaction(
     playback: &mut crate::subsystem::Playback,
     response: &egui::Response,
     frame: &super::TimelineFrame<'_>,
-    // Rects whose clicks belong to another control (now-affordance cap/chip,
-    // failed-cell ticks) — a click inside any of them never also seeks.
+    // Rects whose clicks/presses belong to another control (now-affordance
+    // cap/chip, failed-cell ticks) — a press inside any of them never seeks.
     suppress_rects: &[Rect],
-) {
-    let zoom = frame.zoom;
-    let shift_held = ui.input(|i| i.modifiers.shift);
+) -> InteractionOutcome {
+    let mut outcome = InteractionOutcome::default();
 
-    if shift_held && response.clicked() {
+    let (shift_held, alt_held) = ui.input(|i| (i.modifiers.shift, i.modifiers.alt));
+    // The loop/selection-creation modifier set: alt or shift (spec: alt/right
+    // for the range, shift kept as the established alias). Right-drag is the
+    // secondary button, handled per-branch.
+    let selection_mod = shift_held || alt_held;
+    let right_down = response.dragged_by(PointerButton::Secondary)
+        || response.drag_started_by(PointerButton::Secondary);
+
+    // -- Loop / selection range (alt-drag, right-drag, shift alias) ----------
+    // Click variants: shift/alt-click stretches a range from the playhead to
+    // the click. (Right-click has no click variant — it would clash with a
+    // future context menu; only right-DRAG selects.)
+    if selection_mod && response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
             let clicked_ts = frame.x_to_ts(pos.x);
             let current_pos = playback.state.playback_position();
@@ -29,17 +65,22 @@ pub(super) fn handle_timeline_interaction(
                 state.selection_just_finalized = Some(range);
             }
             let duration_mins = (clicked_ts - current_pos).abs() / 60.0;
-            log::debug!("Shift+click range: {:.0} minutes", duration_mins);
+            log::debug!("Range from playhead: {:.0} minutes", duration_mins);
         }
     }
 
-    if shift_held && response.drag_started() {
+    // A selection drag begins on either the selection modifier (primary) or the
+    // secondary button. Once in progress it is owned by `selection_in_progress`
+    // and tracked regardless of which trigger started it.
+    let selection_drag_started =
+        (selection_mod && response.drag_started_by(PointerButton::Primary)) || right_down;
+    if selection_drag_started && !playback.state.selection_in_progress() {
         if let Some(pos) = response.interact_pointer_pos() {
             playback.state.begin_selection_drag(frame.x_to_ts(pos.x));
         }
     }
 
-    if shift_held && response.dragged() && playback.state.selection_in_progress() {
+    if playback.state.selection_in_progress() && response.dragged() {
         if let Some(pos) = response.interact_pointer_pos() {
             playback.state.update_selection_drag(frame.x_to_ts(pos.x));
         }
@@ -54,75 +95,123 @@ pub(super) fn handle_timeline_interaction(
         }
     }
 
-    if response.clicked() && !shift_held {
+    // While a selection drag is live, no seek/scrub/pan path runs.
+    let selecting = playback.state.selection_in_progress();
+
+    // -- Press-seek (primary press, immediate) -------------------------------
+    // `is_pointer_button_down_on` + `primary_pressed` fires the moment the
+    // button goes down over the strip — not on release like `clicked()`. Alt /
+    // shift presses begin a selection instead (handled above), and presses on a
+    // suppressed control (now-cap, failed tick) never seek.
+    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+    if primary_pressed && !selection_mod && !selecting && response.is_pointer_button_down_on() {
         if let Some(pos) = response.interact_pointer_pos() {
-            // Clicks owned by another control (now-affordance cap/chip, a
-            // failed-cell retry tick) are never also a seek.
-            if suppress_rects.iter().any(|r| r.contains(pos)) {
-                return;
-            }
-
-            let clicked_ts = frame.x_to_ts(pos.x);
-
-            // Seeking while live detaches the playhead but keeps the stream
-            // ingesting — the now-cap flips to "return to live" and the
-            // timeline keeps growing at the right edge.
-            live.detach_playhead(&mut playback.state, state.frame_now.secs());
-
-            // Selection survival: a click *inside* the selection seeks within
-            // it (loop bounds intact); a click outside clears it. Pan/zoom
-            // never clear.
-            let inside = playback.state.selection_contains(clicked_ts);
-            playback.state.set_playback_position(clicked_ts);
-            if !inside {
-                playback.state.clear_selection();
+            if !suppress_rects.iter().any(|r| r.contains(pos)) {
+                seek_to(state, live, playback, frame.x_to_ts(pos.x));
             }
         }
     }
 
-    // Drag to pan
-    if response.dragged() && !shift_held && !playback.state.selection_in_progress() {
-        let delta_secs = -response.drag_delta().x as f64 / zoom;
-        playback.state.timeline_view_start += delta_secs;
+    // -- Primary-drag scrub --------------------------------------------------
+    // Continuous seek following the pointer. The first frame of the scrub
+    // pauses playback (so the playhead stays where the user puts it) and
+    // detaches the tether. Button-filtered so right/alt drags don't scrub.
+    if response.drag_started_by(PointerButton::Primary) && !selection_mod && !selecting {
+        playback.state.playing = false;
+        live.detach_playhead(&mut playback.state, state.frame_now.secs());
     }
-
-    // Scroll wheel zoom
-    if response.hovered() {
-        let scroll_delta = ui.input(|i| i.raw_scroll_delta);
-        if scroll_delta.y != 0.0 {
-            let zoom_factor = 1.0 + scroll_delta.y as f64 * 0.002;
-            let old_zoom = playback.state.timeline_zoom;
-            let new_zoom = (old_zoom * zoom_factor).clamp(
-                crate::state::TIMELINE_ZOOM_MIN,
-                crate::state::TIMELINE_ZOOM_MAX,
-            );
-            let width = playback.state.timeline_width_px;
-
-            // Zooming out far enough to leave the Micro tier while attached to
-            // the live edge is a browsing gesture: detach (the stream keeps
-            // running) instead of silently clamping. The decision is
-            // hysteresis-aware — it fires on the *tier* transition out of
-            // Micro, not a raw threshold crossing.
-            let attached =
-                playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback();
-            if attached && playback.state.zoom_would_exit_micro(new_zoom, width) {
-                live.detach_playhead(&mut playback.state, state.frame_now.secs());
-            }
-
-            if let Some(cursor_pos) = response.hover_pos() {
-                let cursor_ts = frame.x_to_ts(cursor_pos.x);
-                let new_view_start =
-                    cursor_ts - (cursor_pos.x - frame.rects.scan.left()) as f64 / new_zoom;
-                playback.state.timeline_view_start = new_view_start;
-            }
-
-            // The single zoom-mutation path: clamps, stores zoom, and advances
-            // the tier with hysteresis (preserving playback cadence on a
-            // behavioral flip).
-            let spacing = playback.state.median_frame_spacing();
-            playback.state.set_timeline_zoom(new_zoom, width, spacing);
+    if response.dragged_by(PointerButton::Primary) && !selection_mod && !selecting {
+        if let Some(pos) = response.interact_pointer_pos() {
+            seek_to(state, live, playback, frame.x_to_ts(pos.x));
+            outcome.scrubbing = true;
         }
     }
+
+    // -- Pinch zoom (touch, anchored at the pinch center) --------------------
+    // Consume egui multi-touch only when the pinch is over the timeline rect, so
+    // the canvas doesn't also zoom from the same gesture (the canvas mirrors
+    // this by skipping pinches whose focus lands here). Routed through
+    // `set_timeline_zoom` so the tier hysteresis applies.
+    let mut pinched = false;
+    if let Some(t) = crate::ui::mobile::gestures::consume(ui.ctx()) {
+        if frame.rects.scan.contains(t.focus) && (t.zoom - 1.0).abs() > f32::EPSILON {
+            apply_zoom(state, live, playback, frame, t.zoom as f64, t.focus.x);
+            pinched = true;
+        }
+    }
+
+    // -- Scroll: vertical zooms, horizontal pans -----------------------------
+    // (Skip when a pinch already handled this frame's zoom.)
+    if response.hovered() && !pinched {
+        let scroll = ui.input(|i| i.raw_scroll_delta);
+        if scroll.y != 0.0 {
+            let zoom_factor = 1.0 + scroll.y as f64 * 0.002;
+            let anchor_x = response
+                .hover_pos()
+                .map(|p| p.x)
+                .unwrap_or(frame.rects.scan.left());
+            apply_zoom(state, live, playback, frame, zoom_factor, anchor_x);
+        }
+        // Horizontal scroll (trackpad two-finger) pans the view. Never clears
+        // the selection (spec: pan/zoom preserve loop bounds).
+        if scroll.x != 0.0 {
+            let delta_secs = -scroll.x as f64 / frame.zoom;
+            playback.state.timeline_view_start += delta_secs;
+        }
+    }
+
+    outcome
+}
+
+/// Seek the playhead to `ts`, detaching the tether first so the Free-mode
+/// invariant on `set_playback_position` holds. Selection survival: a seek
+/// *inside* the selection keeps the loop bounds; a seek outside clears it.
+fn seek_to(
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    ts: f64,
+) {
+    live.detach_playhead(&mut playback.state, state.frame_now.secs());
+    let inside = playback.state.selection_contains(ts);
+    playback.state.set_playback_position(ts);
+    if !inside {
+        playback.state.clear_selection();
+    }
+}
+
+/// Apply a multiplicative zoom anchored at screen-x `anchor_x`, keeping the
+/// timestamp under that x fixed. Zooming out of the Micro tier while tethered
+/// detaches (the stream keeps running) rather than fighting the tether. The
+/// single zoom-mutation path (`set_timeline_zoom`) advances the tier with
+/// hysteresis and preserves playback cadence on a behavioral flip.
+fn apply_zoom(
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+    playback: &mut crate::subsystem::Playback,
+    frame: &super::TimelineFrame<'_>,
+    zoom_factor: f64,
+    anchor_x: f32,
+) {
+    let old_zoom = playback.state.timeline_zoom;
+    let new_zoom = (old_zoom * zoom_factor).clamp(
+        crate::state::TIMELINE_ZOOM_MIN,
+        crate::state::TIMELINE_ZOOM_MAX,
+    );
+    let width = playback.state.timeline_width_px;
+
+    let attached = playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback();
+    if attached && playback.state.zoom_would_exit_micro(new_zoom, width) {
+        live.detach_playhead(&mut playback.state, state.frame_now.secs());
+    }
+
+    // Keep the timestamp under the anchor fixed while scaling.
+    let anchor_ts = frame.x_to_ts(anchor_x);
+    let new_view_start = anchor_ts - (anchor_x - frame.rects.scan.left()) as f64 / new_zoom;
+    playback.state.timeline_view_start = new_view_start;
+
+    let spacing = playback.state.median_frame_spacing();
+    playback.state.set_timeline_zoom(new_zoom, width, spacing);
 }
 
 /// Implicit live-anchoring: a fresh selection whose later edge lands within

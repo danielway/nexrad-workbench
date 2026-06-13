@@ -29,8 +29,11 @@ pub(crate) fn handle_globe_interaction(
 
     // Multi-touch: two-finger pinch zooms, two-finger drag pans the pivot
     // (orbit modes). When a pinch is active we skip the single-finger drag
-    // and scroll-wheel branches below to avoid double-applying motion.
-    if let Some(t) = super::mobile::gestures::consume(&response.ctx) {
+    // and scroll-wheel branches below to avoid double-applying motion. A pinch
+    // focused over the timeline belongs to the strip, not the globe.
+    if let Some(t) =
+        super::mobile::gestures::consume(&response.ctx).filter(|t| rect.contains(t.focus))
+    {
         if (t.zoom - 1.0).abs() > f32::EPSILON {
             // Camera's zoom() takes a scroll-like delta; convert the
             // proportional zoom_delta into a comparable magnitude.
@@ -216,8 +219,10 @@ pub(crate) fn handle_canvas_interaction(
     }
 
     // Multi-touch takes priority over single-finger drag + scroll so a
-    // two-finger pinch doesn't double-apply motion through both paths.
-    let touch = super::mobile::gestures::consume(&response.ctx);
+    // two-finger pinch doesn't double-apply motion through both paths. A pinch
+    // whose focus is over the timeline belongs to the timeline (it zooms the
+    // strip); ignore it here so the canvas and strip don't both consume it.
+    let touch = super::mobile::gestures::consume(&response.ctx).filter(|t| rect.contains(t.focus));
 
     if let Some(t) = touch {
         // Pinch-zoom anchored on the gesture focus.
