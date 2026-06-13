@@ -186,14 +186,18 @@ pub(super) fn render_playback_controls(
     {
         let selected_ts = playback.state.playback_position();
         let tz_suffix = if use_local { "" } else { " Z" };
-        let text = RichText::new(format!(
+        let mut text = RichText::new(format!(
             "{}{}",
             format_timestamp_compact(selected_ts, use_local, state.width_tier),
             tz_suffix
         ))
-        .monospace()
         .size(13.0)
         .color(tl_colors::selection(state.is_dark));
+        // Monospace reads as a precise instrument in Advanced; Basic (Level 0,
+        // spec §14 "no jargon") gets a plain, friendly clock readout instead.
+        if advanced {
+            text = text.monospace();
+        }
 
         if advanced {
             let timestamp_btn = ui.add(egui::Button::new(text).frame(false));
@@ -702,15 +706,20 @@ fn render_session_stats(
     // separate; this is the always-on ambient indicator.
     render_status_chip(ui, acquisition, chrome);
 
-    // Cache group: size with clear button
-    if ui.small_button("x").on_hover_text("Clear cache").clicked() {
-        state.push_command(crate::state::AppCommand::ClearCache);
+    // Cache group (size + clear button) — Advanced only. A Level-0 viewer
+    // (spec §14) sees a clean transport, not a cache readout or a destructive
+    // clear control; the right-panel storage section is the home for cache
+    // management when Advanced is on.
+    if state.show_advanced() {
+        if ui.small_button("x").on_hover_text("Clear cache").clicked() {
+            state.push_command(crate::state::AppCommand::ClearCache);
+        }
+        ui.label(
+            RichText::new(cache_size)
+                .size(10.0)
+                .color(ui_colors::value(dark)),
+        );
     }
-    ui.label(
-        RichText::new(cache_size)
-            .size(10.0)
-            .color(ui_colors::value(dark)),
-    );
 }
 
 /// The acquisition status chip (spec §5): a tiny ambient indicator near the
