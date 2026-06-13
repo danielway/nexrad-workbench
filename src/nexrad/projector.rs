@@ -19,7 +19,7 @@ use super::timing::{
     ElevationChunkMapper, TimingTuning,
 };
 use chrono::Duration as ChronoDuration;
-use nexrad_data::aws::realtime::ChunkIdentifier;
+use nexrad_data::aws::realtime::{ChunkIdentifier, ChunkType};
 use nexrad_decode::messages::volume_coverage_pattern;
 
 /// Single-source-of-truth input vocabulary for the projector.
@@ -248,7 +248,16 @@ impl Projector {
             .get_chunk_metadata(chunk_id.sequence())
             .is_some_and(|m| m.is_first_in_sweep());
         Some(ChunkCharacteristics {
-            chunk_type: chunk_id.chunk_type(),
+            // Normalize to `Intermediate`: the bucket key is shared with the
+            // READ path (`interval_estimate::chunk_characteristics`), which
+            // always builds the key with `chunk_type: Intermediate`. Using the
+            // chunk identifier's own type here would bucket the volume's final
+            // (radar-data-bearing) chunk under `End` — see
+            // `streaming_state::try_next` setting `ChunkType::End` for the last
+            // sequence — and that bucket could never be read back, so the
+            // final hop's collection/attempts history would be silently
+            // discarded forever.
+            chunk_type: ChunkType::Intermediate,
             waveform_type: elevation.waveform_type(),
             channel_configuration: elevation.channel_configuration(),
             is_first_in_sweep,

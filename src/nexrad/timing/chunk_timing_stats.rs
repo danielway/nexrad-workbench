@@ -583,6 +583,53 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn chunk_type_is_part_of_the_bucket_key() {
+        // Regression pin for the End-chunk bucket-key mismatch: the WRITE path
+        // (`Projector::characteristics_for_sequence`) and the READ path
+        // (`interval_estimate::chunk_characteristics`) must agree on
+        // `chunk_type`, because `ChunkCharacteristics`'s Hash/Eq distinguishes
+        // it. A sample stored under one `chunk_type` is invisible under
+        // another — so if the write path bucketed the volume's final chunk
+        // under `End` while the read path always queries `Intermediate`, the
+        // final hop's history would be silently unreadable.
+        let mut stats = ChunkTimingStats::new();
+        let mut end_bucket = bucket();
+        end_bucket.chunk_type = ChunkType::End;
+        stats.add_timing(end_bucket, Duration::seconds(7), None, 1);
+        stats.attach_collection_interval(&end_bucket, Duration::seconds(7));
+
+        // Same metadata, only `chunk_type` differs → a distinct bucket. The
+        // End sample is NOT visible from the Intermediate key the read path
+        // builds. This is the mismatch the projector fix prevents by
+        // normalizing the write-side `chunk_type` to `Intermediate`.
+        let mut intermediate_bucket = end_bucket;
+        intermediate_bucket.chunk_type = ChunkType::Intermediate;
+        assert_eq!(stats.sample_count(&intermediate_bucket), 0);
+        assert_eq!(
+            stats.average_collection_interval(&intermediate_bucket),
+            None
+        );
+
+        // The End bucket itself round-trips: written stats ARE retrievable
+        // when read under the matching key.
+        assert_eq!(stats.sample_count(&end_bucket), 1);
+        assert_eq!(
+            stats.average_collection_interval(&end_bucket),
+            Some(Duration::seconds(7))
+        );
+
+        // After the fix the write path stores the final chunk under
+        // `Intermediate`, so a same-metadata Intermediate write IS read back.
+        let mut stats2 = ChunkTimingStats::new();
+        stats2.add_timing(intermediate_bucket, Duration::seconds(9), None, 1);
+        stats2.attach_collection_interval(&intermediate_bucket, Duration::seconds(9));
+        assert_eq!(
+            stats2.average_collection_interval(&intermediate_bucket),
+            Some(Duration::seconds(9))
+        );
+    }
+
+    #[wasm_bindgen_test]
     fn persist_rejects_previous_schema_version() {
         // A v2 payload (pre-domain-split shape) must be discarded — its
         // `duration_ms` samples can't be reinterpreted as collection
