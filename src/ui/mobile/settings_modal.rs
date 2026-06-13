@@ -77,9 +77,7 @@ fn draw_mobile_settings_modal(
                 .max_height(body_h)
                 .auto_shrink([false, false])
                 .show(ui, |ui| match chrome.mobile_settings_tab {
-                    MobileSettingsTab::Playback => {
-                        render_playback_body(ui, state, timeline, live, playback)
-                    }
+                    MobileSettingsTab::Playback => render_playback_body(ui, state, playback),
                     MobileSettingsTab::Product => {
                         render_product_body(ui, state, timeline, live, playback)
                     }
@@ -165,8 +163,6 @@ fn render_tab_strip(
 fn render_playback_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    timeline: &crate::subsystem::Timeline,
-    live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
 ) {
     ui.add_space(6.0);
@@ -194,48 +190,14 @@ fn render_playback_body(
 
     ui.add_space(10.0);
 
-    // Transport: play/pause + prev/next.
-    ui.horizontal(|ui| {
-        ui.add_space(8.0);
-        let play_icon = if playback.state.playing {
-            egui_phosphor::regular::PAUSE
-        } else {
-            egui_phosphor::regular::PLAY
-        };
-        if ui
-            .add_sized(
-                [72.0, 48.0],
-                egui::Button::new(RichText::new(play_icon).size(22.0)),
-            )
-            .clicked()
-        {
-            super::tabs::toggle_play(state, timeline, live, playback);
-        }
+    // No play/pause or frame-step row here: the always-visible condensed
+    // transport row (mobile/tabs.rs) owns those (spec §13). This tab is the
+    // Level-2 power surface — it only adds the controls the transport row lacks
+    // (datetime jump above, the full speed list below, and the UTC/Local
+    // toggle).
 
-        ui.add_space(8.0);
-        if ui
-            .add_sized(
-                [52.0, 48.0],
-                egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_BACK).size(18.0)),
-            )
-            .clicked()
-        {
-            super::tabs::step_frame(state, timeline, live, playback, -1);
-        }
-        if ui
-            .add_sized(
-                [52.0, 48.0],
-                egui::Button::new(RichText::new(egui_phosphor::regular::SKIP_FORWARD).size(18.0)),
-            )
-            .clicked()
-        {
-            super::tabs::step_frame(state, timeline, live, playback, 1);
-        }
-    });
-
-    ui.add_space(14.0);
-
-    // Speed picker.
+    // Speed picker (the full list — the transport row only tap-cycles common
+    // speeds).
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         ui.label(RichText::new("Speed:").size(13.0));
@@ -278,12 +240,8 @@ fn render_playback_body(
 
     ui.add_space(8.0);
 
-    // Loop presets (spec §13/§15 cut #2: mobile keeps presets even though
-    // custom drag is cut). Same preset application logic as desktop via the
-    // command queue. Handles are desktop-only.
-    render_mobile_loop_presets(ui, state, playback);
-
-    ui.add_space(8.0);
+    // No loop-preset chips here either: the transport row's loop-preset menu
+    // (mobile/tabs.rs) owns loop creation on mobile (spec §13/§15 cut #2).
 
     // UTC/Local toggle.
     ui.horizontal(|ui| {
@@ -294,39 +252,6 @@ fn render_playback_body(
             .clicked()
         {
             state.use_local_time = !state.use_local_time;
-        }
-    });
-}
-
-/// Mobile loop-preset picker (spec §13). A label plus a row of preset chips and
-/// a "Clear" chip; each pushes the same `ApplyLoopPreset` / `ClearLoop` command
-/// the desktop menu uses. Custom drag/handles are desktop-only (cut #2).
-fn render_mobile_loop_presets(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    playback: &crate::subsystem::Playback,
-) {
-    use crate::state::LoopPreset;
-    let has_loop =
-        playback.state.loop_window.is_some() || playback.state.time_model.playback_bounds.is_some();
-
-    ui.horizontal_wrapped(|ui| {
-        ui.add_space(8.0);
-        ui.label(RichText::new("Loop:").size(13.0));
-        for preset in LoopPreset::menu() {
-            if ui
-                .selectable_label(false, RichText::new(preset.label()).size(13.0))
-                .clicked()
-            {
-                state.push_command(crate::state::AppCommand::ApplyLoopPreset(*preset));
-            }
-        }
-        if has_loop
-            && ui
-                .selectable_label(true, RichText::new("Clear").size(13.0))
-                .clicked()
-        {
-            state.push_command(crate::state::AppCommand::ClearLoop);
         }
     });
 }
