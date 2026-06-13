@@ -83,10 +83,16 @@ pub(super) fn render_timeline_tooltip(
     let view = &frame.view;
     let (use_local, now_secs) = (frame.use_local, frame.now_secs);
     let live_state = &live.mode_state;
-    let in_sweep_track = frame
-        .rects
-        .sweep
-        .is_some_and(|sweep_rect| hover_pos.y > sweep_rect.top());
+    // Frames-first: one main track. A hover inside the frame-cell inset band
+    // (where the cells are painted) reads as hovering a frame cell → the sweep
+    // tooltip; the thin margins around it read as the scan container → the scan
+    // tooltip. Only meaningful in the Micro tier (cells exist there).
+    let track = &frame.rects.scan;
+    let cell_top = track.top() + super::style::CONTAINER_INSET_Y + super::style::CELL_INSET_Y;
+    let cell_bot = track.bottom() - super::style::CONTAINER_INSET_Y - super::style::CELL_INSET_Y;
+    let in_sweep_track = frame.detail == super::DetailLevel::Tilts
+        && hover_pos.y >= cell_top
+        && hover_pos.y <= cell_bot;
 
     // Find the cached (settled) scan at the hovered timestamp, using the
     // same clamped block extents the scan track draws — a sparse scan's

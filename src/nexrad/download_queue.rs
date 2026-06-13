@@ -229,6 +229,15 @@ impl DownloadQueueManager {
             .filter(|item| matches!(item.state, QueueItemState::Active))
     }
 
+    /// All items still waiting to dispatch (Pending). Used to populate the
+    /// timeline's queued-cell ghosts each pump — without it queued scans are
+    /// invisible on the strip.
+    pub fn pending_items(&self) -> impl Iterator<Item = &QueueItem> {
+        self.queue
+            .iter()
+            .filter(|item| matches!(item.state, QueueItemState::Pending))
+    }
+
     /// Recompute every Pending item's dispatch priority against the playhead.
     /// Call once per pump, before the fill loop, so `advance` serves the
     /// scans nearest the cursor (in playback direction) first.

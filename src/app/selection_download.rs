@@ -155,6 +155,27 @@ impl WorkbenchApp {
                 self.state.download_progress.clear();
             }
             log::debug!("Download queue drained");
+        } else {
+            // 4. Republish the active + pending (queued) ghost lists from the
+            // post-dispatch queue state. Active is rebuilt here (rather than
+            // trusting the in-loop pushes alone) and pending is filled so the
+            // strip's queued cells render — without this, `pending_scans` was
+            // only ever cleared and queued cells were invisible (the queued
+            // hatch had no data). Skipped on a drain, which clears both.
+            self.state.download_progress.active_scans = self
+                .acquisition
+                .coordinator
+                .download_queue
+                .active_items()
+                .map(|item| (item.scan_start, item.scan_end))
+                .collect();
+            self.state.download_progress.pending_scans = self
+                .acquisition
+                .coordinator
+                .download_queue
+                .pending_items()
+                .map(|item| (item.scan_start, item.scan_end))
+                .collect();
         }
     }
 }

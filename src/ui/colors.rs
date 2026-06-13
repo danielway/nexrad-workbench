@@ -131,10 +131,14 @@ pub mod timeline {
             Color32::from_rgb(40, 45, 60)
         }
     }
-    /// Active sweep highlight (theme-independent).
+    /// Active-frame ring — one of the three permitted accents (spec §6.2).
     pub const ACTIVE_SWEEP: Color32 = Color32::from_rgb(255, 255, 100);
-    /// Previous active sweep highlight during sweep animation (theme-independent).
-    pub const PREV_ACTIVE_SWEEP: Color32 = Color32::from_rgb(160, 200, 255);
+    /// Previous active-frame ring during the cell-to-cell blend. A FAINTER
+    /// shade of the SAME accent hue (not a second accent color) so the accent
+    /// budget holds — it just trails the active ring for one animation.
+    /// Premultiplied (const-constructible) equivalent of the active yellow at
+    /// ~43% alpha: rgb scaled by 110/255.
+    pub const PREV_ACTIVE_SWEEP: Color32 = Color32::from_rgba_premultiplied(110, 110, 43, 110);
     /// The now-line / "GO LIVE" cap when NOT streaming — a calm, muted red
     /// that reads as an invitation. Red is reserved exclusively for the
     /// now/live concept (see [`LIVE_ACTIVE`] for the streaming state).
@@ -142,15 +146,17 @@ pub mod timeline {
     /// Live status color for the now-line / "LIVE" cap when streaming —
     /// the bright, active end of the same red.
     pub const LIVE_ACTIVE: Color32 = Color32::from_rgb(255, 80, 80);
-    /// Selection range boundary label color.
-    pub const SELECTION_LABEL: Color32 = Color32::from_rgb(140, 180, 255);
-    /// Selection range (shift+drag) translucent fill.
+    /// Selection range boundary label color — neutral (the loop band is no
+    /// longer a saturated-blue accent; it reads as a translucent neutral wash).
+    pub const SELECTION_LABEL: Color32 = Color32::from_rgb(180, 188, 205);
+    /// Selection/loop range (shift+drag) translucent fill — neutral, so it
+    /// doesn't spend one of the three accent slots (spec §6.2).
     pub fn selection_fill() -> Color32 {
-        Color32::from_rgba_unmultiplied(100, 150, 255, 40)
+        Color32::from_rgba_unmultiplied(180, 188, 210, 34)
     }
-    /// Selection range boundary lines.
+    /// Selection/loop range boundary lines — neutral.
     pub fn selection_edge() -> Color32 {
-        Color32::from_rgb(100, 150, 255)
+        Color32::from_rgba_unmultiplied(180, 188, 210, 170)
     }
     /// Text drawn inside scan/sweep blocks. Theme-independent because it
     /// sits on the blocks' own fill colors, not the panel background.
@@ -160,32 +166,6 @@ pub mod timeline {
     /// De-emphasized in-block text (ghost/projected blocks).
     pub fn block_label_weak() -> Color32 {
         Color32::from_rgba_unmultiplied(225, 232, 248, 110)
-    }
-    /// Track separator line color.
-    pub fn track_separator() -> Color32 {
-        Color32::from_rgba_unmultiplied(100, 100, 130, 80)
-    }
-    /// Lane-name header text (VOLUMES / TILTS).
-    pub fn track_header(dark: bool) -> Color32 {
-        if dark {
-            Color32::from_rgba_unmultiplied(150, 155, 175, 130)
-        } else {
-            Color32::from_rgba_unmultiplied(70, 75, 95, 150)
-        }
-    }
-    /// Backdrop chip behind lane-name headers so they stay readable on
-    /// top of block content.
-    pub fn track_header_backdrop(dark: bool) -> Color32 {
-        let c = background(dark);
-        Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 180)
-    }
-    /// Connector line from scan boundary into sweep track.
-    pub fn connector() -> Color32 {
-        Color32::from_rgba_unmultiplied(120, 120, 150, 60)
-    }
-    /// Estimated future scan boundary (dashed).
-    pub fn estimated_boundary() -> Color32 {
-        Color32::from_rgba_unmultiplied(180, 200, 255, 90)
     }
 
     // ── Scan track colors: cached vs available ────────────────────────
@@ -209,16 +189,6 @@ pub mod timeline {
         Color32::from_rgba_unmultiplied(r, g, b, alpha)
     }
 
-    /// Border for an on-device scan block. Full alpha even on partial
-    /// blocks so the block's extent stays crisp.
-    pub fn cached_border(dark: bool, _partial: bool) -> Color32 {
-        if dark {
-            Color32::from_rgb(53, 78, 107)
-        } else {
-            Color32::from_rgb(45, 70, 105)
-        }
-    }
-
     /// Faint interior wash for an available-but-not-downloaded block.
     pub fn available_fill(dark: bool) -> Color32 {
         let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };
@@ -229,12 +199,6 @@ pub mod timeline {
     pub fn available_border(dark: bool) -> Color32 {
         let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };
         Color32::from_rgba_unmultiplied(r, g, b, 120)
-    }
-
-    /// Cloud glyph drawn inside available blocks.
-    pub fn available_glyph(dark: bool) -> Color32 {
-        let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };
-        Color32::from_rgba_unmultiplied(r, g, b, 110)
     }
 
     /// Tooltip status-word tint for on-device data — a brighter, readable
@@ -248,123 +212,116 @@ pub mod timeline {
         Color32::from_rgb(150, 165, 200)
     }
 
-    // ── Sweep track colors (cool palette) ─────────────────────────────
-
-    /// Fill color for a sweep block. Maps elevation angle (0–20 deg)
-    /// from deep indigo (low) to bright cyan (high).
-    pub fn sweep_fill(elevation: f32, is_target: bool) -> Color32 {
-        let t = (elevation / 20.0).clamp(0.0, 1.0);
-        // Indigo → cyan gradient
-        let r = (30.0 + t * 20.0) as u8; //  30– 50
-        let g = (40.0 + t * 80.0) as u8; //  40–120
-        let b = (90.0 + t * 70.0) as u8; //  90–160
-        let alpha = if is_target { 220u8 } else { 120 };
-        Color32::from_rgba_unmultiplied(r, g, b, alpha)
-    }
-
-    /// Border color for a sweep block.
-    pub fn sweep_border(elevation: f32, is_active: bool) -> Color32 {
-        if is_active {
-            return ACTIVE_SWEEP;
-        }
-        let t = (elevation / 20.0).clamp(0.0, 1.0);
-        let r = (20.0 + t * 15.0) as u8;
-        let g = (30.0 + t * 60.0) as u8;
-        let b = (70.0 + t * 50.0) as u8;
-        Color32::from_rgba_unmultiplied(r, g, b, 100)
-    }
-
-    // ── Realtime (live volume) overlay colors ─────────────────────────
+    // ── Frames-first cell palette (spec §6.2 / §6.3) ───────────────────
     //
-    // Download-ghost colors live in [`super::acquisition`] so the timeline
-    // ghosts and the acquisition drawer share one palette.
+    // The strip's primary cells are frames of the selected product + tilt.
+    // Per the accent budget (≤3 accents at once: playhead, live edge, active
+    // ring), every cell state is conveyed by FILL + SHAPE/TEXTURE, never by a
+    // unique hue — one neutral steel tone carries them all and the strip reads
+    // in grayscale. Accents (active ring, failure tick) are layered on top by
+    // the renderer using ACTIVE_SWEEP / acquisition::FAILED.
 
-    /// Elapsed portion of the live in-progress volume — the same steel
-    /// blue as a cached block at reduced alpha, so the block visually
-    /// "becomes" a cached block as it fills in.
-    pub fn live_elapsed_fill() -> Color32 {
-        let (r, g, b) = CACHED_RGB;
-        Color32::from_rgba_unmultiplied(r, g, b, 160)
+    /// Subtle bounding box around a scan container.
+    pub fn container_border(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgba_unmultiplied(120, 130, 150, 90)
+        } else {
+            Color32::from_rgba_unmultiplied(90, 100, 120, 90)
+        }
     }
-    pub fn live_elapsed_border() -> Color32 {
-        let (r, g, b) = CACHED_RGB;
+
+    /// Faint neutral sub-texture: the thin vertical sweep-boundary lines of the
+    /// full volume drawn inside a container (NOT colored per elevation).
+    pub fn sub_texture(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgba_unmultiplied(120, 130, 150, 45)
+        } else {
+            Color32::from_rgba_unmultiplied(90, 100, 120, 45)
+        }
+    }
+
+    /// Solid fill for a downloaded (Cached) frame cell — the neutral steel
+    /// tone at full presence.
+    pub fn cell_cached(dark: bool) -> Color32 {
+        let (r, g, b) = if dark { CACHED_RGB } else { (70, 110, 160) };
+        Color32::from_rgba_unmultiplied(r, g, b, 230)
+    }
+
+    /// Hollow-outline border for an Available (server-only) frame cell.
+    pub fn cell_available_border(dark: bool) -> Color32 {
+        available_border(dark)
+    }
+
+    /// Faint wash inside an Available frame cell (kept low so the outline, not
+    /// the fill, carries the meaning).
+    pub fn cell_available_fill(dark: bool) -> Color32 {
+        available_fill(dark)
+    }
+
+    /// In-flight fill (archive pulse / live chunk slots) — same steel hue as
+    /// cached, at reduced alpha so it reads as "filling in".
+    pub fn cell_inflight(dark: bool) -> Color32 {
+        let (r, g, b) = if dark { CACHED_RGB } else { (70, 110, 160) };
+        Color32::from_rgba_unmultiplied(r, g, b, 150)
+    }
+
+    /// Border around an in-flight cell.
+    pub fn cell_inflight_border(dark: bool) -> Color32 {
+        let (r, g, b) = if dark { CACHED_RGB } else { (70, 110, 160) };
         Color32::from_rgba_unmultiplied(r, g, b, 180)
     }
 
-    /// Projected remainder of the live in-progress volume.
-    pub fn live_projected_fill() -> Color32 {
-        let (r, g, b) = CACHED_RGB;
-        Color32::from_rgba_unmultiplied(r, g, b, 55)
-    }
-    pub fn live_projected_border() -> Color32 {
-        let (r, g, b) = CACHED_RGB;
-        Color32::from_rgba_unmultiplied(r, g, b, 90)
+    /// Hatch stroke for a Queued frame cell (faint, neutral — distinct from the
+    /// dashed Available outline by texture, readable in grayscale).
+    pub fn cell_queued_hatch(dark: bool) -> Color32 {
+        let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };
+        Color32::from_rgba_unmultiplied(r, g, b, 95)
     }
 
-    /// Projected next-volume ghost — available-style slate, since the
-    /// volume doesn't exist yet.
-    pub fn next_volume_fill() -> Color32 {
-        let (r, g, b) = AVAILABLE_RGB;
-        Color32::from_rgba_unmultiplied(r, g, b, 28)
-    }
-    pub fn next_volume_border() -> Color32 {
-        let (r, g, b) = AVAILABLE_RGB;
-        Color32::from_rgba_unmultiplied(r, g, b, 70)
+    /// Dashed-ghost border for a Projected (future) frame cell.
+    pub fn cell_projected_border(dark: bool) -> Color32 {
+        let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };
+        Color32::from_rgba_unmultiplied(r, g, b, 110)
     }
 
-    /// Received chunk slot inside a downloading sweep.
-    pub fn rt_chunk_fill() -> Color32 {
-        Color32::from_rgba_unmultiplied(80, 170, 230, 70)
-    }
-    pub fn rt_chunk_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(100, 180, 255, 90)
-    }
-    /// Dashed border of a still-accumulating (partial) chunk slot.
-    pub fn rt_chunk_partial_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(100, 180, 255, 70)
-    }
-    /// Dashed border around an entire downloading sweep block.
-    pub fn rt_downloading_sweep_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(60, 140, 200, 100)
+    /// Faint fill for a Projected cell.
+    pub fn cell_projected_fill(dark: bool) -> Color32 {
+        let (r, g, b) = if dark { AVAILABLE_RGB } else { (90, 110, 150) };
+        Color32::from_rgba_unmultiplied(r, g, b, 24)
     }
 
-    /// Pending (expected but not yet received) sweep placeholder.
-    pub fn rt_pending_sweep_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(80, 120, 180, 100)
+    /// Countdown text on the nearest projected ghost ("0.5° in ~40s").
+    pub fn cell_countdown_label(dark: bool) -> Color32 {
+        if dark {
+            Color32::from_rgba_unmultiplied(200, 210, 230, 220)
+        } else {
+            Color32::from_rgba_unmultiplied(60, 75, 100, 230)
+        }
     }
 
-    /// Dotted border for the "next chunk" placeholder block.
-    pub fn rt_next_chunk_border() -> Color32 {
-        Color32::from_rgba_unmultiplied(140, 200, 255, 140)
-    }
-
-    /// Very faint fill for the "next chunk" placeholder block.
-    pub fn rt_next_chunk_fill() -> Color32 {
-        Color32::from_rgba_unmultiplied(100, 180, 255, 20)
-    }
-
-    /// Countdown label color for the "next chunk" placeholder.
-    pub fn rt_next_chunk_label() -> Color32 {
-        Color32::from_rgba_unmultiplied(160, 220, 255, 220)
-    }
+    // The former indigo→cyan per-elevation sweep gradient and the realtime
+    // chunk/ghost palette were removed with the two-lane strip: frame cells are
+    // one tilt now and read in a single neutral steel tone (see the frames-first
+    // cell palette above), so no per-elevation hue and no separate live colors.
 
     // ── Saved event overlay colors ────────────────────────────────────
     //
-    // One amber accent for every saved event — the name labels
-    // disambiguate; a rotating palette only added noise.
+    // Saved events are NEUTRAL with a distinct SHAPE (a bookmark tick on the
+    // tick rail), not an amber fill — the accent budget reserves color for the
+    // playhead / live edge / active ring. The name labels disambiguate.
 
-    const EVENT_RGB: (u8, u8, u8) = (255, 200, 80);
+    const EVENT_RGB: (u8, u8, u8) = (190, 198, 215);
 
-    /// Semi-transparent fill for a saved event overlay.
+    /// Faint neutral fill for a saved event overlay band.
     pub fn event_fill() -> Color32 {
         let (r, g, b) = EVENT_RGB;
-        Color32::from_rgba_unmultiplied(r, g, b, 30)
+        Color32::from_rgba_unmultiplied(r, g, b, 22)
     }
 
-    /// Border/line color for a saved event overlay.
+    /// Border/line + bookmark-tick color for a saved event overlay.
     pub fn event_border() -> Color32 {
         let (r, g, b) = EVENT_RGB;
-        Color32::from_rgba_unmultiplied(r, g, b, 160)
+        Color32::from_rgba_unmultiplied(r, g, b, 150)
     }
 
     /// Label color for a saved event name.

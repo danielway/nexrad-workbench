@@ -1,228 +1,292 @@
-//! Scan track rendering: cached (on-device) scan blocks and available
-//! (in-archive, not downloaded) blocks.
+//! Macro / Archive main-track rendering (spec §6.4 / §9).
 //!
-//! Color on this track answers one question — is the data on the device?
-//! Solid steel blue = cached; hollow dashed slate = available in the cloud
-//! archive. VCP identity and sweep counts are carried by the block label
-//! and the tooltip, not by hue.
+//! In the Macro tier scans collapse to **uniform-width ticks** (not
+//! proportional blocks — no sub-pixel silent drops). When tick density exceeds
+//! ~1 per 3px they merge into the coverage-style fill. **Gap glyphs** mark
+//! where the real spacing between consecutive scans far exceeds the median, so
+//! equidistant playback doesn't deceive. Shadow (server-available) regions keep
+//! a hollow/dashed treatment. `fade` (0..1) scales alpha during the Micro↔Macro
+//! morph so this layer cross-fades with the frames-first layer.
 
 use super::strokes::{stroke_dashed_rect, DashedBorder};
-use super::{DetailLevel, TimelineFrame};
+use super::TimelineFrame;
 use crate::data::ScanCompleteness;
+use crate::state::DownloadProgress;
+use crate::ui::colors::acquisition as acq_colors;
 use crate::ui::colors::timeline as tl_colors;
-use eframe::egui::{self, Painter, Pos2, Rect, Stroke, StrokeKind};
+use eframe::egui::{Color32, Painter, Pos2, Rect, Stroke, StrokeKind};
 
-/// Draw an "available in the cloud archive" block: a faint wash with a
-/// dashed border — an empty container the same shape as the solid cached
-/// blocks — plus a cloud glyph when there's room for it.
-pub(super) fn draw_available_block(painter: &Painter, block: Rect, dark: bool) {
-    painter.rect_filled(block, 2.0, tl_colors::available_fill(dark));
-    stroke_dashed_rect(
-        painter,
-        block,
-        DashedBorder::uniform(
-            Stroke::new(1.0, tl_colors::available_border(dark)),
-            4.0,
-            7.0,
-        ),
-    );
-    if block.width() >= 24.0 {
-        painter.text(
-            block.center(),
-            egui::Align2::CENTER_CENTER,
-            egui_phosphor::regular::CLOUD_ARROW_DOWN,
-            egui::FontId::proportional(11.0),
-            tl_colors::available_glyph(dark),
-        );
-    }
+/// Uniform tick width (px) in the Macro tier.
+const TICK_W: f32 = 2.0;
+/// Below this center-to-center spacing (px) ticks are too dense to read
+/// individually → merge into the coverage fill.
+const MERGE_SPACING_PX: f32 = 3.0;
+/// A gap glyph is drawn when the real spacing between consecutive scans exceeds
+/// `GAP_MEDIAN_MULT × median` (and at least `GAP_MIN_SECS`).
+const GAP_MEDIAN_MULT: f64 = 2.5;
+const GAP_MIN_SECS: f64 = 15.0 * 60.0;
+
+/// Apply a morph fade (0..1) to a color's alpha.
+fn faded(c: Color32, fade: f32) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * fade) as u8)
 }
 
-/// Render scan blocks on the scan track.
-pub(super) fn render_scan_track(painter: &Painter, frame: &TimelineFrame<'_>) {
+/// Render the Macro / Archive main track.
+pub(super) fn render_macro_track(
+    painter: &Painter,
+    frame: &TimelineFrame<'_>,
+    progress: &DownloadProgress,
+    fade: f32,
+) {
+    if fade <= 0.0 {
+        return;
+    }
     let rect = &frame.rects.scan;
     let view = &frame.view;
     let (view_start, view_end, dark) = (frame.view_start, frame.view_end, frame.dark);
     let ts_to_x = |ts: f64| frame.ts_to_x(ts);
 
-    match frame.detail {
-        DetailLevel::Coverage => {
-            // Draw solid regions for each contiguous time range
-            for range in view.cache().time_ranges() {
-                let x_start = ts_to_x(range.start).max(rect.left());
-                let x_end = ts_to_x(range.end).min(rect.right());
+    // Collect the cached scan starts in range (uniform-tick candidates).
+    let scans: Vec<(f64, f64, bool)> = view
+        .settled_scans_in_range(view_start, view_end)
+        .map(|(s, clamped_end)| {
+            let available = s.completeness == Some(ScanCompleteness::Missing);
+            (s.start_time, clamped_end, available)
+        })
+        .collect();
 
-                // Enforce minimum visual width for sub-pixel data regions
-                let x_end = if (x_end - x_start) > 0.0 && (x_end - x_start) < 8.0 {
-                    (x_start + 8.0).min(rect.right())
-                } else {
-                    x_end
-                };
+    // Decide density: merge to coverage fill when ticks would crowd.
+    let merge = should_merge(&scans, frame.zoom);
 
-                if x_end > x_start {
-                    painter.rect_filled(
-                        Rect::from_min_max(
-                            Pos2::new(x_start, rect.top() + 2.0),
-                            Pos2::new(x_end, rect.bottom() - 2.0),
-                        ),
-                        2.0,
-                        tl_colors::cached_fill(dark, false),
-                    );
-                }
+    if merge {
+        // Coverage fill: contiguous cached ranges as one fill.
+        for range in view.cache().time_ranges() {
+            let x0 = ts_to_x(range.start).max(rect.left());
+            let x1 = ts_to_x(range.end).min(rect.right());
+            let x1 = if (x1 - x0) > 0.0 && (x1 - x0) < 8.0 {
+                (x0 + 8.0).min(rect.right())
+            } else {
+                x1
+            };
+            if x1 > x0 {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        Pos2::new(x0, rect.top() + 4.0),
+                        Pos2::new(x1, rect.bottom() - 4.0),
+                    ),
+                    2.0,
+                    faded(tl_colors::cached_fill(dark, false), fade),
+                );
             }
         }
-        DetailLevel::Volumes | DetailLevel::Tilts => {
-            for (scan, clamped_end) in view.settled_scans_in_range(view_start, view_end) {
-                let x_start = ts_to_x(scan.start_time).max(rect.left());
-                let x_end = ts_to_x(clamped_end).min(rect.right());
-                let width = x_end - x_start;
-
-                if width < 1.0 {
-                    continue;
-                }
-
-                let scan_rect = Rect::from_min_max(
-                    Pos2::new(x_start, rect.top() + 2.0),
-                    Pos2::new(x_end, rect.bottom() - 2.0),
-                );
-
-                // A scan with no cached sweeps at all is semantically
-                // "available, not downloaded" — render it in that style.
-                if scan.completeness == Some(ScanCompleteness::Missing) {
-                    draw_available_block(painter, scan_rect, dark);
-                    continue;
-                }
-
-                let partial = matches!(
-                    scan.completeness,
-                    Some(ScanCompleteness::PartialWithVcp | ScanCompleteness::PartialNoVcp)
-                );
-                painter.rect_filled(scan_rect, 2.0, tl_colors::cached_fill(dark, partial));
+    } else {
+        // Uniform ticks, one per cached scan — never dropped sub-pixel.
+        let y0 = rect.top() + 6.0;
+        let y1 = rect.bottom() - 6.0;
+        for &(start, _end, available) in &scans {
+            let x = ts_to_x(start);
+            if x < rect.left() - TICK_W || x > rect.right() + TICK_W {
+                continue;
+            }
+            let tick = Rect::from_min_max(
+                Pos2::new(x - TICK_W / 2.0, y0),
+                Pos2::new(x + TICK_W / 2.0, y1),
+            );
+            if available {
                 painter.rect_stroke(
-                    scan_rect,
-                    2.0,
-                    Stroke::new(1.0, tl_colors::cached_border(dark, partial)),
+                    tick,
+                    0.0,
+                    Stroke::new(1.0, faded(tl_colors::cell_available_border(dark), fade)),
                     StrokeKind::Inside,
                 );
-
-                // Block label: VCP identity plus cached/planned sweep count.
-                // Wide blocks spell out "VCP"; narrow ones show the number,
-                // with the count kept only when it carries information
-                // (i.e. the scan is partial).
-                if width > 60.0 && scan.vcp > 0 {
-                    let counts = match (scan.cached_sweep_count, scan.planned_sweep_count) {
-                        (Some(p), Some(e)) if e > 0 => Some((p, e)),
-                        _ => None,
-                    };
-                    let is_partial_count = counts.is_some_and(|(p, e)| p < e);
-                    let label = if width > 110.0 {
-                        match counts {
-                            Some((p, e)) => format!("VCP {} \u{00B7} {}/{}", scan.vcp, p, e),
-                            None => format!("VCP {}", scan.vcp),
-                        }
-                    } else if let (true, Some((p, e))) = (is_partial_count, counts) {
-                        format!("{} \u{00B7} {}/{}", scan.vcp, p, e)
-                    } else {
-                        format!("{}", scan.vcp)
-                    };
-                    painter.text(
-                        scan_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        label,
-                        super::style::block_font(),
-                        tl_colors::block_label(),
-                    );
-                }
+            } else {
+                painter.rect_filled(tick, 0.0, faded(tl_colors::cell_cached(dark), fade));
             }
+        }
+
+        // Gap glyphs between consecutive scans whose real spacing is anomalous.
+        draw_gap_glyphs(painter, frame, &scans, fade);
+    }
+
+    // Shadow (server-available) regions: hollow/dashed, merged like before.
+    render_shadow_regions(painter, frame, fade);
+
+    // In-flight / queued acquisition ghosts at this tier: a faint combined
+    // region so the user still sees something is downloading (the per-cell
+    // detail is the Micro tier's job).
+    render_macro_acquisition(painter, frame, progress, fade);
+}
+
+/// Whether the visible cached scans are dense enough to merge into coverage.
+fn should_merge(scans: &[(f64, f64, bool)], zoom: f64) -> bool {
+    if scans.len() < 2 {
+        return false;
+    }
+    // Median center-to-center pixel spacing.
+    let mut deltas: Vec<f64> = scans
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0).abs())
+        .filter(|d| *d > 0.0)
+        .collect();
+    if deltas.is_empty() {
+        return false;
+    }
+    deltas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = deltas[deltas.len() / 2];
+    let spacing_px = (median * zoom) as f32;
+    spacing_px < MERGE_SPACING_PX
+}
+
+/// Draw a small neutral break glyph between two consecutive ticks whose true
+/// spacing exceeds the gap threshold.
+fn draw_gap_glyphs(
+    painter: &Painter,
+    frame: &TimelineFrame<'_>,
+    scans: &[(f64, f64, bool)],
+    fade: f32,
+) {
+    if scans.len() < 2 {
+        return;
+    }
+    let mut deltas: Vec<f64> = scans
+        .windows(2)
+        .map(|w| w[1].0 - w[0].0)
+        .filter(|d| *d > 0.0)
+        .collect();
+    if deltas.is_empty() {
+        return;
+    }
+    deltas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = deltas[deltas.len() / 2];
+    let threshold = (median * GAP_MEDIAN_MULT).max(GAP_MIN_SECS);
+    let rect = &frame.rects.scan;
+    let cy = rect.center().y;
+    let color = faded(tl_colors::sub_texture(frame.dark), fade);
+    let glyph =
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), (color.a()).max(90));
+
+    for w in scans.windows(2) {
+        let gap = w[1].0 - w[0].0;
+        if gap <= threshold {
+            continue;
+        }
+        // Midpoint between the two scans.
+        let mid_ts = (w[0].0 + w[1].0) / 2.0;
+        let x = frame.ts_to_x(mid_ts);
+        if x < rect.left() || x > rect.right() {
+            continue;
+        }
+        // A small "//" break: two short slashes.
+        for dx in [-2.0_f32, 2.0] {
+            painter.line_segment(
+                [
+                    Pos2::new(x + dx - 1.5, cy + 4.0),
+                    Pos2::new(x + dx + 1.5, cy - 4.0),
+                ],
+                Stroke::new(1.0, glyph),
+            );
         }
     }
 }
 
-/// Render shadow scan boundaries from the archive index as first-class
-/// "available, not downloaded" blocks. The view supplies the dedup against
-/// already-downloaded scans.
-pub(super) fn render_shadow_boundaries(painter: &Painter, frame: &TimelineFrame<'_>) {
+/// Shadow (in-archive, not downloaded) regions: merged contiguous hollow
+/// blocks, suppressed where cached data already covers them.
+fn render_shadow_regions(painter: &Painter, frame: &TimelineFrame<'_>, fade: f32) {
     let rect = &frame.rects.scan;
     let view = &frame.view;
     let dark = frame.dark;
     let ts_to_x = |ts: f64| frame.ts_to_x(ts);
-
     let view_start_i64 = frame.view_start as i64;
     let view_end_i64 = frame.view_end as i64;
 
-    match frame.detail {
-        DetailLevel::Coverage => {
-            // At solid detail, merge all visible shadow boundaries into contiguous regions
-            let visible: Vec<_> = view
-                .shadow_boundaries()
-                .iter()
-                .filter(|b| !view.is_covered_by_cached(b.start))
-                .filter(|b| b.end > view_start_i64 && b.start < view_end_i64)
-                .collect();
+    let visible: Vec<_> = view
+        .shadow_boundaries()
+        .iter()
+        .filter(|b| !view.is_covered_by_cached(b.start))
+        .filter(|b| b.end > view_start_i64 && b.start < view_end_i64)
+        .collect();
+    if visible.is_empty() {
+        return;
+    }
 
-            if visible.is_empty() {
-                return;
-            }
-
-            // Merge into contiguous regions (gap < 15 min)
-            let mut regions: Vec<(i64, i64)> = Vec::new();
-            for b in &visible {
-                if let Some(last) = regions.last_mut() {
-                    if b.start - last.1 < 900 {
-                        last.1 = b.end;
-                        continue;
-                    }
-                }
-                regions.push((b.start, b.end));
-            }
-
-            for (start, end) in regions {
-                let x_start = ts_to_x(start as f64).max(rect.left());
-                let x_end = ts_to_x(end as f64).min(rect.right());
-                let x_end = if (x_end - x_start) > 0.0 && (x_end - x_start) < 8.0 {
-                    (x_start + 8.0).min(rect.right())
-                } else {
-                    x_end
-                };
-                if x_end > x_start {
-                    draw_available_block(
-                        painter,
-                        Rect::from_min_max(
-                            Pos2::new(x_start, rect.top() + 2.0),
-                            Pos2::new(x_end, rect.bottom() - 2.0),
-                        ),
-                        dark,
-                    );
-                }
+    let mut regions: Vec<(i64, i64)> = Vec::new();
+    for b in &visible {
+        if let Some(last) = regions.last_mut() {
+            if b.start - last.1 < 900 {
+                last.1 = b.end;
+                continue;
             }
         }
-        DetailLevel::Volumes | DetailLevel::Tilts => {
-            for b in view
-                .shadow_boundaries()
-                .iter()
-                .filter(|b| !view.is_covered_by_cached(b.start))
-            {
-                // Skip if outside visible range
-                if b.end <= view_start_i64 || b.start >= view_end_i64 {
-                    continue;
-                }
+        regions.push((b.start, b.end));
+    }
 
-                let x_start = ts_to_x(b.start as f64).max(rect.left());
-                let x_end = ts_to_x(b.end as f64).min(rect.right());
-                let width = x_end - x_start;
-
-                if width < 1.0 {
-                    continue;
-                }
-
-                draw_available_block(
-                    painter,
-                    Rect::from_min_max(
-                        Pos2::new(x_start, rect.top() + 2.0),
-                        Pos2::new(x_end, rect.bottom() - 2.0),
-                    ),
-                    dark,
-                );
-            }
+    for (start, end) in regions {
+        let x0 = ts_to_x(start as f64).max(rect.left());
+        let x1 = ts_to_x(end as f64).min(rect.right());
+        let x1 = if (x1 - x0) > 0.0 && (x1 - x0) < 8.0 {
+            (x0 + 8.0).min(rect.right())
+        } else {
+            x1
+        };
+        if x1 > x0 {
+            let block = Rect::from_min_max(
+                Pos2::new(x0, rect.top() + 4.0),
+                Pos2::new(x1, rect.bottom() - 4.0),
+            );
+            painter.rect_filled(
+                block,
+                2.0,
+                faded(tl_colors::cell_available_fill(dark), fade),
+            );
+            stroke_dashed_rect(
+                painter,
+                block,
+                DashedBorder::uniform(
+                    Stroke::new(1.0, faded(tl_colors::cell_available_border(dark), fade)),
+                    4.0,
+                    7.0,
+                ),
+            );
         }
     }
+}
+
+/// A faint combined in-flight region at the Macro tier (the per-cell detail is
+/// the Micro tier's; here we just acknowledge activity, motion not hue).
+fn render_macro_acquisition(
+    painter: &Painter,
+    frame: &TimelineFrame<'_>,
+    progress: &DownloadProgress,
+    fade: f32,
+) {
+    let rect = &frame.rects.scan;
+    let ts_to_x = |ts: f64| frame.ts_to_x(ts);
+    let all: Vec<(i64, i64)> = progress
+        .active_scans
+        .iter()
+        .chain(progress.in_flight_scans.iter())
+        .copied()
+        .collect();
+    if all.is_empty() {
+        return;
+    }
+    let min_ts = all.iter().map(|(s, _)| *s).min().unwrap() as f64;
+    let max_ts = all.iter().map(|(_, e)| *e).max().unwrap() as f64;
+    let x0 = ts_to_x(min_ts).max(rect.left());
+    let x1 = ts_to_x(max_ts).min(rect.right());
+    if x1 > x0 {
+        let base = tl_colors::cell_inflight(frame.dark);
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(x0, rect.top() + 4.0),
+                Pos2::new(x1, rect.bottom() - 4.0),
+            ),
+            2.0,
+            faded(
+                Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), 70),
+                fade,
+            ),
+        );
+    }
+    let _ = acq_colors::ACTIVE; // palette intentionally neutral now.
 }

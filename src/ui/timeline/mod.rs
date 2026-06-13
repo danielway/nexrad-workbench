@@ -1,5 +1,8 @@
-//! Timeline rendering: time ruler, scan/sweep tracks, tooltip, and overlays.
+//! Timeline rendering: time ruler, the frames-first main track (scan
+//! containers + frame cells in Micro; uniform ticks + coverage in Macro),
+//! tooltip, and overlays.
 
+mod frame_cells;
 mod interaction;
 mod now_edge;
 mod overlays;
@@ -7,20 +10,19 @@ mod ruler;
 mod scan_track;
 mod strokes;
 pub(super) mod style;
-mod sweep_track;
 mod tooltips;
 
 use super::colors::timeline as tl_colors;
-use crate::state::{AppState, LivePhase, WidthTier};
+use crate::state::{AppState, FrameJoinInputs, LivePhase, TimelineTier, WidthTier};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
+use frame_cells::{paint_container, CellAnim, FailedTick};
 use interaction::handle_timeline_interaction;
 use now_edge::render_now_affordance;
-use overlays::{render_download_ghosts, render_realtime_progress, render_saved_events};
+use overlays::render_saved_events;
 use ruler::{render_playback_cursor, render_tick_marks};
-use scan_track::{render_scan_track, render_shadow_boundaries};
-use sweep_track::{render_connector_lines, render_sweep_track};
+use scan_track::render_macro_track;
 use tooltips::render_timeline_tooltip;
 
 /// Level of detail for radar data rendering. Now mapped from the stored
@@ -29,16 +31,25 @@ use tooltips::render_timeline_tooltip;
 /// `match` arms in the track renderers keep their short path.
 pub(super) use crate::state::DetailLevel;
 
-/// Sub-rects of the timeline widget's stacked tracks.
+/// Sub-rects of the timeline widget. One main track now (frames-first), with
+/// a tick rail above. The `overlay` rect spans the main track for the cursor,
+/// selection, and now-affordance.
 pub(super) struct TrackRects {
-    /// Timestamp lane above the data tracks.
+    /// Timestamp rail above the main track.
     pub tick: Rect,
-    /// Volume-scan track.
+    /// The single main track: scan containers + frame cells (Micro), or
+    /// uniform ticks / coverage fill (Macro / Archive).
     pub scan: Rect,
-    /// Tilt (sweep) track — present only at [`DetailLevel::Tilts`].
-    pub sweep: Option<Rect>,
-    /// Scan + sweep span: cursor, selection, and now-affordance overlays.
+    /// Main-track span for cursor, selection, and now-affordance overlays.
     pub overlay: Rect,
+}
+
+/// Treat a context as reduced-motion when egui's animation time is zeroed —
+/// the cheapest proxy for the OS/browser "reduce motion" preference (spec §16;
+/// egui doesn't expose it directly). When reduced, pulses render as a static
+/// partial fill and the tier morph switches instantly.
+pub(super) fn reduced_motion(ctx: &egui::Context) -> bool {
+    ctx.style().animation_time == 0.0
 }
 
 /// Read-only per-frame context shared by every timeline renderer.
@@ -62,12 +73,6 @@ pub(super) struct TimelineFrame<'a> {
     pub detail: DetailLevel,
     pub dark: bool,
     pub use_local: bool,
-    /// On-GPU sweep `(scan_key_ts, elevation_number)` for the active border
-    /// highlight. `None` below [`DetailLevel::Tilts`].
-    pub active_sweep: Option<(f64, u8)>,
-    /// Prior on-GPU sweep while sweep animation blends, snapshotted so it
-    /// flips atomically with `active_sweep`.
-    pub prev_active_sweep: Option<(f64, u8)>,
 }
 
 impl TimelineFrame<'_> {
@@ -304,29 +309,13 @@ pub(super) fn format_timestamp_compact(ts: f64, use_local: bool, tier: WidthTier
     }
 }
 
-/// Draw a small lane-name header pinned to the bottom-left inside a track,
-/// over a background-colored chip so it stays readable above block content.
-fn draw_track_header(painter: &egui::Painter, track_rect: &Rect, text: &str, dark: bool) {
-    let galley = painter.layout_no_wrap(
-        text.to_owned(),
-        style::header_font(),
-        tl_colors::track_header(dark),
-    );
-    let pos = Pos2::new(
-        track_rect.left() + 4.0,
-        track_rect.bottom() - 2.0 - galley.size().y,
-    );
-    let chip = Rect::from_min_size(pos, galley.size()).expand2(Vec2::new(3.0, 1.0));
-    painter.rect_filled(chip, 2.0, tl_colors::track_header_backdrop(dark));
-    painter.galley(pos, galley, tl_colors::track_header(dark));
-}
-
 pub(super) fn render_timeline(
     ui: &mut egui::Ui,
     state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &mut crate::subsystem::Live,
     playback: &mut crate::subsystem::Playback,
+    acquisition: &crate::subsystem::Acquisition,
     derived: &crate::subsystem::Derived,
 ) {
     let use_local = state.use_local_time;
@@ -334,28 +323,15 @@ pub(super) fn render_timeline(
     playback.state.timeline_width_px = available_width;
 
     let zoom = playback.state.timeline_zoom;
-    // Detail now maps from the stored tier (single source of truth), not raw
-    // zoom — so it shares the tier's hysteresis and can't disagree with the
-    // playback mode at a boundary.
+    let tier = playback.state.timeline_tier;
+    // The renderer's visual detail still maps from the stored tier (single
+    // source of truth, with hysteresis), but the strip is now ONE main track
+    // at constant height across every tier — no panel reflow.
     let detail_level = playback.state.detail_level();
 
-    // Track heights — timestamp lane sits above the scan track so labels
-    // never overlap scan block content. The total timeline height is
-    // constant across macro/micro transitions: at Sweeps detail the
-    // scan + separator + sweep tracks share the space; at lower detail
-    // the scan track expands to fill the same total so the bottom
-    // panel doesn't reflow when zooming. All dimensions live in `style`.
     let tick_lane_h = style::TICK_LANE_H;
-    let (scan_track_h, separator_h, sweep_track_h) = if detail_level == DetailLevel::Tilts {
-        (
-            style::SCAN_TRACK_H,
-            style::TRACK_SEPARATOR_H,
-            style::SWEEP_TRACK_H,
-        )
-    } else {
-        (style::EXPANDED_SCAN_TRACK_H, 0.0_f32, 0.0_f32)
-    };
-    let timeline_height = tick_lane_h + scan_track_h + separator_h + sweep_track_h;
+    let main_track_h = style::MAIN_TRACK_H;
+    let timeline_height = style::TIMELINE_TOTAL_H;
 
     let (response, painter) = ui.allocate_painter(
         Vec2::new(available_width as f32, timeline_height),
@@ -363,28 +339,23 @@ pub(super) fn render_timeline(
     );
     let full_rect = response.rect;
 
-    // Sub-rects for each track: tick lane -> scan track -> sweep track
+    // Sub-rects: tick rail -> main track. (The minimap sliver + loop-handle
+    // bands in `style` are reserved at 0px for Phase 3.)
     let tick_rect = Rect::from_min_max(
-        full_rect.min,
-        Pos2::new(full_rect.max.x, full_rect.min.y + tick_lane_h),
+        Pos2::new(full_rect.min.x, full_rect.min.y + style::MINIMAP_SLIVER_H),
+        Pos2::new(
+            full_rect.max.x,
+            full_rect.min.y + style::MINIMAP_SLIVER_H + tick_lane_h,
+        ),
     );
     let scan_rect = Rect::from_min_max(
         Pos2::new(full_rect.min.x, tick_rect.max.y),
-        Pos2::new(full_rect.max.x, tick_rect.max.y + scan_track_h),
+        Pos2::new(full_rect.max.x, tick_rect.max.y + main_track_h),
     );
-    let sweep_rect = (detail_level == DetailLevel::Tilts).then(|| {
-        Rect::from_min_max(
-            Pos2::new(full_rect.min.x, scan_rect.max.y + separator_h),
-            Pos2::new(
-                full_rect.max.x,
-                scan_rect.max.y + separator_h + sweep_track_h,
-            ),
-        )
-    });
 
     let dark = state.is_dark;
 
-    // Background for scan track
+    // Background for the main track.
     painter.rect_filled(scan_rect, 2.0, tl_colors::background(dark));
     painter.rect_stroke(
         scan_rect,
@@ -392,25 +363,6 @@ pub(super) fn render_timeline(
         Stroke::new(1.0, tl_colors::border(dark)),
         StrokeKind::Outside,
     );
-
-    // Background for sweep track (when visible)
-    if let Some(sweep_rect) = sweep_rect {
-        painter.rect_filled(sweep_rect, 0.0, tl_colors::background(dark));
-        painter.rect_stroke(
-            sweep_rect,
-            0.0,
-            Stroke::new(0.5, tl_colors::border(dark)),
-            StrokeKind::Outside,
-        );
-        // Separator line
-        painter.line_segment(
-            [
-                Pos2::new(full_rect.left(), scan_rect.bottom()),
-                Pos2::new(full_rect.right(), scan_rect.bottom()),
-            ],
-            Stroke::new(0.5, tl_colors::track_separator()),
-        );
-    }
 
     if zoom <= 0.0 {
         return;
@@ -420,11 +372,12 @@ pub(super) fn render_timeline(
     let visible_secs = available_width / zoom;
     let view_end = view_start + visible_secs;
 
-    // Active border tracks the on-GPU sweep — `displayed` is set only after
-    // a successful update_data() in handle_decoded_outcome, so the highlight
+    // Active ring tracks the on-GPU sweep — `displayed` is set only after a
+    // successful update_data() in handle_decoded_outcome, so the highlight
     // matches the pixels the user is actually looking at (not the resolver's
-    // intent, which may have a render in flight).
-    let active_sweep = if detail_level == DetailLevel::Tilts {
+    // intent, which may have a render in flight). Now applies in the Micro
+    // tier (frames-first).
+    let active_sweep = if tier == TimelineTier::Micro {
         state.viz_state.displayed.as_ref().map(|d| {
             (
                 d.identity.scan_timestamp_secs(),
@@ -434,10 +387,7 @@ pub(super) fn render_timeline(
     } else {
         None
     };
-    // Previous border tracks the prior on-GPU sweep — snapshotted from
-    // `displayed` at the moment a new sweep is uploaded, so it flips
-    // atomically with `active_sweep`.
-    let prev_active_sweep = if derived.effective_sweep_animation {
+    let prev_active_sweep = if derived.effective_sweep_animation && tier == TimelineTier::Micro {
         state.viz_state.previous_displayed.as_ref().map(|d| {
             (
                 d.identity.scan_timestamp_secs(),
@@ -448,22 +398,15 @@ pub(super) fn render_timeline(
         None
     };
 
-    // The overlay rect spans all data tracks (scan + sweep, not the ticks).
-    let overlay_rect = Rect::from_min_max(
-        scan_rect.min,
-        Pos2::new(
-            scan_rect.max.x,
-            sweep_rect.map_or(scan_rect.max.y, |r| r.max.y),
-        ),
-    );
+    // The overlay rect spans the main track (not the tick rail).
+    let overlay_rect = scan_rect;
 
     // -- Build the per-frame TimelineFrame --
     // One adapter (`TimelineView`) merges every timeline source (cache,
     // archive shadows, the live stream + its projection) into a single
     // source-agnostic view; the frame bundles it with the view geometry and
-    // the frame clock. Renderers ask the view availability questions
-    // ("what's cached? what's collecting? is this covered?") and never read
-    // a raw source directly. The cache↔live merge that keeps a resumed
+    // the frame clock. Renderers ask the view availability questions and never
+    // read a raw source directly. The cache↔live merge that keeps a resumed
     // volume's already-downloaded sweeps visible lives inside
     // `TimelineView::build`.
     let frame = TimelineFrame {
@@ -472,7 +415,6 @@ pub(super) fn render_timeline(
             &timeline.shadow_scan_boundaries,
             Some(&live.mode_state),
             live.radar_model.position.as_ref(),
-            live.frame_projection.as_ref(),
             state.viz_state.elevation_selection.elevation_number(),
             state.frame_now.secs(),
         ),
@@ -483,65 +425,126 @@ pub(super) fn render_timeline(
         rects: TrackRects {
             tick: tick_rect,
             scan: scan_rect,
-            sweep: sweep_rect,
             overlay: overlay_rect,
         },
         detail: detail_level,
         dark,
         use_local,
-        active_sweep,
-        prev_active_sweep,
     };
     let ts_to_x = |ts: f64| frame.ts_to_x(ts);
 
-    // -- Render shadow scan boundaries from archive index --
-    if !frame.view.shadow_boundaries().is_empty() {
-        render_shadow_boundaries(&painter, &frame);
-    }
-
-    // -- Render scan track --
-    render_scan_track(&painter, &frame);
-
-    // -- Render sweep track (only at Tilts detail) --
-    if detail_level == DetailLevel::Tilts {
-        render_sweep_track(&painter, &frame);
-        render_connector_lines(&painter, &frame);
-    }
-
-    // -- Render ghost markers for pending downloads --
-    if state.download_progress.is_active() {
-        let anim_time = ui.ctx().input(|i| i.time);
-        render_download_ghosts(&painter, &frame, &state.download_progress, anim_time);
+    // -- Morph animation (spec §6.4) -------------------------------------
+    // A 0..1 factor that eases between Macro (0) and Micro (1) on tier
+    // transitions; the playhead + live edge stay position-stable (only cell
+    // geometry collapses / expands). Reduced motion → instant switch.
+    let reduced = reduced_motion(ui.ctx());
+    let micro_target = if tier == TimelineTier::Micro {
+        1.0
+    } else {
+        0.0
+    };
+    let micro_t = if reduced {
+        micro_target
+    } else {
         ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(67));
-    }
+            .animate_value_with_time(response.id.with("tier_morph"), micro_target, 0.2)
+    };
+    let morphing = micro_t > 0.001 && micro_t < 0.999;
 
-    // -- Render real-time partial scan progress --
-    // The merged in-progress volume and its overlay context come from the
-    // view; `frame.now_secs` keeps render + tooltip on a consistent boundary.
-    if let (Some(position), Some(overlay_ctx)) =
-        (frame.view.live_volume(), frame.view.live_context())
-    {
-        let anim_time = ui.ctx().input(|i| i.time);
-        render_realtime_progress(&painter, &frame, position, overlay_ctx, anim_time);
-        if live.mode_state.phase == LivePhase::WaitingForChunk {
+    // -- Render the main track per tier ----------------------------------
+    // Micro renders frames-first (scan containers + frame cells); Macro /
+    // Archive render the uniform-tick / coverage strip. During a morph both
+    // cross-fade. The download-progress ghosts feed the join (queued / in
+    // flight) so queued cells render; failed scan-starts come from the
+    // acquisition operations (so a retry clears the tick — the error ring
+    // never forgets).
+    let failed_secs = acquisition.state.failed_scan_starts();
+    let mut failed_ticks: Vec<FailedTick> = Vec::new();
+
+    // Micro path (frames-first). Drawn when in Micro or morphing into/out of
+    // it; cell heights + alpha scale by `micro_t` so they collapse/expand.
+    if tier == TimelineTier::Micro || morphing {
+        let pulse = live.mode_state.pulse_alpha();
+        let anim = CellAnim {
+            pulse,
+            reduced_motion: reduced,
+            morph: micro_t,
+        };
+        // Active in-flight downloads + still-ingesting both count as in-flight.
+        let mut in_flight_all = state.download_progress.in_flight_scans.clone();
+        in_flight_all.extend_from_slice(&state.download_progress.active_scans);
+        let product = state.viz_state.product.to_worker_string();
+        let join = FrameJoinInputs {
+            queued: &state.download_progress.pending_scans,
+            in_flight: &in_flight_all,
+            failed: &failed_secs,
+            product,
+            tilt: state.viz_state.elevation_selection.elevation_number(),
+            active: active_sweep,
+            prev_active: prev_active_sweep,
+        };
+
+        let containers = frame
+            .view
+            .frame_containers_in_range(view_start, view_end, join);
+
+        // The nearest projected ghost (smallest start in the future) carries
+        // the countdown including tilt identity.
+        let countdown = live.countdown_remaining_secs(frame.now_secs);
+        let nearest_ghost_key = containers
+            .iter()
+            .filter(|c| {
+                c.cells
+                    .iter()
+                    .any(|cell| cell.state == crate::state::FrameCellState::Projected)
+                    && c.start_secs >= frame.now_secs - 1.0
+            })
+            .min_by(|a, b| {
+                a.start_secs
+                    .partial_cmp(&b.start_secs)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|c| c.key_secs);
+
+        // The morph cross-fade is the cell-height collapse applied inside
+        // `paint_container` (cells fold into ticks), keyed on `micro_t` via
+        // `anim.morph`. The Macro layer fades in opposite via its `fade`.
+        for container in &containers {
+            let carries = nearest_ghost_key == Some(container.key_secs);
+            paint_container(
+                &painter,
+                &frame,
+                container,
+                anim,
+                countdown,
+                carries,
+                &mut failed_ticks,
+            );
+        }
+
+        // Keep the strip animating while live chunks fill or while morphing.
+        if frame.view.live_volume().is_some() && live.mode_state.phase == LivePhase::WaitingForChunk
+        {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(250));
         }
+        if !reduced && (state.download_progress.is_active() || morphing) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(67));
+        }
     }
 
-    // -- Track headers --
-    // Tiny lane-name labels pinned bottom-left inside each track, the only
-    // legend-like element: they name structure, not color. Bottom-left
-    // stays clear of the LIVE edge chip and tick labels (both at the top).
-    if detail_level != DetailLevel::Coverage {
-        draw_track_header(&painter, &scan_rect, "VOLUMES", dark);
-    }
-    if let Some(sweep_rect) = sweep_rect {
-        draw_track_header(&painter, &sweep_rect, "TILTS", dark);
+    // Macro / Archive path (uniform ticks + coverage + gap glyphs). Drawn when
+    // not in Micro, or while morphing (cross-fade with the Micro layer).
+    if tier != TimelineTier::Micro || morphing {
+        render_macro_track(&painter, &frame, &state.download_progress, 1.0 - micro_t);
+        if !reduced && morphing {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(67));
+        }
     }
 
-    // Draw tick marks and labels in the dedicated tick lane above the scan
+    // Draw tick marks and labels in the dedicated tick lane above the main
     // track. Tick spacing/alignment is derived inside from the frame's zoom
     // and view bounds.
     render_tick_marks(&painter, &frame);
@@ -651,6 +654,32 @@ pub(super) fn render_timeline(
         }
     }
 
+    // -- Failed-cell retry ticks --
+    // A click on a failed cell's alert triangle pushes the existing
+    // `AppCommand::RetryFailed` for the matching operation (the deeper
+    // re-enqueue fix is a later phase; the command is wired now). Reported
+    // ahead of seek handling so the seek ignores clicks that land on a tick.
+    let mut clicked_failed_tick = false;
+    if response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if let Some(tick) = failed_ticks.iter().find(|t| t.rect.contains(pos)) {
+                if let Some(op_id) = acquisition.state.failed_operation_for_scan_start(
+                    tick.key_secs.round() as i64,
+                    crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
+                ) {
+                    state.push_command(crate::state::AppCommand::RetryFailed(op_id));
+                    clicked_failed_tick = true;
+                }
+            }
+        }
+    }
+    // Hover hint on a failed tick.
+    if let Some(hover_pos) = response.hover_pos() {
+        if failed_ticks.iter().any(|t| t.rect.contains(hover_pos)) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+    }
+
     // -- Hover tooltips --
     if response.hovered() {
         if let Some(hover_pos) = response.hover_pos() {
@@ -660,6 +689,13 @@ pub(super) fn render_timeline(
     }
 
     // -- Interaction handling --
+    // Rects whose clicks are owned by another control and must not also seek:
+    // the now-affordance cap/chip, plus any failed-cell tick that just fired a
+    // retry this frame.
+    let mut suppress_rects: Vec<Rect> = now_affordance_rect.into_iter().collect();
+    if clicked_failed_tick {
+        suppress_rects.extend(failed_ticks.iter().map(|t| t.rect));
+    }
     handle_timeline_interaction(
         ui,
         state,
@@ -667,6 +703,6 @@ pub(super) fn render_timeline(
         playback,
         &response,
         &frame,
-        now_affordance_rect,
+        &suppress_rects,
     );
 }

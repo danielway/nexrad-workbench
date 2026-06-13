@@ -143,12 +143,8 @@ fn draw_bottom_panel(
             }
 
             ui.vertical(|ui| {
-                // Timeline row
-                render_timeline(ui, state, timeline, live, playback, derived);
-
-                ui.add_space(2.0);
-
-                // Playback controls row
+                // Transport/controls row ABOVE the timeline strip (spec §5
+                // bottom cluster: "transport row … above the timeline").
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     render_playback_controls(
@@ -161,6 +157,11 @@ fn draw_bottom_panel(
                         chrome,
                     );
                 });
+
+                ui.add_space(2.0);
+
+                // Timeline strip row
+                render_timeline(ui, state, timeline, live, playback, acquisition, derived);
             });
         });
 

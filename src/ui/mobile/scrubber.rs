@@ -100,7 +100,6 @@ pub(super) fn render_scrubber(
             None,
             None,
             None,
-            None,
             frame_now,
         );
         for b in view.shadow_boundaries() {

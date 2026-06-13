@@ -32,10 +32,6 @@ pub mod tier {
     /// Nominal Archive boundary used only for hysteresis-free seeding
     /// (boot / URL restore), midway between the enter/exit spans.
     pub const ARCHIVE_NOMINAL_SPAN_SECS: f64 = 54.0 * 3600.0;
-    /// Within Macro, the sub-detail boundary kept for Phase 1: above this the
-    /// strip draws proportional volume blocks, below it merged coverage fill.
-    /// (Phase 2 reworks Macro rendering; this is a stopgap, not a tier.)
-    pub const MACRO_VOLUMES_ZOOM: f64 = 0.2;
 }
 
 /// The single stored timeline tier. Replaces the two previously-uncoupled
@@ -910,19 +906,15 @@ impl PlaybackState {
     }
 
     /// The renderer's visual detail for this frame, derived from the stored
-    /// tier (not raw zoom). Micro → Tilts; Macro → Volumes when zoomed in
-    /// enough else Coverage (a Phase-1 sub-detail kept inside Macro);
-    /// Archive → Coverage.
+    /// tier (not raw zoom). Micro → Tilts (frames-first cells); Macro →
+    /// Volumes (uniform ticks, with the renderer deciding tick-vs-coverage by
+    /// density); Archive → Coverage. The former `MACRO_VOLUMES_ZOOM` sub-detail
+    /// stopgap is gone — the Macro track now merges to coverage by tick
+    /// density, not a zoom threshold.
     pub fn detail_level(&self) -> DetailLevel {
         match self.timeline_tier {
             TimelineTier::Micro => DetailLevel::Tilts,
-            TimelineTier::Macro => {
-                if self.timeline_zoom >= tier::MACRO_VOLUMES_ZOOM {
-                    DetailLevel::Volumes
-                } else {
-                    DetailLevel::Coverage
-                }
-            }
+            TimelineTier::Macro => DetailLevel::Volumes,
             TimelineTier::Archive => DetailLevel::Coverage,
         }
     }
@@ -1666,15 +1658,16 @@ mod tests {
     #[wasm_bindgen_test]
     fn detail_level_maps_from_tier() {
         let mut ps = PlaybackState::default();
-        // Micro → Tilts.
+        // Micro → Tilts (frames-first cells).
         ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
         assert_eq!(ps.detail_level(), DetailLevel::Tilts);
-        // Macro with zoom >= 0.2 → Volumes.
+        // Macro → Volumes regardless of the in-tier zoom; the Macro renderer
+        // decides tick-vs-coverage by density now (the MACRO_VOLUMES_ZOOM
+        // sub-detail stopgap was removed).
         ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
         assert_eq!(ps.detail_level(), DetailLevel::Volumes);
-        // Macro with zoom < 0.2 → Coverage.
         ps.set_timeline_zoom(0.1, 1000.0, FALLBACK_FRAME_SPACING_SECS);
-        assert_eq!(ps.detail_level(), DetailLevel::Coverage);
+        assert_eq!(ps.detail_level(), DetailLevel::Volumes);
         // Archive → Coverage.
         let zoom_61h = 1000.0 / (61.0 * 3600.0);
         ps.set_timeline_zoom(zoom_61h, 1000.0, FALLBACK_FRAME_SPACING_SECS);

@@ -1,26 +1,48 @@
 //! Shared layout and typography constants for the timeline.
 //!
-//! All track heights live here so the bottom panel and the timeline
-//! renderer agree on the panel budget, and so zooming between detail
-//! levels never changes the total height (no panel reflow).
+//! The strip is one fixed-height widget across every zoom tier (no panel
+//! reflow). Its vertical budget is split into named bands so later phases can
+//! insert a minimap sliver above and loop handles below without re-deriving
+//! every rect:
+//!
+//! ```text
+//!   [ minimap sliver ]   ← reserved (Phase 3), 0px today
+//!   [ tick rail      ]   TICK_LANE_H
+//!   [ main track     ]   MAIN_TRACK_H   ← scan containers + frame cells
+//!   [ loop handles   ]   ← reserved (Phase 3), 0px today
+//! ```
+//!
+//! Total height is `TIMELINE_TOTAL_H = TICK_LANE_H + MAIN_TRACK_H` and is
+//! constant across Micro / Macro / Archive so the bottom panel never reflows.
 
 use eframe::egui::FontId;
 
-/// Height of the tick-label lane above the scan track.
+/// Height of the tick-label rail above the main track (spec §6: ~14px).
 pub(crate) const TICK_LANE_H: f32 = 14.0;
-/// Height of the scan (volume) track when the sweep track is visible.
-pub(crate) const SCAN_TRACK_H: f32 = 27.0;
-/// Separator between the scan and sweep tracks.
-pub(crate) const TRACK_SEPARATOR_H: f32 = 1.0;
-/// Height of the sweep (tilt) track.
-pub(crate) const SWEEP_TRACK_H: f32 = 22.0;
-/// Scan track height when the sweep track is hidden — absorbs the sweep
-/// track's space so the total stays constant across detail levels.
-pub(crate) const EXPANDED_SCAN_TRACK_H: f32 = SCAN_TRACK_H + TRACK_SEPARATOR_H + SWEEP_TRACK_H;
-/// Total timeline height, constant across detail levels.
-pub(crate) const TIMELINE_TOTAL_H: f32 = TICK_LANE_H + EXPANDED_SCAN_TRACK_H;
 
-/// Font for text inside scan/sweep blocks (labels, counts, countdowns).
+/// Height of the single main track that holds scan containers and their
+/// frame cells (spec §6 "full strip ~56px" = 14 tick + 42 main).
+pub(crate) const MAIN_TRACK_H: f32 = 42.0;
+
+/// Reserved sliver above the tick rail for the Phase-3 minimap. Zero today;
+/// kept named so [`TIMELINE_TOTAL_H`] and the rect math already account for it.
+pub(crate) const MINIMAP_SLIVER_H: f32 = 0.0;
+
+/// Reserved band below the main track for Phase-3 loop handles. Zero today.
+pub(crate) const LOOP_HANDLE_H: f32 = 0.0;
+
+/// Total timeline height, constant across detail levels.
+pub(crate) const TIMELINE_TOTAL_H: f32 =
+    MINIMAP_SLIVER_H + TICK_LANE_H + MAIN_TRACK_H + LOOP_HANDLE_H;
+
+/// Vertical inset of frame cells / sub-texture inside their scan container, so
+/// the container's bounding box reads as a frame around its contents.
+pub(crate) const CELL_INSET_Y: f32 = 4.0;
+
+/// Vertical inset of the scan-container box inside the main track.
+pub(crate) const CONTAINER_INSET_Y: f32 = 2.0;
+
+/// Font for text inside scan/frame cells (labels, counts, countdowns).
 pub(crate) fn block_font() -> FontId {
     FontId::monospace(9.0)
 }
@@ -28,9 +50,4 @@ pub(crate) fn block_font() -> FontId {
 /// Font for time tick labels in the tick lane.
 pub(crate) fn tick_font() -> FontId {
     FontId::monospace(9.0)
-}
-
-/// Font for the lane-name track headers (VOLUMES / TILTS).
-pub(crate) fn header_font() -> FontId {
-    FontId::proportional(8.0)
 }

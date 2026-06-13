@@ -74,8 +74,9 @@ const LOOKBACK_SPAN_SECS: f64 = (LOOKBACK_FRAMES as f64 + 1.0) * FALLBACK_SCAN_D
 
 /// Maximum time difference (in seconds) between a cached scan's start_time
 /// and an archive file's timestamp for them to be considered the same scan.
-/// 60 s allows for minor clock drift and timestamp rounding.
-const SCAN_CACHE_MATCH_TOLERANCE_SECS: i64 = 60;
+/// Aliases the timeline's single scan-start join tolerance so there is exactly
+/// one number governing "same scan" decisions across acquisition and the strip.
+const SCAN_CACHE_MATCH_TOLERANCE_SECS: i64 = crate::state::SCAN_JOIN_TOLERANCE_SECS;
 
 /// A finalized timeline selection at or under this span downloads its scans
 /// immediately; a longer span first asks for confirmation (the bulk download

@@ -11,7 +11,9 @@ pub(super) fn handle_timeline_interaction(
     playback: &mut crate::subsystem::Playback,
     response: &egui::Response,
     frame: &super::TimelineFrame<'_>,
-    now_rect: Option<Rect>,
+    // Rects whose clicks belong to another control (now-affordance cap/chip,
+    // failed-cell ticks) — a click inside any of them never also seeks.
+    suppress_rects: &[Rect],
 ) {
     let zoom = frame.zoom;
     let shift_held = ui.input(|i| i.modifiers.shift);
@@ -54,9 +56,9 @@ pub(super) fn handle_timeline_interaction(
 
     if response.clicked() && !shift_held {
         if let Some(pos) = response.interact_pointer_pos() {
-            // Clicks on the now affordance (the live-edge cap or the off-screen
-            // chip) are owned by `now_edge` — never also treat them as a seek.
-            if now_rect.is_some_and(|r| r.contains(pos)) {
+            // Clicks owned by another control (now-affordance cap/chip, a
+            // failed-cell retry tick) are never also a seek.
+            if suppress_rects.iter().any(|r| r.contains(pos)) {
                 return;
             }
 

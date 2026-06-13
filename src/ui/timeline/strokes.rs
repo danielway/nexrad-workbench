@@ -25,12 +25,6 @@ impl DashedEdges {
         left: true,
         right: true,
     };
-    pub(super) const HORIZONTAL: Self = Self {
-        top: true,
-        bottom: true,
-        left: false,
-        right: false,
-    };
 }
 
 /// Parameters for dashing a rectangle's border.
@@ -59,28 +53,6 @@ impl DashedBorder {
             v_period: period,
             edges: DashedEdges::ALL,
         }
-    }
-
-    pub(super) fn rect(
-        stroke: Stroke,
-        h_dash: f32,
-        h_period: f32,
-        v_dash: f32,
-        v_period: f32,
-    ) -> Self {
-        Self {
-            stroke,
-            h_dash,
-            h_period,
-            v_dash,
-            v_period,
-            edges: DashedEdges::ALL,
-        }
-    }
-
-    pub(super) fn with_edges(mut self, edges: DashedEdges) -> Self {
-        self.edges = edges;
-        self
     }
 }
 
@@ -147,6 +119,45 @@ pub(super) fn stroke_dashed_rect(painter: &Painter, rect: Rect, border: DashedBo
             }
             y += v_period;
         }
+    }
+
+    if !shapes.is_empty() {
+        painter.extend(shapes);
+    }
+}
+
+/// Fill a rectangle with batched diagonal hatch lines (the Queued frame-cell
+/// texture, spec §6.2). Diagonals read distinctly from the dashed Available
+/// outline even in grayscale, and replace the old dotted outline that was
+/// confusable with it. `spacing` is the perpendicular gap between lines.
+/// Batched into one `painter.extend` for the same perf reason as the dashed
+/// helper — there can be one queued cell per visible scan, per frame.
+pub(super) fn fill_hatched_rect(painter: &Painter, rect: Rect, stroke: Stroke, spacing: f32) {
+    if spacing <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    // 45° hatching: lines of slope 1 (x + y = c). c ranges over
+    // [min.x+min.y , max.x+max.y]; step c by `spacing * sqrt(2)` so the
+    // perpendicular gap between lines is `spacing`.
+    let c_min = rect.min.x + rect.min.y;
+    let c_max = rect.max.x + rect.max.y;
+    let step = spacing * std::f32::consts::SQRT_2;
+    let count = (((c_max - c_min) / step).ceil() as usize).saturating_add(1);
+    let mut shapes = Vec::with_capacity(count);
+
+    let mut c = c_min;
+    while c <= c_max {
+        // Line x + y = c, clipped to the rect. Solve the two edge crossings.
+        // Parametrize by x in [min.x, max.x]; y = c - x must land in
+        // [min.y, max.y]. Intersect the x-interval with the y-constraint.
+        let x_lo = rect.min.x.max(c - rect.max.y);
+        let x_hi = rect.max.x.min(c - rect.min.y);
+        if x_lo < x_hi {
+            let p0 = Pos2::new(x_lo, c - x_lo);
+            let p1 = Pos2::new(x_hi, c - x_hi);
+            shapes.push(Shape::line_segment([p0, p1], stroke));
+        }
+        c += step;
     }
 
     if !shapes.is_empty() {

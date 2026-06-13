@@ -567,6 +567,47 @@ impl AcquisitionState {
         }
     }
 
+    /// Scan-start seconds of every currently-Failed archive download. The
+    /// frame-cell join uses these to mark failed cells (alert tick); because
+    /// `retry_failed` flips the status back to Queued, the marker clears on
+    /// retry — unlike the error ring, which never forgets.
+    pub fn failed_scan_starts(&self) -> Vec<i64> {
+        self.operations
+            .iter()
+            .filter_map(|op| match (&op.status, &op.kind) {
+                (
+                    OperationStatus::Failed { .. },
+                    OperationKind::ArchiveDownload { scan_start, .. },
+                ) => Some(*scan_start),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The id of a Failed archive-download operation whose `scan_start` matches
+    /// `scan_start_secs` within `tolerance_secs`. Used to wire a timeline
+    /// failed-cell tick back to `AppCommand::RetryFailed`. Returns the most
+    /// recent match (operations iterate oldest→newest).
+    pub fn failed_operation_for_scan_start(
+        &self,
+        scan_start_secs: i64,
+        tolerance_secs: i64,
+    ) -> Option<OperationId> {
+        self.operations
+            .iter()
+            .rev()
+            .find(|op| {
+                matches!(op.status, OperationStatus::Failed { .. })
+                    && match &op.kind {
+                        OperationKind::ArchiveDownload { scan_start, .. } => {
+                            (scan_start - scan_start_secs).abs() <= tolerance_secs
+                        }
+                        _ => false,
+                    }
+            })
+            .map(|op| op.id)
+    }
+
     /// Get the next queued operation ID (for the download pump to start).
     pub fn next_queued_id(&self) -> Option<OperationId> {
         self.operations

@@ -62,7 +62,10 @@ pub use stats::{
 // Re-export the command type for ergonomic access.
 // AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
-pub use timeline_view::{LiveOverlayContext, TimelineView};
+pub use timeline_view::{
+    FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView,
+    SCAN_JOIN_TOLERANCE_SECS,
+};
 pub use vcp::get_vcp_definition;
 pub use vcp_forecast::{
     derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord,
