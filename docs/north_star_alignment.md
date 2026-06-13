@@ -46,6 +46,13 @@ one canonical answer and QA knows what behavior is intended.
 - **Radial-level canvas animation**: deferred to v2 (existing sweep animation
   stays, gated as today).
 - **Year-scale strip zoom**: removed, replaced by the Archive calendar tier.
+- **Archive calendar layout** (§6.4): the Archive tier intentionally ships a
+  **1-D zoomable UTC-day lane** (day cells laid out linearly with month
+  separators), not the 2-D week-by-day GitHub-contributions grid the spec
+  sketches. The ~56px strip height can't fit readable week-stacked cells without
+  growing the panel, so the linear lane is the deliberate height-budget tradeoff
+  for this pass. A 2-D weekday grid (independent of the linear zoom scalar) is a
+  possible future enhancement.
 - **Manual download management**: stays demoted; queue sheet shows what the
   system did, plus cancel/retry and policy toggles.
 - **Tablet tier** (§13 row 2): out of scope for this pass; touch devices ≥600 px
