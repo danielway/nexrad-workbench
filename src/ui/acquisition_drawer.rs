@@ -7,7 +7,7 @@
 use super::colors::{acquisition as acq_colors, ui as ui_colors};
 use crate::state::{
     format_bytes, AcquisitionState, AppCommand, AppState, DrawerTab, NetworkGroupKey,
-    OperationStatus, QueueState,
+    OperationStatus,
 };
 use crate::subsystem::Acquisition;
 use eframe::egui::{self, Color32, RichText, ScrollArea};
@@ -71,31 +71,6 @@ pub fn render_acquisition_drawer(
                 }
             });
         });
-
-        // Error-pause banner
-        if acquisition.state.queue_state == QueueState::ErrorPaused {
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(format!("{} Queue paused due to error", icons::WARNING))
-                        .size(10.0)
-                        .strong()
-                        .color(acq_colors::FAILED),
-                );
-
-                if let Some(err_op_id) = acquisition.state.error_pause_operation_id {
-                    if ui.small_button("Retry").clicked() {
-                        state.push_command(AppCommand::RetryFailed(err_op_id));
-                    }
-                    if ui.small_button("Skip").clicked() {
-                        state.push_command(AppCommand::SkipFailed(err_op_id));
-                    }
-                }
-                if ui.small_button("Resume").clicked() {
-                    state.push_command(AppCommand::ResumeQueue);
-                }
-            });
-            ui.separator();
-        }
 
         // Tab content
         match acquisition.state.active_tab {

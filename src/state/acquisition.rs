@@ -106,8 +106,6 @@ pub enum QueueState {
     Running,
     /// User-initiated pause.
     Paused,
-    /// Paused due to a failed operation.
-    ErrorPaused,
     /// No operations in queue.
     #[default]
     Empty,
@@ -138,8 +136,6 @@ pub struct AcquisitionState {
     pub operations: VecDeque<AcquisitionOperation>,
     /// Current queue state.
     pub queue_state: QueueState,
-    /// The operation that caused an error-pause, if any.
-    pub error_pause_operation_id: Option<OperationId>,
     /// Whether the acquisition drawer is expanded.
     pub drawer_expanded: bool,
     /// Drawer height in pixels (user-resizable).
@@ -158,7 +154,6 @@ impl Default for AcquisitionState {
             next_id: 1,
             operations: VecDeque::with_capacity(MAX_RETAINED),
             queue_state: QueueState::Empty,
-            error_pause_operation_id: None,
             drawer_expanded: false,
             drawer_height: 250.0,
             active_tab: DrawerTab::Queue,
@@ -231,9 +226,9 @@ impl AcquisitionState {
     /// Failures are **local and recoverable** (alignment §5 failure model):
     /// one scan's failure does not pause the whole queue — other queued items
     /// keep dispatching, and the failed cell surfaces an alert tick + retry on
-    /// the strip / queue sheet. We deliberately do NOT flip `queue_state` to
-    /// `ErrorPaused` or auto-expand the drawer here; `update_queue_state` keeps
-    /// the queue Running/Empty as appropriate.
+    /// the strip / queue sheet. We deliberately do NOT pause the whole queue or
+    /// auto-expand the drawer here; `update_queue_state` keeps the queue
+    /// Running/Empty as appropriate.
     pub fn mark_failed(&mut self, id: OperationId, error: String) {
         if let Some(op) = self.find_mut(id) {
             op.status = OperationStatus::Failed { error };
@@ -277,7 +272,6 @@ impl AcquisitionState {
             }
         }
         self.queue_state = QueueState::Empty;
-        self.error_pause_operation_id = None;
     }
 
     /// Retry a failed operation: reset to Queued, move to front of queue.
@@ -303,24 +297,18 @@ impl AcquisitionState {
             }
         }
         self.queue_state = QueueState::Running;
-        self.error_pause_operation_id = None;
     }
 
     /// Skip a failed operation: mark as cancelled and resume queue.
     pub fn skip_failed(&mut self, id: OperationId) {
         self.cancel_operation(id);
         self.queue_state = QueueState::Running;
-        self.error_pause_operation_id = None;
     }
 
     /// Resume a paused queue.
     pub fn resume(&mut self) {
-        if matches!(
-            self.queue_state,
-            QueueState::Paused | QueueState::ErrorPaused
-        ) {
+        if self.queue_state == QueueState::Paused {
             self.queue_state = QueueState::Running;
-            self.error_pause_operation_id = None;
         }
     }
 
@@ -562,12 +550,7 @@ impl AcquisitionState {
 
     /// Update queue state based on remaining operations.
     fn update_queue_state(&mut self) {
-        if !self.has_active_operations()
-            && !matches!(
-                self.queue_state,
-                QueueState::Paused | QueueState::ErrorPaused
-            )
-        {
+        if !self.has_active_operations() && self.queue_state != QueueState::Paused {
             self.queue_state = QueueState::Empty;
         }
     }
@@ -623,10 +606,7 @@ impl AcquisitionState {
 
     /// Whether the queue is paused (user or error).
     pub fn is_paused(&self) -> bool {
-        matches!(
-            self.queue_state,
-            QueueState::Paused | QueueState::ErrorPaused
-        )
+        self.queue_state == QueueState::Paused
     }
 }
 
@@ -662,7 +642,6 @@ mod tests {
             !acq.is_paused(),
             "a single failure must not pause the queue"
         );
-        assert_ne!(acq.queue_state, QueueState::ErrorPaused);
         // b is still active and dispatchable.
         assert_eq!(acq.active_count(), 1);
         assert!(matches!(
@@ -671,8 +650,8 @@ mod tests {
         ));
     }
 
-    /// When the failing op was the only work, the queue settles to Empty (not
-    /// ErrorPaused) so the next reactive prefetch can run unobstructed.
+    /// When the failing op was the only work, the queue settles to Empty (never
+    /// a global error-pause) so the next reactive prefetch can run unobstructed.
     #[wasm_bindgen_test]
     fn lone_failure_settles_to_empty_not_paused() {
         let mut acq = AcquisitionState::default();

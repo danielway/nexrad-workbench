@@ -36,7 +36,6 @@ mod volume_elevation_roster;
 pub use crate::geo::camera::CameraMode;
 pub use acquisition::{
     AcquisitionState, DrawerTab, NetworkGroupKey, OperationId, OperationKind, OperationStatus,
-    QueueState,
 };
 pub use alerts::AlertsState;
 pub use app_mode::{derive_app_mode, AppMode};
