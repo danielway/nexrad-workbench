@@ -920,4 +920,70 @@ mod tests {
         c.switch_mode(other);
         assert!(c.mode == other);
     }
+
+    /// A camera with its aspect set from a fixed screen rect.
+    fn cam_with_rect() -> (GlobeCamera, Rect) {
+        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), eframe::egui::Vec2::new(800.0, 600.0));
+        let mut c = cam();
+        c.set_aspect(rect);
+        (c, rect)
+    }
+
+    /// The site center projects to screen and unprojects back to the same
+    /// lat/lon — a full geo → screen → geo round-trip through the view and
+    /// projection matrices.
+    #[wasm_bindgen_test]
+    fn site_center_geo_round_trips_through_screen() {
+        let (c, rect) = cam_with_rect();
+        let screen = c
+            .geo_to_screen(39.0, -98.0, rect)
+            .expect("site center must project (near side)");
+        // The center should land near the middle of the screen.
+        assert!((screen.x - rect.center().x).abs() < 1.0, "sx {}", screen.x);
+        assert!((screen.y - rect.center().y).abs() < 1.0, "sy {}", screen.y);
+
+        let (lat, lon) = c
+            .screen_to_geo(screen, rect)
+            .expect("center screen must hit the globe");
+        assert!((lat - 39.0).abs() < 1e-2, "lat {}", lat);
+        assert!((lon - (-98.0)).abs() < 1e-2, "lon {}", lon);
+    }
+
+    /// The screen rect's center unprojects to the near-side geographic point
+    /// and projects straight back to that same screen pixel.
+    #[wasm_bindgen_test]
+    fn rect_center_screen_to_geo_and_back() {
+        let (c, rect) = cam_with_rect();
+        let center = rect.center();
+        let (lat, lon) = c
+            .screen_to_geo(center, rect)
+            .expect("rect center hits the near side of the globe");
+        // Near side of a camera centered on the site → the site itself.
+        assert!((lat - 39.0).abs() < 1e-2, "lat {}", lat);
+        assert!((lon - (-98.0)).abs() < 1e-2, "lon {}", lon);
+
+        let back = c.geo_to_screen(lat, lon, rect).expect("must re-project");
+        assert!((back.x - center.x).abs() < 1.0);
+        assert!((back.y - center.y).abs() < 1.0);
+    }
+
+    /// A screen point well outside the projected globe disc misses the sphere,
+    /// so `screen_to_geo` returns `None`.
+    #[wasm_bindgen_test]
+    fn screen_to_geo_misses_outside_disc() {
+        let (c, rect) = cam_with_rect();
+        // A point far off the right edge (NDC x ≈ 5) — well outside the globe
+        // disc, so the unprojected ray misses the sphere.
+        let off = Pos2::new(rect.max.x + 2000.0, rect.center().y);
+        assert!(c.screen_to_geo(off, rect).is_none());
+    }
+
+    /// A geographic point on the far hemisphere is behind the globe and culled
+    /// by `geo_to_screen` (the back-face test in `world_to_screen`).
+    #[wasm_bindgen_test]
+    fn geo_to_screen_culls_far_hemisphere() {
+        let (c, rect) = cam_with_rect();
+        // Antipode of the site (39,-98) is (-39, 82) — directly behind the globe.
+        assert!(c.geo_to_screen(-39.0, 82.0, rect).is_none());
+    }
 }

@@ -505,6 +505,93 @@ fn convert_shapefile_shape(shape: &shapefile::Shape, label: Option<String>) -> O
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn c(x: f64, y: f64) -> Coord<f64> {
+        Coord { x, y }
+    }
+
+    /// The shoelace centroid of a unit square is its geometric center (0.5, 0.5)
+    /// — and for a symmetric square this also equals the vertex average, so this
+    /// pins the happy path.
+    #[wasm_bindgen_test]
+    fn centroid_unit_square() {
+        let sq = vec![c(0.0, 0.0), c(1.0, 0.0), c(1.0, 1.0), c(0.0, 1.0)];
+        let centroid = compute_polygon_centroid(&sq);
+        assert!((centroid.x - 0.5).abs() < 1e-9, "x {}", centroid.x);
+        assert!((centroid.y - 0.5).abs() < 1e-9, "y {}", centroid.y);
+    }
+
+    /// An L-shape's true area centroid differs from the naive vertex average —
+    /// this proves the shoelace path is taken, not a fallback. Hand-computed:
+    /// the L (2x2 square minus its top-right 1x1 quadrant) has area centroid
+    /// (5/6, 5/6) — derived by composition: 2x2 square (area 4, centroid (1,1))
+    /// minus the top-right 1x1 (area 1, centroid (1.5, 1.5)) → (4·1 − 1.5)/3 =
+    /// 5/6. Its 6-vertex average is (1.0, 1.0), so the two are distinct.
+    #[wasm_bindgen_test]
+    fn centroid_l_shape_uses_shoelace_not_vertex_average() {
+        // Vertices CCW: (0,0)(2,0)(2,1)(1,1)(1,2)(0,2).
+        let l = vec![
+            c(0.0, 0.0),
+            c(2.0, 0.0),
+            c(2.0, 1.0),
+            c(1.0, 1.0),
+            c(1.0, 2.0),
+            c(0.0, 2.0),
+        ];
+        let centroid = compute_polygon_centroid(&l);
+        assert!((centroid.x - 5.0 / 6.0).abs() < 1e-9, "x {}", centroid.x);
+        assert!((centroid.y - 5.0 / 6.0).abs() < 1e-9, "y {}", centroid.y);
+        // Vertex average is (1.0, 1.0) — distinctly different from the area
+        // centroid, confirming the shoelace formula (not the fallback) ran.
+        let xs = [0.0_f64, 2.0, 2.0, 1.0, 1.0, 0.0];
+        let avg_x = xs.iter().sum::<f64>() / xs.len() as f64;
+        assert!((avg_x - 1.0).abs() < 1e-9, "avg_x {avg_x}");
+        assert!((centroid.x - avg_x).abs() > 1e-3);
+    }
+
+    /// A 2-vertex input is degenerate (<3 verts) → vertex-average fallback.
+    #[wasm_bindgen_test]
+    fn centroid_two_points_falls_back_to_average() {
+        let pts = vec![c(0.0, 0.0), c(4.0, 2.0)];
+        let centroid = compute_polygon_centroid(&pts);
+        assert!((centroid.x - 2.0).abs() < 1e-9);
+        assert!((centroid.y - 1.0).abs() < 1e-9);
+    }
+
+    /// A collinear (zero-area) triple falls back to the vertex average without
+    /// producing NaN from the divide-by-(6*area).
+    #[wasm_bindgen_test]
+    fn centroid_collinear_falls_back_without_nan() {
+        let line = vec![c(0.0, 0.0), c(2.0, 0.0), c(4.0, 0.0)];
+        let centroid = compute_polygon_centroid(&line);
+        assert!(centroid.x.is_finite() && centroid.y.is_finite());
+        // Vertex average of the three collinear points.
+        assert!((centroid.x - 2.0).abs() < 1e-9);
+        assert!((centroid.y - 0.0).abs() < 1e-9);
+    }
+
+    /// Empty input yields the origin (documented degenerate case).
+    #[wasm_bindgen_test]
+    fn centroid_empty_is_origin() {
+        let centroid = compute_polygon_centroid(&[]);
+        assert_eq!(centroid.x, 0.0);
+        assert_eq!(centroid.y, 0.0);
+    }
+
+    /// `polygon_bbox_area` is 0 for empty input and width*height otherwise.
+    #[wasm_bindgen_test]
+    fn bbox_area_empty_and_rectangle() {
+        assert_eq!(polygon_bbox_area(&[]), 0.0);
+        // Bounding box spans x in [1,4] (w=3), y in [2,7] (h=5) → area 15.
+        let pts = vec![c(1.0, 2.0), c(4.0, 5.0), c(2.0, 7.0)];
+        assert!((polygon_bbox_area(&pts) - 15.0).abs() < 1e-9);
+    }
+}
+
 /// Collection of all geographic layers.
 #[derive(Debug, Clone, Default)]
 pub struct GeoLayerSet {
