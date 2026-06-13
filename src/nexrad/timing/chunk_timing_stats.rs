@@ -65,6 +65,24 @@ pub struct BucketStats {
     pub lag_sample_count: usize,
 }
 
+/// Median of a slice of `i64`, or `None` when empty. Sorts `vals` in place.
+/// Even-length inputs average the two middle elements (integer division,
+/// matching the historical per-site math). Shared by
+/// [`ChunkTimingStats::median_availability_lag_secs`] and
+/// [`ChunkTimingStats::per_bucket_stats`].
+fn median_i64(vals: &mut [i64]) -> Option<i64> {
+    if vals.is_empty() {
+        return None;
+    }
+    vals.sort_unstable();
+    let mid = vals.len() / 2;
+    Some(if vals.len().is_multiple_of(2) {
+        (vals[mid - 1] + vals[mid]) / 2
+    } else {
+        vals[mid]
+    })
+}
+
 fn chunk_type_order(t: ChunkType) -> u8 {
     match t {
         ChunkType::Start => 0,
@@ -202,16 +220,7 @@ impl ChunkTimingStats {
             .flat_map(|queue| queue.iter())
             .filter_map(|stat| stat.availability_lag.map(|d| d.num_milliseconds()))
             .collect();
-        if lags_ms.is_empty() {
-            return None;
-        }
-        lags_ms.sort_unstable();
-        let mid = lags_ms.len() / 2;
-        let median_ms = if lags_ms.len().is_multiple_of(2) {
-            (lags_ms[mid - 1] + lags_ms[mid]) / 2
-        } else {
-            lags_ms[mid]
-        };
+        let median_ms = median_i64(&mut lags_ms)?;
         Some(median_ms as f64 / 1000.0)
     }
 
@@ -321,18 +330,8 @@ impl ChunkTimingStats {
                     .iter()
                     .filter_map(|s| s.availability_lag.map(|d| d.num_milliseconds()))
                     .collect();
-                let median_lag_ms = if lags.is_empty() {
-                    None
-                } else {
-                    lags.sort_unstable();
-                    let mid = lags.len() / 2;
-                    Some(if lags.len().is_multiple_of(2) {
-                        (lags[mid - 1] + lags[mid]) / 2
-                    } else {
-                        lags[mid]
-                    })
-                };
                 let lag_sample_count = lags.len();
+                let median_lag_ms = median_i64(&mut lags);
                 Some(BucketStats {
                     characteristics: *k,
                     sample_count: n,
@@ -583,6 +582,25 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn median_i64_edge_cases() {
+        // Empty → None.
+        assert_eq!(median_i64(&mut []), None);
+        // Single element.
+        assert_eq!(median_i64(&mut [7]), Some(7));
+        // Odd length → middle of the sorted values (input order is irrelevant).
+        assert_eq!(median_i64(&mut [9, 1, 5]), Some(5));
+        // Even length → integer-division average of the two middle elements.
+        // sorted [2,4,6,8] → (4+6)/2 = 5.
+        assert_eq!(median_i64(&mut [8, 2, 6, 4]), Some(5));
+        // Even-length average truncates toward zero. sorted [1,2] → (1+2)/2 = 1.
+        assert_eq!(median_i64(&mut [2, 1]), Some(1));
+        // Negative lags (clock skew) sort correctly. sorted [-10,-3,-1] → -3.
+        assert_eq!(median_i64(&mut [-1, -10, -3]), Some(-3));
+        // Mixed signs, even length. sorted [-4,-2,1,3] → (-2+1)/2 = 0 (trunc).
+        assert_eq!(median_i64(&mut [3, -4, 1, -2]), Some(0));
+    }
+
+    #[wasm_bindgen_test]
     fn chunk_type_is_part_of_the_bucket_key() {
         // Regression pin for the End-chunk bucket-key mismatch: the WRITE path
         // (`Projector::characteristics_for_sequence`) and the READ path
@@ -636,5 +654,76 @@ mod tests {
         // intervals.
         let v2 = r#"{"version":2,"timings":[[{"chunk_type":"I","waveform_type":"CS","channel_configuration":"constant_phase","is_first_in_sweep":false},[{"duration_ms":10000,"availability_lag_ms":null,"attempts":1}]]]}"#;
         assert!(ChunkTimingStats::from_json(v2).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn from_json_trims_to_newest_window_in_order() {
+        // A persisted bucket with MORE than MAX_TIMING_SAMPLES samples must
+        // keep exactly the newest MAX, in their original order. We encode the
+        // sample index in `attempts` so we can verify which survived and that
+        // ordering is preserved (oldest dropped from the front).
+        assert_eq!(MAX_TIMING_SAMPLES, 10); // pin the assumed window size
+        let n = MAX_TIMING_SAMPLES + 5; // 15 samples
+        let samples: Vec<String> = (0..n)
+            .map(|i| {
+                format!(
+                    r#"{{"availability_interval_ms":{},"collection_interval_ms":null,"availability_lag_ms":null,"attempts":{}}}"#,
+                    1000 + i,
+                    i
+                )
+            })
+            .collect();
+        let json = format!(
+            r#"{{"version":3,"timings":[[{{"chunk_type":"I","waveform_type":"CS","channel_configuration":"constant_phase","is_first_in_sweep":false}},[{}]]]}}"#,
+            samples.join(",")
+        );
+
+        let stats = ChunkTimingStats::from_json(&json).expect("parses");
+        let b = bucket();
+        // Exactly the newest MAX kept.
+        assert_eq!(stats.sample_count(&b), MAX_TIMING_SAMPLES);
+        // The kept samples are indices 5..15 (the newest 10), in order. The
+        // queue's `attempts` should therefore start at 5 and end at 14.
+        let q = stats.timings.get(&b).expect("bucket present");
+        assert_eq!(q.front().unwrap().attempts, n - MAX_TIMING_SAMPLES); // 5
+        assert_eq!(q.back().unwrap().attempts, n - 1); // 14
+                                                       // Strictly increasing → original order preserved, front is oldest-kept.
+        let attempts: Vec<usize> = q.iter().map(|s| s.attempts).collect();
+        assert!(attempts.windows(2).all(|w| w[0] + 1 == w[1]));
+    }
+
+    #[wasm_bindgen_test]
+    fn from_json_drops_only_the_corrupt_bucket() {
+        // One bucket carries a bogus waveform_type string; a valid sibling
+        // bucket must survive. The corrupt entry should not poison the cache.
+        let json = r#"{"version":3,"timings":[
+            [{"chunk_type":"I","waveform_type":"NOPE","channel_configuration":"constant_phase","is_first_in_sweep":false},[{"availability_interval_ms":8000,"collection_interval_ms":null,"availability_lag_ms":null,"attempts":1}]],
+            [{"chunk_type":"I","waveform_type":"CS","channel_configuration":"constant_phase","is_first_in_sweep":false},[{"availability_interval_ms":9000,"collection_interval_ms":null,"availability_lag_ms":null,"attempts":1}]]
+        ]}"#;
+        let stats = ChunkTimingStats::from_json(json).expect("parses");
+        // The valid sibling (CS) survives.
+        let valid = bucket();
+        assert_eq!(stats.sample_count(&valid), 1);
+        assert_eq!(
+            stats.average_availability_interval(&valid),
+            Some(Duration::seconds(9))
+        );
+        // The corrupt bucket left no other entry behind — only the one valid
+        // bucket exists.
+        assert_eq!(stats.total_sample_count(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn from_json_all_invalid_bucket_yields_no_entry() {
+        // A bucket whose every sample fails to parse leaves an empty queue,
+        // which must not be inserted. Here we make the whole bucket invalid via
+        // an unrecognized channel_configuration so `characteristics_from_dto`
+        // returns None and the bucket is skipped entirely.
+        let json = r#"{"version":3,"timings":[
+            [{"chunk_type":"I","waveform_type":"CS","channel_configuration":"bogus_phase","is_first_in_sweep":false},[{"availability_interval_ms":8000,"collection_interval_ms":null,"availability_lag_ms":null,"attempts":1}]]
+        ]}"#;
+        let stats = ChunkTimingStats::from_json(json).expect("parses");
+        assert_eq!(stats.total_sample_count(), 0);
+        assert!(stats.get_statistics().is_empty());
     }
 }
