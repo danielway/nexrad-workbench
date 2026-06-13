@@ -570,11 +570,24 @@ fn ring_flags(join: &FrameJoinInputs<'_>, key_secs: f64, elev: u8) -> (bool, boo
     (is_active, is_prev_active)
 }
 
-/// Ring flags keyed by ELEVATION only — for the live volume, which is unique,
-/// so the on-GPU cut is identified by its elevation without a timestamp match
-/// (whose tolerance the collection-adjusted `volume_start` can exceed).
-fn ring_flags_by_elevation(join: &FrameJoinInputs<'_>, elev: u8) -> (bool, bool) {
-    let matches = |o: Option<(f64, u8)>| o.is_some_and(|(_, en)| en == elev);
+/// Ring flags for the live volume's cells. The collection-adjusted
+/// `volume_start` can drift from the displayed cut's storage-key timestamp by
+/// more than the ring tolerance, so within the live volume the on-GPU cut is
+/// identified by ELEVATION alone. But the identity must *belong* to the live
+/// volume first: when detached and still streaming, the user can scrub to a
+/// cached scan, so `join.active` points at that cached sweep — its same-elevation
+/// live cell must NOT also ring (the cached container rings it instead). Gate on
+/// the identity's timestamp falling within [`SCAN_JOIN_TOLERANCE_SECS`] of
+/// `volume_start` before matching by elevation.
+fn ring_flags_in_live_volume(
+    join: &FrameJoinInputs<'_>,
+    volume_start: f64,
+    elev: u8,
+) -> (bool, bool) {
+    let tol = SCAN_JOIN_TOLERANCE_SECS as f64;
+    let matches = |o: Option<(f64, u8)>| {
+        o.is_some_and(|(ts, en)| en == elev && (ts - volume_start).abs() <= tol)
+    };
     let is_active = matches(join.active);
     let is_prev_active = !is_active && matches(join.prev_active);
     (is_active, is_prev_active)
@@ -648,12 +661,12 @@ fn container_from_live(pos: &ScanProjection, join: &FrameJoinInputs<'_>) -> Scan
             SweepProjectionStatus::AvailableNotCollected => (FrameCellState::Available, None),
             SweepProjectionStatus::FutureExpected => (FrameCellState::Projected, None),
         };
-        // The live volume is unique, so its on-GPU cut is identified by
-        // ELEVATION alone — `pos.volume_start` (collection-adjusted) can drift
-        // from the displayed cut's storage-key timestamp by more than the ring
-        // tolerance, which would otherwise drop the active highlight while
-        // streaming.
-        let (is_active, is_prev_active) = ring_flags_by_elevation(join, sp.elevation_number);
+        // Ring this cell only when the on-GPU identity belongs to the live
+        // volume (its timestamp is within tolerance of `volume_start`); matching
+        // by elevation alone would double-highlight when detached+streaming and
+        // the displayed sweep is actually a cached scan at the same elevation.
+        let (is_active, is_prev_active) =
+            ring_flags_in_live_volume(join, key_secs, sp.elevation_number);
         cells.push(FrameCell {
             start_secs: sp.collection_start_secs,
             end_secs: sp.collection_end_secs,
@@ -1316,5 +1329,49 @@ mod tests {
         let c = view.frame_containers_in_range(0.0, 5_000.0, j);
         let active_count = c[0].cells.iter().filter(|c| c.is_active).count();
         assert_eq!(active_count, 2); // both tilt-1 cells share the scan key + elev
+    }
+
+    /// The live container rings its matching cell only when the on-GPU identity
+    /// belongs to the live volume. When detached+streaming the user can scrub to
+    /// a cached scan at the same elevation; its identity sits far from
+    /// `volume_start`, so the live cell must NOT also ring (the cached container
+    /// rings it instead — no double-highlight).
+    #[wasm_bindgen_test]
+    fn join_live_ring_only_when_active_is_in_live_volume() {
+        let mut s_inprog = sweep_pos(1, SweepProjectionStatus::InProgress);
+        s_inprog.collection_start_secs = 1_700_000_000.0;
+        s_inprog.collection_end_secs = 1_700_000_030.0;
+        s_inprog.chunks_in_sweep = 3;
+        let pos = live_model(vec![s_inprog]); // volume_start = 1_700_000_000.0
+        let live = crate::state::LiveModeState::with_dummy_streaming(
+            crate::state::LivePhase::Streaming,
+            1_700_000_010.0,
+        );
+        let cache = RadarTimeline { scans: Vec::new() };
+        let shadows: Vec<ScanBoundary> = Vec::new();
+        let view = TimelineView::build(
+            &cache,
+            &shadows,
+            Some(&live),
+            Some(&pos),
+            Some(1),
+            1_700_000_010.0,
+        );
+
+        // Identity points at a cached scan at the SAME elevation but a timestamp
+        // far from the live volume_start → the live cell does not ring.
+        let mut j_far = empty_join("reflectivity", Some(1));
+        j_far.active = Some((1_699_990_000.0, 1));
+        let c_far = view.frame_containers_in_range(1_699_999_000.0, 1_700_001_000.0, j_far);
+        assert!(
+            !c_far[0].cells.iter().any(|c| c.is_active),
+            "live cell must not ring for a cached-scan identity"
+        );
+
+        // Identity inside the live volume → the matching live cell rings.
+        let mut j_in = empty_join("reflectivity", Some(1));
+        j_in.active = Some((1_700_000_005.0, 1));
+        let c_in = view.frame_containers_in_range(1_699_999_000.0, 1_700_001_000.0, j_in);
+        assert_eq!(c_in[0].cells.iter().filter(|c| c.is_active).count(), 1);
     }
 }
