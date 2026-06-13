@@ -77,3 +77,122 @@ fn parse_report(item: &Value) -> Option<StormReport> {
         lon,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// One result object as a JSON string.
+    fn result(id: i64, obtime: &str, category: &str, lon: f64, lat: f64) -> String {
+        format!(
+            r#"{{"id":{id},"obtime":"{obtime}","category":"{category}","description":"d","geom":{{"type":"Point","coordinates":[{lon},{lat}]}}}}"#
+        )
+    }
+
+    /// Wrap result strings in a paginated body with an explicit `count`.
+    fn body(count: Option<usize>, results: &[String]) -> String {
+        let results = results.join(",");
+        match count {
+            Some(c) => format!(r#"{{"count":{c},"results":[{results}]}}"#),
+            None => format!(r#"{{"results":[{results}]}}"#),
+        }
+    }
+
+    /// A well-formed page yields one report per result with `(lon, lat)` read
+    /// in coordinate order and obtime converted to epoch milliseconds. The
+    /// lon/lat ordering is the critical guard: mPING `coordinates` are
+    /// `[lon, lat]`, and a swap would relocate every report.
+    #[wasm_bindgen_test]
+    fn well_formed_page_parses_lon_lat_and_obtime() {
+        let b = body(
+            Some(2),
+            &[
+                result(10, "1970-01-01T00:00:01+00:00", "Hail", -97.5, 35.25),
+                result(11, "1970-01-01T00:00:02+00:00", "Tornado", -98.0, 36.0),
+            ],
+        );
+        let parsed = parse_response(&b).unwrap();
+        assert_eq!(parsed.total_count, 2);
+        assert_eq!(parsed.reports.len(), 2);
+
+        let r0 = &parsed.reports[0];
+        assert_eq!(r0.id, 10);
+        assert_eq!(r0.category, ReportCategory::Hail);
+        // lon = -97.5 (coords[0]), lat = 35.25 (coords[1]) — NOT swapped.
+        assert!((r0.lon - (-97.5)).abs() < 1e-9);
+        assert!((r0.lat - 35.25).abs() < 1e-9);
+        // 1 second past the epoch == 1000 ms.
+        assert!((r0.obtime_ms - 1000.0).abs() < 1e-9);
+
+        assert_eq!(parsed.reports[1].category, ReportCategory::Tornado);
+    }
+
+    /// When `count` is absent, `total_count` falls back to the number of
+    /// parsed results on this page.
+    #[wasm_bindgen_test]
+    fn missing_count_falls_back_to_results_len() {
+        let b = body(
+            None,
+            &[result(1, "1970-01-01T00:00:01+00:00", "Flood", 0.0, 0.0)],
+        );
+        let parsed = parse_response(&b).unwrap();
+        assert_eq!(parsed.total_count, 1);
+    }
+
+    /// A result missing its coordinates or obtime is silently skipped — not an
+    /// error — so the surrounding good results still parse.
+    #[wasm_bindgen_test]
+    fn malformed_results_skipped_not_errored() {
+        // Three results: good, missing geom, missing obtime.
+        let good = result(1, "1970-01-01T00:00:01+00:00", "Hail", -97.0, 35.0);
+        let no_geom =
+            r#"{"id":2,"obtime":"1970-01-01T00:00:02+00:00","category":"Hail"}"#.to_string();
+        let no_obtime =
+            r#"{"id":3,"category":"Hail","geom":{"type":"Point","coordinates":[-98.0,36.0]}}"#
+                .to_string();
+        // count says 3 even though only one result is usable.
+        let b = body(Some(3), &[good, no_geom, no_obtime]);
+        let parsed = parse_response(&b).unwrap();
+        // Only the good one survives, but total_count preserves the server's 3.
+        assert_eq!(parsed.reports.len(), 1);
+        assert_eq!(parsed.reports[0].id, 1);
+        assert_eq!(parsed.total_count, 3);
+    }
+
+    /// A body with no `results` array is an error.
+    #[wasm_bindgen_test]
+    fn missing_results_array_errors() {
+        assert!(parse_response(r#"{"count":0}"#).is_err());
+    }
+
+    /// An unknown category maps to `Other`.
+    #[wasm_bindgen_test]
+    fn unknown_category_maps_to_other() {
+        let b = body(
+            Some(1),
+            &[result(1, "1970-01-01T00:00:01+00:00", "Frogs", 0.0, 0.0)],
+        );
+        let parsed = parse_response(&b).unwrap();
+        assert_eq!(parsed.reports[0].category, ReportCategory::Other);
+    }
+
+    /// `ReportCategory::parse` round-trips its known strings, and the labels
+    /// stay distinct.
+    #[wasm_bindgen_test]
+    fn report_category_parse_round_trips() {
+        let cases = [
+            ("Rain/Snow", ReportCategory::RainSnow),
+            ("Hail", ReportCategory::Hail),
+            ("Wind Damage", ReportCategory::WindDamage),
+            ("Tornado", ReportCategory::Tornado),
+            ("Flood", ReportCategory::Flood),
+            ("Reduced Visibility", ReportCategory::ReducedVisibility),
+        ];
+        for (s, expected) in cases {
+            assert_eq!(ReportCategory::parse(s), expected);
+        }
+        // Unknown → Other.
+        assert_eq!(ReportCategory::parse("xyz"), ReportCategory::Other);
+    }
+}
