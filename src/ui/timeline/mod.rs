@@ -4,6 +4,7 @@
 
 mod frame_cells;
 mod interaction;
+mod minimap;
 mod now_edge;
 mod overlays;
 mod ruler;
@@ -322,6 +323,11 @@ pub(super) fn render_timeline(
     let available_width = ui.available_width() as f64;
     playback.state.timeline_width_px = available_width;
 
+    // The minimap and the main strip are two stacked widgets; butt them
+    // together (the minimap's own padding gives the visual gap) so the panel
+    // height stays exactly TIMELINE_TOTAL_H with no surprise inter-widget gap.
+    ui.spacing_mut().item_spacing.y = 0.0;
+
     let zoom = playback.state.timeline_zoom;
     let tier = playback.state.timeline_tier;
     // The renderer's visual detail still maps from the stored tier (single
@@ -331,22 +337,29 @@ pub(super) fn render_timeline(
 
     let tick_lane_h = style::TICK_LANE_H;
     let main_track_h = style::MAIN_TRACK_H;
-    let timeline_height = style::TIMELINE_TOTAL_H;
 
+    // -- Minimap sliver (spec §5/§13) ------------------------------------
+    // The whole-session navigator renders ABOVE the main strip in its OWN
+    // allocated widget (distinct response id) so its drag/click never shares a
+    // hit-test layer with the main strip's press-seek/scrub. Desktop only this
+    // phase — the mobile scrubber already plays this role on phones.
+    if style::MINIMAP_SLIVER_H > 0.0 {
+        minimap::render_minimap(ui, state, timeline, live, playback);
+    }
+
+    // The main strip widget covers only the tick rail + main track; the
+    // minimap above is its own widget. (The loop-handle band in `style` is
+    // reserved at 0px for Phase 3.)
     let (response, painter) = ui.allocate_painter(
-        Vec2::new(available_width as f32, timeline_height),
+        Vec2::new(available_width as f32, tick_lane_h + main_track_h),
         Sense::click_and_drag(),
     );
     let full_rect = response.rect;
 
-    // Sub-rects: tick rail -> main track. (The minimap sliver + loop-handle
-    // bands in `style` are reserved at 0px for Phase 3.)
+    // Sub-rects: tick rail -> main track.
     let tick_rect = Rect::from_min_max(
-        Pos2::new(full_rect.min.x, full_rect.min.y + style::MINIMAP_SLIVER_H),
-        Pos2::new(
-            full_rect.max.x,
-            full_rect.min.y + style::MINIMAP_SLIVER_H + tick_lane_h,
-        ),
+        Pos2::new(full_rect.min.x, full_rect.min.y),
+        Pos2::new(full_rect.max.x, full_rect.min.y + tick_lane_h),
     );
     let scan_rect = Rect::from_min_max(
         Pos2::new(full_rect.min.x, tick_rect.max.y),

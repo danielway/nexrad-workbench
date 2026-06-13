@@ -6,14 +6,15 @@
 //! every rect:
 //!
 //! ```text
-//!   [ minimap sliver ]   ← reserved (Phase 3), 0px today
+//!   [ minimap sliver ]   MINIMAP_SLIVER_H  ← whole-session navigator (Phase 3)
 //!   [ tick rail      ]   TICK_LANE_H
 //!   [ main track     ]   MAIN_TRACK_H   ← scan containers + frame cells
 //!   [ loop handles   ]   ← reserved (Phase 3), 0px today
 //! ```
 //!
-//! Total height is `TIMELINE_TOTAL_H = TICK_LANE_H + MAIN_TRACK_H` and is
-//! constant across Micro / Macro / Archive so the bottom panel never reflows.
+//! Total height is `TIMELINE_TOTAL_H = MINIMAP_SLIVER_H + TICK_LANE_H +
+//! MAIN_TRACK_H` and is constant across Micro / Macro / Archive so the bottom
+//! panel never reflows.
 
 use eframe::egui::FontId;
 
@@ -24,9 +25,15 @@ pub(crate) const TICK_LANE_H: f32 = 14.0;
 /// frame cells (spec §6 "full strip ~56px" = 14 tick + 42 main).
 pub(crate) const MAIN_TRACK_H: f32 = 42.0;
 
-/// Reserved sliver above the tick rail for the Phase-3 minimap. Zero today;
-/// kept named so [`TIMELINE_TOTAL_H`] and the rect math already account for it.
-pub(crate) const MINIMAP_SLIVER_H: f32 = 0.0;
+/// Whole-session minimap sliver above the tick rail (spec §5/§13): a thin
+/// navigator that doubles as the Level-0 "where am I" anchor. ~6px of painted
+/// content plus [`MINIMAP_PAD_Y`] above and below for a comfortable drag
+/// target.
+pub(crate) const MINIMAP_SLIVER_H: f32 = 10.0;
+
+/// Vertical padding inside the minimap sliver between the hit area and the
+/// painted coverage bar (so the bar reads slim while the target stays easy).
+pub(crate) const MINIMAP_PAD_Y: f32 = 2.0;
 
 /// Reserved band below the main track for Phase-3 loop handles. Zero today.
 pub(crate) const LOOP_HANDLE_H: f32 = 0.0;
