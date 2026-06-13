@@ -19,7 +19,7 @@ pub(crate) mod acquisition_drawer;
 mod alerts_modal;
 mod bottom_panel;
 mod canvas;
-mod canvas_inspector;
+mod canvas_data_probe;
 mod canvas_interaction;
 mod canvas_overlays;
 pub(crate) mod colors;

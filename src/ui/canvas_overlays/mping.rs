@@ -8,7 +8,7 @@
 //!
 //! The selected report (clicked marker) is highlighted with a brighter
 //! ring and its details are drawn as a tooltip-style popover anchored
-//! near the marker, similar to the canvas inspector.
+//! near the marker, similar to the canvas data probe.
 
 use crate::geo::MapProjection;
 use crate::mping::StormReport;

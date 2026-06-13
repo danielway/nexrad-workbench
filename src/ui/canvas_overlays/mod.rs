@@ -11,7 +11,7 @@
 //!
 //! 2. **Geo / data-flow overlays** — sites, alerts, mPING reports,
 //!    GPS location, national mosaic, radar GPU, sweep animation,
-//!    storm cells, distance tool, inspector. These have either
+//!    storm cells, distance tool, data probe. These have either
 //!    interleaved pass dependencies (geo layers' Lines/Labels passes
 //!    bracket the radar image) or mid-render computed inputs
 //!    (`gpu_sweep`, `radar_cutout`, `sweep_line_info`). They stay as

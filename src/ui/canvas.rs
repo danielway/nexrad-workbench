@@ -1,6 +1,8 @@
 //! Central canvas UI: radar visualization area.
 
-use super::canvas_inspector::{render_distance_measurement, render_inspector, render_storm_cells};
+use super::canvas_data_probe::{
+    render_data_probe, render_distance_measurement, render_storm_cells,
+};
 use super::canvas_interaction::{handle_canvas_interaction, handle_globe_interaction};
 use super::canvas_overlays::{
     draw_globe, draw_national_mosaic, render_alerts, render_chrome_overlays, render_gps_location,
@@ -349,9 +351,9 @@ pub fn render_canvas_with_geo(
                     );
                 }
 
-                if state.viz_state.inspector_enabled {
+                if state.viz_state.data_probe_enabled {
                     if let Some(hover_pos) = response.hover_pos() {
-                        render_inspector(
+                        render_data_probe(
                             &painter,
                             &projection,
                             hover_pos,

@@ -1,8 +1,10 @@
-//! Canvas inspector tool and measurement overlays.
+//! Canvas data-probe tool and measurement overlays.
 //!
 //! Renders the hover tooltip (lat/lon, azimuth, range, product value),
 //! the crosshair cursor, distance measurement lines, and detected storm
-//! cell bounding boxes on top of the radar canvas.
+//! cell bounding boxes on top of the radar canvas. The "Data probe" name
+//! distinguishes this map-space hover tool from the scan inspector (the
+//! per-scan volume breakdown), which is a separate surface.
 
 use crate::geo::MapProjection;
 use crate::nexrad::RadarGpuRenderer;
@@ -14,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use super::canvas::format_unix_timestamp;
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_inspector(
+pub(crate) fn render_data_probe(
     painter: &Painter,
     projection: &MapProjection,
     hover_pos: Pos2,

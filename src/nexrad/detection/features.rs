@@ -11,7 +11,7 @@ use super::DetectionInput;
 use crate::state::StormCellInfo;
 
 /// Approximate kilometers per degree of latitude. Matches the
-/// equirectangular approximation used in `canvas_inspector.rs`.
+/// equirectangular approximation used in `canvas_data_probe.rs`.
 const KM_PER_DEG: f64 = 111.0;
 
 pub(super) fn summarize(

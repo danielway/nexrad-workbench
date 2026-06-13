@@ -462,7 +462,7 @@ pub(super) fn render_tools_section(
     egui::CollapsingHeader::new(RichText::new("Tools").strong())
         .default_open(true)
         .show(ui, |ui| {
-            ui.checkbox(&mut state.viz_state.inspector_enabled, "Inspector")
+            ui.checkbox(&mut state.viz_state.data_probe_enabled, "Data probe")
                 .on_hover_text("Hover over radar to see position and data value");
 
             let was_active = state.viz_state.distance_tool_active;

@@ -374,8 +374,10 @@ pub struct VizState {
     /// Density cutoff for volume rendering (physical value, e.g. 5.0 dBZ).
     pub volume_density_cutoff: f32,
 
-    /// Whether the inspector tool is active (hover shows lat/lon and data value).
-    pub inspector_enabled: bool,
+    /// Whether the data-probe tool is active (hover shows lat/lon and data
+    /// value). Named "Data probe" to keep "inspector" for the scan inspector
+    /// (the per-scan volume breakdown), which is an unrelated surface.
+    pub data_probe_enabled: bool,
 
     /// Whether the distance measurement tool is active.
     pub distance_tool_active: bool,
@@ -523,7 +525,7 @@ impl Default for VizState {
             last_sweep_line_cache: None,
             volume_3d_enabled: false,
             volume_density_cutoff: 5.0,
-            inspector_enabled: false,
+            data_probe_enabled: false,
             distance_tool_active: false,
             distance_start: None,
             distance_end: None,
