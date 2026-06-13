@@ -290,3 +290,171 @@ impl ElevationChunkMapper {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_vcp::{build_vcp, TestElevation};
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// A 2-elevation VCP: elev 1 super-res (6 chunks), elev 2 standard (3).
+    /// Sequence layout: 1=Start, 2..=7 elev1, 8..=10 elev2; final=10.
+    fn mapper_2elev() -> ElevationChunkMapper {
+        let vcp = build_vcp(&[
+            TestElevation {
+                super_res: true,
+                elevation_angle_raw: 0,
+                azimuth_rate_raw: 1 << 14, // 22.5 dps
+                waveform_raw: 1,           // CS
+                channel_raw: 0,
+            },
+            TestElevation::standard_cs(0, 1 << 14),
+        ]);
+        ElevationChunkMapper::new(&vcp)
+    }
+
+    #[wasm_bindgen_test]
+    fn new_builds_the_full_sequence_layout() {
+        let m = mapper_2elev();
+        // Start chunk at seq 1 + 6 + 3 data chunks = 10 total.
+        assert_eq!(m.total_chunks(), 10);
+        assert_eq!(m.final_sequence(), 10);
+
+        // Start chunk.
+        let start = m.get_chunk_metadata(1).unwrap();
+        assert!(start.is_start_chunk());
+        assert_eq!(start.elevation_number(), None);
+        assert!(!start.is_first_in_sweep());
+
+        // Elevation 1 occupies seqs 2..=7 (6 super-res chunks).
+        for (idx, seq) in (2..=7).enumerate() {
+            let md = m.get_chunk_metadata(seq).unwrap();
+            assert_eq!(md.elevation_number(), Some(1));
+            assert_eq!(md.chunks_in_sweep(), 6);
+            assert_eq!(md.chunk_index_in_sweep(), idx);
+            assert_eq!(md.is_first_in_sweep(), idx == 0);
+            assert_eq!(md.is_last_in_sweep(), idx == 5);
+            assert!(!md.is_start_chunk());
+        }
+
+        // Elevation 2 occupies seqs 8..=10 (3 standard chunks).
+        for (idx, seq) in (8..=10).enumerate() {
+            let md = m.get_chunk_metadata(seq).unwrap();
+            assert_eq!(md.elevation_number(), Some(2));
+            assert_eq!(md.chunks_in_sweep(), 3);
+            assert_eq!(md.chunk_index_in_sweep(), idx);
+            assert_eq!(md.is_first_in_sweep(), idx == 0);
+            assert_eq!(md.is_last_in_sweep(), idx == 2);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn get_sequence_elevation_number_boundaries() {
+        let m = mapper_2elev();
+        // Start chunk maps to no elevation.
+        assert_eq!(m.get_sequence_elevation_number(1), None);
+        // First/last seq of each elevation range.
+        assert_eq!(m.get_sequence_elevation_number(2), Some(1));
+        assert_eq!(m.get_sequence_elevation_number(7), Some(1));
+        assert_eq!(m.get_sequence_elevation_number(8), Some(2));
+        assert_eq!(m.get_sequence_elevation_number(10), Some(2));
+        // Past the final sequence → None.
+        assert_eq!(m.get_sequence_elevation_number(11), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn get_chunk_metadata_off_by_one_guards() {
+        let m = mapper_2elev();
+        // seq 0 is invalid (1-based sequencing).
+        assert!(m.get_chunk_metadata(0).is_none());
+        // seq == len is the last valid chunk.
+        assert!(m.get_chunk_metadata(10).is_some());
+        // seq > len → None.
+        assert!(m.get_chunk_metadata(11).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn next_matching_after_accepts_all_none_subset() {
+        let m = mapper_2elev();
+        // Accept all: from seq 1, the next match is seq 2.
+        assert_eq!(m.next_matching_sequence_after(1, false, |_| true), Some(2));
+        // Accept none: never matches; with accept_end=false → None (drives the
+        // synthetic volume end in streaming_state).
+        assert_eq!(m.next_matching_sequence_after(1, false, |_| false), None);
+        // Subset: only elevation 2 (seqs 8..=10). From seq 1 the next is 8.
+        let elev2 = |e: Option<usize>| e == Some(2);
+        assert_eq!(m.next_matching_sequence_after(1, false, elev2), Some(8));
+        // From inside elevation 2 (seq 8) the next elev-2 match is seq 9.
+        assert_eq!(m.next_matching_sequence_after(8, false, elev2), Some(9));
+        // After the last elev-2 chunk there is no further match.
+        assert_eq!(m.next_matching_sequence_after(10, false, elev2), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn next_matching_after_accept_end_at_final_sequence() {
+        let m = mapper_2elev();
+        // A predicate that rejects everything: with accept_end=false there is
+        // no match even at the final sequence.
+        assert_eq!(m.next_matching_sequence_after(9, false, |_| false), None);
+        // With accept_end=true the final sequence (10) is returned even though
+        // the predicate rejects it — volume-boundary signaling.
+        assert_eq!(m.next_matching_sequence_after(9, true, |_| false), Some(10));
+        // saturating_add: starting at usize::MAX doesn't panic and yields None.
+        assert_eq!(
+            m.next_matching_sequence_after(usize::MAX, true, |_| true),
+            None
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn has_remaining_match_honors_filter() {
+        let m = mapper_2elev();
+        // `All` always has a remaining match while chunks remain (so the
+        // projector never extends into the next volume for All).
+        assert!(m.has_remaining_match(StreamingFilter::All, 1));
+        assert!(m.has_remaining_match(StreamingFilter::All, 9));
+        // After the final sequence, nothing remains even for All.
+        assert!(!m.has_remaining_match(StreamingFilter::All, 10));
+        // Filtering to elevation 2: a remaining match exists before seq 10 but
+        // not at/after it.
+        assert!(m.has_remaining_match(StreamingFilter::Elevation(2), 1));
+        assert!(!m.has_remaining_match(StreamingFilter::Elevation(2), 10));
+        // Filtering to elevation 1: no remaining match once we're past seq 7.
+        assert!(!m.has_remaining_match(StreamingFilter::Elevation(1), 7));
+    }
+
+    #[wasm_bindgen_test]
+    fn matching_sequences_in_range_clamps_and_excludes_start() {
+        let m = mapper_2elev();
+        // Accept-all over an over-wide range clamps to [1, final]. The Start
+        // chunk (seq 1, elev None) is included only if the predicate accepts
+        // None — here accept-all does, so seq 1 appears.
+        let all = m.matching_sequences_in_range(0, 999, |_| true);
+        assert_eq!(all, (1..=10).collect::<Vec<_>>());
+
+        // Excluding the Start chunk: a predicate that requires Some(elev).
+        let data_only = m.matching_sequences_in_range(0, 999, |e| e.is_some());
+        assert_eq!(data_only, (2..=10).collect::<Vec<_>>());
+
+        // Subset filter within an inner range.
+        let elev2 = m.matching_sequences_in_range(3, 9, |e| e == Some(2));
+        assert_eq!(elev2, vec![8, 9]);
+
+        // Empty when lower > upper after clamping.
+        assert!(m.matching_sequences_in_range(9, 3, |_| true).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn empty_vcp_has_zero_final_sequence() {
+        let vcp = build_vcp(&[]);
+        let m = ElevationChunkMapper::new(&vcp);
+        // Only the Start chunk exists; no elevation ranges.
+        assert_eq!(m.final_sequence(), 0);
+        assert_eq!(m.total_chunks(), 1);
+        assert_eq!(m.get_sequence_elevation_number(1), None);
+        // next_matching scans 2..=0 (empty) → None regardless of accept_end.
+        assert_eq!(m.next_matching_sequence_after(1, true, |_| true), None);
+        // range scan clamps upper to final (0) → lower(1) > upper(0) → empty.
+        assert!(m.matching_sequences_in_range(1, 5, |_| true).is_empty());
+    }
+}
