@@ -89,8 +89,6 @@ fn draw_scan_inspector(
         &timeline.shadow_scan_boundaries,
         Some(&live.mode_state),
         live.radar_model.position.as_ref(),
-        state.viz_state.elevation_selection.elevation_number(),
-        state.frame_now.secs(),
     );
 
     let product = state.viz_state.product.to_worker_string();

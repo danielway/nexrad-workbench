@@ -104,8 +104,6 @@ pub(super) fn render_scrubber(
             &timeline.shadow_scan_boundaries,
             None,
             None,
-            None,
-            frame_now,
         );
         for b in view.shadow_boundaries() {
             if view.is_covered_by_cached(b.start) {
@@ -205,8 +203,6 @@ pub(super) fn render_scrubber(
             &timeline.shadow_scan_boundaries,
             Some(&live.mode_state),
             live.radar_model.position.as_ref(),
-            None,
-            frame_now,
         );
         if let Some(scan_start) = view.scan_start_at(ts) {
             chrome.scan_inspector = Some(scan_start);

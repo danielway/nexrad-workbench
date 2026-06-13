@@ -210,8 +210,6 @@ pub(super) fn render_minimap(
             &timeline.shadow_scan_boundaries,
             None,
             None,
-            None,
-            now,
         );
         for b in view.shadow_boundaries() {
             if view.is_covered_by_cached(b.start) {

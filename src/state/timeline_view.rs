@@ -33,7 +33,6 @@
 //! failures + the live projection into per-cell states the frames-first strip
 //! renders (spec §6.3).
 
-use crate::data::ScanKey;
 use crate::nexrad::projection::{ScanProjection, SweepProjectionStatus, SweepTimingProvenance};
 use crate::nexrad::ScanBoundary;
 use crate::state::radar_data::{RadarTimeline, Scan};
@@ -152,15 +151,6 @@ pub struct ScanContainer {
     pub is_live: bool,
 }
 
-impl ScanContainer {
-    /// Whether `ts` falls within the container's displayed span. The hit-test
-    /// entry point Phase 3's inspector/scrub-to-cell will read.
-    #[allow(dead_code)]
-    pub fn contains(&self, ts: f64) -> bool {
-        ts >= self.start_secs && ts <= self.end_secs
-    }
-}
-
 /// The extra join inputs the frame-cell model needs beyond the sources
 /// [`TimelineView`] already holds: the download-progress ghost ranges and the
 /// set of failed scan-starts. Kept as a small borrowed bundle so the renderer
@@ -201,8 +191,6 @@ pub struct TimelineView<'a> {
     /// Cached scan key-millis (plus the live volume) for O(log n) coverage
     /// queries by the shadow/ghost overlays.
     coverage_keys: BTreeSet<i64>,
-    elevation_filter: Option<u8>,
-    now_secs: f64,
 }
 
 impl<'a> TimelineView<'a> {
@@ -217,8 +205,6 @@ impl<'a> TimelineView<'a> {
         shadows: &'a [ScanBoundary],
         live_state: Option<&LiveModeState>,
         live_position: Option<&ScanProjection>,
-        elevation_filter: Option<u8>,
-        now_secs: f64,
     ) -> Self {
         let (live_position, live_volume_ms) = match (live_state, live_position) {
             (Some(ls), Some(pos)) if ls.is_active() => {
@@ -247,8 +233,6 @@ impl<'a> TimelineView<'a> {
             live_volume_ms,
             live_position,
             coverage_keys,
-            elevation_filter,
-            now_secs,
         }
     }
 
@@ -321,14 +305,6 @@ impl<'a> TimelineView<'a> {
         self.coverage_keys.range(lo..=hi).next().is_some()
     }
 
-    /// The frame's active tilt filter (1-based elevation number), carried for
-    /// consumers that key off it; the frame-cell join takes the tilt explicitly
-    /// via [`FrameJoinInputs`] instead.
-    #[allow(dead_code)]
-    pub fn elevation_filter(&self) -> Option<u8> {
-        self.elevation_filter
-    }
-
     /// Resolve a timestamp (seconds) to the scan-start key of the scan
     /// container covering it — for opening the scan inspector from a
     /// right-click / long-press at `ts`. Prefers the live in-progress volume,
@@ -360,11 +336,6 @@ impl<'a> TimelineView<'a> {
             .iter()
             .find(|b| ts >= b.start as f64 && ts <= b.end as f64)
             .map(|b| b.start as f64)
-    }
-
-    #[allow(dead_code)] // Carried for consumers that need the frame's canonical `now`.
-    pub fn now_secs(&self) -> f64 {
-        self.now_secs
     }
 
     // ──────────────────────────────────────────────────────────────────────
@@ -791,13 +762,6 @@ pub fn merge_cached_into_live(position: &mut ScanProjection, cached: &Scan) {
     }
 }
 
-/// Convenience: the key-millis a [`ScanKey`] resolves to (mirrors how the
-/// adapter and renderers round `key_timestamp`).
-#[allow(dead_code)]
-pub fn scan_key_ms(key: &ScanKey) -> i64 {
-    key.scan_start.0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -928,7 +892,7 @@ mod tests {
             scans: vec![cached_scan(1_700_000_000.0, Vec::new())],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, None, 1_700_000_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
 
         assert!(view.is_covered_by_cached(1_700_000_000));
         assert!(view.is_covered_by_cached(1_700_000_059));
@@ -944,7 +908,7 @@ mod tests {
             scans: vec![cached_scan(1_700_000_000.0, Vec::new())],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, None, 1_700_000_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
         let n = view
             .settled_scans_in_range(1_699_999_000.0, 1_700_001_000.0)
             .count();
@@ -990,7 +954,7 @@ mod tests {
                 end: 1120,
             },
         ];
-        let view = TimelineView::build(&cache, &shadows, None, None, None, 1000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
 
         let pairs: Vec<_> = view.visual_scans_in_range(0.0, 5000.0).collect();
         assert_eq!(pairs.len(), 1);
@@ -1027,7 +991,7 @@ mod tests {
             scans: vec![sparse, next],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, None, 1000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
 
         let pairs: Vec<_> = view.visual_scans_in_range(0.0, 5000.0).collect();
         assert_eq!(pairs.len(), 2);
@@ -1079,7 +1043,7 @@ mod tests {
             )],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, Some(1), 2_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
         let containers =
             view.frame_containers_in_range(0.0, 5_000.0, empty_join("reflectivity", Some(1)));
         assert_eq!(containers.len(), 1);
@@ -1105,7 +1069,7 @@ mod tests {
             )],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, Some(1), 2_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
         let containers =
             view.frame_containers_in_range(0.0, 5_000.0, empty_join("reflectivity", Some(1)));
         assert_eq!(containers.len(), 1);
@@ -1128,7 +1092,7 @@ mod tests {
             start: 1_000,
             end: 1_300,
         }];
-        let view = TimelineView::build(&cache, &shadows, None, None, Some(1), 2_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
         let containers =
             view.frame_containers_in_range(0.0, 5_000.0, empty_join("reflectivity", Some(1)));
         assert_eq!(containers.len(), 1);
@@ -1146,7 +1110,7 @@ mod tests {
             start: 1_000,
             end: 1_300,
         }];
-        let view = TimelineView::build(&cache, &shadows, None, None, Some(1), 2_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
 
         let queued = [(1_010_i64, 1_300_i64)];
         let in_flight = [(990_i64, 1_300_i64)];
@@ -1184,7 +1148,7 @@ mod tests {
             )],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, Some(1), 2_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
         let c = view.frame_containers_in_range(0.0, 5_000.0, empty_join("reflectivity", Some(1)));
         assert_eq!(c[0].cells[0].state, FrameCellState::Available);
         // Same scan resolved for velocity → Cached.
@@ -1203,7 +1167,7 @@ mod tests {
             scans: vec![missing],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, Some(1), 2_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
         let c = view.frame_containers_in_range(0.0, 5_000.0, empty_join("reflectivity", Some(1)));
         assert_eq!(c.len(), 1);
         assert!(c[0].is_available);
@@ -1242,14 +1206,7 @@ mod tests {
         );
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(
-            &cache,
-            &shadows,
-            Some(&live),
-            Some(&pos),
-            Some(1),
-            1_700_000_010.0,
-        );
+        let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
         let c = view.frame_containers_in_range(
             1_699_999_000.0,
             1_700_001_000.0,
@@ -1297,7 +1254,7 @@ mod tests {
             start: 2_000,
             end: 2_300,
         }];
-        let view = TimelineView::build(&cache, &shadows, None, None, None, 3_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
 
         // Inside the cached scan's displayed span → its key.
         assert_eq!(view.scan_start_at(1_100.0), Some(1_000.0));
@@ -1322,7 +1279,7 @@ mod tests {
             )],
         };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(&cache, &shadows, None, None, Some(1), 2_000.0);
+        let view = TimelineView::build(&cache, &shadows, None, None);
         let mut j = empty_join("reflectivity", Some(1));
         // The scan key is 1_000; the on-GPU cell is tilt 1.
         j.active = Some((1_000.0, 1));
@@ -1349,14 +1306,7 @@ mod tests {
         );
         let cache = RadarTimeline { scans: Vec::new() };
         let shadows: Vec<ScanBoundary> = Vec::new();
-        let view = TimelineView::build(
-            &cache,
-            &shadows,
-            Some(&live),
-            Some(&pos),
-            Some(1),
-            1_700_000_010.0,
-        );
+        let view = TimelineView::build(&cache, &shadows, Some(&live), Some(&pos));
 
         // Identity points at a cached scan at the SAME elevation but a timestamp
         // far from the live volume_start → the live cell does not ring.

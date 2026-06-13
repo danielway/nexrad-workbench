@@ -416,8 +416,6 @@ pub(super) fn render_timeline(
             &timeline.shadow_scan_boundaries,
             Some(&live.mode_state),
             live.radar_model.position.as_ref(),
-            state.viz_state.elevation_selection.elevation_number(),
-            state.frame_now.secs(),
         ),
         now_secs: state.frame_now.secs(),
         view_start,

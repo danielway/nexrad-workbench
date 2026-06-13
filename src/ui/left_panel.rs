@@ -1,7 +1,7 @@
 //! Left panel UI: radar operations visualization.
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::state::{get_vcp_definition, radar_data::Scan, AppState};
+use crate::state::{get_vcp_definition, radar_data::Scan};
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
 
@@ -20,7 +20,7 @@ impl Layer for LeftPanelLayer {
         ctx.chrome.left_sidebar_visible && ctx.state.show_advanced()
     }
     fn render(&self, ctx: &mut LayoutCtx) {
-        draw_left_panel(ctx.ctx, ctx.state, ctx.timeline, ctx.live, ctx.playback);
+        draw_left_panel(ctx.ctx, ctx.timeline, ctx.live, ctx.playback);
     }
 }
 
@@ -48,7 +48,6 @@ struct RadarStateAtTimestamp<'a> {
 
 fn draw_left_panel(
     ctx: &egui::Context,
-    state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
@@ -60,14 +59,13 @@ fn draw_left_panel(
         .max_width(400.0)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                render_radar_operations_section(ui, state, timeline, live, playback);
+                render_radar_operations_section(ui, timeline, live, playback);
             });
         });
 }
 
 fn render_radar_operations_section(
     ui: &mut egui::Ui,
-    state: &mut AppState,
     timeline: &crate::subsystem::Timeline,
     live: &crate::subsystem::Live,
     playback: &crate::subsystem::Playback,
@@ -77,7 +75,7 @@ fn render_radar_operations_section(
 
     ui.add_space(4.0);
 
-    let radar_state = query_radar_state_at_timestamp(state, timeline, live, playback);
+    let radar_state = query_radar_state_at_timestamp(timeline, live, playback);
 
     // Top-down and side views side-by-side. The "future data" sector only
     // makes sense while the playhead tracks the live edge — a detached
@@ -102,7 +100,6 @@ fn render_radar_operations_section(
 }
 
 fn query_radar_state_at_timestamp<'a>(
-    state: &'a AppState,
     timeline: &'a crate::subsystem::Timeline,
     live: &'a crate::subsystem::Live,
     playback: &'a crate::subsystem::Playback,
@@ -114,14 +111,11 @@ fn query_radar_state_at_timestamp<'a>(
     // excluded from `settled_scan_at` and surfaced via `live_volume()` (with
     // its already-cached cuts merged in) — this replaces the bespoke
     // archive-vs-live reconciliation this function used to do itself.
-    let now = state.frame_now.secs();
     let view = crate::state::TimelineView::build(
         &timeline.scans,
         &timeline.shadow_scan_boundaries,
         Some(&live.mode_state),
         live.radar_model.position.as_ref(),
-        state.viz_state.elevation_selection.elevation_number(),
-        now,
     );
 
     match view.settled_scan_at(ts) {
