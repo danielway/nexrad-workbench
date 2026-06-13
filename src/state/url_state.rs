@@ -212,3 +212,29 @@ pub fn push_to_url(
     let history = window.history().expect("no history");
     let _ = history.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&query));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn rt_persisted_only_when_caller_reports_attached_live() {
+        // The persistence rule (spec §7): `rt=true` (reload re-tethers) is
+        // written ONLY while the playhead is attached to the live edge. The
+        // caller passes that as `is_live` (`live.app_mode == AppMode::Live`,
+        // which requires both a stream session AND an attached playhead), so a
+        // detached background stream persists `t` only — no `rt`.
+        let state = crate::state::AppState::default();
+        let playback = crate::state::PlaybackState::default();
+
+        // Attached live → rt = Some(true).
+        let attached = ViewState::from_state(&state, &playback, true);
+        assert_eq!(attached.rt, Some(true));
+
+        // Detached (or idle) → rt = None, so reload restores the archive
+        // position rather than re-tethering and losing it.
+        let detached = ViewState::from_state(&state, &playback, false);
+        assert_eq!(detached.rt, None);
+    }
+}

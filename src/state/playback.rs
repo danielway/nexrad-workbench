@@ -1249,6 +1249,21 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    fn format_lag_minutes_and_hours() {
+        // Negative / sub-second clamps to 0:00.
+        assert_eq!(format_lag(-5.0), "0:00");
+        assert_eq!(format_lag(0.4), "0:00");
+        // Under an hour: m:ss.
+        assert_eq!(format_lag(9.0), "0:09");
+        assert_eq!(format_lag(134.0), "2:14"); // the spec's "2:14 behind"
+        assert_eq!(format_lag(59.0 * 60.0 + 59.0), "59:59");
+        // At/above an hour: h:mm:ss.
+        assert_eq!(format_lag(3600.0), "1:00:00");
+        assert_eq!(format_lag(3600.0 + 2.0 * 60.0 + 5.0), "1:02:05");
+        assert_eq!(format_lag(11.0 * 3600.0 + 9.0 * 60.0 + 3.0), "11:09:03");
+    }
+
+    #[wasm_bindgen_test]
     fn effective_mode_is_macro_iff_lookback() {
         let mut ps = PlaybackState::default();
         // Land the tier in Micro via the mutation path (zoom alone no longer

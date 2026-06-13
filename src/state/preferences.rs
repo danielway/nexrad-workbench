@@ -286,3 +286,37 @@ impl UserPreferences {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn pause_stream_while_reviewing_defaults_off() {
+        // New users / fresh defaults: the data-saver policy starts off (spec §7
+        // / alignment §5 default).
+        assert!(!UserPreferences::default().pause_stream_while_reviewing);
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_prefs_without_pause_stream_field_deserialize_to_false() {
+        // A stored blob from before the field existed must still parse (serde
+        // default), landing the policy off rather than failing the whole load.
+        let legacy = r#"{"speed":"Normal","advanced_mode":true}"#;
+        let prefs: UserPreferences = serde_json::from_str(legacy).expect("legacy parse");
+        assert!(!prefs.pause_stream_while_reviewing);
+        // A sibling field still round-trips, confirming the blob really lacked
+        // the new field rather than silently defaulting everything.
+        assert!(prefs.advanced_mode);
+    }
+
+    #[wasm_bindgen_test]
+    fn pause_stream_while_reviewing_round_trips() {
+        let mut prefs = UserPreferences::default();
+        prefs.pause_stream_while_reviewing = true;
+        let json = serde_json::to_string(&prefs).expect("serialize");
+        let back: UserPreferences = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.pause_stream_while_reviewing);
+    }
+}

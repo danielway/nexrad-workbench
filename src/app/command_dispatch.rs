@@ -105,6 +105,11 @@ impl WorkbenchApp {
                 .coordinator
                 .cache_load_channel
                 .clear_cache(ctx.clone(), self.acquisition.coordinator.facade().clone());
+            // An explicit cache wipe is one of the cases where blanking IS
+            // correct (spec §11.2): the data the displayed frame came from is
+            // gone, so drop it rather than holding a stale frame with a
+            // discrepancy caption.
+            self.clear_display_no_scan();
         } else {
             // Cache loader is busy; replay the request on the next frame.
             self.state.push_command(state::AppCommand::ClearCache);

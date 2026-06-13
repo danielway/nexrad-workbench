@@ -393,17 +393,19 @@ pub fn render_canvas_with_geo(
                     },
                 );
 
-                // Loading hint: a blank canvas with a reactive fetch in flight
-                // should read as "loading", not "broken" (PRODUCT.md §7.2).
-                if state.viz_state.acquiring {
-                    painter.text(
-                        rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "Acquiring data…",
-                        egui::FontId::proportional(15.0),
-                        ui.visuals().weak_text_color(),
-                    );
-                }
+                // Canvas honesty caption (spec §11.2). A blank canvas with a
+                // fetch in flight reads as "loading", not "broken"; a held frame
+                // whose time has drifted from the playhead surfaces the
+                // discrepancy ("showing X · fetching/​no-data Y"). The target (Y)
+                // is a PLAYHEAD time, kept visually distinct from the actual
+                // collection readouts (info overlay) by the wording.
+                render_canvas_caption(
+                    &painter,
+                    &rect,
+                    ui.visuals().weak_text_color(),
+                    state.viz_state.canvas_caption,
+                    state.use_local_time,
+                );
 
                 handle_canvas_interaction(
                     &response,
@@ -767,4 +769,54 @@ pub(super) fn format_age_compact(now_secs: f64, ts_secs: f64) -> Option<String> 
     } else {
         None
     }
+}
+
+/// Compact `H:MM` clock for the honesty caption (e.g. "2:41"), honoring the
+/// local/UTC preference. Minute precision matches the spec's "showing 2:41 ·
+/// fetching 2:51…" wording.
+fn format_hhmm(ts: f64, use_local: bool) -> String {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ts * 1000.0));
+    let (h, m) = if use_local {
+        (d.get_hours(), d.get_minutes())
+    } else {
+        (d.get_utc_hours(), d.get_utc_minutes())
+    };
+    format!("{h}:{m:02}")
+}
+
+/// Render the canvas honesty caption (spec §11.2). Centered, low-key text:
+/// "Acquiring data…" on a blank canvas, or "showing X · fetching Y…" /
+/// "showing X · no data at Y" when a held frame's time has drifted from the
+/// playhead. No-op for [`CanvasCaption::None`].
+fn render_canvas_caption(
+    painter: &egui::Painter,
+    rect: &Rect,
+    color: Color32,
+    caption: crate::state::CanvasCaption,
+    use_local: bool,
+) {
+    let text = match caption {
+        crate::state::CanvasCaption::None => return,
+        crate::state::CanvasCaption::Acquiring => "Acquiring data…".to_string(),
+        crate::state::CanvasCaption::Discrepancy {
+            showing,
+            target,
+            fetching,
+        } => {
+            let showing_s = format_hhmm(showing, use_local);
+            let target_s = format_hhmm(target, use_local);
+            if fetching {
+                format!("showing {showing_s} · fetching {target_s}…")
+            } else {
+                format!("showing {showing_s} · no data at {target_s}")
+            }
+        }
+    };
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        text,
+        egui::FontId::proportional(15.0),
+        color,
+    );
 }

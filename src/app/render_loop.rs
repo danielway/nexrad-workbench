@@ -172,11 +172,19 @@ impl WorkbenchApp {
                         }
                     }
                     None => {
-                        // Don't blank during live: an on-GPU live partial has
-                        // no cached scan backing it and must survive a frame
-                        // where the live volume isn't in the timeline yet.
+                        // The playhead drifted into an undownloaded region or
+                        // gap. Per spec §11.2 (alignment §3) we DON'T blank on
+                        // age — keep showing the most recent frame and surface
+                        // the discrepancy via the canvas caption (computed at
+                        // the end of this function). Blanking stays correct only
+                        // for site/product/elevation changes and cache wipes,
+                        // which clear `displayed` on their own paths.
+                        //
+                        // Still drop the stale active-scan key so the resolver
+                        // and prefetch don't keep targeting a scan the playhead
+                        // has left — without re-clearing the GPU frame.
                         if active_ts.is_some() && !live_active {
-                            self.clear_display_no_scan();
+                            self.clear_active_scan();
                         }
                     }
                 }
@@ -246,13 +254,34 @@ impl WorkbenchApp {
             }
         }
 
-        // Distinguish "fetching" from "no data here": when the canvas is blank
-        // but a reactive fetch covers the cursor, flag it so the canvas shows
-        // an "Acquiring…" hint instead of reading as broken (PRODUCT.md §7.2).
+        // Canvas honesty caption (spec §11.2). Derived here where the displayed
+        // identity, playhead, and download-progress ranges are all in scope. The
+        // live partial path owns the canvas while the playhead is attached
+        // (pinned/lookback), so the caption is suppressed there — but a detached
+        // background stream resolves the cached frame at the cursor, so the
+        // caption applies just like ordinary archive browsing.
         let pos = self.playback.state.playback_position();
-        self.state.viz_state.acquiring = !live_active
-            && self.state.viz_state.displayed.is_none()
-            && self.position_is_being_acquired(pos);
+        let attached = self.playback.state.time_model.is_pinned()
+            || self.playback.state.time_model.is_lookback();
+        let displayed = self
+            .state
+            .viz_state
+            .displayed
+            .as_ref()
+            .map(|d| (d.start_time, d.end_time, (d.start_time + d.end_time) / 2.0));
+        let scan_covers_playhead = self
+            .timeline
+            .scans
+            .find_recent_scan(pos, MAX_SCAN_AGE_SECS)
+            .is_some();
+        let fetch_covers_playhead = self.position_is_being_acquired(pos);
+        self.state.viz_state.canvas_caption = state::derive_canvas_caption(
+            attached,
+            displayed,
+            pos,
+            scan_covers_playhead,
+            fetch_covers_playhead,
+        );
     }
 
     /// Whether an archive fetch covering `playback_secs` is in flight or being

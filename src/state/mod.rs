@@ -72,8 +72,9 @@ pub use vcp_forecast::{
     ForecastTimingLabel, SweepForecast, SweepStatus, VolumeForecastSnapshot, WaitResolution,
 };
 pub use viz::{
-    DisplayedSweep, ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct,
-    RenderProcessing, StormCellInfo, SweepIdentity, ViewMode, VizState,
+    derive_canvas_caption, CanvasCaption, DisplayedSweep, ElevationListEntry, ElevationSelection,
+    InterpolationMode, RadarProduct, RenderProcessing, StormCellInfo, SweepIdentity, ViewMode,
+    VizState,
 };
 pub use volume_elevation_roster::VolumeElevationRoster;
 
