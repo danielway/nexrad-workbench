@@ -52,8 +52,9 @@ fn draw_bottom_panel(
     let dt = ctx.input(|i| i.stable_dt);
 
     // Handle spacebar to toggle playback (only when no text input is focused).
-    // Decoupled from live: in live this toggles the lookback replay; going live
-    // is handled by the now-line cap / Ctrl+L, not the spacebar.
+    // Decoupled from the stream: while tethered this freezes the live feed
+    // (pause-while-tethered); going live is handled by the LIVE button /
+    // now-line cap / Ctrl+L, not the spacebar.
     let space_pressed = ctx.input(|i| i.key_pressed(egui::Key::Space) && !i.modifiers.any());
     let has_focus = ctx.memory(|m| m.focused().is_some());
     if space_pressed && !has_focus {
