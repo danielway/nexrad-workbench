@@ -12,8 +12,25 @@ pub const MICRO_ZOOM_THRESHOLD: f64 = 1.0;
 
 /// Minimum / maximum timeline zoom (pixels per second). Every zoom mutation
 /// routes through [`PlaybackState::set_timeline_zoom`], which clamps here.
-pub const TIMELINE_ZOOM_MIN: f64 = 0.000001;
+///
+/// The minimum is the *hard floor* that bounds even a very wide strip; the
+/// effective per-frame floor is tighter and width-aware (see
+/// [`PlaybackState::min_zoom_for_width`] / [`MAX_VIEW_SPAN_SECS`]). The old
+/// `0.000001` floor allowed a single linear strip stretched across ~30 years —
+/// the "label soup" year-wide zoom the Archive calendar tier replaces (spec
+/// §6.4 DECIDED, §15 cut #4). It is now tightened so the widest view is a
+/// readable multi-month calendar span, not decades.
+pub const TIMELINE_ZOOM_MIN: f64 = 0.00001;
 pub const TIMELINE_ZOOM_MAX: f64 = 1000.0;
+
+/// Widest visible span (seconds) any timeline view may show — the ceiling the
+/// width-aware min-zoom enforces. The linear Micro/Macro strip stops being the
+/// renderer past the Archive-enter span (~60 h); beyond that the Archive
+/// **calendar** tier renders day cells over this same zoom scalar, so this
+/// ceiling sizes the calendar's widest reach (~a quarter of day cells) rather
+/// than the deprecated year-wide strip. Tuned so a multi-month heatmap stays
+/// legible while old URLs with absurd (near-zero) zooms clamp sanely into range.
+pub const MAX_VIEW_SPAN_SECS: f64 = 100.0 * 86_400.0;
 
 /// Tunable tier thresholds. The timeline's zoom level maps to one of three
 /// behavioral+visual tiers; transitions carry hysteresis (distinct enter/exit
@@ -1054,13 +1071,30 @@ impl PlaybackState {
         }
     }
 
+    /// The width-aware minimum zoom (px/sec): the smallest zoom whose visible
+    /// span does not exceed [`MAX_VIEW_SPAN_SECS`] at `width_px`, floored at the
+    /// hard [`TIMELINE_ZOOM_MIN`]. This is what stops the strip zooming out into
+    /// the deprecated year-wide view: past the Archive-enter span the calendar
+    /// tier renders, and this floor keeps even the calendar's widest reach to a
+    /// readable multi-month span (spec §6.4 DECIDED). Width-aware so the ceiling
+    /// holds whether the strip is a phone sliver or a wide desktop.
+    pub fn min_zoom_for_width(width_px: f64) -> f64 {
+        let w = width_px.max(1.0);
+        (w / MAX_VIEW_SPAN_SECS).max(TIMELINE_ZOOM_MIN)
+    }
+
     /// The single zoom-mutation path. Clamps, stores the zoom, and advances
     /// the tier with hysteresis (running the cadence-preservation side effect
     /// on a behavioral flip). `width_px` is the current strip width; pass
     /// `timeline_width_px` when unknown. `median_frame_spacing` feeds cadence
     /// conversion (see [`Self::median_frame_spacing`]).
+    ///
+    /// The minimum is width-aware ([`Self::min_zoom_for_width`]) so the widest
+    /// view stays a readable calendar span instead of the deprecated year-wide
+    /// strip.
     pub fn set_timeline_zoom(&mut self, zoom: f64, width_px: f64, median_frame_spacing: f64) {
-        self.timeline_zoom = zoom.clamp(TIMELINE_ZOOM_MIN, TIMELINE_ZOOM_MAX);
+        let min = Self::min_zoom_for_width(width_px);
+        self.timeline_zoom = zoom.clamp(min, TIMELINE_ZOOM_MAX);
         let next = self.next_tier(self.timeline_zoom, width_px);
         self.apply_tier(next, median_frame_spacing);
     }
@@ -1575,6 +1609,42 @@ mod tests {
         ps.enter_pinned_live(1000.0);
         ps.enter_lookback(None, LoopBasis::default());
         assert!(ps.effective_playback_mode() == PlaybackMode::Macro);
+    }
+
+    #[wasm_bindgen_test]
+    fn min_zoom_clamp_caps_widest_view_at_calendar_span() {
+        // The width-aware floor bounds the visible span to MAX_VIEW_SPAN_SECS.
+        let width = 1200.0;
+        let min = PlaybackState::min_zoom_for_width(width);
+        // At the floor, the span equals the ceiling (within float slop).
+        let span_at_min = width / min;
+        assert!(
+            (span_at_min - MAX_VIEW_SPAN_SECS).abs() < 1.0,
+            "span {span_at_min}"
+        );
+        // The widest linear view is far short of a year — the deprecated
+        // year-wide strip is gone.
+        assert!(span_at_min < 365.0 * 86_400.0);
+
+        // A zoom request below the floor clamps UP to it, never to the old
+        // ~30-year minimum.
+        let mut ps = PlaybackState::default();
+        ps.set_timeline_zoom(1e-9, width, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_zoom, min);
+        // And the resulting view can't show beyond the ceiling.
+        assert!(width / ps.timeline_zoom <= MAX_VIEW_SPAN_SECS + 1.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn min_zoom_is_width_aware() {
+        // span = width / zoom, so holding the same span ceiling, a WIDER strip
+        // needs a LARGER floor (more pixels per second).
+        let narrow = PlaybackState::min_zoom_for_width(300.0);
+        let wide = PlaybackState::min_zoom_for_width(2400.0);
+        assert!(wide > narrow);
+        // Both hold the span ceiling.
+        assert!((300.0 / narrow - MAX_VIEW_SPAN_SECS).abs() < 1.0);
+        assert!((2400.0 / wide - MAX_VIEW_SPAN_SECS).abs() < 1.0);
     }
 
     #[wasm_bindgen_test]

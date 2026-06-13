@@ -275,11 +275,15 @@ fn apply_zoom(
     anchor_x: f32,
 ) {
     let old_zoom = playback.state.timeline_zoom;
+    let width = playback.state.timeline_width_px;
+    // Clamp with the WIDTH-AWARE floor (not the loose hard min) so the
+    // zoom-would-exit-micro check and the anchor math below agree with the
+    // floor `set_timeline_zoom` will apply — the widest view stays the readable
+    // calendar span, never the deprecated year-wide strip.
     let new_zoom = (old_zoom * zoom_factor).clamp(
-        crate::state::TIMELINE_ZOOM_MIN,
+        crate::state::PlaybackState::min_zoom_for_width(width),
         crate::state::TIMELINE_ZOOM_MAX,
     );
-    let width = playback.state.timeline_width_px;
 
     let attached = playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback();
     if attached && playback.state.zoom_would_exit_micro(new_zoom, width) {
