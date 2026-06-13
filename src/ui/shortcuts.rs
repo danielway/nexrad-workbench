@@ -16,7 +16,7 @@
 //! help overlay still lives here so users see the full set in one place.
 
 use crate::geo::camera::CameraMode;
-use crate::state::{AppState, LiveExitReason, PlaybackSpeed, RadarProduct, ViewMode};
+use crate::state::{AppState, PlaybackSpeed, RadarProduct, ViewMode};
 use eframe::egui::{self, RichText};
 
 // ---------------------------------------------------------------------------
@@ -103,35 +103,46 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     // ---- Playback ---------------------------------------------------
     OneShotShortcut {
         section: SECTION_PLAYBACK,
-        key_label: "[",
-        description: "Step backward",
-        pressed: |i| no_mods(i, egui::Key::OpenBracket),
+        key_label: "←/→",
+        description: "Frame step (prev / next)",
+        pressed: |i| no_mods(i, egui::Key::ArrowLeft) || no_mods(i, egui::Key::ArrowRight),
         enabled: always_enabled,
-        handler: handle_step_backward,
+        handler: handle_frame_step,
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
-        key_label: "]",
-        description: "Step forward",
-        pressed: |i| no_mods(i, egui::Key::CloseBracket),
+        key_label: "Shift+←/→",
+        description: "Scan step (prev / next volume)",
+        pressed: |i| {
+            i.modifiers.shift_only()
+                && (i.key_pressed(egui::Key::ArrowLeft) || i.key_pressed(egui::Key::ArrowRight))
+        },
         enabled: always_enabled,
-        handler: handle_step_forward,
+        handler: handle_scan_step,
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
-        key_label: "-",
-        description: "Decrease playback speed",
-        pressed: |i| no_mods(i, egui::Key::Minus),
+        key_label: "[ / ]",
+        description: "Speed down / up",
+        pressed: |i| no_mods(i, egui::Key::OpenBracket) || no_mods(i, egui::Key::CloseBracket),
         enabled: always_enabled,
-        handler: handle_speed_down,
+        handler: handle_speed_step,
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
-        key_label: "=",
-        description: "Increase playback speed",
-        pressed: |i| no_mods(i, egui::Key::Equals),
+        key_label: "+ / −",
+        description: "Zoom timeline (in / out)",
+        // Equals carries the unshifted "+" key on most layouts; accept both the
+        // bare Plus and Shift+Equals so "+" works regardless of keymap. Minus
+        // zooms out.
+        pressed: |i| {
+            no_mods(i, egui::Key::Minus)
+                || no_mods(i, egui::Key::Equals)
+                || no_mods(i, egui::Key::Plus)
+                || (i.key_pressed(egui::Key::Equals) && i.modifiers.shift_only())
+        },
         enabled: always_enabled,
-        handler: handle_speed_up,
+        handler: handle_zoom_step,
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
@@ -151,11 +162,11 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
-        key_label: "Ctrl+L",
-        description: "Toggle live mode",
-        pressed: |i| i.key_pressed(egui::Key::L) && i.modifiers.command,
+        key_label: "L",
+        description: "Go live (re-tether)",
+        pressed: |i| no_mods(i, egui::Key::L),
         enabled: always_enabled,
-        handler: handle_toggle_live,
+        handler: handle_go_live,
     },
     OneShotShortcut {
         section: SECTION_PLAYBACK,
@@ -313,7 +324,7 @@ const HELD_KEY_DOCS: &[HelpEntry] = &[
     },
     HelpEntry {
         section: SECTION_CAMERA,
-        key_label: "WASD / Arrows",
+        key_label: "WASD",
         description: "Move / pan camera",
     },
     HelpEntry {
@@ -388,31 +399,78 @@ fn jog_fallback(_state: &AppState, playback: &crate::subsystem::Playback) -> f64
     playback.state.speed.timeline_seconds_per_real_second()
 }
 
-fn handle_step_backward(
-    state: &mut AppState,
+/// Direction a step shortcut moves the playhead, read from this frame's input.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StepDir {
+    Backward,
+    Forward,
+}
+
+/// Resolve the step direction for the arrow-key shortcuts. ArrowRight wins if
+/// somehow both are pressed in the same frame (forward bias).
+fn step_dir(ctx: &egui::Context) -> StepDir {
+    if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+        StepDir::Forward
+    } else {
+        StepDir::Backward
+    }
+}
+
+/// Detach the tether for a seek gesture (spec §7/§12): stepping is a seek, so
+/// the playhead leaves the live edge first; the stream keeps ingesting unless
+/// the data-saver policy stops it. Threads `pause_stream_while_reviewing`
+/// through the one place that policy is checked.
+fn detach_for_seek(
+    state: &AppState,
     live: &mut crate::subsystem::Live,
-    timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
-    _chrome: &mut crate::subsystem::Chrome,
-    _: &egui::Context,
 ) {
-    let pos = current_pos(state, playback);
-    let fallback = jog_fallback(state, playback);
-    // Stepping is a seek gesture: detach the tether first (spec §7/§12), then
-    // step. The stream keeps ingesting unless the data-saver policy stops it.
     live.detach_playhead(
         &mut playback.state,
         state.frame_now.secs(),
         state.pause_stream_while_reviewing,
     );
-    let new_pos = match &state.viz_state.elevation_selection {
-        crate::state::ElevationSelection::Fixed {
-            elevation_number, ..
-        } => timeline
+}
+
+/// ←/→ frame step: move one matching frame (a sweep of the selected product +
+/// tilt). Detach-then-step so the Free-mode seek assert holds and stepping
+/// while tethered detaches rather than no-opping (spec §7/§12).
+fn handle_frame_step(
+    state: &mut AppState,
+    live: &mut crate::subsystem::Live,
+    timeline: &crate::subsystem::Timeline,
+    playback: &mut crate::subsystem::Playback,
+    _chrome: &mut crate::subsystem::Chrome,
+    ctx: &egui::Context,
+) {
+    let dir = step_dir(ctx);
+    let pos = current_pos(state, playback);
+    let fallback = jog_fallback(state, playback);
+    detach_for_seek(state, live, playback);
+    let new_pos = match (&state.viz_state.elevation_selection, dir) {
+        (
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            },
+            StepDir::Forward,
+        ) => timeline
+            .scans
+            .next_matching_sweep_end_by_number(pos, *elevation_number)
+            .unwrap_or(pos + fallback),
+        (
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            },
+            StepDir::Backward,
+        ) => timeline
             .scans
             .prev_matching_sweep_end_by_number(pos, *elevation_number)
             .unwrap_or(pos - fallback),
-        crate::state::ElevationSelection::Latest => timeline
+        (crate::state::ElevationSelection::Latest, StepDir::Forward) => timeline
+            .scans
+            .next_any_sweep_end(pos)
+            .unwrap_or(pos + fallback),
+        (crate::state::ElevationSelection::Latest, StepDir::Backward) => timeline
             .scans
             .prev_any_sweep_end(pos)
             .unwrap_or(pos - fallback),
@@ -420,34 +478,50 @@ fn handle_step_backward(
     playback.state.set_playback_position(new_pos);
 }
 
-fn handle_step_forward(
+/// Shift+←/→ scan step: move one whole volume scan (spec §12). Lands on the
+/// matching frame of the adjacent volume (or its earliest sweep when the
+/// selected tilt is absent). Detach-then-step like the frame step. Falls back
+/// to a whole-volume time jump only when no adjacent scan exists.
+fn handle_scan_step(
     state: &mut AppState,
     live: &mut crate::subsystem::Live,
     timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
-    _: &egui::Context,
+    ctx: &egui::Context,
 ) {
+    let dir = step_dir(ctx);
     let pos = current_pos(state, playback);
-    let fallback = jog_fallback(state, playback);
-    // Stepping is a seek gesture: detach the tether first (spec §7/§12), then
-    // step. The stream keeps ingesting unless the data-saver policy stops it.
-    live.detach_playhead(
-        &mut playback.state,
-        state.frame_now.secs(),
-        state.pause_stream_while_reviewing,
-    );
-    let new_pos = match &state.viz_state.elevation_selection {
-        crate::state::ElevationSelection::Fixed {
-            elevation_number, ..
-        } => timeline
+    // Whole-volume fallback when the timeline has no neighboring scan loaded.
+    let fallback = crate::FALLBACK_SCAN_DURATION_SECS as f64;
+    detach_for_seek(state, live, playback);
+    let new_pos = match (&state.viz_state.elevation_selection, dir) {
+        (
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            },
+            StepDir::Forward,
+        ) => timeline
             .scans
-            .next_matching_sweep_end_by_number(pos, *elevation_number)
+            .next_scan_matching_sweep_end_by_number(pos, *elevation_number)
             .unwrap_or(pos + fallback),
-        crate::state::ElevationSelection::Latest => timeline
+        (
+            crate::state::ElevationSelection::Fixed {
+                elevation_number, ..
+            },
+            StepDir::Backward,
+        ) => timeline
             .scans
-            .next_any_sweep_end(pos)
+            .prev_scan_matching_sweep_end_by_number(pos, *elevation_number)
+            .unwrap_or(pos - fallback),
+        (crate::state::ElevationSelection::Latest, StepDir::Forward) => timeline
+            .scans
+            .next_scan_any_sweep_end(pos)
             .unwrap_or(pos + fallback),
+        (crate::state::ElevationSelection::Latest, StepDir::Backward) => timeline
+            .scans
+            .prev_scan_any_sweep_end(pos)
+            .unwrap_or(pos - fallback),
     };
     playback.state.set_playback_position(new_pos);
 }
@@ -466,17 +540,26 @@ fn active_mode_speeds(playback: &crate::subsystem::Playback) -> &'static [Playba
     }
 }
 
-fn handle_speed_down(
+/// [ / ] speed down / up (spec §12). `[` (OpenBracket) slows, `]`
+/// (CloseBracket) quickens; cycling stays within the active mode's valid speed
+/// set (macro fps vs micro multiples) so the combo label and playback never
+/// disagree (Phase 1 fix).
+fn handle_speed_step(
     _state: &mut AppState,
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
-    _: &egui::Context,
+    ctx: &egui::Context,
 ) {
+    let faster = ctx.input(|i| i.key_pressed(egui::Key::CloseBracket));
     let speeds = active_mode_speeds(playback);
     if let Some(idx) = speeds.iter().position(|s| *s == playback.state.speed) {
-        if idx > 0 {
+        if faster {
+            if idx + 1 < speeds.len() {
+                playback.state.speed = speeds[idx + 1];
+            }
+        } else if idx > 0 {
             playback.state.speed = speeds[idx - 1];
         }
     } else if let Some(&first) = speeds.first() {
@@ -485,23 +568,57 @@ fn handle_speed_down(
     }
 }
 
-fn handle_speed_up(
+/// Multiplicative timeline-zoom step per `+`/`−` press (spec §12). A ~1.3×
+/// factor gives a brisk but controllable zoom.
+const ZOOM_KEY_STEP: f64 = 1.3;
+
+/// New `timeline_view_start` that keeps the timestamp `anchor_ts` at the same
+/// on-screen pixel while the zoom changes `old_zoom → new_zoom`. Pure so the
+/// anchoring math is unit-testable: `offset_px = (anchor_ts - view_start) *
+/// old_zoom` is held fixed, so `view_start' = anchor_ts - offset_px /
+/// new_zoom`.
+fn view_start_anchored_at(view_start: f64, old_zoom: f64, new_zoom: f64, anchor_ts: f64) -> f64 {
+    let offset_px = (anchor_ts - view_start) * old_zoom;
+    anchor_ts - offset_px / new_zoom
+}
+
+/// Timeline zoom in/out on `+`/`−`, anchored at the playhead (spec §12). Routed
+/// through [`PlaybackState::set_timeline_zoom`] so tier hysteresis + cadence
+/// preservation apply, and the view start is recomputed to keep the playhead's
+/// on-screen x fixed (mirrors the scroll-zoom-at-cursor path, anchored at the
+/// playhead instead of the pointer). Does not detach: zooming the timeline is
+/// not a seek.
+fn handle_zoom_step(
     _state: &mut AppState,
     _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
     playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
-    _: &egui::Context,
+    ctx: &egui::Context,
 ) {
-    let speeds = active_mode_speeds(playback);
-    if let Some(idx) = speeds.iter().position(|s| *s == playback.state.speed) {
-        if idx + 1 < speeds.len() {
-            playback.state.speed = speeds[idx + 1];
-        }
-    } else if let Some(&first) = speeds.first() {
-        // Current speed isn't valid in this mode — land on the slowest valid.
-        playback.state.speed = first;
+    let zoom_in = ctx.input(|i| i.key_pressed(egui::Key::Equals) || i.key_pressed(egui::Key::Plus));
+    let factor = if zoom_in {
+        ZOOM_KEY_STEP
+    } else {
+        1.0 / ZOOM_KEY_STEP
+    };
+    let ps = &mut playback.state;
+    let old_zoom = ps.timeline_zoom;
+    let new_zoom = (old_zoom * factor).clamp(
+        crate::state::TIMELINE_ZOOM_MIN,
+        crate::state::TIMELINE_ZOOM_MAX,
+    );
+    if new_zoom == old_zoom {
+        return;
     }
+    // Anchor at the playhead: keep its current on-screen offset fixed while the
+    // scale changes.
+    let playhead = ps.playback_position();
+    ps.timeline_view_start =
+        view_start_anchored_at(ps.timeline_view_start, old_zoom, new_zoom, playhead);
+    let width = ps.timeline_width_px;
+    let spacing = ps.median_frame_spacing();
+    ps.set_timeline_zoom(new_zoom, width, spacing);
 }
 
 /// Set a loop in/out point at the playhead (spec §8/§12 I/O keys). Editing a
@@ -571,27 +688,19 @@ fn handle_loop_out(
     set_loop_point(state, live, playback, false);
 }
 
-fn handle_toggle_live(
+/// L go live (spec §12): a one-way re-tether, never a toggle that can stop the
+/// stream. `ReturnToLive` instantly re-pins the playhead to the live edge when
+/// a stream is already running in the background (detached browsing) and starts
+/// a fresh stream otherwise — matching the now-cap REJOIN / GO-LIVE control.
+fn handle_go_live(
     state: &mut AppState,
-    live: &mut crate::subsystem::Live,
+    _live: &mut crate::subsystem::Live,
     _timeline: &crate::subsystem::Timeline,
-    playback: &mut crate::subsystem::Playback,
+    _playback: &mut crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    if live.mode_state.is_active() {
-        live.stop(LiveExitReason::UserStopped);
-        playback.state.exit_live(crate::state::FreezeAt::Keep);
-        playback.state.playing = false;
-        state.status_message = live
-            .mode_state
-            .last_exit_reason
-            .map(|r| r.message().to_string())
-            .unwrap_or_default();
-    } else {
-        state.push_command(crate::state::AppCommand::StartLive);
-        playback.state.speed = PlaybackSpeed::Realtime;
-    }
+    state.push_command(crate::state::AppCommand::ReturnToLive);
 }
 
 fn handle_cycle_product(
@@ -697,18 +806,16 @@ fn handle_continuous_movement(
 ) {
     let (forward, right_move, up_move, speed_mult, dt) = ctx.input(|i| {
         let dt = i.stable_dt.min(0.1); // cap to avoid jumps
+                                       // Arrows are now frame/scan step (spec §12) — camera movement is WASD
+                                       // only (plus Q/E for vertical in 3D).
         let w = i.key_down(egui::Key::W) as i32 as f32;
         let a = i.key_down(egui::Key::A) as i32 as f32;
         let s = i.key_down(egui::Key::S) as i32 as f32;
         let d = i.key_down(egui::Key::D) as i32 as f32;
         let q = i.key_down(egui::Key::Q) as i32 as f32;
         let e = i.key_down(egui::Key::E) as i32 as f32;
-        let up = i.key_down(egui::Key::ArrowUp) as i32 as f32;
-        let down = i.key_down(egui::Key::ArrowDown) as i32 as f32;
-        let left = i.key_down(egui::Key::ArrowLeft) as i32 as f32;
-        let right = i.key_down(egui::Key::ArrowRight) as i32 as f32;
-        let forward = (w + up) - (s + down);
-        let right_move = (d + right) - (a + left);
+        let forward = w - s;
+        let right_move = d - a;
         let up_move = e - q;
         let speed_mult = if i.modifiers.shift {
             2.0
@@ -733,7 +840,7 @@ fn handle_continuous_movement(
             ctx.request_repaint();
         }
     } else {
-        // 2D mode: WASD/arrows pan the map.
+        // 2D mode: WASD pan the map.
         let pan_speed = 200.0 * speed_mult * dt;
         state.viz_state.pan_offset.x -= right_move * pan_speed;
         state.viz_state.pan_offset.y += forward * pan_speed;
@@ -885,5 +992,33 @@ mod tests {
                 h.section
             );
         }
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_keeps_anchor_timestamp_pixel_fixed() {
+        // The on-screen x of the anchor must not move across a zoom. Pixel x is
+        // (anchor_ts - view_start) * zoom; assert it's invariant after the zoom.
+        let view_start = 1000.0_f64;
+        let anchor_ts = 1600.0_f64; // 600s right of the left edge
+        let old_zoom = 0.5_f64;
+        let px_before = (anchor_ts - view_start) * old_zoom;
+
+        for &new_zoom in &[ZOOM_KEY_STEP * old_zoom, old_zoom / ZOOM_KEY_STEP, 4.0] {
+            let vs = view_start_anchored_at(view_start, old_zoom, new_zoom, anchor_ts);
+            let px_after = (anchor_ts - vs) * new_zoom;
+            assert!(
+                (px_after - px_before).abs() < 1e-6,
+                "anchor pixel moved: before={px_before} after={px_after} new_zoom={new_zoom}"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_anchor_at_left_edge_keeps_view_start() {
+        // Anchoring on the left edge (offset 0) must leave view_start unchanged
+        // for any zoom — the degenerate case.
+        let view_start = 1000.0_f64;
+        let vs = view_start_anchored_at(view_start, 0.5, 2.0, view_start);
+        assert!((vs - view_start).abs() < 1e-9);
     }
 }

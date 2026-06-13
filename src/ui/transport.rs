@@ -3,8 +3,8 @@
 //! Used by both the desktop play button (`playback_controls.rs`) and the
 //! spacebar (`bottom_panel.rs`) so the ARCHIVE / LIVE-NOW / LIVE-LOOKBACK
 //! branching lives in exactly one place. Play/pause is fully decoupled from
-//! the stream: going live and stopping the stream belong to the LIVE button /
-//! now-line cap / Ctrl+L, never to this button.
+//! the stream: going live belongs to the LIVE button / now-line cap / the `L`
+//! key, stopping the stream belongs to the now-line cap, never to this button.
 
 use crate::state::AppState;
 use crate::subsystem::{Live, Playback, Timeline};

@@ -536,6 +536,98 @@ impl RadarTimeline {
         best
     }
 
+    /// Index of the scan that `ts` resolves into: the last scan whose
+    /// `start_time <= ts`. Matches the render resolver's "most recent scan at or
+    /// before the playhead" (see
+    /// [`crate::state::playback_manager::resolve_active_sweep_target`]). Returns
+    /// `None` when `ts` is before every scan.
+    fn scan_index_at(&self, ts: f64) -> Option<usize> {
+        let idx = self.scans.partition_point(|s| s.start_time <= ts);
+        (idx > 0).then(|| idx - 1)
+    }
+
+    /// A renderable timestamp to land on inside `scan` when scan-stepping with a
+    /// `Fixed` tilt. Prefers the scan's earliest sweep matching
+    /// `elevation_number` (its first matching frame); if the scan lacks that
+    /// tilt, falls back to the scan's earliest sweep end; with no sweeps at all,
+    /// the scan's start. Keeps a scan step landing on the whole volume even when
+    /// the selected tilt is absent.
+    fn scan_landing_by_number(scan: &Scan, elevation_number: u8) -> f64 {
+        scan.sweeps
+            .iter()
+            .filter(|s| s.elevation_number == elevation_number)
+            .map(|s| s.end_time)
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .or_else(|| {
+                scan.sweeps
+                    .iter()
+                    .map(|s| s.end_time)
+                    .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            })
+            .unwrap_or(scan.start_time)
+    }
+
+    /// A renderable timestamp to land on inside `scan` when scan-stepping in
+    /// `Latest` mode: the scan's earliest sweep end (any tilt), else its start.
+    fn scan_landing_any(scan: &Scan) -> f64 {
+        scan.sweeps
+            .iter()
+            .map(|s| s.end_time)
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or(scan.start_time)
+    }
+
+    /// Scan step forward (spec §12 Shift+→): a landing timestamp inside the
+    /// *next whole volume scan* after the one `ts` resolves into, matching
+    /// `elevation_number`. When `ts` is before all scans, lands in the first
+    /// scan. `None` when there is no later scan.
+    pub fn next_scan_matching_sweep_end_by_number(
+        &self,
+        ts: f64,
+        elevation_number: u8,
+    ) -> Option<f64> {
+        let next_idx = match self.scan_index_at(ts) {
+            Some(i) => i + 1,
+            None => 0,
+        };
+        let scan = self.scans.get(next_idx)?;
+        Some(Self::scan_landing_by_number(scan, elevation_number))
+    }
+
+    /// Scan step backward (spec §12 Shift+←): a landing timestamp inside the
+    /// *previous whole volume scan* before the one `ts` resolves into, matching
+    /// `elevation_number`. `None` when there is no earlier scan.
+    pub fn prev_scan_matching_sweep_end_by_number(
+        &self,
+        ts: f64,
+        elevation_number: u8,
+    ) -> Option<f64> {
+        let cur = self.scan_index_at(ts)?;
+        let prev = cur.checked_sub(1)?;
+        let scan = self.scans.get(prev)?;
+        Some(Self::scan_landing_by_number(scan, elevation_number))
+    }
+
+    /// Scan step forward in `Latest` mode (any tilt). See
+    /// [`Self::next_scan_matching_sweep_end_by_number`].
+    pub fn next_scan_any_sweep_end(&self, ts: f64) -> Option<f64> {
+        let next_idx = match self.scan_index_at(ts) {
+            Some(i) => i + 1,
+            None => 0,
+        };
+        let scan = self.scans.get(next_idx)?;
+        Some(Self::scan_landing_any(scan))
+    }
+
+    /// Scan step backward in `Latest` mode (any tilt). See
+    /// [`Self::prev_scan_matching_sweep_end_by_number`].
+    pub fn prev_scan_any_sweep_end(&self, ts: f64) -> Option<f64> {
+        let cur = self.scan_index_at(ts)?;
+        let prev = cur.checked_sub(1)?;
+        let scan = self.scans.get(prev)?;
+        Some(Self::scan_landing_any(scan))
+    }
+
     /// Find scans that overlap with the given time range, by real-data
     /// extent (`end_time`). The display counterpart is
     /// [`Self::scans_in_visual_range`]; keep this for callers that need the
@@ -982,6 +1074,106 @@ mod tests {
             tl.prev_matching_sweep_end_by_number(1025.0, 2),
             Some(1020.0)
         );
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_step_by_number_lands_in_adjacent_volume() {
+        // Three volume scans, each with an elev-1 and elev-2 sweep.
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(
+                    1000.0,
+                    1040.0,
+                    vec![sweep(1000.0, 1010.0, 0.5, 1), sweep(1010.0, 1020.0, 0.9, 2)],
+                ),
+                scan_with_sweeps(
+                    1300.0,
+                    1340.0,
+                    vec![sweep(1300.0, 1310.0, 0.5, 1), sweep(1310.0, 1320.0, 0.9, 2)],
+                ),
+                scan_with_sweeps(
+                    1600.0,
+                    1640.0,
+                    vec![sweep(1600.0, 1610.0, 0.5, 1), sweep(1610.0, 1620.0, 0.9, 2)],
+                ),
+            ],
+        };
+
+        // Mid first scan → next scan's elev-1 landing (earliest matching sweep end).
+        assert_eq!(
+            tl.next_scan_matching_sweep_end_by_number(1015.0, 1),
+            Some(1310.0)
+        );
+        // Mid middle scan → third scan's elev-1 landing.
+        assert_eq!(
+            tl.next_scan_matching_sweep_end_by_number(1315.0, 1),
+            Some(1610.0)
+        );
+        // From the last scan there is no later scan.
+        assert_eq!(tl.next_scan_matching_sweep_end_by_number(1615.0, 1), None);
+
+        // Backward: mid middle scan → first scan's elev-2 landing.
+        assert_eq!(
+            tl.prev_scan_matching_sweep_end_by_number(1315.0, 2),
+            Some(1020.0)
+        );
+        // From the first scan there is no earlier scan.
+        assert_eq!(tl.prev_scan_matching_sweep_end_by_number(1015.0, 1), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_step_before_all_scans_lands_in_first() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(1000.0, 1040.0, vec![sweep(1000.0, 1010.0, 0.5, 1)]),
+                scan_with_sweeps(1300.0, 1340.0, vec![sweep(1300.0, 1310.0, 0.5, 1)]),
+            ],
+        };
+        // A position before every scan steps forward into the first scan.
+        assert_eq!(
+            tl.next_scan_matching_sweep_end_by_number(500.0, 1),
+            Some(1010.0)
+        );
+        // ...and there is nothing earlier than it to step back to.
+        assert_eq!(tl.prev_scan_matching_sweep_end_by_number(500.0, 1), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_step_missing_tilt_falls_back_to_earliest_sweep() {
+        // The next scan lacks elev-2 entirely; the landing falls back to its
+        // earliest sweep end so the step still lands on the whole volume.
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(1000.0, 1020.0, vec![sweep(1000.0, 1010.0, 0.5, 1)]),
+                scan_with_sweeps(1300.0, 1320.0, vec![sweep(1300.0, 1312.0, 0.5, 1)]),
+            ],
+        };
+        assert_eq!(
+            tl.next_scan_matching_sweep_end_by_number(1005.0, 2),
+            Some(1312.0)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_step_any_uses_earliest_sweep_of_adjacent_volume() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(
+                    1000.0,
+                    1040.0,
+                    vec![sweep(1000.0, 1010.0, 0.5, 1), sweep(1010.0, 1020.0, 0.9, 2)],
+                ),
+                scan_with_sweeps(
+                    1300.0,
+                    1340.0,
+                    vec![sweep(1300.0, 1310.0, 0.5, 1), sweep(1310.0, 1320.0, 0.9, 2)],
+                ),
+            ],
+        };
+        // Latest mode: next scan's earliest sweep end.
+        assert_eq!(tl.next_scan_any_sweep_end(1015.0), Some(1310.0));
+        // Backward from the second scan: first scan's earliest sweep end.
+        assert_eq!(tl.prev_scan_any_sweep_end(1315.0), Some(1010.0));
     }
 
     #[wasm_bindgen_test]

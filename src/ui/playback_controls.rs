@@ -219,8 +219,9 @@ pub(super) fn render_playback_controls(
     // Persistent, stateful LIVE button (spec §7). Always present in the
     // transport row: solid "● LIVE" while tethered, hollow "● LIVE · m:ss
     // behind" while a background stream runs detached (click re-tethers), and
-    // hollow "● GO LIVE" with no stream (click starts one). Stopping the stream
-    // is still owned by the timeline now-line cap / Ctrl+L.
+    // hollow "● GO LIVE" with no stream (click starts one). The `L` key
+    // re-tethers / starts a stream; stopping the stream is owned by the timeline
+    // now-line cap.
     render_live_button(ui, state, live, playback);
     ui.separator();
 
@@ -526,7 +527,7 @@ fn render_utc_toggle(ui: &mut egui::Ui, state: &mut AppState) {
 /// the live edge is one glance/one tap away no matter where the user is:
 ///
 /// - **Tethered** (playhead attached, `AppMode::Live`): solid red "● LIVE".
-///   Stopping the stream stays with the now-line cap / Ctrl+L, so this state is
+///   Stopping the stream stays with the now-line cap, so this state is
 ///   an indicator — clicking is a no-op.
 /// - **Detached** (stream running, playhead browsing): hollow "● LIVE · m:ss
 ///   behind" where the lag is wall-now − playhead. Click re-tethers
