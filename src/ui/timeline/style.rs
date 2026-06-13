@@ -9,12 +9,12 @@
 //!   [ minimap sliver ]   MINIMAP_SLIVER_H  ← whole-session navigator (Phase 3)
 //!   [ tick rail      ]   TICK_LANE_H
 //!   [ main track     ]   MAIN_TRACK_H   ← scan containers + frame cells
-//!   [ loop handles   ]   ← reserved (Phase 3), 0px today
+//!   [ loop handles   ]   LOOP_HANDLE_H  ← draggable loop start/end (Phase 5)
 //! ```
 //!
 //! Total height is `TIMELINE_TOTAL_H = MINIMAP_SLIVER_H + TICK_LANE_H +
-//! MAIN_TRACK_H` and is constant across Micro / Macro / Archive so the bottom
-//! panel never reflows.
+//! MAIN_TRACK_H + LOOP_HANDLE_H` and is constant across Micro / Macro / Archive
+//! so the bottom panel never reflows.
 
 use eframe::egui::FontId;
 
@@ -35,8 +35,28 @@ pub(crate) const MINIMAP_SLIVER_H: f32 = 10.0;
 /// painted coverage bar (so the bar reads slim while the target stays easy).
 pub(crate) const MINIMAP_PAD_Y: f32 = 2.0;
 
-/// Reserved band below the main track for Phase-3 loop handles. Zero today.
-pub(crate) const LOOP_HANDLE_H: f32 = 0.0;
+/// Band below the main track that holds the draggable loop start/end handles
+/// (spec §8/§12 row 6). Holds the visible handle glyphs; the *hit* targets are
+/// padded up into the strip to a comfortable size ([`LOOP_HANDLE_HIT_H`] /
+/// [`LOOP_HANDLE_HIT_W`]) without growing the panel.
+pub(crate) const LOOP_HANDLE_H: f32 = 14.0;
+
+/// Total height of a loop handle's hit target (spec §12: ≥44pt). The visual
+/// glyph lives in the [`LOOP_HANDLE_H`] band; the hit rect extends upward into
+/// the strip so the target reaches this height even though the glyph is thin.
+pub(crate) const LOOP_HANDLE_HIT_H: f32 = 44.0;
+
+/// Width of a loop handle's hit target (spec §12: ≥44pt touch target), centered
+/// on the handle's x. Wider than the thin painted glyph.
+pub(crate) const LOOP_HANDLE_HIT_W: f32 = 44.0;
+
+/// Width of a handle's painted glyph (the thin draggable tab).
+pub(crate) const LOOP_HANDLE_GLYPH_W: f32 = 10.0;
+
+/// Within the snap threshold (px) of the live edge, dragging the RIGHT handle
+/// snaps it to now and pins the loop (spec §8 snap-to-live fusion). A generous
+/// target so the fuse-with-now-dot gesture is easy.
+pub(crate) const LOOP_SNAP_LIVE_PX: f32 = 14.0;
 
 /// Total timeline height, constant across detail levels.
 pub(crate) const TIMELINE_TOTAL_H: f32 =

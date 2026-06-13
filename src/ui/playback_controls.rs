@@ -313,6 +313,13 @@ pub(super) fn render_playback_controls(
             });
     });
 
+    // Loop preset menu (spec §5 "loop preset" control; §8 "presets first").
+    // The creation surface for loops — available in Basic too (Level-1
+    // disclosure, but core enough to show). One compact menu button, so it
+    // stays inline at every width.
+    ui.separator();
+    render_loop_preset_menu(ui, state, playback, interactive);
+
     // Below the full width tier, the Advanced-only loop combo and UTC toggle
     // are demoted into a ⋯ overflow menu so they don't crowd the transport row.
     let compact = state.width_tier < WidthTier::Full;
@@ -386,6 +393,57 @@ pub(super) fn render_playback_controls(
     // Push session stats to the right
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         render_session_stats(ui, state, playback, acquisition, chrome);
+    });
+}
+
+/// Loop-preset menu button (spec §8 "presets first"). A small ⟳ menu offering
+/// "Pin to live", the frame-count windows, the duration windows, and a "Clear
+/// loop" entry when a loop exists. Each selection pushes an `ApplyLoopPreset` /
+/// `ClearLoop` command — the app routes it through the named playhead
+/// transitions (never direct field writes). Shown in Basic too.
+fn render_loop_preset_menu(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    playback: &crate::subsystem::Playback,
+    interactive: bool,
+) {
+    use crate::state::LoopPreset;
+    let has_loop =
+        playback.state.loop_window.is_some() || playback.state.time_model.playback_bounds.is_some();
+    // Highlight the icon while a loop is active so the control reads as "on".
+    let icon = egui_phosphor::regular::REPEAT;
+    let tint = if has_loop {
+        live::STREAMING
+    } else {
+        ui_colors::value(state.is_dark)
+    };
+    ui.add_enabled_ui(interactive, |ui| {
+        ui.menu_button(RichText::new(icon).size(14.0).color(tint), |ui| {
+            // Header: the active loop window (basis + pinned), or "Loop".
+            let header = match playback.state.loop_window {
+                Some(w) => {
+                    let pin = if w.pinned { " · pinned" } else { "" };
+                    format!("Loop · {}{}", w.basis.label(), pin)
+                }
+                None => "Loop".to_string(),
+            };
+            ui.label(RichText::new(header).size(11.0).weak());
+            for preset in LoopPreset::menu() {
+                if ui.button(preset.label()).clicked() {
+                    state.push_command(crate::state::AppCommand::ApplyLoopPreset(*preset));
+                    ui.close();
+                }
+            }
+            if has_loop {
+                ui.separator();
+                if ui.button("Clear loop").clicked() {
+                    state.push_command(crate::state::AppCommand::ClearLoop);
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Loop presets");
     });
 }
 

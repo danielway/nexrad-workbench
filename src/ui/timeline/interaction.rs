@@ -116,7 +116,33 @@ pub(super) fn handle_timeline_interaction(
     // Continuous seek following the pointer. The first frame of the scrub
     // pauses playback (so the playhead stays where the user puts it) and
     // detaches the tether. Button-filtered so right/alt drags don't scrub.
-    if response.drag_started_by(PointerButton::Primary) && !selection_mod && !selecting {
+    //
+    // A drag that BEGINS on a suppressed control (a loop handle whose hit rect
+    // extends up into the strip) must not also scrub — the handle owns that
+    // drag. We can't read the drag origin from egui's Response, so remember on
+    // the start frame whether the press landed in a suppress rect, keyed in
+    // memory for the drag's lifetime.
+    let drag_lock_id = response.id.with("scrub_suppressed");
+    if response.drag_started_by(PointerButton::Primary) {
+        let on_suppressed = response
+            .interact_pointer_pos()
+            .is_some_and(|p| suppress_rects.iter().any(|r| r.contains(p)));
+        ui.ctx()
+            .memory_mut(|m| m.data.insert_temp(drag_lock_id, on_suppressed));
+    }
+    if response.drag_stopped() {
+        ui.ctx().memory_mut(|m| m.data.remove::<bool>(drag_lock_id));
+    }
+    let scrub_suppressed = ui
+        .ctx()
+        .memory(|m| m.data.get_temp::<bool>(drag_lock_id))
+        .unwrap_or(false);
+
+    if response.drag_started_by(PointerButton::Primary)
+        && !selection_mod
+        && !selecting
+        && !scrub_suppressed
+    {
         playback.state.playing = false;
         live.detach_playhead(
             &mut playback.state,
@@ -124,7 +150,11 @@ pub(super) fn handle_timeline_interaction(
             state.pause_stream_while_reviewing,
         );
     }
-    if response.dragged_by(PointerButton::Primary) && !selection_mod && !selecting {
+    if response.dragged_by(PointerButton::Primary)
+        && !selection_mod
+        && !selecting
+        && !scrub_suppressed
+    {
         if let Some(pos) = response.interact_pointer_pos() {
             seek_to(state, live, playback, frame.x_to_ts(pos.x));
             outcome.scrubbing = true;

@@ -4,6 +4,7 @@
 
 mod frame_cells;
 mod interaction;
+mod loop_handles;
 mod minimap;
 mod now_edge;
 mod overlays;
@@ -716,9 +717,18 @@ pub(super) fn render_timeline(
     // -- Interaction handling --
     // Runs BEFORE the tooltip so a primary-drag scrub can suppress the hover
     // popup. Rects whose presses are owned by another control and must not also
-    // seek: the now-affordance cap/chip, plus any failed-cell tick that just
-    // fired a retry this frame.
+    // seek: the now-affordance cap/chip, the loop-handle hit rects (which extend
+    // up into the strip), plus any failed-cell tick that just fired a retry this
+    // frame.
     let mut suppress_rects: Vec<Rect> = now_affordance_rect.into_iter().collect();
+    // The loop-handle band sits directly below the strip (item_spacing.y == 0),
+    // so its bottom is the strip bottom plus the band height.
+    let band_bottom = scan_rect.bottom() + style::LOOP_HANDLE_H;
+    let handle_hit =
+        loop_handles::handle_hit_rects(&frame, playback.state.selection_range(), band_bottom);
+    if let Some(rects) = handle_hit {
+        suppress_rects.extend_from_slice(&rects);
+    }
     if clicked_failed_tick {
         suppress_rects.extend(failed_ticks.iter().map(|t| t.rect));
     }
@@ -740,4 +750,20 @@ pub(super) fn render_timeline(
             render_timeline_tooltip(ui, &frame, live, hover_ts, hover_pos);
         }
     }
+
+    // -- Loop-handle band (spec §8/§12) ----------------------------------
+    // Its OWN allocated widget below the strip (distinct response id) so its
+    // drag never shares the strip's hit layer; the strip already suppresses
+    // seeks at the handle hit rects above. Allocated even when no loop exists
+    // (the render is a no-op then) so the panel height stays constant at
+    // TIMELINE_TOTAL_H.
+    let (_band_resp, _band_painter) = ui.allocate_painter(
+        Vec2::new(available_width as f32, style::LOOP_HANDLE_H),
+        Sense::hover(),
+    );
+    let band_rect = Rect::from_min_max(
+        Pos2::new(scan_rect.left(), scan_rect.bottom()),
+        Pos2::new(scan_rect.right(), scan_rect.bottom() + style::LOOP_HANDLE_H),
+    );
+    loop_handles::render_loop_handles(ui, state, live, playback, &frame, band_rect);
 }
