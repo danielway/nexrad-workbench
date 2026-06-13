@@ -310,3 +310,251 @@ fn get_legacy_default_wait_time(
         ChronoDuration::seconds(4)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_vcp::{build_vcp, TestElevation};
+    use super::super::ChunkCharacteristics;
+    use super::*;
+    use chrono::{DateTime, Utc};
+    use nexrad_data::aws::realtime::VolumeIndex;
+    use nexrad_decode::messages::volume_coverage_pattern::{
+        self, ChannelConfiguration, WaveformType,
+    };
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn when() -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000, 0).unwrap()
+    }
+
+    fn chunk(sequence: usize, chunk_type: ChunkType) -> ChunkIdentifier {
+        ChunkIdentifier::new(
+            "KDMX".to_string(),
+            VolumeIndex::new(1),
+            when().naive_utc(),
+            sequence,
+            chunk_type,
+            Some(when()),
+        )
+    }
+
+    /// One super-res CS elevation at 22.5 dps → 6 chunks (seqs 2..=7), final 7.
+    /// sweep = 360/22.5 - 0.67 = 15.33; chunk_dur = 15.33/6.
+    fn vcp_1elev() -> volume_coverage_pattern::Message<'static> {
+        build_vcp(&[TestElevation {
+            super_res: true,
+            elevation_angle_raw: 0,
+            azimuth_rate_raw: 1 << 14, // 22.5 dps
+            waveform_raw: 1,           // CS
+            channel_raw: 0,            // ConstantPhase
+        }])
+    }
+
+    const CHUNK_DUR: f64 = (360.0 / 22.5 - 0.67) / 6.0;
+
+    #[wasm_bindgen_test]
+    fn start_chunk_uses_constant_gap() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let e =
+            estimate_chunk_processing_diagnostics(&chunk(1, ChunkType::Start), &vcp, &mapper, None)
+                .unwrap();
+        assert_eq!(e.path, SchedulerPath::StartConstant);
+        assert_eq!(e.duration, ChronoDuration::milliseconds(1500));
+        assert!(e.bucket.is_none());
+        assert!(e.physics_breakdown.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn physics_path_when_no_stats() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        // Intra-sweep hop seq 3 -> 4 (both elevation 1, not first-in-sweep).
+        let e = estimate_chunk_processing_diagnostics(
+            &chunk(3, ChunkType::Intermediate),
+            &vcp,
+            &mapper,
+            None,
+        )
+        .unwrap();
+        assert_eq!(e.path, SchedulerPath::Physics);
+        // No stats → wait == pure physics chunk duration (retry budget 0).
+        let wait = e.duration.num_milliseconds() as f64 / 1000.0;
+        assert!((wait - CHUNK_DUR).abs() < 1e-3, "wait={wait}");
+    }
+
+    #[wasm_bindgen_test]
+    fn blended_path_when_collection_stats_present() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        // The bucket the read path builds for the ARRIVING chunk (seq 4).
+        let next_meta = mapper.get_chunk_metadata(4).unwrap();
+        let bucket = chunk_characteristics(next_meta, &vcp).unwrap();
+        // Seed a COLLECTION-domain historical interval far from physics so the
+        // 70/30 blend is observable, plus an attempts average for retry budget.
+        let mut stats = ChunkTimingStats::new();
+        stats.add_timing(bucket, ChronoDuration::seconds(30), None, 3);
+        stats.attach_collection_interval(&bucket, ChronoDuration::seconds(30));
+
+        let e = estimate_chunk_processing_diagnostics(
+            &chunk(3, ChunkType::Intermediate),
+            &vcp,
+            &mapper,
+            Some(&stats),
+        )
+        .unwrap();
+        assert_eq!(e.path, SchedulerPath::Blended);
+        assert_eq!(e.bucket, Some(bucket));
+        // wait = blended interval + retry budget. Blend = 0.7*physics + 0.3*30;
+        // retry budget = avg_attempts - 1 = 2.
+        let blend = 0.7 * CHUNK_DUR + 0.3 * 30.0;
+        let expected = blend + 2.0;
+        let wait = e.duration.num_milliseconds() as f64 / 1000.0;
+        assert!(
+            (wait - expected).abs() < 1e-3,
+            "wait={wait} expected={expected}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_path_when_metadata_absent_but_elevation_resolves() {
+        // At the final sequence (7), get_chunk_metadata(8) is None so the
+        // metadata-pair guard fails, but get_sequence_elevation_number(7)
+        // resolves → legacy path. The elevation is CS → 11s.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let e =
+            estimate_chunk_processing_diagnostics(&chunk(7, ChunkType::End), &vcp, &mapper, None)
+                .unwrap();
+        assert_eq!(e.path, SchedulerPath::Legacy);
+        assert_eq!(e.duration, ChronoDuration::seconds(11)); // CS
+        assert!(e.bucket.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_default_wait_time_branches() {
+        // CS → 11s regardless of channel config.
+        assert_eq!(
+            get_legacy_default_wait_time(WaveformType::CS, ChannelConfiguration::RandomPhase),
+            ChronoDuration::seconds(11)
+        );
+        // Non-CS + ConstantPhase → 7s.
+        assert_eq!(
+            get_legacy_default_wait_time(WaveformType::CDW, ChannelConfiguration::ConstantPhase),
+            ChronoDuration::seconds(7)
+        );
+        // Non-CS + non-ConstantPhase → 4s.
+        assert_eq!(
+            get_legacy_default_wait_time(WaveformType::CDW, ChannelConfiguration::RandomPhase),
+            ChronoDuration::seconds(4)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn to_target_rejects_non_advancing_targets() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let cur = chunk(3, ChunkType::Intermediate);
+        assert!(estimate_chunk_processing_time_to_target(&cur, 3, &vcp, &mapper, None).is_none());
+        assert!(estimate_chunk_processing_time_to_target(&cur, 2, &vcp, &mapper, None).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn to_target_single_hop_equals_single_hop_diagnostic() {
+        // Stated invariant: target == current+1 must EXACTLY equal the
+        // single-hop diagnostic.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let cur = chunk(3, ChunkType::Intermediate);
+        let single = estimate_chunk_processing_diagnostics(&cur, &vcp, &mapper, None).unwrap();
+        let multi = estimate_chunk_processing_time_to_target(&cur, 4, &vcp, &mapper, None).unwrap();
+        assert_eq!(single.duration, multi.duration);
+    }
+
+    #[wasm_bindgen_test]
+    fn to_target_multi_hop_sums_per_hop_plus_target_retry_budget() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        // Give the target bucket (seq 6) an attempts average so the target
+        // retry budget is non-zero and we can verify it's added exactly once.
+        let target_meta = mapper.get_chunk_metadata(6).unwrap();
+        let target_bucket = chunk_characteristics(target_meta, &vcp).unwrap();
+        let mut stats = ChunkTimingStats::new();
+        stats.add_timing(target_bucket, ChronoDuration::seconds(5), None, 4); // attempts=4
+
+        let cur = chunk(3, ChunkType::Intermediate);
+        let multi =
+            estimate_chunk_processing_time_to_target(&cur, 6, &vcp, &mapper, Some(&stats)).unwrap();
+
+        // Expected = sum of per-hop estimate_interval seconds for hops 3->4,
+        // 4->5, 5->6, plus the target (seq 6) retry budget (avg_attempts-1=3).
+        let mut sum = 0.0;
+        for seq in 3..6 {
+            let prev = mapper.get_chunk_metadata(seq).unwrap();
+            let next = mapper.get_chunk_metadata(seq + 1).unwrap();
+            let bucket = chunk_characteristics(next, &vcp);
+            let est = estimate_interval(
+                prev,
+                next,
+                bucket.as_ref(),
+                Some(&stats),
+                &TimingTuning::DEFAULT,
+            );
+            sum += est.seconds;
+        }
+        let target_prev = mapper.get_chunk_metadata(5).unwrap();
+        let target_est = estimate_interval(
+            target_prev,
+            target_meta,
+            Some(&target_bucket),
+            Some(&stats),
+            &TimingTuning::DEFAULT,
+        );
+        sum += target_est.retry_budget_secs;
+        assert!((target_est.retry_budget_secs - 3.0).abs() < 1e-9);
+
+        let got = multi.duration.num_milliseconds() as f64 / 1000.0;
+        assert!((got - sum).abs() < 1e-3, "got={got} sum={sum}");
+        assert_eq!(multi.stats_n_at_prediction, target_est.stats_n);
+    }
+
+    #[wasm_bindgen_test]
+    fn to_target_start_first_hop_adds_constant_once() {
+        // From the Start chunk, the first hop is the 1.5s constant, then the
+        // loop sums intervals from current+1. Verify the constant is added
+        // exactly once (not double-counted) by comparing against a hand sum.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let start = chunk(1, ChunkType::Start);
+        // Target seq 4: hops are start->2 (constant 1.5), 2->3, 3->4.
+        let multi =
+            estimate_chunk_processing_time_to_target(&start, 4, &vcp, &mapper, None).unwrap();
+
+        let mut sum = ChunkTimingModel::start_to_first_intermediate_gap_secs();
+        for seq in 2..4 {
+            let prev = mapper.get_chunk_metadata(seq).unwrap();
+            let next = mapper.get_chunk_metadata(seq + 1).unwrap();
+            let bucket = chunk_characteristics(next, &vcp);
+            let est = estimate_interval(prev, next, bucket.as_ref(), None, &TimingTuning::DEFAULT);
+            sum += est.seconds;
+        }
+        // target (seq 4) retry budget is 0 (no stats).
+        let got = multi.duration.num_milliseconds() as f64 / 1000.0;
+        assert!((got - sum).abs() < 1e-3, "got={got} sum={sum}");
+    }
+
+    #[wasm_bindgen_test]
+    fn unbucketable_bucket_is_none_for_start_metadata() {
+        // chunk_characteristics for the Start chunk (no elevation) is None;
+        // this pins that the read-path bucket builder returns None rather than
+        // a bogus key.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let start_meta = mapper.get_chunk_metadata(1).unwrap();
+        assert!(chunk_characteristics(start_meta, &vcp).is_none());
+        // And a data chunk DOES bucket, with the normalized Intermediate type.
+        let data_meta = mapper.get_chunk_metadata(2).unwrap();
+        let b: ChunkCharacteristics = chunk_characteristics(data_meta, &vcp).unwrap();
+        assert_eq!(b.chunk_type, ChunkType::Intermediate);
+    }
+}
