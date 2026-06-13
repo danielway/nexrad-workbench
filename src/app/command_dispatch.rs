@@ -65,6 +65,10 @@ impl WorkbenchApp {
             AppCommand::StartLive => self.start_live_mode(ctx),
             AppCommand::ReturnToLive => self.return_to_live(ctx),
 
+            // ---- Loop presets -----------------------------------------
+            AppCommand::ApplyLoopPreset(preset) => self.apply_loop_preset(preset, ctx),
+            AppCommand::ClearLoop => self.playback.state.clear_selection(),
+
             // ---- Queue management -------------------------------------
             // Mutations that may unblock work flip `pump_queue` so the
             // post-results queue pump runs in the same frame.

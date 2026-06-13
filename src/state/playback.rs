@@ -336,6 +336,128 @@ pub fn format_lag(secs: f64) -> String {
     }
 }
 
+/// Default loop-window size when a pinned/preset loop is created without an
+/// explicit choice (alignment §7: "last 6 frames"). Replaces the old
+/// compile-time `LOOKBACK_FRAMES = 5` so the window size is user-driven state.
+pub const DEFAULT_LOOP_FRAMES: u32 = 6;
+
+/// How a loop window's extent is measured. Frame-count windows ("last 6
+/// frames") are preferred in Micro since scan spacing varies; duration windows
+/// ("last 30 min") are the alternative offered in presets (spec §8).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum LoopBasis {
+    /// The last `n` matching frames (sweeps of the selected product + tilt).
+    FrameCount(u32),
+    /// The last `secs` seconds of timeline time.
+    Duration(f64),
+}
+
+impl Default for LoopBasis {
+    fn default() -> Self {
+        LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES)
+    }
+}
+
+impl LoopBasis {
+    /// A short menu label for the basis (e.g. "6 frames", "30 min").
+    pub fn label(&self) -> String {
+        match self {
+            LoopBasis::FrameCount(n) => format!("{n} frames"),
+            LoopBasis::Duration(secs) => {
+                let mins = secs / 60.0;
+                if mins >= 60.0 {
+                    format!("{:.0} h", mins / 60.0)
+                } else {
+                    format!("{mins:.0} min")
+                }
+            }
+        }
+    }
+
+    /// Conservative fallback span (seconds) the *pinned* sliding window covers
+    /// before any matching frame is cached — so `tick_live` can seed bounds
+    /// that bound the macro frame list to recent data rather than all history.
+    /// Frame-count bases assume the typical volume interval per frame (plus a
+    /// volume of slack); duration bases use their own span.
+    pub fn fallback_span_secs(&self) -> f64 {
+        match self {
+            LoopBasis::FrameCount(n) => (*n as f64 + 1.0) * FALLBACK_FRAME_SPACING_SECS,
+            LoopBasis::Duration(secs) => *secs,
+        }
+    }
+}
+
+/// First-class loop-window model (spec §8). Lives on [`PlaybackState`], NOT
+/// inside [`TimeSelection`] (which `tick_live` overwrites wholesale every frame
+/// while replaying) — the per-frame slide reads this to size the sliding
+/// window, so it must survive that clobber.
+///
+/// `pinned` distinguishes the two loop flavors the presets create:
+/// - **pinned** (sliding): the window's later edge tracks the live edge as new
+///   sweeps arrive (the "loop the last N while still streaming" gesture).
+/// - **fixed** (custom range): a static range that does not follow now.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct LoopWindow {
+    /// How the window's extent is measured (frame-count or duration).
+    pub basis: LoopBasis,
+    /// Whether the window slides forward with the live edge (`true`) or is a
+    /// fixed range (`false`).
+    pub pinned: bool,
+}
+
+/// A loop preset the user can pick from the transport row / mobile settings
+/// (spec §8 "creation order: presets first"). The app turns each into a
+/// concrete [`LoopWindow`] + the right playhead transition (alignment #7:
+/// menu offers 4/6/10 frames, 30 min / 1 h, and "pin to live").
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum LoopPreset {
+    /// Enter the pinned sliding loop at the default frame count.
+    PinToLive,
+    /// A loop of the last `n` matching frames.
+    LastFrames(u32),
+    /// A duration-basis loop covering the last `secs` seconds.
+    LastDuration(f64),
+}
+
+impl LoopPreset {
+    /// The presets offered in the menu, in display order.
+    pub fn menu() -> &'static [LoopPreset] {
+        &[
+            LoopPreset::PinToLive,
+            LoopPreset::LastFrames(4),
+            LoopPreset::LastFrames(6),
+            LoopPreset::LastFrames(10),
+            LoopPreset::LastDuration(30.0 * 60.0),
+            LoopPreset::LastDuration(60.0 * 60.0),
+        ]
+    }
+
+    /// Menu label.
+    pub fn label(&self) -> String {
+        match self {
+            LoopPreset::PinToLive => "Pin to live".to_string(),
+            LoopPreset::LastFrames(n) => format!("Last {n} frames"),
+            LoopPreset::LastDuration(secs) => {
+                let mins = secs / 60.0;
+                if mins >= 60.0 {
+                    format!("Last {:.0} h", mins / 60.0)
+                } else {
+                    format!("Last {mins:.0} min")
+                }
+            }
+        }
+    }
+
+    /// The loop-window basis this preset resolves to.
+    pub fn basis(&self) -> LoopBasis {
+        match self {
+            LoopPreset::PinToLive => LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES),
+            LoopPreset::LastFrames(n) => LoopBasis::FrameCount(*n),
+            LoopPreset::LastDuration(secs) => LoopBasis::Duration(*secs),
+        }
+    }
+}
+
 /// Loop behavior when playback bounds are set.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum LoopMode {
@@ -627,6 +749,25 @@ pub struct PlaybackState {
     /// The user's timeline selection, if any (see [`TimeSelection`]).
     pub selection: Option<TimeSelection>,
 
+    /// The active loop window's basis + pinned-ness (see [`LoopWindow`]), if a
+    /// loop exists. `Some` whenever a loop is active — a fixed range (alongside
+    /// `playback_bounds`) or a pinned replay (whose bounds `tick_live` owns).
+    /// Kept in step with the selection/bounds by the selection/preset/handle
+    /// APIs. Sized state that `tick_live` reads to slide the pinned window — it
+    /// must NOT live in the selection, which the live tick rewrites every frame.
+    pub loop_window: Option<LoopWindow>,
+
+    /// Wrap-point incorporation buffer (spec §8): while *playing* a pinned
+    /// loop, the freshly resolved target window is parked here instead of being
+    /// applied immediately. It is committed to `playback_bounds` only when the
+    /// playhead crosses the loop's wrap point, so the visible band and frame set
+    /// stay fixed between wraps and newly arrived frames "enter at the wrap,
+    /// never mid-cycle". Cleared (and bypassed) while not playing — a
+    /// paused/idle pinned window may track now continuously. See
+    /// [`Self::commit_pinned_window`] and the wrap branch of
+    /// [`Self::step_macro_frame_internal`].
+    pub pending_loop_window: Option<(f64, f64)>,
+
     /// Actual pixel width of the timeline widget (set by render_timeline each frame).
     /// Used for accurate view centering calculations outside the render function.
     pub timeline_width_px: f64,
@@ -649,6 +790,8 @@ impl Default for PlaybackState {
             timeline_tier: Self::seed_tier(zoom, 1000.0),
             timeline_view_start: now - view_width_secs / 2.0,
             selection: None,
+            loop_window: None,
+            pending_loop_window: None,
             timeline_width_px: 1000.0,
             macro_playback: MacroPlaybackState::default(),
         }
@@ -696,6 +839,8 @@ impl PlaybackState {
     /// its own constraints).
     pub fn enter_pinned_live(&mut self, now: f64) {
         self.time_model.playback_bounds = None;
+        self.loop_window = None;
+        self.pending_loop_window = None;
         self.time_model.mode = PlayheadMode::PinnedToNow;
         self.time_model.playback_position = now;
     }
@@ -707,6 +852,8 @@ impl PlaybackState {
     pub fn exit_live(&mut self, freeze: FreezeAt) {
         if self.time_model.mode == PlayheadMode::LookbackLoop {
             self.clear_anchored_selection();
+            self.loop_window = None;
+            self.pending_loop_window = None;
             self.time_model.clear_bounds();
         }
         self.time_model.mode = PlayheadMode::Free;
@@ -723,11 +870,10 @@ impl PlaybackState {
     /// `seed` places the playhead (oldest cached frame) so the first pass
     /// runs oldest→newest.
     ///
-    /// Currently unreachable: Phase 4 removed the Play-while-pinned → lookback
-    /// wiring (pause-while-tethered freezes instead). The loop-presets phase
-    /// re-enters lookback through this transition, so the machinery stays.
-    #[allow(dead_code)]
-    pub fn enter_lookback(&mut self, seed: Option<f64>) {
+    /// `basis` records the pinned window's measure (frame-count / duration) so
+    /// `tick_live` and the backfill pump can size the sliding window; it is
+    /// stored as a pinned [`LoopWindow`].
+    pub fn enter_lookback(&mut self, seed: Option<f64>, basis: LoopBasis) {
         debug_assert!(
             self.time_model.mode == PlayheadMode::PinnedToNow,
             "lookback starts from pinned live, not {:?}",
@@ -735,6 +881,10 @@ impl PlaybackState {
         );
         self.time_model.mode = PlayheadMode::LookbackLoop;
         self.time_model.loop_mode = LoopMode::Loop;
+        self.loop_window = Some(LoopWindow {
+            basis,
+            pinned: true,
+        });
         if let Some(ts) = seed {
             self.time_model.playback_position = ts;
         }
@@ -748,6 +898,8 @@ impl PlaybackState {
     /// untouched.
     pub fn exit_lookback_to_now(&mut self, now: f64) {
         self.clear_anchored_selection();
+        self.loop_window = None;
+        self.pending_loop_window = None;
         self.time_model.clear_bounds();
         self.time_model.mode = PlayheadMode::PinnedToNow;
         self.time_model.playback_position = now;
@@ -1054,6 +1206,10 @@ impl PlaybackState {
             // Past end
             match self.time_model.loop_mode {
                 LoopMode::Loop => {
+                    // Wrap point: flush any pinned window parked while playing so
+                    // newly arrived frames enter the loop here, never mid-cycle
+                    // (spec §8). No-op when nothing is parked / not a pinned loop.
+                    self.apply_pending_window_at_wrap();
                     self.macro_playback.current_frame_index = 0;
                 }
                 LoopMode::PingPong => {
@@ -1180,10 +1336,26 @@ impl PlaybackState {
     }
 
     /// Anchor the selection's later edge to the live edge (it slides
-    /// forward with now while streaming).
+    /// forward with now while streaming). Mirrors the pin into the loop window
+    /// so the band reads as pinned.
     pub fn anchor_selection_to_live(&mut self) {
         if let Some(sel) = self.selection.as_mut() {
             sel.anchored_to_live = true;
+        }
+        if let Some(w) = self.loop_window.as_mut() {
+            w.pinned = true;
+        }
+    }
+
+    /// Un-anchor the selection (a dragged right handle moved off the live
+    /// edge): the loop becomes a fixed range. Mirrors the un-pin into the loop
+    /// window. The selection keeps its current bounds.
+    pub fn unanchor_selection_from_live(&mut self) {
+        if let Some(sel) = self.selection.as_mut() {
+            sel.anchored_to_live = false;
+        }
+        if let Some(w) = self.loop_window.as_mut() {
+            w.pinned = false;
         }
     }
 
@@ -1216,14 +1388,86 @@ impl PlaybackState {
     /// Clear the current selection.
     pub fn clear_selection(&mut self) {
         self.selection = None;
+        self.loop_window = None;
+        self.pending_loop_window = None;
         self.time_model.clear_bounds();
     }
 
-    /// Apply selection as playback bounds.
+    /// Apply selection as playback bounds. Records a matching [`LoopWindow`]: a
+    /// `Duration` basis equal to the selection's span, `pinned` mirroring the
+    /// selection's live-anchoring (so a selection ending near now while
+    /// streaming reads as a pinned loop). The anchored-selection slide path
+    /// owns its own bounds tracking — the basis here is descriptive, not a
+    /// re-derivation source for these selection-driven loops.
     pub fn apply_selection_as_bounds(&mut self) {
         if let Some((start, end)) = self.selection_range() {
             self.time_model.set_bounds_from_selection(start, end);
+            let pinned = self.selection.is_some_and(|s| s.anchored_to_live);
+            self.loop_window = Some(LoopWindow {
+                basis: LoopBasis::Duration(end - start),
+                pinned,
+            });
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Wrap-point incorporation (spec §8). The pinned sliding loop must not
+    // grow/shift mid-cycle: a frame that arrives while the loop is playing
+    // joins the active set only when the playhead next wraps. The split is:
+    // `commit_pinned_window` parks the resolved target while playing and
+    // returns the still-committed bounds; the macro wrap branch flushes the
+    // parked window via `apply_pending_window_at_wrap`.
+    // ------------------------------------------------------------------
+
+    /// Decide which window to apply this frame for a pinned loop, given the
+    /// freshly resolved `target`. Returns the window the caller should set as
+    /// `playback_bounds`.
+    ///
+    /// - **Not playing** (paused/idle pinned): track now continuously — return
+    ///   the target and clear any parked window.
+    /// - **Playing, no committed window yet**: commit the target immediately
+    ///   (first frame of the loop has nothing to disrupt).
+    /// - **Playing, target differs from committed**: park the target and keep
+    ///   returning the committed window until the wrap flushes it.
+    pub fn commit_pinned_window(&mut self, target_start: f64, target_end: f64) -> (f64, f64) {
+        let target = order_pair(target_start, target_end);
+        if !self.playing {
+            self.pending_loop_window = None;
+            return target;
+        }
+        match self.time_model.playback_bounds {
+            None => {
+                self.pending_loop_window = None;
+                target
+            }
+            Some(current) => {
+                if target != current {
+                    self.pending_loop_window = Some(target);
+                } else {
+                    self.pending_loop_window = None;
+                }
+                current
+            }
+        }
+    }
+
+    /// Flush a parked pinned window into `playback_bounds` at the loop's wrap
+    /// point. No-op when nothing is parked. The render loop rebuilds the macro
+    /// frame list from the new bounds (a `WindowChanged` rebuild, which re-syncs
+    /// to the nearest frame without teleporting the cursor).
+    fn apply_pending_window_at_wrap(&mut self) {
+        if let Some((s, e)) = self.pending_loop_window.take() {
+            self.time_model.set_bounds_preserving(s, e);
+        }
+    }
+}
+
+/// Order a pair so `.0 <= .1`.
+fn order_pair(a: f64, b: f64) -> (f64, f64) {
+    if a <= b {
+        (a, b)
+    } else {
+        (b, a)
     }
 }
 
@@ -1239,13 +1483,21 @@ mod tests {
         // Pretend a prior macro session left a non-zero cursor.
         ps.macro_playback.current_frame_index = 7;
         ps.macro_playback.frame_accumulator = 0.4;
-        ps.enter_lookback(Some(940.0));
+        ps.enter_lookback(Some(940.0), LoopBasis::FrameCount(10));
         assert!(ps.time_model.loop_mode == LoopMode::Loop);
         assert!(ps.time_model.is_lookback());
         assert!(ps.playing);
         assert_eq!(ps.playback_position(), 940.0);
         assert_eq!(ps.macro_playback.current_frame_index, 0);
         assert_eq!(ps.macro_playback.frame_accumulator, 0.0);
+        // The basis is recorded as a pinned loop window for tick_live to read.
+        assert_eq!(
+            ps.loop_window,
+            Some(LoopWindow {
+                basis: LoopBasis::FrameCount(10),
+                pinned: true,
+            })
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1272,7 +1524,7 @@ mod tests {
         assert_eq!(ps.timeline_tier, TimelineTier::Micro);
         assert!(ps.effective_playback_mode() == PlaybackMode::Micro);
         ps.enter_pinned_live(1000.0);
-        ps.enter_lookback(None);
+        ps.enter_lookback(None, LoopBasis::default());
         assert!(ps.effective_playback_mode() == PlaybackMode::Macro);
     }
 
@@ -1280,7 +1532,7 @@ mod tests {
     fn exit_lookback_to_now_clears_window_and_repins() {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
-        ps.enter_lookback(Some(940.0));
+        ps.enter_lookback(Some(940.0), LoopBasis::default());
         ps.time_model.set_bounds_preserving(940.0, 1000.0); // tick's window
         ps.exit_lookback_to_now(1010.0);
         assert_eq!(ps.time_model.playback_bounds, None);
@@ -1293,7 +1545,7 @@ mod tests {
     fn exit_live_keep_preserves_position_and_clears_lookback_window() {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
-        ps.enter_lookback(Some(940.0));
+        ps.enter_lookback(Some(940.0), LoopBasis::default());
         ps.time_model.set_bounds_preserving(940.0, 1000.0);
         ps.exit_live(FreezeAt::Keep);
         assert_eq!(ps.time_model.mode, PlayheadMode::Free);
@@ -1463,7 +1715,7 @@ mod tests {
     fn exit_live_from_lookback_drops_anchored_selection() {
         let mut ps = PlaybackState::default();
         ps.enter_pinned_live(1000.0);
-        ps.enter_lookback(Some(940.0));
+        ps.enter_lookback(Some(940.0), LoopBasis::default());
         ps.selection = Some(TimeSelection {
             a: 940.0,
             b: 1000.0,
@@ -1711,5 +1963,159 @@ mod tests {
         ps.set_timeline_zoom(zoom_61h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
         assert_eq!(ps.timeline_tier, TimelineTier::Archive);
         assert_eq!(ps.detail_level(), DetailLevel::Coverage);
+    }
+
+    // ---------------------------------------------------------------
+    // Loop-window state (spec §8)
+    // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn loop_basis_default_is_six_frames() {
+        // Alignment #7: the default preset is the last 6 frames.
+        assert_eq!(
+            LoopBasis::default(),
+            LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES)
+        );
+        assert_eq!(DEFAULT_LOOP_FRAMES, 6);
+        assert_eq!(LoopWindow::default().basis, LoopBasis::FrameCount(6));
+        assert!(!LoopWindow::default().pinned);
+    }
+
+    #[wasm_bindgen_test]
+    fn loop_preset_basis_and_menu() {
+        assert_eq!(
+            LoopPreset::PinToLive.basis(),
+            LoopBasis::FrameCount(DEFAULT_LOOP_FRAMES)
+        );
+        assert_eq!(
+            LoopPreset::LastFrames(10).basis(),
+            LoopBasis::FrameCount(10)
+        );
+        assert_eq!(
+            LoopPreset::LastDuration(1800.0).basis(),
+            LoopBasis::Duration(1800.0)
+        );
+        // The menu offers the alignment #7 set.
+        let labels: Vec<String> = LoopPreset::menu().iter().map(|p| p.label()).collect();
+        assert!(labels.contains(&"Pin to live".to_string()));
+        assert!(labels.contains(&"Last 4 frames".to_string()));
+        assert!(labels.contains(&"Last 6 frames".to_string()));
+        assert!(labels.contains(&"Last 10 frames".to_string()));
+        assert!(labels.contains(&"Last 30 min".to_string()));
+        assert!(labels.contains(&"Last 1 h".to_string()));
+    }
+
+    #[wasm_bindgen_test]
+    fn loop_basis_fallback_span_frame_count_vs_duration() {
+        // Frame-count: (n + 1) volumes of slack at the typical interval.
+        assert_eq!(
+            LoopBasis::FrameCount(6).fallback_span_secs(),
+            7.0 * FALLBACK_FRAME_SPACING_SECS
+        );
+        // Duration: exactly the span.
+        assert_eq!(LoopBasis::Duration(1800.0).fallback_span_secs(), 1800.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn apply_selection_records_fixed_loop_window() {
+        let mut ps = PlaybackState::default();
+        ps.set_selection(100.0, 460.0);
+        ps.apply_selection_as_bounds();
+        // A plain selection → a fixed (un-pinned) duration-basis loop window.
+        let w = ps.loop_window.expect("loop window set");
+        assert_eq!(w.basis, LoopBasis::Duration(360.0));
+        assert!(!w.pinned);
+        // Anchoring it mirrors into the window as pinned.
+        ps.anchor_selection_to_live();
+        assert!(ps.loop_window.unwrap().pinned);
+        // Un-anchoring (handle dragged off live) reverts to fixed.
+        ps.unanchor_selection_from_live();
+        assert!(!ps.loop_window.unwrap().pinned);
+    }
+
+    #[wasm_bindgen_test]
+    fn clearing_a_loop_drops_the_window() {
+        let mut ps = PlaybackState::default();
+        ps.set_selection(100.0, 400.0);
+        ps.apply_selection_as_bounds();
+        assert!(ps.loop_window.is_some());
+        ps.clear_selection();
+        assert!(ps.loop_window.is_none());
+        assert_eq!(ps.time_model.playback_bounds, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn exiting_live_clears_pinned_loop_window() {
+        let mut ps = PlaybackState::default();
+        ps.enter_pinned_live(1000.0);
+        ps.enter_lookback(Some(940.0), LoopBasis::FrameCount(4));
+        assert!(ps.loop_window.is_some());
+        ps.exit_lookback_to_now(1010.0);
+        assert!(ps.loop_window.is_none());
+        // And the harder exit path.
+        ps.enter_lookback(Some(940.0), LoopBasis::FrameCount(4));
+        assert!(ps.loop_window.is_some());
+        ps.exit_live(FreezeAt::Keep);
+        assert!(ps.loop_window.is_none());
+    }
+
+    // ---------------------------------------------------------------
+    // Wrap-point incorporation (spec §8)
+    // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn commit_pinned_window_tracks_now_continuously_while_paused() {
+        // Not playing: the window follows now every call, nothing is parked.
+        let mut ps = PlaybackState::default();
+        assert!(!ps.playing);
+        let w = ps.commit_pinned_window(100.0, 200.0);
+        assert_eq!(w, (100.0, 200.0));
+        ps.time_model.set_bounds_preserving(100.0, 200.0);
+        // A later target is taken immediately (continuous tracking).
+        let w = ps.commit_pinned_window(150.0, 260.0);
+        assert_eq!(w, (150.0, 260.0));
+        assert!(ps.pending_loop_window.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn commit_pinned_window_defers_new_frames_until_wrap_while_playing() {
+        let mut ps = PlaybackState::default();
+        ps.playing = true;
+        // First commit while playing takes effect immediately (no prior bounds).
+        let w = ps.commit_pinned_window(100.0, 400.0);
+        assert_eq!(w, (100.0, 400.0));
+        ps.time_model.set_bounds_preserving(w.0, w.1);
+
+        // A frame arrives mid-cycle (window would slide to 160..460): it is
+        // parked, NOT applied — the committed window stays fixed.
+        let held = ps.commit_pinned_window(160.0, 460.0);
+        assert_eq!(held, (100.0, 400.0), "committed window held between wraps");
+        assert_eq!(ps.pending_loop_window, Some((160.0, 460.0)));
+
+        // Set up a frame list spanning the committed window and step to the wrap.
+        ps.macro_playback.sweep_frames = vec![100.0, 250.0, 400.0];
+        ps.macro_playback.current_frame_index = 2; // last frame
+        ps.time_model.loop_mode = LoopMode::Loop;
+        // Stepping forward past the end wraps to index 0 and flushes the parked
+        // window into bounds.
+        ps.step_macro_frame(1);
+        assert_eq!(ps.macro_playback.current_frame_index, 0);
+        assert_eq!(
+            ps.time_model.playback_bounds,
+            Some((160.0, 460.0)),
+            "parked window committed at the wrap"
+        );
+        assert!(ps.pending_loop_window.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn commit_pinned_window_no_park_when_target_unchanged() {
+        let mut ps = PlaybackState::default();
+        ps.playing = true;
+        ps.time_model.set_bounds_preserving(100.0, 400.0);
+        // Same target as committed → nothing parked.
+        let held = ps.commit_pinned_window(100.0, 400.0);
+        assert_eq!(held, (100.0, 400.0));
+        assert!(ps.pending_loop_window.is_none());
     }
 }

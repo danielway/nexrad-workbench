@@ -64,14 +64,6 @@ const FALLBACK_SCAN_DURATION_SECS: i64 = 300;
 /// going/returning live lands the tier in Micro.
 const LIVE_DEFAULT_ZOOM: f64 = 2.0;
 
-/// Number of recent matching frames the live "lookback" replay covers.
-const LOOKBACK_FRAMES: usize = 5;
-
-/// Time span (seconds) the lookback covers — sized to roughly `LOOKBACK_FRAMES`
-/// volumes with a volume of slack. Used both as the `tick_live` bounds fallback
-/// (before any frame is cached) and as the backward backfill window.
-const LOOKBACK_SPAN_SECS: f64 = (LOOKBACK_FRAMES as f64 + 1.0) * FALLBACK_SCAN_DURATION_SECS as f64;
-
 /// Maximum time difference (in seconds) between a cached scan's start_time
 /// and an archive file's timestamp for them to be considered the same scan.
 /// Aliases the timeline's single scan-start join tolerance so there is exactly

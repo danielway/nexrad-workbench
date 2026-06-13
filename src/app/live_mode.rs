@@ -82,6 +82,103 @@ impl WorkbenchApp {
         }
     }
 
+    /// Apply a loop preset (spec §8 "presets first"; the creation surface for
+    /// loops, additive to the implicit alt/right/shift-drag paths). Routes every
+    /// mode change through the named playhead transitions — never direct field
+    /// writes — so the `PlayheadMode` invariants hold.
+    ///
+    /// - **Pin to live** always enters the pinned sliding loop: re-tether first
+    ///   if detached/Free with a running stream (or start one), then
+    ///   `enter_lookback` from `PinnedToNow`.
+    /// - **Last N frames / duration** enter the pinned sliding loop when
+    ///   streaming-and-near-now (so the loop follows the live edge), else create
+    ///   a *fixed* loop of that extent ending at the current playhead.
+    pub(crate) fn apply_loop_preset(
+        &mut self,
+        preset: crate::state::LoopPreset,
+        ctx: &egui::Context,
+    ) {
+        use crate::state::LoopPreset;
+        let basis = preset.basis();
+        let now = self.state.frame_now.secs();
+
+        // "Pin to live", or a windowed preset while streaming with the playhead
+        // close to now, becomes the pinned sliding loop.
+        let near_now = self.live.mode_state.is_active()
+            && (now - self.playback.state.playback_position()).abs()
+                < crate::FALLBACK_SCAN_DURATION_SECS as f64;
+        let want_pinned = matches!(preset, LoopPreset::PinToLive) || near_now;
+
+        if want_pinned {
+            // Get to PinnedToNow without tripping enter_lookback's assert.
+            if !self.playback.state.time_model.is_pinned() {
+                // Re-tether: instant if a stream is already running, otherwise
+                // start one. `return_to_live` lands the playhead in PinnedToNow.
+                self.return_to_live(ctx);
+            }
+            // `return_to_live`/`start_live_mode` may have queued a StartLive
+            // command (no stream yet) and left us not-yet-pinned this frame; only
+            // enter lookback once actually pinned.
+            if self.playback.state.time_model.is_pinned() {
+                let seed = self.resolve_pinned_window(basis, now).0;
+                self.playback.state.enter_lookback(Some(seed), basis);
+            } else {
+                // Stream is still starting; remember the intent so the loop
+                // engages once we're pinned. Stored as a pinned loop window the
+                // next pin can read — but for simplicity we just leave the
+                // preset to be re-applied by the user if the stream was cold.
+                log::debug!("Pin-to-live preset deferred: stream still starting");
+            }
+            return;
+        }
+
+        // Fixed loop ending at the current playhead. Detach a tether first so the
+        // selection lands as an ordinary Free-mode range (enter_lookback is only
+        // for the pinned case). The stream, if any, keeps running.
+        if self.live.mode_state.is_active() {
+            self.live.detach_playhead(
+                &mut self.playback.state,
+                now,
+                self.state.pause_stream_while_reviewing,
+            );
+        }
+        let end = self.playback.state.playback_position();
+        let span = match basis {
+            crate::state::LoopBasis::Duration(secs) => secs,
+            crate::state::LoopBasis::FrameCount(_) => self.frame_count_span_ending_at(basis, end),
+        };
+        let start = end - span;
+        self.playback.state.set_selection(start, end);
+        self.playback.state.apply_selection_as_bounds();
+        // A fixed preset loop is created ready to play.
+        if self.playback.state.is_playback_allowed() {
+            self.playback.state.playing = true;
+        }
+        // Arm the bulk fetch for the new range (selection = the fetch).
+        if let Some(range) = self.playback.state.selection_range() {
+            self.state.selection_just_finalized = Some(range);
+        }
+    }
+
+    /// Span (seconds) of the last `n` matching frames ending at/<= `end`, for a
+    /// frame-count basis fixed loop. Falls back to the basis's nominal span when
+    /// too few frames are cached around `end`.
+    fn frame_count_span_ending_at(&self, basis: crate::state::LoopBasis, end: f64) -> f64 {
+        if let crate::state::LoopBasis::FrameCount(n) = basis {
+            if let Some((s, e)) = self.timeline.scans.lookback_window(
+                &self.state.viz_state.elevation_selection,
+                self.state.viz_state.product.to_worker_string(),
+                end,
+                n as usize,
+            ) {
+                if e - s > 1.0 {
+                    return e - s;
+                }
+            }
+        }
+        basis.fallback_span_secs()
+    }
+
     /// Per-frame live tick — drives the playhead while streaming, independent
     /// of the `playing` flag (which now belongs to playback/lookback).
     ///
@@ -105,26 +202,34 @@ impl WorkbenchApp {
             // LIVE-NOW: pin to this frame's now.
             self.playback.state.pin_tick(now);
         } else if self.playback.state.time_model.is_lookback() {
-            // LIVE-LOOKBACK: own the frame window. Prefer the exact last-N-frame
-            // span; before any matching frame is cached, fall back to a time
-            // window of ~N volumes so `render_loop` builds `sweep_frames` from
-            // recent data — not all history. `render_loop` turns these bounds
-            // into the macro frame list; the backfill pump fills the window in,
-            // and this widens to the precise span as frames land.
-            let (start, end) = self
-                .timeline
-                .scans
-                .lookback_window(
-                    &self.state.viz_state.elevation_selection,
-                    self.state.viz_state.product.to_worker_string(),
-                    now,
-                    crate::LOOKBACK_FRAMES,
-                )
-                .unwrap_or((now - crate::LOOKBACK_SPAN_SECS, now));
+            // LIVE-LOOKBACK: own the frame window, sized from the loop window's
+            // basis (frame-count or duration — see `LoopWindow`). For a
+            // frame-count basis, prefer the exact last-N-frame span; before any
+            // matching frame is cached, fall back to a time window of ~N volumes
+            // so `render_loop` builds `sweep_frames` from recent data — not all
+            // history. A duration basis is simply the last `secs` ending at now.
+            // `render_loop` turns these bounds into the macro frame list; the
+            // backfill pump fills the window in, and this widens to the precise
+            // span as frames land.
+            //
+            // While *playing*, defer incorporating newly arrived frames until the
+            // playhead crosses the loop's wrap point (spec §8) — the committed
+            // window stays fixed between wraps so the band doesn't stretch
+            // mid-cycle. While paused/idle there's no cycle to disrupt, so the
+            // window tracks now continuously.
+            let basis = self
+                .playback
+                .state
+                .loop_window
+                .map(|w| w.basis)
+                .unwrap_or_default();
+            let (start, end) = self.resolve_pinned_window(basis, now);
+            let committed = self.playback.state.commit_pinned_window(start, end);
             self.playback
                 .state
                 .time_model
-                .set_bounds_preserving(start, end);
+                .set_bounds_preserving(committed.0, committed.1);
+            let (start, end) = committed;
             // Surface the replay window as a live-anchored selection so it
             // renders like any other selection (one concept, one overlay).
             self.playback.state.selection = Some(state::TimeSelection {
@@ -157,6 +262,34 @@ impl WorkbenchApp {
         }
 
         self.keep_now_on_screen(now);
+    }
+
+    /// Resolve the *target* pinned-loop window for `now` from its basis — the
+    /// window the loop would have if it tracked now continuously. The
+    /// wrap-point deferral ([`PlaybackState::commit_pinned_window`]) decides
+    /// whether this target is actually applied this frame.
+    ///
+    /// Frame-count: the span of the last `n` matching frames (with a time
+    /// fallback before any frame is cached). Duration: the last `secs` ending
+    /// at now.
+    pub(crate) fn resolve_pinned_window(
+        &self,
+        basis: crate::state::LoopBasis,
+        now: f64,
+    ) -> (f64, f64) {
+        match basis {
+            crate::state::LoopBasis::FrameCount(n) => self
+                .timeline
+                .scans
+                .lookback_window(
+                    &self.state.viz_state.elevation_selection,
+                    self.state.viz_state.product.to_worker_string(),
+                    now,
+                    n as usize,
+                )
+                .unwrap_or((now - basis.fallback_span_secs(), now)),
+            crate::state::LoopBasis::Duration(secs) => (now - secs, now),
+        }
     }
 
     /// Nudge the timeline view minimally so "now" stays visible. Pan/zoom is

@@ -592,8 +592,9 @@ impl WorkbenchApp {
     }
 
     /// Backward backfill for the live lookback replay: while replaying, ensure
-    /// the last ~[`crate::LOOKBACK_FRAMES`] volumes (matching elevation) ending
-    /// at "now" are fetched from the archive, so the loop has frames. Lazy — it
+    /// the volumes the active pinned loop covers (matching elevation, sized from
+    /// the loop window's basis) ending at "now" are fetched from the archive, so
+    /// the loop has frames. Lazy — it
     /// runs only in `LookbackLoop` mode — and idempotent via the same dedup as
     /// the forward pump. The live stream itself only fetches the in-progress
     /// volume, so previous volumes must come from the archive.
@@ -618,9 +619,21 @@ impl WorkbenchApp {
         }
         self.acquisition.lookback_backfill_next_ms = now_ms + 1000.0;
 
+        // Backfill the window the active pinned loop covers, sized from its
+        // basis (frame-count or duration). The exact frame span is resolved by
+        // `resolve_pinned_window`; widen the *start* by the basis fallback span
+        // so a frame-count loop still backfills enough archive before its
+        // frames are cached (its resolved span collapses to near-zero then).
         let now = crate::state::TimeModel::wall_clock_time();
+        let basis = self
+            .playback
+            .state
+            .loop_window
+            .map(|w| w.basis)
+            .unwrap_or_default();
+        let (resolved_start, _resolved_end) = self.resolve_pinned_window(basis, now);
         let win_end_i64 = now as i64;
-        let win_start_i64 = (now - crate::LOOKBACK_SPAN_SECS) as i64;
+        let win_start_i64 = resolved_start.min(now - basis.fallback_span_secs()) as i64;
         let elevation_filter = match &self.state.viz_state.elevation_selection {
             state::ElevationSelection::Fixed {
                 elevation_number, ..

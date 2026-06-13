@@ -47,9 +47,9 @@ pub use live_mode::{LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
 pub use mping::MpingState;
 pub use playback::{
-    format_lag, DetailLevel, FreezeAt, LoopMode, MacroFrameInputs, PlaybackDirection, PlaybackMode,
-    PlaybackSpeed, PlaybackState, RebuildCause, TimeModel, TimeSelection, TimelineTier,
-    TIMELINE_ZOOM_MAX, TIMELINE_ZOOM_MIN,
+    format_lag, DetailLevel, FreezeAt, LoopBasis, LoopMode, LoopPreset, MacroFrameInputs,
+    PlaybackDirection, PlaybackMode, PlaybackSpeed, PlaybackState, RebuildCause, TimeModel,
+    TimeSelection, TimelineTier, TIMELINE_ZOOM_MAX, TIMELINE_ZOOM_MIN,
 };
 pub use preferences::UserPreferences;
 pub use radar_data::RadarTimeline;
@@ -96,6 +96,11 @@ pub enum AppCommand {
     /// Re-pin the playhead to the live edge. Instant when the stream is
     /// already running (detached browsing); otherwise starts a stream.
     ReturnToLive,
+    /// Apply a loop preset (spec §8): pin-to-live, last N frames, or a duration
+    /// window. Resolved into a [`LoopWindow`] + the right playhead transition.
+    ApplyLoopPreset(LoopPreset),
+    /// Clear any active loop (selection bounds / pinned replay).
+    ClearLoop,
     /// Check and run eviction after a storage operation.
     CheckEviction,
     /// Wipe all data (IndexedDB + localStorage) and reload.
