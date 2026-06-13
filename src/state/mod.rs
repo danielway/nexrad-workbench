@@ -8,6 +8,7 @@
 pub(crate) mod acquisition;
 mod alerts;
 mod app_mode;
+pub(crate) mod calendar;
 mod errors;
 mod frame_clock;
 mod gps;
@@ -39,6 +40,7 @@ pub use acquisition::{
 };
 pub use alerts::AlertsState;
 pub use app_mode::{derive_app_mode, AppMode};
+pub use calendar::{aggregate_day_buckets, day_tap_macro_view, DayBucket, DAY_SECS};
 pub use errors::{AppError, ErrorContext};
 pub use frame_clock::FrameNow;
 pub use gps::GpsState;

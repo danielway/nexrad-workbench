@@ -2,6 +2,7 @@
 //! containers + frame cells in Micro; uniform ticks + coverage in Macro),
 //! tooltip, and overlays.
 
+mod calendar;
 mod frame_cells;
 mod interaction;
 mod loop_handles;
@@ -101,32 +102,15 @@ pub(super) struct TickConfig {
     min_pixels_per_major: f64,
 }
 
+// The tick ladder now stops at days: the linear Micro/Macro strip is only the
+// renderer up to ~the Archive-enter span (≈2.5 days), so it never needs
+// week/month/quarter/year ticks. Beyond that span the Archive **calendar** tier
+// renders day cells with its own month/day labels (spec §6.4 DECIDED, §15 cut
+// #4) — the deprecated year-wide-strip tick configs that produced "label soup"
+// are gone.
 const TICK_CONFIGS: &[TickConfig] = &[
-    // Years (approximate - 365 days)
-    TickConfig {
-        major_interval: 365 * 24 * 3600,
-        minor_divisions: 4,
-        min_pixels_per_major: 60.0,
-    },
-    // Quarters (approximate - 91 days)
-    TickConfig {
-        major_interval: 91 * 24 * 3600,
-        minor_divisions: 3,
-        min_pixels_per_major: 60.0,
-    },
-    // Months (approximate - 30 days)
-    TickConfig {
-        major_interval: 30 * 24 * 3600,
-        minor_divisions: 4,
-        min_pixels_per_major: 60.0,
-    },
-    // Weeks
-    TickConfig {
-        major_interval: 7 * 24 * 3600,
-        minor_divisions: 7,
-        min_pixels_per_major: 60.0,
-    },
-    // Days
+    // Days (coarsest the linear strip needs; also the `select_tick_config`
+    // fallback when nothing finer fits).
     TickConfig {
         major_interval: 24 * 3600,
         minor_divisions: 4,
@@ -478,8 +462,10 @@ pub(super) fn render_timeline(
     let mut failed_ticks: Vec<FailedTick> = Vec::new();
 
     // Micro path (frames-first). Drawn when in Micro or morphing into/out of
-    // it; cell heights + alpha scale by `micro_t` so they collapse/expand.
-    if tier == TimelineTier::Micro || morphing {
+    // it; cell heights + alpha scale by `micro_t` so they collapse/expand. The
+    // morph is Micro↔Macro only — in the Archive tier the calendar is an instant
+    // swap, so the frame-cell layer never paints over the day grid.
+    if tier == TimelineTier::Micro || (morphing && tier != TimelineTier::Archive) {
         // Free-running pulse for archive in-flight cells — independent of the
         // live-stream pulse (which is frozen at 0 when not streaming), so a
         // pure archive download still animates. Same 0..1 sine the old
@@ -570,9 +556,26 @@ pub(super) fn render_timeline(
         }
     }
 
-    // Macro / Archive path (uniform ticks + coverage + gap glyphs). Drawn when
-    // not in Micro, or while morphing (cross-fade with the Micro layer).
-    if tier != TimelineTier::Micro || morphing {
+    // Archive path (calendar coverage heatmap) — the main strip is REPLACED by
+    // a row of UTC-day cells (spec §6.4). The linear strip is never the active
+    // renderer at Archive spans, which is exactly how the deprecated year-wide
+    // strip zoom is gone (§15 cut #4): the calendar handles everything wider
+    // than the Archive-enter span. Macro↔Archive is an instant swap (no morph).
+    // The per-cell hit list feeds tap-to-zoom + the day tooltip below.
+    let mut day_cells: Vec<calendar::DayCellHit> = Vec::new();
+    if tier == TimelineTier::Archive {
+        let buckets = crate::state::aggregate_day_buckets(
+            &timeline.scans,
+            &timeline.shadow_scan_boundaries,
+            &state.saved_events,
+            &state.viz_state.site_id,
+            view_start,
+            view_end,
+        );
+        day_cells = calendar::render_calendar(&painter, &frame, &buckets);
+    } else if tier == TimelineTier::Macro || morphing {
+        // Macro track (uniform ticks + coverage + gap glyphs). Drawn in Macro,
+        // or while morphing into/out of Micro (cross-fade with the Micro layer).
         render_macro_track(&painter, &frame, &state.download_progress, 1.0 - micro_t);
         if !reduced && morphing {
             ui.ctx()
@@ -716,6 +719,35 @@ pub(super) fn render_timeline(
         }
     }
 
+    // -- Archive: tap a day → zoom into Macro centered on that day -----------
+    // The key Archive navigation gesture (spec §6.4). A click on a day cell sets
+    // the view to that day's start and a Macro-tier zoom, routed through
+    // `set_timeline_zoom` so the tier machine lands in Macro (playback re-enabled
+    // there). The tapped day's cell rects are added to `suppress_rects` so the
+    // generic press-seek below doesn't also fire on the same click.
+    let mut clicked_day = false;
+    if tier == TimelineTier::Archive && response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if let Some(cell) = day_cells.iter().find(|c| c.rect.contains(pos)) {
+                let width = playback.state.timeline_width_px;
+                let (new_view_start, new_zoom) =
+                    crate::state::day_tap_macro_view(cell.bucket.day_start, width);
+                playback.state.timeline_view_start = new_view_start;
+                let spacing = playback.state.median_frame_spacing();
+                playback.state.set_timeline_zoom(new_zoom, width, spacing);
+                clicked_day = true;
+            }
+        }
+    }
+    // Hover hint on a day cell (Archive tier): it's tappable.
+    if tier == TimelineTier::Archive {
+        if let Some(hover_pos) = response.hover_pos() {
+            if day_cells.iter().any(|c| c.rect.contains(hover_pos)) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+    }
+
     // -- Interaction handling --
     // Runs BEFORE the tooltip so a primary-drag scrub can suppress the hover
     // popup. Rects whose presses are owned by another control and must not also
@@ -734,6 +766,11 @@ pub(super) fn render_timeline(
     if clicked_failed_tick {
         suppress_rects.extend(failed_ticks.iter().map(|t| t.rect));
     }
+    // In Archive, every day cell suppresses the generic seek — a tap is a
+    // zoom-to-day, not a playhead seek (the tier is a navigator only).
+    if tier == TimelineTier::Archive {
+        suppress_rects.extend(day_cells.iter().map(|c| c.rect));
+    }
     let interaction = handle_timeline_interaction(
         ui,
         state,
@@ -747,10 +784,19 @@ pub(super) fn render_timeline(
 
     // -- Hover tooltips --
     // Suppressed during an active scrub so the popup doesn't chase the pointer.
+    // In Archive the calendar's per-day tooltip (date + cached/available summary)
+    // replaces the linear-strip scan/sweep tooltip.
+    let _ = clicked_day; // consumed for clarity; the zoom already applied above.
     if response.hovered() && !interaction.scrubbing {
         if let Some(hover_pos) = response.hover_pos() {
-            let hover_ts = frame.x_to_ts(hover_pos.x);
-            render_timeline_tooltip(ui, &frame, live, hover_ts, hover_pos);
+            if tier == TimelineTier::Archive {
+                if let Some(cell) = day_cells.iter().find(|c| c.rect.contains(hover_pos)) {
+                    calendar::render_day_tooltip(ui, &cell.bucket, hover_pos, use_local);
+                }
+            } else {
+                let hover_ts = frame.x_to_ts(hover_pos.x);
+                render_timeline_tooltip(ui, &frame, live, hover_ts, hover_pos);
+            }
         }
     }
 
