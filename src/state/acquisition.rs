@@ -896,27 +896,34 @@ mod tests {
     #[wasm_bindgen_test]
     fn correlate_returns_newest_active_match_ignoring_queued() {
         let mut acq = AcquisitionState::default();
-        // Two downloads of the same file; only the second is Active. The first
-        // (`_old`) stays Queued and must be ignored by the correlator.
-        let _old = acq.create_operation(OperationKind::ArchiveDownload {
+        let mk = || OperationKind::ArchiveDownload {
             site_id: "KDMX".to_string(),
             file_name: "KDMX20240501_120000_V06".to_string(),
             scan_start: 1000,
             scan_end: 1300,
-        });
-        let new = acq.create_operation(OperationKind::ArchiveDownload {
-            site_id: "KDMX".to_string(),
-            file_name: "KDMX20240501_120000_V06".to_string(),
-            scan_start: 1000,
-            scan_end: 1300,
-        });
-        // `old` stays Queued; `new` goes Active.
+        };
+        // Three downloads of the same file. `queued` must be ignored (not
+        // Active/Completed); `old` and `new` are BOTH Active, so the correlator
+        // must pick the newest (its scan walks operations newest-first).
+        let queued = acq.create_operation(mk());
+        let old = acq.create_operation(mk());
+        let new = acq.create_operation(mk());
+        acq.mark_active(old);
         acq.mark_active(new);
         let url = "https://s3/.../KDMX20240501_120000_V06";
-        assert_eq!(acq.correlate_network_request(url), Some(new));
+        assert_eq!(
+            acq.correlate_network_request(url),
+            Some(new),
+            "with two Active matches the newest wins the tie-break"
+        );
+        let _ = queued;
 
-        // A Cancelled op is never correlated.
+        // Cancel the newest → the older Active match now wins (still ignores Queued).
         acq.cancel_operation(new);
+        assert_eq!(acq.correlate_network_request(url), Some(old));
+
+        // Cancel the last Active → nothing left to correlate (Queued is ignored).
+        acq.cancel_operation(old);
         assert_eq!(acq.correlate_network_request(url), None);
     }
 
