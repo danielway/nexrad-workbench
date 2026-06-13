@@ -779,17 +779,22 @@ pub(super) fn format_age_compact(now_secs: f64, ts_secs: f64) -> Option<String> 
     }
 }
 
-/// Compact `H:MM` clock for the honesty caption (e.g. "2:41"), honoring the
-/// local/UTC preference. Minute precision matches the spec's "showing 2:41 ·
-/// fetching 2:51…" wording.
+/// Compact 12-hour `h:MM` clock for the honesty caption (e.g. "2:41"), honoring
+/// the local/UTC preference. Matches the spec's "showing 2:41 · fetching 2:51…"
+/// wording (12-hour, no meridiem — two adjacent times share the AM/PM context)
+/// and stays consistent with the 12-hour top-bar/overlay readouts.
 fn format_hhmm(ts: f64, use_local: bool) -> String {
     let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ts * 1000.0));
-    let (h, m) = if use_local {
+    let (h24, m) = if use_local {
         (d.get_hours(), d.get_minutes())
     } else {
         (d.get_utc_hours(), d.get_utc_minutes())
     };
-    format!("{h}:{m:02}")
+    let h12 = match h24 % 12 {
+        0 => 12,
+        h => h,
+    };
+    format!("{h12}:{m:02}")
 }
 
 /// Render the canvas honesty caption (spec §11.2). Centered, low-key text:
