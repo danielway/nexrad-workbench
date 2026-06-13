@@ -36,6 +36,11 @@ pub struct Chrome {
     pub vcp_forecast_open: bool,
     /// Whether the network log modal is open.
     pub network_log_open: bool,
+    /// Whether the user-facing queue sheet (spec §5/§10: active/queued/recent
+    /// downloads + acquisition policy toggles) is open. Opened from the status
+    /// chip near the transport (desktop) or the mobile top-bar acquiring
+    /// indicator. Distinct from the dev-only acquisition drawer.
+    pub queue_sheet_open: bool,
     /// Whether the event create/edit modal is open.
     pub event_modal_open: bool,
     /// Event ID being edited (`None` = creating new).

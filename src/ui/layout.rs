@@ -43,6 +43,7 @@ use super::left_panel::LeftPanelLayer;
 use super::mobile::{MobileChromeLayer, MobileSettingsModalLayer, MobileTopBarLayer};
 use super::mping_modal::MpingModalLayer;
 use super::network_panel::NetworkLogLayer;
+use super::queue_sheet::QueueSheetLayer;
 use super::range_download_modal::RangeDownloadModalLayer;
 use super::right_panel::RightPanelLayer;
 use super::shortcuts::ShortcutsHelpLayer;
@@ -132,6 +133,7 @@ pub fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &ShortcutsHelpLayer,       // z=20
             &WipeModalLayer,           // z=30
             &RangeDownloadModalLayer,  // z=35
+            &QueueSheetLayer,          // z=37
             &StatsModalLayer,          // z=40
             &VcpForecastModalLayer,    // z=50
             &NetworkLogLayer,          // z=60
@@ -152,6 +154,7 @@ pub fn render_layout(is_mobile: bool, ctx: &mut LayoutCtx) {
             &ShortcutsHelpLayer,       // z=20
             &WipeModalLayer,           // z=30
             &RangeDownloadModalLayer,  // z=35
+            &QueueSheetLayer,          // z=37
             &StatsModalLayer,          // z=40
             &VcpForecastModalLayer,    // z=50
             &NetworkLogLayer,          // z=60

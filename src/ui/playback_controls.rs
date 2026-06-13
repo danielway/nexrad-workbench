@@ -696,6 +696,11 @@ fn render_session_stats(
         }
     }
 
+    // Acquisition status chip (spec §5) — for ALL users, hidden when idle.
+    // Opens the user-facing queue sheet. The dev-only metrics above are
+    // separate; this is the always-on ambient indicator.
+    render_status_chip(ui, acquisition, chrome);
+
     // Cache group: size with clear button
     if ui.small_button("x").on_hover_text("Clear cache").clicked() {
         state.push_command(crate::state::AppCommand::ClearCache);
@@ -705,6 +710,79 @@ fn render_session_stats(
             .size(10.0)
             .color(ui_colors::value(dark)),
     );
+}
+
+/// The acquisition status chip (spec §5): a tiny ambient indicator near the
+/// transport, visible to ALL users and hidden when idle. Shows "↓ N" with a
+/// spinning pulse while downloads are active/queued, and a red failure tick +
+/// count when downloads have failed (red = failure only, per the accent rule).
+/// Tapping it opens the user-facing queue sheet.
+fn render_status_chip(
+    ui: &mut egui::Ui,
+    acquisition: &Acquisition,
+    chrome: &mut crate::subsystem::Chrome,
+) {
+    let active = acquisition.state.active_count();
+    let queued = acquisition.state.queued_count();
+    let failed = acquisition.state.failed_scan_starts().len();
+    let in_flight = active + queued;
+
+    // Idle (nothing acquiring, nothing failed): hidden entirely.
+    if in_flight == 0 && failed == 0 {
+        return;
+    }
+
+    // Build the chip label. The down-arrow + count reads as "downloading N";
+    // a pulsing tint conveys motion (routine work, never alarm).
+    let mut clicked = false;
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+
+        if in_flight > 0 {
+            // Pulse the arrow so motion = acquisition activity.
+            let anim = ui.ctx().input(|i| i.time);
+            let pulse = (0.5 + 0.5 * (anim * 3.0).sin()) as f32;
+            let base = ui_colors::ACTIVE;
+            let alpha = (150.0 + 105.0 * pulse) as u8;
+            let tint = Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), alpha);
+            let label = format!("{} {}", egui_phosphor::regular::ARROW_DOWN, in_flight);
+            let resp = ui.add(
+                egui::Button::new(RichText::new(label).size(11.0).strong().color(tint))
+                    .frame(false),
+            );
+            if resp.clicked() {
+                clicked = true;
+            }
+            resp.on_hover_text("Downloads in progress — click for the download queue");
+            // Keep the pulse animating.
+            ui.ctx().request_repaint();
+        }
+
+        if failed > 0 {
+            // Red failure tick + count (accent rule: red = failure).
+            let label = format!("{} {}", egui_phosphor::regular::WARNING, failed);
+            let resp = ui.add(
+                egui::Button::new(
+                    RichText::new(label)
+                        .size(11.0)
+                        .strong()
+                        .color(super::colors::acquisition::FAILED),
+                )
+                .frame(false),
+            );
+            if resp.clicked() {
+                clicked = true;
+            }
+            resp.on_hover_text("Some downloads failed — click to retry");
+        }
+    });
+
+    ui.separator();
+
+    if clicked {
+        chrome.queue_sheet_open = true;
+    }
 }
 
 /// Render pipeline phase indicator boxes (3 high-level groups).
