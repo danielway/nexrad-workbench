@@ -194,3 +194,184 @@ fn parse_ring(value: &Value) -> Option<Ring> {
     }
     Some(ring)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// A FeatureCollection wrapper around one feature body string.
+    fn fc(feature: &str) -> String {
+        format!(r#"{{"type":"FeatureCollection","features":[{feature}]}}"#)
+    }
+
+    /// A square Polygon feature is parsed into one alert with vertices in
+    /// `(lon, lat)` order and a bbox spanning the square. The lon/lat ordering
+    /// assertion is the critical guard: GeoJSON coordinates are `[lon, lat]`,
+    /// and a swap here would mirror every alert across the diagonal.
+    #[wasm_bindgen_test]
+    fn polygon_feature_parses_lon_lat_and_bbox() {
+        // Square from lon -100..-99, lat 40..41. First vertex is the SW corner.
+        let feature = r#"{
+            "id": "urn:oid:1",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[-100.0, 40.0], [-99.0, 40.0], [-99.0, 41.0], [-100.0, 41.0], [-100.0, 40.0]]]
+            },
+            "properties": { "event": "Tornado Warning", "severity": "Extreme" }
+        }"#;
+        let parsed = parse_response(&fc(feature)).unwrap();
+        assert_eq!(parsed.alerts.len(), 1);
+        let a = &parsed.alerts[0];
+        assert_eq!(a.id, "urn:oid:1");
+        assert_eq!(a.event, "Tornado Warning");
+        assert_eq!(a.severity, AlertSeverity::Extreme);
+        assert_eq!(a.geometry.polygons.len(), 1);
+        let outer = &a.geometry.polygons[0][0];
+        // First vertex: lon=-100 (x), lat=40 (y) — NOT (40, -100).
+        assert_eq!(outer[0], (-100.0, 40.0));
+        assert_eq!(outer[1], (-99.0, 40.0));
+        // bbox = (min_lon, min_lat, max_lon, max_lat).
+        assert_eq!(a.geometry.bbox, Some((-100.0, 40.0, -99.0, 41.0)));
+        // Triangulated fill is non-empty for a valid square.
+        assert!(!a.fill_triangles.is_empty());
+    }
+
+    /// A MultiPolygon yields one polygon entry per member ring.
+    #[wasm_bindgen_test]
+    fn multipolygon_parses_multiple_polygons() {
+        let feature = r#"{
+            "id": "mp1",
+            "geometry": {
+                "type": "MultiPolygon",
+                "coordinates": [
+                    [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]]],
+                    [[[5.0, 5.0], [6.0, 5.0], [6.0, 6.0], [5.0, 5.0]]]
+                ]
+            },
+            "properties": { "event": "Flood Warning" }
+        }"#;
+        let parsed = parse_response(&fc(feature)).unwrap();
+        let a = &parsed.alerts[0];
+        assert_eq!(a.geometry.polygons.len(), 2);
+        // bbox spans both polygons.
+        assert_eq!(a.geometry.bbox, Some((0.0, 0.0, 6.0, 6.0)));
+    }
+
+    /// A zone-only feature (null geometry + affectedZones) is kept so its
+    /// footprint can be resolved later; geometry stays empty.
+    #[wasm_bindgen_test]
+    fn zone_only_feature_kept() {
+        let feature = r#"{
+            "id": "z1",
+            "geometry": null,
+            "properties": {
+                "event": "Winter Weather Advisory",
+                "affectedZones": ["https://api.weather.gov/zones/forecast/IAZ001"]
+            }
+        }"#;
+        let parsed = parse_response(&fc(feature)).unwrap();
+        assert_eq!(parsed.alerts.len(), 1);
+        let a = &parsed.alerts[0];
+        assert!(a.geometry.is_empty());
+        assert_eq!(a.affected_zones.len(), 1);
+    }
+
+    /// A feature with neither geometry nor affectedZones is dropped.
+    #[wasm_bindgen_test]
+    fn feature_with_no_geometry_and_no_zones_dropped() {
+        let feature = r#"{
+            "id": "drop",
+            "geometry": null,
+            "properties": { "event": "Special Weather Statement" }
+        }"#;
+        let parsed = parse_response(&fc(feature)).unwrap();
+        assert!(parsed.alerts.is_empty());
+    }
+
+    /// `id` falls back to `properties.id` when the feature has no top-level id.
+    #[wasm_bindgen_test]
+    fn id_falls_back_to_properties_id() {
+        let feature = r#"{
+            "geometry": null,
+            "properties": {
+                "id": "prop-id",
+                "event": "Flood Watch",
+                "affectedZones": ["z"]
+            }
+        }"#;
+        let parsed = parse_response(&fc(feature)).unwrap();
+        assert_eq!(parsed.alerts[0].id, "prop-id");
+    }
+
+    /// A feature with no id anywhere is dropped (no selection key).
+    #[wasm_bindgen_test]
+    fn feature_without_any_id_dropped() {
+        let feature = r#"{
+            "geometry": null,
+            "properties": { "event": "Flood Watch", "affectedZones": ["z"] }
+        }"#;
+        let parsed = parse_response(&fc(feature)).unwrap();
+        assert!(parsed.alerts.is_empty());
+    }
+
+    /// ISO-8601-with-offset timestamps parse to Unix seconds; malformed or
+    /// absent timestamps yield `None`.
+    #[wasm_bindgen_test]
+    fn timestamps_parse_and_fall_back_to_none() {
+        let feature = r#"{
+            "id": "t1",
+            "geometry": null,
+            "properties": {
+                "event": "Flood Watch",
+                "affectedZones": ["z"],
+                "effective": "1970-01-01T00:00:10+00:00",
+                "expires": "not a date"
+            }
+        }"#;
+        let parsed = parse_response(&fc(feature)).unwrap();
+        let a = &parsed.alerts[0];
+        // 10 seconds past the epoch.
+        assert_eq!(a.effective_secs, Some(10.0));
+        // Garbage string → None.
+        assert_eq!(a.expires_secs, None);
+        // Absent field → None.
+        assert_eq!(a.ends_secs, None);
+    }
+
+    /// A polygon whose every ring has fewer than 3 points is dropped, leaving
+    /// the alert with empty geometry (kept only if zones exist).
+    #[wasm_bindgen_test]
+    fn degenerate_short_ring_polygon_dropped() {
+        let feature = r#"{
+            "id": "short",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0.0, 0.0], [1.0, 1.0]]]
+            },
+            "properties": { "event": "Flood Warning", "affectedZones": ["z"] }
+        }"#;
+        let parsed = parse_response(&fc(feature)).unwrap();
+        let a = &parsed.alerts[0];
+        // The 2-point ring made the polygon None → geometry empty.
+        assert!(a.geometry.is_empty());
+    }
+
+    /// Missing severity defaults to `Unknown`.
+    #[wasm_bindgen_test]
+    fn missing_severity_defaults_unknown() {
+        let feature = r#"{
+            "id": "s1",
+            "geometry": null,
+            "properties": { "event": "Flood Warning", "affectedZones": ["z"] }
+        }"#;
+        let parsed = parse_response(&fc(feature)).unwrap();
+        assert_eq!(parsed.alerts[0].severity, AlertSeverity::Unknown);
+    }
+
+    /// A body without a `features` array is an error.
+    #[wasm_bindgen_test]
+    fn missing_features_array_errors() {
+        assert!(parse_response(r#"{"type":"FeatureCollection"}"#).is_err());
+    }
+}
