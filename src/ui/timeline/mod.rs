@@ -335,8 +335,9 @@ pub(super) fn render_timeline(
     }
 
     // The main strip widget covers only the tick rail + main track; the
-    // minimap above is its own widget. (The loop-handle band in `style` is
-    // reserved at 0px for Phase 3.)
+    // minimap above and the loop-handle band below are each their own
+    // allocated widget (the 14px `style::LOOP_HANDLE_H` band is allocated and
+    // rendered after the strip, near the bottom of this function).
     let (response, painter) = ui.allocate_painter(
         Vec2::new(available_width as f32, tick_lane_h + main_track_h),
         Sense::click_and_drag(),
@@ -695,10 +696,9 @@ pub(super) fn render_timeline(
 
     // -- Failed-cell retry ticks --
     // A click on a failed cell's alert triangle pushes the existing
-    // `AppCommand::RetryFailed` for the matching operation (the deeper
-    // re-enqueue fix is a later phase; the command is wired now). Reported
-    // ahead of seek handling so the seek ignores clicks that land on a tick.
-    let mut clicked_failed_tick = false;
+    // `AppCommand::RetryFailed` for the matching operation. The tick rects are
+    // added to `suppress_rects` unconditionally below so the generic press-seek
+    // never also fires on a tick.
     if response.clicked() {
         if let Some(pos) = response.interact_pointer_pos() {
             if let Some(tick) = failed_ticks.iter().find(|t| t.rect.contains(pos)) {
@@ -707,7 +707,6 @@ pub(super) fn render_timeline(
                     crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
                 ) {
                     state.push_command(crate::state::AppCommand::RetryFailed(op_id));
-                    clicked_failed_tick = true;
                 }
             }
         }
@@ -752,8 +751,7 @@ pub(super) fn render_timeline(
     // Runs BEFORE the tooltip so a primary-drag scrub can suppress the hover
     // popup. Rects whose presses are owned by another control and must not also
     // seek: the now-affordance cap/chip, the loop-handle hit rects (which extend
-    // up into the strip), plus any failed-cell tick that just fired a retry this
-    // frame.
+    // up into the strip), and the failed-cell retry ticks.
     let mut suppress_rects: Vec<Rect> = now_affordance_rect.into_iter().collect();
     // The loop-handle band sits directly below the strip (item_spacing.y == 0),
     // so its bottom is the strip bottom plus the band height.
@@ -763,9 +761,12 @@ pub(super) fn render_timeline(
     if let Some(rects) = handle_hit {
         suppress_rects.extend_from_slice(&rects);
     }
-    if clicked_failed_tick {
-        suppress_rects.extend(failed_ticks.iter().map(|t| t.rect));
-    }
+    // Failed ticks suppress the generic seek UNCONDITIONALLY: the retry fires on
+    // `clicked()` (release) but the strip's press-seek fires earlier on the
+    // primary press, so suppressing only after a release-time click would let a
+    // press on a tick seek before the retry ever runs. Suppress on press like the
+    // Archive day cells below.
+    suppress_rects.extend(failed_ticks.iter().map(|t| t.rect));
     // In Archive, every day cell suppresses the generic seek — a tap is a
     // zoom-to-day, not a playhead seek (the tier is a navigator only).
     if tier == TimelineTier::Archive {
