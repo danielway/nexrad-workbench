@@ -57,71 +57,37 @@ Always commit at natural milestones — a self-contained fix, a completed featur
 
 ## Architecture
 
-### Fat Worker Pattern
+The full engineering map — module/file responsibilities, data flow, key types,
+async architecture, caching, and UI layout — lives in
+[ARCHITECTURE.md](ARCHITECTURE.md). Deep per-subsystem references:
+[RENDERING.md](docs/RENDERING.md) (GPU shader pipeline + 3D),
+[STREAMING.md](docs/STREAMING.md) (real-time sequencing/timing),
+[TIMING.md](docs/TIMING.md) (the three time categories),
+[INDEXEDDB.md](docs/INDEXEDDB.md) (cache layer + schema). Product/UX intent is in
+[PRODUCT.md](docs/PRODUCT.md). The strategic refactor backlog is in
+[REFACTORING_STRATEGIC.md](docs/REFACTORING_STRATEGIC.md).
 
-The main thread is a thin UI shell. All expensive operations run in a dedicated Web Worker (`worker.js`):
-- bzip2 decompression, NEXRAD record decode, sweep extraction
-- IndexedDB read/write
-- Pre-computed sweep blob generation
+The essentials to hold in mind:
 
-Communication uses `postMessage` with Transferable ArrayBuffers (zero-copy). The main thread only uploads results to GPU textures and paints the UI.
-
-### Data Pipeline
-
-1. **Acquire**: AWS S3 download or real-time chunk streaming → raw bytes
-2. **Ingest** (worker): Split records → decompress → decode → extract sweep blobs → store in IndexedDB
-3. **Render** (worker): Read single pre-computed sweep blob from IDB → marshal for transfer
-4. **Display** (main): Upload raw f32 data to GPU R32F texture → fragment shader does polar→Cartesian + color lookup
-
-Sweep blobs are pre-computed during ingestion so that scrubbing and elevation changes have near-zero render latency (no decompression or decoding at render time).
-
-### Module Layout
-
-- `src/main.rs` — App entry, update loop, coordination manager orchestration
-- `src/state/` — Centralized `AppState` with sub-states. UI actions emit `AppCommand` variants processed in the main loop.
-- `src/nexrad/` — Data pipeline: acquisition (`download.rs`, `realtime.rs`), worker communication (`decode_worker/`, `worker_api/`), GPU rendering (`gpu_renderer/`), real-time chunk timing (`timing/`), storm cell detection (`detection/`), national mosaic overlay (`national_mosaic.rs`), coordination managers (`acquisition_coordinator.rs`, `render_coordinator.rs`, `persistence_manager.rs`)
-- `src/ui/` — egui panels, timeline (`timeline/`), canvas with overlays (`canvas_overlays/`), modals, shortcuts, mobile chrome (`mobile/`)
-- `src/geo/` — Map projection, camera (2D/globe), geographic feature rendering
-- `src/data/` — Site definitions, VCP definitions, storage key types (`ScanKey`, `SweepDataKey`), IndexedDB abstraction
-- `src/alerts/` — NWS active-alerts polling, geometry, and severity types
-- `src/net/` — Shared HTTP retry policy used by every outbound request
-- `worker.js` — ES module Web Worker dispatching postMessage to WASM exports
-- `service-worker.js` — Cross-origin isolation headers (COOP/COEP) and network metrics
-
-### Async Pattern
-
-egui's update loop is synchronous. Async operations use channels polled each frame:
-
-```rust
-channel.start_operation(ctx.clone(), params);  // spawn async task
-if let Some(result) = channel.try_recv() { … } // poll in update()
-```
-
-WASM async spawning: `wasm_bindgen_futures::spawn_local()`.
-
-### Coordination Managers
-
-Recent refactoring consolidated scattered fields into focused owners:
-- `AcquisitionCoordinator` — download channel, archive index, cache loader, download queue
-- `RenderCoordinator` — decode worker, render request deduplication via `last_render_params`
-- `RealtimeChannel` — realtime streaming task lifecycle, result queue, observation drains, filter sync
-- `PersistenceManager` — URL state pushing (throttled), preference saving
-
-### Worker Protocol
-
-Six message types (see `worker.js` header for full protocol):
-`init`, `ingest`, `ingest_chunk`, `render`, `render_volume`, `render_live`
-
-The decode worker is pooled — multiple worker instances share the load and one logical command may be served by any worker (see `nexrad/decode_worker/pool.rs`).
-
-### IndexedDB Schema
-
-Three object stores under database `nexrad-workbench` (current schema version 5):
-- `sweeps` — pre-computed sweep blobs (raw gate values + metadata), keyed `SITE|SCAN_MS|ELEV_NUM|PRODUCT`
-- `scan_index` — per-scan metadata for fast timeline queries, keyed `SITE|SCAN_MS`
-- `scan_touches` — per-scan last-access timestamps for LRU eviction, keyed `SITE|SCAN_MS`; kept in its own store so fire-and-forget touch bumps from `get_sweep` don't race chunk-ingest's read-modify-write of the index entry
-
-Schema upgrades are destructive (all stores dropped and recreated). Earlier schemas had `records` / `record_index` stores; the render path is exclusively sweep-blob based.
+- **Fat Worker** — the main thread is a thin UI shell; all heavy work (bzip2
+  decompress, NEXRAD decode, sweep extraction, IndexedDB I/O, sweep-blob
+  generation) runs in a pool of Web Workers (`worker.js`). Communication is
+  `postMessage` with Transferable ArrayBuffers (zero-copy). The worker protocol
+  has six message types: `init`, `ingest`, `ingest_chunk`, `render`,
+  `render_volume`, `render_live`.
+- **Pipeline** — Acquire (S3 download or live chunk stream) → Ingest in the worker
+  (split → decompress → decode → extract sweep blobs → store in IDB) → Render in
+  the worker (read one pre-computed sweep blob from IDB) → Display on the main
+  thread (upload raw f32 to a GPU R32F texture; the fragment shader does
+  polar→Cartesian + raw→physical + color). Sweep blobs are pre-computed at ingest
+  so scrubbing and elevation changes have near-zero render latency.
+- **State** — `WorkbenchApp` is a thin coordinator over bounded subsystems
+  (Acquisition, Render, Timeline, Playback, Live, Chrome, Diagnostics — see
+  REFACTORING_STRATEGIC.md S1). UI actions emit `AppCommand` variants processed in
+  the main loop.
+- **Async** — egui's update loop is synchronous; async tasks communicate via typed
+  `futures_channel::mpsc` channels polled each frame, spawned with
+  `wasm_bindgen_futures::spawn_local()`.
 
 ## Timestamps
 

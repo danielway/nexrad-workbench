@@ -2,6 +2,15 @@
 
 A WebAssembly-based NEXRAD weather radar visualization application built with Rust and egui.
 
+This is the canonical engineering map of the codebase. For depth on a specific
+subsystem, follow the dedicated references: [RENDERING.md](docs/RENDERING.md)
+(GPU shader pipeline + 3D), [STREAMING.md](docs/STREAMING.md) (real-time
+sequencing/timing), [TIMING.md](docs/TIMING.md) (the three time categories), and
+[INDEXEDDB.md](docs/INDEXEDDB.md) (cache layer + schema). Product/UX intent lives
+in [PRODUCT.md](docs/PRODUCT.md); the strategic refactor backlog in
+[REFACTORING_STRATEGIC.md](docs/REFACTORING_STRATEGIC.md); the agent/build guide
+in [CLAUDE.md](CLAUDE.md).
+
 ## Module Structure
 
 ```
@@ -224,7 +233,6 @@ User changes elevation or product
 | Type | Description |
 |------|-------------|
 | `ScanKey` | Unique identifier: `SITE\|SCAN_START_MS` |
-| `RecordKey` | Record identifier: `SITE\|SCAN_START_MS\|RECORD_ID` |
 | `SweepDataKey` | Pre-computed sweep: `SITE\|SCAN_START_MS\|ELEV_NUM\|PRODUCT` |
 | `SweepMeta` | Lightweight sweep metadata (time span, elevation, azimuth) |
 | `ExtractedVcp` | VCP pattern data extracted from Message Type 5 |
@@ -300,23 +308,15 @@ near-zero render latency for scrubbing and elevation changes.
 
 ### IndexedDB Schema
 
-Database `nexrad-workbench`, schema version 3. Two object stores:
+Database `nexrad-workbench`, schema version 5, with three string-keyed object
+stores: `sweeps` (pre-computed sweep blobs, the primary render path), `scan_index`
+(per-scan metadata for fast timeline queries), and `scan_touches` (per-scan
+last-access timestamps for LRU eviction, isolated so fire-and-forget touch bumps
+don't race index writes). Schema upgrades are destructive.
 
-```
-nexrad-workbench
-├── sweeps            - Pre-computed sweep blobs (primary render path)
-│   Key: "SITE|SCAN_START_MS|ELEV_NUM|PRODUCT"
-│   Value: ArrayBuffer (compact binary: azimuth count, gate count, metadata, raw gate values)
-│
-└── scan_index        - Per-scan metadata for fast timeline queries
-    Key: "SITE|SCAN_START_MS"
-    Value: { scan, has_vcp, expected_records, present_records, completeness, ... }
-```
-
-Earlier schemas had `records` / `record_index` stores holding raw bzip2-compressed
-record blobs and per-record metadata. Those were dropped during the upgrade to
-version 3 — the render path is exclusively sweep-blob based, so per-record
-storage is no longer needed.
+The full store layout, payload byte formats, concurrency model, and key-range
+query rules are documented in [INDEXEDDB.md](docs/INDEXEDDB.md) — the single
+source of truth for the schema.
 
 ### Scan Completeness States
 
