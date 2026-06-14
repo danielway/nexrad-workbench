@@ -35,7 +35,7 @@ pub const MAX_VIEW_SPAN_SECS: f64 = 100.0 * 86_400.0;
 /// Tunable tier thresholds. The timeline's zoom level maps to one of three
 /// behavioral+visual tiers; transitions carry hysteresis (distinct enter/exit
 /// thresholds) so a zoom hovering at a boundary never flickers. Values are
-/// the alignment-pass decisions (see docs/product_north_star.md, Alignment §2);
+/// the alignment-pass decisions (see docs/PRODUCT.md, Alignment §2);
 /// tune here, in one place.
 pub mod tier {
     /// Enter Micro (from Macro) when zoom rises to/above this (px/sec).
