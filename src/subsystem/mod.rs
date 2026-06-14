@@ -2,9 +2,9 @@
 //! behavior with a typed external API.
 //!
 //! Each subsystem replaces a scattering of fields previously split between
-//! [`crate::state::AppState`] and [`crate::WorkbenchApp`]. See
-//! `docs/REFACTORING_STRATEGIC.md` (initiative S1) for the rationale and
-//! the full target decomposition.
+//! [`crate::state::AppState`] and [`crate::WorkbenchApp`]. See `ARCHITECTURE.md`
+//! for the subsystem map and `docs/CORE_SHELL.md` for the functional-core /
+//! thin-shell standard these subsystems serve.
 //!
 //! Migration is staged one subsystem at a time. The first one extracted
 //! is [`acquisition::Acquisition`] (the messiest split — state lived on

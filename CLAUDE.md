@@ -55,6 +55,30 @@ Always commit at natural milestones — a self-contained fix, a completed featur
 - **`globalThis` not `window`**: IDB and other browser APIs accessed via `js_sys::global()` / `js_sys::Reflect::get("indexedDB")` so the same code works in both main thread and Web Worker contexts.
 - **Raw gate values on GPU**: NEXRAD gate values are raw u8/u16. Physical conversion (`physical = (raw - offset) / scale`) happens in the fragment shader. Values 0 (below threshold) and 1 (range folded) are sentinels checked via `v > 1.5`. This means bilinear interpolation works on raw values before conversion.
 
+## Architecture Standard — Functional Core, Thin Shell (MANDATORY)
+
+All code follows a strict **functional core / imperative shell** split. This is the
+binding rule for new and changed code, and the target of an in-progress migration
+of existing code. Full pattern, seams, test recipe, and migration roadmap:
+[CORE_SHELL.md](docs/CORE_SHELL.md).
+
+- **The headless core owns all state and business logic.** Decision logic is pure
+  — `(state, intent) -> (next state, effects)` — performs no I/O, and is
+  unit-tested with no egui, no browser, no async.
+- **Effects live behind a boundary.** Every side effect (IndexedDB, HTTP, Web
+  Worker dispatch, GPU upload, localStorage, geolocation, URL/history, timers) is a
+  described value the core returns and the shell executes — mockable, never inlined
+  into decision logic.
+- **The UI shell only renders a view-model and emits intents.** No business logic,
+  no state mutation, no I/O anywhere under `src/ui/**` or in egui/canvas code.
+  Input becomes an intent (`AppCommand`); rendering reads a view-model snapshot.
+- **The contract is: intents in, view-model out — nothing else crosses.** Every
+  feature is validated headlessly by `core + intents → assert view-model/state`;
+  the egui layer is a trivial 1:1 projection you can eyeball.
+
+Rule of thumb: put the logic and its tests in the core; the UI change must be a
+thin projection. **If you can't test it without the browser, it's in the wrong layer.**
+
 ## Architecture
 
 The full engineering map — module/file responsibilities, data flow, key types,
@@ -64,8 +88,9 @@ async architecture, caching, and UI layout — lives in
 [STREAMING.md](docs/STREAMING.md) (real-time sequencing/timing),
 [TIMING.md](docs/TIMING.md) (the three time categories),
 [INDEXEDDB.md](docs/INDEXEDDB.md) (cache layer + schema). Product/UX intent is in
-[PRODUCT.md](docs/PRODUCT.md). The strategic refactor backlog is in
-[REFACTORING_STRATEGIC.md](docs/REFACTORING_STRATEGIC.md).
+[PRODUCT.md](docs/PRODUCT.md). The binding architecture standard (functional
+core / thin shell) and its migration roadmap are in
+[CORE_SHELL.md](docs/CORE_SHELL.md).
 
 The essentials to hold in mind:
 
@@ -83,8 +108,8 @@ The essentials to hold in mind:
   so scrubbing and elevation changes have near-zero render latency.
 - **State** — `WorkbenchApp` is a thin coordinator over bounded subsystems
   (Acquisition, Render, Timeline, Playback, Live, Chrome, Diagnostics — see
-  REFACTORING_STRATEGIC.md S1). UI actions emit `AppCommand` variants processed in
-  the main loop.
+  ARCHITECTURE.md). UI actions emit `AppCommand` variants processed in the main
+  loop.
 - **Async** — egui's update loop is synchronous; async tasks communicate via typed
   `futures_channel::mpsc` channels polled each frame, spawned with
   `wasm_bindgen_futures::spawn_local()`.

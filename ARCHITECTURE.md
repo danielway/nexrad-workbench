@@ -7,9 +7,9 @@ subsystem, follow the dedicated references: [RENDERING.md](docs/RENDERING.md)
 (GPU shader pipeline + 3D), [STREAMING.md](docs/STREAMING.md) (real-time
 sequencing/timing), [TIMING.md](docs/TIMING.md) (the three time categories), and
 [INDEXEDDB.md](docs/INDEXEDDB.md) (cache layer + schema). Product/UX intent lives
-in [PRODUCT.md](docs/PRODUCT.md); the strategic refactor backlog in
-[REFACTORING_STRATEGIC.md](docs/REFACTORING_STRATEGIC.md); the agent/build guide
-in [CLAUDE.md](CLAUDE.md).
+in [PRODUCT.md](docs/PRODUCT.md); the binding architecture standard + migration
+roadmap in [CORE_SHELL.md](docs/CORE_SHELL.md); the agent/build guide in
+[CLAUDE.md](CLAUDE.md).
 
 ## Module Structure
 
