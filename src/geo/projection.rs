@@ -4,8 +4,8 @@
 //! screen coordinates for rendering on the canvas.
 //!
 //! The [`Projection`] trait abstracts over both the 2D
-//! [`MapProjection`] and a 3D wrapper around
-//! [`GlobeCamera`](crate::geo::camera::GlobeCamera). Both return
+//! [`MapProjection`] and a 3D wrapper around the
+//! [`Camera`](crate::geo::camera::Camera) state machine. Both return
 //! `Option<Pos2>` from `geo_to_screen` so the 3D side can signal
 //! "behind the globe" — for 2D it's always `Some`.
 

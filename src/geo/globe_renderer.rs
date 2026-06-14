@@ -5,7 +5,7 @@
 //! subsequent layers (geo lines, radar patch) are naturally occluded
 //! on the far side.
 
-use crate::geo::camera::GlobeCamera;
+use crate::geo::Camera;
 use glow::HasContext;
 use std::sync::Arc;
 
@@ -122,7 +122,7 @@ void main() {
 
     /// Draw the globe sphere. Caller must have set the viewport.
     /// Enables depth test with depth writes.
-    pub fn paint(&self, gl: &glow::Context, camera: &GlobeCamera) {
+    pub fn paint(&self, gl: &glow::Context, camera: &Camera) {
         unsafe {
             gl.enable(glow::DEPTH_TEST);
             gl.depth_func(glow::LEQUAL);

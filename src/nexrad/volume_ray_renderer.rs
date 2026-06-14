@@ -5,7 +5,7 @@
 //! steps through the radar volume shell, and samples radar data via trilinear
 //! interpolation across azimuth, range, and elevation dimensions.
 
-use crate::geo::camera::GlobeCamera;
+use crate::geo::Camera;
 use crate::nexrad::VolumeSweepMeta;
 use crate::state::RenderProcessing;
 use glow::HasContext;
@@ -670,7 +670,7 @@ impl VolumeRayRenderer {
     pub fn paint(
         &mut self,
         gl: &glow::Context,
-        camera: &GlobeCamera,
+        camera: &Camera,
         lut_texture: glow::Texture,
         processing: &RenderProcessing,
         value_min: f32,

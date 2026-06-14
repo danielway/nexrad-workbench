@@ -1,7 +1,7 @@
 //! Visualization state (canvas, zoom/pan, product selection).
 
 use crate::data::ScanKey;
-use crate::geo::GlobeCamera;
+use crate::geo::{Camera, Flat2DState};
 use eframe::egui::Vec2;
 
 /// Available radar products for display.
@@ -280,7 +280,7 @@ impl Default for RenderProcessing {
 }
 
 /// Map view mode.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewMode {
     /// Classic flat equirectangular map.
     #[default]
@@ -321,17 +321,13 @@ pub struct StormCellInfo {
 
 /// Visualization state including view controls.
 pub struct VizState {
-    /// Active view mode (flat 2D or 3D globe).
-    pub view_mode: ViewMode,
-
-    /// Current zoom level (1.0 = 100%) — used in Flat2D mode.
-    pub zoom: f32,
-
-    /// Current pan offset from center — used in Flat2D mode.
-    pub pan_offset: Vec2,
-
-    /// Orbital camera for Globe3D mode.
-    pub camera: GlobeCamera,
+    /// The camera state machine — the single source of truth for the view
+    /// mode and all 2D/3D camera state. [`ViewMode`] is derived from the
+    /// active variant via [`VizState::view_mode`] (no separate stored
+    /// toggle). 2D pan/zoom live on the [`Flat2D`](crate::geo::Camera::Flat2D)
+    /// variant; read/write via [`VizState::zoom`] / [`VizState::pan_offset`]
+    /// / [`VizState::set_zoom`] / [`VizState::set_pan_offset`].
+    pub camera: Camera,
 
     /// Selected radar product
     pub product: RadarProduct,
@@ -341,6 +337,13 @@ pub struct VizState {
 
     /// Stored Fixed selection to restore when toggling off auto mode.
     pub last_fixed_selection: Option<(u8, f32)>,
+
+    /// The 3D camera mode to return to when toggling 2D → 3D (the `T`
+    /// shortcut and the Basic 3D pill). Preserves the historical "toggle
+    /// last 2D/3D mode" behavior now that [`ViewMode`] is derived from the
+    /// camera variant rather than stored independently. Updated whenever a
+    /// 3D mode becomes active.
+    pub last_3d_mode: crate::geo::CameraMode,
 
     /// Overlay info: radar site ID
     pub site_id: String,
@@ -508,13 +511,11 @@ pub fn derive_canvas_caption(
 impl Default for VizState {
     fn default() -> Self {
         Self {
-            view_mode: ViewMode::default(),
-            zoom: 1.0,
-            pan_offset: Vec2::ZERO,
-            camera: GlobeCamera::centered_on(41.7312, -93.7229),
+            camera: Camera::centered_on(41.7312, -93.7229),
             product: RadarProduct::default(),
             elevation_selection: ElevationSelection::default(),
             last_fixed_selection: None,
+            last_3d_mode: crate::geo::CameraMode::default(),
             site_id: "KDMX".to_string(),
             elevation: "-- deg".to_string(),
             center_lat: 41.7312,
@@ -540,6 +541,73 @@ impl Default for VizState {
 }
 
 impl VizState {
+    /// The active [`ViewMode`], derived from the camera variant.
+    pub fn view_mode(&self) -> ViewMode {
+        self.camera.view_mode()
+    }
+
+    /// Whether the flat 2D view is active.
+    pub fn is_2d(&self) -> bool {
+        self.camera.is_2d()
+    }
+
+    /// Current 2D zoom level (1.0 = 100%). Falls back to the default zoom in
+    /// 3D modes (the 2D pan/zoom is only meaningful in the Flat2D variant).
+    pub fn zoom(&self) -> f32 {
+        self.camera.flat_2d().map(|s| s.zoom).unwrap_or(1.0)
+    }
+
+    /// Current 2D pan offset. `ZERO` in 3D modes.
+    pub fn pan_offset(&self) -> Vec2 {
+        self.camera
+            .flat_2d()
+            .map(|s| s.pan_offset)
+            .unwrap_or(Vec2::ZERO)
+    }
+
+    /// Set the 2D zoom level. No-op in 3D modes.
+    pub fn set_zoom(&mut self, zoom: f32) {
+        if let Some(s) = self.camera.flat_2d_mut() {
+            s.zoom = zoom;
+        }
+    }
+
+    /// Set the 2D pan offset. No-op in 3D modes.
+    pub fn set_pan_offset(&mut self, pan_offset: Vec2) {
+        if let Some(s) = self.camera.flat_2d_mut() {
+            s.pan_offset = pan_offset;
+        }
+    }
+
+    /// Mutable access to the 2D pan offset, if the flat view is active.
+    /// Used by the WASD pan path that increments each axis.
+    pub fn flat_pan_mut(&mut self) -> Option<&mut Vec2> {
+        self.camera.flat_2d_mut().map(|s| &mut s.pan_offset)
+    }
+
+    /// Switch the camera into the given 3D mode and remember it as the
+    /// mode to return to when toggling 2D → 3D.
+    pub fn switch_camera_mode(&mut self, mode: crate::geo::CameraMode) {
+        self.last_3d_mode = mode;
+        self.camera.switch_to_3d(mode);
+    }
+
+    /// Switch the camera to the flat 2D view (default pan/zoom).
+    pub fn switch_to_2d(&mut self) {
+        self.camera.switch_to_flat_2d(Flat2DState::default());
+    }
+
+    /// Toggle between the flat 2D view and the last-used 3D mode. Mirrors
+    /// the historical `T` shortcut: 2D → the remembered 3D mode, any 3D
+    /// mode → 2D.
+    pub fn toggle_2d_3d(&mut self) {
+        if self.camera.is_2d() {
+            self.switch_camera_mode(self.last_3d_mode);
+        } else {
+            self.switch_to_2d();
+        }
+    }
+
     /// Update the canvas overlay's elevation text and seed staleness from a
     /// freshly decoded sweep. The displayed-frame *timestamp* is no longer baked
     /// here: it is formatted at render time from `displayed` so a local/UTC flip
@@ -576,6 +644,47 @@ mod tests {
     // A displayed frame [100, 200], midpoint 150.
     fn frame() -> Option<(f64, f64, f64)> {
         Some((100.0, 200.0, 150.0))
+    }
+
+    #[wasm_bindgen_test]
+    fn view_mode_and_zoom_pan_derive_from_camera() {
+        let mut viz = VizState::default();
+        assert_eq!(viz.view_mode(), ViewMode::Flat2D);
+        assert!(viz.is_2d());
+        // 2D pan/zoom round-trip through the accessors.
+        viz.set_zoom(3.0);
+        viz.set_pan_offset(Vec2::new(12.0, -4.0));
+        assert!((viz.zoom() - 3.0).abs() < 1e-6);
+        assert!((viz.pan_offset().x - 12.0).abs() < 1e-6);
+        // Switching to a 3D mode makes view_mode derive to Globe3D; zoom/pan
+        // fall back to the 2D defaults (only meaningful in Flat2D).
+        viz.switch_camera_mode(crate::geo::CameraMode::SiteOrbit);
+        assert_eq!(viz.view_mode(), ViewMode::Globe3D);
+        assert!(!viz.is_2d());
+        assert!((viz.zoom() - 1.0).abs() < 1e-6);
+        assert_eq!(viz.pan_offset(), Vec2::ZERO);
+    }
+
+    #[wasm_bindgen_test]
+    fn toggle_returns_to_last_3d_mode() {
+        let mut viz = VizState::default();
+        // Pick FreeLook as the last 3D mode, then drop to 2D.
+        viz.switch_camera_mode(crate::geo::CameraMode::FreeLook);
+        assert_eq!(
+            viz.camera.camera_mode(),
+            Some(crate::geo::CameraMode::FreeLook)
+        );
+        viz.switch_to_2d();
+        assert!(viz.is_2d());
+        // Toggling back enters the remembered FreeLook mode, not the default.
+        viz.toggle_2d_3d();
+        assert_eq!(
+            viz.camera.camera_mode(),
+            Some(crate::geo::CameraMode::FreeLook)
+        );
+        // Toggling again returns to 2D.
+        viz.toggle_2d_3d();
+        assert!(viz.is_2d());
     }
 
     #[wasm_bindgen_test]

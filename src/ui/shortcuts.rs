@@ -15,7 +15,6 @@
 //! and live-mode interactions there don't generalize; its entry in the
 //! help overlay still lives here so users see the full set in one place.
 
-use crate::geo::camera::CameraMode;
 use crate::state::{AppState, PlaybackSpeed, RadarProduct, ViewMode};
 use eframe::egui::{self, RichText};
 
@@ -88,11 +87,11 @@ const fn always_enabled(_: &AppState) -> bool {
 }
 
 fn in_2d(state: &AppState) -> bool {
-    state.viz_state.view_mode == ViewMode::Flat2D
+    state.viz_state.view_mode() == ViewMode::Flat2D
 }
 
 fn in_3d(state: &AppState) -> bool {
-    state.viz_state.view_mode == ViewMode::Globe3D
+    state.viz_state.view_mode() == ViewMode::Globe3D
 }
 
 fn no_mods(i: &egui::InputState, key: egui::Key) -> bool {
@@ -202,7 +201,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         pressed: |i| no_mods(i, egui::Key::Num1),
         enabled: always_enabled,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state.viz_state.view_mode = ViewMode::Flat2D
+            state.viz_state.switch_to_2d();
         },
     },
     OneShotShortcut {
@@ -212,8 +211,9 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         pressed: |i| no_mods(i, egui::Key::Num2),
         enabled: always_enabled,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state.viz_state.view_mode = ViewMode::Globe3D;
-            state.viz_state.camera.switch_mode(CameraMode::SiteOrbit);
+            state
+                .viz_state
+                .switch_camera_mode(crate::geo::CameraMode::SiteOrbit);
         },
     },
     OneShotShortcut {
@@ -223,8 +223,9 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         pressed: |i| no_mods(i, egui::Key::Num3),
         enabled: always_enabled,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state.viz_state.view_mode = ViewMode::Globe3D;
-            state.viz_state.camera.switch_mode(CameraMode::PlanetOrbit);
+            state
+                .viz_state
+                .switch_camera_mode(crate::geo::CameraMode::PlanetOrbit);
         },
     },
     OneShotShortcut {
@@ -234,8 +235,9 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         pressed: |i| no_mods(i, egui::Key::Num4),
         enabled: always_enabled,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state.viz_state.view_mode = ViewMode::Globe3D;
-            state.viz_state.camera.switch_mode(CameraMode::FreeLook);
+            state
+                .viz_state
+                .switch_camera_mode(crate::geo::CameraMode::FreeLook);
         },
     },
     OneShotShortcut {
@@ -245,10 +247,7 @@ const ONE_SHOT_SHORTCUTS: &[OneShotShortcut] = &[
         pressed: |i| no_mods(i, egui::Key::T),
         enabled: always_enabled,
         handler: |state, _live, _timeline, _playback, _chrome, _| {
-            state.viz_state.view_mode = match state.viz_state.view_mode {
-                ViewMode::Flat2D => ViewMode::Globe3D,
-                ViewMode::Globe3D => ViewMode::Flat2D,
-            };
+            state.viz_state.toggle_2d_3d();
         },
     },
     // ---- Camera -----------------------------------------------------
@@ -788,9 +787,9 @@ fn handle_reset_camera(
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    if state.viz_state.view_mode == ViewMode::Flat2D {
-        state.viz_state.zoom = 1.0;
-        state.viz_state.pan_offset = egui::Vec2::ZERO;
+    if state.viz_state.is_2d() {
+        state.viz_state.set_zoom(1.0);
+        state.viz_state.set_pan_offset(egui::Vec2::ZERO);
     } else {
         state.viz_state.camera.reset();
     }
@@ -804,8 +803,8 @@ fn handle_focus_site(
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    if state.viz_state.view_mode == ViewMode::Flat2D {
-        state.viz_state.pan_offset = egui::Vec2::ZERO;
+    if state.viz_state.is_2d() {
+        state.viz_state.set_pan_offset(egui::Vec2::ZERO);
     } else {
         state.viz_state.camera.focus_site();
     }
@@ -847,7 +846,7 @@ fn handle_continuous_movement(
         return;
     }
 
-    if state.viz_state.view_mode == ViewMode::Globe3D {
+    if state.viz_state.view_mode() == ViewMode::Globe3D {
         let moved = state
             .viz_state
             .camera
@@ -858,8 +857,10 @@ fn handle_continuous_movement(
     } else {
         // 2D mode: WASD pan the map.
         let pan_speed = 200.0 * speed_mult * dt;
-        state.viz_state.pan_offset.x -= right_move * pan_speed;
-        state.viz_state.pan_offset.y += forward * pan_speed;
+        if let Some(pan) = state.viz_state.flat_pan_mut() {
+            pan.x -= right_move * pan_speed;
+            pan.y += forward * pan_speed;
+        }
         ctx.request_repaint();
     }
 }

@@ -429,7 +429,7 @@ fn render_volume_section(ui: &mut egui::Ui, state: &mut AppState) {
     use crate::state::ViewMode;
 
     // Only show volume controls in 3D mode
-    if !matches!(state.viz_state.view_mode, ViewMode::Globe3D) {
+    if !matches!(state.viz_state.view_mode(), ViewMode::Globe3D) {
         return;
     }
 
@@ -643,7 +643,7 @@ fn navigate_to_event(
             state.viz_state.site_id = site.id.to_string();
             state.viz_state.center_lat = site.lat;
             state.viz_state.center_lon = site.lon;
-            state.viz_state.pan_offset = egui::Vec2::ZERO;
+            state.viz_state.set_pan_offset(egui::Vec2::ZERO);
             state.viz_state.camera.center_on(site.lat, site.lon);
             state.push_command(crate::state::AppCommand::RefreshTimeline {
                 auto_position: false,

@@ -48,7 +48,7 @@ pub fn render_canvas_with_geo(
         // Draw background
         painter.rect_filled(rect, 0.0, canvas_colors::background(dark));
 
-        match state.viz_state.view_mode {
+        match state.viz_state.view_mode() {
             ViewMode::Globe3D => {
                 // Globe view doesn't have meaningful 2D lat/lon bounds;
                 // downstream consumers should treat `None` as "unknown".
@@ -89,7 +89,7 @@ pub fn render_canvas_with_geo(
                 // --- Existing flat 2D path ---
                 let mut projection =
                     MapProjection::new(state.viz_state.center_lat, state.viz_state.center_lon);
-                projection.update(state.viz_state.zoom, state.viz_state.pan_offset, rect);
+                projection.update(state.viz_state.zoom(), state.viz_state.pan_offset(), rect);
 
                 // Cache current visible bounds so non-canvas UI (top bar chip,
                 // modals) can filter geographic data without reconstructing
@@ -149,7 +149,7 @@ pub fn render_canvas_with_geo(
                         &painter,
                         &projection,
                         &state.national_mosaic,
-                        state.viz_state.zoom,
+                        state.viz_state.zoom(),
                         radar_cutout,
                     );
                 }
@@ -160,7 +160,7 @@ pub fn render_canvas_with_geo(
                         layers,
                         &state.layer_state.geo,
                         &projection,
-                        state.viz_state.zoom,
+                        state.viz_state.zoom(),
                         state.layer_state.geo.labels,
                         crate::geo::GeoPass::Lines,
                         dark,
@@ -279,7 +279,7 @@ pub fn render_canvas_with_geo(
                         layers,
                         &state.layer_state.geo,
                         &projection,
-                        state.viz_state.zoom,
+                        state.viz_state.zoom(),
                         state.layer_state.geo.labels,
                         crate::geo::GeoPass::Labels,
                         dark,

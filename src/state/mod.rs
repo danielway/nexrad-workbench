@@ -618,8 +618,10 @@ impl AppState {
         // the layout flipped to mobile (browser resize, forced override),
         // snap back to 2D rather than leaving them in a view they have no
         // controls for.
-        if self.is_mobile && self.viz_state.view_mode != ViewMode::Flat2D {
-            self.viz_state.view_mode = ViewMode::Flat2D;
+        if self.is_mobile && !self.viz_state.is_2d() {
+            self.viz_state
+                .camera
+                .switch_to_flat_2d(crate::geo::Flat2DState::default());
         }
     }
 

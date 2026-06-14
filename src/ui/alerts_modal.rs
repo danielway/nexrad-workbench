@@ -336,7 +336,7 @@ fn focus_on_alert(state: &mut AppState, alert: &Alert) {
         let center_lon = (min_lon + max_lon) * 0.5;
         state.viz_state.center_lat = center_lat;
         state.viz_state.center_lon = center_lon;
-        state.viz_state.pan_offset = egui::Vec2::ZERO;
+        state.viz_state.set_pan_offset(egui::Vec2::ZERO);
         state.viz_state.camera.center_on(center_lat, center_lon);
     }
 }

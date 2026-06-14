@@ -5,7 +5,7 @@
 //! color LUT logic as the flat renderer — only the coordinate source differs:
 //! polar coords come from vertex attributes instead of screen-space math.
 
-use crate::geo::camera::GlobeCamera;
+use crate::geo::Camera;
 use crate::state::RenderProcessing;
 use glow::HasContext;
 use std::sync::Arc;
@@ -290,7 +290,7 @@ impl GlobeRadarRenderer {
     pub fn paint(
         &self,
         gl: &glow::Context,
-        camera: &GlobeCamera,
+        camera: &Camera,
         flat_renderer: &super::gpu_renderer::RadarGpuRenderer,
         processing: &RenderProcessing,
     ) {

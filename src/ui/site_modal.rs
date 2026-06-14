@@ -122,7 +122,7 @@ pub(super) fn apply_site_selection(
     state.viz_state.site_id = site_id.to_string();
     state.viz_state.center_lat = lat;
     state.viz_state.center_lon = lon;
-    state.viz_state.pan_offset = Vec2::ZERO;
+    state.viz_state.set_pan_offset(Vec2::ZERO);
     state.viz_state.camera.center_on(lat, lon);
     state.push_command(crate::state::AppCommand::RefreshTimeline {
         auto_position: true,

@@ -4,7 +4,7 @@
 //! the globe camera's heading, so cardinal directions stay accurate as
 //! the user orbits.
 
-use crate::geo::GlobeCamera;
+use crate::geo::Camera;
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 
 /// Trait wrapper for the registry. Compass is 3D-only — `visible`
@@ -17,7 +17,7 @@ impl super::Overlay for CompassOverlay {
     }
 
     fn visible(&self, ctx: &super::OverlayContext) -> bool {
-        ctx.state.viz_state.view_mode == crate::state::ViewMode::Globe3D
+        ctx.state.viz_state.view_mode() == crate::state::ViewMode::Globe3D
     }
 
     fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
@@ -25,7 +25,7 @@ impl super::Overlay for CompassOverlay {
     }
 }
 
-fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera) {
+fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) {
     let painter = ui.painter();
     let radius = 28.0f32;
     let margin = 16.0f32;
@@ -50,12 +50,15 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &GlobeCamera) {
     // In SiteOrbit, orbit_bearing is where the camera IS, not where it looks.
     // The camera looks FROM the bearing TOWARD the site, so the viewing direction
     // is bearing + 180°. We add π to account for this.
-    let rotation_rad = match camera.mode {
-        crate::geo::camera::CameraMode::SiteOrbit => {
-            std::f32::consts::PI - camera.orbit_bearing.to_radians()
+    let rotation_rad = match camera {
+        Camera::SiteOrbit(s) => {
+            (std::f32::consts::PI - s.orbit_bearing.to_radians()) - s.rotation.to_radians()
         }
-        _ => 0.0,
-    } - camera.rotation.to_radians();
+        Camera::PlanetOrbit(s) => -s.rotation.to_radians(),
+        // Free Look and the 2D view have no compass-relevant bearing/roll;
+        // the compass overlay is only visible in 3D modes anyway.
+        Camera::FreeLook(_) | Camera::Flat2D(_) => 0.0,
+    };
 
     // Cardinal directions
     let cardinals = [("N", 0.0), ("E", 90.0), ("S", 180.0), ("W", 270.0)];

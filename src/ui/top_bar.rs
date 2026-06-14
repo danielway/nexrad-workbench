@@ -422,14 +422,13 @@ fn render_view_mode_pills(ui: &mut egui::Ui, state: &mut AppState) {
 
     for &(label, view, cam, color, key) in modes {
         let is_active = match (view, cam) {
-            (ViewMode::Flat2D, _) => state.viz_state.view_mode == ViewMode::Flat2D,
+            (ViewMode::Flat2D, _) => state.viz_state.view_mode() == ViewMode::Flat2D,
             (ViewMode::Globe3D, Some(cm)) => {
                 if state.show_advanced() {
-                    state.viz_state.view_mode == ViewMode::Globe3D
-                        && state.viz_state.camera.mode == cm
+                    state.viz_state.camera.camera_mode() == Some(cm)
                 } else {
                     // In Basic the single 3D pill is active for any 3D camera mode.
-                    state.viz_state.view_mode == ViewMode::Globe3D
+                    state.viz_state.view_mode() == ViewMode::Globe3D
                 }
             }
             _ => false,
@@ -451,9 +450,11 @@ fn render_view_mode_pills(ui: &mut egui::Ui, state: &mut AppState) {
             .on_hover_text(format!("Switch to {} ({})", label, key))
             .clicked()
         {
-            state.viz_state.view_mode = view;
-            if let Some(cm) = cam {
-                state.viz_state.camera.switch_mode(cm);
+            match (view, cam) {
+                (ViewMode::Flat2D, _) => state.viz_state.switch_to_2d(),
+                (ViewMode::Globe3D, Some(cm)) => state.viz_state.switch_camera_mode(cm),
+                // Globe3D pills always carry a camera mode; nothing else fires.
+                (ViewMode::Globe3D, None) => {}
             }
         }
     }

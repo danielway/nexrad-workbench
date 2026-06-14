@@ -277,7 +277,7 @@ fn apply_url_params(
 
     // Apply view state (zoom levels) before centering so the zoom is correct
     if let Some(mz) = url_params.view.mz {
-        state.viz_state.zoom = mz;
+        state.viz_state.set_zoom(mz);
     }
     if let Some(tz) = url_params.view.tz {
         // Clamp restored zoom into the *width-aware* range so an old link with
@@ -293,53 +293,60 @@ fn apply_url_params(
         playback.state.seed_tier_from_state();
     }
 
-    // Restore 3D view mode and camera parameters from URL
+    // Restore 3D view mode and camera parameters from URL. The camera is the
+    // single source of truth for the view mode, so a globe link reconstructs
+    // the appropriate 3D variant from the saved snapshot; a 2D link leaves the
+    // camera in its (already-centered) Flat2D state but still records the saved
+    // 3D mode so a later 2D → 3D toggle re-enters it.
     let v = &url_params.view;
-    if let Some(vm) = v.vm {
-        state.viz_state.view_mode = match vm {
-            0 => state::ViewMode::Flat2D,
-            _ => state::ViewMode::Globe3D,
-        };
+    let restored_mode = v.cm.map(|cm| match cm {
+        1 => state::CameraMode::SiteOrbit,
+        2 => state::CameraMode::FreeLook,
+        _ => state::CameraMode::PlanetOrbit,
+    });
+    if let Some(mode) = restored_mode {
+        state.viz_state.last_3d_mode = mode;
     }
-    if let Some(cm) = v.cm {
-        state.viz_state.camera.mode = match cm {
-            1 => state::CameraMode::SiteOrbit,
-            2 => state::CameraMode::FreeLook,
-            _ => state::CameraMode::PlanetOrbit,
-        };
-    }
-    if let Some(cd) = v.cd {
-        state.viz_state.camera.distance = cd;
-    }
-    if let Some(clat) = v.clat {
-        state.viz_state.camera.center_lat = clat;
-    }
-    if let Some(clon) = v.clon {
-        state.viz_state.camera.center_lon = clon;
-    }
-    if let Some(ct) = v.ct {
-        state.viz_state.camera.tilt = ct;
-    }
-    if let Some(cr) = v.cr {
-        state.viz_state.camera.rotation = cr;
-    }
-    if let Some(ob) = v.ob {
-        state.viz_state.camera.orbit_bearing = ob;
-    }
-    if let Some(oe) = v.oe {
-        state.viz_state.camera.orbit_elevation = oe;
-    }
-    if let Some(fp) = v.fp {
-        state.viz_state.camera.free_pos = glam::Vec3::new(fp[0], fp[1], fp[2]);
-    }
-    if let Some(fy) = v.fy {
-        state.viz_state.camera.free_yaw = fy;
-    }
-    if let Some(fpt) = v.fpt {
-        state.viz_state.camera.free_pitch = fpt;
-    }
-    if let Some(fs) = v.fs {
-        state.viz_state.camera.free_speed = fs;
+    let wants_3d = v.vm.is_some_and(|vm| vm != 0);
+    if wants_3d {
+        let mode = restored_mode.unwrap_or_default();
+        // Build the snapshot from the saved fields, falling back to the
+        // historical defaults for any field the saved link omitted.
+        let mut snap = crate::geo::UrlCameraSnapshot::default();
+        if let Some(cd) = v.cd {
+            snap.distance = cd;
+        }
+        if let Some(clat) = v.clat {
+            snap.center_lat = clat;
+        }
+        if let Some(clon) = v.clon {
+            snap.center_lon = clon;
+        }
+        if let Some(ct) = v.ct {
+            snap.tilt = ct;
+        }
+        if let Some(cr) = v.cr {
+            snap.rotation = cr;
+        }
+        if let Some(ob) = v.ob {
+            snap.orbit_bearing = ob;
+        }
+        if let Some(oe) = v.oe {
+            snap.orbit_elevation = oe;
+        }
+        if let Some(fp) = v.fp {
+            snap.free_pos = fp;
+        }
+        if let Some(fy) = v.fy {
+            snap.free_yaw = fy;
+        }
+        if let Some(fpt) = v.fpt {
+            snap.free_pitch = fpt;
+        }
+        if let Some(fs) = v.fs {
+            snap.free_speed = fs;
+        }
+        state.viz_state.camera.restore_from_url(mode, &snap);
     }
     if let Some(v3d) = v.v3d {
         state.viz_state.volume_3d_enabled = v3d;

@@ -10,6 +10,16 @@
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
+/// URL wire code for a [`CameraMode`](super::CameraMode):
+/// 0 = PlanetOrbit, 1 = SiteOrbit, 2 = FreeLook.
+fn camera_mode_code(mode: super::CameraMode) -> u8 {
+    match mode {
+        super::CameraMode::PlanetOrbit => 0,
+        super::CameraMode::SiteOrbit => 1,
+        super::CameraMode::FreeLook => 2,
+    }
+}
+
 /// Opaque view-state blob encoded in the `v` URL parameter.
 #[derive(Default, Serialize, Deserialize)]
 pub struct ViewState {
@@ -84,30 +94,36 @@ impl ViewState {
         playback: &super::PlaybackState,
         is_live: bool,
     ) -> Self {
-        let cam = &state.viz_state.camera;
+        let snap = state.viz_state.camera.url_snapshot();
         Self {
-            mz: Some(state.viz_state.zoom),
+            mz: Some(state.viz_state.zoom()),
             tz: Some(playback.timeline_zoom),
-            vm: Some(match state.viz_state.view_mode {
+            vm: Some(match state.viz_state.view_mode() {
                 super::ViewMode::Flat2D => 0,
                 super::ViewMode::Globe3D => 1,
             }),
-            cm: Some(match cam.mode {
-                super::CameraMode::PlanetOrbit => 0,
-                super::CameraMode::SiteOrbit => 1,
-                super::CameraMode::FreeLook => 2,
-            }),
-            cd: Some(cam.distance),
-            clat: Some(cam.center_lat),
-            clon: Some(cam.center_lon),
-            ct: Some(cam.tilt),
-            cr: Some(cam.rotation),
-            ob: Some(cam.orbit_bearing),
-            oe: Some(cam.orbit_elevation),
-            fp: Some([cam.free_pos.x, cam.free_pos.y, cam.free_pos.z]),
-            fy: Some(cam.free_yaw),
-            fpt: Some(cam.free_pitch),
-            fs: Some(cam.free_speed),
+            // The 3D camera mode to restore. In 2D the camera variant carries
+            // no 3D mode, so persist the remembered `last_3d_mode` (the mode a
+            // 2D → 3D toggle would re-enter) — this keeps a reloaded 2D link
+            // returning to the same 3D mode the user last used.
+            cm: Some(camera_mode_code(
+                state
+                    .viz_state
+                    .camera
+                    .camera_mode()
+                    .unwrap_or(state.viz_state.last_3d_mode),
+            )),
+            cd: Some(snap.distance),
+            clat: Some(snap.center_lat),
+            clon: Some(snap.center_lon),
+            ct: Some(snap.tilt),
+            cr: Some(snap.rotation),
+            ob: Some(snap.orbit_bearing),
+            oe: Some(snap.orbit_elevation),
+            fp: Some(snap.free_pos),
+            fy: Some(snap.free_yaw),
+            fpt: Some(snap.free_pitch),
+            fs: Some(snap.free_speed),
             v3d: Some(state.viz_state.volume_3d_enabled),
             vdc: Some(state.viz_state.volume_density_cutoff),
             rt: is_live.then_some(true),

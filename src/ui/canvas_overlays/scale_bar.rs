@@ -22,7 +22,7 @@ impl super::Overlay for ScaleBarOverlay {
     }
 
     fn visible(&self, ctx: &super::OverlayContext) -> bool {
-        ctx.state.viz_state.view_mode == crate::state::ViewMode::Flat2D
+        ctx.state.viz_state.view_mode() == crate::state::ViewMode::Flat2D
     }
 
     fn draw(&self, ui: &mut egui::Ui, ctx: &super::OverlayContext) {
@@ -31,8 +31,8 @@ impl super::Overlay for ScaleBarOverlay {
             ctx.state.viz_state.center_lon,
         );
         projection.update(
-            ctx.state.viz_state.zoom,
-            ctx.state.viz_state.pan_offset,
+            ctx.state.viz_state.zoom(),
+            ctx.state.viz_state.pan_offset(),
             ctx.rect,
         );
         draw_scale_bar(ui, &ctx.rect, &projection);

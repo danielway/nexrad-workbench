@@ -25,7 +25,7 @@ pub(crate) fn handle_globe_interaction(
     rect: &Rect,
     state: &mut AppState,
 ) {
-    use crate::geo::camera::CameraMode;
+    use crate::geo::Camera;
 
     // Multi-touch: two-finger pinch zooms, two-finger drag pans the pivot
     // (orbit modes). When a pinch is active we skip the single-finger drag
@@ -42,19 +42,21 @@ pub(crate) fn handle_globe_interaction(
         }
         if t.pan != Vec2::ZERO {
             let viewport_h = response.rect.height();
-            match state.viz_state.camera.mode {
-                CameraMode::PlanetOrbit | CameraMode::SiteOrbit => {
+            match state.viz_state.camera {
+                Camera::PlanetOrbit(_) | Camera::SiteOrbit(_) => {
                     state
                         .viz_state
                         .camera
                         .pan_pivot(t.pan.x, t.pan.y, viewport_h);
                 }
-                CameraMode::FreeLook => {
+                Camera::FreeLook(_) => {
                     state
                         .viz_state
                         .camera
                         .free_translate(t.pan.x, t.pan.y, viewport_h);
                 }
+                // Flat2D never reaches the globe interaction handler.
+                Camera::Flat2D(_) => {}
             }
         }
         // Double-click still falls through below.
@@ -77,8 +79,8 @@ pub(crate) fn handle_globe_interaction(
         let right_button = response.dragged_by(egui::PointerButton::Secondary);
         let middle_button = response.dragged_by(egui::PointerButton::Middle);
 
-        match state.viz_state.camera.mode {
-            CameraMode::FreeLook => {
+        match state.viz_state.camera {
+            Camera::FreeLook(_) => {
                 if middle_button || (shift_held && !right_button) {
                     // Middle-drag or Shift+left: translate camera sideways
                     state
@@ -99,7 +101,7 @@ pub(crate) fn handle_globe_interaction(
                         .free_look(delta.x, delta.y, viewport_h);
                 }
             }
-            CameraMode::PlanetOrbit | CameraMode::SiteOrbit => {
+            Camera::PlanetOrbit(_) | Camera::SiteOrbit(_) => {
                 if middle_button || (shift_held && !right_button) {
                     state
                         .viz_state
@@ -113,6 +115,8 @@ pub(crate) fn handle_globe_interaction(
                     state.viz_state.camera.orbit(delta.x, delta.y, viewport_h);
                 }
             }
+            // Flat2D never reaches the globe interaction handler.
+            Camera::Flat2D(_) => {}
         }
     }
 
@@ -227,43 +231,49 @@ pub(crate) fn handle_canvas_interaction(
     if let Some(t) = touch {
         // Pinch-zoom anchored on the gesture focus.
         if (t.zoom - 1.0).abs() > f32::EPSILON {
-            let old_zoom = state.viz_state.zoom;
+            let old_zoom = state.viz_state.zoom();
             let new_zoom = (old_zoom * t.zoom).clamp(0.1, 25.0);
             let focus_rel = t.focus - rect.center();
             let ratio = new_zoom / old_zoom;
-            state.viz_state.pan_offset =
-                focus_rel * (1.0 - ratio) + state.viz_state.pan_offset * ratio;
-            state.viz_state.zoom = new_zoom;
+            state
+                .viz_state
+                .set_pan_offset(focus_rel * (1.0 - ratio) + state.viz_state.pan_offset() * ratio);
+            state.viz_state.set_zoom(new_zoom);
         }
         // Two-finger drag = pan.
-        state.viz_state.pan_offset += t.pan;
+        state
+            .viz_state
+            .set_pan_offset(state.viz_state.pan_offset() + t.pan);
     } else {
         if response.dragged() {
-            state.viz_state.pan_offset += response.drag_delta();
+            state
+                .viz_state
+                .set_pan_offset(state.viz_state.pan_offset() + response.drag_delta());
         }
 
         if response.hovered() {
             let scroll_delta = response.ctx.input(|i| i.raw_scroll_delta);
             if scroll_delta.y != 0.0 {
                 let zoom_factor = 1.0 + scroll_delta.y * 0.001;
-                let old_zoom = state.viz_state.zoom;
+                let old_zoom = state.viz_state.zoom();
                 let new_zoom = (old_zoom * zoom_factor).clamp(0.1, 25.0);
 
                 if let Some(cursor_pos) = response.hover_pos() {
                     let cursor_rel = cursor_pos - rect.center();
                     let ratio = new_zoom / old_zoom;
-                    state.viz_state.pan_offset =
-                        cursor_rel * (1.0 - ratio) + state.viz_state.pan_offset * ratio;
+                    state.viz_state.set_pan_offset(
+                        cursor_rel * (1.0 - ratio) + state.viz_state.pan_offset() * ratio,
+                    );
                 }
 
-                state.viz_state.zoom = new_zoom;
+                state.viz_state.set_zoom(new_zoom);
             }
         }
     }
 
     if response.double_clicked() {
-        state.viz_state.zoom = 1.0;
-        state.viz_state.pan_offset = Vec2::ZERO;
+        state.viz_state.set_zoom(1.0);
+        state.viz_state.set_pan_offset(Vec2::ZERO);
     }
 }
 
