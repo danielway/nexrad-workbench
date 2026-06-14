@@ -18,32 +18,49 @@ on top of those definitions and focuses on the operational flow.
 
 | Layer | Type | Role |
 | --- | --- | --- |
-| Channel | [`RealtimeChannel`](../src/nexrad/realtime.rs) | The single owner the egui update loop talks to. Holds the shared state cell, spawns the streaming task, and exposes the result queue + observation setters + filter sync. |
-| Async task | `streaming_loop` (in [`realtime.rs`](../src/nexrad/realtime.rs)) | The long-running future. One per active site. Owns the iteration, sleeping, polling, and emit. |
+| Channel | [`RealtimeChannel`](../src/nexrad/realtime/mod.rs) | The handle the egui update loop talks to. Owns three typed `futures_channel::mpsc` queues + an `active: Rc<Cell<bool>>` flag, and spawns the streaming task. Holds no shared mutable loop state. |
+| Async task | `streaming_loop` (in [`realtime/streaming.rs`](../src/nexrad/realtime/streaming.rs)) | The long-running future. One per active site. Owns the iteration, sleeping, polling, emit — and its own `LoopState` (stop flag, active filter, filter epoch) as local variables. |
 | Iterator state | [`StreamingState`](../src/nexrad/streaming_state.rs) | Replaces `nexrad_data`'s `ChunkIterator`. Holds the current `ChunkIdentifier`, the VCP, the elevation/chunk mapper, and the rolling timing stats. |
 | Predictor | [`timing/`](../src/nexrad/timing/) | Pure functions over `(current_chunk, vcp, mapper, stats)` that return either a wait duration (scheduler) or a per-chunk projection (timeline). |
 
-The async task drives the streaming. The channel is just the shared
-mailbox between it and the UI thread.
+The async task drives the streaming. The channels are just typed mailboxes
+between it and the UI thread.
 
 ### Communication shape
 
+Three typed channels (all replaced on each `start()` so a winding-down previous
+loop can't leak messages into the new session) plus an `active` flag:
+
 ```
-egui frame ──poll──▶ RealtimeChannel.results
-                              ▲
-                              │ push
-                        streaming_loop
-                              │
-                  predict ─ sleep ─ fetch ─ emit
-                              │
-                  observation ◀──pending_*──── main.rs
-                  (collection time, lag, filter)
+                 results (loop → UI)
+egui frame ◀──── try_recv ──────────┐
+    │                               │ push RealtimeResult
+    │  observe(ProjectorObservation)│
+    ├──── observations (UI → loop) ─┼──▶ streaming_loop
+    │     (collection-end, lag)     │      │
+    │  set_filter / stop            │   predict ─ sleep ─ fetch ─ emit
+    └──── control (UI → loop) ──────┘      │  (drains observations + control
+          (SetFilter, Stop)                │   each iteration & inside sleep)
+                                           ▼
+                                   active: Rc<Cell<bool>>
+                                   (set by start(), cleared on exit/stop)
 ```
 
-The `pending_*` setters on `RealtimeChannel` are mutate-and-forget — the
-streaming loop drains them at the top of each iteration. This avoids
-needing a second async channel for the worker → loop direction and keeps
-the loop's borrow of `iter` exclusive.
+- **results** (loop → UI): every [`RealtimeResult`] the loop produces; the UI
+  drains them with `try_recv` / `poll` each frame.
+- **observations** (UI → loop): projector hints the UI gathers from worker
+  results — `ProjectorObservation::{CollectionEndSecs, AvailabilityLagSecs}` — sent
+  via `RealtimeChannel::observe` (and the `record_*` convenience wrappers).
+- **control** (UI → loop): `ControlMessage::{SetFilter, Stop}`, sent via
+  `set_filter` / `sync_filter` / `stop`. `drain_control` applies them into the
+  loop's local `LoopState`, de-duping no-op filter changes and bumping a
+  `filter_epoch` on real ones.
+
+`drain_control` and the observation drain both run at the top of each iteration
+*and* inside the sleep loop, so a filter swap or stop interrupts a long wait
+instead of waiting for the current chunk to land. Because the control/filter
+state is loop-local (not an `Rc<RefCell<_>>` shared cell), the loop keeps an
+exclusive borrow of `iter` throughout.
 
 ---
 
@@ -109,8 +126,10 @@ The provisional scan-start timestamp for the volume is
 
 ```
 loop {
-    drain pending observations (collection time, lag) into iter
+    drain control (stop / SetFilter) + observations (collection time, lag) into
+        LoopState + iter
 
+    if stop requested: break
     if filter changed:
         run mid-stream backfill, advance epoch, clear per-chunk diagnostics
 
@@ -253,13 +272,16 @@ to retry waits, so each chunk eats it exactly once.
 
 ### 4b. `interruptible_sleep`
 
-Sleeping is broken into 250 ms increments so the loop can:
+Sleeping is broken into 250 ms increments. On each increment the loop drains the
+control channel into its `LoopState`, so it can:
 
-- Wake immediately on stop (`state.stop_requested`).
-- Wake on filter change (`state.filter_epoch != wake_epoch`) and
-  re-evaluate without finishing the now-stale sleep.
-- Update the user-facing countdown (`state.time_until_next`) in tight
-  enough increments that the UI feels live.
+- Wake immediately on stop (`loop_state.stop_requested`, set when a `Stop`
+  control message drains in).
+- Wake on filter change (`loop_state.filter_epoch != wake_epoch`, bumped when a
+  `SetFilter` control message drains in) and re-evaluate without finishing the
+  now-stale sleep.
+- Refresh the user-facing countdown in increments tight enough that the UI feels
+  live (the resolved wait is reported back via `WaitResolution`).
 
 `SleepOutcome::FilterChanged` causes the loop to `continue` back to the
 top, where the filter-change branch runs the mid-stream backfill before
@@ -355,11 +377,13 @@ on "Streaming…" for the entire inter-volume gap because
 
 `RealtimeChannel::sync_filter` is called once per egui frame from the
 update loop. It maps the user's `ElevationSelection` into a
-`StreamingFilter` and calls `set_filter`, which short-circuits on equal
-values; on a real change it:
+`StreamingFilter` and calls `set_filter`, which sends a
+`ControlMessage::SetFilter` down the control channel (cheap to send every
+frame). When `drain_control` applies it, it short-circuits on a value equal
+to the loop's current `active_filter`; on a real change it:
 
-- Stores the new filter in `pending_filter`.
-- Bumps `filter_epoch` (wrapping `u64`).
+- Adopts the new filter as `loop_state.active_filter`.
+- Bumps `loop_state.filter_epoch` (wrapping `u64`).
 
 `interruptible_sleep` wakes within ≤250 ms via the
 `filter_epoch != wake_epoch` check. The streaming loop's filter-change
@@ -379,10 +403,13 @@ The mid-stream backfill skips any sequence in
 
 ### 5d. Stop
 
-`stop_requested` is checked at three sites: top of every loop
-iteration, top of every retry attempt, and inside
-`interruptible_sleep`. The loop exits cleanly within ~250 ms of the
-flag being set.
+`RealtimeChannel::stop()` sends a `ControlMessage::Stop` down the control
+channel and eagerly clears the `active` flag so `is_active()` reflects the
+user's intent immediately. When `drain_control` applies the message it sets
+`loop_state.stop_requested`, which is checked at three sites: top of every
+loop iteration, top of every retry attempt, and inside
+`interruptible_sleep`. The loop exits cleanly within ~250 ms of the stop
+message and clears `active` again on the way out as a backstop.
 
 ---
 
@@ -423,22 +450,25 @@ starts on warm stats.
 ## 7. Observations pushed in from `main.rs`
 
 Two observations the streaming loop cannot compute itself, because they
-require the worker to have decoded the chunk's radials:
+require the worker to have decoded the chunk's radials. The UI sends them
+down the **observations channel** as `ProjectorObservation` variants:
 
-| Observation | Source | Setter | Used by |
+| Observation | Source | Sent via | Used by |
 | --- | --- | --- | --- |
-| `chunk_max_time_secs` | Latest radial collection time in the chunk | `RealtimeChannel::record_chunk_collection_end_secs` → `StreamingState::record_chunk_collection_end_secs` | Anchor for `project_scan_timing` (§3) |
-| `lag_secs = s3_last_modified − chunk_max_time` | Computed in `main.rs` from the matched arrival stat | `RealtimeChannel::record_availability_lag_secs` → `StreamingState::record_availability_lag_for_current` | Most recent bucket sample's `availability_lag` field |
+| `CollectionEndSecs` — latest radial collection time in the chunk | Worker-decoded radials | `RealtimeChannel::record_chunk_collection_end_secs` → `observe` → `StreamingState::record_chunk_collection_end_secs` | Anchor for `project_scan_timing` (§3) |
+| `AvailabilityLagSecs` — `s3_last_modified − chunk_max_time` | Computed in `main.rs` from the matched arrival stat | `RealtimeChannel::record_availability_lag_secs` → `observe` → `StreamingState::record_availability_lag_for_current` | Most recent bucket sample's `availability_lag` field |
 
-Both go through `RealtimeState`'s `pending_*` fields and are drained
-into `iter` at the top of each streaming loop iteration. The collection
-anchor is also reset to `None` on every Start chunk (new volume) so a
-fresh anchor lands on the first M chunk.
+The loop drains the observations channel into `iter` at the top of each
+iteration (and inside the sleep). The collection anchor is also reset to
+`None` on every Start chunk (new volume) so a fresh anchor lands on the
+first M chunk.
 
-The `pending_*` fields are not a queue; if `main.rs` pushes twice
-before the loop drains, the second value wins. This matches reality —
-only the most recent chunk's collection time matters for the next
-prediction.
+The channel is unbounded and drained in order, so if `main.rs` pushes two
+collection times before the loop drains, both are applied and the later one
+wins — which matches reality: only the most recent chunk's collection time
+matters for the next prediction. Adding a new observation kind is just a new
+`ProjectorObservation` variant plus a drain-dispatch arm — no new channel or
+state field.
 
 ---
 
@@ -453,17 +483,19 @@ Two `RealtimeResult` variants per chunk (in this order):
   sweep's first chunk — important under filter mode where that next
   chunk may never arrive).
 - **`ChunkReceived`** — UI status update. Carries `chunks_in_volume`,
-  `time_until_next` (the next prediction, fed to the countdown UI),
-  `is_volume_end`, the projected volume-end times (collection +
-  availability), the full per-chunk projection list (built by
-  `build_chunk_projections`), and an `arrival_stat` bundle with
-  per-chunk diagnostics (predicted vs actual, scheduler path used,
-  bucket sample count at prediction time, physics breakdown, anchor
-  source).
+  `is_volume_end`, `fetch_latency_ms`, a `plan: Option<StreamingPlan>`, and an
+  `arrival_stat: Option<ChunkArrivalStat>`. The `plan` is the single canonical
+  forward-looking projection consumed by the timeline countdown, the in-progress
+  sweep rendering, and the next-scan ghost; it replaces an older bag of
+  `time_until_next` + projected volume-end times + per-chunk projection lists
+  that used to drift apart and let the UI countdown disagree with the loop's
+  actual sleep. `arrival_stat` is the per-chunk diagnostic bundle (predicted vs
+  actual, scheduler path used, bucket sample count at prediction time, physics
+  breakdown, anchor source).
 
-Init backfill chunks emit the same pair but with `time_until_next: None`
-and `arrival_stat: None` — they were not predicted, just pulled from
-the historical chunk list.
+Init backfill chunks emit the same pair but with `plan: None` and
+`arrival_stat: None` — they were not predicted, just pulled from the historical
+chunk list.
 
 ---
 
@@ -472,19 +504,20 @@ the historical chunk list.
 - **Loop doesn't start** — check `acquire_streaming_state` against the
   10 s `ACQUIRE_TIMEOUT_SECS`. Most often the site's volume bucket has
   not been published yet.
-- **"Next in N s" stays at the same N** — `interruptible_sleep` is not
-  updating `state.time_until_next`. Likely the loop fell off into an
-  unguarded `await` (any new code added inside the streaming task must
-  pass through `interruptible_sleep` for cancellation to work).
+- **"Next in N s" stays at the same N** — the emitted plan's countdown isn't
+  being refreshed (`interruptible_sleep`'s `WaitResolution` isn't feeding the
+  next `ChunkReceived.plan`). Likely the loop fell off into an unguarded `await`
+  (any new code added inside the streaming task must pass through
+  `interruptible_sleep` for cancellation to work).
 - **First chunk of each volume always burns the retry budget** —
   scheduler is taking the `Legacy` path because there are no historical
   samples yet for the Start chunk's bucket. Expected on cold start; if
   it persists across sessions, check `save_timing_stats`/
   `load_cached_timing_stats` for the site.
-- **Filter change does nothing** — `RealtimeChannel::set_filter` is
-  short-circuiting against the existing `pending_filter`, or
-  `interruptible_sleep` is not reading `filter_epoch`. Both checks are
-  cheap; add a log to confirm `set_filter` is being called.
+- **Filter change does nothing** — the `SetFilter` control message is being
+  de-duped in `drain_control` against the loop's current `active_filter`, or the
+  sleep isn't draining control / reading `filter_epoch`. Add a log in
+  `drain_control` to confirm the message arrives.
 - **Loop polls forever after a synthetic volume end** — the cross-
   volume estimate returned `None` and the loop fell through to the
   legacy single-hop. Check `projected_volume_end_collection_secs` —
