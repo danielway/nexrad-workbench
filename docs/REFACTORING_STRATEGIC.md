@@ -2,15 +2,9 @@
 
 ## Context
 
-The **tactical tier** — the catalog in `docs/REFACTORING.md` — was about clarifying what's already there: typed protocols, named outcomes, registry patterns, aggregator structs. Six of those items have landed (C1, A2, D1 stage 1, E3, E4 dispatcher cleanup, E5); nine remain.
+An earlier **tactical pass** clarified what was already there: typed worker protocols, named command outcomes, a shortcuts registry, aggregated modal state, and unified mobile/desktop chrome. Those readability wins landed but did not change the underlying structure.
 
-This plan covers the **strategic tier**: changes to *how the codebase is structured*, not just how its existing pieces are labeled. Each of the four initiatives below subsumes one or more remaining catalog items and goes further by re-drawing boundary or ownership lines. They're sized so that any one of them is a multi-PR project, but together they represent a coherent next phase.
-
-## Where we stand
-
-- Done or partial: C1, A2, D1 stage 1, E3, E4 dispatcher, E5
-- Remaining catalog items: A1, A3, A4, B1 (in progress), B2, E1, E2, F1, F2
-- The initiatives below subsume those remaining items.
+This plan covers the **strategic tier**: changes to *how the codebase is structured*, not just how its existing pieces are labeled. Each of the four initiatives below re-draws a boundary or ownership line. They're sized so that any one of them is a multi-PR project, but together they represent a coherent next phase. The current status of each is in the table at the end.
 
 ## Cross-cutting themes still in need of attention
 
@@ -26,10 +20,8 @@ This plan covers the **strategic tier**: changes to *how the codebase is structu
 
 ## S1. Subsystem Decomposition
 
-*Subsumes catalog items **A1**, **A3**, **A4**.*
-
 ### The problem
-The codebase has two god structures (`WorkbenchApp`, `AppState`) plus orphan managers (`alerts_manager`, `mping_manager`, `playback_manager`, `network_monitor`). The catalog's A1 (move managers into AppState), A3 (unify acquisition state), and A4 (nest AppState into sub-structs) each take one slice, but none of them changes the underlying pattern of *"shared mutable state any module can reach into."* They rearrange the chairs.
+The codebase has two god structures (`WorkbenchApp`, `AppState`) plus orphan managers (`alerts_manager`, `mping_manager`, `playback_manager`, `network_monitor`). Smaller rearrangements — moving managers into AppState, unifying acquisition state, nesting AppState into sub-structs — each take one slice, but none of them changes the underlying pattern of *"shared mutable state any module can reach into."* They rearrange the chairs.
 
 ### The change
 Define bounded subsystems, each owning a coherent slice of state + behavior, with a typed external API. Initial decomposition:
@@ -51,7 +43,7 @@ Each subsystem:
 - Owns its async surface end-to-end — worker handles, channel ends, callback queues
 
 Cross-subsystem coordination uses:
-- The existing `AppCommand` queue (handler families per catalog A2, already shipped)
+- The existing `AppCommand` queue (handler families, already shipped)
 - A new typed `Event` channel for "subsystem X changed Y" (e.g. `TimelineEvent::ScansChanged`) that other subsystems subscribe to instead of polling AppState
 - Explicit cross-subsystem calls when read-only access suffices (e.g. `render.request_for(timeline.current_scan())`)
 
@@ -81,8 +73,6 @@ The root `WorkbenchApp` shrinks to a thin coordinator holding subsystems + the e
 
 ## S2. Unified Async / Effect Model
 
-*Subsumes catalog item **B1**; absorbs **B2**.*
-
 ### The problem
 Four distinct async patterns coexist:
 
@@ -95,9 +85,9 @@ Four distinct async patterns coexist:
 
 Real consequences:
 - `RealtimeChannel` uses `Rc<RefCell<RealtimeState>>` with three coordination mechanisms (`stop_requested` bool, `pending_observations` Vec, `filter_epoch` u64). The filter-epoch wakeup is non-obvious without reading the sleep loop.
-- Pending-context leaks (the C1 fix) were possible because polled channels silently drop unknown messages.
-- The IDB no-await-inside-readwrite invariant is enforced by runtime panics and prose comments (catalog item B2).
-- `upsert_scan`'s single-writer requirement (B2) is comment-only.
+- Pending-context leaks (fixed by the typed worker protocol) were possible because polled channels silently drop unknown messages.
+- The IDB no-await-inside-readwrite invariant is enforced by runtime panics and prose comments.
+- `upsert_scan`'s single-writer requirement is comment-only.
 
 ### The change
 Pick **one** cross-task communication model and migrate every async surface to it. Recommended:
@@ -130,14 +120,12 @@ Document the chosen async model in `CLAUDE.md` so future patterns conform.
 ### Critical files
 - `src/nexrad/realtime/{mod.rs, streaming.rs}` — biggest payoff and the model
 - `src/state/gps.rs` — smallest, do as a warm-up
-- `src/nexrad/worker_api/ingest.rs` (`CHUNK_ACCUM`) — for B2-style type safety
+- `src/nexrad/worker_api/ingest.rs` (`CHUNK_ACCUM`) — for compile-time type safety
 - `src/data/indexeddb/{mod.rs, helpers.rs, logic.rs}` — `upsert_scan` and `SingleWriterGuard`
 
 ---
 
 ## S3. UI Layer Tree
-
-*Subsumes catalog items **E1**, **E2**, and the deferred LayoutProvider work from **E4**.*
 
 ### The problem
 UI dispatch is imperative and scattered across multiple layers:
@@ -145,14 +133,14 @@ UI dispatch is imperative and scattered across multiple layers:
 - Each panel has its own visibility checks (sidebar visible, advanced mode, etc.)
 - Modal overlays are 8 separate render calls at the bottom of `update()`
 - Canvas overlays (`ui/canvas_overlays/`) are a flat imperative sequence with implicit z-order
-- Derived state (visible bounds, sweep azimuth, current sweep info) is recomputed per frame across multiple panels (catalog item E1)
+- Derived state (visible bounds, sweep azimuth, current sweep info) is recomputed per frame across multiple panels
 
 Result: the rule for "what should render when" is split between `main.rs` decisions, per-panel guards, and per-overlay implicit ordering. No single place captures the whole layout.
 
 ### The change
 Two complementary parts.
 
-**Part A: Per-frame `Derived` snapshot.** Populated once at the top of `update()`, before any UI render. Holds visible bounds, current scan/sweep info, sweep-line azimuth, camera-settled flag, etc. Panels and overlays read from `&Derived` instead of recomputing. This is catalog item E1 done properly.
+**Part A: Per-frame `Derived` snapshot.** Populated once at the top of `update()`, before any UI render. Holds visible bounds, current scan/sweep info, sweep-line azimuth, camera-settled flag, etc. Panels and overlays read from `&Derived` instead of recomputing. This eliminates the per-frame recomputation scattered across panels.
 
 **Part B: Typed layer tree.** Replace the imperative panel + overlay + modal sequence with a declarative tree:
 
@@ -165,7 +153,7 @@ enum Layer {
 }
 ```
 
-Mobile and desktop layouts become tree builders (`build_desktop_layout(state) -> LayerTree`, `build_mobile_layout(state) -> LayerTree`). A single renderer walks the tree. Modal stacking becomes z-order, not order-of-call. Canvas overlay ordering becomes declarative (catalog item E2).
+Mobile and desktop layouts become tree builders (`build_desktop_layout(state) -> LayerTree`, `build_mobile_layout(state) -> LayerTree`). A single renderer walks the tree. Modal stacking becomes z-order, not order-of-call. Canvas overlay ordering becomes declarative.
 
 Conditional visibility (sidebar visible, advanced mode, modal-open flags) moves into the tree builders, removing the per-panel guards we still have.
 
@@ -189,8 +177,6 @@ Conditional visibility (sidebar visible, advanced mode, modal-open flags) moves 
 ---
 
 ## S4. Camera + Projection State Machine
-
-*Subsumes catalog items **F1** and **F2**.*
 
 ### The problem
 - `GlobeCamera` (`src/geo/camera.rs`, 889 lines) has 15+ public fields covering three disjoint modes (PlanetOrbit, SiteOrbit, FreeLook). Any code can mutate any field in any mode. Mode transitions leak state (e.g. `free_pos` retained across switch to orbit).
@@ -243,7 +229,7 @@ UI interaction handlers and overlays work generically on `&dyn Projection`. Mode
 2. **S2 (Async Unification)** — within each subsystem, clean up its async surface. Doing this *after* S1 means each subsystem owns its async, so the cleanup happens in one place per subsystem.
 3. **S3 (UI Layer Tree) and S4 (Camera State Machine) in parallel** — both are independent of S1/S2 once subsystem boundaries are set. S4 is more isolated; S3 is best done after S1 since subsystems become the natural providers of "what to render."
 
-If appetite is lower than "do all four," the catalog items each subsumes can be done individually and incrementally instead. The strategic plan above is the maximum-leverage version.
+If appetite is lower than "do all four," the smaller changes within each initiative can be done individually and incrementally instead. The strategic plan above is the maximum-leverage version.
 
 ## Verification per initiative
 
@@ -261,10 +247,10 @@ Each initiative is multiple PRs; standard per-PR checks:
 ## What this plan does *not* cover
 
 - **Pure Core / Effect Shell** — the truly transformative refactor (separate pure state-transition logic from side effects, enable browser-free unit tests for most logic). Too speculative without first doing S1+S2; becomes viable after.
-- **Schema-first worker IPC** — would generate both Rust types and `worker.js` dispatch from one schema. Incremental on C1; not ambitious enough for this tier.
+- **Schema-first worker IPC** — would generate both Rust types and `worker.js` dispatch from one schema. Incremental on the existing typed protocol; not ambitious enough for this tier.
 - **Performance optimization** — the renderer is already fast.
 - **New features** — the app's functionality is set.
-- **Catalog items that *don't* fit a strategic initiative**: D1 stage 2 (app-side `ErrorContext` aggregation) is done — the top-bar errors chip surfaces the unified collector.
+- **Work that *doesn't* fit a strategic initiative**: app-side error aggregation is done — the top-bar errors chip surfaces a unified error collector.
 
 ## Status
 
@@ -273,4 +259,4 @@ Each initiative is multiple PRs; standard per-PR checks:
 | S1 | Subsystem Decomposition | ✅ done (Acquisition + Diagnostics + Render + Live + Timeline + Playback + Chrome all extracted). AppState shrank from ~45 to ~22 fields; WorkbenchApp owns 7 bounded subsystems. |
 | S2 | Unified Async / Effect Model | ✅ done (GpsState + SiteModalState location queues moved to mpsc; upsert_scan single-writer enforced via UpsertScanGuard RAII; RealtimeChannel fully migrated — results / observations / control all typed channels, active as Rc<Cell<bool>>, no shared RealtimeState). CHUNK_ACCUM hardening still pending as a smaller follow-up. |
 | S3 | UI Layer Tree | not started — substantial design work. Symptom: 40 functions silenced `clippy::too_many_arguments` after S1 threading. A declarative layer tree would address this by giving each rendered surface its own bound context. |
-| S4 | Camera + Projection State Machine | partial — F2 `Projection` trait + `GlobeProjection` adapter landed; F1 camera enum split (the `GlobeCamera` struct → `Camera` enum with `PlanetOrbit`/`SiteOrbit`/`FreeLook` variants) not started. F1 is large (`geo/camera.rs` is 889 lines and every interaction handler branches on mode). |
+| S4 | Camera + Projection State Machine | partial — the `Projection` trait + `GlobeProjection` adapter landed; the camera enum split (the `GlobeCamera` struct → `Camera` enum with `PlanetOrbit`/`SiteOrbit`/`FreeLook` variants) not started. That split is large (`geo/camera.rs` is 889 lines and every interaction handler branches on mode). |

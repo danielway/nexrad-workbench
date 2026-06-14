@@ -2,10 +2,9 @@
 //!
 //! Before this module, errors were surfaced inconsistently — some as
 //! `status_message` flips, some as the dedicated `worker_init_error`
-//! banner, some only logged. The catalog (REFACTORING.md D1 stage 2)
-//! calls for a single collector that all reporters push to, so the UI
-//! can surface a coherent recent-errors view instead of multiple
-//! ad-hoc indicators.
+//! banner, some only logged. The design calls for a single collector
+//! that all reporters push to, so the UI can surface a coherent
+//! recent-errors view instead of multiple ad-hoc indicators.
 //!
 //! This is the seed: a small ring buffer on [`AppState`]
 //! ([`crate::state::AppState::errors`]) plus the [`AppError`] taxonomy.
