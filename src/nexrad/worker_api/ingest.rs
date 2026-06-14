@@ -220,6 +220,22 @@ pub(super) struct ChunkAccumulator {
 // take a synchronous `FnOnce` (or no closure at all) and drop the
 // borrow before returning, so the no-await-inside invariant is
 // type-enforced: you literally cannot `.await` inside the closure.
+//
+// ## Why a thread-local and not a scope-local token (S2 decision)
+//
+// A "scope-local typed token" was considered — own the accumulator in the
+// async fn's scope rather than in a thread-local — but it does not fit the
+// access pattern. The accumulator must persist *across independent worker
+// entry points*: `worker_ingest_chunk` mutates it incrementally over many
+// separate JS calls, and `worker_render_live` reads it *between* those calls
+// to draw the in-progress sweep. State shared across `#[wasm_bindgen]` free
+// functions has to live in worker-global storage; a value owned by one
+// call's scope cannot be seen by the next call or by the render path. So the
+// synchronous-`FnOnce` accessor API below is the chosen design: it already
+// type-enforces the one invariant that matters (no borrow held across an
+// `.await`), and re-entrance cannot occur because no accessor closure calls
+// back into these helpers. The accessor contract is pinned by the unit tests
+// at the bottom of this file.
 thread_local! {
     static CHUNK_ACCUM: std::cell::RefCell<Option<ChunkAccumulator>> =
         const { std::cell::RefCell::new(None) };
@@ -643,4 +659,93 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         serde_wasm_bindgen::to_value(&response)
             .map_err(|e| JsValue::from_str(&format!("Failed to serialize response: {}", e)))
     })
+}
+
+#[cfg(test)]
+mod accum_tests {
+    //! Pins the `CHUNK_ACCUM` accessor contract (see the design note above the
+    //! thread-local). The worker is single-threaded, so these run in sequence
+    //! and share the one thread-local; each test clears it first so the cases
+    //! are independent. This exercises the real access shape — `set` then
+    //! sequential, non-nested `with_*` borrows, exactly as the ingest and
+    //! render-live paths use it.
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn sample_accum() -> ChunkAccumulator {
+        ChunkAccumulator {
+            scan_key: ScanKey::new("KDMX", UnixMillis::from_secs_f64(1_000.0)),
+            site_id: "KDMX".to_string(),
+            current_radials: Vec::new(),
+            current_radial_metas: Vec::new(),
+            current_elevation: Some(2),
+            completed_elevations: std::collections::HashSet::new(),
+            completed_sweep_metas: Vec::new(),
+            vcp: None,
+            has_vcp: false,
+            total_chunks: 3,
+            total_size_bytes: 4_096,
+            file_name: "test-chunk".to_string(),
+            timestamp_secs: 1_000.0,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn empty_accumulator_reads_none() {
+        set_chunk_accum(None);
+        assert!(with_chunk_accum(|a| a.is_none()));
+        assert_eq!(with_chunk_accum(|a| a.map(|x| x.total_chunks)), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_then_read_roundtrips() {
+        set_chunk_accum(None);
+        set_chunk_accum(Some(sample_accum()));
+        assert_eq!(with_chunk_accum(|a| a.map(|x| x.total_chunks)), Some(3));
+        assert_eq!(
+            with_chunk_accum(|a| a.and_then(|x| x.current_elevation)),
+            Some(2)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn mutation_through_with_mut_persists() {
+        set_chunk_accum(None);
+        set_chunk_accum(Some(sample_accum()));
+        with_chunk_accum_mut(|a| {
+            let a = a.expect("accumulator was installed");
+            a.total_chunks += 1;
+            a.completed_elevations.insert(2);
+        });
+        assert_eq!(with_chunk_accum(|a| a.map(|x| x.total_chunks)), Some(4));
+        assert!(with_chunk_accum(|a| a
+            .map(|x| x.completed_elevations.contains(&2))
+            .unwrap_or(false)));
+    }
+
+    #[wasm_bindgen_test]
+    fn sequential_borrows_do_not_panic() {
+        // The render-live path borrows shared, returns, then the ingest path
+        // borrows mutably — back-to-back, never nested. Confirm that real
+        // shape stays panic-free (a nested borrow would be the only re-entrance
+        // hazard, and no accessor closure nests).
+        set_chunk_accum(None);
+        set_chunk_accum(Some(sample_accum()));
+        let read_a = with_chunk_accum(|a| a.map(|x| x.total_chunks));
+        with_chunk_accum_mut(|a| {
+            if let Some(a) = a {
+                a.total_chunks += 10;
+            }
+        });
+        let read_b = with_chunk_accum(|a| a.map(|x| x.total_chunks));
+        assert_eq!(read_a, Some(3));
+        assert_eq!(read_b, Some(13));
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_resets_to_none() {
+        set_chunk_accum(Some(sample_accum()));
+        set_chunk_accum(None);
+        assert!(with_chunk_accum(|a| a.is_none()));
+    }
 }
