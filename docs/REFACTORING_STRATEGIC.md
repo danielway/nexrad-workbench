@@ -125,6 +125,13 @@ weigh next, roughly by leverage:
    `canvas.rs`. Their order is pipeline-inherent (radar under features under
    annotations), not accidental, so this is lower-value and carries visual-
    regression risk — do it only if a real need arises.
+5. **`streaming.rs` decomposition** — split the 1850-line live-streaming loop
+   ([`src/nexrad/realtime/streaming.rs`](../src/nexrad/realtime/streaming.rs))
+   into focused submodules. This was the projection refactor's stretch item "P6";
+   it was de-scoped to here because the projection refactor's actual goals
+   (entropy reduction, collection-domain estimates) shipped, and a behavior-
+   preserving split of the live-stream core would reopen live-stream QA for purely
+   organizational gain. Do it when that file next needs substantial change.
 
-These were intentionally not pursued in the strategic tier — performance (the
-renderer is already fast) and new features were also out of scope.
+These were intentionally not pursued — performance (the renderer is already fast)
+and new features were also out of scope.
