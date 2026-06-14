@@ -1,7 +1,9 @@
 # Weather Radar Viewer — Timeline, Playback & Acquisition UX
 
-**Product brief · v0.1 (draft for iteration) · June 12, 2026**
-**Status:** Open for review — items marked ⚠️ OPEN are unresolved decisions.
+**Product brief · v0.1 · June 12, 2026 (open items resolved June 2026)**
+**Status:** Implemented on `simplify-user-interface`. The June 2026 alignment
+pass resolved the spec's open items — see **Alignment decisions** at the end.
+One forward-looking experiment (§13 tape-scrub) remains flagged ⚠️ OPEN.
 
 ---
 
@@ -89,7 +91,7 @@ The strip's primary cells are **frames of the currently selected product/tilt**,
 | **Macro** | hours → a few days | Scans collapse to uniform ticks; gap glyphs where real spacing exceeds threshold | Equidistant frames at a chosen fps (classic radar loop) |
 | **Archive** | beyond ~2–3 days | Calendar-style coverage heatmap (per-day availability + cache tone, bookmarks/events) | None — navigator only; tapping a day zooms into Macro there |
 
-- **Snap with hysteresis:** enter/exit thresholds differ so pinch gestures never flicker at a boundary. ⚠️ OPEN: exact thresholds and hysteresis values (tune in prototype).
+- **Snap with hysteresis:** enter/exit thresholds differ so pinch gestures never flicker at a boundary. ✅ DECIDED (Alignment §2): Micro↔Macro nominal 1.0 px/s (enter Micro ≥ 1.15, exit ≤ 0.87 px/s); Archive enters above a 60 h visible span and exits below 48 h. Tunable constants in one place.
 - **Morph animation:** frame cells visibly collapse into scan ticks (and expand back). Playhead and live edge stay spatially stable through the transition.
 - **Archive tier replaces year-wide strip zoom** ✅ DECIDED: a strip stretched across months produces label soup and disorienting travel; a calendar heatmap (GitHub-contributions grammar) answers "which days have data / weather I care about" directly.
 
@@ -101,7 +103,7 @@ There is **one continuous timeline**; "live" is its right edge. Live is not a mo
 - **Detached:** scrubbing backward auto-detaches. LIVE button hollows out and shows lag ("● LIVE · 2:14 behind"). Streaming **continues in the background** by default, filling the cache at the right edge. One tap re-tethers with a brief animated catch-up.
 - **Pause while tethered:** frame freezes; a "behind live by 0:42" counter grows; resuming plays from the pause point (now detached) — detachment is made explicit via the button state change.
 - **Policy:** a data-saver toggle ("pause live stream while reviewing") for metered connections, in the queue sheet. Default off.
-- **Session start:** app opens tethered to live for the selected site (the dominant use case). ⚠️ OPEN: validate whether default live experience is single-frame-following or the pinned loop (§8).
+- **Session start:** app opens tethered to live for the selected site (the dominant use case). ✅ DECIDED (Alignment §1): the default live experience is tethered **single-frame following**; the pinned loop (§8) is opt-in via the loop preset, one tap away.
 
 ## 8. Loop system
 
@@ -109,7 +111,7 @@ There is **one continuous timeline**; "live" is its right edge. Live is not a mo
 - **Pinned sliding loop:** dragging the right handle to the live edge snaps and pins — the handle visually fuses with the live dot, and the window slides forward as sweeps arrive. This is the core "loop the last N while still streaming" experience.
 - **Window basis:** frame-count windows ("last 6 frames") preferred in Micro, since scan spacing varies; duration windows offered as an alternative in presets.
 - **Incorporation rule:** newly arrived frames enter the loop **at the wrap point**, never mid-cycle, so the loop never visibly pops.
-- ⚠️ OPEN: should the pinned loop be the *default* live experience (RadarScope-style), or opt-in via preset?
+- ✅ DECIDED (Alignment §1): the pinned loop is **opt-in** via preset, not the default; default live is single-frame following (§7).
 
 ## 9. Playback semantics
 
@@ -129,7 +131,7 @@ There is **one continuous timeline**; "live" is its right edge. Live is not a mo
 ## 11. Canvas honesty rules
 
 1. Displayed-frame timestamp is the primary readout (e.g., "2:41:07 PM CDT · 0.5°").
-2. When playhead time ≠ frame time (undownloaded region, gap), keep showing the most recent available frame and surface the discrepancy ("showing 2:41 · fetching 2:51…"). ⚠️ OPEN: exact treatment (caption vs. canvas-edge shimmer vs. both).
+2. When playhead time ≠ frame time (undownloaded region, gap), keep showing the most recent available frame and surface the discrepancy ("showing 2:41 · fetching 2:51…"). ✅ DECIDED (Alignment §3): **caption only**, no canvas shimmer.
 3. At the live edge, show data age ("updated 1m ago") — radar "live" is minutes old by nature; acknowledging it builds trust exactly when severe weather makes users notice lag.
 4. Local time primary, UTC available on tap (enthusiasts want Zulu).
 
@@ -183,16 +185,20 @@ Ranked concessions if needed, first to cut at top:
 | "Live" feels laggy in severe weather | Data-age readout; ghost countdown sets expectations |
 | Accessibility | State = fill + shape, never hue alone; reduced-motion replaces pulses with static progress; full keyboard operation; screen reader announces displayed-frame timestamp |
 
-## 17. Open questions (iteration backlog)
+## 17. Open questions — resolved
 
-1. Default live experience: tethered single-frame or pinned loop of last N frames?
-2. Exact Micro/Macro/Archive zoom thresholds + hysteresis values.
-3. Canvas treatment while fetching (caption vs. shimmer vs. both).
-4. Should chunk segmentation display 3 vs 6 faithfully, or normalize to one progress style?
-5. Does background streaming auto-start on app open per site, and what happens on site switch?
-6. Prefetch policy across tilts: when the user switches product/tilt, do we fetch matching sweeps for cached scans proactively?
-7. Loop window defaults (N frames? which N?) per device class.
-8. Offline / connection-loss behavior at the live edge (stale ghost handling).
+The v0.1 backlog below was resolved in the June 2026 alignment pass. The
+authoritative decisions (with rationale) live in **Alignment decisions** at
+the end of this document; code cites them as "alignment §N". Summary:
+
+1. **Default live experience** → tethered single-frame following; pinned loop opt-in (Alignment §1).
+2. **Zoom thresholds + hysteresis** → Micro↔Macro 1.0 px/s nominal (enter ≥1.15 / exit ≤0.87); Archive span enter >60 h / exit <48 h (Alignment §2).
+3. **Canvas treatment while fetching** → caption only, no shimmer (Alignment §3).
+4. **Chunk segmentation** → display 3 vs 6 faithfully (Alignment §4).
+5. **Background streaming on open / site switch** → opens tethered; site switch re-tethers; detached streaming continues with a 60-min idle-stop (Alignment §5).
+6. **Prefetch across tilts** → no proactive refetch; archive volumes already carry all tilts (Alignment §6).
+7. **Loop window defaults** → default last 6 frames; presets 4/6/10 frames + 30 min/1 h + pin to live (Alignment §7).
+8. **Offline / stale ghosts** → ghosts emitted only while a live stream exists; they disappear when the stream dies (Alignment §8).
 
 ## 18. Suggested build order
 
@@ -200,4 +206,90 @@ Strip + minimap with cell states and auto-fetch → tether model + LIVE button �
 
 ---
 
-*v0.1 drafted from UX consultation 2026-06-12. Edit freely; ⚠️ OPEN items are the active decision list.*
+## Alignment decisions (June 2026)
+
+This pass resolved the spec's open items (§17) and recorded the product
+decisions the implementation follows, so the spec has one canonical answer
+per open item and QA knows what behavior is intended. References throughout
+the codebase cite these as "alignment §N" / "#N".
+
+### Decisions on the spec's open questions (§17)
+
+1. **Default live experience** (§17.1): tethered **single-frame following**.
+   The pinned loop is opt-in via the loop preset control ("pin to live",
+   "last N frames"), one tap away. Play/pause while tethered follows §7's
+   pause semantics (freeze + behind-live counter), not loop entry.
+2. **Zoom tier thresholds + hysteresis** (§17.2): one stored tier state machine
+   owns the boundary. Micro↔Macro nominal boundary 1.0 px/s with ~±15%
+   hysteresis (enter Micro ≥ 1.15 px/s, exit Micro ≤ 0.87 px/s). Archive is
+   span-based: enter when the visible span exceeds 60 h, exit below 48 h.
+   Values are tunable constants in one place.
+3. **Canvas treatment while fetching** (§17.3): **caption only**
+   ("showing 2:41 · fetching 2:51…"), no canvas shimmer. Cheapest, honest,
+   reads in grayscale and to screen readers.
+4. **Chunk segmentation** (§17.4): display 3 vs 6 chunks **faithfully** (already
+   the live behavior). Archive downloads have no chunk telemetry; in-flight
+   archive cells use the pulse fill inside the frame cell instead of fake segments.
+5. **Background streaming on open / site switch** (§17.5): the app opens
+   **tethered to live** for the selected site (per §7 DECIDED). Site switch while
+   tethered re-tethers on the new site. While detached, streaming continues in
+   the background; a safety idle-stop applies after 60 min detached (raised from
+   15 min — pragmatic S3-cost bound the spec doesn't forbid; the data-saver
+   toggle is the user-facing control).
+6. **Prefetch across tilts on product/tilt switch** (§17.6): no proactive
+   refetch. Archive scans download whole volumes, so cached scans already have
+   all tilts; the existing playhead-window prefetch covers the rest.
+7. **Loop window defaults** (§17.7): default preset **last 6 frames**; preset
+   menu offers 4 / 6 / 10 frames and 30 min / 1 h durations plus "pin to live".
+   Same defaults on all device classes.
+8. **Offline / stale ghosts** (§17.8): ghosts are emitted only while the
+   projection engine has a live stream. When the stream dies, ghosts disappear
+   rather than going stale. Revisit post-v1.
+
+### Scope decisions (per §15 cut order)
+
+- **Frames-first strip**: done (cut order says "do regardless").
+- **Custom loop dragging on mobile**: cut; mobile gets presets + handles remain
+  desktop-only.
+- **Radial-level canvas animation**: deferred to v2 (existing sweep animation
+  stays, gated as today).
+- **Year-scale strip zoom**: removed, replaced by the Archive calendar tier.
+- **Archive calendar layout** (§6.4): the Archive tier intentionally ships a
+  **1-D zoomable UTC-day lane** (day cells laid out linearly with month
+  separators), not the 2-D week-by-day GitHub-contributions grid the spec
+  sketches. The ~56px strip height can't fit readable week-stacked cells without
+  growing the panel, so the linear lane is the deliberate height-budget tradeoff
+  for this pass. A 2-D weekday grid (independent of the linear zoom scalar) is a
+  possible future enhancement.
+- **Manual download management**: stays demoted; queue sheet shows what the
+  system did, plus cancel/retry and policy toggles.
+- **Tablet tier** (§13 row 2): out of scope for this pass; touch devices ≥600 px
+  get the desktop layout as today.
+- **Wi-Fi-only toggle** (§10): not implementable in a browser (no reliable
+  network-type API); the queue sheet ships "auto-fetch while scrubbing" and
+  "pause live stream while reviewing" (data-saver). `navigator.connection.saveData`
+  may later seed the data-saver default.
+
+### Other interpretation calls
+
+- **Keyboard**: ←/→ frame step, Shift+←/→ scan step, I/O loop in/out, plain L
+  go-live (one-way re-tether), +/− timeline zoom anchored at the playhead,
+  Space play/pause. Camera pan keeps WASD; arrows no longer pan the camera.
+  Speed up/down moves to [ / ].
+- **Scan inspector entry**: right-click a scan (desktop), long-press (touch).
+  The old map-probe "Inspector" tool is renamed "Data probe" to free the word.
+- **Failure model**: a failed download no longer error-pauses the whole queue;
+  failures are per-cell (alert tick, tap to retry) and retry actually re-enqueues.
+- **Frame definition**: everywhere (macro frame list, lookback window, stepping)
+  a frame is a sweep matching the selected **product + tilt** (§4).
+- **Top readouts**: displayed-frame timestamp becomes the primary top-bar
+  readout ("2:41:07 PM CDT · 0.5°"), tap toggles local/UTC; local is the
+  default. "Updated 1m ago" age appears when tethered.
+- **Jargon at Level 0**: the VOLUMES/TILTS lane headers are removed; structure
+  is conveyed by containment, vocabulary by the inspector.
+
+---
+
+*v0.1 drafted from UX consultation 2026-06-12; open items resolved in the
+June 2026 alignment pass (above). The spec sections are the design; the
+Alignment decisions are the canonical resolutions the code implements.*
