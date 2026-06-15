@@ -131,3 +131,129 @@ impl ErrorContext {
         self.recent.clear();
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn other(msg: &str) -> AppError {
+        AppError::Other {
+            message: msg.to_string(),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn source_label_identifies_each_subsystem() {
+        assert_eq!(
+            AppError::Worker {
+                kind: WorkerErrorKind::IdbFailure,
+                message: "x".into(),
+                scan_timestamp_secs: None,
+            }
+            .source_label(),
+            "worker"
+        );
+        assert_eq!(
+            AppError::Download {
+                message: "x".into(),
+                scan_start_secs: None,
+            }
+            .source_label(),
+            "download"
+        );
+        assert_eq!(
+            AppError::Alerts {
+                message: "x".into()
+            }
+            .source_label(),
+            "alerts"
+        );
+        assert_eq!(
+            AppError::Mping {
+                message: "x".into()
+            }
+            .source_label(),
+            "mping"
+        );
+        assert_eq!(other("x").source_label(), "other");
+    }
+
+    #[wasm_bindgen_test]
+    fn message_returns_each_variants_text() {
+        assert_eq!(
+            AppError::Worker {
+                kind: WorkerErrorKind::NotFound,
+                message: "w".into(),
+                scan_timestamp_secs: Some(1.0),
+            }
+            .message(),
+            "w"
+        );
+        assert_eq!(
+            AppError::Download {
+                message: "d".into(),
+                scan_start_secs: Some(5),
+            }
+            .message(),
+            "d"
+        );
+        assert_eq!(
+            AppError::Alerts {
+                message: "a".into()
+            }
+            .message(),
+            "a"
+        );
+        assert_eq!(
+            AppError::Mping {
+                message: "m".into()
+            }
+            .message(),
+            "m"
+        );
+        assert_eq!(other("o").message(), "o");
+    }
+
+    #[wasm_bindgen_test]
+    fn fresh_context_is_empty() {
+        let ctx = ErrorContext::default();
+        assert_eq!(ctx.len(), 0);
+        assert!(ctx.is_empty());
+        assert!(ctx.most_recent().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn push_records_in_oldest_first_order() {
+        let mut ctx = ErrorContext::default();
+        ctx.push(other("first"));
+        ctx.push(other("second"));
+        assert_eq!(ctx.len(), 2);
+        assert!(!ctx.is_empty());
+        let msgs: Vec<&str> = ctx.iter().map(|e| e.error.message()).collect();
+        assert_eq!(msgs, vec!["first", "second"]);
+        assert_eq!(ctx.most_recent().unwrap().error.message(), "second");
+    }
+
+    #[wasm_bindgen_test]
+    fn ring_buffer_evicts_oldest_past_the_cap() {
+        let mut ctx = ErrorContext::default();
+        for i in 0..55 {
+            ctx.push(other(&format!("e{i}")));
+        }
+        // Capped at MAX_RETAINED (50); the first 5 fell off.
+        assert_eq!(ctx.len(), 50);
+        assert_eq!(ctx.iter().next().unwrap().error.message(), "e5");
+        assert_eq!(ctx.most_recent().unwrap().error.message(), "e54");
+        // Newest-first view via the double-ended iterator.
+        assert_eq!(ctx.iter().next_back().unwrap().error.message(), "e54");
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_empties_the_ring() {
+        let mut ctx = ErrorContext::default();
+        ctx.push(other("x"));
+        ctx.clear();
+        assert!(ctx.is_empty());
+    }
+}

@@ -114,3 +114,101 @@ impl SavedEvents {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // `save()` is a no-op under wasm-bindgen-test in node (no window), so these
+    // exercise the pure in-memory collection logic without touching storage.
+
+    fn ev(id: u64, name: &str) -> SavedEvent {
+        SavedEvent {
+            id,
+            name: name.to_string(),
+            site_id: "KDMX".to_string(),
+            start_time: 1000.0,
+            end_time: 2000.0,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn default_is_empty() {
+        assert!(SavedEvents::default().events.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn serde_round_trips_events() {
+        let s = SavedEvents {
+            events: vec![ev(1, "Derecho"), ev(2, "Tornado outbreak")],
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: SavedEvents = serde_json::from_str(&json).unwrap();
+        // SavedEvents has no Debug derive, so compare via PartialEq directly.
+        assert!(back == s);
+    }
+
+    #[wasm_bindgen_test]
+    fn deserialize_tolerates_missing_events_field() {
+        // `#[serde(default)]` on `events` means an empty object loads as empty.
+        let back: SavedEvents = serde_json::from_str("{}").unwrap();
+        assert!(back.events.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn remove_drops_only_the_matching_id() {
+        let mut s = SavedEvents {
+            events: vec![ev(1, "a"), ev(2, "b"), ev(3, "c")],
+        };
+        s.remove(2);
+        let ids: Vec<u64> = s.events.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![1, 3]);
+    }
+
+    #[wasm_bindgen_test]
+    fn remove_absent_id_is_a_noop() {
+        let mut s = SavedEvents {
+            events: vec![ev(1, "a")],
+        };
+        s.remove(99);
+        assert_eq!(s.events.len(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn update_mutates_matching_event_fields() {
+        let mut s = SavedEvents {
+            events: vec![ev(1, "old"), ev(2, "keep")],
+        };
+        s.update(1, "new".to_string(), 5.0, 9.0);
+        let e = &s.events[0];
+        assert_eq!(e.name, "new");
+        assert_eq!(e.start_time, 5.0);
+        assert_eq!(e.end_time, 9.0);
+        // site_id and id are untouched; the other event is untouched.
+        assert_eq!(e.site_id, "KDMX");
+        assert_eq!(e.id, 1);
+        assert_eq!(s.events[1].name, "keep");
+    }
+
+    #[wasm_bindgen_test]
+    fn update_absent_id_is_a_noop() {
+        let mut s = SavedEvents {
+            events: vec![ev(1, "a")],
+        };
+        s.update(42, "x".to_string(), 0.0, 0.0);
+        assert_eq!(s.events[0].name, "a");
+    }
+
+    #[wasm_bindgen_test]
+    fn add_appends_one_event_with_given_fields() {
+        let mut s = SavedEvents::default();
+        s.add("Hail".to_string(), "KFWS".to_string(), 100.0, 200.0);
+        assert_eq!(s.events.len(), 1);
+        let e = &s.events[0];
+        assert_eq!(e.name, "Hail");
+        assert_eq!(e.site_id, "KFWS");
+        assert_eq!(e.start_time, 100.0);
+        assert_eq!(e.end_time, 200.0);
+    }
+}
