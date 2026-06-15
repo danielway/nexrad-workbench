@@ -559,3 +559,491 @@ mod tests {
         assert_eq!(a.selected_alert_id, None);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::alerts::types::{Alert, AlertGeometry, Ring};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- builders (sibling `mod tests` helpers are private) ----
+
+    fn square(min: f64, max: f64) -> Ring {
+        vec![(min, min), (max, min), (max, max), (min, max), (min, min)]
+    }
+
+    /// Rectangle ring with independent lon/lat extents (asymmetric centroid).
+    fn rect(min_lon: f64, min_lat: f64, max_lon: f64, max_lat: f64) -> Ring {
+        vec![
+            (min_lon, min_lat),
+            (max_lon, min_lat),
+            (max_lon, max_lat),
+            (min_lon, max_lat),
+            (min_lon, min_lat),
+        ]
+    }
+
+    fn alert(id: &str, severity: AlertSeverity, event: &str, polygons: Vec<Vec<Ring>>) -> Alert {
+        let mut geometry = AlertGeometry {
+            polygons,
+            bbox: None,
+        };
+        geometry.recompute_bbox();
+        Alert {
+            id: id.into(),
+            event: event.into(),
+            headline: String::new(),
+            description: String::new(),
+            instruction: String::new(),
+            severity,
+            urgency: String::new(),
+            certainty: String::new(),
+            area_desc: String::new(),
+            sender: String::new(),
+            effective_secs: None,
+            onset_secs: None,
+            expires_secs: None,
+            ends_secs: None,
+            geometry,
+            affected_zones: Vec::new(),
+            fill_triangles: Vec::new(),
+        }
+    }
+
+    const WORLD: (f64, f64, f64, f64) = (-180.0, -90.0, 180.0, 90.0);
+
+    fn warning(id: &str, severity: AlertSeverity, poly: Vec<Vec<Ring>>) -> Alert {
+        alert(id, severity, "Tornado Warning", poly)
+    }
+    fn advisory(id: &str, severity: AlertSeverity, poly: Vec<Vec<Ring>>) -> Alert {
+        alert(id, severity, "Flood Watch", poly)
+    }
+
+    fn state_bundle() -> (AlertsState, MpingState, GpsState, bool) {
+        (
+            AlertsState::default(),
+            MpingState::default(),
+            GpsState::default(),
+            false,
+        )
+    }
+
+    fn run(
+        alerts: &mut AlertsState,
+        mping: &mut MpingState,
+        gps: &mut GpsState,
+        gps_layer: &mut bool,
+        intent: DiagnosticsIntent,
+    ) -> Vec<Effect> {
+        reduce(
+            DiagnosticsStateMut {
+                alerts,
+                mping,
+                gps,
+                gps_layer_active: gps_layer,
+            },
+            intent,
+        )
+    }
+
+    // -------------------------------------------------------------------
+    // select_alert_at: bbox short-circuit, class gating for warnings, holes,
+    // multi-polygon, mid-list severity replacement
+    // -------------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn bbox_outside_view_rejects_even_when_point_inside_polygon() {
+        // The point (5,5) is geometrically inside the polygon, but the view
+        // bounds are far away so bbox_intersects short-circuits to a miss.
+        let alerts = vec![warning(
+            "a",
+            AlertSeverity::Extreme,
+            vec![vec![square(0.0, 10.0)]],
+        )];
+        let far = (100.0, 100.0, 110.0, 110.0);
+        assert_eq!(select_alert_at(&alerts, 5.0, 5.0, far, true, true), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn warning_class_hidden_gates_warning_hit() {
+        // show_warnings=false hides a warning even with the point inside.
+        let alerts = vec![warning(
+            "w",
+            AlertSeverity::Severe,
+            vec![vec![square(0.0, 10.0)]],
+        )];
+        assert_eq!(select_alert_at(&alerts, 5.0, 5.0, WORLD, false, true), None);
+        assert_eq!(
+            select_alert_at(&alerts, 5.0, 5.0, WORLD, true, true).as_deref(),
+            Some("w")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn hole_invalidates_hit_but_outer_ring_still_hits() {
+        // Outer square(0,10) with an inner hole square(3,7).
+        let alerts = vec![warning(
+            "donut",
+            AlertSeverity::Severe,
+            vec![vec![square(0.0, 10.0), square(3.0, 7.0)]],
+        )];
+        // (5,5) sits in the hole → no hit.
+        assert_eq!(select_alert_at(&alerts, 5.0, 5.0, WORLD, true, true), None);
+        // (1,1) is in the outer ring but outside the hole → hit.
+        assert_eq!(
+            select_alert_at(&alerts, 1.0, 1.0, WORLD, true, true).as_deref(),
+            Some("donut")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn point_inside_second_polygon_of_multipolygon_hits() {
+        // Two disjoint polygons; the point lands in the second one.
+        let alerts = vec![warning(
+            "multi",
+            AlertSeverity::Severe,
+            vec![vec![square(0.0, 5.0)], vec![rect(20.0, 20.0, 30.0, 30.0)]],
+        )];
+        assert_eq!(
+            select_alert_at(&alerts, 25.0, 25.0, WORLD, true, true).as_deref(),
+            Some("multi")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn higher_severity_later_in_list_replaces_incumbent() {
+        // First qualifying alert is Minor; a later one is Extreme → the later,
+        // strictly-higher-rank alert replaces the incumbent.
+        let alerts = vec![
+            warning("lo", AlertSeverity::Minor, vec![vec![square(0.0, 10.0)]]),
+            warning("hi", AlertSeverity::Extreme, vec![vec![square(0.0, 10.0)]]),
+        ];
+        assert_eq!(
+            select_alert_at(&alerts, 5.0, 5.0, WORLD, true, true).as_deref(),
+            Some("hi")
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn empty_alert_list_returns_none() {
+        let alerts: Vec<Alert> = Vec::new();
+        assert_eq!(select_alert_at(&alerts, 0.0, 0.0, WORLD, true, true), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn zone_only_alert_has_no_bbox_so_never_selected() {
+        // No polygons → recompute_bbox leaves bbox None → bbox_intersects false.
+        let alerts = vec![advisory("z", AlertSeverity::Extreme, vec![])];
+        assert_eq!(select_alert_at(&alerts, 0.0, 0.0, WORLD, true, true), None);
+    }
+
+    // -------------------------------------------------------------------
+    // compute_alert_focus: non-warning class + asymmetric centroid
+    // -------------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn focus_advisory_is_not_warning_with_centroid() {
+        // bbox (2,4,8,10) → center (lat,lon) = ((4+10)/2, (2+8)/2) = (7,5).
+        let a = advisory(
+            "adv",
+            AlertSeverity::Moderate,
+            vec![vec![rect(2.0, 4.0, 8.0, 10.0)]],
+        );
+        let focus = compute_alert_focus(&a);
+        assert!(!focus.is_warning);
+        let (clat, clon) = focus.center.expect("rect alert has a bbox");
+        assert!((clat - 7.0).abs() < 1e-9);
+        assert!((clon - 5.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn focus_struct_equality_for_warning() {
+        let a = warning(
+            "w",
+            AlertSeverity::Severe,
+            vec![vec![rect(-4.0, -2.0, 6.0, 8.0)]],
+        );
+        // center (lat,lon) = ((-2+8)/2, (-4+6)/2) = (3,1).
+        let expected = AlertFocus {
+            is_warning: true,
+            center: Some((3.0, 1.0)),
+        };
+        assert!(compute_alert_focus(&a) == expected);
+    }
+
+    // -------------------------------------------------------------------
+    // reduce: remaining alert/mping/gps branches + effect emptiness
+    // -------------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn alert_list_modal_open_close() {
+        let (mut a, mut m, mut g, mut layer) = state_bundle();
+        let e1 = run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::OpenAlertList,
+        );
+        assert!(e1.is_empty());
+        assert!(a.list_modal_open);
+        let e2 = run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::CloseAlertList,
+        );
+        assert!(e2.is_empty());
+        assert!(!a.list_modal_open);
+    }
+
+    #[wasm_bindgen_test]
+    fn refresh_alerts_sets_flag() {
+        let (mut a, mut m, mut g, mut layer) = state_bundle();
+        assert!(!a.refresh_requested);
+        let e = run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::RefreshAlerts,
+        );
+        assert!(e.is_empty());
+        assert!(a.refresh_requested);
+    }
+
+    #[wasm_bindgen_test]
+    fn mping_report_selection_round_trip() {
+        let (mut a, mut m, mut g, mut layer) = state_bundle();
+        run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::SelectMpingReport(99),
+        );
+        assert_eq!(m.selected_report_id, Some(99));
+        run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::ClearMpingSelection,
+        );
+        assert_eq!(m.selected_report_id, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn mping_settings_modal_open_close() {
+        let (mut a, mut m, mut g, mut layer) = state_bundle();
+        run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::OpenMpingSettings,
+        );
+        assert!(m.settings_modal_open);
+        run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::CloseMpingSettings,
+        );
+        assert!(!m.settings_modal_open);
+    }
+
+    #[wasm_bindgen_test]
+    fn save_mping_key_to_none_clears_existing_and_invalidates() {
+        // Existing key → saving None is a real change: clears key + invalidates.
+        let (mut a, mut m, mut g, mut layer) = state_bundle();
+        m.api_key = Some("OLD".into());
+        m.last_error = Some("boom".into());
+        m.settings_modal_open = true;
+        run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::SaveMpingApiKey(None),
+        );
+        assert_eq!(m.api_key, None);
+        assert_eq!(m.last_error, None);
+        assert!(m.invalidate_requested);
+        assert!(!m.settings_modal_open);
+    }
+
+    #[wasm_bindgen_test]
+    fn save_mping_key_none_to_none_is_noop_but_closes() {
+        // No key and saving None → unchanged: no invalidation, modal closes.
+        let (mut a, mut m, mut g, mut layer) = state_bundle();
+        m.settings_modal_open = true;
+        run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::SaveMpingApiKey(None),
+        );
+        assert!(!m.invalidate_requested);
+        assert!(!m.settings_modal_open);
+        assert_eq!(m.api_key, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn save_mping_key_clears_prior_error_on_change() {
+        let (mut a, mut m, mut g, mut layer) = state_bundle();
+        m.api_key = Some("OLD".into());
+        m.last_error = Some("stale".into());
+        run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::SaveMpingApiKey(Some("NEW".into())),
+        );
+        assert_eq!(m.api_key.as_deref(), Some("NEW"));
+        assert_eq!(m.last_error, None);
+        assert!(m.invalidate_requested);
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_mping_key_clears_error_and_reports_vec() {
+        let (mut a, mut m, mut g, mut layer) = state_bundle();
+        m.api_key = Some("KEY".into());
+        m.last_error = Some("err".into());
+        m.total_count = 3;
+        let e = run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::ClearMpingKey,
+        );
+        assert!(e.is_empty());
+        assert_eq!(m.last_error, None);
+        assert!(m.reports.is_empty());
+        assert_eq!(m.total_count, 0);
+        assert!(m.invalidate_requested);
+    }
+
+    #[wasm_bindgen_test]
+    fn disable_gps_clears_coords_and_error_no_effect() {
+        let (mut a, mut m, mut g, mut layer) = state_bundle();
+        g.coords = Some((1.0, 2.0));
+        g.error = Some("e".into());
+        let e = run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::DisableGps,
+        );
+        assert!(e.is_empty());
+        assert_eq!(g.coords, None);
+        assert_eq!(g.error, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn gps_failed_with_layer_already_off_stays_off() {
+        let (mut a, mut m, mut g, _) = state_bundle();
+        let mut layer = false;
+        let e = run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::GpsFailed("timeout".into()),
+        );
+        assert!(e.is_empty());
+        assert_eq!(g.error.as_deref(), Some("timeout"));
+        assert_eq!(g.coords, None);
+        assert!(!layer);
+    }
+
+    #[wasm_bindgen_test]
+    fn only_enable_gps_emits_an_effect() {
+        // Spot-check that a representative non-GPS intent yields zero effects,
+        // confirming EnableGps is the sole effect source.
+        let (mut a, mut m, mut g, mut layer) = state_bundle();
+        let e = run(
+            &mut a,
+            &mut m,
+            &mut g,
+            &mut layer,
+            DiagnosticsIntent::SelectAlert("z".into()),
+        );
+        assert!(e.is_empty());
+    }
+
+    // -------------------------------------------------------------------
+    // DiagnosticsVm::build — None bounds, projection, severity sort, filter
+    // -------------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn vm_none_bounds_is_empty() {
+        let mut d = crate::subsystem::Diagnostics::new();
+        d.alerts.alerts.push(warning(
+            "a",
+            AlertSeverity::Extreme,
+            vec![vec![square(0.0, 10.0)]],
+        ));
+        let vm = DiagnosticsVm::build(&d, None);
+        assert!(vm.visible_alerts.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn vm_default_is_empty() {
+        let vm = DiagnosticsVm::default();
+        assert!(vm.visible_alerts.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn vm_projects_severity_sorted_with_field_mapping() {
+        let mut d = crate::subsystem::Diagnostics::new();
+        // Insert in ascending severity to prove the VM re-sorts high-first.
+        let mut minor = advisory("minor", AlertSeverity::Minor, vec![vec![square(0.0, 4.0)]]);
+        minor.area_desc = "County A".into();
+        minor.expires_secs = Some(111.0);
+        let mut extreme = warning("ex", AlertSeverity::Extreme, vec![vec![square(0.0, 4.0)]]);
+        extreme.area_desc = "County B".into();
+        extreme.expires_secs = Some(222.0);
+        d.alerts.alerts.push(minor);
+        d.alerts.alerts.push(extreme);
+
+        let vm = DiagnosticsVm::build(&d, Some((-1.0, -1.0, 5.0, 5.0)));
+        assert_eq!(vm.visible_alerts.len(), 2);
+        // Highest severity first.
+        assert_eq!(vm.visible_alerts[0].id, "ex");
+        assert!(vm.visible_alerts[0].is_warning);
+        assert!(vm.visible_alerts[0].severity == AlertSeverity::Extreme);
+        assert_eq!(vm.visible_alerts[0].event, "Tornado Warning");
+        assert_eq!(vm.visible_alerts[0].area_desc, "County B");
+        assert_eq!(vm.visible_alerts[0].expires_secs, Some(222.0));
+        // Lower severity second.
+        assert_eq!(vm.visible_alerts[1].id, "minor");
+        assert!(!vm.visible_alerts[1].is_warning);
+        assert_eq!(vm.visible_alerts[1].expires_secs, Some(111.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn vm_filters_out_of_view_alert() {
+        let mut d = crate::subsystem::Diagnostics::new();
+        d.alerts.alerts.push(warning(
+            "near",
+            AlertSeverity::Severe,
+            vec![vec![square(0.0, 5.0)]],
+        ));
+        d.alerts.alerts.push(warning(
+            "far",
+            AlertSeverity::Extreme,
+            vec![vec![rect(100.0, 100.0, 110.0, 110.0)]],
+        ));
+        // View covers only the "near" alert's bbox.
+        let vm = DiagnosticsVm::build(&d, Some((-1.0, -1.0, 6.0, 6.0)));
+        assert_eq!(vm.visible_alerts.len(), 1);
+        assert_eq!(vm.visible_alerts[0].id, "near");
+    }
+}

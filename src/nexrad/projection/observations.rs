@@ -237,3 +237,207 @@ mod tests {
         assert!(obs.current_in_progress_elevation.is_none());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // Local builders re-declared (sibling `mod tests` helpers are private).
+    fn elev(angle: f32, waveform: &str, prf: u8) -> crate::data::keys::ExtractedVcpElevation {
+        crate::data::keys::ExtractedVcpElevation {
+            angle,
+            waveform: waveform.to_string(),
+            prf_number: prf,
+            is_sails: false,
+            is_mrle: false,
+            is_base_tilt: false,
+            azimuth_rate: None,
+        }
+    }
+
+    fn vcp(number: u16, elevations: Vec<crate::data::keys::ExtractedVcpElevation>) -> ExtractedVcp {
+        ExtractedVcp { number, elevations }
+    }
+
+    // ── record_elevations dedup + sort ──
+
+    #[wasm_bindgen_test]
+    fn record_elevations_dedups_across_calls_and_keeps_sorted() {
+        let mut obs = VolumeObservations::default();
+        obs.record_elevations(&[5, 2]);
+        // Overlapping second call: 2 already present, 5 already present, 3 new.
+        obs.record_elevations(&[3, 2, 5]);
+        assert_eq!(obs.elevations_received, vec![2, 3, 5]);
+        // A within-call duplicate is also deduped.
+        obs.record_elevations(&[1, 1, 4, 4]);
+        assert_eq!(obs.elevations_received, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[wasm_bindgen_test]
+    fn record_elevations_empty_slice_is_noop() {
+        let mut obs = VolumeObservations::default();
+        obs.record_elevations(&[]);
+        assert!(obs.elevations_received.is_empty());
+    }
+
+    // ── record_vcp ──
+
+    #[wasm_bindgen_test]
+    fn record_vcp_sets_number_and_expected_count_and_stores_pattern() {
+        let mut obs = VolumeObservations::default();
+        let pattern = vcp(
+            212,
+            vec![elev(0.5, "CS", 1), elev(0.9, "CS", 1), elev(1.3, "B", 4)],
+        );
+        obs.record_vcp(&pattern);
+        assert_eq!(obs.current_vcp_number, Some(212));
+        // expected_elevation_count derives from elevations.len() as u8.
+        assert_eq!(obs.expected_elevation_count, Some(3));
+        assert!(obs.current_vcp_pattern.is_some());
+        assert_eq!(obs.expected_count(), 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn record_vcp_with_empty_elevations_sets_count_zero_and_no_pattern() {
+        let mut obs = VolumeObservations::default();
+        obs.record_vcp(&vcp(999, vec![]));
+        assert_eq!(obs.current_vcp_number, Some(999));
+        assert_eq!(obs.expected_elevation_count, Some(0));
+        // Empty-elevation VCP is NOT stored as a usable pattern.
+        assert!(obs.current_vcp_pattern.is_none());
+    }
+
+    // ── chunk spans / sweep metas accumulation ──
+
+    #[wasm_bindgen_test]
+    fn record_chunk_elev_spans_extends_in_order() {
+        let mut obs = VolumeObservations::default();
+        obs.record_chunk_elev_spans(&[(1, 0.0, 10.0, 360)]);
+        obs.record_chunk_elev_spans(&[(2, 10.0, 20.0, 360), (3, 20.0, 30.0, 360)]);
+        assert_eq!(obs.chunk_elev_spans.len(), 3);
+        // Order preserved: appended, not sorted/replaced.
+        assert_eq!(obs.chunk_elev_spans[0].0, 1u8);
+        assert_eq!(obs.chunk_elev_spans[2].0, 3u8);
+        assert!((obs.chunk_elev_spans[1].1 - 10.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn update_sweep_metas_replaces_not_appends() {
+        let mut obs = VolumeObservations::default();
+        let make = |num: u8| CachedSweep {
+            start: 0.0,
+            end: 1.0,
+            elevation: 0.5,
+            elevation_number: num,
+            start_azimuth: 0.0,
+            cached_products: Vec::new(),
+        };
+        obs.update_sweep_metas(vec![make(1), make(2)]);
+        assert_eq!(obs.completed_sweep_metas.len(), 2);
+        // Second call fully replaces the prior list.
+        obs.update_sweep_metas(vec![make(7)]);
+        assert_eq!(obs.completed_sweep_metas.len(), 1);
+        assert_eq!(obs.completed_sweep_metas[0].elevation_number, 7u8);
+    }
+
+    // ── received_vec / expected_count None paths ──
+
+    #[wasm_bindgen_test]
+    fn received_vec_empty_when_no_expected_count() {
+        let mut obs = VolumeObservations::default();
+        // Received some elevations, but no VCP-claimed expected count.
+        obs.record_elevations(&[1, 2, 3]);
+        assert_eq!(obs.expected_elevation_count, None);
+        // received_vec iterates 0..expected (which defaults to 0) -> empty.
+        assert!(obs.received_vec().is_empty());
+        assert_eq!(obs.expected_count(), 0);
+    }
+
+    // ── expected_dur_secs: VCP fallback + boundary filter ──
+
+    #[wasm_bindgen_test]
+    fn expected_dur_uses_vcp_estimate_when_no_completed_volume() {
+        let mut obs = VolumeObservations::default();
+        // Precip VCP (212 is not clear-air), no azimuth_rate -> Method B rate.
+        // ("CS", prf 1) precip -> 21.1 deg/s; per-elev = 360/21.1; two elevs.
+        obs.record_vcp(&vcp(212, vec![elev(0.5, "CS", 1), elev(0.9, "CS", 1)]));
+        let expected = 2.0 * (360.0 / 21.1);
+        let got = obs.expected_dur_secs();
+        assert!(
+            (got - expected).abs() < 1e-6,
+            "expected {expected}, got {got}"
+        );
+        // Sanity: the estimate is in the accepted (0, 1200) window.
+        assert!(got > 0.0 && got < 1200.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn expected_dur_filter_rejects_nonpositive_and_too_large_durations() {
+        let mut obs = VolumeObservations::default();
+        // Exactly 0.0 fails `> 0.0` -> falls through to default.
+        obs.set_last_volume_duration_secs(Some(0.0));
+        assert!((obs.expected_dur_secs() - DEFAULT_VOLUME_DURATION_SECS).abs() < 1e-9);
+        // Negative also rejected.
+        obs.set_last_volume_duration_secs(Some(-5.0));
+        assert!((obs.expected_dur_secs() - DEFAULT_VOLUME_DURATION_SECS).abs() < 1e-9);
+        // Just inside the upper bound is accepted.
+        obs.set_last_volume_duration_secs(Some(1199.9));
+        assert!((obs.expected_dur_secs() - 1199.9).abs() < 1e-9);
+        // Exactly 1200.0 fails `< 1200.0` -> default.
+        obs.set_last_volume_duration_secs(Some(1200.0));
+        assert!((obs.expected_dur_secs() - DEFAULT_VOLUME_DURATION_SECS).abs() < 1e-9);
+        // The default constant itself is 300.0 (TimingTuning::DEFAULT).
+        assert!((DEFAULT_VOLUME_DURATION_SECS - 300.0).abs() < 1e-9);
+    }
+
+    // ── fallback_sweep_durations: populated path + empty-elev VCP ──
+
+    #[wasm_bindgen_test]
+    fn fallback_sweep_durations_distribute_expected_dur_when_no_plan() {
+        let mut obs = VolumeObservations::default();
+        // Two identical precip elevations -> equal weights -> equal split.
+        obs.record_vcp(&vcp(212, vec![elev(0.5, "CS", 1), elev(0.9, "CS", 1)]));
+        let durs = obs.fallback_sweep_durations(false);
+        assert_eq!(durs.len(), 2);
+        let total = obs.expected_dur_secs();
+        // Equal weights -> each half of the total volume duration.
+        assert!((durs[0] - total / 2.0).abs() < 1e-6);
+        assert!((durs[1] - total / 2.0).abs() < 1e-6);
+        // The per-sweep durations sum to the total volume duration.
+        assert!((durs.iter().sum::<f64>() - total).abs() < 1e-6);
+        // A plan being available suppresses the fallback entirely.
+        assert!(obs.fallback_sweep_durations(true).is_empty());
+    }
+
+    // ── reset clears the derivation-feeding fields too ──
+
+    #[wasm_bindgen_test]
+    fn reset_clears_vcp_spans_metas_and_durations() {
+        let mut obs = VolumeObservations::default();
+        obs.record_vcp(&vcp(212, vec![elev(0.5, "CS", 1)]));
+        obs.record_chunk_elev_spans(&[(1, 0.0, 10.0, 360)]);
+        obs.update_sweep_metas(vec![CachedSweep {
+            start: 0.0,
+            end: 1.0,
+            elevation: 0.5,
+            elevation_number: 1,
+            start_azimuth: 0.0,
+            cached_products: Vec::new(),
+        }]);
+        obs.set_last_volume_duration_secs(Some(250.0));
+        obs.push_elev_chunk((0.0, 90.0, 50));
+
+        obs.reset();
+
+        assert!(obs.current_vcp_number.is_none());
+        assert!(obs.current_vcp_pattern.is_none());
+        assert!(obs.expected_elevation_count.is_none());
+        assert!(obs.chunk_elev_spans.is_empty());
+        assert!(obs.completed_sweep_metas.is_empty());
+        assert!(obs.last_volume_duration_secs.is_none());
+        assert!(obs.current_elev_chunks.is_empty());
+        // After reset, with no data, expected_dur falls back to the default.
+        assert!((obs.expected_dur_secs() - DEFAULT_VOLUME_DURATION_SECS).abs() < 1e-9);
+    }
+}

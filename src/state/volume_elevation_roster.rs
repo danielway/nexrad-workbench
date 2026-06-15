@@ -150,3 +150,125 @@ mod tests {
         assert!(r.is_complete());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn new_round_trips_fields() {
+        let r = VolumeElevationRoster::new(Some(4), vec![1, 2]);
+        assert!(r.expected_count == Some(4));
+        assert!(r.received == vec![1u8, 2u8]);
+    }
+
+    #[wasm_bindgen_test]
+    fn default_is_empty_and_pre_vcp() {
+        let r = VolumeElevationRoster::default();
+        assert!(r.expected_count.is_none());
+        assert!(r.received.is_empty());
+        assert_eq!(r.received_count(), 0);
+        assert!(!r.is_complete());
+        assert_eq!(r.status_label(), "0");
+        assert!(r.expected_but_not_received().is_empty());
+        assert!(r.received_but_not_expected().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn expected_count_accessor_reflects_value() {
+        let known = VolumeElevationRoster::new(Some(7), vec![]);
+        assert_eq!(known.expected_count(), Some(7));
+        let unknown = VolumeElevationRoster::new(None, vec![1]);
+        assert_eq!(unknown.expected_count(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn received_count_counts_entries_not_distinctness() {
+        // received_count() is just .len(); it does not dedup.
+        let r = VolumeElevationRoster::new(Some(3), vec![1, 1, 2]);
+        assert_eq!(r.received_count(), 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn is_received_true_for_present_false_for_absent() {
+        let r = VolumeElevationRoster::new(Some(5), vec![2, 4]);
+        assert!(r.is_received(2));
+        assert!(r.is_received(4));
+        assert!(!r.is_received(1));
+        assert!(!r.is_received(3));
+        assert!(!r.is_received(5));
+    }
+
+    #[wasm_bindgen_test]
+    fn is_received_false_on_empty_roster() {
+        let r = VolumeElevationRoster::new(None, vec![]);
+        assert!(!r.is_received(1));
+    }
+
+    #[wasm_bindgen_test]
+    fn is_complete_true_when_received_exceeds_expected() {
+        // is_complete uses `>=`, so an over-count (e.g. drift adding an
+        // out-of-range elevation) still reads as complete.
+        let r = VolumeElevationRoster::new(Some(2), vec![1, 2, 9]);
+        assert!(r.is_complete());
+    }
+
+    #[wasm_bindgen_test]
+    fn is_complete_false_one_below_boundary() {
+        let r = VolumeElevationRoster::new(Some(3), vec![1, 2]);
+        assert!(!r.is_complete());
+    }
+
+    #[wasm_bindgen_test]
+    fn expected_zero_count_is_trivially_complete() {
+        // Some(0): the 1..=0 range is empty, so nothing is expected-but-missing
+        // and an empty received list is already "complete" via 0 >= 0.
+        let r = VolumeElevationRoster::new(Some(0), vec![]);
+        assert!(r.is_complete());
+        assert!(r.expected_but_not_received().is_empty());
+        assert_eq!(r.status_label(), "0 of 0");
+    }
+
+    #[wasm_bindgen_test]
+    fn expected_zero_count_flags_all_received_as_unexpected() {
+        // With Some(0), every received elevation has n > count, so all are
+        // surfaced as received-but-not-expected.
+        let r = VolumeElevationRoster::new(Some(0), vec![1, 2]);
+        assert_eq!(r.received_but_not_expected(), vec![1, 2]);
+    }
+
+    #[wasm_bindgen_test]
+    fn received_but_not_expected_flags_zero_sentinel() {
+        // Elevation number 0 is out-of-range (VCP elevations are 1..=count)
+        // and the filter's `n == 0` branch must catch it.
+        let r = VolumeElevationRoster::new(Some(3), vec![0, 1, 2, 3]);
+        assert_eq!(r.received_but_not_expected(), vec![0]);
+    }
+
+    #[wasm_bindgen_test]
+    fn received_but_not_expected_preserves_received_order_and_dups() {
+        // The filter copies straight from `received` without sorting/dedup.
+        let r = VolumeElevationRoster::new(Some(2), vec![5, 3, 5]);
+        assert_eq!(r.received_but_not_expected(), vec![5, 3, 5]);
+    }
+
+    #[wasm_bindgen_test]
+    fn expected_but_not_received_full_when_none_received() {
+        let r = VolumeElevationRoster::new(Some(4), vec![]);
+        assert_eq!(r.expected_but_not_received(), vec![1, 2, 3, 4]);
+        assert!(!r.is_complete());
+        assert_eq!(r.status_label(), "0 of 4");
+    }
+
+    #[wasm_bindgen_test]
+    fn clone_and_partial_eq_hold() {
+        let a = VolumeElevationRoster::new(Some(3), vec![1, 2]);
+        let b = a.clone();
+        assert!(a == b);
+        let c = VolumeElevationRoster::new(Some(3), vec![1, 3]);
+        assert!(a != c);
+        let d = VolumeElevationRoster::new(None, vec![1, 2]);
+        assert!(a != d);
+    }
+}

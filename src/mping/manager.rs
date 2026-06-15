@@ -365,3 +365,141 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const MIN_MS: f64 = 60_000.0;
+
+    // Local builder mirroring the sibling `mod tests` helper (those helpers
+    // are private to that module). Window centred `center_min` minutes past
+    // epoch, ±30 min, fixed identity (site "KTLX", fingerprint 7).
+    fn covered_at(center_min: f64) -> Covered {
+        let center = center_min * MIN_MS;
+        Covered {
+            lo_ms: center - 30.0 * MIN_MS,
+            hi_ms: center + 30.0 * MIN_MS,
+            site_id: "KTLX".to_string(),
+            key_fingerprint: 7,
+        }
+    }
+
+    // Independent reference: exactly the algorithm `hash_str` documents.
+    fn reference_hash(s: &str) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        s.hash(&mut h);
+        h.finish()
+    }
+
+    // ---- hash_str (entirely uncovered by the sibling suite) ----
+
+    // Deterministic: the same input hashes identically across calls.
+    #[wasm_bindgen_test]
+    fn hash_str_is_deterministic() {
+        let a = hash_str("my-secret-key");
+        let b = hash_str("my-secret-key");
+        assert!(a == b);
+    }
+
+    // Matches the canonical DefaultHasher computation it claims to perform.
+    #[wasm_bindgen_test]
+    fn hash_str_matches_reference() {
+        let s = "another-key-123";
+        assert!(hash_str(s) == reference_hash(s));
+    }
+
+    // Distinct keys produce distinct fingerprints (the whole point: the
+    // cache key must change when the API key changes).
+    #[wasm_bindgen_test]
+    fn hash_str_distinguishes_different_keys() {
+        assert!(hash_str("key-A") != hash_str("key-B"));
+    }
+
+    // The empty string is handled and matches its reference value.
+    #[wasm_bindgen_test]
+    fn hash_str_empty_string() {
+        assert!(hash_str("") == reference_hash(""));
+    }
+
+    // ---- refetch_needed: identity precedes the pinned/historical branch ----
+
+    // Pinned + site change: identity mismatch forces a refetch even though
+    // the live poll interval has NOT elapsed (last_poll == now).
+    #[wasm_bindgen_test]
+    fn pinned_site_change_forces_refetch_before_interval() {
+        let c = covered_at(100.0);
+        let p = 100.0 * MIN_MS;
+        // now == last_poll → interval not elapsed, yet site differs.
+        assert!(refetch_needed(Some(&c), "KFWS", 7, p, true, 0.0, 0.0));
+    }
+
+    // Pinned + key change: same — identity mismatch wins over the interval.
+    #[wasm_bindgen_test]
+    fn pinned_key_change_forces_refetch_before_interval() {
+        let c = covered_at(100.0);
+        let p = 100.0 * MIN_MS;
+        assert!(refetch_needed(Some(&c), "KTLX", 9, p, true, 0.0, 0.0));
+    }
+
+    // Pinned ignores the historical edge logic: a playhead far outside the
+    // covered window still holds while the interval has not elapsed.
+    #[wasm_bindgen_test]
+    fn pinned_ignores_window_edges() {
+        let c = covered_at(100.0);
+        // Window is [70, 130] min; place the playhead at 200 min, way past
+        // the high edge — historical regime would refetch, pinned does not.
+        let p = 200.0 * MIN_MS;
+        assert!(!refetch_needed(
+            Some(&c),
+            "KTLX",
+            7,
+            p,
+            true,
+            LIVE_POLL_INTERVAL_MS - 1.0,
+            0.0
+        ));
+    }
+
+    // ---- refetch_needed: historical boundary semantics (strict compares) ----
+
+    // Exactly at the comfortable low edge (lo + margin = 85 min): the
+    // comparison is strict `<`, so equality does NOT trigger a refetch.
+    #[wasm_bindgen_test]
+    fn historical_exactly_at_low_edge_holds() {
+        let c = covered_at(100.0);
+        // lo = 70 min, margin = 15 min → comfortable low edge = 85 min.
+        let p = 85.0 * MIN_MS;
+        assert!(!refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+    }
+
+    // Exactly at the comfortable high edge (hi - margin = 115 min): strict
+    // `>` means equality holds (no refetch).
+    #[wasm_bindgen_test]
+    fn historical_exactly_at_high_edge_holds() {
+        let c = covered_at(100.0);
+        // hi = 130 min, margin = 15 min → comfortable high edge = 115 min.
+        let p = 115.0 * MIN_MS;
+        assert!(!refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+    }
+
+    // Just inside the low edge by 1 ms still holds (proves the boundary is
+    // the precise comfortable edge, not a coarse minute).
+    #[wasm_bindgen_test]
+    fn historical_one_ms_inside_low_edge_holds() {
+        let c = covered_at(100.0);
+        let p = 85.0 * MIN_MS + 1.0;
+        assert!(!refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+    }
+
+    // Playhead far below the covered window (before lo entirely) refetches.
+    #[wasm_bindgen_test]
+    fn historical_far_below_window_refetches() {
+        let c = covered_at(100.0);
+        // 10 min past epoch is far below the [70, 130] window.
+        let p = 10.0 * MIN_MS;
+        assert!(refetch_needed(Some(&c), "KTLX", 7, p, false, 0.0, 0.0));
+    }
+}

@@ -431,3 +431,183 @@ mod tests {
         assert!(alerts[0].geometry.is_empty());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::alerts::AlertSeverity;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn zone_only_alert(zones: &[&str]) -> Alert {
+        Alert {
+            id: "test".into(),
+            event: "Flood Watch".into(),
+            headline: String::new(),
+            description: String::new(),
+            instruction: String::new(),
+            severity: AlertSeverity::Moderate,
+            urgency: String::new(),
+            certainty: String::new(),
+            area_desc: String::new(),
+            sender: String::new(),
+            effective_secs: None,
+            onset_secs: None,
+            expires_secs: None,
+            ends_secs: None,
+            geometry: AlertGeometry::default(),
+            affected_zones: zones.iter().map(|z| z.to_string()).collect(),
+            fill_triangles: Vec::new(),
+        }
+    }
+
+    // ---- zone_key edge cases (beyond the single happy/None case) ----
+
+    #[wasm_bindgen_test]
+    fn zone_key_other_types_and_boundaries() {
+        // A different zone type tail.
+        assert_eq!(
+            zone_key("https://api.weather.gov/zones/county/COC013"),
+            Some("county/COC013")
+        );
+        // Trailing "/zones/" leaves an empty tail (Some(""), not None).
+        assert_eq!(zone_key("https://api.weather.gov/zones/"), Some(""));
+        // Multiple "/zones/" delimiters: nth(1) keeps only the first split tail.
+        assert_eq!(zone_key("x/zones/a/zones/b"), Some("a"));
+        // The substring must be exactly "/zones/"; a near-miss yields None.
+        assert_eq!(
+            zone_key("https://api.weather.gov/zone/forecast/ALZ019"),
+            None
+        );
+        // Empty string → None.
+        assert_eq!(zone_key(""), None);
+    }
+
+    // ---- is_sliver: degenerate, thin, and chunky contours ----
+
+    #[wasm_bindgen_test]
+    fn is_sliver_degenerate_contours_are_slivers() {
+        // Fewer than 3 vertices is always a sliver.
+        assert!(is_sliver(&[]));
+        assert!(is_sliver(&[[0.0, 0.0]]));
+        assert!(is_sliver(&[[0.0, 0.0], [1.0, 0.0]]));
+        // Three coincident points: zero area AND zero perimeter → perim <= 0 path.
+        assert!(is_sliver(&[[5.0, 5.0], [5.0, 5.0], [5.0, 5.0]]));
+    }
+
+    #[wasm_bindgen_test]
+    fn is_sliver_thin_rectangle_vs_chunky_square() {
+        // 10 wide x 0.001 tall: area=0.01, perim≈20.002, width≈0.001 < 0.05.
+        let thin: Vec<[f64; 2]> = vec![[0.0, 0.0], [10.0, 0.0], [10.0, 0.001], [0.0, 0.001]];
+        assert!(is_sliver(&thin), "thin rectangle should be a sliver");
+
+        // 1x1 square: area=1, perim=4, width=0.5 >= 0.05 → not a sliver.
+        let chunky: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        assert!(!is_sliver(&chunky), "unit square should not be a sliver");
+    }
+
+    #[wasm_bindgen_test]
+    fn is_sliver_width_is_orientation_independent() {
+        // The area term uses |shoelace|, so winding must not change the verdict.
+        // 2x2 square (width = 2*4/8 = 1.0, well above 0.05) both ways.
+        let cw: Vec<[f64; 2]> = vec![[0.0, 0.0], [0.0, 2.0], [2.0, 2.0], [2.0, 0.0]];
+        let ccw: Vec<[f64; 2]> = vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]];
+        assert!(!is_sliver(&cw));
+        assert!(!is_sliver(&ccw));
+    }
+
+    // ---- oriented_open_contour: pop-close + winding reorientation ----
+
+    #[wasm_bindgen_test]
+    fn oriented_open_contour_opens_closed_ring() {
+        // A closed ring (first == last) loses its duplicate last vertex.
+        let closed: Ring = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)];
+        let out = oriented_open_contour(&closed, /* clockwise = */ false);
+        // CCW input, CCW requested → no reversal, just the open contour.
+        assert!(out == vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    }
+
+    #[wasm_bindgen_test]
+    fn oriented_open_contour_reverses_when_winding_mismatches() {
+        // CCW square (positive shoelace) but caller asks for clockwise → reverse.
+        let ccw: Ring = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)];
+        let out = oriented_open_contour(&ccw, /* clockwise = */ true);
+        assert!(out == vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]);
+
+        // A clockwise square (negative shoelace) asked for CCW → also reversed.
+        let cw: Ring = vec![(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)];
+        let out_cw = oriented_open_contour(&cw, /* clockwise = */ false);
+        assert!(out_cw == vec![[1.0, 0.0], [1.0, 1.0], [0.0, 1.0], [0.0, 0.0]]);
+        // And asking the clockwise square for clockwise leaves it untouched.
+        let same = oriented_open_contour(&cw, /* clockwise = */ true);
+        assert!(same == vec![[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]);
+    }
+
+    #[wasm_bindgen_test]
+    fn oriented_open_contour_single_point_not_popped() {
+        // len <= 1 skips the pop guard; a lone point passes through unchanged.
+        let pt: Ring = vec![(3.0, 4.0)];
+        let out = oriented_open_contour(&pt, false);
+        assert!(out == vec![[3.0, 4.0]]);
+    }
+
+    // ---- closed_ring: re-close vs already-closed vs empty ----
+
+    #[wasm_bindgen_test]
+    fn closed_ring_appends_first_when_open() {
+        let open: Vec<[f64; 2]> = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+        let ring = closed_ring(open);
+        assert!(ring == vec![(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (0.0, 0.0)]);
+    }
+
+    #[wasm_bindgen_test]
+    fn closed_ring_leaves_closed_and_empty_alone() {
+        // Already closed (last == first) → unchanged, no extra vertex.
+        let already: Vec<[f64; 2]> = vec![[2.0, 2.0], [5.0, 2.0], [2.0, 2.0]];
+        let ring = closed_ring(already);
+        assert!(ring == vec![(2.0, 2.0), (5.0, 2.0), (2.0, 2.0)]);
+
+        // Empty contour → empty ring (no first vertex to close against).
+        let empty: Vec<[f64; 2]> = Vec::new();
+        assert!(closed_ring(empty).is_empty());
+    }
+
+    // ---- dissolve_polygons: the < 2 short-circuit on empty input ----
+
+    #[wasm_bindgen_test]
+    fn dissolve_polygons_empty_input_unchanged() {
+        let empty: Vec<Vec<Ring>> = Vec::new();
+        let out = dissolve_polygons(empty);
+        assert!(out.is_empty());
+    }
+
+    // ---- resolve: mixed batch and multi-zone merge ----
+
+    #[wasm_bindgen_test]
+    fn resolve_skips_already_resolved_and_unioned_zones() {
+        // One alert already has geometry (must be left untouched); another is
+        // zone-only with two real baked zones that must merge into geometry.
+        let mut resolved = zone_only_alert(&[]);
+        resolved
+            .geometry
+            .polygons
+            .push(vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 0.0)]]);
+        resolved.geometry.recompute_bbox();
+        let original_polys = resolved.geometry.polygons.clone();
+
+        let zone_only = zone_only_alert(&[
+            "https://api.weather.gov/zones/forecast/ALZ019",
+            "https://api.weather.gov/zones/forecast/ALZ020",
+        ]);
+
+        let mut alerts = vec![resolved, zone_only];
+        let mut resolver = ZoneResolver::new();
+        assert!(resolver.resolve(&mut alerts));
+
+        // The pre-resolved alert's polygons are unchanged.
+        assert!(alerts[0].geometry.polygons == original_polys);
+        // The zone-only alert now has geometry, a bbox, and fill triangles.
+        assert!(!alerts[1].geometry.is_empty());
+        assert!(alerts[1].geometry.bbox.is_some());
+        assert!(!alerts[1].fill_triangles.is_empty());
+    }
+}

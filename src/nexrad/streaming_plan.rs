@@ -354,3 +354,200 @@ mod tests {
         assert_eq!(p.next_target_elevation(), None);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// Build a fully-populated forecast. Copies the idiom used by the
+    /// `projection::status` test module (which constructs `ChunkProjectedTimes`
+    /// literals) so we can exercise the `projected.is_some()` branches of
+    /// `next_available_in_secs` / `next_poll_in_secs`.
+    fn forecast(collection: f64, available: f64, poll: f64) -> ChunkProjectedTimes {
+        ChunkProjectedTimes {
+            collection_time_secs: collection,
+            available_at_secs: available,
+            poll_at_secs: poll,
+            physics_breakdown: super::super::timing::PhysicsBreakdown {
+                case: super::super::timing::IntervalCase::IntraSweep,
+                total_secs: 0.0,
+                chunk_duration_secs: None,
+                inter_sweep_gap_secs: None,
+                waveform_penalty_secs: None,
+            },
+            stats_n: 0,
+            scheduler_path: SchedulerPath::Physics,
+            bucket: None,
+        }
+    }
+
+    fn chunk(
+        sequence: usize,
+        elevation_number: Option<usize>,
+        projected: Option<ChunkProjectedTimes>,
+    ) -> ChunkProjectionInfo {
+        ChunkProjectionInfo {
+            sequence,
+            elevation_number,
+            azimuth_rate_dps: 0.0,
+            chunk_index_in_sweep: 0,
+            chunks_in_sweep: 3,
+            projected,
+        }
+    }
+
+    fn plan(
+        next_target_key: Option<(u8, usize)>,
+        current: Vec<ChunkProjectionInfo>,
+        next: Option<Vec<ChunkProjectionInfo>>,
+    ) -> StreamingPlan {
+        StreamingPlan {
+            filter: StreamingFilter::Elevation(1),
+            built_at_secs: 0.0,
+            revision: 0,
+            current_volume_chunks: current,
+            next_volume_chunks: next,
+            current_volume_end_collection_secs: None,
+            next_target_key,
+        }
+    }
+
+    // ---- next_target() resolution ----
+
+    #[wasm_bindgen_test]
+    fn next_target_resolves_current_volume_by_sequence() {
+        // Two current-volume chunks; key points to sequence 7, not the first
+        // entry — confirms it finds by sequence rather than taking index 0.
+        let p = plan(
+            Some((0, 7)),
+            vec![chunk(3, Some(1), None), chunk(7, Some(2), None)],
+            None,
+        );
+        let t = p.next_target().expect("target resolves");
+        assert_eq!(t.sequence, 7);
+        assert_eq!(t.elevation_number, Some(2));
+    }
+
+    #[wasm_bindgen_test]
+    fn next_target_resolves_next_volume_by_sequence() {
+        let p = plan(
+            Some((1, 4)),
+            vec![chunk(1, Some(1), None)],
+            Some(vec![chunk(2, Some(1), None), chunk(4, Some(3), None)]),
+        );
+        let t = p.next_target().expect("next-volume target resolves");
+        assert_eq!(t.sequence, 4);
+        assert_eq!(t.elevation_number, Some(3));
+    }
+
+    #[wasm_bindgen_test]
+    fn next_target_none_when_no_key() {
+        let p = plan(None, vec![chunk(1, Some(1), None)], None);
+        assert!(p.next_target().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn next_target_none_when_volume1_but_no_next_chunks() {
+        // Key says volume offset 1, but next_volume_chunks is None: the
+        // `as_deref()?` short-circuits to None.
+        let p = plan(Some((1, 2)), vec![chunk(2, Some(1), None)], None);
+        assert!(p.next_target().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn next_target_none_for_invalid_volume_offset() {
+        // volume_offset 2 hits the `_ => return None` arm even though a
+        // chunk with the sequence exists in the current list.
+        let p = plan(Some((2, 1)), vec![chunk(1, Some(1), None)], None);
+        assert!(p.next_target().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn next_target_none_when_sequence_absent() {
+        // Key references sequence 99 which isn't present: `.find` yields None.
+        let p = plan(Some((0, 99)), vec![chunk(1, Some(1), None)], None);
+        assert!(p.next_target().is_none());
+    }
+
+    // ---- next_target_elevation() gaps ----
+
+    #[wasm_bindgen_test]
+    fn next_target_elevation_none_for_start_chunk_target() {
+        // A target exists, but its elevation_number is None (Start chunk).
+        let p = plan(Some((0, 1)), vec![chunk(1, None, None)], None);
+        assert!(p.next_target().is_some());
+        assert_eq!(p.next_target_elevation(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn next_target_elevation_casts_usize_to_u8() {
+        // elevation_number is usize; the accessor casts to u8.
+        let p = plan(Some((0, 1)), vec![chunk(1, Some(19), None)], None);
+        assert_eq!(p.next_target_elevation(), Some(19u8));
+    }
+
+    // ---- next_available_in_secs() ----
+
+    #[wasm_bindgen_test]
+    fn next_available_in_secs_positive_diff() {
+        // available_at = 1000, now = 990 -> 10s remaining.
+        let p = plan(
+            Some((0, 1)),
+            vec![chunk(1, Some(1), Some(forecast(900.0, 1000.0, 1001.0)))],
+            None,
+        );
+        let got = p.next_available_in_secs(990.0).expect("has target");
+        assert!((got - 10.0).abs() < 1e-9, "got {got}");
+    }
+
+    #[wasm_bindgen_test]
+    fn next_available_in_secs_clamps_to_zero_when_past() {
+        // available_at already elapsed: now > available -> clamped to 0.0.
+        let p = plan(
+            Some((0, 1)),
+            vec![chunk(1, Some(1), Some(forecast(900.0, 1000.0, 1001.0)))],
+            None,
+        );
+        let got = p.next_available_in_secs(1050.0).expect("has target");
+        assert!(got.abs() < 1e-12, "expected clamp to 0, got {got}");
+    }
+
+    #[wasm_bindgen_test]
+    fn next_available_in_secs_none_when_projected_none() {
+        // Target resolves but its forecast is None -> overall None.
+        let p = plan(Some((0, 1)), vec![chunk(1, Some(1), None)], None);
+        assert!(p.next_available_in_secs(0.0).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn next_available_in_secs_none_when_no_target() {
+        let p = plan(None, vec![], None);
+        assert!(p.next_available_in_secs(0.0).is_none());
+    }
+
+    // ---- next_poll_in_secs() ----
+
+    #[wasm_bindgen_test]
+    fn next_poll_in_secs_positive_and_clamped() {
+        let p = plan(
+            Some((0, 1)),
+            vec![chunk(1, Some(1), Some(forecast(900.0, 1000.0, 1005.0)))],
+            None,
+        );
+        // poll_at = 1005, now = 1000 -> 5s.
+        let got = p.next_poll_in_secs(1000.0).expect("has target");
+        assert!((got - 5.0).abs() < 1e-9, "got {got}");
+        // now past poll_at -> clamped to 0.
+        let clamped = p.next_poll_in_secs(2000.0).expect("has target");
+        assert!(clamped.abs() < 1e-12, "expected clamp to 0, got {clamped}");
+    }
+
+    #[wasm_bindgen_test]
+    fn next_poll_in_secs_none_when_no_forecast_or_target() {
+        let no_fc = plan(Some((0, 1)), vec![chunk(1, Some(1), None)], None);
+        assert!(no_fc.next_poll_in_secs(0.0).is_none());
+        let no_target = plan(None, vec![], None);
+        assert!(no_target.next_poll_in_secs(0.0).is_none());
+    }
+}

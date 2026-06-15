@@ -375,3 +375,277 @@ mod tests {
         assert!(parse_response(r#"{"type":"FeatureCollection"}"#).is_err());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// A FeatureCollection wrapper around an arbitrary inner features-array body.
+    fn fc_features(features_body: &str) -> String {
+        format!(r#"{{"type":"FeatureCollection","features":[{features_body}]}}"#)
+    }
+
+    /// Syntactically invalid JSON hits the `serde_json::from_str` `map_err`
+    /// branch and produces a "parse error" message (distinct from the
+    /// "missing 'features' array" error the existing suite covers).
+    #[wasm_bindgen_test]
+    fn malformed_json_yields_parse_error() {
+        let res = parse_response("{ not json at all ");
+        match res {
+            Ok(_) => panic!("malformed JSON should not parse"),
+            Err(msg) => assert!(
+                msg.starts_with("parse error:"),
+                "unexpected error message: {msg}"
+            ),
+        }
+    }
+
+    /// `features` present but not an array (here a string) is rejected the same
+    /// as a missing `features` key — the `as_array` guard fails.
+    #[wasm_bindgen_test]
+    fn features_not_an_array_errors() {
+        let res = parse_response(r#"{"features":"oops"}"#);
+        match res {
+            Ok(_) => panic!("non-array features should error"),
+            Err(msg) => assert!(
+                msg.contains("missing 'features' array"),
+                "unexpected error message: {msg}"
+            ),
+        }
+    }
+
+    /// An empty `features` array is a successful parse with zero alerts.
+    #[wasm_bindgen_test]
+    fn empty_features_array_ok_empty() {
+        let parsed = parse_response(r#"{"features":[]}"#).unwrap();
+        assert!(parsed.alerts.is_empty());
+    }
+
+    /// The feature loop processes every entry: kept features accumulate in order
+    /// while un-renderable ones (no geometry, no zones) are silently dropped.
+    #[wasm_bindgen_test]
+    fn multiple_features_mixed_keep_and_drop_preserve_order() {
+        let keep_a = r#"{
+            "id": "A",
+            "geometry": null,
+            "properties": { "event": "Flood Watch", "affectedZones": ["z1"] }
+        }"#;
+        let drop = r#"{
+            "id": "B",
+            "geometry": null,
+            "properties": { "event": "Special Weather Statement" }
+        }"#;
+        let keep_c = r#"{
+            "id": "C",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0.0,0.0],[1.0,0.0],[1.0,1.0],[0.0,0.0]]]
+            },
+            "properties": { "event": "Tornado Warning" }
+        }"#;
+        let body = format!("{keep_a},{drop},{keep_c}");
+        let parsed = parse_response(&fc_features(&body)).unwrap();
+        // Two kept, in input order, with the dropped one excised.
+        assert_eq!(parsed.alerts.len(), 2);
+        assert_eq!(parsed.alerts[0].id, "A");
+        assert_eq!(parsed.alerts[1].id, "C");
+    }
+
+    /// When `properties.event` is absent, the event defaults to "Alert".
+    #[wasm_bindgen_test]
+    fn event_defaults_to_alert() {
+        let feature = r#"{
+            "id": "no-event",
+            "geometry": null,
+            "properties": { "affectedZones": ["z"] }
+        }"#;
+        let parsed = parse_response(&fc_features(feature)).unwrap();
+        assert_eq!(parsed.alerts[0].event, "Alert");
+    }
+
+    /// All optional string fields populate from their respective JSON keys.
+    #[wasm_bindgen_test]
+    fn string_fields_populate_from_properties() {
+        let feature = r#"{
+            "id": "full",
+            "geometry": null,
+            "properties": {
+                "event": "Flood Warning",
+                "affectedZones": ["z"],
+                "headline": "H",
+                "description": "D",
+                "instruction": "I",
+                "urgency": "Immediate",
+                "certainty": "Observed",
+                "areaDesc": "Polk, IA",
+                "senderName": "NWS Des Moines IA"
+            }
+        }"#;
+        let parsed = parse_response(&fc_features(feature)).unwrap();
+        let a = &parsed.alerts[0];
+        assert_eq!(a.headline, "H");
+        assert_eq!(a.description, "D");
+        assert_eq!(a.instruction, "I");
+        assert_eq!(a.urgency, "Immediate");
+        assert_eq!(a.certainty, "Observed");
+        assert_eq!(a.area_desc, "Polk, IA");
+        assert_eq!(a.sender, "NWS Des Moines IA");
+    }
+
+    /// Absent string fields default to the empty string (not "Alert"/None).
+    #[wasm_bindgen_test]
+    fn absent_string_fields_default_empty() {
+        let feature = r#"{
+            "id": "sparse",
+            "geometry": null,
+            "properties": { "event": "Flood Warning", "affectedZones": ["z"] }
+        }"#;
+        let parsed = parse_response(&fc_features(feature)).unwrap();
+        let a = &parsed.alerts[0];
+        assert_eq!(a.headline, "");
+        assert_eq!(a.description, "");
+        assert_eq!(a.instruction, "");
+        assert_eq!(a.urgency, "");
+        assert_eq!(a.certainty, "");
+        assert_eq!(a.area_desc, "");
+        assert_eq!(a.sender, "");
+    }
+
+    /// `onset` parses to Unix seconds (the sibling timestamp not exercised by the
+    /// existing suite); a pre-epoch ISO instant yields a negative second count.
+    #[wasm_bindgen_test]
+    fn onset_and_negative_epoch_timestamps() {
+        let feature = r#"{
+            "id": "ts",
+            "geometry": null,
+            "properties": {
+                "event": "Flood Watch",
+                "affectedZones": ["z"],
+                "onset": "1970-01-01T00:00:05+00:00",
+                "effective": "1969-12-31T23:59:59+00:00"
+            }
+        }"#;
+        let parsed = parse_response(&fc_features(feature)).unwrap();
+        let a = &parsed.alerts[0];
+        assert_eq!(a.onset_secs, Some(5.0));
+        // One second before the epoch.
+        assert_eq!(a.effective_secs, Some(-1.0));
+    }
+
+    /// `affectedZones` keeps only string entries; non-string members (numbers,
+    /// objects, nulls) are filtered out.
+    #[wasm_bindgen_test]
+    fn affected_zones_filters_non_strings() {
+        let feature = r#"{
+            "id": "az",
+            "geometry": null,
+            "properties": {
+                "event": "Flood Watch",
+                "affectedZones": ["keep1", 42, null, {"x":1}, "keep2"]
+            }
+        }"#;
+        let parsed = parse_response(&fc_features(feature)).unwrap();
+        let a = &parsed.alerts[0];
+        assert_eq!(
+            a.affected_zones,
+            vec!["keep1".to_string(), "keep2".to_string()]
+        );
+    }
+
+    /// `affectedZones` that is present but not an array (here an object) yields an
+    /// empty zone list — and with null geometry that means the alert is dropped.
+    #[wasm_bindgen_test]
+    fn affected_zones_non_array_treated_as_empty() {
+        let feature = r#"{
+            "id": "az2",
+            "geometry": null,
+            "properties": { "event": "Flood Watch", "affectedZones": {"oops": true} }
+        }"#;
+        let parsed = parse_response(&fc_features(feature)).unwrap();
+        // No zones + null geometry → dropped.
+        assert!(parsed.alerts.is_empty());
+    }
+
+    /// An unrecognized geometry `type` (e.g. "Point") and geometry missing
+    /// `coordinates` both yield empty geometry; with zones present the alert is
+    /// still kept but renders nothing inline.
+    #[wasm_bindgen_test]
+    fn unknown_geometry_type_and_missing_coords_empty() {
+        let point_feature = r#"{
+            "id": "pt",
+            "geometry": { "type": "Point", "coordinates": [1.0, 2.0] },
+            "properties": { "event": "Flood Watch", "affectedZones": ["z"] }
+        }"#;
+        let a = &parse_response(&fc_features(point_feature)).unwrap().alerts[0];
+        assert!(a.geometry.is_empty());
+        assert_eq!(a.geometry.bbox, None);
+
+        // Polygon type but no coordinates key → early return, empty geometry.
+        let no_coords = r#"{
+            "id": "nc",
+            "geometry": { "type": "Polygon" },
+            "properties": { "event": "Flood Watch", "affectedZones": ["z"] }
+        }"#;
+        let b = &parse_response(&fc_features(no_coords)).unwrap().alerts[0];
+        assert!(b.geometry.is_empty());
+    }
+
+    /// A malformed coordinate (a point that is not a 2-array) makes `parse_ring`
+    /// return None, which propagates up to drop the WHOLE polygon — even though
+    /// the other points are well-formed. With zones present the alert survives
+    /// with empty geometry.
+    #[wasm_bindgen_test]
+    fn malformed_coordinate_drops_entire_polygon() {
+        // The middle vertex is a bare number, not a [lon,lat] pair.
+        let feature = r#"{
+            "id": "bad",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [[[0.0,0.0], 5, [1.0,1.0], [0.0,1.0], [0.0,0.0]]]
+            },
+            "properties": { "event": "Flood Warning", "affectedZones": ["z"] }
+        }"#;
+        let a = &parse_response(&fc_features(feature)).unwrap().alerts[0];
+        assert!(a.geometry.is_empty());
+        assert!(a.fill_triangles.is_empty());
+    }
+
+    /// A polygon's outer ring (>=3 points) is kept and an inner hole ring is also
+    /// kept (a polygon entry is [outer, hole, ...]); the bbox spans the outer
+    /// ring, and triangulation produces a non-empty fill.
+    #[wasm_bindgen_test]
+    fn polygon_with_hole_keeps_both_rings() {
+        let feature = r#"{
+            "id": "holed",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[0.0,0.0],[10.0,0.0],[10.0,10.0],[0.0,10.0],[0.0,0.0]],
+                    [[3.0,3.0],[6.0,3.0],[6.0,6.0],[3.0,6.0],[3.0,3.0]]
+                ]
+            },
+            "properties": { "event": "Flood Warning" }
+        }"#;
+        let a = &parse_response(&fc_features(feature)).unwrap().alerts[0];
+        assert_eq!(a.geometry.polygons.len(), 1);
+        // outer + hole = 2 rings within the single polygon.
+        assert_eq!(a.geometry.polygons[0].len(), 2);
+        // bbox follows the outer ring only (the hole is inside it).
+        assert_eq!(a.geometry.bbox, Some((0.0, 0.0, 10.0, 10.0)));
+        assert!(!a.fill_triangles.is_empty());
+    }
+
+    /// The feature's top-level `id` is preferred over `properties.id` when both
+    /// are present (the existing suite only covers the fallback direction).
+    #[wasm_bindgen_test]
+    fn top_level_id_preferred_over_properties_id() {
+        let feature = r#"{
+            "id": "top",
+            "geometry": null,
+            "properties": { "id": "inner", "event": "Flood Watch", "affectedZones": ["z"] }
+        }"#;
+        let parsed = parse_response(&fc_features(feature)).unwrap();
+        assert_eq!(parsed.alerts[0].id, "top");
+    }
+}

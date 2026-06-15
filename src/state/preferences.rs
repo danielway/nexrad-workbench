@@ -360,3 +360,250 @@ mod tests {
         assert!(!back.autofetch_while_scrubbing);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // Re-declared builder idioms (sibling `mod tests` helpers are private).
+    // `AppState::default()` / `PlaybackState::default()` are the constructors
+    // used throughout the state suite (see src/core/persist.rs tests).
+    fn states() -> (AppState, super::super::PlaybackState) {
+        (AppState::default(), super::super::PlaybackState::default())
+    }
+
+    // --- serde default table (`#[serde(default = ...)]`) -------------------
+
+    #[wasm_bindgen_test]
+    fn partial_json_fills_serde_defaults() {
+        // A blob with only `speed` set must hydrate every other field from its
+        // serde default function, NOT panic / fail the load.
+        let prefs: UserPreferences =
+            serde_json::from_str(r#"{"speed":"Normal"}"#).expect("partial parse");
+        // `default = "default_true"` fields:
+        assert!(prefs.layer_states);
+        assert!(prefs.layer_counties);
+        assert!(prefs.layer_labels);
+        assert!(prefs.layer_cities);
+        assert!(prefs.layer_alerts_warnings);
+        assert!(prefs.use_local_time);
+        assert!(prefs.data_age_desaturation);
+        assert!(prefs.autofetch_while_scrubbing);
+        // `#[serde(default)]` bool fields → false:
+        assert!(!prefs.elevation_auto);
+        assert!(!prefs.layer_nexrad_sites);
+        assert!(!prefs.layer_national_mosaic);
+        assert!(!prefs.layer_alerts_other);
+        assert!(!prefs.layer_mping);
+        assert!(!prefs.sweep_animation);
+        assert!(!prefs.advanced_mode);
+        assert!(!prefs.pause_stream_while_reviewing);
+        // Numeric defaults from explicit default fns:
+        assert!((prefs.preferred_elevation_angle - 0.5).abs() < 1e-6);
+        assert!((prefs.opacity - 1.0).abs() < 1e-6);
+        // Option defaults → None:
+        assert!(prefs.mping_api_key.is_none());
+        assert!(prefs.preferred_site.is_none());
+        assert!(prefs.mobile_override.is_none());
+        assert!(prefs.layer_alerts_legacy.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn default_matches_serde_default_construction() {
+        // The hand-written `Default` impl must agree field-for-field with what
+        // serde produces from an empty object (every field defaulted).
+        let from_empty: UserPreferences = serde_json::from_str("{}").expect("empty parse");
+        assert!(from_empty == UserPreferences::default());
+    }
+
+    // --- legacy `layer_alerts` rename capture (serde-pure half) -----------
+
+    #[wasm_bindgen_test]
+    fn legacy_layer_alerts_field_captured_into_option() {
+        // The `#[serde(rename = "layer_alerts")]` mapping pulls the old single
+        // toggle into `layer_alerts_legacy` as `Some(_)`. (The promotion into
+        // the split fields happens in `load()` and is not exercised here.)
+        let prefs: UserPreferences =
+            serde_json::from_str(r#"{"layer_alerts":false}"#).expect("legacy alerts parse");
+        assert!(prefs.layer_alerts_legacy == Some(false));
+        let prefs_on: UserPreferences =
+            serde_json::from_str(r#"{"layer_alerts":true}"#).expect("legacy alerts on parse");
+        assert!(prefs_on.layer_alerts_legacy == Some(true));
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_field_never_serialized_back_as_some_default() {
+        // Default has `layer_alerts_legacy: None`; serializing must NOT bring
+        // the legacy key back as a real value the next load would re-capture.
+        let json = serde_json::to_string(&UserPreferences::default()).expect("serialize");
+        let back: UserPreferences = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.layer_alerts_legacy.is_none());
+    }
+
+    // --- full round-trip of the serde struct ------------------------------
+
+    #[wasm_bindgen_test]
+    fn full_struct_round_trips_through_json() {
+        let mut prefs = UserPreferences::default();
+        prefs.speed = PlaybackSpeed::Double;
+        prefs.elevation_auto = true;
+        prefs.preferred_elevation_angle = 3.25;
+        prefs.layer_states = false;
+        prefs.layer_nexrad_sites = true;
+        prefs.layer_alerts_other = true;
+        prefs.mping_api_key = Some("abc-123".to_string());
+        prefs.preferred_site = Some("KDMX".to_string());
+        prefs.interpolation = InterpolationMode::Bilinear;
+        prefs.opacity = 0.42;
+        prefs.mobile_override = Some(true);
+        prefs.advanced_mode = true;
+        prefs.use_local_time = false;
+        let json = serde_json::to_string(&prefs).expect("serialize");
+        let back: UserPreferences = serde_json::from_str(&json).expect("deserialize");
+        assert!(back == prefs);
+    }
+
+    // --- from_app_state snapshot mapping ----------------------------------
+
+    #[wasm_bindgen_test]
+    fn from_app_state_default_reads_fixed_elevation() {
+        // Default VizState elevation is Fixed{1, 0.5} → not auto, angle 0.5.
+        let (state, playback) = states();
+        let prefs = UserPreferences::from_app_state(&state, &playback, None);
+        assert!(!prefs.elevation_auto);
+        assert!((prefs.preferred_elevation_angle - 0.5).abs() < 1e-6);
+        // Default layer mirror.
+        assert!(prefs.layer_states);
+        assert!(prefs.layer_cities);
+        assert!(!prefs.layer_nexrad_sites);
+        // mping key is sourced separately, passed through verbatim.
+        assert!(prefs.mping_api_key.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn from_app_state_passes_mping_key_through() {
+        let (state, playback) = states();
+        let prefs = UserPreferences::from_app_state(&state, &playback, Some("KEY".to_string()));
+        assert!(prefs.mping_api_key == Some("KEY".to_string()));
+    }
+
+    #[wasm_bindgen_test]
+    fn from_app_state_reflects_auto_elevation() {
+        let (mut state, playback) = states();
+        state.viz_state.elevation_selection = ElevationSelection::Latest;
+        let prefs = UserPreferences::from_app_state(&state, &playback, None);
+        assert!(prefs.elevation_auto);
+        // Latest reports angle() == 0.5 by convention.
+        assert!((prefs.preferred_elevation_angle - 0.5).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn from_app_state_captures_fixed_angle() {
+        let (mut state, playback) = states();
+        state.viz_state.elevation_selection = ElevationSelection::Fixed {
+            elevation_number: 4,
+            angle: 2.4,
+        };
+        let prefs = UserPreferences::from_app_state(&state, &playback, None);
+        assert!(!prefs.elevation_auto);
+        assert!((prefs.preferred_elevation_angle - 2.4).abs() < 1e-6);
+    }
+
+    // --- apply_to: elevation branch behavior ------------------------------
+
+    #[wasm_bindgen_test]
+    fn apply_to_auto_sets_latest_and_returns_key() {
+        let (mut state, mut playback) = states();
+        let mut prefs = UserPreferences::default();
+        prefs.elevation_auto = true;
+        prefs.mping_api_key = Some("mk".to_string());
+        let returned = prefs.apply_to(&mut state, &mut playback);
+        assert!(state.viz_state.elevation_selection == ElevationSelection::Latest);
+        // apply_to returns the persisted mping key for the diagnostics subsystem.
+        assert!(returned == Some("mk".to_string()));
+    }
+
+    #[wasm_bindgen_test]
+    fn apply_to_fixed_resets_number_to_one_keeps_angle() {
+        // Non-auto applies as Fixed{elevation_number:1, angle}: number is reset
+        // to 1 (re-resolved later from VCP), the angle is preserved verbatim.
+        let (mut state, mut playback) = states();
+        let mut prefs = UserPreferences::default();
+        prefs.elevation_auto = false;
+        prefs.preferred_elevation_angle = 1.75;
+        prefs.apply_to(&mut state, &mut playback);
+        match state.viz_state.elevation_selection {
+            ElevationSelection::Fixed {
+                elevation_number,
+                angle,
+            } => {
+                assert_eq!(elevation_number, 1);
+                assert!((angle - 1.75).abs() < 1e-6);
+            }
+            ElevationSelection::Latest => panic!("expected Fixed selection"),
+        }
+    }
+
+    // --- from_app_state -> apply_to persistence contract ------------------
+
+    #[wasm_bindgen_test]
+    fn snapshot_then_apply_round_trips_observable_fields() {
+        // Mutate a spread of preference-backed AppState/Playback fields, snapshot
+        // them, apply onto a fresh state, and confirm the snapshot survives.
+        let (mut src, mut src_pb) = states();
+        src_pb.speed = PlaybackSpeed::Quadruple;
+        src.viz_state.elevation_selection = ElevationSelection::Fixed {
+            elevation_number: 7,
+            angle: 3.5,
+        };
+        src.layer_state.geo.states = false;
+        src.layer_state.geo.nexrad_sites = true;
+        src.layer_state.geo.national_mosaic = true;
+        src.layer_state.geo.alerts_other = true;
+        src.layer_state.geo.mping = true;
+        src.use_local_time = false;
+        src.preferred_site = Some("KTLX".to_string());
+        src.render_processing.interpolation = InterpolationMode::Bilinear;
+        src.render_processing.opacity = 0.3;
+        src.render_processing.sweep_animation = true;
+        src.render_processing.data_age_desaturation = false;
+        src.mobile_override = Some(false);
+        src.advanced_mode = true;
+        src.pause_stream_while_reviewing = true;
+        src.autofetch_while_scrubbing = false;
+
+        let prefs = UserPreferences::from_app_state(&src, &src_pb, None);
+
+        let (mut dst, mut dst_pb) = states();
+        prefs.apply_to(&mut dst, &mut dst_pb);
+
+        assert!(dst_pb.speed == PlaybackSpeed::Quadruple);
+        // Fixed angle preserved; elevation_number resets to 1 by contract.
+        match dst.viz_state.elevation_selection {
+            ElevationSelection::Fixed {
+                elevation_number,
+                angle,
+            } => {
+                assert_eq!(elevation_number, 1);
+                assert!((angle - 3.5).abs() < 1e-6);
+            }
+            ElevationSelection::Latest => panic!("expected Fixed selection"),
+        }
+        assert!(!dst.layer_state.geo.states);
+        assert!(dst.layer_state.geo.nexrad_sites);
+        assert!(dst.layer_state.geo.national_mosaic);
+        assert!(dst.layer_state.geo.alerts_other);
+        assert!(dst.layer_state.geo.mping);
+        assert!(!dst.use_local_time);
+        assert!(dst.preferred_site == Some("KTLX".to_string()));
+        assert!(dst.render_processing.interpolation == InterpolationMode::Bilinear);
+        assert!((dst.render_processing.opacity - 0.3).abs() < 1e-6);
+        assert!(dst.render_processing.sweep_animation);
+        assert!(!dst.render_processing.data_age_desaturation);
+        assert!(dst.mobile_override == Some(false));
+        assert!(dst.advanced_mode);
+        assert!(dst.pause_stream_while_reviewing);
+        assert!(!dst.autofetch_while_scrubbing);
+    }
+}

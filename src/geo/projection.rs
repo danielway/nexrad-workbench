@@ -346,3 +346,236 @@ mod tests {
         assert!((s1.y - s0.y - 30.0).abs() < 1e-3);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// Default 800x600 projection at the given center, zoom 1.0, no pan.
+    fn proj(center_lat: f64, center_lon: f64) -> MapProjection {
+        let mut p = MapProjection::new(center_lat, center_lon);
+        p.update(
+            1.0,
+            Vec2::ZERO,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)),
+        );
+        p
+    }
+
+    #[wasm_bindgen_test]
+    fn default_has_continental_us_center_and_range() {
+        let d = MapProjection::default();
+        assert!((d.center_lat - 39.0).abs() < 1e-12);
+        assert!((d.center_lon - (-98.0)).abs() < 1e-12);
+        assert!((d.range_deg - 4.5).abs() < 1e-12);
+        assert!((d.zoom - 1.0).abs() < 1e-7);
+        assert!(d.pan_offset.x == 0.0 && d.pan_offset.y == 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn new_overrides_center_keeps_other_defaults() {
+        let p = MapProjection::new(45.0, -120.0);
+        assert!((p.center_lat - 45.0).abs() < 1e-12);
+        assert!((p.center_lon - (-120.0)).abs() < 1e-12);
+        // Range/zoom remain the Default values.
+        assert!((p.range_deg - 4.5).abs() < 1e-12);
+        assert!((p.zoom - 1.0).abs() < 1e-7);
+    }
+
+    #[wasm_bindgen_test]
+    fn update_sets_view_state() {
+        let mut p = MapProjection::new(39.0, -98.0);
+        let r = Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(640.0, 480.0));
+        p.update(3.0, Vec2::new(7.0, -4.0), r);
+        assert!((p.zoom - 3.0).abs() < 1e-7);
+        assert!(p.pan_offset.x == 7.0 && p.pan_offset.y == -4.0);
+        assert!(p.screen_rect == r);
+    }
+
+    #[wasm_bindgen_test]
+    fn north_is_up_east_is_right() {
+        let p = proj(39.0, -98.0);
+        let center = p.geo_to_screen(Coord { x: -98.0, y: 39.0 });
+        // 1 degree north -> screen Y decreases (up).
+        let north = p.geo_to_screen(Coord { x: -98.0, y: 40.0 });
+        assert!(north.y < center.y);
+        // 1 degree east -> screen X increases (right).
+        let east = p.geo_to_screen(Coord { x: -97.0, y: 39.0 });
+        assert!(east.x > center.x);
+    }
+
+    #[wasm_bindgen_test]
+    fn geo_to_screen_exact_offsets_for_one_degree() {
+        // center=(400,300), half_size=min(800,600)/2=300, eff_range=4.5,
+        // cos(39deg)=0.7771459614569709.
+        let p = proj(39.0, -98.0);
+        let cos39 = 0.7771459614569709_f64;
+        let east = p.geo_to_screen(Coord { x: -97.0, y: 39.0 });
+        let expected_x = 400.0 + (1.0 * cos39 / 4.5) * 300.0; // ~451.8097
+        assert!((east.x as f64 - expected_x).abs() < 1e-2);
+        assert!((east.y as f64 - 300.0).abs() < 1e-3);
+
+        let north = p.geo_to_screen(Coord { x: -98.0, y: 40.0 });
+        let expected_y = 300.0 + (-1.0 / 4.5) * 300.0; // ~233.3333
+        assert!((north.y as f64 - expected_y).abs() < 1e-2);
+        assert!((north.x as f64 - 400.0).abs() < 1e-3);
+    }
+
+    #[wasm_bindgen_test]
+    fn half_size_uses_min_dimension() {
+        // With an 800x600 rect, the projection scales by 300 (min/2), not 400.
+        // Moving from center to the top edge (Y from 300 to 0) spans exactly
+        // one half_size of normalized space, i.e. eff_range degrees of latitude.
+        let p = proj(39.0, -98.0);
+        let top_geo = p.screen_to_geo(Pos2::new(400.0, 0.0));
+        // norm_y = -300/300 = -1 -> rel_lat = +4.5
+        assert!((top_geo.y - (39.0 + 4.5)).abs() < 1e-9);
+        assert!((top_geo.x - (-98.0)).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn lat_correction_compresses_longitude_at_high_latitude() {
+        // The same 1-degree longitude offset projects to fewer screen pixels
+        // at a higher center latitude because cos(lat) shrinks.
+        let low = proj(20.0, -98.0);
+        let high = proj(60.0, -98.0);
+        let c_low = low.geo_to_screen(Coord { x: -98.0, y: 20.0 });
+        let e_low = low.geo_to_screen(Coord { x: -97.0, y: 20.0 });
+        let c_high = high.geo_to_screen(Coord { x: -98.0, y: 60.0 });
+        let e_high = high.geo_to_screen(Coord { x: -97.0, y: 60.0 });
+        let dx_low = (e_low.x - c_low.x).abs();
+        let dx_high = (e_high.x - c_high.x).abs();
+        assert!(dx_high < dx_low);
+    }
+
+    #[wasm_bindgen_test]
+    fn visible_bounds_lat_span_is_twice_range() {
+        // Latitude span is unaffected by lat_correction: top/bottom edges are
+        // exactly +/- eff_range from center, so the span is 2*range_deg.
+        let p = proj(39.0, -98.0);
+        let (min_lon, min_lat, max_lon, max_lat) = p.visible_bounds();
+        assert!((max_lat - min_lat - 9.0).abs() < 1e-9);
+        // Bounds are centered on the site latitude.
+        assert!(((min_lat + max_lat) / 2.0 - 39.0).abs() < 1e-9);
+        // Longitude bounds are centered on the site longitude.
+        assert!(((min_lon + max_lon) / 2.0 - (-98.0)).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn visible_bounds_lon_span_widened_by_lat_correction() {
+        // half_size=300, center_x=400 -> norm_x spans [-4/3, 4/3].
+        // lon span = (8/3) * eff_range / cos(39deg).
+        let p = proj(39.0, -98.0);
+        let (min_lon, _, max_lon, _) = p.visible_bounds();
+        let cos39 = 0.7771459614569709_f64;
+        let expected = (8.0 / 3.0) * 4.5 / cos39; // ~15.4411
+        assert!((max_lon - min_lon - expected).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn is_visible_margin_extends_inclusion() {
+        let p = proj(39.0, -98.0);
+        // lon -90.0 is just outside max_lon (~-90.279) without margin...
+        let pt = Coord { x: -90.0, y: 39.0 };
+        assert!(!p.is_visible(pt, 0.0));
+        // ...but a 1-degree margin pulls it inside.
+        assert!(p.is_visible(pt, 1.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn bbox_visible_box_inside_is_visible() {
+        let p = proj(39.0, -98.0);
+        // Box well within visible bounds.
+        assert!(p.bbox_visible(-99.0, 38.0, -97.0, 40.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn bbox_visible_far_box_not_visible() {
+        let p = proj(39.0, -98.0);
+        // Box far to the south-east near (0,0); outside visible bounds + margin.
+        assert!(!p.bbox_visible(-1.0, -1.0, 1.0, 1.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn bbox_visible_each_disjoint_axis() {
+        let p = proj(39.0, -98.0);
+        // visible ~ lon[-105.72,-90.28] lat[34.5,43.5], margin=1.0.
+        // Entirely west of view (max_lon < vis_min_lon - 1).
+        assert!(!p.bbox_visible(-120.0, 38.0, -110.0, 40.0));
+        // Entirely east of view (min_lon > vis_max_lon + 1).
+        assert!(!p.bbox_visible(-80.0, 38.0, -70.0, 40.0));
+        // Entirely south of view (max_lat < vis_min_lat - 1).
+        assert!(!p.bbox_visible(-99.0, 20.0, -97.0, 30.0));
+        // Entirely north of view (min_lat > vis_max_lat + 1).
+        assert!(!p.bbox_visible(-99.0, 50.0, -97.0, 60.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn bbox_visible_overlapping_edge_within_margin_is_visible() {
+        let p = proj(39.0, -98.0);
+        // A box whose max_lon is just inside the west margin: vis_min_lon ~ -105.72,
+        // margin 1.0 => threshold -106.72. max_lon = -106.0 is NOT < -106.72, so visible.
+        assert!(p.bbox_visible(-110.0, 38.0, -106.0, 40.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn fingerprint_changes_with_pan_and_rect() {
+        let mut p = proj(39.0, -98.0);
+        let f0 = p.fingerprint();
+        p.update(1.0, Vec2::new(5.0, 0.0), p.screen_rect);
+        let f_pan = p.fingerprint();
+        assert!(f0 != f_pan);
+
+        let mut q = proj(39.0, -98.0);
+        let g0 = q.fingerprint();
+        q.update(
+            1.0,
+            Vec2::ZERO,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(640.0, 480.0)),
+        );
+        assert!(g0 != q.fingerprint());
+    }
+
+    #[wasm_bindgen_test]
+    fn fingerprint_changes_when_lon_changes() {
+        // Sibling tests cover lat; cover the longitude field of the fingerprint.
+        let f0 = proj(39.0, -98.0).fingerprint();
+        let f1 = proj(39.0, -97.0).fingerprint();
+        assert!(f0 != f1);
+    }
+
+    #[wasm_bindgen_test]
+    fn trait_impl_swaps_latlon_argument_order() {
+        // The trait method takes (lat, lon) and must match the inherent
+        // geo_to_screen(Coord{x:lon,y:lat}).
+        let p = proj(39.0, -98.0);
+        let inherent = MapProjection::geo_to_screen(&p, Coord { x: -97.0, y: 40.0 });
+        let via_trait = Projection::geo_to_screen(&p, 40.0, -97.0);
+        let s = via_trait.expect("2D projection always returns Some");
+        assert!((s.x - inherent.x).abs() < 1e-4);
+        assert!((s.y - inherent.y).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn trait_screen_to_geo_returns_lat_lon_tuple() {
+        let p = proj(39.0, -98.0);
+        let pos = Pos2::new(500.0, 200.0);
+        let coord = MapProjection::screen_to_geo(&p, pos);
+        let (lat, lon) = Projection::screen_to_geo(&p, pos).expect("2D always Some");
+        // Trait returns (lat, lon) = (coord.y, coord.x).
+        assert!((lat - coord.y).abs() < 1e-9);
+        assert!((lon - coord.x).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn trait_visible_bounds_matches_inherent() {
+        let p = proj(39.0, -98.0);
+        let (a, b, c, d) = MapProjection::visible_bounds(&p);
+        let (ta, tb, tc, td) = Projection::visible_bounds(&p).expect("2D always Some");
+        assert!((a - ta).abs() < 1e-12);
+        assert!((b - tb).abs() < 1e-12);
+        assert!((c - tc).abs() < 1e-12);
+        assert!((d - td).abs() < 1e-12);
+    }
+}
