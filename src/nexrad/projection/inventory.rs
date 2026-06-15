@@ -244,3 +244,103 @@ mod tests {
         }));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn vol(n: usize) -> VolumeIndex {
+        VolumeIndex::new(n)
+    }
+
+    fn known(volume: usize, sequence: usize, upload: f64, ty: ChunkType) -> KnownChunk {
+        KnownChunk {
+            coord: ChunkCoord {
+                volume: vol(volume),
+                sequence,
+            },
+            upload_secs: upload,
+            chunk_type: ty,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn upload_is_newer_truth_table() {
+        // Nothing seen yet → anything is newer.
+        assert!(upload_is_newer(None, 0.0));
+        assert!(upload_is_newer(None, -50.0));
+        // Strictly greater only.
+        assert!(upload_is_newer(Some(100.0), 100.1));
+        assert!(!upload_is_newer(Some(100.0), 100.0)); // equal is NOT newer
+        assert!(!upload_is_newer(Some(100.0), 99.9));
+    }
+
+    #[wasm_bindgen_test]
+    fn empty_inventory_reports_nothing() {
+        let inv = KnownChunkInventory::default();
+        assert!(inv.newest().is_none());
+        assert!(inv.newest_seq_in(vol(1)).is_none());
+        assert!(inv.newest_upload_in(vol(1)).is_none());
+        assert!(!inv.has_end(vol(1)));
+        assert!(!inv.contains(ChunkCoord {
+            volume: vol(1),
+            sequence: 1,
+        }));
+    }
+
+    #[wasm_bindgen_test]
+    fn re_observing_a_sequence_is_set_idempotent() {
+        let mut inv = KnownChunkInventory::default();
+        inv.observe(known(3, 7, 100.0, ChunkType::Intermediate));
+        // Same sequence again with an older upload: no anchor advance, still one
+        // entry, max sequence unchanged.
+        assert!(!inv.observe(known(3, 7, 50.0, ChunkType::Intermediate)));
+        assert!(inv.contains(ChunkCoord {
+            volume: vol(3),
+            sequence: 7,
+        }));
+        assert_eq!(inv.newest_seq_in(vol(3)), Some(7));
+    }
+
+    #[wasm_bindgen_test]
+    fn anchor_advances_across_volumes() {
+        let mut inv = KnownChunkInventory::default();
+        inv.observe(known(1, 1, 100.0, ChunkType::Start));
+        // A newer upload in the NEXT volume moves the global anchor.
+        assert!(inv.observe(known(2, 1, 200.0, ChunkType::Start)));
+        let n = inv.newest().unwrap();
+        assert_eq!(n.upload_secs, 200.0);
+        assert_eq!(n.coord.volume.as_number(), 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn newest_upload_in_tracks_max_not_last_seen() {
+        let mut inv = KnownChunkInventory::default();
+        inv.observe(known(5, 1, 200.0, ChunkType::Intermediate));
+        // A later observation with an OLDER upload must not lower the per-volume
+        // newest (recycled-slot guard).
+        inv.observe(known(5, 2, 100.0, ChunkType::Intermediate));
+        assert_eq!(inv.newest_upload_in(vol(5)), Some(200.0));
+        // But the sequence set still grows.
+        assert_eq!(inv.newest_seq_in(vol(5)), Some(2));
+    }
+
+    #[wasm_bindgen_test]
+    fn chunk_coord_equality_is_volume_and_sequence() {
+        let a = ChunkCoord {
+            volume: vol(1),
+            sequence: 4,
+        };
+        let b = ChunkCoord {
+            volume: vol(1),
+            sequence: 4,
+        };
+        let c = ChunkCoord {
+            volume: vol(2),
+            sequence: 4,
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+}
