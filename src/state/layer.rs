@@ -55,3 +55,36 @@ impl Default for GeoLayerVisibility {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn default_geo_visibility_matches_product_defaults() {
+        // Pins the out-of-the-box overlay set: base geography + warnings on,
+        // opt-in/heavier overlays off.
+        let v = GeoLayerVisibility::default();
+        assert!(v.states);
+        assert!(v.counties);
+        assert!(v.labels);
+        assert!(v.cities);
+        assert!(v.alerts_warnings);
+
+        assert!(!v.nexrad_sites);
+        assert!(!v.highways);
+        assert!(!v.lakes);
+        assert!(!v.national_mosaic);
+        assert!(!v.alerts_other);
+        assert!(!v.mping);
+        assert!(!v.gps_location);
+    }
+
+    #[wasm_bindgen_test]
+    fn layer_state_default_wraps_geo_defaults() {
+        let s = LayerState::default();
+        assert!(s.geo.states);
+        assert!(!s.geo.mping);
+    }
+}

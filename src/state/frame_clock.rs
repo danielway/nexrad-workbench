@@ -28,3 +28,35 @@ impl FrameNow {
         self.0 * 1000.0
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn secs_returns_inner_value() {
+        assert_eq!(FrameNow(123.5).secs(), 123.5);
+        assert_eq!(FrameNow(0.0).secs(), 0.0);
+        assert_eq!(FrameNow(-4.0).secs(), -4.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn millis_is_seconds_times_thousand() {
+        assert_eq!(FrameNow(2.0).millis(), 2000.0);
+        assert_eq!(FrameNow(1.5).millis(), 1500.0);
+        assert_eq!(FrameNow(0.0).millis(), 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn default_is_epoch_zero() {
+        assert_eq!(FrameNow::default(), FrameNow(0.0));
+        assert_eq!(FrameNow::default().secs(), 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn equality_is_value_based() {
+        assert_eq!(FrameNow(5.0), FrameNow(5.0));
+        assert_ne!(FrameNow(5.0), FrameNow(5.1));
+    }
+}
