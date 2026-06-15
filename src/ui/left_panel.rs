@@ -1,6 +1,7 @@
 //! Left panel UI: radar operations visualization.
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
+use crate::core::panels::{query_radar_state_at_timestamp, RadarStateAtTimestamp};
 use crate::state::{get_vcp_definition, radar_data::Scan};
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
@@ -22,28 +23,6 @@ impl Layer for LeftPanelLayer {
     fn render(&self, ctx: &mut LayoutCtx) {
         draw_left_panel(ctx.ctx, ctx.timeline, ctx.live, ctx.playback);
     }
-}
-
-/// State queried from the radar timeline at the current timestamp
-struct RadarStateAtTimestamp<'a> {
-    /// Current azimuth angle in degrees (0-360), from actual radial data
-    azimuth: Option<f32>,
-    /// Current elevation angle in degrees, from actual radial data
-    elevation: Option<f32>,
-    /// Current VCP number
-    vcp: Option<u16>,
-    /// Elevation number (1-based VCP cut ordinal) of the sweep currently on
-    /// the canvas. The VCP-row highlight is keyed off this so it stays in
-    /// sync with the displayed cut even when the scan is missing elevations.
-    current_elevation_number: Option<u8>,
-    /// Scan progress as a percentage (0.0-1.0)
-    scan_progress: Option<f32>,
-    /// Reference to the current scan (for elevation list)
-    scan: Option<&'a Scan>,
-    /// Extracted VCP pattern from live streaming (used when scan is None)
-    live_vcp_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
-    /// Unified position model with sweep timing (live or archived)
-    position: Option<crate::nexrad::projection::ScanProjection>,
 }
 
 fn draw_left_panel(
@@ -97,145 +76,6 @@ fn render_radar_operations_section(
 
     // VCP breakdown
     render_vcp_breakdown(ui, &radar_state);
-}
-
-fn query_radar_state_at_timestamp<'a>(
-    timeline: &'a crate::subsystem::Timeline,
-    live: &'a crate::subsystem::Live,
-    playback: &'a crate::subsystem::Playback,
-) -> RadarStateAtTimestamp<'a> {
-    let ts = playback.state.playback_position();
-
-    // Resolve position detail through the same single adapter the timeline
-    // uses, so the panel can't drift from it. The in-progress volume is
-    // excluded from `settled_scan_at` and surfaced via `live_volume()` (with
-    // its already-cached cuts merged in) — this replaces the bespoke
-    // archive-vs-live reconciliation this function used to do itself.
-    let view = crate::state::TimelineView::build(
-        &timeline.scans,
-        &timeline.shadow_scan_boundaries,
-        Some(&live.mode_state),
-        live.radar_model.position.as_ref(),
-    );
-
-    match view.settled_scan_at(ts) {
-        Some(scan) => {
-            // Time-window match: drives the rotating-azimuth animation,
-            // which is only meaningful while the cursor is inside a
-            // sweep's [start, end] interval.
-            let sweep_at_ts = scan.find_sweep_at_timestamp(ts);
-            // Highlight match: when the cursor sits in a gap between sweeps,
-            // show the most-recently-completed sweep. Sweeps are stored in
-            // elevation order, not time order (SAILS-style VCPs revisit the
-            // lowest cut), so pick by max end_time rather than Vec position.
-            let sweep_for_highlight = sweep_at_ts.or_else(|| {
-                scan.sweeps
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.end_time <= ts)
-                    .max_by(|(_, a), (_, b)| {
-                        a.end_time
-                            .partial_cmp(&b.end_time)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-            });
-
-            // At high playback speeds (>30 s/s), freeze all animated radar state
-            // (azimuth, elevation, sweep indicator, progress) to prevent violent flashing.
-            // Static VCP info (number, name, elevation list) still renders.
-            let is_fast = playback.state.playing
-                && playback.state.speed.timeline_seconds_per_real_second() > 30.0;
-
-            let azimuth = if is_fast {
-                None
-            } else {
-                sweep_at_ts.and_then(|(_, sweep)| {
-                    let dur = sweep.end_time - sweep.start_time;
-                    if dur <= 0.0 {
-                        return None;
-                    }
-                    let progress = (ts - sweep.start_time) / dur;
-                    Some(((progress * 360.0) as f32) % 360.0)
-                })
-            };
-            let elevation = if is_fast {
-                None
-            } else {
-                sweep_for_highlight.map(|(_, s)| scan.display_angle(s))
-            };
-            let current_elevation_number = if is_fast {
-                None
-            } else {
-                sweep_for_highlight.map(|(_, s)| s.elevation_number)
-            };
-            let scan_progress = if is_fast {
-                None
-            } else {
-                scan.progress_at_timestamp(ts)
-            };
-
-            RadarStateAtTimestamp {
-                azimuth,
-                elevation,
-                vcp: Some(scan.vcp),
-                current_elevation_number,
-                scan_progress,
-                scan: Some(scan),
-                live_vcp_pattern: None,
-                position: Some(crate::nexrad::projection::scan_to_projection(scan)),
-            }
-        }
-        None => {
-            // In live mode, read the frame-snapshotted derivations from
-            // LiveRadarModel rather than re-evaluating with a fresh
-            // js_sys::Date::now() — that would drift by ~frame-render
-            // duration against every other surface that consumed the same
-            // model.
-            if let Some(position) = view.live_volume() {
-                let frame = &live.radar_model.frame_now;
-                let vcp = Some(position.vcp_number).filter(|&v| v > 0);
-                let azimuth = live.radar_model.estimated_azimuth;
-                let sweep_index = frame.sweep_index.or_else(|| {
-                    position
-                        .in_progress_elevation
-                        .map(|e| e.saturating_sub(1) as usize)
-                });
-                let scan_progress = frame.progress;
-                let elevation = frame.elevation_angle.or_else(|| {
-                    sweep_index.and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_angle))
-                });
-                let current_elevation_number = sweep_index
-                    .and_then(|idx| position.sweeps.get(idx).map(|s| s.elevation_number))
-                    .or(position.in_progress_elevation);
-
-                RadarStateAtTimestamp {
-                    azimuth,
-                    elevation,
-                    vcp,
-                    current_elevation_number,
-                    scan_progress,
-                    scan: None,
-                    live_vcp_pattern: live
-                        .radar_model
-                        .volume
-                        .as_ref()
-                        .and_then(|v| v.vcp_pattern.as_ref()),
-                    position: Some(position.clone()),
-                }
-            } else {
-                RadarStateAtTimestamp {
-                    azimuth: None,
-                    elevation: None,
-                    vcp: None,
-                    current_elevation_number: None,
-                    scan_progress: None,
-                    scan: None,
-                    live_vcp_pattern: None,
-                    position: None,
-                }
-            }
-        }
-    }
 }
 
 fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) {

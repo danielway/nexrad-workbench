@@ -160,3 +160,31 @@ once the migration is complete.
   correctness" seam a unit test. The stateful dedup *cache* (`last_render`,
   `set_last_render` on prefetch) stays in the coordinator (shell), per the
   carve-out.
+
+### D6 — P5 scope decision (partial)
+- **What I did:** moved the pure panel derivations into `core::panels` and routed
+  the panels through them — `query_radar_state_at_timestamp` (the biggest
+  UI-resident derivation), `animation_frozen`, `archive_azimuth_from_progress`,
+  `status_message_visibility`. Leaf helpers are unit-tested; the radar-state move
+  is a behavior-identical relocation (its leaf helpers are the tested part —
+  `Live` isn't headlessly constructible, so the whole function can't be unit-tested
+  without a fixture, noted for the QA pass).
+- **What I deferred and why:** the roadmap's full P5 — replace every `&mut state`
+  mutation in the interactive panels with intents and reshape `LayoutCtx` into
+  `&ViewModel` + an intent sink — is **deliberately not done blind.** Three
+  reasons, all rooted in the project's own rules:
+  1. *Behavior-preservation is paramount and I cannot run the egui/WebGL app.*
+     Converting immediate `&mut` mutations to queued intents introduces one-frame
+     lag and reorders effects; on an interactive hot path that is exactly the
+     class of regression only manual QA catches. The roadmap itself gates P5
+     "behind manual QA, file-by-file."
+  2. *Several mutations must stay `&mut` anyway* (per the P5 coupling map):
+     camera/WASD motion and `playback.advance(dt)` are frame-tier and
+     high-frequency; two-way `ui.checkbox(&mut field)` bindings need wrapper
+     widgets, not a blind find-replace.
+  3. *The pattern is already proven.* P2 demonstrates the full `intent → reduce →
+     effect → VM` loop end-to-end for a whole feature area; P5's remainder is
+     mechanical application of it, which is safe to do incrementally alongside the
+     human QA pass rather than in one un-verifiable sweep.
+  The end-QA checklist calls out the panels whose mutation→intent conversion
+  remains, so the follow-up is scoped.

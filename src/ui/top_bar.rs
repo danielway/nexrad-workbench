@@ -151,32 +151,25 @@ fn draw_top_bar(
                     && live.app_mode != AppMode::Live
                     && !state.status_message.is_empty()
                 {
-                    // Auto-dismiss: fade out after 8 seconds, clear after 10
+                    // Auto-dismiss / fade decided by the pure core.
                     let now = state.frame_now.millis();
-                    let age_ms = now - state.status_message_set_ms;
-                    const FADE_START_MS: f64 = 8000.0;
-                    const DISMISS_MS: f64 = 10000.0;
-
-                    if state.status_message_set_ms > 0.0 && age_ms >= DISMISS_MS {
-                        state.status_message.clear();
-                    } else {
-                        let alpha = if state.status_message_set_ms <= 0.0 || age_ms < FADE_START_MS
-                        {
-                            255u8
-                        } else {
-                            let t = 1.0 - (age_ms - FADE_START_MS) / (DISMISS_MS - FADE_START_MS);
-                            (t.clamp(0.0, 1.0) * 255.0) as u8
-                        };
-
-                        ui.label(
-                            RichText::new(&state.status_message)
-                                .size(13.0)
-                                .color(Color32::from_rgba_unmultiplied(128, 128, 128, alpha)),
-                        );
-
-                        // Request repaint during fade
-                        if (FADE_START_MS..DISMISS_MS).contains(&age_ms) {
-                            ui.ctx().request_repaint();
+                    match crate::core::panels::status_message_visibility(
+                        state.status_message_set_ms,
+                        now,
+                    ) {
+                        crate::core::panels::StatusVisibility::Dismiss => {
+                            state.status_message.clear();
+                        }
+                        crate::core::panels::StatusVisibility::Visible { alpha, fading } => {
+                            ui.label(
+                                RichText::new(&state.status_message)
+                                    .size(13.0)
+                                    .color(Color32::from_rgba_unmultiplied(128, 128, 128, alpha)),
+                            );
+                            // Request repaint during fade so the animation runs.
+                            if fading {
+                                ui.ctx().request_repaint();
+                            }
                         }
                     }
                 }

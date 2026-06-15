@@ -26,6 +26,7 @@ pub mod canvas;
 pub mod diagnostics;
 pub mod effect;
 pub mod intent;
+pub mod panels;
 pub mod persist;
 pub mod render;
 

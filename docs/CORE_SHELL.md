@@ -173,12 +173,23 @@ test seam. Effort S/M/L = relative size. **Status: P0 complete; in progress.**
   suppress/pass). GPU upload + worker dispatch stay shell (carve-out). Risk: high
   (perceived-latency, dedup) — **gate behind manual QA** (scrub, elevation/product
   switch, play-through sweep boundaries, 3D volume).
-- **P5 — Intent-ize remaining UI + widen the view-model (L).** Replace direct
-  `&mut state` mutation in `right_panel` / `left_panel` / `canvas_interaction` /
-  `shortcuts` with intents; replace direct subsystem reads with per-panel VM
-  structs. `LayoutCtx` shrinks from `&mut`-everything to `&ViewModel` + an intent
-  sink. Seam: every panel feature is `send intent → assert VM`. Risk: high (broad)
-  — file-by-file, each behind its own commit + manual QA.
+- **P5 — Intent-ize remaining UI + widen the view-model (L). ◐ PARTIAL (pure
+  logic extracted; broad mutation→intent rewrite deferred).** Extracted the
+  panels' read-only *derivations and decision math* into the pure
+  [`core::panels`](../src/core/panels.rs) (tested): the left panel's whole
+  `query_radar_state_at_timestamp` derivation (the map's #1 left-panel violation)
+  now lives in the core; the high-speed `animation_frozen` freeze rule, the
+  archive sweep azimuth, and the top-bar status-message auto-dismiss/fade
+  (`status_message_visibility`) are pure functions the panels call. 3 headless
+  tests. **Deferred (QA-gated):** the broad `&mut state` → intent conversion for
+  the *interactive* surface (transport, layer checkboxes, camera, text-edit) and
+  the `LayoutCtx` → `&ViewModel` + intent-sink reshape. Rationale (see log D6):
+  that half is mechanical but one-frame-lag-risky on an interactive hot path that
+  can't be unit-tested *or* run here; the gotchas show several mutations
+  (camera/WASD, `playback.advance`, two-way checkbox bindings) must stay `&mut`
+  regardless; and the phase is explicitly "behind manual QA." The intent pattern
+  itself is already proven end-to-end by P2. Doing a blind broad rewrite would
+  risk the behavior-preservation guarantee with no way to verify.
 - **P6 — Acquisition & live orchestration (L, last/optional).** Move the
   prefetch / selection / listing pumps (`src/app/*`) into pure decide→effect; only
   extract already-pure pieces from `streaming.rs` (a full split stays de-scoped —
