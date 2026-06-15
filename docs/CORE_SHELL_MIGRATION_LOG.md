@@ -188,3 +188,24 @@ once the migration is complete.
      human QA pass rather than in one un-verifiable sweep.
   The end-QA checklist calls out the panels whose mutation→intent conversion
   remains, so the follow-up is scoped.
+
+### D7 — P6 acquisition decisions
+- **Extracted the selection-fetch gate** (`decide_selection_gate -> SelectionGate
+  {Arm, Confirm}`) — the roadmap's named "selection-gate decisions assertable"
+  seam. The shell (`resolve_selection_fetch_gate`) maps `Arm`→arm the bulk pump,
+  `Confirm`→open the modal; the `armed_at_secs`/target construction (needs `now`)
+  stays shell.
+- **Re-homed the already-pure acquisition fns** (`reactive_prefetch_allowed`,
+  `dates_spanning`, `dates_in_range`) from `app::acquisition_intent` into
+  `core::acquisition`, moving their tests with them and adding coverage for the
+  date spans (single-day, midnight cross, interior-day enumeration, reversed
+  range). This puts the acquisition core surface in one place.
+- **Pump I/O sequencing stays shell.** The pumps (`pump_implicit_prefetch`,
+  `pump_selection_fetch`, `pump_visible_listings`, `pump_lookback_backfill`)
+  interleave decisions with listing fetches + queue enqueues + backoff bookkeeping.
+  Their *pure* decisions are now in core/tested; folding the I/O dispatch itself
+  into a `decide→Vec<Effect>` rewrite is the same un-QA-able ordering risk as P5's
+  interactive surface (and the `download_queue` state machine — the real dispatch
+  logic — is already pure + 30-test-covered). So P6 extracts the gates and leaves
+  the I/O sequencing in the shell, consistent with the worker-dispatch carve-out.
+- **`streaming.rs` untouched** — the carve-out explicitly defers its split.

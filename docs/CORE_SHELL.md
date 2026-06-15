@@ -190,10 +190,21 @@ test seam. Effort S/M/L = relative size. **Status: P0 complete; in progress.**
   regardless; and the phase is explicitly "behind manual QA." The intent pattern
   itself is already proven end-to-end by P2. Doing a blind broad rewrite would
   risk the behavior-preservation guarantee with no way to verify.
-- **P6 — Acquisition & live orchestration (L, last/optional).** Move the
-  prefetch / selection / listing pumps (`src/app/*`) into pure decide→effect; only
-  extract already-pure pieces from `streaming.rs` (a full split stays de-scoped —
-  it reopens live QA). Seam: prefetch / selection-gate decisions assertable.
+- **P6 — Acquisition & live orchestration (L, last/optional). ✅ DONE (pure
+  decisions extracted; pump I/O + streaming.rs stay shell).** Consolidated the
+  acquisition *decisions* into [`core::acquisition`](../src/core/acquisition.rs):
+  the selection-fetch duration gate (`decide_selection_gate -> SelectionGate`,
+  the roadmap's named "selection-gate" seam, lifted out of
+  `resolve_selection_fetch_gate`), plus the already-pure `reactive_prefetch_allowed`
+  and the `dates_spanning` / `dates_in_range` span utilities re-homed from
+  `app::acquisition_intent`. 6 headless tests (prefetch policy, gate arm/confirm
+  boundary, single/midnight/interior date spans). The download-queue state
+  machine (`nexrad::download_queue`) was already pure + tested and stays put. The
+  pump bodies keep their I/O orchestration (listing fetch / enqueue) in the shell
+  — extracting those into a full decide→effect rewrite carries the same
+  ordering/one-frame risk as P5's interactive surface with no runnable QA, so the
+  pure gates are extracted and the I/O sequencing stays. `streaming.rs` stays
+  de-scoped per the carve-out.
 
 **Reference slice (do first): Diagnostics overlays — NWS alerts + mPING + GPS.**
 Cleanest existing seams, off the render hot path, high QA value. Steps: define

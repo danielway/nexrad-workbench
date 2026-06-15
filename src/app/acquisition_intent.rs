@@ -19,6 +19,7 @@
 //! elevation) or already queued, and the download path itself makes the
 //! authoritative per-(elevation) cache-hit decision before any network call.
 
+use crate::core::acquisition::{dates_in_range, dates_spanning, reactive_prefetch_allowed};
 use crate::nexrad::download_queue::QueueItem;
 use crate::{state, WorkbenchApp};
 use chrono::NaiveDate;
@@ -455,14 +456,21 @@ impl WorkbenchApp {
             return;
         };
         let now_secs = self.state.frame_now.secs();
-        if (end - start).abs() <= crate::SELECTION_BULK_CONFIRM_SECS {
-            self.acquisition.selection_fetch_target =
-                Some(crate::subsystem::acquisition::SelectionFetchTarget {
-                    range: (start, end),
-                    armed_at_secs: now_secs,
-                });
-        } else {
-            self.chrome.range_download_modal = Some((start, end));
+        match crate::core::acquisition::decide_selection_gate(
+            start,
+            end,
+            crate::SELECTION_BULK_CONFIRM_SECS,
+        ) {
+            crate::core::acquisition::SelectionGate::Arm => {
+                self.acquisition.selection_fetch_target =
+                    Some(crate::subsystem::acquisition::SelectionFetchTarget {
+                        range: (start, end),
+                        armed_at_secs: now_secs,
+                    });
+            }
+            crate::core::acquisition::SelectionGate::Confirm => {
+                self.chrome.range_download_modal = Some((start, end));
+            }
         }
     }
 
@@ -683,82 +691,5 @@ impl WorkbenchApp {
                     None => !s.sweeps.is_empty(),
                 }
         })
-    }
-}
-
-/// Whether the playhead-driven reactive prefetch (settled window + anchor
-/// fast-path) may run this frame. It is suppressed while the playhead is
-/// attached to the live edge (the stream owns acquisition there), while the
-/// queue is manually paused, or when the data-saver `autofetch_while_scrubbing`
-/// policy is off. Pure so the policy gate is unit-tested without a full app.
-fn reactive_prefetch_allowed(
-    playhead_attached: bool,
-    queue_paused: bool,
-    autofetch_while_scrubbing: bool,
-) -> bool {
-    !playhead_attached && !queue_paused && autofetch_while_scrubbing
-}
-
-/// The distinct UTC dates a `[start, end]` second-range touches (one, or two
-/// across a midnight boundary — the prefetch window is always well under 24h).
-fn dates_spanning(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
-    let mut dates = Vec::new();
-    for ts in [start_secs, end_secs] {
-        if let Some(dt) = chrono::DateTime::from_timestamp(ts, 0) {
-            let date = dt.date_naive();
-            if !dates.contains(&date) {
-                dates.push(date);
-            }
-        }
-    }
-    dates
-}
-
-/// Every UTC date a `[start, end]` second-range touches, in order. Unlike
-/// [`dates_spanning`] (which only samples the endpoints), this walks day by
-/// day so multi-day visible windows enumerate their interior dates too.
-fn dates_in_range(start_secs: i64, end_secs: i64) -> Vec<NaiveDate> {
-    let (Some(start_dt), Some(end_dt)) = (
-        chrono::DateTime::from_timestamp(start_secs, 0),
-        chrono::DateTime::from_timestamp(end_secs.max(start_secs), 0),
-    ) else {
-        return Vec::new();
-    };
-    let mut dates = Vec::new();
-    let mut date = start_dt.date_naive();
-    let last = end_dt.date_naive();
-    while date <= last {
-        dates.push(date);
-        let Some(next) = date.succ_opt() else { break };
-        date = next;
-    }
-    dates
-}
-
-#[cfg(test)]
-mod tests {
-    use super::reactive_prefetch_allowed;
-    use wasm_bindgen_test::wasm_bindgen_test;
-
-    /// With everything nominal (detached/free playhead, queue running, autofetch
-    /// on) the reactive prefetch runs.
-    #[wasm_bindgen_test]
-    fn prefetch_runs_when_free_and_autofetch_on() {
-        assert!(reactive_prefetch_allowed(false, false, true));
-    }
-
-    /// Data-saver: autofetch off suppresses the playhead-driven prefetch even
-    /// when the playhead is free and the queue is running.
-    #[wasm_bindgen_test]
-    fn prefetch_suppressed_when_autofetch_off() {
-        assert!(!reactive_prefetch_allowed(false, false, false));
-    }
-
-    /// The pre-existing gates still hold independently of the new policy: an
-    /// attached playhead or a paused queue both suppress prefetch.
-    #[wasm_bindgen_test]
-    fn prefetch_suppressed_when_attached_or_paused() {
-        assert!(!reactive_prefetch_allowed(true, false, true));
-        assert!(!reactive_prefetch_allowed(false, true, true));
     }
 }
