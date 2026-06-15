@@ -265,3 +265,109 @@ pub fn parse_retry_after(header: &str) -> Option<Duration> {
     let delta = parsed.with_timezone(&chrono::Utc) - now;
     delta.to_std().ok()
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn default_policy_constants_are_documented_values() {
+        assert_eq!(DEFAULT_POLICY.base, Duration::from_millis(250));
+        assert_eq!(DEFAULT_POLICY.cap, Duration::from_secs(4));
+        assert_eq!(DEFAULT_POLICY.max_attempts, 4);
+        assert_eq!(DEFAULT_POLICY.total_budget, Duration::from_secs(30));
+        assert_eq!(DEFAULT_POLICY.per_attempt_timeout, Duration::from_secs(15));
+    }
+
+    #[wasm_bindgen_test]
+    fn realtime_chunk_policy_constants_are_documented_values() {
+        assert_eq!(REALTIME_CHUNK_POLICY.base, Duration::from_millis(500));
+        assert_eq!(REALTIME_CHUNK_POLICY.cap, Duration::from_secs(8));
+        assert_eq!(REALTIME_CHUNK_POLICY.max_attempts, 8);
+        assert_eq!(REALTIME_CHUNK_POLICY.total_budget, Duration::from_secs(45));
+        assert_eq!(
+            REALTIME_CHUNK_POLICY.per_attempt_timeout,
+            Duration::from_secs(5)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_delay_honors_retry_after_when_below_ceiling() {
+        // cap is 4s, ceiling is 2× cap = 8s; a 3s hint passes through verbatim.
+        let d = compute_delay(&DEFAULT_POLICY, 1, Some(Duration::from_secs(3)));
+        assert_eq!(d, Duration::from_secs(3));
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_delay_clamps_retry_after_to_twice_the_cap() {
+        // A misbehaving server asking for 100s is pinned to 2× cap = 8s.
+        let d = compute_delay(&DEFAULT_POLICY, 1, Some(Duration::from_secs(100)));
+        assert_eq!(d, DEFAULT_POLICY.cap.saturating_mul(2));
+        assert_eq!(d, Duration::from_secs(8));
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_delay_full_jitter_stays_within_first_window() {
+        // failure_count 1 → window = base = 250ms. Full jitter ⇒ [0, 250ms).
+        for _ in 0..500 {
+            let d = compute_delay(&DEFAULT_POLICY, 1, None);
+            assert!(
+                d < Duration::from_millis(250),
+                "delay {d:?} exceeded window"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_delay_window_grows_then_saturates_at_cap() {
+        // failure_count 2 → base*2 = 500ms window.
+        for _ in 0..200 {
+            let d = compute_delay(&DEFAULT_POLICY, 2, None);
+            assert!(d < Duration::from_millis(500));
+        }
+        // Very large failure_count saturates at cap (shift capped at 20, then
+        // min(cap)). Window never exceeds cap = 4s.
+        for _ in 0..200 {
+            let d = compute_delay(&DEFAULT_POLICY, 30, None);
+            assert!(d <= DEFAULT_POLICY.cap, "delay {d:?} exceeded cap");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_delay_does_not_overflow_for_extreme_failure_counts() {
+        // Guards the 1u64 << shift path against panics on huge counts.
+        let d = compute_delay(&DEFAULT_POLICY, u32::MAX, None);
+        assert!(d <= DEFAULT_POLICY.cap);
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_retry_after_delta_seconds() {
+        assert_eq!(parse_retry_after("120"), Some(Duration::from_secs(120)));
+        assert_eq!(parse_retry_after("0"), Some(Duration::from_secs(0)));
+        // Surrounding whitespace is trimmed.
+        assert_eq!(parse_retry_after("  42 "), Some(Duration::from_secs(42)));
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_retry_after_rejects_garbage() {
+        assert_eq!(parse_retry_after(""), None);
+        assert_eq!(parse_retry_after("abc"), None);
+        assert_eq!(parse_retry_after("12.5"), None);
+        assert_eq!(parse_retry_after("-3"), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_retry_after_future_http_date_is_positive_duration() {
+        // A date comfortably in the future parses to a positive remaining delay.
+        let d = parse_retry_after("Wed, 21 Oct 2099 07:28:00 GMT");
+        assert!(d.is_some(), "expected Some for future date");
+        assert!(d.unwrap() > Duration::from_secs(0));
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_retry_after_past_http_date_is_none() {
+        // A past date has a negative delta → not representable as a Duration.
+        assert_eq!(parse_retry_after("Wed, 21 Oct 1999 07:28:00 GMT"), None);
+    }
+}

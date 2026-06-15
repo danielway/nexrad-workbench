@@ -270,3 +270,193 @@ pub fn continuous_color_scale(product: Product) -> ColorScale {
     };
     ColorScale::Continuous(ContinuousColorScale::new(stops))
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use nexrad_render::{ColorScale, Product};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const PRODUCTS: [Product; 7] = [
+        Product::Reflectivity,
+        Product::Velocity,
+        Product::SpectrumWidth,
+        Product::DifferentialReflectivity,
+        Product::CorrelationCoefficient,
+        Product::DifferentialPhase,
+        Product::ClutterFilterPower,
+    ];
+
+    #[wasm_bindgen_test]
+    fn product_value_range_exact_per_product() {
+        assert_eq!(product_value_range(Product::Reflectivity), (-32.0, 95.0));
+        assert_eq!(product_value_range(Product::Velocity), (-64.0, 64.0));
+        assert_eq!(product_value_range(Product::SpectrumWidth), (0.0, 30.0));
+        assert_eq!(
+            product_value_range(Product::DifferentialReflectivity),
+            (-2.0, 6.0)
+        );
+        assert_eq!(
+            product_value_range(Product::CorrelationCoefficient),
+            (0.0, 1.05)
+        );
+        assert_eq!(
+            product_value_range(Product::DifferentialPhase),
+            (0.0, 360.0)
+        );
+        assert_eq!(
+            product_value_range(Product::ClutterFilterPower),
+            (-20.0, 20.0)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn product_value_range_always_min_below_max() {
+        for p in PRODUCTS {
+            let (lo, hi) = product_value_range(p);
+            assert!(lo < hi, "range for {p:?} not ordered: {lo}..{hi}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn product_from_str_known_strings() {
+        assert!(matches!(product_from_str("velocity"), Product::Velocity));
+        assert!(matches!(
+            product_from_str("spectrum_width"),
+            Product::SpectrumWidth
+        ));
+        assert!(matches!(
+            product_from_str("differential_reflectivity"),
+            Product::DifferentialReflectivity
+        ));
+        assert!(matches!(
+            product_from_str("differential_phase"),
+            Product::DifferentialPhase
+        ));
+        assert!(matches!(
+            product_from_str("correlation_coefficient"),
+            Product::CorrelationCoefficient
+        ));
+        assert!(matches!(
+            product_from_str("clutter_filter_power"),
+            Product::ClutterFilterPower
+        ));
+        assert!(matches!(
+            product_from_str("reflectivity"),
+            Product::Reflectivity
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn product_from_str_unknown_and_miscased_fall_back_to_reflectivity() {
+        // Match is exact and case-sensitive: anything unrecognized → Reflectivity.
+        assert!(matches!(product_from_str(""), Product::Reflectivity));
+        assert!(matches!(
+            product_from_str("Velocity"),
+            Product::Reflectivity
+        ));
+        assert!(matches!(
+            product_from_str("VELOCITY"),
+            Product::Reflectivity
+        ));
+        assert!(matches!(product_from_str("vel"), Product::Reflectivity));
+        assert!(matches!(
+            product_from_str("nonsense"),
+            Product::Reflectivity
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn reflectivity_lut_has_expected_size() {
+        // 1024 entries × RGBA.
+        let lut = build_reflectivity_lut(-32.0, 95.0);
+        assert_eq!(lut.len(), 1024 * 4);
+    }
+
+    #[wasm_bindgen_test]
+    fn reflectivity_lut_low_end_is_fully_transparent_black() {
+        // dBZ at i=0 equals min_val (-32) which is below all anchors and below
+        // the 3 dBZ alpha ramp → black, zero alpha.
+        let lut = build_reflectivity_lut(-32.0, 95.0);
+        assert_eq!(&lut[0..4], &[0, 0, 0, 0]);
+    }
+
+    #[wasm_bindgen_test]
+    fn reflectivity_lut_high_end_is_fully_opaque() {
+        // The top of the scale is past the alpha ramp → alpha saturated.
+        let lut = build_reflectivity_lut(-32.0, 95.0);
+        let last_alpha = lut[lut.len() - 1];
+        assert_eq!(last_alpha, 255);
+    }
+
+    #[wasm_bindgen_test]
+    fn reflectivity_lut_alpha_is_monotonic_non_decreasing() {
+        // Alpha = anchor_alpha (non-decreasing) × low-end ramp (non-decreasing),
+        // sampled over monotonically increasing dBZ → must never step down.
+        let lut = build_reflectivity_lut(-32.0, 95.0);
+        let mut prev = 0u8;
+        for i in 0..1024 {
+            let a = lut[i * 4 + 3];
+            assert!(a >= prev, "alpha decreased at entry {i}: {prev} -> {a}");
+            prev = a;
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn reflectivity_lut_degenerate_zero_range_does_not_panic() {
+        // min == max → range 0; must still produce a full LUT.
+        let lut = build_reflectivity_lut(20.0, 20.0);
+        assert_eq!(lut.len(), 1024 * 4);
+    }
+
+    #[wasm_bindgen_test]
+    fn continuous_color_scale_is_continuous_for_every_product() {
+        for p in PRODUCTS {
+            let scale = continuous_color_scale(p);
+            assert!(
+                matches!(scale, ColorScale::Continuous(_)),
+                "expected continuous scale for {p:?}"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn srgb_linear_round_trips_at_endpoints_and_midtone() {
+        assert!((srgb_to_linear(0.0)).abs() < 1e-6);
+        assert!((srgb_to_linear(1.0) - 1.0).abs() < 1e-5);
+        for &c in &[0.0_f32, 0.04, 0.2, 0.5, 0.8, 1.0] {
+            let back = linear_to_srgb(srgb_to_linear(c));
+            assert!((back - c).abs() < 1e-4, "round trip failed for {c}: {back}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn oklab_round_trips_within_tolerance() {
+        for &(r, g, b) in &[
+            (0.2_f32, 0.7_f32, 0.2_f32),
+            (0.9, 0.1, 0.1),
+            (0.5, 0.5, 0.5),
+            (0.0, 0.0, 0.0),
+            (1.0, 1.0, 1.0),
+        ] {
+            let (ol, oa, ob) = srgb_to_oklab(r, g, b);
+            let (r2, g2, b2) = oklab_to_srgb(ol, oa, ob);
+            assert!((r2 - r).abs() < 2e-3, "r {r} -> {r2}");
+            assert!((g2 - g).abs() < 2e-3, "g {g} -> {g2}");
+            assert!((b2 - b).abs() < 2e-3, "b {b} -> {b2}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn smoothstep_clamps_and_interpolates() {
+        assert_eq!(smoothstep(3.0, 12.0, -100.0), 0.0);
+        assert_eq!(smoothstep(3.0, 12.0, 100.0), 1.0);
+        // Midpoint of the edges → 0.5 by symmetry of the cubic.
+        let mid = smoothstep(0.0, 10.0, 5.0);
+        assert!((mid - 0.5).abs() < 1e-6, "mid was {mid}");
+        // Monotonic non-decreasing within the band.
+        let a = smoothstep(0.0, 10.0, 2.0);
+        let b = smoothstep(0.0, 10.0, 7.0);
+        assert!(a < b);
+    }
+}
