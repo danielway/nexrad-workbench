@@ -756,3 +756,148 @@ fn align_pos(pos: Pos2, size: Vec2, align: egui::Align2) -> Pos2 {
     };
     Pos2::new(x, y)
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use eframe::egui::{Align2, Pos2, Vec2};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- cached_lon_range_deg ----
+    // v = range_km * (1/111) / cos(lat_rad)
+
+    #[wasm_bindgen_test]
+    fn lon_range_at_equator_no_lat_correction() {
+        // cos(0) = 1, so v = range_km / 111.
+        let v = cached_lon_range_deg(0.0, -97.0, 300.0);
+        assert!((v - 300.0 / 111.0).abs() < 1e-9, "got {}", v);
+    }
+
+    #[wasm_bindgen_test]
+    fn lon_range_grows_with_latitude() {
+        // cos(60deg) = 0.5, so the lon-degree extent roughly doubles vs equator.
+        let eq = cached_lon_range_deg(0.0, 10.0, 300.0);
+        let high = cached_lon_range_deg(60.0, 10.0, 300.0);
+        assert!(high > eq, "high={} eq={}", high, eq);
+        assert!((high - eq * 2.0).abs() < 1e-6, "got {}", high);
+    }
+
+    #[wasm_bindgen_test]
+    fn lon_range_scales_linearly_with_range_km() {
+        let single = cached_lon_range_deg(30.0, -80.0, 100.0);
+        let triple = cached_lon_range_deg(30.0, -80.0, 300.0);
+        assert!((triple - single * 3.0).abs() < 1e-9, "got {}", triple);
+    }
+
+    #[wasm_bindgen_test]
+    fn lon_range_repeat_call_is_stable() {
+        // Identical inputs hit the thread-local cache and must return identically.
+        let a = cached_lon_range_deg(42.5, -71.0, 300.0);
+        let b = cached_lon_range_deg(42.5, -71.0, 300.0);
+        assert!((a - b).abs() < 1e-12, "a={} b={}", a, b);
+    }
+
+    // ---- sweep_label_align ----
+    // Top sector (az not in [45,315)) -> CENTER_BOTTOM
+    // right (45..135) -> LEFT_CENTER; bottom (135..225) -> CENTER_TOP;
+    // left (225..315) -> RIGHT_CENTER.
+
+    #[wasm_bindgen_test]
+    fn sweep_align_north_is_center_bottom() {
+        assert!(sweep_label_align(0.0) == Align2::CENTER_BOTTOM);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_align_east_is_left_center() {
+        assert!(sweep_label_align(90.0) == Align2::LEFT_CENTER);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_align_south_is_center_top() {
+        assert!(sweep_label_align(180.0) == Align2::CENTER_TOP);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_align_west_is_right_center() {
+        assert!(sweep_label_align(270.0) == Align2::RIGHT_CENTER);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_align_boundaries() {
+        // 45.0 is included in the right sector; 44.9 falls in the top sector.
+        assert!(sweep_label_align(45.0) == Align2::LEFT_CENTER);
+        assert!(sweep_label_align(44.9) == Align2::CENTER_BOTTOM);
+        // 315.0 is excluded from the left sector -> top.
+        assert!(sweep_label_align(315.0) == Align2::CENTER_BOTTOM);
+        assert!(sweep_label_align(314.9) == Align2::RIGHT_CENTER);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_align_wraps_negative_via_rem_euclid() {
+        // -10 -> 350 -> top sector.
+        assert!(sweep_label_align(-10.0) == Align2::CENTER_BOTTOM);
+        // -90 -> 270 -> left sector.
+        assert!(sweep_label_align(-90.0) == Align2::RIGHT_CENTER);
+    }
+
+    // ---- align_pos ----
+
+    #[wasm_bindgen_test]
+    fn align_pos_min_min_is_identity() {
+        let p = align_pos(
+            Pos2::new(10.0, 20.0),
+            Vec2::new(40.0, 8.0),
+            Align2::LEFT_TOP,
+        );
+        assert!((p.x - 10.0).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 20.0).abs() < 1e-6, "y={}", p.y);
+    }
+
+    #[wasm_bindgen_test]
+    fn align_pos_center_bottom() {
+        // x centered (minus half width), y anchored to bottom (minus full height).
+        let p = align_pos(
+            Pos2::new(100.0, 50.0),
+            Vec2::new(40.0, 8.0),
+            Align2::CENTER_BOTTOM,
+        );
+        assert!((p.x - 80.0).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 42.0).abs() < 1e-6, "y={}", p.y);
+    }
+
+    #[wasm_bindgen_test]
+    fn align_pos_right_center() {
+        // x anchored to max (minus full width), y centered (minus half height).
+        let p = align_pos(
+            Pos2::new(100.0, 50.0),
+            Vec2::new(40.0, 8.0),
+            Align2::RIGHT_CENTER,
+        );
+        assert!((p.x - 60.0).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 46.0).abs() < 1e-6, "y={}", p.y);
+    }
+
+    #[wasm_bindgen_test]
+    fn align_pos_left_center() {
+        // x identity, y centered.
+        let p = align_pos(
+            Pos2::new(5.0, 30.0),
+            Vec2::new(20.0, 10.0),
+            Align2::LEFT_CENTER,
+        );
+        assert!((p.x - 5.0).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 25.0).abs() < 1e-6, "y={}", p.y);
+    }
+
+    #[wasm_bindgen_test]
+    fn align_pos_center_top() {
+        // x centered, y identity (Min).
+        let p = align_pos(
+            Pos2::new(100.0, 50.0),
+            Vec2::new(40.0, 8.0),
+            Align2::CENTER_TOP,
+        );
+        assert!((p.x - 80.0).abs() < 1e-6, "x={}", p.x);
+        assert!((p.y - 50.0).abs() < 1e-6, "y={}", p.y);
+    }
+}

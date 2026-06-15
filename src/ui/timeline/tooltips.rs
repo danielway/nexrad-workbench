@@ -590,3 +590,102 @@ fn render_scan_tooltip_content(
         );
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // --- format_time_range ---
+    // Uses use_local=false so DateTimeComponents goes through chrono's
+    // deterministic Utc path (no js_sys::Date, no host timezone).
+
+    #[wasm_bindgen_test]
+    fn time_range_formats_date_once_with_duration() {
+        // 1749591365 = 2025-06-10 21:36:05 UTC
+        // 1749591731 = 2025-06-10 21:42:11 UTC, 366s apart.
+        let s = format_time_range(1749591365.0, 1749591731.0, false);
+        assert!(s == "2025-06-10 21:36:05 - 21:42:11 (366s)", "got {s}");
+    }
+
+    #[wasm_bindgen_test]
+    fn time_range_floors_fractional_seconds() {
+        // Fractional parts on start/end must be floored before conversion,
+        // and the duration is rounded to whole seconds via {:.0}.
+        let s = format_time_range(1749591365.9, 1749591731.4, false);
+        assert!(s == "2025-06-10 21:36:05 - 21:42:11 (366s)", "got {s}");
+    }
+
+    #[wasm_bindgen_test]
+    fn time_range_zero_duration_when_start_equals_end() {
+        let s = format_time_range(1749591365.0, 1749591365.0, false);
+        assert!(s == "2025-06-10 21:36:05 - 21:36:05 (0s)", "got {s}");
+    }
+
+    #[wasm_bindgen_test]
+    fn time_range_clamps_negative_duration_to_zero() {
+        // end < start: the displayed end time is still the (earlier) end,
+        // but the duration is clamped to 0 by .max(0.0).
+        let s = format_time_range(1749591731.0, 1749591365.0, false);
+        assert!(s == "2025-06-10 21:42:11 - 21:36:05 (0s)", "got {s}");
+    }
+
+    #[wasm_bindgen_test]
+    fn time_range_zero_pads_all_fields() {
+        // 1704067205 = 2024-01-01 00:00:05 UTC
+        // 1704067271 = 2024-01-01 00:01:11 UTC, 66s apart.
+        let s = format_time_range(1704067205.0, 1704067271.0, false);
+        assert!(s == "2024-01-01 00:00:05 - 00:01:11 (66s)", "got {s}");
+    }
+
+    // --- vcp_detail_line ---
+
+    #[wasm_bindgen_test]
+    fn vcp_zero_is_unknown() {
+        assert!(vcp_detail_line(0) == "VCP unknown");
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_precipitation_mode() {
+        // 215 and 212 both map to Precipitation Mode (em-dash separator).
+        assert!(vcp_detail_line(215) == "VCP 215 \u{2014} Precipitation Mode");
+        assert!(vcp_detail_line(212) == "VCP 212 \u{2014} Precipitation Mode");
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_clear_air_mode() {
+        assert!(vcp_detail_line(31) == "VCP 31 \u{2014} Clear Air Mode");
+        assert!(vcp_detail_line(32) == "VCP 32 \u{2014} Clear Air Mode");
+        assert!(vcp_detail_line(35) == "VCP 35 \u{2014} Clear Air Mode");
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_severe_weather_mode() {
+        assert!(vcp_detail_line(12) == "VCP 12 \u{2014} Severe Weather Mode");
+        assert!(vcp_detail_line(121) == "VCP 121 \u{2014} Severe Weather Mode");
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_unknown_nonzero_has_no_mode_suffix() {
+        // A non-zero VCP not in any table prints just "VCP <n>".
+        assert!(vcp_detail_line(999) == "VCP 999");
+        assert!(vcp_detail_line(7) == "VCP 7");
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_detail_uses_em_dash_not_ascii_dash() {
+        // Guard the separator glyph: must be U+2014, never an ASCII hyphen.
+        let s = vcp_detail_line(215);
+        assert!(s.contains('\u{2014}'));
+        assert!(!s.contains(" - "));
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_zero_takes_priority_over_empty_mode_branch() {
+        // 0 has an empty mode, but the explicit vcp==0 check must win
+        // so it never renders the bare "VCP 0" form.
+        let s = vcp_detail_line(0);
+        assert!(s == "VCP unknown");
+        assert!(!s.contains('0'));
+    }
+}

@@ -1059,3 +1059,432 @@ pub(super) fn format_anchor_tally(t: &[(AnchorSource, u32); 3]) -> String {
         .collect::<Vec<_>>()
         .join("  ")
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::state::vcp_forecast::RateSource;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ── builders ────────────────────────────────────────────────────────
+
+    /// Default-ish arrival; callers tweak the few fields the helper reads.
+    fn arrival(sequence: u32, success_at: f64) -> ChunkArrivalStat {
+        ChunkArrivalStat::minimal_for_test(sequence, success_at)
+    }
+
+    fn bucket(chunk_type: &'static str, waveform: &'static str) -> BucketKey {
+        BucketKey {
+            chunk_type,
+            waveform,
+            channel: "RP",
+            first_in_sweep: false,
+        }
+    }
+
+    fn sweep(status: SweepStatus) -> SweepForecast {
+        SweepForecast {
+            elev_number: 1,
+            elev_angle: 0.5,
+            waveform: "CS".to_string(),
+            azimuth_rate_used: 20.0,
+            rate_source: RateSource::VcpMessage,
+            predicted_start: 0.0,
+            predicted_duration: 10.0,
+            predicted_chunks: None,
+            actual_start: None,
+            actual_end: None,
+            actual_chunks: None,
+            timing_source: None,
+            status,
+        }
+    }
+
+    fn snapshot(sweeps: Vec<SweepForecast>) -> VolumeForecastSnapshot {
+        VolumeForecastSnapshot {
+            vcp_number: 212,
+            vcp_name: None,
+            is_clear_air: false,
+            volume_start: 500.0,
+            predicted_volume_end: 800.0,
+            actual_volume_end: None,
+            expected_elevation_count: 14,
+            sweeps,
+            inter_volume_gap_secs: None,
+            predicted_inter_volume_gap_secs: None,
+        }
+    }
+
+    // ── total_empty_polls ──────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn total_empty_polls_sums_each_arrival() {
+        let mut a = arrival(1, 10.0);
+        a.empty_polls = 2;
+        let mut b = arrival(2, 11.0);
+        b.empty_polls = 3;
+        let c = arrival(3, 12.0); // 0
+        assert_eq!(total_empty_polls(&[a, b, c]), 5);
+    }
+
+    #[wasm_bindgen_test]
+    fn total_empty_polls_empty_slice_is_zero() {
+        assert_eq!(total_empty_polls(&[]), 0);
+    }
+
+    // ── fmt_elev ───────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn fmt_elev_full_triple_shows_one_based_index() {
+        let mut a = arrival(1, 0.0);
+        a.elevation_number = Some(3);
+        a.chunk_index_in_sweep = Some(0); // displayed as 0+1 = 1
+        a.chunks_in_sweep = Some(3);
+        assert_eq!(fmt_elev(&a), "3 (1/3)".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn fmt_elev_elev_only_when_indices_absent() {
+        let mut a = arrival(1, 0.0);
+        a.elevation_number = Some(7);
+        a.chunk_index_in_sweep = None;
+        a.chunks_in_sweep = None;
+        assert_eq!(fmt_elev(&a), "7".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn fmt_elev_dash_when_no_elevation() {
+        let a = arrival(1, 0.0); // elevation_number None
+        assert_eq!(fmt_elev(&a), "\u{2014}".to_string());
+    }
+
+    // ── fmt_physics ────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn fmt_physics_none_is_dash() {
+        assert_eq!(fmt_physics(None), "\u{2014}".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn fmt_physics_intra_with_chunk_duration() {
+        let b = PhysicsBreakdown {
+            case: IntervalCase::IntraSweep,
+            total_secs: 99.0,
+            chunk_duration_secs: Some(4.0),
+            inter_sweep_gap_secs: None,
+            waveform_penalty_secs: None,
+        };
+        // Uses chunk_duration when present, not total_secs.
+        assert_eq!(fmt_physics(Some(&b)), "intra 4.00s".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn fmt_physics_intra_falls_back_to_total_when_no_chunk_dur() {
+        let b = PhysicsBreakdown {
+            case: IntervalCase::IntraSweep,
+            total_secs: 2.5,
+            chunk_duration_secs: None,
+            inter_sweep_gap_secs: None,
+            waveform_penalty_secs: None,
+        };
+        assert_eq!(fmt_physics(Some(&b)), "intra ~2.50s".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn fmt_physics_inter_sweep_subtracts_wf_from_gap() {
+        // gap=2.0, wf=0.5 → displayed g = gap-wf = 1.50; wf=0.5; ch=3.0; total.
+        let b = PhysicsBreakdown {
+            case: IntervalCase::InterSweep,
+            total_secs: 5.0,
+            chunk_duration_secs: Some(3.0),
+            inter_sweep_gap_secs: Some(2.0),
+            waveform_penalty_secs: Some(0.5),
+        };
+        assert_eq!(
+            fmt_physics(Some(&b)),
+            "is g=1.50 (wf=0.5) ch=3.00 \u{2192} 5.00s".to_string()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn fmt_physics_inter_sweep_treats_missing_terms_as_zero() {
+        let b = PhysicsBreakdown {
+            case: IntervalCase::InterSweep,
+            total_secs: 1.0,
+            chunk_duration_secs: None,
+            inter_sweep_gap_secs: None,
+            waveform_penalty_secs: None,
+        };
+        assert_eq!(
+            fmt_physics(Some(&b)),
+            "is g=0.00 (wf=0.0) ch=0.00 \u{2192} 1.00s".to_string()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn fmt_physics_inter_volume_uses_total() {
+        let b = PhysicsBreakdown {
+            case: IntervalCase::InterVolume,
+            total_secs: 8.5,
+            chunk_duration_secs: None,
+            inter_sweep_gap_secs: None,
+            waveform_penalty_secs: None,
+        };
+        assert_eq!(fmt_physics(Some(&b)), "inter_vol 8.50s".to_string());
+    }
+
+    // ── count_statuses ─────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn count_statuses_tallies_each_variant() {
+        let snap = snapshot(vec![
+            sweep(SweepStatus::Complete),
+            sweep(SweepStatus::Complete),
+            sweep(SweepStatus::InProgress {
+                radials_received: 1,
+                chunks_received: 1,
+                chunks_expected: Some(3),
+            }),
+            sweep(SweepStatus::Future),
+        ]);
+        let (complete, in_progress, future) = count_statuses(&snap);
+        assert_eq!(complete, 2);
+        assert_eq!(in_progress, 1);
+        assert_eq!(future, 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn count_statuses_all_zero_when_no_sweeps() {
+        let snap = snapshot(vec![]);
+        let counts = count_statuses(&snap);
+        assert!(counts == (0usize, 0usize, 0usize));
+    }
+
+    // ── stats_on ───────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn stats_on_empty_is_none() {
+        assert!(stats_on(&[]).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn stats_on_odd_count_median_is_middle() {
+        // values [1, -3, 2] → mean 0, sorted [-3,1,2] median 1, max_abs 3.
+        let (mean, median, max_abs) = stats_on(&[1.0, -3.0, 2.0]).expect("some");
+        assert!((mean - 0.0).abs() < 1e-9);
+        assert!((median - 1.0).abs() < 1e-9);
+        assert!((max_abs - 3.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn stats_on_even_count_median_is_average_of_middle_pair() {
+        // [4,1,3,2] → mean 2.5, sorted [1,2,3,4] median (2+3)/2 = 2.5, max_abs 4.
+        let (mean, median, max_abs) = stats_on(&[4.0, 1.0, 3.0, 2.0]).expect("some");
+        assert!((mean - 2.5).abs() < 1e-9);
+        assert!((median - 2.5).abs() < 1e-9);
+        assert!((max_abs - 4.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn stats_on_max_abs_picks_largest_magnitude_negative() {
+        // single negative value: mean = median = -5, max_abs = 5.
+        let (mean, median, max_abs) = stats_on(&[-5.0]).expect("some");
+        assert!((mean + 5.0).abs() < 1e-9);
+        assert!((median + 5.0).abs() < 1e-9);
+        assert!((max_abs - 5.0).abs() < 1e-9);
+    }
+
+    // ── median_of ──────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn median_of_empty_is_none() {
+        assert!(median_of(vec![]).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn median_of_odd_returns_middle() {
+        let m = median_of(vec![3.0, 1.0, 2.0]).expect("some");
+        assert!((m - 2.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn median_of_even_returns_mean_of_middle_two() {
+        let m = median_of(vec![1.0, 2.0, 3.0, 4.0]).expect("some");
+        assert!((m - 2.5).abs() < 1e-9);
+    }
+
+    // ── collect_interval_errors_ms ─────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn collect_interval_errors_ms_uses_consecutive_pairs() {
+        // a0: collection 100. a1: collection 103, predicted_wait 2.0.
+        // interval = 3s; error_ms = (3 - 2) * 1000 = 1000.
+        let mut a0 = arrival(1, 0.0);
+        a0.collection_time_secs = Some(100.0);
+        let mut a1 = arrival(2, 0.0);
+        a1.collection_time_secs = Some(103.0);
+        a1.predicted_wait_secs = Some(2.0);
+        let out = collect_interval_errors_ms(&[a0, a1]);
+        assert_eq!(out.len(), 1);
+        assert!((out[0] - 1000.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn collect_interval_errors_ms_skips_when_data_missing() {
+        // a1 has no predicted_wait_secs → interval_error_ms returns None.
+        let mut a0 = arrival(1, 0.0);
+        a0.collection_time_secs = Some(100.0);
+        let mut a1 = arrival(2, 0.0);
+        a1.collection_time_secs = Some(103.0);
+        // predicted_wait_secs left None
+        assert!(collect_interval_errors_ms(&[a0, a1]).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn collect_interval_errors_ms_single_arrival_has_no_pairs() {
+        let a0 = arrival(1, 0.0);
+        assert!(collect_interval_errors_ms(&[a0]).is_empty());
+    }
+
+    // ── compute_per_bucket_stats ───────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn compute_per_bucket_stats_skips_arrivals_without_bucket() {
+        let a = arrival(1, 0.0); // bucket_key None
+        assert!(compute_per_bucket_stats(&[a]).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_per_bucket_stats_aggregates_lag_and_counts() {
+        // Two arrivals in the same bucket; lags 100 and 200 → median 150, n_lag 2.
+        let mut a0 = arrival(1, 0.0);
+        a0.bucket_key = Some(bucket("I", "CS"));
+        a0.availability_lag_ms = Some(100);
+        let mut a1 = arrival(2, 0.0);
+        a1.bucket_key = Some(bucket("I", "CS"));
+        a1.availability_lag_ms = Some(200);
+        let rows = compute_per_bucket_stats(&[a0, a1]);
+        assert_eq!(rows.len(), 1);
+        let row = &rows[0];
+        assert_eq!(row.n_lag, 2);
+        // n = max(pred_errs=0, lags=2, waits=0, 1) = 2.
+        assert_eq!(row.n, 2);
+        let med = row.median_lag_ms.expect("median lag");
+        assert!((med - 150.0).abs() < 1e-9);
+        // No prediction errors or waits were recorded.
+        assert!(row.median_pred_err_ms.is_none());
+        assert!(row.median_wait_after_empty_ms.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_per_bucket_stats_separate_buckets_sorted_by_key() {
+        // Different waveforms → distinct bucket keys; BTreeMap keys sort
+        // "I|B|RP|F" before "I|CS|RP|F" (uppercase 'B' < 'C').
+        let mut a0 = arrival(1, 0.0);
+        a0.bucket_key = Some(bucket("I", "CS"));
+        let mut a1 = arrival(2, 0.0);
+        a1.bucket_key = Some(bucket("I", "B"));
+        let rows = compute_per_bucket_stats(&[a0, a1]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].bucket.short(), "I|B|RP|F".to_string());
+        assert_eq!(rows[1].bucket.short(), "I|CS|RP|F".to_string());
+        // No measurable samples → n defaults to the floor of 1.
+        assert_eq!(rows[0].n, 1);
+    }
+
+    // ── scheduler_path_tally / format_path_tally ───────────────────────
+
+    #[wasm_bindgen_test]
+    fn scheduler_path_tally_counts_by_variant() {
+        let mut a0 = arrival(1, 0.0);
+        a0.scheduler_path = Some(SchedulerPath::Physics);
+        let mut a1 = arrival(2, 0.0);
+        a1.scheduler_path = Some(SchedulerPath::Physics);
+        let mut a2 = arrival(3, 0.0);
+        a2.scheduler_path = Some(SchedulerPath::Blended);
+        let a3 = arrival(4, 0.0); // None — ignored
+        let t = scheduler_path_tally(&[a0, a1, a2, a3]);
+        // Fixed order: StartConstant, Blended, Physics, Legacy.
+        assert!(t[0].0 == SchedulerPath::StartConstant && t[0].1 == 0);
+        assert!(t[1].0 == SchedulerPath::Blended && t[1].1 == 1);
+        assert!(t[2].0 == SchedulerPath::Physics && t[2].1 == 2);
+        assert!(t[3].0 == SchedulerPath::Legacy && t[3].1 == 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn format_path_tally_omits_zero_buckets() {
+        let t = [
+            (SchedulerPath::StartConstant, 0u32),
+            (SchedulerPath::Blended, 1),
+            (SchedulerPath::Physics, 2),
+            (SchedulerPath::Legacy, 0),
+        ];
+        // Only non-zero entries, joined by two spaces; short codes blend/phys.
+        assert_eq!(format_path_tally(&t), "blend=1  phys=2".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn format_path_tally_all_zero_is_empty_string() {
+        let t = [
+            (SchedulerPath::StartConstant, 0u32),
+            (SchedulerPath::Blended, 0),
+            (SchedulerPath::Physics, 0),
+            (SchedulerPath::Legacy, 0),
+        ];
+        assert_eq!(format_path_tally(&t), String::new());
+    }
+
+    // ── anchor_source_tally / format_anchor_tally ──────────────────────
+
+    #[wasm_bindgen_test]
+    fn anchor_source_tally_counts_by_variant() {
+        let mut a0 = arrival(1, 0.0);
+        a0.anchor_source = Some(AnchorSource::ObservedCollection);
+        let mut a1 = arrival(2, 0.0);
+        a1.anchor_source = Some(AnchorSource::UploadMinusDefault);
+        let a2 = arrival(3, 0.0); // None — ignored
+        let t = anchor_source_tally(&[a0, a1, a2]);
+        // Fixed order: ObservedCollection, UploadMinusMedian, UploadMinusDefault.
+        assert!(t[0].0 == AnchorSource::ObservedCollection && t[0].1 == 1);
+        assert!(t[1].0 == AnchorSource::UploadMinusMedian && t[1].1 == 0);
+        assert!(t[2].0 == AnchorSource::UploadMinusDefault && t[2].1 == 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn format_anchor_tally_omits_zero_buckets() {
+        let t = [
+            (AnchorSource::ObservedCollection, 2u32),
+            (AnchorSource::UploadMinusMedian, 0),
+            (AnchorSource::UploadMinusDefault, 1),
+        ];
+        // short codes: obs / default.
+        assert_eq!(format_anchor_tally(&t), "obs=2  default=1".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn format_anchor_tally_all_zero_is_empty() {
+        let t = [
+            (AnchorSource::ObservedCollection, 0u32),
+            (AnchorSource::UploadMinusMedian, 0),
+            (AnchorSource::UploadMinusDefault, 0),
+        ];
+        assert_eq!(format_anchor_tally(&t), String::new());
+    }
+
+    // ── format_time (deterministic constructor, not Date::now) ─────────
+
+    #[wasm_bindgen_test]
+    fn format_time_epoch_renders_iso_date_and_time() {
+        // secs=0 → 1970-01-01T00:00:00.000Z → "1970-01-01 00:00:00Z".
+        assert_eq!(format_time(0.0), "1970-01-01 00:00:00Z".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn format_time_known_instant_drops_subsecond_and_appends_z() {
+        // 2001-09-09T01:46:40Z is exactly 1_000_000_000 unix seconds.
+        assert_eq!(
+            format_time(1_000_000_000.0),
+            "2001-09-09 01:46:40Z".to_string()
+        );
+    }
+}

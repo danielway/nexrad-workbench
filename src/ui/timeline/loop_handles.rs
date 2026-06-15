@@ -255,3 +255,93 @@ mod tests {
         assert!(!snaps_to_live(now_x, now_x, false));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ── snaps_to_live: complementary cases the existing `tests` mod omits ──
+
+    #[wasm_bindgen_test]
+    fn snap_negative_side_just_past_threshold_does_not_snap() {
+        let now_x = 300.0;
+        // Mirror of the existing +epsilon case on the LEFT side of the now-line.
+        assert!(!snaps_to_live(now_x - LOOP_SNAP_LIVE_PX - 0.1, now_x, true));
+    }
+
+    #[wasm_bindgen_test]
+    fn snap_far_away_while_streaming_does_not_snap() {
+        let now_x = 300.0;
+        // Well outside the threshold (both directions) → never snaps.
+        assert!(!snaps_to_live(now_x + 1000.0, now_x, true));
+        assert!(!snaps_to_live(now_x - 1000.0, now_x, true));
+    }
+
+    #[wasm_bindgen_test]
+    fn snap_within_threshold_but_not_streaming_never_snaps() {
+        let now_x = 300.0;
+        // Even a value that WOULD snap while streaming must not snap when idle.
+        assert!(snaps_to_live(now_x + 5.0, now_x, true));
+        assert!(!snaps_to_live(now_x + 5.0, now_x, false));
+    }
+
+    // ── hit_rect: 44×44 target centered on x, extending UP from band_bottom ──
+
+    #[wasm_bindgen_test]
+    fn hit_rect_is_full_touch_target_size() {
+        let r = hit_rect(100.0, 200.0);
+        // LOOP_HANDLE_HIT_W × LOOP_HANDLE_HIT_H = 44 × 44.
+        assert!((r.width() - LOOP_HANDLE_HIT_W).abs() < 1e-4);
+        assert!((r.height() - LOOP_HANDLE_HIT_H).abs() < 1e-4);
+        assert!((r.width() - 44.0).abs() < 1e-4);
+        assert!((r.height() - 44.0).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn hit_rect_centered_on_x_and_anchored_to_band_bottom() {
+        let x = 100.0_f32;
+        let band_bottom = 200.0_f32;
+        let r = hit_rect(x, band_bottom);
+        // Horizontally centered on x: left = x - 22, right = x + 22.
+        assert!((r.left() - (x - LOOP_HANDLE_HIT_W / 2.0)).abs() < 1e-4);
+        assert!((r.right() - (x + LOOP_HANDLE_HIT_W / 2.0)).abs() < 1e-4);
+        assert!((r.left() - 78.0).abs() < 1e-4);
+        assert!((r.right() - 122.0).abs() < 1e-4);
+        // Bottom sits at band_bottom; top extends UP into the strip by HIT_H.
+        assert!((r.bottom() - band_bottom).abs() < 1e-4);
+        assert!((r.top() - (band_bottom - LOOP_HANDLE_HIT_H)).abs() < 1e-4);
+        assert!((r.top() - 156.0).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn hit_rect_center_tracks_x() {
+        // The rect's center x equals the requested x (within rounding).
+        let r = hit_rect(37.5, 80.0);
+        assert!((r.center().x - 37.5).abs() < 1e-4);
+    }
+
+    // ── fill_for: fused → live red; otherwise the edge color at alpha 150 ──
+
+    #[wasm_bindgen_test]
+    fn fill_for_fused_is_live_active_red() {
+        // When fused with the now dot, the tab fills with the bright live red,
+        // independent of the passed-in edge color. LIVE_ACTIVE is fully opaque,
+        // so all channels round-trip exactly through premultiplication.
+        let edge = Color32::from_rgb(180, 188, 210);
+        let f = fill_for(edge, true);
+        assert!(f.to_array() == [255, 80, 80, 255]);
+        assert!(f == LIVE_ACTIVE);
+    }
+
+    #[wasm_bindgen_test]
+    fn fill_for_unfused_washes_edge_color_to_alpha_150() {
+        // Not fused → from_rgba_unmultiplied(r, g, b, 150). Alpha is stored
+        // verbatim; rgb is premultiplied so only assert alpha exactly.
+        let edge = Color32::from_rgb(180, 188, 210);
+        let f = fill_for(edge, false);
+        assert!(f.a() == 150);
+        // It must NOT be the opaque live red used for the fused case.
+        assert!(f.a() != LIVE_ACTIVE.a());
+    }
+}

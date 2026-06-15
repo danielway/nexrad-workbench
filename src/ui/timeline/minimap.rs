@@ -429,3 +429,109 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    #[wasm_bindgen_test]
+    fn span_is_end_minus_start() {
+        let e = SessionExtent {
+            start: 1000.0,
+            end: 3500.0,
+        };
+        assert!(close(e.span(), 2500.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn span_floors_at_one_for_degenerate_extent() {
+        // start == end → raw span 0, floored to 1.0 so mapping never divides by 0.
+        let e = SessionExtent {
+            start: 500.0,
+            end: 500.0,
+        };
+        assert!(close(e.span(), 1.0));
+        // A negative (inverted) raw span also floors to 1.0.
+        let inverted = SessionExtent {
+            start: 800.0,
+            end: 600.0,
+        };
+        assert!(close(inverted.span(), 1.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn frac_of_on_degenerate_extent_is_finite_and_clamped() {
+        // span() floors to 1.0, so frac_of stays finite (no div-by-zero / NaN).
+        let e = SessionExtent {
+            start: 500.0,
+            end: 500.0,
+        };
+        let f = e.frac_of(500.0);
+        assert!(f.is_finite());
+        // 0 / 1 = 0, clamped within 0..=1.
+        assert!(close(f, 0.0));
+        // A timestamp one second past start maps to fraction 1.0 (1/1, clamped).
+        assert!(close(e.frac_of(501.0), 1.0));
+        // Anything below start clamps to 0.
+        assert!(close(e.frac_of(400.0), 0.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_streaming_only_no_data_uses_now_and_history() {
+        // No cached/shadow ranges, but streaming → extent spans
+        // [now - FALLBACK_HALF_SPAN_SECS, now], not the symmetric fallback window.
+        let now = 10_000.0;
+        let e = SessionExtent::compute([], [], now, true);
+        assert!(close(e.start, now - FALLBACK_HALF_SPAN_SECS));
+        assert!(close(e.end, now));
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_inverted_single_pair_falls_back_to_window_around_now() {
+        // Union of an inverted (end < start) pair yields hi <= lo, which is
+        // treated as degenerate → symmetric fallback window around `now`.
+        let now = 2000.0;
+        let e = SessionExtent::compute([(900.0, 100.0)], [], now, false);
+        assert!(close(e.start, now - FALLBACK_HALF_SPAN_SECS));
+        assert!(close(e.end, now + FALLBACK_HALF_SPAN_SECS));
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_shadows_only_unions_their_bounds() {
+        // Only archive-shadow ranges, not streaming → extent is their union.
+        let e = SessionExtent::compute([], [(300.0, 350.0), (100.0, 120.0)], 9999.0, false);
+        assert!(close(e.start, 100.0));
+        assert!(close(e.end, 350.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn ts_of_clamps_fraction_argument() {
+        let e = SessionExtent {
+            start: 1000.0,
+            end: 2000.0,
+        };
+        // Out-of-range fractions clamp before mapping.
+        assert!(close(e.ts_of(-1.0), 1000.0));
+        assert!(close(e.ts_of(2.0), 2000.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn window_indicator_colors_are_translucent_and_distinct() {
+        // Only the alpha channel survives from_rgba_unmultiplied unchanged
+        // (r/g/b are premultiplied), so assert alpha exactly.
+        let fill = minimap_window_fill();
+        let edge = minimap_window_edge();
+        assert!(fill.a() == 46);
+        assert!(edge.a() == 150);
+        // Both are translucent (not fully opaque) and the edge is more opaque
+        // than the fill so the outline reads over the body.
+        assert!(fill.a() < 255);
+        assert!(edge.a() < 255);
+        assert!(edge.a() > fill.a());
+    }
+}

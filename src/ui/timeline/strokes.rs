@@ -164,3 +164,67 @@ pub(super) fn fill_hatched_rect(painter: &Painter, rect: Rect, stroke: Stroke, s
         painter.extend(shapes);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use eframe::egui::Color32;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // `DashedBorder::uniform` must copy the single `dash`/`period` arguments
+    // into BOTH the horizontal and vertical fields, and default to all edges.
+    #[wasm_bindgen_test]
+    fn uniform_mirrors_dash_into_h_and_v() {
+        let stroke = Stroke::new(2.0, Color32::from_rgb(10, 20, 30));
+        let b = DashedBorder::uniform(stroke, 4.0, 8.0);
+
+        assert!((b.h_dash - 4.0).abs() < 1e-6);
+        assert!((b.v_dash - 4.0).abs() < 1e-6);
+        assert!((b.h_period - 8.0).abs() < 1e-6);
+        assert!((b.v_period - 8.0).abs() < 1e-6);
+        // h and v parameters are identical for a uniform border.
+        assert!((b.h_dash - b.v_dash).abs() < 1e-6);
+        assert!((b.h_period - b.v_period).abs() < 1e-6);
+    }
+
+    // The stroke passed in must be preserved verbatim.
+    #[wasm_bindgen_test]
+    fn uniform_preserves_stroke() {
+        let stroke = Stroke::new(1.5, Color32::from_rgb(200, 100, 50));
+        let b = DashedBorder::uniform(stroke, 3.0, 6.0);
+
+        assert!((b.stroke.width - 1.5).abs() < 1e-6);
+        // Color32 channels compared individually (opaque, no premultiply issue).
+        assert!(b.stroke.color.r() == 200);
+        assert!(b.stroke.color.g() == 100);
+        assert!(b.stroke.color.b() == 50);
+        assert!(b.stroke.color.a() == 255);
+    }
+
+    // A uniform border always dashes every edge.
+    #[wasm_bindgen_test]
+    fn uniform_sets_all_edges() {
+        let stroke = Stroke::new(1.0, Color32::WHITE);
+        let b = DashedBorder::uniform(stroke, 1.0, 2.0);
+
+        assert!(b.edges.top);
+        assert!(b.edges.bottom);
+        assert!(b.edges.left);
+        assert!(b.edges.right);
+    }
+
+    // `DashedEdges::ALL` is the constant with every edge enabled.
+    #[wasm_bindgen_test]
+    fn dashed_edges_all_is_every_edge_true() {
+        let e = DashedEdges::ALL;
+        assert!(e.top);
+        assert!(e.bottom);
+        assert!(e.left);
+        assert!(e.right);
+        // The boolean-as-usize count used by the drawing code is 2 sides each.
+        let horiz_sides = e.top as usize + e.bottom as usize;
+        let vert_sides = e.left as usize + e.right as usize;
+        assert!(horiz_sides == 2);
+        assert!(vert_sides == 2);
+    }
+}

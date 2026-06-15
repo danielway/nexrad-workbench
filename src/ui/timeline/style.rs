@@ -78,3 +78,61 @@ pub(crate) fn block_font() -> FontId {
 pub(crate) fn tick_font() -> FontId {
     FontId::monospace(9.0)
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- block_font() / tick_font() -------------------------------------
+    // Both pure constructors return a plain FontId value (no Ui/Painter),
+    // so size + family are directly assertable.
+
+    #[wasm_bindgen_test]
+    fn block_font_is_monospace_size_9() {
+        let f = block_font();
+        // size is f32; 9.0 is exactly representable.
+        assert!((f.size - 9.0).abs() < 1e-6);
+        assert!(f.family == eframe::egui::FontFamily::Monospace);
+    }
+
+    #[wasm_bindgen_test]
+    fn tick_font_is_monospace_size_9() {
+        let f = tick_font();
+        assert!((f.size - 9.0).abs() < 1e-6);
+        assert!(f.family == eframe::egui::FontFamily::Monospace);
+    }
+
+    #[wasm_bindgen_test]
+    fn block_and_tick_fonts_are_equal() {
+        // Both currently resolve to the same monospace 9.0 spec; FontId derives
+        // PartialEq so this pins that they stay in lockstep.
+        assert!(block_font() == tick_font());
+    }
+
+    // ---- TIMELINE_TOTAL_H derived constant ------------------------------
+
+    #[wasm_bindgen_test]
+    fn timeline_total_h_equals_sum_of_bands() {
+        // Documented invariant: total = minimap + tick + main + loop.
+        let expected = MINIMAP_SLIVER_H + TICK_LANE_H + MAIN_TRACK_H + LOOP_HANDLE_H;
+        assert!((TIMELINE_TOTAL_H - expected).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_total_h_is_eighty_px() {
+        // Hand-computed: 10 + 14 + 42 + 14 = 80.
+        assert!((TIMELINE_TOTAL_H - 80.0).abs() < 1e-6);
+    }
+
+    // ---- loop-handle hit/touch sizing -----------------------------------
+
+    #[wasm_bindgen_test]
+    fn loop_handle_hit_target_meets_44px_minimum() {
+        // Spec §12: touch targets must be >= 44px in both axes, and the hit
+        // rect must be wider than the thin painted glyph.
+        assert!(LOOP_HANDLE_HIT_H >= 44.0);
+        assert!(LOOP_HANDLE_HIT_W >= 44.0);
+        assert!(LOOP_HANDLE_HIT_W > LOOP_HANDLE_GLYPH_W);
+    }
+}
