@@ -254,3 +254,90 @@ mod tests {
         assert_eq!(detached.rt, None);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // Mirror the exact codec parse_from_url uses for the `v` parameter.
+    fn encode_v(vs: &ViewState) -> String {
+        let json = serde_json::to_vec(vs).unwrap();
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&json)
+    }
+    fn decode_v(s: &str) -> Option<ViewState> {
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(s)
+            .ok()?;
+        serde_json::from_slice::<ViewState>(&bytes).ok()
+    }
+
+    #[wasm_bindgen_test]
+    fn camera_mode_code_maps_each_variant() {
+        assert_eq!(camera_mode_code(crate::state::CameraMode::PlanetOrbit), 0);
+        assert_eq!(camera_mode_code(crate::state::CameraMode::SiteOrbit), 1);
+        assert_eq!(camera_mode_code(crate::state::CameraMode::FreeLook), 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn default_view_state_serializes_to_empty_object() {
+        // Every field is `skip_serializing_if = Option::is_none`, so a default
+        // ViewState carries no keys — keeps shared URLs minimal.
+        let json = serde_json::to_string(&ViewState::default()).unwrap();
+        assert_eq!(json, "{}");
+    }
+
+    #[wasm_bindgen_test]
+    fn view_state_round_trips_through_v_blob_codec() {
+        let vs = ViewState {
+            mz: Some(1.5),
+            tz: Some(4.0),
+            vm: Some(1),
+            cm: Some(2),
+            cd: Some(3.25),
+            fp: Some([1.0, 2.0, 3.0]),
+            v3d: Some(true),
+            rt: Some(true),
+            ..Default::default()
+        };
+        let decoded = decode_v(&encode_v(&vs)).expect("round trip");
+        assert_eq!(decoded, vs);
+    }
+
+    #[wasm_bindgen_test]
+    fn round_trip_preserves_none_fields_as_none() {
+        // Fields left None must come back None (not defaulted to Some(0)).
+        let vs = ViewState {
+            mz: Some(2.0),
+            ..Default::default()
+        };
+        let decoded = decode_v(&encode_v(&vs)).unwrap();
+        assert_eq!(decoded.mz, Some(2.0));
+        assert_eq!(decoded.tz, None);
+        assert_eq!(decoded.cm, None);
+        assert_eq!(decoded.rt, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn malformed_v_blob_is_rejected_not_panicking() {
+        // parse_from_url silently ignores a bad `v`; the codec must return None
+        // rather than panic on invalid base64 or invalid JSON.
+        assert!(decode_v("!!!not base64!!!").is_none());
+        // Valid base64 but not valid ViewState JSON.
+        let not_json = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"\xff\xff\xff");
+        assert!(decode_v(&not_json).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn from_state_default_sets_core_view_fields() {
+        let state = crate::state::AppState::default();
+        let playback = crate::state::PlaybackState::default();
+        let vs = ViewState::from_state(&state, &playback, false);
+        // These are always populated (Some) regardless of live state.
+        assert!(vs.mz.is_some());
+        assert!(vs.tz.is_some());
+        assert!(vs.vm.is_some());
+        assert!(vs.cm.is_some());
+        assert_eq!(vs.tz, Some(playback.timeline_zoom));
+    }
+}
