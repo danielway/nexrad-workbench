@@ -680,3 +680,178 @@ mod tests {
         assert_eq!(parsed, WorkerErrorKind::Unknown);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // The existing `mod tests` pins `RequestType::as_str` exact strings and
+    // round-trips `ResponseType` through `parse(as_str())`. A consistent typo
+    // in BOTH `ResponseType::as_str` and `ResponseType::parse` would survive
+    // that round-trip. Pin the exact `ResponseType::as_str` wire literals here
+    // so the write direction is independently anchored against worker.js.
+    #[wasm_bindgen_test]
+    fn response_type_as_str_exact_wire_literals() {
+        assert_eq!(ResponseType::Ready.as_str(), "ready");
+        assert_eq!(ResponseType::Ingested.as_str(), "ingested");
+        assert_eq!(ResponseType::ChunkIngested.as_str(), "chunk_ingested");
+        assert_eq!(ResponseType::Decoded.as_str(), "decoded");
+        assert_eq!(ResponseType::LiveDecoded.as_str(), "live_decoded");
+        assert_eq!(ResponseType::VolumeDecoded.as_str(), "volume_decoded");
+        assert_eq!(ResponseType::Error.as_str(), "error");
+    }
+
+    // The existing roundtrip test drives `parse` from `as_str`. Drive the
+    // opposite direction with literals hand-written to match worker.js, so a
+    // changed string in `parse` alone (without touching `as_str`) is caught.
+    #[wasm_bindgen_test]
+    fn response_type_parse_from_literal_wire_strings() {
+        assert_eq!(ResponseType::parse("ready"), Some(ResponseType::Ready));
+        assert_eq!(
+            ResponseType::parse("ingested"),
+            Some(ResponseType::Ingested)
+        );
+        assert_eq!(
+            ResponseType::parse("chunk_ingested"),
+            Some(ResponseType::ChunkIngested)
+        );
+        assert_eq!(ResponseType::parse("decoded"), Some(ResponseType::Decoded));
+        assert_eq!(
+            ResponseType::parse("live_decoded"),
+            Some(ResponseType::LiveDecoded)
+        );
+        assert_eq!(
+            ResponseType::parse("volume_decoded"),
+            Some(ResponseType::VolumeDecoded)
+        );
+        assert_eq!(ResponseType::parse("error"), Some(ResponseType::Error));
+    }
+
+    // `parse` is whitespace- and substring-sensitive: nothing trims or does a
+    // contains-match, so adornments must miss. Guards against an accidental
+    // loosening of the exact-match dispatch.
+    #[wasm_bindgen_test]
+    fn response_type_parse_rejects_adorned_strings() {
+        assert_eq!(ResponseType::parse(" ready"), None);
+        assert_eq!(ResponseType::parse("ready "), None);
+        assert_eq!(ResponseType::parse("ready\n"), None);
+        assert_eq!(ResponseType::parse("READY"), None);
+        // "decode" is a prefix of "decoded" but not an exact tag.
+        assert_eq!(ResponseType::parse("decode"), None);
+        // "render" is a REQUEST tag, never a valid response tag.
+        assert_eq!(ResponseType::parse("render"), None);
+        assert_eq!(ResponseType::parse("init"), None);
+    }
+
+    // The existing tests only exercise the DESERIALIZE direction of
+    // WorkerErrorKind. Pin the SERIALIZE direction: each unit variant must
+    // emit its `#[serde(rename_all = "snake_case")]` tag as a bare JS string.
+    // Read it back as `String` via the same serde_wasm_bindgen idiom the
+    // existing tests use, so no JS-object construction is needed.
+    #[wasm_bindgen_test]
+    fn worker_error_kind_serializes_to_snake_case_strings() {
+        let cases = [
+            (WorkerErrorKind::QuotaExceeded, "quota_exceeded"),
+            (WorkerErrorKind::IdbFailure, "idb_failure"),
+            (WorkerErrorKind::NotFound, "not_found"),
+            (WorkerErrorKind::InvalidData, "invalid_data"),
+            (WorkerErrorKind::InitFailed, "init_failed"),
+            (WorkerErrorKind::Unknown, "unknown"),
+        ];
+        for (kind, expected) in cases {
+            let v = serde_wasm_bindgen::to_value(&kind).unwrap();
+            let s: String = serde_wasm_bindgen::from_value(v).unwrap();
+            assert_eq!(s, expected, "serialize tag wrong for {:?}", kind);
+        }
+    }
+
+    // A full enum->JS->enum round-trip for every variant. Distinct from the
+    // existing string->enum test (which never starts from a Rust enum value)
+    // and from the serialize test above (which inspects the intermediate
+    // string). The `#[serde(other)] Unknown` variant round-trips cleanly
+    // because it also carries the explicit "unknown" tag in the snake_case
+    // rename table.
+    #[wasm_bindgen_test]
+    fn worker_error_kind_enum_value_roundtrip() {
+        for kind in [
+            WorkerErrorKind::QuotaExceeded,
+            WorkerErrorKind::IdbFailure,
+            WorkerErrorKind::NotFound,
+            WorkerErrorKind::InvalidData,
+            WorkerErrorKind::InitFailed,
+            WorkerErrorKind::Unknown,
+        ] {
+            let v = serde_wasm_bindgen::to_value(&kind).unwrap();
+            let back: WorkerErrorKind = serde_wasm_bindgen::from_value(v).unwrap();
+            assert_eq!(back, kind, "enum round-trip failed for {:?}", kind);
+        }
+    }
+
+    // The private `#[serde(default = ...)]` helper functions are the source of
+    // truth for what a worker response gets when a field is absent. They are
+    // pure and deterministic but otherwise only exercised implicitly. Pin
+    // their exact values: these feed shader uniforms / product labels, so a
+    // silent change would corrupt decode behavior for sparse messages.
+    #[wasm_bindgen_test]
+    fn serde_default_helpers_return_expected_values() {
+        // Default product label used by both DecodedResultMsg and
+        // VolumeDecodedResultMsg.
+        assert_eq!(default_product(), "reflectivity");
+
+        // Scale default of 1.0 makes `physical = (raw - offset) / scale` a
+        // no-op divisor when the worker omits the field.
+        assert!((default_scale() - 1.0).abs() < f32::EPSILON);
+
+        // Azimuth spacing default is the canonical 1-degree super-resolution
+        // step.
+        assert!((default_azimuth_spacing_deg() - 1.0).abs() < f32::EPSILON);
+
+        // Word size default of 2 bytes => R16UI texture path.
+        assert_eq!(default_word_size(), 2u8);
+
+        // Error defaults: human string + Unknown category.
+        assert_eq!(default_error_message(), "Unknown worker error");
+        assert_eq!(default_error_kind(), WorkerErrorKind::Unknown);
+    }
+
+    // Cross-check: no RequestType wire string collides with any ResponseType
+    // wire string EXCEPT where intended (they share no literals). Worker.js
+    // dispatches requests and responses on the same `type` key namespace; a
+    // collision would route a response into the request handler. Computed from
+    // the two as_str tables directly.
+    #[wasm_bindgen_test]
+    fn request_and_response_wire_strings_are_disjoint() {
+        let requests = [
+            RequestType::Init.as_str(),
+            RequestType::Ingest.as_str(),
+            RequestType::IngestChunk.as_str(),
+            RequestType::Render.as_str(),
+            RequestType::RenderLive.as_str(),
+            RequestType::RenderVolume.as_str(),
+        ];
+        let responses = [
+            ResponseType::Ready.as_str(),
+            ResponseType::Ingested.as_str(),
+            ResponseType::ChunkIngested.as_str(),
+            ResponseType::Decoded.as_str(),
+            ResponseType::LiveDecoded.as_str(),
+            ResponseType::VolumeDecoded.as_str(),
+            ResponseType::Error.as_str(),
+        ];
+        for req in requests {
+            for resp in responses {
+                assert!(req != resp, "request and response share wire tag {:?}", req);
+            }
+        }
+        // And every response tag parses back to a response (sanity that the
+        // disjoint-from-requests set is the same set `parse` accepts).
+        for resp in responses {
+            assert!(
+                ResponseType::parse(resp).is_some(),
+                "response tag {:?} not parseable",
+                resp
+            );
+        }
+    }
+}

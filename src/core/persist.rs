@@ -169,3 +169,150 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::state::RadarProduct;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // Same baseline-snapshot idiom as `mod tests::fixture`: a prefs snapshot
+    // matching the (possibly mutated) fixture state, so a no-change frame emits
+    // no SavePreferences. Callers mutate `state`/`playback` BEFORE snapshotting
+    // when they want an unchanged-prefs frame, or pass the un-mutated `saved`
+    // when they want to force a change.
+    fn fixture() -> (AppState, PlaybackState, UserPreferences) {
+        let state = AppState::default();
+        let playback = PlaybackState::default();
+        let prefs = UserPreferences::from_app_state(&state, &playback, None);
+        (state, playback, prefs)
+    }
+
+    #[wasm_bindgen_test]
+    fn throttle_constant_is_one_second() {
+        // The gate compares against this constant; pin it so a silent change to
+        // the throttle window is caught.
+        assert!((PERSIST_THROTTLE_SECS - 1.0).abs() < 1e-12);
+    }
+
+    #[wasm_bindgen_test]
+    fn now_before_last_push_is_suppressed() {
+        // Negative elapsed (clock ran backwards / marker in the future) is still
+        // `< 1.0`, so the gate suppresses and the no-op leaves tracking untouched.
+        let (state, playback, saved) = fixture();
+        let d = decide_persist(50.0, 100.0, &state, &playback, false, None, &saved);
+        assert_eq!(d, PersistDecision::default());
+        assert!(d.effects.is_empty());
+        assert!(d.last_url_push_secs.is_none());
+        assert!(d.saved_preferences.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn just_below_boundary_is_suppressed() {
+        // 0.9999s elapsed is strictly `< 1.0` → suppressed. Guards the boundary
+        // from the suppressed side (the existing test only checks 0.5s and the
+        // exactly-1.0 pass).
+        let (state, playback, saved) = fixture();
+        let d = decide_persist(100.9999, 100.0, &state, &playback, false, None, &saved);
+        assert!(d.effects.is_empty());
+        assert!(d.last_url_push_secs.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn just_above_boundary_fires_and_marks_exact_now() {
+        // 1.0001s elapsed (just past the window) fires, and the new throttle
+        // marker is exactly `now_secs` — not rounded, not the elapsed delta.
+        let (state, playback, saved) = fixture();
+        let now = 100.0001 + 1.0; // 101.0001
+        let d = decide_persist(now, 100.0, &state, &playback, false, None, &saved);
+        assert_eq!(d.last_url_push_secs, Some(now));
+        assert!(matches!(d.effects.first(), Some(Effect::PushUrl(_))));
+    }
+
+    #[wasm_bindgen_test]
+    fn url_push_carries_product_lat_lon_and_time() {
+        // The existing `url_push_carries_view_fields` only asserts site/dev/rt.
+        // Cover the remaining scalar payload: product short_code, center coords,
+        // and the playback position threaded through as `time`.
+        let (mut state, mut playback, _) = fixture();
+        state.viz_state.product = RadarProduct::Velocity; // short_code "VEL"
+        state.viz_state.center_lat = 41.25;
+        state.viz_state.center_lon = -93.75;
+        playback.set_playback_position(1_700_000_000.5);
+        // Snapshot AFTER mutating so prefs are unchanged → single URL effect.
+        let saved = UserPreferences::from_app_state(&state, &playback, None);
+
+        let d = decide_persist(200.0, 100.0, &state, &playback, false, None, &saved);
+        match &d.effects[0] {
+            Effect::PushUrl(p) => {
+                assert_eq!(p.product, "VEL");
+                assert!((p.lat - 41.25).abs() < 1e-9);
+                assert!((p.lon - (-93.75)).abs() < 1e-9);
+                assert!((p.time - 1_700_000_000.5).abs() < 1e-6);
+            }
+            other => panic!("expected PushUrl, got {:?}", other),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn url_push_view_matches_from_state() {
+        // The view blob in the effect must be exactly what ViewState::from_state
+        // produces for the same (state, playback, is_live) — the doc-comment
+        // contract that the mapping lives in one place.
+        let (state, playback, saved) = fixture();
+        let is_live = true;
+        let d = decide_persist(200.0, 100.0, &state, &playback, is_live, None, &saved);
+        let expected = ViewState::from_state(&state, &playback, is_live);
+        match &d.effects[0] {
+            Effect::PushUrl(p) => assert_eq!(p.view, expected),
+            other => panic!("expected PushUrl, got {:?}", other),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn changed_mping_key_emits_save_carrying_the_key() {
+        // Distinct from the existing `use_local_time` change test: the mPING key
+        // is sourced separately (passed in, not on AppState), so a key that
+        // differs from the saved snapshot's None must trigger a SavePreferences
+        // whose payload carries the new key.
+        let (state, playback, saved) = fixture(); // saved.mping_api_key == None
+        let d = decide_persist(
+            200.0,
+            100.0,
+            &state,
+            &playback,
+            false,
+            Some("ABC123".to_string()),
+            &saved,
+        );
+        assert_eq!(d.effects.len(), 2);
+        match &d.effects[1] {
+            Effect::SavePreferences(p) => {
+                assert_eq!(p.mping_api_key.as_deref(), Some("ABC123"));
+            }
+            other => panic!("expected SavePreferences, got {:?}", other),
+        }
+        // The reported snapshot mirrors what was saved (key included).
+        let snap = d.saved_preferences.expect("snapshot when changed");
+        assert_eq!(snap.mping_api_key.as_deref(), Some("ABC123"));
+    }
+
+    #[wasm_bindgen_test]
+    fn saved_snapshot_equals_save_effect_payload() {
+        // When prefs change, the returned `saved_preferences` snapshot the shell
+        // should adopt must be byte-for-byte the same value carried in the
+        // SavePreferences effect — otherwise the shell's tracking would drift
+        // from what was persisted and re-save every frame.
+        let (mut state, playback, saved) = fixture();
+        state.advanced_mode = !saved.advanced_mode; // flip a prefs-backed field
+        let d = decide_persist(200.0, 100.0, &state, &playback, false, None, &saved);
+        let snap = d.saved_preferences.clone().expect("snapshot when changed");
+        let payload = match &d.effects[1] {
+            Effect::SavePreferences(p) => (**p).clone(),
+            other => panic!("expected SavePreferences, got {:?}", other),
+        };
+        assert_eq!(snap, payload);
+        // And it reflects the mutated field, not the stale `saved`.
+        assert_eq!(snap.advanced_mode, state.advanced_mode);
+    }
+}

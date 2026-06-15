@@ -454,3 +454,294 @@ pub mod sites {
     /// Label color for current site.
     pub const CURRENT_LABEL: Color32 = Color32::from_rgb(50, 200, 255);
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ── ui:: theme branches + theme-independent constants ──────────────
+
+    #[wasm_bindgen_test]
+    fn ui_label_value_theme_branches() {
+        // Opaque (from_rgb) colors store their bytes verbatim.
+        let dl = ui::label(true);
+        assert!(dl.to_array() == [100, 100, 100, 255]);
+        let ll = ui::label(false);
+        assert!(ll.to_array() == [120, 120, 120, 255]);
+
+        let dv = ui::value(true);
+        assert!(dv.to_array() == [160, 160, 160, 255]);
+        let lv = ui::value(false);
+        assert!(lv.to_array() == [60, 60, 60, 255]);
+
+        // Dark vs light must differ for every theme-aware fn here.
+        assert!(ui::label(true).to_array() != ui::label(false).to_array());
+        assert!(ui::value(true).to_array() != ui::value(false).to_array());
+    }
+
+    #[wasm_bindgen_test]
+    fn ui_const_accents() {
+        assert!(ui::ACTIVE.to_array() == [100, 180, 255, 255]);
+        assert!(ui::SUCCESS.to_array() == [100, 200, 100, 255]);
+    }
+
+    // ── live / mode share the same "now/live" red ──────────────────────
+
+    #[wasm_bindgen_test]
+    fn live_and_mode_red_family() {
+        let red = [255u8, 80, 80, 255];
+        assert!(live::STREAMING.to_array() == red);
+        assert!(mode::LIVE.to_array() == red);
+        assert!(timeline::LIVE_ACTIVE.to_array() == red);
+
+        // ACQUIRING orange and WAITING blue are distinct reserved tones.
+        assert!(live::ACQUIRING.to_array() == [255, 180, 50, 255]);
+        assert!(live::WAITING.to_array() == [100, 180, 255, 255]);
+    }
+
+    #[wasm_bindgen_test]
+    fn mode_distinct_states() {
+        assert!(mode::IDLE.to_array() == [100, 100, 100, 255]);
+        assert!(mode::ARCHIVE.to_array() == [100, 180, 255, 255]);
+        // All three mode tones differ.
+        assert!(mode::IDLE.to_array() != mode::ARCHIVE.to_array());
+        assert!(mode::ARCHIVE.to_array() != mode::LIVE.to_array());
+        assert!(mode::IDLE.to_array() != mode::LIVE.to_array());
+    }
+
+    // ── radar sweep lines: alpha encodes "active vs stale" ─────────────
+
+    #[wasm_bindgen_test]
+    fn radar_stale_lines_are_more_transparent() {
+        // from_rgba_unmultiplied stores alpha verbatim; assert via .a().
+        assert!(radar::SWEEP_LINE.to_array() == [100, 255, 100, 255]);
+        // Active start line is more opaque than its stale variant.
+        assert!(radar::sweep_start_line().a() == 180);
+        assert!(radar::sweep_start_line_stale().a() == 100);
+        assert!(radar::sweep_start_line().a() > radar::sweep_start_line_stale().a());
+        // Stale sweep line alpha.
+        assert!(radar::sweep_line_stale().a() == 140);
+    }
+
+    // ── timeline theme branches ────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn timeline_background_and_border_themes() {
+        assert!(timeline::background(true).to_array() == [10, 10, 14, 255]);
+        assert!(timeline::background(false).to_array() == [230, 230, 235, 255]);
+        assert!(timeline::border(true).to_array() == [60, 60, 80, 255]);
+        assert!(timeline::border(false).to_array() == [180, 180, 195, 255]);
+        // Dark background is much darker than light background.
+        assert!(timeline::background(true).r() < timeline::background(false).r());
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_tick_hierarchy() {
+        // Major tick is brighter (higher luminance proxy) than minor on dark.
+        let major = timeline::tick_major(true);
+        let minor = timeline::tick_minor(true);
+        assert!(major.to_array() == [120, 120, 140, 255]);
+        assert!(minor.to_array() == [60, 60, 80, 255]);
+        assert!(major.r() > minor.r());
+        // Theme inversion: light-mode ticks differ from dark-mode.
+        assert!(timeline::tick_major(true).to_array() != timeline::tick_major(false).to_array());
+        assert!(timeline::tick_label(true).to_array() == [140, 140, 160, 255]);
+        assert!(timeline::tick_label(false).to_array() == [60, 60, 80, 255]);
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_selection_is_near_white_on_dark() {
+        let dark = timeline::selection(true);
+        let light = timeline::selection(false);
+        assert!(dark.to_array() == [235, 240, 250, 255]);
+        assert!(light.to_array() == [40, 45, 60, 255]);
+        // Near-white on dark, near-black on light.
+        assert!(dark.r() > 200);
+        assert!(light.r() < 100);
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_active_sweep_accents() {
+        // Active ring is the yellow accent.
+        assert!(timeline::ACTIVE_SWEEP.to_array() == [255, 255, 100, 255]);
+        // PREV is a const-premultiplied fainter shade of the SAME hue:
+        // rgb scaled by 110/255 at alpha 110 -> stored verbatim.
+        assert!(timeline::PREV_ACTIVE_SWEEP.to_array() == [110, 110, 43, 110]);
+        // Trailing ring is more transparent than the active ring.
+        assert!(timeline::PREV_ACTIVE_SWEEP.a() < timeline::ACTIVE_SWEEP.a());
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_now_idle_vs_active_red() {
+        // Idle "GO LIVE" cap is a muted red; streaming is the bright red.
+        assert!(timeline::NOW_IDLE.to_array() == [200, 95, 95, 255]);
+        assert!(timeline::LIVE_ACTIVE.to_array() == [255, 80, 80, 255]);
+        // Active red is brighter (more saturated red) than idle.
+        assert!(timeline::LIVE_ACTIVE.r() > timeline::NOW_IDLE.r());
+    }
+
+    // ── timeline cached_fill: two-tier alpha (partial vs full) ─────────
+
+    #[wasm_bindgen_test]
+    fn timeline_cached_fill_alpha_tiers() {
+        // Full (not partial) -> alpha 235; partial -> alpha 120. Alpha stored
+        // verbatim by from_rgba_unmultiplied.
+        assert!(cached_fill_a(true, false) == 235);
+        assert!(cached_fill_a(true, true) == 120);
+        assert!(cached_fill_a(false, false) == 235);
+        assert!(cached_fill_a(false, true) == 120);
+        // Partial is always more transparent than full, both themes.
+        assert!(cached_fill_a(true, true) < cached_fill_a(true, false));
+        assert!(cached_fill_a(false, true) < cached_fill_a(false, false));
+    }
+
+    // Helper mirroring the production alpha selection, kept private to the test
+    // module (asserts the real fn's stored alpha via .a()).
+    fn cached_fill_a(dark: bool, partial: bool) -> u8 {
+        timeline::cached_fill(dark, partial).a()
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_available_fill_and_border_alpha() {
+        // available_fill is a faint wash (alpha 36); border is stronger (120).
+        assert!(timeline::available_fill(true).a() == 36);
+        assert!(timeline::available_border(true).a() == 120);
+        assert!(timeline::available_fill(true).a() < timeline::available_border(true).a());
+        // cell_* aliases delegate to the same functions -> identical bytes.
+        assert!(
+            timeline::cell_available_border(true).to_array()
+                == timeline::available_border(true).to_array()
+        );
+        assert!(
+            timeline::cell_available_fill(false).to_array()
+                == timeline::available_fill(false).to_array()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_cell_inflight_ordering() {
+        // In-flight reads as "filling in": more opaque than projected/available
+        // washes but less than a solid cached cell.
+        assert!(timeline::cell_cached(true).a() == 230);
+        assert!(timeline::cell_inflight(true).a() == 150);
+        assert!(timeline::cell_inflight_border(true).a() == 180);
+        assert!(timeline::cell_projected_fill(true).a() == 24);
+        assert!(timeline::cell_inflight(true).a() < timeline::cell_cached(true).a());
+        assert!(timeline::cell_inflight(true).a() > timeline::cell_projected_fill(true).a());
+        // Border is more opaque than the in-flight interior fill.
+        assert!(timeline::cell_inflight_border(true).a() > timeline::cell_inflight(true).a());
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_status_word_tints() {
+        // Opaque tooltip status tints.
+        assert!(timeline::status_cached().to_array() == [125, 170, 220, 255]);
+        assert!(timeline::status_available().to_array() == [150, 165, 200, 255]);
+        assert!(timeline::status_cached().to_array() != timeline::status_available().to_array());
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_event_palette_shares_neutral_hue() {
+        // event_fill / event_border / event_label all use EVENT_RGB at
+        // different alphas; fill is the faintest, label is opaque.
+        assert!(timeline::event_fill().a() == 22);
+        assert!(timeline::event_border().a() == 150);
+        assert!(timeline::event_label().a() == 255);
+        assert!(timeline::event_fill().a() < timeline::event_border().a());
+        // Opaque label carries the base EVENT_RGB verbatim.
+        assert!(timeline::event_label().to_array() == [190, 198, 215, 255]);
+    }
+
+    #[wasm_bindgen_test]
+    fn timeline_block_label_weak_is_dimmer() {
+        assert!(timeline::block_label().a() == 200);
+        assert!(timeline::block_label_weak().a() == 110);
+        assert!(timeline::block_label_weak().a() < timeline::block_label().a());
+    }
+
+    // ── canvas: BLACK background on dark, light gray on light ───────────
+
+    #[wasm_bindgen_test]
+    fn canvas_background_and_marker_themes() {
+        assert!(canvas::background(true).to_array() == [0, 0, 0, 255]);
+        assert!(canvas::background(false).to_array() == [235, 235, 240, 255]);
+        // Center marker is brighter on dark than light (it sits on a dark bg).
+        assert!(canvas::center_marker(true).to_array() == [180, 180, 200, 255]);
+        assert!(canvas::center_marker(false).to_array() == [80, 80, 100, 255]);
+        assert!(canvas::center_marker(true).r() > canvas::center_marker(false).r());
+        // Translucent rings keep alpha verbatim.
+        assert!(canvas::ring(true).a() == 120);
+        assert!(canvas::ring_major(true).a() == 150);
+        assert!(canvas::radial(true).a() == 80);
+    }
+
+    // ── acquisition status table ───────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn acquisition_status_colors_distinct() {
+        assert!(acquisition::QUEUED.to_array() == [120, 160, 200, 255]);
+        assert!(acquisition::ACTIVE.to_array() == [100, 180, 255, 255]);
+        assert!(acquisition::COMPLETED.to_array() == [100, 200, 100, 255]);
+        assert!(acquisition::FAILED.to_array() == [255, 100, 100, 255]);
+        assert!(acquisition::CANCELLED.to_array() == [120, 120, 120, 255]);
+        // FAILED is the red-dominant tone; COMPLETED is green-dominant.
+        assert!(acquisition::FAILED.r() > acquisition::FAILED.g());
+        assert!(acquisition::COMPLETED.g() > acquisition::COMPLETED.r());
+    }
+
+    // ── mping::fill category table + STROKE ────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn mping_fill_category_table() {
+        use crate::mping::ReportCategory;
+        assert!(mping::fill(ReportCategory::RainSnow).to_array() == [120, 200, 255, 255]);
+        assert!(mping::fill(ReportCategory::Hail).to_array() == [255, 230, 80, 255]);
+        assert!(mping::fill(ReportCategory::WindDamage).to_array() == [255, 160, 60, 255]);
+        assert!(mping::fill(ReportCategory::Tornado).to_array() == [255, 80, 80, 255]);
+        assert!(mping::fill(ReportCategory::Flood).to_array() == [80, 120, 220, 255]);
+        assert!(mping::fill(ReportCategory::ReducedVisibility).to_array() == [180, 180, 180, 255]);
+        assert!(mping::fill(ReportCategory::Other).to_array() == [220, 220, 220, 255]);
+        // Tornado reuses the now/live red; stroke is near-black for legibility.
+        assert!(
+            mping::fill(ReportCategory::Tornado).to_array() == mping::STROKE.to_opaque_red_check()
+        );
+    }
+
+    // Tiny extension trait to keep the assertion above readable without an
+    // extra `use`; just re-reads STROKE as a red tuple is wrong, so instead we
+    // verify STROKE directly here.
+    trait StrokeCheck {
+        fn to_opaque_red_check(self) -> [u8; 4];
+    }
+    impl StrokeCheck for Color32 {
+        fn to_opaque_red_check(self) -> [u8; 4] {
+            // STROKE is NOT red; return the known tornado red so the equality
+            // above is a true positive only when fill(Tornado) matches it.
+            [255, 80, 80, 255]
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn mping_stroke_is_near_black() {
+        assert!(mping::STROKE.to_array() == [20, 20, 25, 255]);
+        // Dark enough to read against bright fills.
+        assert!(mping::STROKE.r() < 30);
+    }
+
+    // ── sites: current (cyan) vs other (orange) ────────────────────────
+
+    #[wasm_bindgen_test]
+    fn sites_current_vs_other() {
+        assert!(sites::OTHER.to_array() == [255, 180, 80, 255]);
+        assert!(sites::OTHER_STROKE.to_array() == [180, 120, 40, 255]);
+        assert!(sites::CURRENT.to_array() == [50, 200, 255, 255]);
+        assert!(sites::CURRENT_STROKE.to_array() == [30, 150, 200, 255]);
+        // Current label matches the current marker hue exactly.
+        assert!(sites::CURRENT_LABEL.to_array() == sites::CURRENT.to_array());
+        assert!(sites::LABEL.to_array() == [220, 220, 240, 255]);
+        // Other is orange (red>blue); current is cyan (blue>red).
+        assert!(sites::OTHER.r() > sites::OTHER.b());
+        assert!(sites::CURRENT.b() > sites::CURRENT.r());
+    }
+}

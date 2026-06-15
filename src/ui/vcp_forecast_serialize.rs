@@ -315,3 +315,289 @@ fn trim_str(s: &str, max_len: usize) -> String {
         s.chars().take(max_len).collect()
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::state::vcp_forecast::RateSource;
+    use crate::state::SweepForecast;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- trim_str (private, fully pure, no JS) ----
+
+    #[wasm_bindgen_test]
+    fn trim_str_shorter_than_max_passes_through() {
+        // 2 chars, max 4 → unchanged.
+        assert_eq!(trim_str("CS", 4), "CS".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn trim_str_exact_length_boundary_unchanged() {
+        // len == max_len uses the `<=` branch (no truncation).
+        assert_eq!(trim_str("ABCD", 4), "ABCD".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn trim_str_longer_truncates_to_max() {
+        // 6 chars, max 4 → first 4 retained.
+        assert_eq!(trim_str("ABCDEF", 4), "ABCD".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn trim_str_empty_stays_empty() {
+        assert_eq!(trim_str("", 4), String::new());
+    }
+
+    #[wasm_bindgen_test]
+    fn trim_str_counts_chars_not_bytes() {
+        // "éé" is 2 chars but 4 bytes; with max 2 it is <= and stays whole.
+        let s = "éé";
+        assert_eq!(s.len(), 4); // 4 bytes
+        assert_eq!(s.chars().count(), 2); // 2 chars
+        assert_eq!(trim_str(s, 2), "éé".to_string());
+        // With max 1 it truncates to the first single char.
+        assert_eq!(trim_str(s, 1), "é".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn trim_str_zero_max_yields_empty() {
+        assert_eq!(trim_str("abc", 0), String::new());
+    }
+
+    // ---- serialize_forecast: deterministic (non-date) lines ----
+    //
+    // The `volume_start=` line goes through `format_time` (js_sys::Date) and is
+    // deliberately NOT asserted on; every other line tested here is a pure
+    // string/number projection of the snapshot fields.
+
+    fn sweep(status: SweepStatus, rate_source: RateSource) -> SweepForecast {
+        SweepForecast {
+            elev_number: 1,
+            elev_angle: 0.5,
+            waveform: "CS".to_string(),
+            azimuth_rate_used: 20.0,
+            rate_source,
+            predicted_start: 0.0,
+            predicted_duration: 10.0,
+            predicted_chunks: None,
+            actual_start: None,
+            actual_end: None,
+            actual_chunks: None,
+            timing_source: None,
+            status,
+        }
+    }
+
+    fn snapshot(
+        vcp_name: Option<&'static str>,
+        is_clear_air: bool,
+        actual_volume_end: Option<f64>,
+        inter_gap: Option<f64>,
+        pred_inter_gap: Option<f64>,
+        sweeps: Vec<SweepForecast>,
+    ) -> VolumeForecastSnapshot {
+        VolumeForecastSnapshot {
+            vcp_number: 212,
+            vcp_name,
+            is_clear_air,
+            volume_start: 500.0,
+            predicted_volume_end: 800.0,
+            actual_volume_end,
+            expected_elevation_count: 14,
+            sweeps,
+            inter_volume_gap_secs: inter_gap,
+            predicted_inter_volume_gap_secs: pred_inter_gap,
+        }
+    }
+
+    /// Find the single line beginning with `prefix` (after leading whitespace
+    /// is irrelevant for these header lines, which are flush-left).
+    fn line_with<'a>(out: &'a str, prefix: &str) -> Option<&'a str> {
+        out.lines().find(|l| l.starts_with(prefix))
+    }
+
+    #[wasm_bindgen_test]
+    fn header_line_unknown_name_precip_mode() {
+        // vcp_name None → "?" ; is_clear_air false → "precip".
+        let snap = snapshot(None, false, None, None, None, vec![]);
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        let header = line_with(&out, "site=").expect("header line");
+        assert_eq!(header, "site=KTLX VCP=212 (?) mode=precip elevations=14");
+    }
+
+    #[wasm_bindgen_test]
+    fn header_line_named_clear_air_mode() {
+        // vcp_name Some → printed verbatim ; is_clear_air true → "clear_air".
+        let snap = snapshot(Some("VCP-35"), true, None, None, None, vec![]);
+        let out = serialize_forecast(&snap, &[], "KFWS");
+        let header = line_with(&out, "site=").expect("header line");
+        assert_eq!(
+            header,
+            "site=KFWS VCP=212 (VCP-35) mode=clear_air elevations=14"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn duration_line_dashes_when_no_actual_end() {
+        // predicted_dur = 800 - 500 = 300.0 ; actual/drift → "—".
+        let snap = snapshot(None, false, None, None, None, vec![]);
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        let dur = line_with(&out, "duration:").expect("duration line");
+        assert_eq!(dur, "duration: pred=300.0s actual=— drift=—");
+    }
+
+    #[wasm_bindgen_test]
+    fn duration_line_actual_and_signed_drift() {
+        // actual_volume_end 820 → actual = 820-500 = 320.0s ;
+        // drift = 820 - predicted_end(800) = +20.0s (signed, one decimal).
+        let snap = snapshot(None, false, Some(820.0), None, None, vec![]);
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        let dur = line_with(&out, "duration:").expect("duration line");
+        assert_eq!(dur, "duration: pred=300.0s actual=320.0s drift=+20.0s");
+    }
+
+    #[wasm_bindgen_test]
+    fn duration_line_negative_drift_sign() {
+        // actual_volume_end 790 → drift = 790 - 800 = -10.0s.
+        let snap = snapshot(None, false, Some(790.0), None, None, vec![]);
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        let dur = line_with(&out, "duration:").expect("duration line");
+        assert_eq!(dur, "duration: pred=300.0s actual=290.0s drift=-10.0s");
+    }
+
+    #[wasm_bindgen_test]
+    fn inter_volume_gap_all_dashes_when_none() {
+        let snap = snapshot(None, false, None, None, None, vec![]);
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        let gap = line_with(&out, "inter_volume_gap:").expect("gap line");
+        assert_eq!(gap, "inter_volume_gap: obs=— pred=— delta=—");
+    }
+
+    #[wasm_bindgen_test]
+    fn inter_volume_gap_signed_values_and_delta() {
+        // obs +5.00s, pred +3.00s, delta = 5 - 3 = +2.00s (two decimals, signed).
+        let snap = snapshot(None, false, None, Some(5.0), Some(3.0), vec![]);
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        let gap = line_with(&out, "inter_volume_gap:").expect("gap line");
+        assert_eq!(gap, "inter_volume_gap: obs=+5.00s pred=+3.00s delta=+2.00s");
+    }
+
+    #[wasm_bindgen_test]
+    fn inter_volume_gap_delta_dash_when_one_missing() {
+        // obs known, pred missing → delta cannot be computed → "—".
+        let snap = snapshot(None, false, None, Some(5.0), None, vec![]);
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        let gap = line_with(&out, "inter_volume_gap:").expect("gap line");
+        assert_eq!(gap, "inter_volume_gap: obs=+5.00s pred=— delta=—");
+    }
+
+    #[wasm_bindgen_test]
+    fn summary_counts_each_status_class() {
+        // One Complete, one Future, one InProgress → 1/1/1.
+        let sweeps = vec![
+            sweep(SweepStatus::Complete, RateSource::VcpMessage),
+            sweep(SweepStatus::Future, RateSource::VcpMessage),
+            sweep(
+                SweepStatus::InProgress {
+                    radials_received: 0,
+                    chunks_received: 0,
+                    chunks_expected: None,
+                },
+                RateSource::VcpMessage,
+            ),
+        ];
+        let snap = snapshot(None, false, None, None, None, sweeps);
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        let summary = line_with(&out, "summary:").expect("summary line");
+        assert_eq!(summary, "summary: complete=1 in_progress=1 future=1");
+    }
+
+    #[wasm_bindgen_test]
+    fn s3_requests_line_zero_when_no_arrivals() {
+        // Empty arrivals → 0 total, 0 wasted, 0.0%, 0/0 chunks.
+        let snap = snapshot(None, false, None, None, None, vec![]);
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        let line = line_with(&out, "s3_requests:").expect("s3 line");
+        assert_eq!(
+            line,
+            "s3_requests: 0 total → 0 wasted (0.0%)  retries_on=0/0 chunks"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_row_renders_status_and_rate_source_tokens() {
+        // A single Future sweep with the VCP-message rate source: the per-sweep
+        // row must carry the rate-source short code "VCP" and status "Future".
+        let snap = snapshot(
+            None,
+            false,
+            None,
+            None,
+            None,
+            vec![sweep(SweepStatus::Future, RateSource::VcpMessage)],
+        );
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        // The status token "Future" only appears in the sweep row (not in the
+        // header lines), confirming the row was emitted.
+        assert!(
+            out.contains("Future"),
+            "expected sweep row with Future status, got:\n{out}"
+        );
+        // Rate-source short code for VcpMessage is "VCP".
+        assert!(
+            out.contains("VCP"),
+            "expected rate-source short 'VCP', got:\n{out}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_row_uses_projection_library_rate_source_code() {
+        // ProjectionLibrary short code is "LIB"; Complete status renders.
+        let snap = snapshot(
+            None,
+            false,
+            None,
+            None,
+            None,
+            vec![sweep(SweepStatus::Complete, RateSource::ProjectionLibrary)],
+        );
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        assert!(out.contains("LIB"), "expected 'LIB' src code, got:\n{out}");
+        assert!(
+            out.contains("Complete"),
+            "expected Complete status, got:\n{out}"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn s3_requests_counts_empty_polls_and_waste_pct() {
+        // Two arrivals: one with 1 empty poll, one with 0.
+        // total_empty = 1 ; any_retry = 1 ; total_requests = 2 + 1 = 3 ;
+        // waste_pct = 100 * 1/3 = 33.3% (one decimal).
+        let mut a0 = ChunkArrivalStat::minimal_for_test(1, 10.0);
+        a0.empty_polls = 1;
+        let a1 = ChunkArrivalStat::minimal_for_test(2, 11.0);
+        let arrivals = vec![a0, a1];
+        let snap = snapshot(None, false, None, None, None, vec![]);
+        let out = serialize_forecast(&snap, &arrivals, "KTLX");
+        let line = line_with(&out, "s3_requests:").expect("s3 line");
+        assert_eq!(
+            line,
+            "s3_requests: 3 total → 1 wasted (33.3%)  retries_on=1/2 chunks"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn summary_all_future_when_no_progress() {
+        let sweeps = vec![
+            sweep(SweepStatus::Future, RateSource::MethodBFallback),
+            sweep(SweepStatus::Future, RateSource::MethodBFallback),
+        ];
+        let snap = snapshot(None, false, None, None, None, sweeps);
+        let out = serialize_forecast(&snap, &[], "KTLX");
+        let summary = line_with(&out, "summary:").expect("summary line");
+        assert_eq!(summary, "summary: complete=0 in_progress=0 future=2");
+        // Method-B fallback short code is "FB".
+        assert!(out.contains("FB"), "expected 'FB' src code, got:\n{out}");
+    }
+}

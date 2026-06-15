@@ -1848,3 +1848,197 @@ mod tests {
         assert!(!probe_should_advance(100.0, Some(100.0)));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ── LoopState / drain_control state machine ────────────────────────────
+    //
+    // `drain_control` is the loop's control-channel state machine: it folds
+    // every queued `ControlMessage` into a `LoopState` and reports whether the
+    // active filter changed. The existing `mod tests` covers only the pure
+    // probe/cache helpers, never this. We drive it through an in-process
+    // unbounded channel (no async, no browser): keeping the sender alive means
+    // `try_recv` returns `Err(Empty)` on drain-out, exactly the production path.
+
+    #[wasm_bindgen_test]
+    fn loop_state_starts_unstopped_all_filter() {
+        let ls = LoopState::new();
+        assert!(!ls.stop_requested);
+        assert!(ls.active_filter == StreamingFilter::All);
+        assert_eq!(ls.filter_epoch, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn drain_control_empty_channel_is_noop() {
+        let (_tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
+        let mut ls = LoopState::new();
+        let changed = drain_control(&mut ls, &mut rx);
+        assert!(!changed);
+        assert!(!ls.stop_requested);
+        assert!(ls.active_filter == StreamingFilter::All);
+        assert_eq!(ls.filter_epoch, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn drain_control_stop_sets_flag_without_filter_change() {
+        let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
+        let _ = tx.unbounded_send(ControlMessage::Stop);
+        let mut ls = LoopState::new();
+        let changed = drain_control(&mut ls, &mut rx);
+        // Stop is not a filter change.
+        assert!(!changed);
+        assert!(ls.stop_requested);
+        // Filter + epoch untouched by a Stop.
+        assert!(ls.active_filter == StreamingFilter::All);
+        assert_eq!(ls.filter_epoch, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn drain_control_filter_change_bumps_epoch_and_reports_change() {
+        let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(3)));
+        let mut ls = LoopState::new();
+        let changed = drain_control(&mut ls, &mut rx);
+        assert!(changed);
+        assert!(ls.active_filter == StreamingFilter::Elevation(3));
+        // One real change → epoch 0 → 1.
+        assert_eq!(ls.filter_epoch, 1);
+        assert!(!ls.stop_requested);
+    }
+
+    #[wasm_bindgen_test]
+    fn drain_control_redundant_filter_is_noop() {
+        // Setting the filter to its current value must NOT bump the epoch or
+        // report a change (mirrors the old `pending_filter == filter` guard).
+        let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::All));
+        let mut ls = LoopState::new(); // already All
+        let changed = drain_control(&mut ls, &mut rx);
+        assert!(!changed);
+        assert_eq!(ls.filter_epoch, 0);
+        assert!(ls.active_filter == StreamingFilter::All);
+    }
+
+    #[wasm_bindgen_test]
+    fn drain_control_coalesces_multiple_distinct_changes() {
+        // Two distinct changes queued before a single drain → both applied,
+        // epoch counts each real transition, final value is the last one.
+        let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(1)));
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(2)));
+        let mut ls = LoopState::new();
+        let changed = drain_control(&mut ls, &mut rx);
+        assert!(changed);
+        assert!(ls.active_filter == StreamingFilter::Elevation(2));
+        // 0 → 1 (to Elevation(1)) → 2 (to Elevation(2)).
+        assert_eq!(ls.filter_epoch, 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn drain_control_duplicate_change_only_bumps_once() {
+        // Same target sent twice: first transition counts, the second is a
+        // no-op against the now-current value.
+        let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(5)));
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(5)));
+        let mut ls = LoopState::new();
+        let changed = drain_control(&mut ls, &mut rx);
+        assert!(changed);
+        assert!(ls.active_filter == StreamingFilter::Elevation(5));
+        assert_eq!(ls.filter_epoch, 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn drain_control_change_back_to_all_is_a_real_change() {
+        // Starting from Elevation, a SetFilter(All) is a genuine transition.
+        let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::All));
+        let mut ls = LoopState::new();
+        ls.active_filter = StreamingFilter::Elevation(4);
+        // Pretend we'd already advanced the epoch once before this drain.
+        ls.filter_epoch = 1;
+        let changed = drain_control(&mut ls, &mut rx);
+        assert!(changed);
+        assert!(ls.active_filter == StreamingFilter::All);
+        assert_eq!(ls.filter_epoch, 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn drain_control_applies_stop_and_filter_together() {
+        // A filter change AND a stop queued in the same drain: both land. The
+        // change is reported and the stop flag is set.
+        let (tx, mut rx) = futures_channel::mpsc::unbounded::<ControlMessage>();
+        let _ = tx.unbounded_send(ControlMessage::SetFilter(StreamingFilter::Elevation(7)));
+        let _ = tx.unbounded_send(ControlMessage::Stop);
+        let mut ls = LoopState::new();
+        let changed = drain_control(&mut ls, &mut rx);
+        assert!(changed);
+        assert!(ls.stop_requested);
+        assert!(ls.active_filter == StreamingFilter::Elevation(7));
+        assert_eq!(ls.filter_epoch, 1);
+    }
+
+    // ── localStorage key derivation (pure formatting) ─────────────────────
+
+    #[wasm_bindgen_test]
+    fn volume_cache_key_is_site_namespaced() {
+        assert_eq!(volume_cache_key("KTLX"), "nexrad_volume_KTLX");
+        assert_eq!(volume_cache_key("KFWS"), "nexrad_volume_KFWS");
+        // Distinct sites must not collide.
+        assert!(volume_cache_key("KTLX") != volume_cache_key("KFWS"));
+    }
+
+    #[wasm_bindgen_test]
+    fn timing_stats_key_is_site_namespaced() {
+        assert_eq!(timing_stats_key("KTLX"), "nexrad_timing_stats_KTLX");
+        assert_eq!(timing_stats_key("KOUN"), "nexrad_timing_stats_KOUN");
+        // The two key families never collide for the same site.
+        assert!(timing_stats_key("KTLX") != volume_cache_key("KTLX"));
+    }
+
+    // ── decode_volume_cache: gaps the existing tests leave open ────────────
+
+    #[wasm_bindgen_test]
+    fn decode_volume_cache_accepts_range_endpoints() {
+        // The inclusive range is 1..=999; both endpoints decode.
+        match decode_volume_cache(&encode_volume_cache(1, 10.0)) {
+            Some((vol, t)) => {
+                assert_eq!(vol.as_number(), 1);
+                assert_eq!(t, 10.0);
+            }
+            None => panic!("v=1 should be accepted"),
+        }
+        match decode_volume_cache(&encode_volume_cache(999, 20.0)) {
+            Some((vol, t)) => {
+                assert_eq!(vol.as_number(), 999);
+                assert_eq!(t, 20.0);
+            }
+            None => panic!("v=999 should be accepted"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn decode_volume_cache_requires_timestamp_field() {
+        // Valid volume but missing the `t` field → None (incomplete entry).
+        assert!(decode_volume_cache("{\"v\":42}").is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn decode_volume_cache_requires_volume_field() {
+        // Timestamp present but no `v` → None.
+        assert!(decode_volume_cache("{\"t\":1700000000.0}").is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn decode_volume_cache_rejects_wrong_typed_fields() {
+        // `v` as a string is not a u64 → None.
+        assert!(decode_volume_cache("{\"v\":\"42\",\"t\":1.0}").is_none());
+        // `t` as a non-number → None.
+        assert!(decode_volume_cache("{\"v\":42,\"t\":\"soon\"}").is_none());
+        // A JSON array (no object fields) → None.
+        assert!(decode_volume_cache("[42,1.0]").is_none());
+    }
+}
