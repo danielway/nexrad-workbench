@@ -408,3 +408,139 @@ impl RealtimeChannel {
         out
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // --- From<&ElevationSelection> for StreamingFilter ---
+
+    #[wasm_bindgen_test]
+    fn filter_from_latest_is_all() {
+        let sel = crate::state::ElevationSelection::Latest;
+        let filter = StreamingFilter::from(&sel);
+        assert_eq!(filter, StreamingFilter::All);
+    }
+
+    #[wasm_bindgen_test]
+    fn filter_from_fixed_maps_to_elevation_number() {
+        let sel = crate::state::ElevationSelection::Fixed {
+            elevation_number: 3,
+            angle: 1.5,
+        };
+        let filter = StreamingFilter::from(&sel);
+        assert_eq!(filter, StreamingFilter::Elevation(3));
+    }
+
+    #[wasm_bindgen_test]
+    fn filter_from_fixed_preserves_distinct_numbers() {
+        let sel1 = crate::state::ElevationSelection::Fixed {
+            elevation_number: 1,
+            angle: 0.5,
+        };
+        let sel7 = crate::state::ElevationSelection::Fixed {
+            elevation_number: 7,
+            angle: 4.0,
+        };
+        assert_eq!(StreamingFilter::from(&sel1), StreamingFilter::Elevation(1));
+        assert_eq!(StreamingFilter::from(&sel7), StreamingFilter::Elevation(7));
+        assert_ne!(StreamingFilter::from(&sel1), StreamingFilter::from(&sel7));
+    }
+
+    #[wasm_bindgen_test]
+    fn filter_from_default_selection_is_elevation_one() {
+        // ElevationSelection::default() is Fixed { 1, 0.5 }.
+        let sel = crate::state::ElevationSelection::default();
+        assert_eq!(StreamingFilter::from(&sel), StreamingFilter::Elevation(1));
+    }
+
+    // --- RealtimeChannel construction / is_active ---
+
+    #[wasm_bindgen_test]
+    fn new_channel_is_inactive() {
+        let ch = RealtimeChannel::new();
+        assert!(!ch.is_active());
+    }
+
+    #[wasm_bindgen_test]
+    fn default_channel_is_inactive() {
+        let ch = RealtimeChannel::default();
+        assert!(!ch.is_active());
+    }
+
+    #[wasm_bindgen_test]
+    fn with_stats_channel_is_inactive() {
+        let stats = NetworkStats::new();
+        let ch = RealtimeChannel::with_stats(stats);
+        assert!(!ch.is_active());
+    }
+
+    // --- try_recv / poll on a fresh channel ---
+
+    #[wasm_bindgen_test]
+    fn try_recv_on_fresh_channel_is_none() {
+        let ch = RealtimeChannel::new();
+        assert!(ch.try_recv().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn poll_on_fresh_channel_is_empty() {
+        let ch = RealtimeChannel::new();
+        assert!(ch.poll().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn poll_is_idempotent_while_empty() {
+        let ch = RealtimeChannel::new();
+        assert_eq!(ch.poll().len(), 0);
+        assert_eq!(ch.poll().len(), 0);
+        assert!(ch.try_recv().is_none());
+    }
+
+    // --- stop() semantics ---
+
+    #[wasm_bindgen_test]
+    fn stop_clears_active_flag() {
+        let ch = RealtimeChannel::new();
+        // active starts false; stop() should keep/force it false.
+        ch.stop();
+        assert!(!ch.is_active());
+    }
+
+    // --- observation / control sends are non-panicking and side-effect-free
+    //     w.r.t. the active flag and the results channel ---
+
+    #[wasm_bindgen_test]
+    fn observe_does_not_touch_active_or_results() {
+        let ch = RealtimeChannel::new();
+        ch.observe(super::super::ProjectorObservation::CollectionEndSecs(123.5));
+        assert!(!ch.is_active());
+        // Observation goes to the observations channel, never to results.
+        assert!(ch.try_recv().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn record_helpers_do_not_panic_or_emit_results() {
+        let ch = RealtimeChannel::new();
+        ch.record_chunk_collection_end_secs(42.0);
+        ch.record_availability_lag_secs(2.25);
+        assert!(ch.try_recv().is_none());
+        assert!(!ch.is_active());
+    }
+
+    #[wasm_bindgen_test]
+    fn set_and_sync_filter_do_not_emit_results() {
+        let ch = RealtimeChannel::new();
+        ch.set_filter(StreamingFilter::Elevation(2));
+        ch.set_filter(StreamingFilter::All);
+        let sel = crate::state::ElevationSelection::Fixed {
+            elevation_number: 4,
+            angle: 2.4,
+        };
+        ch.sync_filter(&sel);
+        // Filter changes flow over the control channel, not results.
+        assert!(ch.try_recv().is_none());
+        assert!(!ch.is_active());
+    }
+}

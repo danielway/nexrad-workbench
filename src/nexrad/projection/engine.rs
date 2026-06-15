@@ -446,3 +446,198 @@ mod tests {
         assert!(eng.projection(&anchor, 1000.0).is_none());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn cv_chunk(volume: usize, sequence: usize) -> ChunkIdentifier {
+        let when = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        ChunkIdentifier::new(
+            "KDMX".to_string(),
+            nexrad_data::aws::realtime::VolumeIndex::new(volume),
+            when.naive_utc(),
+            sequence,
+            nexrad_data::aws::realtime::ChunkType::Intermediate,
+            Some(when),
+        )
+    }
+
+    fn cv_known(
+        volume: usize,
+        sequence: usize,
+        upload: f64,
+        ty: nexrad_data::aws::realtime::ChunkType,
+    ) -> KnownChunk {
+        KnownChunk {
+            coord: super::super::inventory::ChunkCoord {
+                volume: VolumeIndex::new(volume),
+                sequence,
+            },
+            upload_secs: upload,
+            chunk_type: ty,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn fresh_engine_is_cold() {
+        let eng = ProjectionEngine::new();
+        // No inputs fed yet: revision at zero, no collection anchor, no cached
+        // projection.
+        assert_eq!(eng.input_revision, 0);
+        assert_eq!(eng.collection_anchor_secs(), None);
+        assert!(eng.last_projection().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn default_matches_new() {
+        // Default delegates to new(): same cold state.
+        let eng = ProjectionEngine::default();
+        assert_eq!(eng.input_revision, 0);
+        assert!(eng.last_projection().is_none());
+        assert_eq!(eng.collection_anchor_secs(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_current_scan_start_secs_bumps_only_on_change() {
+        let mut eng = ProjectionEngine::new();
+        // First set establishes the value → bump.
+        eng.set_current_scan_start_secs(1000.0);
+        assert_eq!(eng.input_revision, 1);
+        // Same value again → no-op.
+        eng.set_current_scan_start_secs(1000.0);
+        assert_eq!(eng.input_revision, 1);
+        // Different value → bump.
+        eng.set_current_scan_start_secs(2000.0);
+        assert_eq!(eng.input_revision, 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_in_progress_elevation_bumps_only_on_change() {
+        let mut eng = ProjectionEngine::new();
+        // Setting Some on a fresh engine (was None) → bump.
+        eng.set_in_progress_elevation(1000.0, Some(3));
+        assert_eq!(eng.input_revision, 1);
+        // Identical (scan_start, elevation) → no-op.
+        eng.set_in_progress_elevation(1000.0, Some(3));
+        assert_eq!(eng.input_revision, 1);
+        // Different elevation at same scan → bump.
+        eng.set_in_progress_elevation(1000.0, Some(4));
+        assert_eq!(eng.input_revision, 2);
+        // Different scan start with same elevation → bump.
+        eng.set_in_progress_elevation(2000.0, Some(4));
+        assert_eq!(eng.input_revision, 3);
+        // Clearing to None (was Some) → bump.
+        eng.set_in_progress_elevation(2000.0, None);
+        assert_eq!(eng.input_revision, 4);
+        // Clearing again (already None) → no-op; the scan_start is ignored when
+        // the elevation is None because the stored value is None.
+        eng.set_in_progress_elevation(9999.0, None);
+        assert_eq!(eng.input_revision, 4);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_archive_boundaries_bumps_only_on_content_change() {
+        let mut eng = ProjectionEngine::new();
+        let a = vec![crate::nexrad::ScanBoundary {
+            start: 100,
+            end: 400,
+        }];
+        // Empty → non-empty: content changed → bump.
+        eng.set_archive_boundaries(a.clone());
+        assert_eq!(eng.input_revision, 1);
+        // Identical content → no-op.
+        eng.set_archive_boundaries(a.clone());
+        assert_eq!(eng.input_revision, 1);
+        // Different content → bump.
+        let b = vec![
+            crate::nexrad::ScanBoundary {
+                start: 100,
+                end: 400,
+            },
+            crate::nexrad::ScanBoundary {
+                start: 400,
+                end: 700,
+            },
+        ];
+        eng.set_archive_boundaries(b);
+        assert_eq!(eng.input_revision, 2);
+        // Clearing back to empty (different from current) → bump.
+        eng.set_archive_boundaries(Vec::new());
+        assert_eq!(eng.input_revision, 3);
+        // Empty again → no-op.
+        eng.set_archive_boundaries(Vec::new());
+        assert_eq!(eng.input_revision, 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn observe_known_chunk_bumps_only_when_anchor_advances() {
+        let mut eng = ProjectionEngine::new();
+        // First observation advances the availability anchor → bump.
+        eng.observe_known_chunk(cv_known(
+            1,
+            2,
+            100.0,
+            nexrad_data::aws::realtime::ChunkType::Intermediate,
+        ));
+        assert_eq!(eng.input_revision, 1);
+        // Strictly newer upload advances → bump.
+        eng.observe_known_chunk(cv_known(
+            1,
+            3,
+            150.0,
+            nexrad_data::aws::realtime::ChunkType::Intermediate,
+        ));
+        assert_eq!(eng.input_revision, 2);
+        // Equal upload does not advance the anchor → no bump.
+        eng.observe_known_chunk(cv_known(
+            1,
+            4,
+            150.0,
+            nexrad_data::aws::realtime::ChunkType::Intermediate,
+        ));
+        assert_eq!(eng.input_revision, 2);
+        // Older (recycled-slot) upload does not advance → no bump.
+        eng.observe_known_chunk(cv_known(
+            1,
+            5,
+            50.0,
+            nexrad_data::aws::realtime::ChunkType::Intermediate,
+        ));
+        assert_eq!(eng.input_revision, 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn observe_listing_empty_does_not_bump() {
+        let mut eng = ProjectionEngine::new();
+        // An empty listing can't advance the anchor → no bump.
+        eng.observe_listing(VolumeIndex::new(1), &[]);
+        assert_eq!(eng.input_revision, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn observe_listing_advances_on_dated_chunk() {
+        let mut eng = ProjectionEngine::new();
+        // The helper chunk carries an upload date_time → first listing entry
+        // advances the anchor → bump.
+        eng.observe_listing(VolumeIndex::new(1), &[cv_chunk(1, 1)]);
+        assert_eq!(eng.input_revision, 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn observations_handles_bump_then_reset_bumps() {
+        let mut eng = ProjectionEngine::new();
+        // Taking the mutable observations handle always bumps (the caller only
+        // takes it to record a change).
+        let _ = eng.observations_mut();
+        assert_eq!(eng.input_revision, 1);
+        let _ = eng.observations_mut();
+        assert_eq!(eng.input_revision, 2);
+        // Resetting the observations always bumps.
+        eng.reset_volume_observations();
+        assert_eq!(eng.input_revision, 3);
+        eng.reset_volume_observations();
+        assert_eq!(eng.input_revision, 4);
+    }
+}

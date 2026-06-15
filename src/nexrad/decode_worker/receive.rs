@@ -628,3 +628,271 @@ fn cleanup_pending_by_id(
         None
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn scan_key(site: &str, ms: i64) -> crate::data::ScanKey {
+        crate::data::ScanKey::new(site, crate::data::UnixMillis(ms))
+    }
+
+    fn render_ctx(site: &str, ms: i64, elev: u8) -> RenderContext {
+        RenderContext {
+            scan_key: scan_key(site, ms),
+            elevation_number: elev,
+        }
+    }
+
+    fn ingest_ctx(site: &str, ms: i64, ts: f64) -> IngestContext {
+        IngestContext {
+            scan_key: scan_key(site, ms),
+            timestamp_secs: ts,
+            file_name: "f".to_string(),
+            fetch_latency_ms: 0.0,
+        }
+    }
+
+    fn chunk_ctx(site: &str, ms: i64, ts: f64) -> ChunkIngestContext {
+        ChunkIngestContext {
+            site_id: site.to_string(),
+            scan_key: scan_key(site, ms),
+            timestamp_secs: ts,
+            chunk_index: 0,
+            is_end: false,
+        }
+    }
+
+    fn header(msg_type: &str, id: Option<u64>) -> ResponseHeader {
+        ResponseHeader {
+            msg_type: msg_type.to_string(),
+            id,
+        }
+    }
+
+    // --- require_id ---------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn require_id_returns_present_id() {
+        let h = header("ingested", Some(42));
+        assert_eq!(require_id(&h, "ingested"), Some(42));
+    }
+
+    #[wasm_bindgen_test]
+    fn require_id_returns_none_when_missing() {
+        let h = header("ingested", None);
+        assert_eq!(require_id(&h, "ingested"), None);
+    }
+
+    // --- take_pending_context ----------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn take_pending_context_removes_and_returns_entry() {
+        let map: Rc<RefCell<HashMap<RequestId, RenderContext>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+        map.borrow_mut().insert(7, render_ctx("KDMX", 1000, 3));
+
+        let taken = take_pending_context(7, "decoded", &map);
+        assert!(taken.is_some());
+        assert_eq!(taken.unwrap().elevation_number, 3);
+        // Entry removed.
+        assert!(map.borrow().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn take_pending_context_unknown_id_returns_none() {
+        let map: Rc<RefCell<HashMap<RequestId, RenderContext>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+        map.borrow_mut().insert(1, render_ctx("KDMX", 1000, 3));
+
+        assert!(take_pending_context(999, "decoded", &map).is_none());
+        // Existing entry untouched.
+        assert_eq!(map.borrow().len(), 1);
+    }
+
+    // --- cleanup_pending_by_id ---------------------------------------------
+
+    fn empty_maps() -> (
+        Rc<RefCell<HashMap<RequestId, IngestContext>>>,
+        Rc<RefCell<HashMap<RequestId, ChunkIngestContext>>>,
+        Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+        Rc<RefCell<HashMap<RequestId, RenderContext>>>,
+        Rc<RefCell<HashMap<RequestId, VolumeRenderContext>>>,
+    ) {
+        (
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashMap::new())),
+            Rc::new(RefCell::new(HashMap::new())),
+        )
+    }
+
+    #[wasm_bindgen_test]
+    fn cleanup_pending_by_id_finds_ingest_timestamp() {
+        let (ing, chunk, rend, live, vol) = empty_maps();
+        ing.borrow_mut()
+            .insert(5, ingest_ctx("KDMX", 1000, 12345.5));
+
+        let ts = cleanup_pending_by_id(5, &ing, &chunk, &rend, &live, &vol);
+        assert!(ts.is_some());
+        assert!((ts.unwrap() - 12345.5).abs() < 1e-9);
+        // Removed.
+        assert!(ing.borrow().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn cleanup_pending_by_id_finds_chunk_timestamp() {
+        let (ing, chunk, rend, live, vol) = empty_maps();
+        chunk
+            .borrow_mut()
+            .insert(8, chunk_ctx("KDMX", 2000, 6789.0));
+
+        let ts = cleanup_pending_by_id(8, &ing, &chunk, &rend, &live, &vol);
+        assert!(ts.is_some());
+        assert!((ts.unwrap() - 6789.0).abs() < 1e-9);
+        assert!(chunk.borrow().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn cleanup_pending_by_id_finds_render_scan_start() {
+        let (ing, chunk, rend, live, vol) = empty_maps();
+        // scan_start in ms; as_secs_f64 = ms/1000.
+        rend.borrow_mut()
+            .insert(3, render_ctx("KDMX", 1_700_000_000_000, 1));
+
+        let ts = cleanup_pending_by_id(3, &ing, &chunk, &rend, &live, &vol);
+        assert!(ts.is_some());
+        assert!((ts.unwrap() - 1_700_000_000.0).abs() < 1e-3);
+        assert!(rend.borrow().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn cleanup_pending_by_id_finds_volume_scan_start() {
+        let (ing, chunk, rend, live, vol) = empty_maps();
+        vol.borrow_mut().insert(
+            9,
+            VolumeRenderContext {
+                scan_key: scan_key("KDMX", 5000),
+            },
+        );
+
+        let ts = cleanup_pending_by_id(9, &ing, &chunk, &rend, &live, &vol);
+        assert!(ts.is_some());
+        assert!((ts.unwrap() - 5.0).abs() < 1e-6);
+        assert!(vol.borrow().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn cleanup_pending_by_id_unknown_returns_none() {
+        let (ing, chunk, rend, live, vol) = empty_maps();
+        ing.borrow_mut().insert(1, ingest_ctx("KDMX", 1000, 1.0));
+
+        let ts = cleanup_pending_by_id(999, &ing, &chunk, &rend, &live, &vol);
+        assert!(ts.is_none());
+        // Unrelated entry left intact.
+        assert_eq!(ing.borrow().len(), 1);
+    }
+
+    // --- push_payload_parse_error ------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn push_payload_parse_error_emits_invalid_data_outcome() {
+        let results: Rc<RefCell<Vec<WorkerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+        push_payload_parse_error(&results, 17, "decoded", "boom", Some(42.0));
+
+        let r = results.borrow();
+        assert_eq!(r.len(), 1);
+        match &r[0] {
+            WorkerOutcome::WorkerError {
+                id,
+                kind,
+                message,
+                failed_scan_timestamp_secs,
+            } => {
+                assert_eq!(*id, 17);
+                assert_eq!(*kind, WorkerErrorKind::InvalidData);
+                assert!(message.contains("decoded"));
+                assert!(message.contains("boom"));
+                assert!(failed_scan_timestamp_secs.is_some());
+                assert!((failed_scan_timestamp_secs.unwrap() - 42.0).abs() < 1e-9);
+            }
+            _ => panic!("expected WorkerError outcome"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn push_payload_parse_error_preserves_none_timestamp() {
+        let results: Rc<RefCell<Vec<WorkerOutcome>>> = Rc::new(RefCell::new(Vec::new()));
+        push_payload_parse_error(&results, 1, "error", "x", None);
+
+        let r = results.borrow();
+        match &r[0] {
+            WorkerOutcome::WorkerError {
+                failed_scan_timestamp_secs,
+                ..
+            } => assert!(failed_scan_timestamp_secs.is_none()),
+            _ => panic!("expected WorkerError outcome"),
+        }
+    }
+
+    // --- build_decode_result -----------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn build_decode_result_maps_all_fields() {
+        let context = render_ctx("KDMX", 1000, 4);
+        let r = DecodedResultMsg {
+            azimuth_count: 720,
+            gate_count: 1832,
+            first_gate_range_km: 2.125,
+            gate_interval_km: 0.25,
+            max_range_km: 460.0,
+            product: "velocity".to_string(),
+            radial_count: 720,
+            fetch_ms: 1.5,
+            deser_ms: 2.5,
+            marshal_ms: 3.5,
+            total_ms: 10.0,
+            scale: 2.0,
+            offset: 66.0,
+            mean_elevation: 0.5,
+            sweep_start_secs: 100.0,
+            sweep_end_secs: 200.0,
+            azimuth_spacing_deg: 0.5,
+        };
+        let azimuths = vec![0.0_f32, 1.0, 2.0];
+        let gate_values = vec![10.0_f32, 20.0];
+        let radial_times = vec![100.0_f64, 100.5, 101.0];
+
+        let out = build_decode_result(
+            context,
+            r,
+            azimuths.clone(),
+            gate_values.clone(),
+            radial_times.clone(),
+        );
+
+        assert_eq!(out.context.elevation_number, 4);
+        assert_eq!(out.azimuths, azimuths);
+        assert_eq!(out.gate_values, gate_values);
+        assert_eq!(out.radial_times, radial_times);
+        assert_eq!(out.azimuth_count, 720);
+        assert_eq!(out.gate_count, 1832);
+        assert_eq!(out.radial_count, 720);
+        assert_eq!(out.product, "velocity");
+        assert!((out.first_gate_range_km - 2.125).abs() < 1e-9);
+        assert!((out.gate_interval_km - 0.25).abs() < 1e-9);
+        assert!((out.max_range_km - 460.0).abs() < 1e-9);
+        assert!((out.scale - 2.0).abs() < 1e-6);
+        assert!((out.offset - 66.0).abs() < 1e-6);
+        assert!((out.mean_elevation - 0.5).abs() < 1e-6);
+        assert!((out.sweep_start_secs - 100.0).abs() < 1e-9);
+        assert!((out.sweep_end_secs - 200.0).abs() < 1e-9);
+        assert!((out.azimuth_spacing_deg - 0.5).abs() < 1e-6);
+        assert!((out.fetch_ms - 1.5).abs() < 1e-9);
+        assert!((out.deser_ms - 2.5).abs() < 1e-9);
+        assert!((out.marshal_ms - 3.5).abs() < 1e-9);
+        assert!((out.total_ms - 10.0).abs() < 1e-9);
+    }
+}

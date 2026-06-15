@@ -665,3 +665,228 @@ impl AppState {
         Vec::new()
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- MobileSettingsTab ----
+
+    #[wasm_bindgen_test]
+    fn mobile_settings_tab_labels() {
+        assert_eq!(MobileSettingsTab::Playback.label(), "Playback");
+        assert_eq!(MobileSettingsTab::Product.label(), "Product");
+        assert_eq!(MobileSettingsTab::Layers.label(), "Layers");
+        assert_eq!(MobileSettingsTab::More.label(), "More");
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_settings_tab_all_order() {
+        let all = MobileSettingsTab::all();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[0], MobileSettingsTab::Playback);
+        assert_eq!(all[1], MobileSettingsTab::Product);
+        assert_eq!(all[2], MobileSettingsTab::Layers);
+        assert_eq!(all[3], MobileSettingsTab::More);
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_settings_tab_default_is_playback() {
+        assert_eq!(MobileSettingsTab::default(), MobileSettingsTab::Playback);
+    }
+
+    // ---- WidthTier ----
+
+    #[wasm_bindgen_test]
+    fn width_tier_default_is_full() {
+        assert_eq!(WidthTier::default(), WidthTier::Full);
+    }
+
+    #[wasm_bindgen_test]
+    fn width_tier_ordering_narrowest_to_widest() {
+        assert!(WidthTier::Cramped < WidthTier::Compact);
+        assert!(WidthTier::Compact < WidthTier::Full);
+        assert!(WidthTier::Cramped < WidthTier::Full);
+    }
+
+    // ---- MobileChromeAutoHide ----
+
+    #[wasm_bindgen_test]
+    fn mobile_chrome_default_sentinel() {
+        let h = MobileChromeAutoHide::default();
+        assert_eq!(h.last_interaction_secs, f64::NEG_INFINITY);
+        assert!(!h.hidden);
+        assert!(!h.revealed_this_frame);
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_chrome_touch_resets_timer() {
+        let mut h = MobileChromeAutoHide::default();
+        h.touch(42.5);
+        assert!((h.last_interaction_secs - 42.5).abs() < 1e-9);
+        h.touch(100.0);
+        assert!((h.last_interaction_secs - 100.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_chrome_secs_until_hide_none_when_paused() {
+        let h = MobileChromeAutoHide {
+            last_interaction_secs: 10.0,
+            ..Default::default()
+        };
+        assert!(h.secs_until_hide(11.0, false).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_chrome_secs_until_hide_counts_down() {
+        let h = MobileChromeAutoHide {
+            last_interaction_secs: 10.0,
+            ..Default::default()
+        };
+        // 1 second of idle elapsed → remaining = threshold - 1.
+        let remaining = h.secs_until_hide(11.0, true).expect("pending");
+        assert!((remaining - (MOBILE_CHROME_IDLE_HIDE_SECS - 1.0)).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn mobile_chrome_secs_until_hide_none_past_threshold() {
+        let h = MobileChromeAutoHide {
+            last_interaction_secs: 10.0,
+            ..Default::default()
+        };
+        // Exactly at the threshold remaining == 0.0, which is not > 0.0.
+        assert!(h
+            .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS, true)
+            .is_none());
+        // Well past the threshold.
+        assert!(h
+            .secs_until_hide(10.0 + MOBILE_CHROME_IDLE_HIDE_SECS + 5.0, true)
+            .is_none());
+    }
+
+    // ---- DateTimePickerState ----
+
+    #[wasm_bindgen_test]
+    fn datetime_picker_default_is_closed_and_empty() {
+        let p = DateTimePickerState::default();
+        assert!(!p.open);
+        assert!(p.year.is_empty());
+        assert!(p.month.is_empty());
+        assert!(p.day.is_empty());
+        assert!(p.hour.is_empty());
+        assert!(p.minute.is_empty());
+        assert!(p.second.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn datetime_picker_close_clears_open() {
+        let mut p = DateTimePickerState {
+            open: true,
+            ..Default::default()
+        };
+        p.close();
+        assert!(!p.open);
+    }
+
+    #[wasm_bindgen_test]
+    fn datetime_picker_to_timestamp_utc_epoch() {
+        let p = DateTimePickerState {
+            year: "1970".to_string(),
+            month: "01".to_string(),
+            day: "01".to_string(),
+            hour: "00".to_string(),
+            minute: "00".to_string(),
+            second: "00".to_string(),
+            ..Default::default()
+        };
+        let ts = p.to_timestamp(false).expect("valid utc datetime");
+        assert!((ts - 0.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn datetime_picker_to_timestamp_utc_known_value() {
+        // 2021-01-01 00:00:00 UTC == 1609459200 seconds since epoch.
+        let p = DateTimePickerState {
+            year: "2021".to_string(),
+            month: "1".to_string(),
+            day: "1".to_string(),
+            hour: "0".to_string(),
+            minute: "0".to_string(),
+            second: "0".to_string(),
+            ..Default::default()
+        };
+        let ts = p.to_timestamp(false).expect("valid utc datetime");
+        assert!((ts - 1_609_459_200.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn datetime_picker_to_timestamp_utc_rejects_unparseable() {
+        // Default (all-empty) inputs cannot parse → None.
+        let p = DateTimePickerState::default();
+        assert!(p.to_timestamp(false).is_none());
+
+        // Garbage month also fails to parse.
+        let bad = DateTimePickerState {
+            year: "2021".to_string(),
+            month: "abc".to_string(),
+            day: "1".to_string(),
+            hour: "0".to_string(),
+            minute: "0".to_string(),
+            second: "0".to_string(),
+            ..Default::default()
+        };
+        assert!(bad.to_timestamp(false).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn datetime_picker_to_timestamp_utc_rejects_invalid_date() {
+        // Month 13 is out of range → chrono returns non-Single → None.
+        let p = DateTimePickerState {
+            year: "2021".to_string(),
+            month: "13".to_string(),
+            day: "1".to_string(),
+            hour: "0".to_string(),
+            minute: "0".to_string(),
+            second: "0".to_string(),
+            ..Default::default()
+        };
+        assert!(p.to_timestamp(false).is_none());
+    }
+
+    // ---- AppState command queue / gating ----
+
+    #[wasm_bindgen_test]
+    fn app_state_default_show_advanced_false() {
+        let state = AppState::default();
+        assert!(!state.show_advanced());
+        assert!(state.commands.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn app_state_show_advanced_tracks_flag() {
+        let mut state = AppState::default();
+        state.advanced_mode = true;
+        assert!(state.show_advanced());
+        state.advanced_mode = false;
+        assert!(!state.show_advanced());
+    }
+
+    #[wasm_bindgen_test]
+    fn app_state_push_and_drain_commands_fifo() {
+        let mut state = AppState::default();
+        state.push_command(AppCommand::ClearCache);
+        state.push_command(AppCommand::StartLive);
+        state.push_command(AppCommand::ClearLoop);
+        assert_eq!(state.commands.len(), 3);
+
+        let drained = state.drain_commands();
+        assert_eq!(drained.len(), 3);
+        assert_eq!(drained[0], AppCommand::ClearCache);
+        assert_eq!(drained[1], AppCommand::StartLive);
+        assert_eq!(drained[2], AppCommand::ClearLoop);
+        // Draining empties the queue.
+        assert!(state.commands.is_empty());
+        assert!(state.drain_commands().is_empty());
+    }
+}

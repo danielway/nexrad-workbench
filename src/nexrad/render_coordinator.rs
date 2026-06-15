@@ -263,3 +263,149 @@ impl RenderCoordinator {
         self.last_render = Some(identity);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn key(site: &str, ms: i64) -> ScanKey {
+        ScanKey::new(site, crate::data::keys::UnixMillis(ms))
+    }
+
+    fn identity(site: &str, ms: i64, elev: u8, product: &str) -> SweepIdentity {
+        SweepIdentity::new(key(site, ms), elev, product)
+    }
+
+    #[wasm_bindgen_test]
+    fn new_has_no_worker_and_empty_state() {
+        let c = RenderCoordinator::new(None);
+        assert!(!c.has_worker());
+        assert!(c.scan_key().is_none());
+        assert!(c.available_elevations().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn set_scan_sets_key_and_elevations() {
+        let mut c = RenderCoordinator::new(None);
+        c.set_scan(key("KDMX", 1_700_000_000_000), vec![1, 2, 3]);
+        assert_eq!(c.scan_key(), Some(&key("KDMX", 1_700_000_000_000)));
+        assert_eq!(c.available_elevations(), &[1, 2, 3]);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_scan_key_only_leaves_elevations_untouched() {
+        let mut c = RenderCoordinator::new(None);
+        c.set_scan(key("KDMX", 100), vec![4, 5]);
+        c.set_scan_key(key("KFTG", 200));
+        assert_eq!(c.scan_key(), Some(&key("KFTG", 200)));
+        // elevations from the prior set_scan remain
+        assert_eq!(c.available_elevations(), &[4, 5]);
+    }
+
+    #[wasm_bindgen_test]
+    fn add_elevations_keeps_sorted_unique() {
+        let mut c = RenderCoordinator::new(None);
+        c.add_elevations(&[5, 3, 9]);
+        assert_eq!(c.available_elevations(), &[3, 5, 9]);
+    }
+
+    #[wasm_bindgen_test]
+    fn add_elevations_dedups_existing() {
+        let mut c = RenderCoordinator::new(None);
+        c.add_elevations(&[1, 2]);
+        c.add_elevations(&[2, 1, 4]);
+        assert_eq!(c.available_elevations(), &[1, 2, 4]);
+    }
+
+    #[wasm_bindgen_test]
+    fn add_elevations_no_duplicate_when_re_added() {
+        let mut c = RenderCoordinator::new(None);
+        c.add_elevations(&[7]);
+        c.add_elevations(&[7]);
+        assert_eq!(c.available_elevations(), &[7]);
+    }
+
+    #[wasm_bindgen_test]
+    fn add_elevations_merges_into_existing_sorted() {
+        let mut c = RenderCoordinator::new(None);
+        c.set_scan(key("KABC", 1), vec![2, 6]);
+        c.add_elevations(&[4]);
+        assert_eq!(c.available_elevations(), &[2, 4, 6]);
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_for_site_change_resets_everything() {
+        let mut c = RenderCoordinator::new(None);
+        c.set_scan(key("KDMX", 5), vec![1, 2]);
+        c.clear_for_site_change();
+        assert!(c.scan_key().is_none());
+        assert!(c.available_elevations().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_scan_key_clears_key_but_keeps_elevations() {
+        let mut c = RenderCoordinator::new(None);
+        c.set_scan(key("KDMX", 5), vec![1, 2]);
+        c.clear_scan_key();
+        assert!(c.scan_key().is_none());
+        assert_eq!(c.available_elevations(), &[1, 2]);
+    }
+
+    #[wasm_bindgen_test]
+    fn request_render_for_returns_false_without_worker() {
+        let mut c = RenderCoordinator::new(None);
+        let sent = c.request_render_for(identity("KDMX", 100, 1, "ref"));
+        assert!(!sent);
+    }
+
+    #[wasm_bindgen_test]
+    fn request_volume_render_false_without_scan_key() {
+        let mut c = RenderCoordinator::new(None);
+        // no scan key set -> short-circuits to false
+        assert!(!c.request_volume_render("ref"));
+    }
+
+    #[wasm_bindgen_test]
+    fn request_volume_render_false_without_worker() {
+        let mut c = RenderCoordinator::new(None);
+        c.set_scan(key("KDMX", 100), vec![1, 2]);
+        // scan key present + elevations present, but no worker -> false
+        assert!(!c.request_volume_render("ref"));
+    }
+
+    #[wasm_bindgen_test]
+    fn try_recv_empty_without_worker() {
+        let mut c = RenderCoordinator::new(None);
+        assert!(c.try_recv().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn force_fresh_render_is_safe_without_worker() {
+        let mut c = RenderCoordinator::new(None);
+        // exercises the dedup-cache clear path; no observable getter, just
+        // assert it does not affect scan state.
+        c.set_scan(key("KDMX", 1), vec![3]);
+        c.force_fresh_render();
+        assert_eq!(c.scan_key(), Some(&key("KDMX", 1)));
+        assert_eq!(c.available_elevations(), &[3]);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_last_render_does_not_send_without_worker() {
+        let mut c = RenderCoordinator::new(None);
+        // priming the dedup cache should not affect public state and should
+        // keep request_render_for returning false (still no worker).
+        c.set_last_render(identity("KDMX", 1, 1, "ref"));
+        assert!(!c.request_render_for(identity("KDMX", 1, 1, "ref")));
+    }
+
+    #[wasm_bindgen_test]
+    fn set_scan_overwrites_prior_elevations() {
+        let mut c = RenderCoordinator::new(None);
+        c.set_scan(key("KDMX", 1), vec![1, 2, 3]);
+        c.set_scan(key("KDMX", 2), vec![9]);
+        assert_eq!(c.scan_key(), Some(&key("KDMX", 2)));
+        assert_eq!(c.available_elevations(), &[9]);
+    }
+}

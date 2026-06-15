@@ -507,3 +507,266 @@ pub(crate) fn build_elevation_uploads_for_flush(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use ::nexrad::model::data::{Radial, RadialStatus};
+
+    /// Construct a minimal `Radial` with no moment data. The pure functions
+    /// under test only read timestamp, azimuth/elevation angle, and elevation
+    /// number — all moment fields are `None`, which makes
+    /// `extract_sweep_data_from_sorted` return `None` for every product (so no
+    /// blobs are extractable). That exercises the "drop on no extracted
+    /// product" path deterministically.
+    fn radial(
+        collection_timestamp_ms: i64,
+        elevation_number: u8,
+        elevation_angle_degrees: f32,
+        azimuth_angle_degrees: f32,
+    ) -> Radial {
+        Radial::new(
+            collection_timestamp_ms,
+            0,
+            azimuth_angle_degrees,
+            1.0,
+            RadialStatus::IntermediateRadialData,
+            elevation_number,
+            elevation_angle_degrees,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    // ---- timing_for_elevation -------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn timing_for_elevation_none_when_no_match() {
+        let metas: Vec<(i64, u8, f32, f32)> = vec![(1000, 1, 0.5, 10.0)];
+        assert!(timing_for_elevation(&metas, 2).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn timing_for_elevation_none_when_empty() {
+        let metas: Vec<(i64, u8, f32, f32)> = vec![];
+        assert!(timing_for_elevation(&metas, 1).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn timing_for_elevation_computes_bounds_and_mean() {
+        // Elevation 1 rows: ts 3000 (az 30), 1000 (az 10), 2000 (az 20).
+        // Elevation 2 row is ignored.
+        let metas: Vec<(i64, u8, f32, f32)> = vec![
+            (3000, 1, 0.5, 30.0),
+            (1000, 1, 0.5, 10.0),
+            (5000, 2, 9.9, 99.0),
+            (2000, 1, 0.8, 20.0),
+        ];
+        let t = timing_for_elevation(&metas, 1).expect("elev 1 present");
+        // min ts 1000ms -> 1.0s, max ts 3000ms -> 3.0s
+        assert!((t.start_secs - 1.0).abs() < 1e-9, "start {}", t.start_secs);
+        assert!((t.end_secs - 3.0).abs() < 1e-9, "end {}", t.end_secs);
+        // mean of 0.5, 0.5, 0.8 = 0.6
+        assert!(
+            (t.elevation_angle - 0.6).abs() < 1e-5,
+            "angle {}",
+            t.elevation_angle
+        );
+        // azimuth at the minimum timestamp (1000ms) is 10.0
+        assert!(
+            (t.start_azimuth - 10.0).abs() < 1e-5,
+            "start_az {}",
+            t.start_azimuth
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn timing_for_elevation_single_row() {
+        let metas: Vec<(i64, u8, f32, f32)> = vec![(7500, 3, 4.0, 123.0)];
+        let t = timing_for_elevation(&metas, 3).unwrap();
+        assert!((t.start_secs - 7.5).abs() < 1e-9);
+        assert!((t.end_secs - 7.5).abs() < 1e-9);
+        assert!((t.elevation_angle - 4.0).abs() < 1e-5);
+        assert!((t.start_azimuth - 123.0).abs() < 1e-5);
+    }
+
+    // ---- group_radials_by_elevation -------------------------------------
+
+    #[wasm_bindgen_test]
+    fn group_radials_by_elevation_buckets_and_sorts() {
+        let radials = vec![
+            radial(1000, 1, 0.5, 50.0),
+            radial(1001, 2, 1.5, 10.0),
+            radial(1002, 1, 0.5, 20.0),
+            radial(1003, 1, 0.5, 35.0),
+            radial(1004, 2, 1.5, 5.0),
+        ];
+        let grouped = group_radials_by_elevation(&radials);
+        assert_eq!(grouped.len(), 2);
+
+        let e1 = grouped.get(&1).expect("elev 1");
+        assert_eq!(e1.len(), 3);
+        // sorted ascending by azimuth: 20, 35, 50
+        let az1: Vec<f32> = e1.iter().map(|r| r.azimuth_angle_degrees()).collect();
+        assert!((az1[0] - 20.0).abs() < 1e-5);
+        assert!((az1[1] - 35.0).abs() < 1e-5);
+        assert!((az1[2] - 50.0).abs() < 1e-5);
+
+        let e2 = grouped.get(&2).expect("elev 2");
+        assert_eq!(e2.len(), 2);
+        let az2: Vec<f32> = e2.iter().map(|r| r.azimuth_angle_degrees()).collect();
+        assert!((az2[0] - 5.0).abs() < 1e-5);
+        assert!((az2[1] - 10.0).abs() < 1e-5);
+    }
+
+    #[wasm_bindgen_test]
+    fn group_radials_by_elevation_empty() {
+        let radials: Vec<Radial> = vec![];
+        let grouped = group_radials_by_elevation(&radials);
+        assert!(grouped.is_empty());
+    }
+
+    // ---- compute_chunk_time_spans ---------------------------------------
+
+    #[wasm_bindgen_test]
+    fn compute_chunk_time_spans_empty() {
+        let radials: Vec<Radial> = vec![];
+        let spans = compute_chunk_time_spans(&radials);
+        assert!(spans.chunk_min_ts_secs.is_none());
+        assert!(spans.chunk_max_ts_secs.is_none());
+        assert!(spans.chunk_elev_spans.is_empty());
+        assert!(spans.chunk_elev_az_ranges.is_empty());
+        assert!(spans.first_radial_azimuth.is_none());
+        assert!(spans.last_radial_azimuth.is_none());
+        assert!(spans.last_radial_time_secs.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_chunk_time_spans_min_max_and_first_last() {
+        let radials = vec![
+            radial(2000, 1, 0.5, 100.0),
+            radial(1000, 1, 0.5, 200.0),
+            radial(3000, 2, 1.5, 300.0),
+        ];
+        let spans = compute_chunk_time_spans(&radials);
+        // overall min ts 1000ms -> 1.0, max 3000ms -> 3.0
+        assert!((spans.chunk_min_ts_secs.unwrap() - 1.0).abs() < 1e-9);
+        assert!((spans.chunk_max_ts_secs.unwrap() - 3.0).abs() < 1e-9);
+        // first radial is index 0 (az 100), last is index 2 (az 300)
+        assert!((spans.first_radial_azimuth.unwrap() - 100.0).abs() < 1e-5);
+        assert!((spans.last_radial_azimuth.unwrap() - 300.0).abs() < 1e-5);
+        // last radial collection time 3000ms -> 3.0s
+        assert!((spans.last_radial_time_secs.unwrap() - 3.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_chunk_time_spans_elev_spans_btree_sorted() {
+        // Provide elevation 2 rows before elevation 1 to confirm BTree ordering.
+        let radials = vec![
+            radial(5000, 2, 1.5, 10.0),
+            radial(6000, 2, 1.5, 20.0),
+            radial(1000, 1, 0.5, 30.0),
+            radial(4000, 1, 0.5, 40.0),
+            radial(2000, 1, 0.5, 50.0),
+        ];
+        let spans = compute_chunk_time_spans(&radials);
+        // elev_spans is BTreeMap-ordered: elev 1 then elev 2.
+        assert_eq!(spans.chunk_elev_spans.len(), 2);
+
+        let (e1, e1_min, e1_max, e1_count) = spans.chunk_elev_spans[0];
+        assert_eq!(e1, 1);
+        assert!((e1_min - 1.0).abs() < 1e-9, "e1 min {}", e1_min);
+        assert!((e1_max - 4.0).abs() < 1e-9, "e1 max {}", e1_max);
+        assert_eq!(e1_count, 3);
+
+        let (e2, e2_min, e2_max, e2_count) = spans.chunk_elev_spans[1];
+        assert_eq!(e2, 2);
+        assert!((e2_min - 5.0).abs() < 1e-9, "e2 min {}", e2_min);
+        assert!((e2_max - 6.0).abs() < 1e-9, "e2 max {}", e2_max);
+        assert_eq!(e2_count, 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn compute_chunk_time_spans_az_ranges_first_last() {
+        // az range per elevation = (first az seen, last az seen) in iteration order.
+        let radials = vec![
+            radial(1000, 1, 0.5, 11.0),
+            radial(2000, 1, 0.5, 22.0),
+            radial(3000, 1, 0.5, 33.0),
+            radial(4000, 2, 1.5, 90.0),
+        ];
+        let spans = compute_chunk_time_spans(&radials);
+        assert_eq!(spans.chunk_elev_az_ranges.len(), 2);
+
+        let (e1, first1, last1) = spans.chunk_elev_az_ranges[0];
+        assert_eq!(e1, 1);
+        assert!((first1 - 11.0).abs() < 1e-5, "first {}", first1);
+        assert!((last1 - 33.0).abs() < 1e-5, "last {}", last1);
+
+        let (e2, first2, last2) = spans.chunk_elev_az_ranges[1];
+        assert_eq!(e2, 2);
+        // single radial: first == last
+        assert!((first2 - 90.0).abs() < 1e-5);
+        assert!((last2 - 90.0).abs() < 1e-5);
+    }
+
+    // ---- build_elevation_uploads (drop-on-no-product semantics) ---------
+
+    #[wasm_bindgen_test]
+    fn build_elevation_uploads_empty_input() {
+        let by_elevation = group_radials_by_elevation(&[]);
+        let metas: Vec<(i64, u8, f32, f32)> = vec![];
+        let uploads = build_elevation_uploads(&by_elevation, &metas);
+        assert!(uploads.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn build_elevation_uploads_drops_radials_without_moment_data() {
+        // Radials carry no moment data, so no product blob can be extracted;
+        // every elevation is dropped -> no phantom manifest entries.
+        let radials = vec![
+            radial(1000, 1, 0.5, 10.0),
+            radial(1001, 1, 0.5, 20.0),
+            radial(1002, 2, 1.5, 30.0),
+        ];
+        let by_elevation = group_radials_by_elevation(&radials);
+        let metas: Vec<(i64, u8, f32, f32)> = vec![
+            (1000, 1, 0.5, 10.0),
+            (1001, 1, 0.5, 20.0),
+            (1002, 2, 1.5, 30.0),
+        ];
+        let uploads = build_elevation_uploads(&by_elevation, &metas);
+        assert!(
+            uploads.is_empty(),
+            "expected no uploads for moment-less radials, got {}",
+            uploads.len()
+        );
+    }
+
+    // ---- build_elevation_uploads_for_flush ------------------------------
+
+    #[wasm_bindgen_test]
+    fn build_elevation_uploads_for_flush_empty_when_no_completed() {
+        let radials = vec![radial(1000, 1, 0.5, 10.0)];
+        let metas: Vec<(i64, u8, f32, f32)> = vec![(1000, 1, 0.5, 10.0)];
+        let uploads = build_elevation_uploads_for_flush(&radials, &metas, &[]);
+        assert!(uploads.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn build_elevation_uploads_for_flush_drops_absent_and_momentless() {
+        let radials = vec![radial(1000, 1, 0.5, 10.0), radial(2000, 1, 0.5, 20.0)];
+        let metas: Vec<(i64, u8, f32, f32)> = vec![(1000, 1, 0.5, 10.0), (2000, 1, 0.5, 20.0)];
+        // Elevation 9 is not present in the radials; elevation 1 has no moment
+        // data. Both yield nothing.
+        let uploads = build_elevation_uploads_for_flush(&radials, &metas, &[9, 1]);
+        assert!(uploads.is_empty());
+    }
+}

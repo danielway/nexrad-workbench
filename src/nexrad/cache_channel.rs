@@ -171,3 +171,164 @@ impl Default for CacheLoadChannel {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn sample_metadata() -> ScanMetadata {
+        ScanMetadata {
+            key: crate::data::ScanKey::new("KDMX", UnixMillis(1_700_000_000_000)),
+            file_name: "KDMX20230101_000000_V06".to_string(),
+            file_size: 4096,
+            end_timestamp: Some(1_700_000_300),
+            vcp: None,
+            completeness: None,
+            cached_sweep_count: Some(7),
+            planned_sweep_count: Some(14),
+            sweeps: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn new_channel_is_not_loading() {
+        let ch = CacheLoadChannel::new();
+        assert!(!ch.is_loading());
+    }
+
+    #[wasm_bindgen_test]
+    fn default_channel_is_not_loading() {
+        let ch = CacheLoadChannel::default();
+        assert!(!ch.is_loading());
+    }
+
+    #[wasm_bindgen_test]
+    fn new_channel_try_recv_is_none() {
+        let ch = CacheLoadChannel::new();
+        assert!(ch.try_recv().is_none());
+        // Still none on a second call.
+        assert!(ch.try_recv().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn is_loading_reflects_internal_flag() {
+        let ch = CacheLoadChannel::new();
+        assert!(!ch.is_loading());
+        *ch.loading.borrow_mut() = true;
+        assert!(ch.is_loading());
+        *ch.loading.borrow_mut() = false;
+        assert!(!ch.is_loading());
+    }
+
+    #[wasm_bindgen_test]
+    fn try_recv_takes_success_result_and_leaves_none() {
+        let ch = CacheLoadChannel::new();
+        *ch.receiver.borrow_mut() = Some(CacheLoadResult::Success {
+            site_id: "KDMX".to_string(),
+            metadata: vec![sample_metadata()],
+            total_cache_size: 8192,
+        });
+
+        let got = ch.try_recv();
+        match got {
+            Some(CacheLoadResult::Success {
+                site_id,
+                metadata,
+                total_cache_size,
+            }) => {
+                assert_eq!(site_id, "KDMX");
+                assert_eq!(metadata.len(), 1);
+                assert_eq!(metadata[0].file_size, 4096);
+                assert_eq!(total_cache_size, 8192);
+            }
+            other => panic!("expected Success, got {:?}", other),
+        }
+
+        // The value was taken; the receiver is now empty.
+        assert!(ch.try_recv().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn try_recv_takes_error_result() {
+        let ch = CacheLoadChannel::new();
+        *ch.receiver.borrow_mut() = Some(CacheLoadResult::Error("boom".to_string()));
+
+        match ch.try_recv() {
+            Some(CacheLoadResult::Error(msg)) => assert_eq!(msg, "boom"),
+            other => panic!("expected Error, got {:?}", other),
+        }
+        assert!(ch.try_recv().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn success_result_clone_preserves_fields() {
+        let original = CacheLoadResult::Success {
+            site_id: "KTLX".to_string(),
+            metadata: vec![sample_metadata(), sample_metadata()],
+            total_cache_size: 100,
+        };
+        let cloned = original.clone();
+        match cloned {
+            CacheLoadResult::Success {
+                site_id,
+                metadata,
+                total_cache_size,
+            } => {
+                assert_eq!(site_id, "KTLX");
+                assert_eq!(metadata.len(), 2);
+                assert_eq!(total_cache_size, 100);
+            }
+            other => panic!("expected Success, got {:?}", other),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn error_result_clone_preserves_message() {
+        let original = CacheLoadResult::Error("io failure".to_string());
+        let cloned = original.clone();
+        match cloned {
+            CacheLoadResult::Error(msg) => assert_eq!(msg, "io failure"),
+            other => panic!("expected Error, got {:?}", other),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn empty_success_result_round_trips_via_receiver() {
+        // Mirrors the clear_cache success payload shape.
+        let ch = CacheLoadChannel::new();
+        *ch.receiver.borrow_mut() = Some(CacheLoadResult::Success {
+            site_id: String::new(),
+            metadata: Vec::new(),
+            total_cache_size: 0,
+        });
+
+        match ch.try_recv() {
+            Some(CacheLoadResult::Success {
+                site_id,
+                metadata,
+                total_cache_size,
+            }) => {
+                assert!(site_id.is_empty());
+                assert!(metadata.is_empty());
+                assert_eq!(total_cache_size, 0);
+            }
+            other => panic!("expected empty Success, got {:?}", other),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn result_debug_is_non_empty() {
+        let s = format!("{:?}", CacheLoadResult::Error("x".to_string()));
+        assert!(s.contains("Error"));
+        let s2 = format!(
+            "{:?}",
+            CacheLoadResult::Success {
+                site_id: "KDMX".to_string(),
+                metadata: Vec::new(),
+                total_cache_size: 5,
+            }
+        );
+        assert!(s2.contains("Success"));
+    }
+}

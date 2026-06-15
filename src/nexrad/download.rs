@@ -411,3 +411,161 @@ async fn download_specific_file(
         decode_latency_ms: 0.0,
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn network_stats_default_is_zero() {
+        let stats = NetworkStats::default();
+        assert_eq!(stats.active_count(), 0);
+        assert_eq!(stats.total_count(), 0);
+        assert_eq!(stats.bytes_transferred(), 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn network_stats_new_matches_default() {
+        let stats = NetworkStats::new();
+        assert_eq!(stats.active_count(), 0);
+        assert_eq!(stats.total_count(), 0);
+        assert_eq!(stats.bytes_transferred(), 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn network_stats_request_started_increments_active_and_total() {
+        let stats = NetworkStats::new();
+        stats.request_started();
+        assert_eq!(stats.active_count(), 1);
+        assert_eq!(stats.total_count(), 1);
+        assert_eq!(stats.bytes_transferred(), 0);
+
+        stats.request_started();
+        assert_eq!(stats.active_count(), 2);
+        assert_eq!(stats.total_count(), 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn network_stats_request_completed_decrements_active_and_adds_bytes() {
+        let stats = NetworkStats::new();
+        stats.request_started();
+        stats.request_started();
+        stats.request_completed(1500);
+        // total_requests stays at 2 (only started bumps it); active drops to 1.
+        assert_eq!(stats.active_count(), 1);
+        assert_eq!(stats.total_count(), 2);
+        assert_eq!(stats.bytes_transferred(), 1500);
+
+        stats.request_completed(500);
+        assert_eq!(stats.active_count(), 0);
+        assert_eq!(stats.bytes_transferred(), 2000);
+    }
+
+    #[wasm_bindgen_test]
+    fn network_stats_completed_saturates_active_at_zero() {
+        let stats = NetworkStats::new();
+        // No request started; completing must not underflow active count.
+        stats.request_completed(42);
+        assert_eq!(stats.active_count(), 0);
+        assert_eq!(stats.total_count(), 0);
+        assert_eq!(stats.bytes_transferred(), 42);
+    }
+
+    #[wasm_bindgen_test]
+    fn network_stats_clone_shares_underlying_counters() {
+        let a = NetworkStats::new();
+        let b = a.clone();
+        a.request_started();
+        // Clones share the same Rc<RefCell>, so b observes a's mutation.
+        assert_eq!(b.active_count(), 1);
+        assert_eq!(b.total_count(), 1);
+        b.request_completed(10);
+        assert_eq!(a.active_count(), 0);
+        assert_eq!(a.bytes_transferred(), 10);
+    }
+
+    #[wasm_bindgen_test]
+    fn download_channel_new_starts_empty() {
+        let chan = DownloadChannel::new();
+        assert!(chan.try_recv().is_none());
+        assert!(chan.try_recv_listing().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn download_channel_default_starts_empty() {
+        let chan = DownloadChannel::default();
+        assert!(chan.try_recv().is_none());
+        assert!(chan.try_recv_listing().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn download_channel_stats_fresh_are_zero() {
+        let chan = DownloadChannel::new();
+        let stats = chan.stats();
+        assert_eq!(stats.active_count(), 0);
+        assert_eq!(stats.total_count(), 0);
+        assert_eq!(stats.bytes_transferred(), 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn download_channel_no_pending_initially() {
+        let chan = DownloadChannel::new();
+        assert!(!chan.is_download_pending("KDMX", 1_700_000_000));
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        assert!(!chan.is_listing_pending("KDMX", &date));
+    }
+
+    #[wasm_bindgen_test]
+    fn listing_result_error_variant_fields() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        let res = ListingResult::Error {
+            site_id: "KDMX".to_string(),
+            date,
+            message: "boom".to_string(),
+        };
+        match res {
+            ListingResult::Error {
+                site_id,
+                date: d,
+                message,
+            } => {
+                assert_eq!(site_id, "KDMX");
+                assert_eq!(d, date);
+                assert_eq!(message, "boom");
+            }
+            ListingResult::Success { .. } => panic!("expected Error variant"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn listing_result_success_carries_sorted_listing() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        let listing = ArchiveListing {
+            files: vec![ArchiveFileMeta {
+                name: "KDMX20240501_120000_V06".to_string(),
+                size: 0,
+                timestamp: 1_714_564_800,
+            }],
+            fetched_at: 0.0,
+        };
+        let res = ListingResult::Success {
+            site_id: "KDMX".to_string(),
+            date,
+            listing,
+        };
+        match res {
+            ListingResult::Success {
+                site_id,
+                date: d,
+                listing,
+            } => {
+                assert_eq!(site_id, "KDMX");
+                assert_eq!(d, date);
+                assert_eq!(listing.files.len(), 1);
+                assert_eq!(listing.files[0].timestamp, 1_714_564_800);
+            }
+            ListingResult::Error { .. } => panic!("expected Success variant"),
+        }
+    }
+}

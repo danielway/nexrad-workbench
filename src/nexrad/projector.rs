@@ -264,3 +264,131 @@ impl Projector {
         })
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use nexrad_data::aws::realtime::{ChunkType, VolumeIndex};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn chunk(sequence: usize) -> ChunkIdentifier {
+        let when = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        ChunkIdentifier::new(
+            "KDMX".to_string(),
+            VolumeIndex::new(1),
+            when.naive_utc(),
+            sequence,
+            ChunkType::Intermediate,
+            Some(when),
+        )
+    }
+
+    #[wasm_bindgen_test]
+    fn new_is_cold_with_all_filter() {
+        let p = Projector::new();
+        // Default filter is `All`.
+        assert_eq!(p.filter(), StreamingFilter::All);
+        // No collection anchor recorded yet.
+        assert_eq!(p.latest_chunk_collection_end_secs(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn default_matches_new() {
+        let p = Projector::default();
+        assert_eq!(p.filter(), StreamingFilter::All);
+        assert_eq!(p.latest_chunk_collection_end_secs(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_filter_round_trips() {
+        let mut p = Projector::new();
+        p.set_filter(StreamingFilter::Elevation(3));
+        assert_eq!(p.filter(), StreamingFilter::Elevation(3));
+        p.set_filter(StreamingFilter::All);
+        assert_eq!(p.filter(), StreamingFilter::All);
+    }
+
+    #[wasm_bindgen_test]
+    fn record_collection_end_sets_anchor() {
+        let mut p = Projector::new();
+        // No VCP installed → characteristics_for_sequence returns None, so no
+        // stats sample is attached, but the anchor must still update.
+        p.record_collection_end(&chunk(5), 1234.5);
+        let got = p.latest_chunk_collection_end_secs().unwrap();
+        assert!((got - 1234.5).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn record_collection_end_overwrites_anchor() {
+        let mut p = Projector::new();
+        p.record_collection_end(&chunk(5), 100.0);
+        p.record_collection_end(&chunk(6), 250.0);
+        let got = p.latest_chunk_collection_end_secs().unwrap();
+        assert!((got - 250.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn reset_collection_anchor_clears() {
+        let mut p = Projector::new();
+        p.record_collection_end(&chunk(5), 999.0);
+        assert!(p.latest_chunk_collection_end_secs().is_some());
+        p.reset_collection_anchor();
+        assert_eq!(p.latest_chunk_collection_end_secs(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn anchor_source_cold_is_upload_minus_default() {
+        // Cold: no collection anchor, empty timing stats → no median lag.
+        let p = Projector::new();
+        assert_eq!(p.current_anchor_source(), AnchorSource::UploadMinusDefault);
+    }
+
+    #[wasm_bindgen_test]
+    fn anchor_source_with_anchor_is_observed_collection() {
+        let mut p = Projector::new();
+        p.record_collection_end(&chunk(2), 500.0);
+        assert_eq!(p.current_anchor_source(), AnchorSource::ObservedCollection);
+        // Clearing the anchor returns to the cold fallback.
+        p.reset_collection_anchor();
+        assert_eq!(p.current_anchor_source(), AnchorSource::UploadMinusDefault);
+    }
+
+    #[wasm_bindgen_test]
+    fn build_plan_cold_returns_none() {
+        // No VCP / no elevation mapper → projector is cold → no plan.
+        let mut p = Projector::new();
+        let anchor = chunk(1);
+        assert!(p
+            .build_plan_with_collection(&anchor, 1000.0, None, None)
+            .is_none());
+        // A second call also stays None; the revision counter must not have
+        // been bumped into a state that produces a plan.
+        assert!(p
+            .build_plan_with_collection(&anchor, 2000.0, Some(900.0), Some((2, 1500.0)))
+            .is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn preload_timing_stats_is_observable_via_getter() {
+        let mut p = Projector::new();
+        // A fresh, empty stats snapshot has no median availability lag.
+        let stats = ChunkTimingStats::new();
+        p.preload_timing_stats(stats);
+        assert_eq!(p.timing_stats().median_availability_lag_secs(), None);
+        // With no collection anchor and no median lag, anchor source is default.
+        assert_eq!(p.current_anchor_source(), AnchorSource::UploadMinusDefault);
+    }
+
+    #[wasm_bindgen_test]
+    fn record_observations_without_vcp_are_noops() {
+        // Without a VCP, characteristics_for_sequence returns None, so these
+        // recorders must not panic and must not disturb the collection anchor.
+        let mut p = Projector::new();
+        p.record_availability_lag_for(&chunk(4), 12.0);
+        p.record_inter_chunk_duration(&chunk(4), ChronoDuration::seconds(7), 1);
+        assert_eq!(p.latest_chunk_collection_end_secs(), None);
+        assert_eq!(p.timing_stats().median_availability_lag_secs(), None);
+        // Filter is untouched.
+        assert_eq!(p.filter(), StreamingFilter::All);
+    }
+}

@@ -255,3 +255,135 @@ pub(super) async fn idb_store() -> Result<IndexedDbStore, wasm_bindgen::JsValue>
         .map_err(|e| wasm_bindgen::JsValue::from_str(&format!("Failed to open IDB: {}", e)))?;
     Ok(store)
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn default_product_is_reflectivity() {
+        assert_eq!(default_product(), "reflectivity");
+    }
+
+    #[wasm_bindgen_test]
+    fn ingest_params_full_camel_case() {
+        let json = r#"{
+            "siteId": "KTLX",
+            "timestampSecs": 1234.5,
+            "fileName": "KTLX20230101_000000_V06",
+            "wantedElevations": [1, 2, 3]
+        }"#;
+        let p: IngestParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(p.site_id, "KTLX");
+        assert!((p.timestamp_secs - 1234.5).abs() < 1e-9);
+        assert_eq!(p.file_name, "KTLX20230101_000000_V06");
+        assert_eq!(p.wanted_elevations, vec![1u8, 2, 3]);
+    }
+
+    #[wasm_bindgen_test]
+    fn ingest_params_defaults_when_optional_omitted() {
+        // Only the required fields present; file_name and wanted_elevations default.
+        let json = r#"{ "siteId": "KOUN", "timestampSecs": 0.0 }"#;
+        let p: IngestParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(p.site_id, "KOUN");
+        assert!(p.timestamp_secs.abs() < 1e-9);
+        assert_eq!(p.file_name, "");
+        assert!(p.wanted_elevations.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn render_params_product_defaults_to_reflectivity() {
+        let json = r#"{ "scanKey": "KTLX|1700000000000", "elevationNumber": 2 }"#;
+        let p: RenderParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(p.scan_key, "KTLX|1700000000000");
+        assert_eq!(p.elevation_number, 2u8);
+        // default = default_product()
+        assert_eq!(p.product, "reflectivity");
+    }
+
+    #[wasm_bindgen_test]
+    fn render_params_explicit_product_overrides_default() {
+        let json = r#"{ "scanKey": "K|1", "elevationNumber": 5, "product": "velocity" }"#;
+        let p: RenderParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(p.elevation_number, 5u8);
+        assert_eq!(p.product, "velocity");
+    }
+
+    #[wasm_bindgen_test]
+    fn render_volume_params_parse() {
+        let json = r#"{ "scanKey": "K|9", "elevationNumbers": [1, 4, 7] }"#;
+        let p: RenderVolumeParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(p.scan_key, "K|9");
+        assert_eq!(p.elevation_numbers, vec![1u8, 4, 7]);
+        // product defaults
+        assert_eq!(p.product, "reflectivity");
+    }
+
+    #[wasm_bindgen_test]
+    fn render_volume_params_explicit_product() {
+        let json = r#"{ "scanKey": "K|9", "elevationNumbers": [], "product": "spectrum_width" }"#;
+        let p: RenderVolumeParams = serde_json::from_str(json).expect("deserialize");
+        assert!(p.elevation_numbers.is_empty());
+        assert_eq!(p.product, "spectrum_width");
+    }
+
+    #[wasm_bindgen_test]
+    fn ingest_chunk_params_defaults() {
+        // Only the required fields present; all optional booleans/index default.
+        let json = r#"{ "siteId": "KTLX", "timestampSecs": 100.0 }"#;
+        let p: IngestChunkParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(p.site_id, "KTLX");
+        assert!((p.timestamp_secs - 100.0).abs() < 1e-9);
+        assert_eq!(p.chunk_index, 0u32);
+        assert!(!p.is_start);
+        assert!(!p.is_end);
+        assert_eq!(p.file_name, "");
+        assert!(!p.is_last_in_sweep);
+    }
+
+    #[wasm_bindgen_test]
+    fn ingest_chunk_params_full() {
+        let json = r#"{
+            "siteId": "KOUN",
+            "timestampSecs": 200.25,
+            "chunkIndex": 7,
+            "isStart": true,
+            "isEnd": true,
+            "fileName": "chunk7",
+            "isLastInSweep": true
+        }"#;
+        let p: IngestChunkParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(p.site_id, "KOUN");
+        assert!((p.timestamp_secs - 200.25).abs() < 1e-9);
+        assert_eq!(p.chunk_index, 7u32);
+        assert!(p.is_start);
+        assert!(p.is_end);
+        assert_eq!(p.file_name, "chunk7");
+        assert!(p.is_last_in_sweep);
+    }
+
+    #[wasm_bindgen_test]
+    fn ingest_chunk_params_partial_flags() {
+        // is_start true, is_end omitted (defaults false).
+        let json = r#"{
+            "siteId": "K",
+            "timestampSecs": 1.0,
+            "chunkIndex": 3,
+            "isStart": true
+        }"#;
+        let p: IngestChunkParams = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(p.chunk_index, 3u32);
+        assert!(p.is_start);
+        assert!(!p.is_end);
+        assert!(!p.is_last_in_sweep);
+    }
+
+    #[wasm_bindgen_test]
+    fn ingest_params_missing_required_field_errors() {
+        // siteId is required (no serde default) → deserialization must fail.
+        let json = r#"{ "timestampSecs": 5.0 }"#;
+        let res: Result<IngestParams, _> = serde_json::from_str(json);
+        assert!(res.is_err());
+    }
+}

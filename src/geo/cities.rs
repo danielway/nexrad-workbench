@@ -856,3 +856,137 @@ pub fn build_cities_layer() -> GeoLayer {
 
     layer
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// The built layer is tagged as the Cities layer type, regardless of any
+    /// per-layer color/width overrides (which are None by construction).
+    #[wasm_bindgen_test]
+    fn build_cities_layer_has_cities_type() {
+        let layer = build_cities_layer();
+        assert_eq!(layer.layer_type, GeoLayerType::Cities);
+        assert!(layer.visible);
+        // No explicit overrides set → effective values fall back to the
+        // GeoLayerType::Cities defaults.
+        assert!((layer.effective_line_width() - 0.0).abs() < 1e-6);
+        assert_eq!(
+            layer.effective_color(),
+            GeoLayerType::Cities.default_color()
+        );
+    }
+
+    /// The static CITIES table has 135 entries (42 Major + 31 Medium + 62
+    /// Small), and every one becomes exactly one feature.
+    #[wasm_bindgen_test]
+    fn build_cities_layer_feature_count_matches_table() {
+        let layer = build_cities_layer();
+        assert_eq!(layer.features.len(), 135);
+    }
+
+    /// Every feature is a Point carrying a non-empty label (the city name).
+    #[wasm_bindgen_test]
+    fn all_features_are_labeled_points() {
+        let layer = build_cities_layer();
+        for feature in &layer.features {
+            match feature {
+                GeoFeature::Point(_coord, label) => {
+                    let name = label.as_ref().expect("city point must have a name");
+                    assert!(!name.is_empty(), "city name must be non-empty");
+                }
+                other => panic!("expected Point feature, got {:?}", other),
+            }
+        }
+    }
+
+    /// Point coordinates map lon→x and lat→y. Verify against the first entry
+    /// (New York: lat 40.7128, lon -74.0060).
+    #[wasm_bindgen_test]
+    fn first_city_is_new_york_with_lon_x_lat_y() {
+        let layer = build_cities_layer();
+        match &layer.features[0] {
+            GeoFeature::Point(coord, label) => {
+                assert_eq!(label.as_deref(), Some("New York"));
+                assert!(
+                    (coord.x - (-74.0060)).abs() < 1e-9,
+                    "lon→x, got {}",
+                    coord.x
+                );
+                assert!((coord.y - 40.7128).abs() < 1e-9, "lat→y, got {}", coord.y);
+            }
+            other => panic!("expected Point feature, got {:?}", other),
+        }
+    }
+
+    /// `GeoFeature::label_text` exposes the same name stored in the Point, and
+    /// `label_anchor` returns the point's own coordinate for labeled points.
+    #[wasm_bindgen_test]
+    fn label_accessors_agree_with_point_data() {
+        let layer = build_cities_layer();
+        let ny = &layer.features[0];
+        assert_eq!(ny.label_text(), Some("New York"));
+        let anchor = ny.label_anchor().expect("labeled point has an anchor");
+        assert!((anchor.x - (-74.0060)).abs() < 1e-9);
+        assert!((anchor.y - 40.7128).abs() < 1e-9);
+    }
+
+    /// Specific well-known cities are present with their expected coordinates.
+    /// This pins the lon/lat ordering for a few western/southern entries whose
+    /// signs make a transposition obvious.
+    #[wasm_bindgen_test]
+    fn known_cities_present_with_expected_coords() {
+        let layer = build_cities_layer();
+
+        let find = |name: &str| -> Coord<f64> {
+            for f in &layer.features {
+                if let GeoFeature::Point(coord, Some(label)) = f {
+                    if label == name {
+                        return *coord;
+                    }
+                }
+            }
+            panic!("city {name} not found");
+        };
+
+        // Los Angeles: lat 34.0522, lon -118.2437
+        let la = find("Los Angeles");
+        assert!((la.x - (-118.2437)).abs() < 1e-9, "LA lon, got {}", la.x);
+        assert!((la.y - 34.0522).abs() < 1e-9, "LA lat, got {}", la.y);
+
+        // Miami: lat 25.7617, lon -80.1918
+        let miami = find("Miami");
+        assert!((miami.x - (-80.1918)).abs() < 1e-9);
+        assert!((miami.y - 25.7617).abs() < 1e-9);
+
+        // Honolulu: lat 21.3069, lon -157.8583 — far west, low lat.
+        let hono = find("Honolulu");
+        assert!((hono.x - (-157.8583)).abs() < 1e-9);
+        assert!((hono.y - 21.3069).abs() < 1e-9);
+    }
+
+    /// All US city coordinates lie in plausible CONUS+AK+HI bounds: longitudes
+    /// are negative (western hemisphere) and latitudes positive (northern).
+    /// This guards against a global lon/lat transposition in the table mapping.
+    #[wasm_bindgen_test]
+    fn all_coords_in_us_bounds() {
+        let layer = build_cities_layer();
+        for f in &layer.features {
+            if let GeoFeature::Point(coord, Some(name)) = f {
+                // Longitude (x): western hemisphere, roughly -180..-60.
+                assert!(
+                    coord.x < -60.0 && coord.x > -180.0,
+                    "{name} lon out of range: {}",
+                    coord.x
+                );
+                // Latitude (y): northern hemisphere US span ~18..72.
+                assert!(
+                    coord.y > 18.0 && coord.y < 72.0,
+                    "{name} lat out of range: {}",
+                    coord.y
+                );
+            }
+        }
+    }
+}
