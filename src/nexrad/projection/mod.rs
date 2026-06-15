@@ -547,3 +547,385 @@ mod tests {
         assert_eq!(degenerate.progress_at(1000.0), 0.0);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn make_sweep(
+        elev: u8,
+        start: f64,
+        end: f64,
+        role: ProjectionScanRole,
+        status: SweepProjectionStatus,
+        timing: SweepTimingProvenance,
+    ) -> SweepProjection {
+        SweepProjection {
+            elevation_number: elev,
+            elevation_angle: 0.5 * elev as f32,
+            scan_role: role,
+            status,
+            timing,
+            collection_start_secs: start,
+            collection_end_secs: end,
+            chunks_in_sweep: 0,
+            chunks_received: 0,
+            radials_received: 0,
+            azimuth_rate_dps: 20.0,
+            chunks: Vec::new(),
+        }
+    }
+
+    fn make_scan(sweeps: Vec<SweepProjection>, vs: f64, ve: f64) -> ScanProjection {
+        ScanProjection {
+            vcp_number: 0,
+            vcp_pattern: None,
+            roster: crate::state::VolumeElevationRoster::default(),
+            in_progress_elevation: None,
+            in_progress_radials: None,
+            volume_start: vs,
+            volume_end: ve,
+            sweeps,
+            extrapolation: None,
+            next_scan_ghost: None,
+        }
+    }
+
+    // ── SweepProjection predicate getters ───────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn sweep_predicate_getters_match_status_and_timing() {
+        let collected = make_sweep(
+            1,
+            0.0,
+            10.0,
+            ProjectionScanRole::CurrentInProgress,
+            SweepProjectionStatus::CollectedByUs,
+            SweepTimingProvenance::Observed,
+        );
+        assert!(collected.is_complete());
+        assert!(!collected.is_in_progress());
+        assert!(!collected.is_future());
+        assert!(collected.is_observed());
+
+        let in_prog = make_sweep(
+            1,
+            0.0,
+            10.0,
+            ProjectionScanRole::CurrentInProgress,
+            SweepProjectionStatus::InProgress,
+            SweepTimingProvenance::Anchored,
+        );
+        assert!(!in_prog.is_complete());
+        assert!(in_prog.is_in_progress());
+        assert!(!in_prog.is_future());
+        // Anchored is not Observed.
+        assert!(!in_prog.is_observed());
+
+        let future = make_sweep(
+            1,
+            0.0,
+            10.0,
+            ProjectionScanRole::NextScan,
+            SweepProjectionStatus::FutureExpected,
+            SweepTimingProvenance::Projected,
+        );
+        assert!(!future.is_complete());
+        assert!(!future.is_in_progress());
+        assert!(future.is_future());
+        assert!(!future.is_observed());
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_duration_is_end_minus_start() {
+        let s = make_sweep(
+            1,
+            1000.0,
+            1037.5,
+            ProjectionScanRole::CurrentInProgress,
+            SweepProjectionStatus::CollectedByUs,
+            SweepTimingProvenance::Observed,
+        );
+        assert!((s.duration() - 37.5).abs() < 1e-9, "got {}", s.duration());
+
+        // Zero-duration sweep → 0.0.
+        let z = make_sweep(
+            1,
+            500.0,
+            500.0,
+            ProjectionScanRole::CurrentInProgress,
+            SweepProjectionStatus::CollectedByUs,
+            SweepTimingProvenance::Observed,
+        );
+        assert_eq!(z.duration(), 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn availability_maps_each_status_variant() {
+        let cases = [
+            (
+                SweepProjectionStatus::CollectedByUs,
+                SweepAvailability::Cached,
+            ),
+            (
+                SweepProjectionStatus::InProgress,
+                SweepAvailability::Collecting,
+            ),
+            (
+                SweepProjectionStatus::AvailableNotCollected,
+                SweepAvailability::Available,
+            ),
+            (
+                SweepProjectionStatus::FutureExpected,
+                SweepAvailability::Projected,
+            ),
+        ];
+        for (status, expected) in cases {
+            let s = make_sweep(
+                1,
+                0.0,
+                10.0,
+                ProjectionScanRole::CurrentInProgress,
+                status,
+                SweepTimingProvenance::Estimated,
+            );
+            assert_eq!(s.availability(), expected);
+        }
+    }
+
+    // ── ScanProjection::sweep_at ────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn sweep_at_finds_containing_sweep_and_boundaries() {
+        let sweeps = vec![
+            make_sweep(
+                1,
+                1000.0,
+                1010.0,
+                ProjectionScanRole::CurrentInProgress,
+                SweepProjectionStatus::CollectedByUs,
+                SweepTimingProvenance::Observed,
+            ),
+            make_sweep(
+                2,
+                1020.0,
+                1030.0,
+                ProjectionScanRole::CurrentInProgress,
+                SweepProjectionStatus::InProgress,
+                SweepTimingProvenance::Anchored,
+            ),
+        ];
+        let sp = make_scan(sweeps, 1000.0, 1030.0);
+
+        // Inside second sweep.
+        assert_eq!(sp.sweep_at(1025.0).unwrap().elevation_number, 2);
+        // Start boundary (inclusive) of first sweep.
+        assert_eq!(sp.sweep_at(1000.0).unwrap().elevation_number, 1);
+        // End boundary (inclusive) of first sweep.
+        assert_eq!(sp.sweep_at(1010.0).unwrap().elevation_number, 1);
+        // In the gap between sweeps → None.
+        assert!(sp.sweep_at(1015.0).is_none());
+        // Before everything → None.
+        assert!(sp.sweep_at(500.0).is_none());
+        // After everything → None.
+        assert!(sp.sweep_at(2000.0).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_at_empty_scan_is_none() {
+        let sp = make_scan(vec![], 0.0, 100.0);
+        assert!(sp.sweep_at(50.0).is_none());
+    }
+
+    // ── ScanProjection::completed_count ─────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn completed_count_counts_only_collected_by_us() {
+        let sweeps = vec![
+            make_sweep(
+                1,
+                0.0,
+                10.0,
+                ProjectionScanRole::CurrentInProgress,
+                SweepProjectionStatus::CollectedByUs,
+                SweepTimingProvenance::Observed,
+            ),
+            make_sweep(
+                2,
+                10.0,
+                20.0,
+                ProjectionScanRole::CurrentInProgress,
+                SweepProjectionStatus::CollectedByUs,
+                SweepTimingProvenance::Observed,
+            ),
+            make_sweep(
+                3,
+                20.0,
+                30.0,
+                ProjectionScanRole::CurrentInProgress,
+                SweepProjectionStatus::InProgress,
+                SweepTimingProvenance::Anchored,
+            ),
+            make_sweep(
+                4,
+                30.0,
+                40.0,
+                ProjectionScanRole::CurrentInProgress,
+                SweepProjectionStatus::FutureExpected,
+                SweepTimingProvenance::Estimated,
+            ),
+        ];
+        let sp = make_scan(sweeps, 0.0, 40.0);
+        assert_eq!(sp.completed_count(), 2);
+
+        // No collected sweeps → 0.
+        let none_done = make_scan(
+            vec![make_sweep(
+                1,
+                0.0,
+                10.0,
+                ProjectionScanRole::CurrentInProgress,
+                SweepProjectionStatus::FutureExpected,
+                SweepTimingProvenance::Estimated,
+            )],
+            0.0,
+            10.0,
+        );
+        assert_eq!(none_done.completed_count(), 0);
+    }
+
+    // ── assemble_live_scan ──────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn assemble_live_scan_splits_current_and_next_into_ghost() {
+        let sweeps = vec![
+            make_sweep(
+                1,
+                1000.0,
+                1010.0,
+                ProjectionScanRole::CurrentInProgress,
+                SweepProjectionStatus::CollectedByUs,
+                SweepTimingProvenance::Observed,
+            ),
+            make_sweep(
+                2,
+                1010.0,
+                1020.0,
+                ProjectionScanRole::CurrentInProgress,
+                SweepProjectionStatus::InProgress,
+                SweepTimingProvenance::Anchored,
+            ),
+            make_sweep(
+                1,
+                1300.0,
+                1310.0,
+                ProjectionScanRole::NextScan,
+                SweepProjectionStatus::FutureExpected,
+                SweepTimingProvenance::Projected,
+            ),
+            make_sweep(
+                2,
+                1290.0,
+                1330.0,
+                ProjectionScanRole::NextScan,
+                SweepProjectionStatus::FutureExpected,
+                SweepTimingProvenance::Projected,
+            ),
+        ];
+
+        let scan = assemble_live_scan(
+            &sweeps,
+            212,
+            None,
+            crate::state::VolumeElevationRoster::default(),
+            Some(2),
+            Some(7),
+            1000.0,
+            1020.0,
+        );
+
+        // Top-level scan keeps only the CurrentInProgress sweeps.
+        assert_eq!(scan.sweeps.len(), 2);
+        assert!(scan
+            .sweeps
+            .iter()
+            .all(|s| matches!(s.scan_role, ProjectionScanRole::CurrentInProgress)));
+        assert_eq!(scan.vcp_number, 212);
+        assert_eq!(scan.in_progress_elevation, Some(2));
+        assert_eq!(scan.in_progress_radials, Some(7));
+        assert!((scan.volume_start - 1000.0).abs() < 1e-9);
+        assert!((scan.volume_end - 1020.0).abs() < 1e-9);
+        // No extrapolation is filled at assembly time.
+        assert!(scan.extrapolation.is_none());
+
+        // The NextScan sweeps become a ghost with min-start / max-end bounds.
+        let ghost = scan.next_scan_ghost.expect("ghost present");
+        assert_eq!(ghost.sweeps.len(), 2);
+        assert!(ghost
+            .sweeps
+            .iter()
+            .all(|s| matches!(s.scan_role, ProjectionScanRole::NextScan)));
+        // min start across {1300, 1290} = 1290; max end across {1310, 1330} = 1330.
+        assert!((ghost.volume_start - 1290.0).abs() < 1e-9);
+        assert!((ghost.volume_end - 1330.0).abs() < 1e-9);
+        assert_eq!(ghost.vcp_number, 212);
+        // Ghost has no further ghost and no extrapolation.
+        assert!(ghost.next_scan_ghost.is_none());
+        assert!(ghost.extrapolation.is_none());
+        assert!(ghost.in_progress_elevation.is_none());
+        assert!(ghost.in_progress_radials.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn assemble_live_scan_no_next_means_no_ghost() {
+        let sweeps = vec![make_sweep(
+            1,
+            1000.0,
+            1010.0,
+            ProjectionScanRole::CurrentInProgress,
+            SweepProjectionStatus::CollectedByUs,
+            SweepTimingProvenance::Observed,
+        )];
+        let scan = assemble_live_scan(
+            &sweeps,
+            12,
+            None,
+            crate::state::VolumeElevationRoster::default(),
+            None,
+            None,
+            1000.0,
+            1010.0,
+        );
+        assert_eq!(scan.sweeps.len(), 1);
+        assert!(scan.next_scan_ghost.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn assemble_live_scan_only_next_yields_empty_current_with_ghost() {
+        let sweeps = vec![make_sweep(
+            3,
+            2000.0,
+            2050.0,
+            ProjectionScanRole::NextScan,
+            SweepProjectionStatus::FutureExpected,
+            SweepTimingProvenance::Projected,
+        )];
+        let scan = assemble_live_scan(
+            &sweeps,
+            35,
+            None,
+            crate::state::VolumeElevationRoster::default(),
+            None,
+            None,
+            2000.0,
+            2050.0,
+        );
+        // No current sweeps, but a ghost exists.
+        assert!(scan.sweeps.is_empty());
+        let ghost = scan.next_scan_ghost.expect("ghost present");
+        assert_eq!(ghost.sweeps.len(), 1);
+        assert!((ghost.volume_start - 2000.0).abs() < 1e-9);
+        assert!((ghost.volume_end - 2050.0).abs() < 1e-9);
+    }
+}

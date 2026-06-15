@@ -751,3 +751,266 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use crate::data::keys::UnixMillis;
+    use crate::data::ScanKey;
+
+    fn scan_key(site: &str, ms: i64) -> ScanKey {
+        ScanKey::new(site, UnixMillis(ms))
+    }
+
+    fn elev(elevation_number: u8, angle: f32) -> ElevationListEntry {
+        ElevationListEntry {
+            elevation_number,
+            angle,
+            waveform: "CS".to_string(),
+            is_sails: false,
+            is_mrle: false,
+            cached_products: Vec::new(),
+        }
+    }
+
+    // ---- RadarProduct -----------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn radar_product_label_unit_short_code() {
+        assert_eq!(RadarProduct::Reflectivity.label(), "Reflectivity");
+        assert_eq!(RadarProduct::Reflectivity.unit(), "dBZ");
+        assert_eq!(RadarProduct::Reflectivity.short_code(), "REF");
+
+        assert_eq!(RadarProduct::Velocity.unit(), "m/s");
+        assert_eq!(RadarProduct::SpectrumWidth.unit(), "m/s");
+        assert_eq!(RadarProduct::Velocity.short_code(), "VEL");
+        assert_eq!(RadarProduct::SpectrumWidth.short_code(), "SW");
+
+        // Correlation coefficient has an empty unit string.
+        assert_eq!(RadarProduct::CorrelationCoefficient.unit(), "");
+        assert_eq!(RadarProduct::CorrelationCoefficient.short_code(), "CC");
+
+        assert_eq!(RadarProduct::DifferentialReflectivity.short_code(), "ZDR");
+        assert_eq!(RadarProduct::DifferentialPhase.short_code(), "KDP");
+        assert_eq!(RadarProduct::ClutterFilterPower.short_code(), "CFP");
+        assert_eq!(RadarProduct::ClutterFilterPower.unit(), "dB");
+        assert_eq!(RadarProduct::DifferentialReflectivity.unit(), "dB");
+    }
+
+    #[wasm_bindgen_test]
+    fn radar_product_short_code_round_trips() {
+        // Every product's short_code parses back to itself.
+        // (RadarProduct has no Debug derive, so compare via PartialEq.)
+        for &p in RadarProduct::all() {
+            assert!(RadarProduct::from_short_code(p.short_code()) == Some(p));
+        }
+        // Unknown / empty / lowercase codes do not parse.
+        assert!(RadarProduct::from_short_code("XYZ").is_none());
+        assert!(RadarProduct::from_short_code("").is_none());
+        assert!(RadarProduct::from_short_code("ref").is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn radar_product_all_and_default() {
+        let all = RadarProduct::all();
+        assert_eq!(all.len(), 7);
+        assert!(all[0] == RadarProduct::Reflectivity);
+        // Default is Reflectivity.
+        assert!(RadarProduct::default() == RadarProduct::Reflectivity);
+    }
+
+    #[wasm_bindgen_test]
+    fn radar_product_to_worker_string_and_cfp_fallback() {
+        assert_eq!(
+            RadarProduct::Reflectivity.to_worker_string(),
+            "reflectivity"
+        );
+        assert_eq!(RadarProduct::Velocity.to_worker_string(), "velocity");
+        assert_eq!(
+            RadarProduct::SpectrumWidth.to_worker_string(),
+            "spectrum_width"
+        );
+        assert_eq!(
+            RadarProduct::DifferentialReflectivity.to_worker_string(),
+            "differential_reflectivity"
+        );
+        assert_eq!(
+            RadarProduct::CorrelationCoefficient.to_worker_string(),
+            "correlation_coefficient"
+        );
+        assert_eq!(
+            RadarProduct::DifferentialPhase.to_worker_string(),
+            "differential_phase"
+        );
+        // ClutterFilterPower deliberately falls back to "reflectivity".
+        assert_eq!(
+            RadarProduct::ClutterFilterPower.to_worker_string(),
+            "reflectivity"
+        );
+    }
+
+    // ---- SweepIdentity ----------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn sweep_identity_new_and_accessors() {
+        // 1_700_000_000_500 ms -> 1_700_000_000.5 s
+        let id = SweepIdentity::new(scan_key("KDMX", 1_700_000_000_500), 3, "velocity");
+        assert_eq!(id.elevation_number, 3);
+        assert_eq!(id.product, "velocity");
+        assert_eq!(id.site_id(), "KDMX");
+        assert!((id.scan_timestamp_secs() - 1_700_000_000.5).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_identity_equality_by_blob_identity() {
+        let a = SweepIdentity::new(scan_key("KDMX", 1000), 1, "reflectivity");
+        let b = SweepIdentity::new(scan_key("KDMX", 1000), 1, "reflectivity");
+        assert_eq!(a, b);
+        // Differing product, elevation, or site each break equality.
+        assert_ne!(a, SweepIdentity::new(scan_key("KDMX", 1000), 1, "velocity"));
+        assert_ne!(
+            a,
+            SweepIdentity::new(scan_key("KDMX", 1000), 2, "reflectivity")
+        );
+        assert_ne!(
+            a,
+            SweepIdentity::new(scan_key("KLOT", 1000), 1, "reflectivity")
+        );
+    }
+
+    // ---- ElevationSelection ----------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn elevation_selection_default_and_accessors() {
+        let def = ElevationSelection::default();
+        assert!(!def.is_auto());
+        assert_eq!(def.elevation_number(), Some(1));
+        assert!((def.angle() - 0.5).abs() < 1e-6);
+
+        let latest = ElevationSelection::Latest;
+        assert!(latest.is_auto());
+        assert_eq!(latest.elevation_number(), None);
+        // Latest reports the sentinel 0.5 angle.
+        assert!((latest.angle() - 0.5).abs() < 1e-6);
+
+        let fixed = ElevationSelection::Fixed {
+            elevation_number: 5,
+            angle: 2.4,
+        };
+        assert!(!fixed.is_auto());
+        assert_eq!(fixed.elevation_number(), Some(5));
+        assert!((fixed.angle() - 2.4).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_for_vcp_picks_closest_angle() {
+        let mut sel = ElevationSelection::Fixed {
+            elevation_number: 9,
+            angle: 1.4,
+        };
+        // Entries with angles 0.5, 1.5, 3.0 — closest to 1.4 is 1.5 (entry #2).
+        let entries = [elev(1, 0.5), elev(2, 1.5), elev(3, 3.0)];
+        sel.resolve_for_vcp(&entries);
+        assert_eq!(sel.elevation_number(), Some(2));
+        assert!((sel.angle() - 1.5).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_for_vcp_noop_on_latest_and_empty() {
+        // Latest is untouched.
+        let mut latest = ElevationSelection::Latest;
+        latest.resolve_for_vcp(&[elev(1, 0.5)]);
+        assert!(latest.is_auto());
+
+        // Empty entry list leaves a Fixed selection unchanged.
+        let mut fixed = ElevationSelection::Fixed {
+            elevation_number: 7,
+            angle: 4.2,
+        };
+        fixed.resolve_for_vcp(&[]);
+        assert_eq!(fixed.elevation_number(), Some(7));
+        assert!((fixed.angle() - 4.2).abs() < 1e-6);
+    }
+
+    // ---- InterpolationMode / RenderProcessing / defaults ------------------
+
+    #[wasm_bindgen_test]
+    fn interpolation_mode_label_all_default() {
+        assert_eq!(InterpolationMode::Nearest.label(), "Nearest");
+        assert_eq!(InterpolationMode::Bilinear.label(), "Bilinear");
+        let all = InterpolationMode::all();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0], InterpolationMode::Nearest);
+        assert_eq!(all[1], InterpolationMode::Bilinear);
+        assert_eq!(InterpolationMode::default(), InterpolationMode::Nearest);
+    }
+
+    #[wasm_bindgen_test]
+    fn render_processing_default_values() {
+        let rp = RenderProcessing::default();
+        assert_eq!(rp.interpolation, InterpolationMode::Nearest);
+        assert!((rp.opacity - 1.0).abs() < 1e-6);
+        assert!(!rp.sweep_animation);
+        assert!(rp.data_age_desaturation);
+    }
+
+    #[wasm_bindgen_test]
+    fn enum_defaults() {
+        assert_eq!(ViewMode::default(), ViewMode::Flat2D);
+        assert_eq!(CanvasCaption::default(), CanvasCaption::None);
+    }
+
+    // ---- VizState::update_overlay & displayed_midpoint_secs ---------------
+
+    #[wasm_bindgen_test]
+    fn update_overlay_formats_and_seeds_staleness() {
+        let mut viz = VizState::default();
+        // now=300, end=200 -> 100s stale; start=100 -> 200s stale.
+        viz.update_overlay(100.0, 200.0, 0.5, 300.0);
+        assert_eq!(viz.elevation, "0.5\u{00B0}");
+        assert!((viz.data_staleness_secs.unwrap() - 100.0).abs() < 1e-6);
+        assert!((viz.data_staleness_start_secs.unwrap() - 200.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn update_overlay_clamps_future_frames_to_none() {
+        let mut viz = VizState::default();
+        // now precedes both start and end -> negative staleness clamped to None.
+        viz.update_overlay(500.0, 600.0, 12.34, 400.0);
+        assert_eq!(viz.elevation, "12.3\u{00B0}");
+        assert_eq!(viz.data_staleness_secs, None);
+        assert_eq!(viz.data_staleness_start_secs, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn displayed_midpoint_secs_none_then_some() {
+        let mut viz = VizState::default();
+        assert_eq!(viz.displayed_midpoint_secs(), None);
+
+        viz.displayed = Some(DisplayedSweep {
+            identity: SweepIdentity::new(scan_key("KDMX", 1000), 1, "reflectivity"),
+            start_time: 100.0,
+            end_time: 250.0,
+            elevation_deg: 0.5,
+        });
+        assert!((viz.displayed_midpoint_secs().unwrap() - 175.0).abs() < 1e-6);
+    }
+
+    // ---- VizState 2D/3D accessor no-ops ----------------------------------
+
+    #[wasm_bindgen_test]
+    fn set_zoom_pan_are_noops_in_3d() {
+        let mut viz = VizState::default();
+        viz.switch_camera_mode(crate::geo::CameraMode::SiteOrbit);
+        assert!(!viz.is_2d());
+        // No flat-2D state to write -> setters are no-ops, getters fall back.
+        viz.set_zoom(5.0);
+        viz.set_pan_offset(Vec2::new(9.0, 9.0));
+        assert!((viz.zoom() - 1.0).abs() < 1e-6);
+        assert_eq!(viz.pan_offset(), Vec2::ZERO);
+        // flat_pan_mut yields None in 3D.
+        assert!(viz.flat_pan_mut().is_none());
+    }
+}

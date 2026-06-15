@@ -1759,3 +1759,128 @@ mod tests {
         assert!(NEXRAD_SITES.len() > 150, "Should have many NEXRAD sites");
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- title_case (private, accessible via super::*) ----
+
+    #[wasm_bindgen_test]
+    fn title_case_single_word() {
+        assert_eq!(title_case("AMARILLO"), "Amarillo");
+    }
+
+    #[wasm_bindgen_test]
+    fn title_case_multi_word_collapses_whitespace_to_single_space() {
+        assert_eq!(title_case("DES MOINES"), "Des Moines");
+        assert_eq!(title_case("NEW YORK CITY"), "New York City");
+    }
+
+    #[wasm_bindgen_test]
+    fn title_case_empty_string_is_empty() {
+        assert_eq!(title_case(""), "");
+    }
+
+    #[wasm_bindgen_test]
+    fn title_case_already_mixed_case_normalized() {
+        // First char upper, remainder lower regardless of input casing.
+        assert_eq!(title_case("aBcDeF"), "Abcdef");
+    }
+
+    // ---- display_label ----
+
+    #[wasm_bindgen_test]
+    fn display_label_with_state() {
+        let site = get_site("KDMX").unwrap();
+        assert_eq!(site.display_label(), "KDMX - Des Moines, IA");
+    }
+
+    #[wasm_bindgen_test]
+    fn display_label_without_state_omits_comma_state() {
+        // International site with state == None.
+        let site = get_site("RKJK").unwrap();
+        assert_eq!(site.state, None);
+        assert_eq!(site.display_label(), "RKJK - Kunsan Ab");
+    }
+
+    #[wasm_bindgen_test]
+    fn display_label_multiword_name() {
+        let site = get_site("KAKQ").unwrap();
+        assert_eq!(site.display_label(), "KAKQ - Norfolk Richmond, VA");
+    }
+
+    // ---- get_site ----
+
+    #[wasm_bindgen_test]
+    fn get_site_unknown_returns_none() {
+        assert!(get_site("ZZZZ").is_none());
+        assert!(get_site("").is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn get_site_lowercase_international_site() {
+        // Case-insensitive lookup must also work for non-K sites.
+        let site = get_site("rkjk").unwrap();
+        assert_eq!(site.id, "RKJK");
+        assert_eq!(site.name, "KUNSAN AB");
+    }
+
+    // ---- all_sites_sorted ----
+
+    #[wasm_bindgen_test]
+    fn all_sites_sorted_is_ascending_by_id() {
+        let sorted = all_sites_sorted();
+        assert_eq!(sorted.len(), NEXRAD_SITES.len());
+        for pair in sorted.windows(2) {
+            assert!(
+                pair[0].id <= pair[1].id,
+                "{} should sort before {}",
+                pair[0].id,
+                pair[1].id
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn all_sites_sorted_first_entry_is_kabr() {
+        // KABR is lexicographically the smallest id present.
+        let sorted = all_sites_sorted();
+        assert_eq!(sorted.first().unwrap().id, "KABR");
+    }
+
+    // ---- nearest_site ----
+
+    #[wasm_bindgen_test]
+    fn nearest_site_to_exact_coords_returns_that_site() {
+        // Use KDMX's own coordinates; zero-distance must win min_by.
+        let dmx = get_site("KDMX").unwrap();
+        let nearest = nearest_site(dmx.lat, dmx.lon).unwrap();
+        assert_eq!(nearest.id, "KDMX");
+    }
+
+    #[wasm_bindgen_test]
+    fn nearest_site_slightly_offset_still_resolves_local_site() {
+        // A point a few hundredths of a degree from KOKX (NYC) should still
+        // resolve to KOKX, the closest of the dense northeast cluster.
+        let okx = get_site("KOKX").unwrap();
+        let nearest = nearest_site(okx.lat + 0.01, okx.lon - 0.01).unwrap();
+        assert_eq!(nearest.id, "KOKX");
+    }
+
+    // ---- haversine_distance (private) ----
+
+    #[wasm_bindgen_test]
+    fn haversine_zero_for_identical_points() {
+        let d = haversine_distance(41.73111, -93.72278, 41.73111, -93.72278);
+        assert!(d.abs() < 1e-6, "distance to self should be ~0, got {}", d);
+    }
+
+    #[wasm_bindgen_test]
+    fn haversine_one_degree_latitude_is_about_111km() {
+        // One degree of latitude on a 6371 km sphere ≈ 111.19 km.
+        let d = haversine_distance(0.0, 0.0, 1.0, 0.0);
+        assert!((d - 111.19).abs() < 0.5, "expected ~111.19 km, got {}", d);
+    }
+}

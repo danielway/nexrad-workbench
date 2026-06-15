@@ -911,3 +911,252 @@ impl ChunkArrivalStat {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// Build a `SweepForecast` with the given actual start/end and otherwise
+    /// inert fields. Only `actual_start`/`actual_end` are read by the method
+    /// under test.
+    fn forecast_with_actuals(actual_start: Option<f64>, actual_end: Option<f64>) -> SweepForecast {
+        SweepForecast {
+            elev_number: 1,
+            elev_angle: 0.5,
+            waveform: "CS".to_string(),
+            azimuth_rate_used: 20.0,
+            rate_source: RateSource::VcpMessage,
+            predicted_start: 0.0,
+            predicted_duration: 0.0,
+            predicted_chunks: None,
+            actual_start,
+            actual_end,
+            actual_chunks: None,
+            timing_source: None,
+            status: SweepStatus::Future,
+        }
+    }
+
+    // ---- SweepForecast::actual_duration ----
+
+    #[wasm_bindgen_test]
+    fn actual_duration_some_when_end_after_start() {
+        let f = forecast_with_actuals(Some(100.0), Some(115.5));
+        let d = f.actual_duration().expect("duration");
+        assert!((d - 15.5).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn actual_duration_none_when_end_equals_start() {
+        // Guard is strict `e > s`, so equal endpoints yield None.
+        let f = forecast_with_actuals(Some(100.0), Some(100.0));
+        assert_eq!(f.actual_duration(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn actual_duration_none_when_end_before_start() {
+        let f = forecast_with_actuals(Some(100.0), Some(90.0));
+        assert_eq!(f.actual_duration(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn actual_duration_none_when_either_endpoint_missing() {
+        assert_eq!(
+            forecast_with_actuals(Some(100.0), None).actual_duration(),
+            None
+        );
+        assert_eq!(
+            forecast_with_actuals(None, Some(100.0)).actual_duration(),
+            None
+        );
+        assert_eq!(forecast_with_actuals(None, None).actual_duration(), None);
+    }
+
+    // ---- RateSource::short ----
+
+    #[wasm_bindgen_test]
+    fn rate_source_short_labels() {
+        assert_eq!(RateSource::VcpMessage.short(), "VCP");
+        assert_eq!(RateSource::MethodBFallback.short(), "FB");
+        assert_eq!(RateSource::ProjectionLibrary.short(), "LIB");
+    }
+
+    // ---- WaitResolution ----
+
+    #[wasm_bindgen_test]
+    fn wait_resolution_short_labels() {
+        assert_eq!(WaitResolution::SleptToPrediction.short(), "sleep");
+        assert_eq!(WaitResolution::EarlyFired.short(), "early");
+        assert_eq!(WaitResolution::ReAnchored.short(), "reanchor");
+    }
+
+    #[wasm_bindgen_test]
+    fn wait_resolution_default_is_slept_to_prediction() {
+        assert_eq!(WaitResolution::default(), WaitResolution::SleptToPrediction);
+    }
+
+    // ---- BucketKey::short ----
+
+    #[wasm_bindgen_test]
+    fn bucket_key_short_first_in_sweep_true() {
+        let k = BucketKey {
+            chunk_type: "I",
+            waveform: "CS",
+            channel: "RP",
+            first_in_sweep: true,
+        };
+        assert_eq!(k.short(), "I|CS|RP|T");
+    }
+
+    #[wasm_bindgen_test]
+    fn bucket_key_short_first_in_sweep_false() {
+        let k = BucketKey {
+            chunk_type: "S",
+            waveform: "CDWO",
+            channel: "SZ2",
+            first_in_sweep: false,
+        };
+        assert_eq!(k.short(), "S|CDWO|SZ2|F");
+    }
+
+    // ---- BucketKey::from_characteristics (covers chunk_type_str/waveform_str/channel_str) ----
+
+    #[wasm_bindgen_test]
+    fn bucket_key_from_characteristics_intermediate_cs_constant() {
+        let c = ChunkCharacteristics {
+            chunk_type: ChunkType::Intermediate,
+            waveform_type: WaveformType::CS,
+            channel_configuration: ChannelConfiguration::ConstantPhase,
+            is_first_in_sweep: false,
+        };
+        let k = BucketKey::from_characteristics(&c);
+        assert_eq!(k.chunk_type, "I");
+        assert_eq!(k.waveform, "CS");
+        assert_eq!(k.channel, "CP");
+        assert!(!k.first_in_sweep);
+        assert_eq!(k.short(), "I|CS|CP|F");
+    }
+
+    #[wasm_bindgen_test]
+    fn bucket_key_from_characteristics_start_b_random_first() {
+        let c = ChunkCharacteristics {
+            chunk_type: ChunkType::Start,
+            waveform_type: WaveformType::B,
+            channel_configuration: ChannelConfiguration::RandomPhase,
+            is_first_in_sweep: true,
+        };
+        let k = BucketKey::from_characteristics(&c);
+        assert_eq!(k.chunk_type, "S");
+        assert_eq!(k.waveform, "B");
+        assert_eq!(k.channel, "RP");
+        assert!(k.first_in_sweep);
+    }
+
+    #[wasm_bindgen_test]
+    fn bucket_key_from_characteristics_end_spp_sz2() {
+        let c = ChunkCharacteristics {
+            chunk_type: ChunkType::End,
+            waveform_type: WaveformType::SPP,
+            channel_configuration: ChannelConfiguration::SZ2Phase,
+            is_first_in_sweep: false,
+        };
+        let k = BucketKey::from_characteristics(&c);
+        assert_eq!(k.chunk_type, "E");
+        assert_eq!(k.waveform, "SPP");
+        assert_eq!(k.channel, "SZ2");
+    }
+
+    #[wasm_bindgen_test]
+    fn bucket_key_from_characteristics_cdw_unknown_channel() {
+        let c = ChunkCharacteristics {
+            chunk_type: ChunkType::Intermediate,
+            waveform_type: WaveformType::CDW,
+            channel_configuration: ChannelConfiguration::UnknownPhase,
+            is_first_in_sweep: false,
+        };
+        let k = BucketKey::from_characteristics(&c);
+        assert_eq!(k.waveform, "CDW");
+        assert_eq!(k.channel, "?");
+    }
+
+    #[wasm_bindgen_test]
+    fn bucket_key_from_characteristics_unknown_waveform() {
+        let c = ChunkCharacteristics {
+            chunk_type: ChunkType::Intermediate,
+            waveform_type: WaveformType::Unknown,
+            channel_configuration: ChannelConfiguration::ConstantPhase,
+            is_first_in_sweep: false,
+        };
+        let k = BucketKey::from_characteristics(&c);
+        assert_eq!(k.waveform, "?");
+    }
+
+    // ---- ChunkArrivalStat diagnostic methods ----
+
+    #[wasm_bindgen_test]
+    fn prediction_error_secs_positive_and_none() {
+        // success_at(1010) − predicted(1002) = 8 (too optimistic).
+        let mut a = ChunkArrivalStat::minimal_for_test(1, 1010.0);
+        a.predicted_available_at = Some(1002.0);
+        let err = a.prediction_error_secs().expect("err");
+        assert!((err - 8.0).abs() < 1e-9);
+
+        // Negative: waited longer than predicted.
+        let mut b = ChunkArrivalStat::minimal_for_test(2, 1000.0);
+        b.predicted_available_at = Some(1005.0);
+        assert!((b.prediction_error_secs().unwrap() - (-5.0)).abs() < 1e-9);
+
+        // No prediction → None.
+        let c = ChunkArrivalStat::minimal_for_test(3, 1000.0);
+        assert_eq!(c.prediction_error_secs(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn wait_after_last_empty_ms_scales_to_ms_and_none() {
+        let mut a = ChunkArrivalStat::minimal_for_test(1, 1002.5);
+        a.last_empty_poll_at = Some(1000.0);
+        // (1002.5 − 1000.0) * 1000 = 2500 ms.
+        let ms = a.wait_after_last_empty_ms().expect("ms");
+        assert!((ms - 2500.0).abs() < 1e-6);
+
+        // No last-empty-poll timestamp → None.
+        let b = ChunkArrivalStat::minimal_for_test(2, 1002.5);
+        assert_eq!(b.wait_after_last_empty_ms(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn actual_interval_secs_requires_both_and_increasing() {
+        let mut cur = ChunkArrivalStat::minimal_for_test(2, 0.0);
+        cur.collection_time_secs = Some(110.0);
+        let mut prev = ChunkArrivalStat::minimal_for_test(1, 0.0);
+        prev.collection_time_secs = Some(100.0);
+        assert!((cur.actual_interval_secs(&prev).unwrap() - 10.0).abs() < 1e-9);
+
+        // Non-increasing (cur == prev) → None (guard is strict `c > p`).
+        let mut eq = ChunkArrivalStat::minimal_for_test(3, 0.0);
+        eq.collection_time_secs = Some(100.0);
+        assert_eq!(eq.actual_interval_secs(&prev), None);
+
+        // Missing prev collection time → None.
+        let missing = ChunkArrivalStat::minimal_for_test(4, 0.0);
+        assert_eq!(cur.actual_interval_secs(&missing), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn interval_error_ms_combines_actual_and_predicted() {
+        let mut cur = ChunkArrivalStat::minimal_for_test(2, 0.0);
+        cur.collection_time_secs = Some(112.0);
+        cur.predicted_wait_secs = Some(9.0);
+        let mut prev = ChunkArrivalStat::minimal_for_test(1, 0.0);
+        prev.collection_time_secs = Some(100.0);
+        // actual interval = 12; (12 − 9) * 1000 = 3000 ms (underestimated gap).
+        let err = cur.interval_error_ms(&prev).expect("err");
+        assert!((err - 3000.0).abs() < 1e-6);
+
+        // No predicted_wait_secs → None even with a valid interval.
+        let mut cur2 = ChunkArrivalStat::minimal_for_test(3, 0.0);
+        cur2.collection_time_secs = Some(112.0);
+        assert_eq!(cur2.interval_error_ms(&prev), None);
+    }
+}

@@ -638,3 +638,361 @@ impl GeoLayerSet {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use eframe::egui::{Align2, Rect};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn c(x: f64, y: f64) -> Coord<f64> {
+        Coord { x, y }
+    }
+
+    fn test_proj() -> MapProjection {
+        let mut p = MapProjection::new(39.0, -98.0);
+        p.update(
+            1.0,
+            Vec2::ZERO,
+            Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)),
+        );
+        p
+    }
+
+    // ----- GeoLayerType::default_color -----
+
+    #[wasm_bindgen_test]
+    fn default_colors_are_distinct_per_type() {
+        assert_eq!(
+            GeoLayerType::States.default_color(),
+            Color32::from_rgb(100, 100, 120)
+        );
+        assert_eq!(
+            GeoLayerType::Counties.default_color(),
+            Color32::from_rgb(70, 70, 90)
+        );
+        assert_eq!(
+            GeoLayerType::Cities.default_color(),
+            Color32::from_rgb(180, 180, 200)
+        );
+        assert_eq!(
+            GeoLayerType::Highways.default_color(),
+            Color32::from_rgb(100, 80, 60)
+        );
+        assert_eq!(
+            GeoLayerType::Lakes.default_color(),
+            Color32::from_rgb(60, 80, 120)
+        );
+    }
+
+    // ----- GeoLayerType::default_line_width -----
+
+    #[wasm_bindgen_test]
+    fn default_line_widths() {
+        assert!((GeoLayerType::States.default_line_width() - 1.5).abs() < 1e-6);
+        assert!((GeoLayerType::Counties.default_line_width() - 0.8).abs() < 1e-6);
+        // Cities are points, so line width is zero.
+        assert!((GeoLayerType::Cities.default_line_width() - 0.0).abs() < 1e-6);
+        assert!((GeoLayerType::Highways.default_line_width() - 1.0).abs() < 1e-6);
+        assert!((GeoLayerType::Lakes.default_line_width() - 0.8).abs() < 1e-6);
+    }
+
+    // ----- GeoLayerType::min_zoom -----
+
+    #[wasm_bindgen_test]
+    fn min_zoom_values() {
+        assert!((GeoLayerType::States.min_zoom() - 0.0).abs() < 1e-6);
+        assert!((GeoLayerType::Counties.min_zoom() - 1.5).abs() < 1e-6);
+        assert!((GeoLayerType::Cities.min_zoom() - 0.0).abs() < 1e-6);
+        assert!((GeoLayerType::Highways.min_zoom() - 1.0).abs() < 1e-6);
+        assert!((GeoLayerType::Lakes.min_zoom() - 0.5).abs() < 1e-6);
+    }
+
+    // ----- GeoLayerType::min_label_zoom -----
+
+    #[wasm_bindgen_test]
+    fn min_label_zoom_values() {
+        assert!((GeoLayerType::States.min_label_zoom() - 0.0).abs() < 1e-6);
+        assert!((GeoLayerType::Counties.min_label_zoom() - 3.0).abs() < 1e-6);
+        assert!((GeoLayerType::Cities.min_label_zoom() - 0.0).abs() < 1e-6);
+        assert!((GeoLayerType::Highways.min_label_zoom() - 2.0).abs() < 1e-6);
+        assert!((GeoLayerType::Lakes.min_label_zoom() - 2.0).abs() < 1e-6);
+    }
+
+    // ----- GeoFeature::label_anchor -----
+
+    #[wasm_bindgen_test]
+    fn label_anchor_polygon_with_label_returns_anchor() {
+        let f = GeoFeature::Polygon {
+            exterior: vec![c(0.0, 0.0), c(2.0, 0.0), c(2.0, 2.0), c(0.0, 2.0)],
+            holes: vec![],
+            label: Some("Region".to_string()),
+            label_anchor: c(1.0, 1.0),
+        };
+        let anchor = f.label_anchor().expect("labeled polygon has anchor");
+        assert!((anchor.x - 1.0).abs() < 1e-9);
+        assert!((anchor.y - 1.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn label_anchor_polygon_without_label_is_none() {
+        let f = GeoFeature::Polygon {
+            exterior: vec![c(0.0, 0.0), c(1.0, 0.0), c(1.0, 1.0)],
+            holes: vec![],
+            label: None,
+            label_anchor: c(0.5, 0.5),
+        };
+        assert!(f.label_anchor().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn label_anchor_multipolygon_with_label() {
+        let f = GeoFeature::MultiPolygon {
+            polygons: vec![(vec![c(0.0, 0.0), c(1.0, 0.0), c(1.0, 1.0)], vec![])],
+            label: Some("Multi".to_string()),
+            label_anchor: c(3.0, 4.0),
+        };
+        let anchor = f.label_anchor().expect("labeled multipolygon has anchor");
+        assert!((anchor.x - 3.0).abs() < 1e-9);
+        assert!((anchor.y - 4.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn label_anchor_point_with_label_returns_point() {
+        let f = GeoFeature::Point(c(-98.0, 39.0), Some("City".to_string()));
+        let anchor = f.label_anchor().expect("labeled point has anchor");
+        assert!((anchor.x + 98.0).abs() < 1e-9);
+        assert!((anchor.y - 39.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn label_anchor_point_without_label_is_none() {
+        let f = GeoFeature::Point(c(1.0, 2.0), None);
+        assert!(f.label_anchor().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn label_anchor_linestring_is_none() {
+        let f = GeoFeature::LineString(vec![c(0.0, 0.0), c(1.0, 1.0)]);
+        assert!(f.label_anchor().is_none());
+    }
+
+    // ----- GeoFeature::label_text -----
+
+    #[wasm_bindgen_test]
+    fn label_text_variants() {
+        let poly = GeoFeature::Polygon {
+            exterior: vec![c(0.0, 0.0)],
+            holes: vec![],
+            label: Some("Poly".to_string()),
+            label_anchor: c(0.0, 0.0),
+        };
+        assert_eq!(poly.label_text(), Some("Poly"));
+
+        let point = GeoFeature::Point(c(0.0, 0.0), Some("Pt".to_string()));
+        assert_eq!(point.label_text(), Some("Pt"));
+
+        let multi = GeoFeature::MultiPolygon {
+            polygons: vec![],
+            label: Some("M".to_string()),
+            label_anchor: c(0.0, 0.0),
+        };
+        assert_eq!(multi.label_text(), Some("M"));
+
+        let unlabeled = GeoFeature::Point(c(0.0, 0.0), None);
+        assert_eq!(unlabeled.label_text(), None);
+
+        let line = GeoFeature::MultiLineString(vec![vec![c(0.0, 0.0)]]);
+        assert_eq!(line.label_text(), None);
+    }
+
+    // ----- GeoLayer::new + effective_color / effective_line_width -----
+
+    #[wasm_bindgen_test]
+    fn new_layer_defaults() {
+        let layer = GeoLayer::new(GeoLayerType::Counties);
+        assert_eq!(layer.layer_type, GeoLayerType::Counties);
+        assert!(layer.features.is_empty());
+        assert!(layer.color.is_none());
+        assert!(layer.line_width.is_none());
+        assert!(layer.visible);
+    }
+
+    #[wasm_bindgen_test]
+    fn effective_color_falls_back_to_default() {
+        let layer = GeoLayer::new(GeoLayerType::Highways);
+        assert_eq!(layer.effective_color(), Color32::from_rgb(100, 80, 60));
+    }
+
+    #[wasm_bindgen_test]
+    fn effective_color_uses_override() {
+        let mut layer = GeoLayer::new(GeoLayerType::Highways);
+        let custom = Color32::from_rgb(1, 2, 3);
+        layer.color = Some(custom);
+        assert_eq!(layer.effective_color(), custom);
+    }
+
+    #[wasm_bindgen_test]
+    fn effective_line_width_default_and_override() {
+        let mut layer = GeoLayer::new(GeoLayerType::States);
+        assert!((layer.effective_line_width() - 1.5).abs() < 1e-6);
+        layer.line_width = Some(7.25);
+        assert!((layer.effective_line_width() - 7.25).abs() < 1e-6);
+    }
+
+    // ----- project_feature / refresh_projection_cache / cached_entries -----
+
+    #[wasm_bindgen_test]
+    fn point_feature_projects_to_empty() {
+        let proj = test_proj();
+        let pf = project_feature(&GeoFeature::Point(c(-98.0, 39.0), None), &proj);
+        assert!(matches!(pf, FeatureProjection::Empty));
+    }
+
+    #[wasm_bindgen_test]
+    fn linestring_feature_projects_to_single() {
+        let proj = test_proj();
+        let f = GeoFeature::LineString(vec![c(-98.0, 39.0), c(-97.0, 39.5)]);
+        let pf = project_feature(&f, &proj);
+        match pf {
+            FeatureProjection::Single(pts) => {
+                assert_eq!(pts.len(), 2);
+                // First coord is the projection center → screen center.
+                let center = proj.screen_rect.center();
+                assert!((pts[0].x - center.x).abs() < 1e-3);
+                assert!((pts[0].y - center.y).abs() < 1e-3);
+            }
+            _ => panic!("expected Single projection"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn multilinestring_feature_projects_to_multi() {
+        let proj = test_proj();
+        let f = GeoFeature::MultiLineString(vec![
+            vec![c(-98.0, 39.0), c(-97.5, 39.0)],
+            vec![c(-96.0, 38.0)],
+        ]);
+        let pf = project_feature(&f, &proj);
+        match pf {
+            FeatureProjection::Multi(parts) => {
+                assert_eq!(parts.len(), 2);
+                assert_eq!(parts[0].len(), 2);
+                assert_eq!(parts[1].len(), 1);
+            }
+            _ => panic!("expected Multi projection"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn multipolygon_feature_projects_exteriors_only() {
+        let proj = test_proj();
+        let f = GeoFeature::MultiPolygon {
+            polygons: vec![
+                (
+                    vec![c(-98.0, 39.0), c(-97.0, 39.0), c(-97.0, 40.0)],
+                    vec![vec![c(-97.8, 39.2)]], // hole ignored by projection
+                ),
+                (vec![c(-96.0, 38.0), c(-95.0, 38.0)], vec![]),
+            ],
+            label: None,
+            label_anchor: c(0.0, 0.0),
+        };
+        let pf = project_feature(&f, &proj);
+        match pf {
+            FeatureProjection::Multi(parts) => {
+                assert_eq!(parts.len(), 2);
+                // Only exterior coords projected; hole has no effect on count.
+                assert_eq!(parts[0].len(), 3);
+                assert_eq!(parts[1].len(), 2);
+            }
+            _ => panic!("expected Multi projection"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn refresh_projection_cache_builds_parallel_entries() {
+        let proj = test_proj();
+        let mut layer = GeoLayer::new(GeoLayerType::States);
+        layer.features.push(GeoFeature::Point(c(-98.0, 39.0), None));
+        layer
+            .features
+            .push(GeoFeature::LineString(vec![c(-98.0, 39.0), c(-97.0, 39.0)]));
+
+        layer.refresh_projection_cache(&proj);
+        let entries = layer.cached_entries();
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(entries[0], FeatureProjection::Empty));
+        assert!(matches!(entries[1], FeatureProjection::Single(_)));
+    }
+
+    // ----- GeoLayerSet::new + set_layer routing -----
+
+    #[wasm_bindgen_test]
+    fn layer_set_new_is_all_none() {
+        let set = GeoLayerSet::new();
+        assert!(set.states.is_none());
+        assert!(set.counties.is_none());
+        assert!(set.cities.is_none());
+        assert!(set.highways.is_none());
+        assert!(set.lakes.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn set_layer_routes_to_matching_slot() {
+        let mut set = GeoLayerSet::new();
+        set.set_layer(GeoLayer::new(GeoLayerType::Lakes));
+        assert!(set.lakes.is_some());
+        assert!(set.states.is_none());
+        assert_eq!(set.lakes.as_ref().unwrap().layer_type, GeoLayerType::Lakes);
+
+        set.set_layer(GeoLayer::new(GeoLayerType::Cities));
+        assert!(set.cities.is_some());
+        assert_eq!(
+            set.cities.as_ref().unwrap().layer_type,
+            GeoLayerType::Cities
+        );
+    }
+
+    // ----- LabelCacheToken default / equality -----
+
+    #[wasm_bindgen_test]
+    fn label_cache_token_default_and_eq() {
+        let a = LabelCacheToken::default();
+        assert_eq!(a.zoom_bucket, 0);
+        assert!(!a.dark);
+        assert!(!a.show_labels);
+
+        let b = LabelCacheToken {
+            zoom_bucket: 0,
+            dark: false,
+            show_labels: false,
+        };
+        assert_eq!(a, b);
+
+        let c_tok = LabelCacheToken {
+            zoom_bucket: 4,
+            dark: true,
+            show_labels: true,
+        };
+        assert_ne!(a, c_tok);
+    }
+
+    // ----- LabelEntry construction sanity (pure struct) -----
+
+    #[wasm_bindgen_test]
+    fn label_entry_holds_fields() {
+        let e = LabelEntry {
+            anchor: c(-98.0, 39.0),
+            align: Align2::CENTER_CENTER,
+            pixel_offset: Vec2::new(3.0, 0.0),
+            text: "Topeka".to_string(),
+            font_size: 12.0,
+            color: Color32::WHITE,
+        };
+        assert_eq!(e.text, "Topeka");
+        assert!((e.font_size - 12.0).abs() < 1e-6);
+        assert!((e.anchor.y - 39.0).abs() < 1e-9);
+        assert!((e.pixel_offset.x - 3.0).abs() < 1e-6);
+    }
+}

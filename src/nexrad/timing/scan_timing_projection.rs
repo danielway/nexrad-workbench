@@ -845,3 +845,234 @@ mod tests {
         assert_eq!(seq4.bucket(), Some(&bucket));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::super::test_vcp::{build_vcp, TestElevation};
+    use super::*;
+    use chrono::DateTime;
+    use nexrad_data::aws::realtime::VolumeIndex;
+    use nexrad_decode::messages::volume_coverage_pattern as vcpmsg;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn upload_at(secs: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(secs, 0).unwrap()
+    }
+
+    fn anchor(sequence: usize, chunk_type: ChunkType, upload_secs: i64) -> ChunkIdentifier {
+        ChunkIdentifier::new(
+            "KDMX".to_string(),
+            VolumeIndex::new(1),
+            upload_at(upload_secs).naive_utc(),
+            sequence,
+            chunk_type,
+            Some(upload_at(upload_secs)),
+        )
+    }
+
+    /// One super-res CS elevation at 22.5 dps → 6 chunks (seqs 2..=7), final 7.
+    fn vcp_1elev() -> vcpmsg::Message<'static> {
+        build_vcp(&[TestElevation {
+            super_res: true,
+            elevation_angle_raw: 0,
+            azimuth_rate_raw: 1 << 14, // 22.5 dps
+            waveform_raw: 1,           // CS
+            channel_raw: 0,            // ConstantPhase
+        }])
+    }
+
+    #[wasm_bindgen_test]
+    fn anchor_source_short_strings() {
+        // Pure enum → string mapping; not covered by existing tests.
+        assert_eq!(AnchorSource::ObservedCollection.short(), "obs");
+        assert_eq!(AnchorSource::UploadMinusMedian.short(), "median");
+        assert_eq!(AnchorSource::UploadMinusDefault.short(), "default");
+    }
+
+    #[wasm_bindgen_test]
+    fn anchor_source_eq_and_copy() {
+        let a = AnchorSource::UploadMinusMedian;
+        let b = a; // Copy
+        assert_eq!(a, b);
+        assert_ne!(
+            AnchorSource::ObservedCollection,
+            AnchorSource::UploadMinusDefault
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn current_volume_only_projects_remaining_offset0_seqs() {
+        // Anchor mid-volume at seq 3; no next-volume pass. The remaining
+        // chunks in the current volume are seqs 4..=7, all offset 0.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let a = anchor(3, ChunkType::Intermediate, 1000);
+        let p = project_scan_timing(&a, Some(995.0), &vcp, &mapper, None, &TimingTuning::DEFAULT)
+            .unwrap();
+
+        assert_eq!(p.anchor_sequence(), 3);
+        let seqs: Vec<usize> = p.chunks().iter().map(|c| c.sequence()).collect();
+        assert_eq!(seqs, vec![4, 5, 6, 7]);
+        assert!(p.chunks().iter().all(|c| c.volume_offset() == 0));
+    }
+
+    #[wasm_bindgen_test]
+    fn offsets_and_available_times_are_monotonic() {
+        // offset_from_anchor and projected_available_at must be strictly
+        // increasing across the projected chunks (each interval is positive).
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let a = anchor(2, ChunkType::Intermediate, 2000);
+        let p = project_scan_timing(
+            &a,
+            Some(1990.0),
+            &vcp,
+            &mapper,
+            None,
+            &TimingTuning::DEFAULT,
+        )
+        .unwrap();
+        let chunks = p.chunks();
+        assert!(chunks.len() >= 2);
+        for w in chunks.windows(2) {
+            assert!(
+                w[1].offset_from_anchor() > w[0].offset_from_anchor(),
+                "offset_from_anchor not increasing"
+            );
+            assert!(
+                w[1].projected_available_at() > w[0].projected_available_at(),
+                "projected_available_at not increasing"
+            );
+            // Each per-chunk interval is strictly positive.
+            assert!(w[1].interval_from_previous().num_milliseconds() > 0);
+        }
+        // First chunk's offset equals its own interval_from_previous.
+        assert_eq!(
+            chunks[0].offset_from_anchor().num_milliseconds(),
+            chunks[0].interval_from_previous().num_milliseconds()
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn intervals_sum_to_last_offset() {
+        // The cumulative offset_from_anchor of the final chunk equals the sum
+        // of all per-chunk intervals (no anchor shift in this simple case).
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let a = anchor(3, ChunkType::Intermediate, 1000);
+        let p = project_scan_timing(&a, None, &vcp, &mapper, None, &TimingTuning::DEFAULT).unwrap();
+        let sum_ms: i64 = p
+            .chunks()
+            .iter()
+            .map(|c| c.interval_from_previous().num_milliseconds())
+            .sum();
+        let last_off = p
+            .chunks()
+            .last()
+            .unwrap()
+            .offset_from_anchor()
+            .num_milliseconds();
+        assert_eq!(sum_ms, last_off);
+    }
+
+    #[wasm_bindgen_test]
+    fn remaining_duration_invariant_simple_case() {
+        // anchor_available_at + remaining_duration == volume_end_available_at,
+        // and volume_end matches the last chunk's projected availability.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let a = anchor(4, ChunkType::Intermediate, 1500);
+        let p = project_scan_timing(
+            &a,
+            Some(1495.0),
+            &vcp,
+            &mapper,
+            None,
+            &TimingTuning::DEFAULT,
+        )
+        .unwrap();
+
+        let recomputed_end = p.anchor_available_at() + p.remaining_duration();
+        let diff = (recomputed_end - p.volume_end_available_at())
+            .num_milliseconds()
+            .abs();
+        assert!(diff <= 1, "remaining/volume_end mismatch: {diff}ms");
+
+        let last_avail = p.chunks().last().unwrap().projected_available_at();
+        assert_eq!(last_avail, p.volume_end_available_at());
+    }
+
+    #[wasm_bindgen_test]
+    fn full_scan_projects_whole_volume_from_start() {
+        // project_full_scan_timing builds the Start chunk (seq 1) and projects
+        // seqs 2..=7. No collection supplied → UploadMinusDefault anchor.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let start_time = upload_at(3000);
+        let p = project_full_scan_timing(
+            "KDMX",
+            VolumeIndex::new(1),
+            start_time,
+            &vcp,
+            &mapper,
+            None,
+            &TimingTuning::DEFAULT,
+        )
+        .unwrap();
+
+        assert_eq!(p.anchor_sequence(), 1);
+        assert_eq!(p.anchor_source(), AnchorSource::UploadMinusDefault);
+        assert_eq!(p.observed_anchor_lag_secs(), None);
+        let seqs: Vec<usize> = p.chunks().iter().map(|c| c.sequence()).collect();
+        assert_eq!(seqs, vec![2, 3, 4, 5, 6, 7]);
+        // collection anchor = upload(3000) − default_lag(5) = 2995.
+        assert!(
+            (p.anchor_collection_time_secs()
+                - (3000.0 - TimingTuning::DEFAULT.default_availability_lag_secs))
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn no_stats_means_no_historical_blend() {
+        // With timing_stats=None every chunk uses pure physics: stats_n == 0,
+        // used_historical == false, retry_budget == 0.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let a = anchor(3, ChunkType::Intermediate, 1000);
+        let p = project_scan_timing(&a, Some(995.0), &vcp, &mapper, None, &TimingTuning::DEFAULT)
+            .unwrap();
+        for c in p.chunks() {
+            assert_eq!(c.stats_n(), 0);
+            assert!(!c.used_historical());
+            assert!((c.retry_budget_secs() - 0.0).abs() < 1e-9);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn collection_times_increase_and_lead_availability() {
+        // projected_collection_time_secs is strictly increasing, and each
+        // chunk's availability is collection + a non-negative lag.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let a = anchor(3, ChunkType::Intermediate, 1000);
+        // Observed collection 990 → lag = upload(1000) − 990 = 10s.
+        let p = project_scan_timing(&a, Some(990.0), &vcp, &mapper, None, &TimingTuning::DEFAULT)
+            .unwrap();
+        let chunks = p.chunks();
+        for w in chunks.windows(2) {
+            assert!(
+                w[1].projected_collection_time_secs() > w[0].projected_collection_time_secs(),
+                "collection not increasing"
+            );
+        }
+        for c in chunks {
+            let avail_secs = c.projected_available_at().timestamp_millis() as f64 / 1000.0;
+            // availability = collection + lag(10) → strictly later, ~10s gap.
+            let gap = avail_secs - c.projected_collection_time_secs();
+            assert!(gap > 0.0, "availability not after collection");
+            assert!((gap - 10.0).abs() < 0.5, "lag gap unexpected: {gap}");
+        }
+    }
+}

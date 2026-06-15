@@ -1014,3 +1014,293 @@ mod tests {
         assert!((out[1].end - 1010.0).abs() < 1e-9, "got {}", out[1].end);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::nexrad::realtime::ChunkProjectedTimes;
+    use crate::nexrad::timing::{IntervalCase, PhysicsBreakdown, SchedulerPath};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn vol(n: usize) -> VolumeIndex {
+        VolumeIndex::new(n)
+    }
+
+    fn forecast(collection: f64, available: f64) -> ChunkProjectedTimes {
+        ChunkProjectedTimes {
+            collection_time_secs: collection,
+            available_at_secs: available,
+            poll_at_secs: available + 1.0,
+            physics_breakdown: PhysicsBreakdown {
+                case: IntervalCase::IntraSweep,
+                total_secs: 0.0,
+                chunk_duration_secs: None,
+                inter_sweep_gap_secs: None,
+                waveform_penalty_secs: None,
+            },
+            stats_n: 0,
+            scheduler_path: SchedulerPath::Physics,
+            bucket: None,
+        }
+    }
+
+    fn chunk(
+        seq: usize,
+        elev: Option<usize>,
+        fc: Option<ChunkProjectedTimes>,
+    ) -> ChunkProjectionInfo {
+        ChunkProjectionInfo {
+            sequence: seq,
+            elevation_number: elev,
+            azimuth_rate_dps: 20.0,
+            chunk_index_in_sweep: 0,
+            chunks_in_sweep: 3,
+            projected: fc,
+        }
+    }
+
+    fn observe_chunk(
+        inv: &mut KnownChunkInventory,
+        volume: usize,
+        sequence: usize,
+        upload: f64,
+        ty: nexrad_data::aws::realtime::ChunkType,
+    ) {
+        inv.observe(super::super::inventory::KnownChunk {
+            coord: ChunkCoord {
+                volume: vol(volume),
+                sequence,
+            },
+            upload_secs: upload,
+            chunk_type: ty,
+        });
+    }
+
+    // ── published_in_inventory: each of the three independent OR branches ──
+
+    #[wasm_bindgen_test]
+    fn published_false_on_empty_inventory() {
+        let inv = KnownChunkInventory::default();
+        assert!(!published_in_inventory(&inv, vol(1), 5));
+    }
+
+    #[wasm_bindgen_test]
+    fn published_true_via_has_end_even_with_low_sequences() {
+        let mut inv = KnownChunkInventory::default();
+        // End chunk observed at a low sequence; last_seq_of_sweep is far higher.
+        observe_chunk(
+            &mut inv,
+            1,
+            2,
+            10.0,
+            nexrad_data::aws::realtime::ChunkType::End,
+        );
+        // has_end short-circuits to true regardless of the requested last seq.
+        assert!(published_in_inventory(&inv, vol(1), 999));
+    }
+
+    #[wasm_bindgen_test]
+    fn published_true_via_newest_seq_gte_last_seq() {
+        let mut inv = KnownChunkInventory::default();
+        // Newest known seq in vol 1 is 7 (no End).
+        observe_chunk(
+            &mut inv,
+            1,
+            7,
+            10.0,
+            nexrad_data::aws::realtime::ChunkType::Intermediate,
+        );
+        // newest_seq (7) >= last_seq (5) → published.
+        assert!(published_in_inventory(&inv, vol(1), 5));
+        // Boundary: newest_seq (7) >= last_seq (7) → published.
+        assert!(published_in_inventory(&inv, vol(1), 7));
+        // newest_seq (7) < last_seq (8); seq 8 not present → not published.
+        assert!(!published_in_inventory(&inv, vol(1), 8));
+    }
+
+    #[wasm_bindgen_test]
+    fn published_true_via_contains_exact_sequence() {
+        let mut inv = KnownChunkInventory::default();
+        // Observe a gap: seq 3 and seq 9 known.
+        observe_chunk(
+            &mut inv,
+            1,
+            3,
+            10.0,
+            nexrad_data::aws::realtime::ChunkType::Intermediate,
+        );
+        observe_chunk(
+            &mut inv,
+            1,
+            9,
+            20.0,
+            nexrad_data::aws::realtime::ChunkType::Intermediate,
+        );
+        // Target seq 3 is present exactly (and newest 9 >= 3 anyway).
+        assert!(published_in_inventory(&inv, vol(1), 3));
+        // A different volume has nothing.
+        assert!(!published_in_inventory(&inv, vol(2), 3));
+    }
+
+    // ── derive_sweep_status: AvailableNotCollected via the has_end branch ──
+
+    #[wasm_bindgen_test]
+    fn derive_status_available_via_end_chunk() {
+        let cached = CachedSweepSet::default();
+        let mut inv = KnownChunkInventory::default();
+        // End chunk observed for vol 1 → any not-cached, not-in-progress sweep
+        // is AvailableNotCollected regardless of last_seq.
+        observe_chunk(
+            &mut inv,
+            1,
+            4,
+            10.0,
+            nexrad_data::aws::realtime::ChunkType::End,
+        );
+        assert_eq!(
+            derive_sweep_status(1000.0, 6, vol(1), 100, &cached, &inv, None),
+            SweepProjectionStatus::AvailableNotCollected
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn derive_status_in_progress_beats_available() {
+        // Even when published, the in-progress elevation wins over Available
+        // (precedence: cached > in-progress > available > future).
+        let cached = CachedSweepSet::default();
+        let mut inv = KnownChunkInventory::default();
+        observe_chunk(
+            &mut inv,
+            1,
+            10,
+            10.0,
+            nexrad_data::aws::realtime::ChunkType::End,
+        );
+        assert_eq!(
+            derive_sweep_status(1000.0, 3, vol(1), 5, &cached, &inv, Some(3)),
+            SweepProjectionStatus::InProgress
+        );
+    }
+
+    // ── cascade_current_sweeps: 0.5°-per-cut elevation-angle fallback ──
+
+    #[wasm_bindgen_test]
+    fn cascade_elev_angle_falls_back_to_half_degree_per_cut() {
+        // vcp_number 0 + no vcp_pattern → elev_angle_for uses 0.5 * elev_num.
+        let received = [false, false, false];
+        let durs = [100.0, 100.0, 100.0];
+        let out = cascade_current_sweeps(&CascadeInputs {
+            vol_start: 1000.0,
+            expected_count: 3,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            expected_dur: 300.0,
+            current_volume_chunks: &[],
+            completed_sweep_metas: &[],
+            chunk_elev_spans: &[],
+            current_elev_chunks: &[],
+            in_progress_elevation: None,
+            in_progress_radials: None,
+            fallback_sweep_durations: &durs,
+        });
+        assert_eq!(out.len(), 3);
+        assert!((out[0].elevation_angle - 0.5).abs() < 1e-6);
+        assert!((out[1].elevation_angle - 1.0).abs() < 1e-6);
+        assert!((out[2].elevation_angle - 1.5).abs() < 1e-6);
+    }
+
+    // ── cascade_current_sweeps: azimuth_rate fallback to 360/duration ──
+
+    #[wasm_bindgen_test]
+    fn cascade_azimuth_rate_falls_back_to_360_over_duration() {
+        // No projection (so no projected azimuth rate), duration 100s per cut →
+        // azimuth_rate_dps resolves to 360/100 = 3.6.
+        let received = [false];
+        let durs = [100.0];
+        let out = cascade_current_sweeps(&CascadeInputs {
+            vol_start: 1000.0,
+            expected_count: 1,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            expected_dur: 100.0,
+            current_volume_chunks: &[],
+            completed_sweep_metas: &[],
+            chunk_elev_spans: &[],
+            current_elev_chunks: &[],
+            in_progress_elevation: None,
+            in_progress_radials: None,
+            fallback_sweep_durations: &durs,
+        });
+        assert_eq!(out.len(), 1);
+        assert!(
+            (out[0].azimuth_rate_dps - 3.6).abs() < 1e-9,
+            "got {}",
+            out[0].azimuth_rate_dps
+        );
+    }
+
+    // ── build_sweeps: next scan with no authoritative boundary (delta == 0) ──
+
+    #[wasm_bindgen_test]
+    fn build_sweeps_next_scan_unshifted_when_no_boundary() {
+        let current = vec![chunk(2, Some(1), Some(forecast(1020.0, 1025.0)))];
+        // Next volume has two elevations with distinct forecast spans.
+        let next = vec![
+            chunk(2, Some(1), Some(forecast(1100.0, 1105.0))),
+            chunk(3, Some(1), Some(forecast(1108.0, 1112.0))),
+            chunk(4, Some(2), Some(forecast(1130.0, 1135.0))),
+        ];
+        let cached = CachedSweepSet::default();
+        let inv = KnownChunkInventory::default();
+        let received = [false];
+        let durs = [100.0];
+        let ctx = SweepBuildCtx {
+            current_chunks: &current,
+            next_chunks: Some(&next),
+            current_scan_start_secs: 1000.0,
+            current_volume: vol(1),
+            next_volume: vol(2),
+            cached: &cached,
+            inventory: &inv,
+            in_progress_elevation: None,
+            next_scan_boundary_start_secs: None, // delta = 0
+            expected_count: 1,
+            received: &received,
+            vcp_number: 0,
+            vcp_pattern: None,
+            vol_start_secs: 1000.0,
+            expected_dur_secs: 300.0,
+            completed_sweep_metas: &[],
+            chunk_elev_spans: &[],
+            current_elev_chunks: &[],
+            in_progress_radials: None,
+            fallback_sweep_durations: &durs,
+        };
+        let sweeps = build_sweeps(&ctx);
+        let next_sweeps: Vec<_> = sweeps
+            .iter()
+            .filter(|s| s.scan_role == ProjectionScanRole::NextScan)
+            .collect();
+        // Two distinct next-scan elevations.
+        assert_eq!(next_sweeps.len(), 2);
+        let e1 = next_sweeps
+            .iter()
+            .find(|s| s.elevation_number == 1)
+            .unwrap();
+        // Elev 1 spans the min/max of its two forecast chunks (1100..1108),
+        // unshifted because there is no boundary.
+        assert!((e1.collection_start_secs - 1100.0).abs() < 1e-9);
+        assert!((e1.collection_end_secs - 1108.0).abs() < 1e-9);
+        assert_eq!(e1.timing, SweepTimingProvenance::Projected);
+        let e2 = next_sweeps
+            .iter()
+            .find(|s| s.elevation_number == 2)
+            .unwrap();
+        assert!((e2.collection_start_secs - 1130.0).abs() < 1e-9);
+        // Next-scan sweeps never report received chunks/radials.
+        assert_eq!(e2.chunks_received, 0);
+        assert_eq!(e2.radials_received, 0);
+    }
+}

@@ -727,3 +727,254 @@ mod tests {
         assert!(stats.get_statistics().is_empty());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn cs_bucket() -> ChunkCharacteristics {
+        ChunkCharacteristics {
+            chunk_type: ChunkType::Intermediate,
+            waveform_type: WaveformType::CS,
+            channel_configuration: ChannelConfiguration::ConstantPhase,
+            is_first_in_sweep: false,
+        }
+    }
+
+    fn other_bucket() -> ChunkCharacteristics {
+        ChunkCharacteristics {
+            chunk_type: ChunkType::Start,
+            waveform_type: WaveformType::CDW,
+            channel_configuration: ChannelConfiguration::RandomPhase,
+            is_first_in_sweep: true,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn median_lag_none_until_lag_recorded() {
+        let mut stats = ChunkTimingStats::new();
+        let b = cs_bucket();
+        // Availability-only samples carry no lag → still None.
+        stats.add_timing(b, Duration::seconds(10), None, 1);
+        stats.add_timing(b, Duration::seconds(12), None, 1);
+        assert_eq!(stats.median_availability_lag_secs(), None);
+        // Empty store is also None.
+        assert_eq!(ChunkTimingStats::new().median_availability_lag_secs(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn median_lag_across_buckets() {
+        let mut stats = ChunkTimingStats::new();
+        let a = cs_bucket();
+        let b = other_bucket();
+        // Lags (ms): 1000, 3000 in one bucket; 9000 in the other.
+        // Pooled sorted [1000,3000,9000] → median 3000ms = 3.0s.
+        stats.add_timing(a, Duration::seconds(5), Some(Duration::seconds(1)), 1);
+        stats.add_timing(a, Duration::seconds(5), Some(Duration::seconds(3)), 1);
+        stats.add_timing(b, Duration::seconds(5), Some(Duration::seconds(9)), 1);
+        let got = stats.median_availability_lag_secs().expect("has lag");
+        assert!((got - 3.0).abs() < 1e-9, "got {got}");
+    }
+
+    #[wasm_bindgen_test]
+    fn attach_availability_lag_updates_latest_only() {
+        let mut stats = ChunkTimingStats::new();
+        let b = cs_bucket();
+        stats.add_timing(b, Duration::seconds(5), None, 1);
+        stats.add_timing(b, Duration::seconds(5), None, 1);
+        // Attaches to the most recent sample only → one lag of 8000ms.
+        stats.attach_availability_lag(&b, Duration::seconds(8));
+        // Single recorded lag → median is that lag.
+        let got = stats.median_availability_lag_secs().expect("has lag");
+        assert!((got - 8.0).abs() < 1e-9, "got {got}");
+    }
+
+    #[wasm_bindgen_test]
+    fn attach_on_missing_bucket_is_noop() {
+        let mut stats = ChunkTimingStats::new();
+        let b = cs_bucket();
+        // No samples added yet — attach must not panic and must not create a bucket.
+        stats.attach_collection_interval(&b, Duration::seconds(4));
+        stats.attach_availability_lag(&b, Duration::seconds(4));
+        assert_eq!(stats.sample_count(&b), 0);
+        assert_eq!(stats.total_sample_count(), 0);
+        assert_eq!(stats.median_availability_lag_secs(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn average_attempts_and_missing_bucket() {
+        let mut stats = ChunkTimingStats::new();
+        let b = cs_bucket();
+        stats.add_timing(b, Duration::seconds(1), None, 2);
+        stats.add_timing(b, Duration::seconds(1), None, 5);
+        // (2 + 5) / 2 = 3.5
+        let avg = stats.get_average_attempts(&b).expect("has attempts");
+        assert!((avg - 3.5).abs() < 1e-9, "got {avg}");
+        // A never-populated bucket → None for all aggregates.
+        let missing = other_bucket();
+        assert_eq!(stats.get_average_attempts(&missing), None);
+        assert_eq!(stats.average_availability_interval(&missing), None);
+        assert_eq!(stats.average_collection_interval(&missing), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn rolling_window_caps_at_max_samples() {
+        let mut stats = ChunkTimingStats::new();
+        let b = cs_bucket();
+        // Push more than MAX_TIMING_SAMPLES; oldest are evicted from the front.
+        for i in 0..(MAX_TIMING_SAMPLES + 4) {
+            stats.add_timing(b, Duration::milliseconds(1000 + i as i64), None, i);
+        }
+        assert_eq!(stats.sample_count(&b), MAX_TIMING_SAMPLES);
+        assert_eq!(stats.total_sample_count(), MAX_TIMING_SAMPLES);
+    }
+
+    #[wasm_bindgen_test]
+    fn total_sample_count_sums_buckets() {
+        let mut stats = ChunkTimingStats::new();
+        let a = cs_bucket();
+        let b = other_bucket();
+        stats.add_timing(a, Duration::seconds(1), None, 1);
+        stats.add_timing(a, Duration::seconds(1), None, 1);
+        stats.add_timing(b, Duration::seconds(1), None, 1);
+        assert_eq!(stats.sample_count(&a), 2);
+        assert_eq!(stats.sample_count(&b), 1);
+        assert_eq!(stats.total_sample_count(), 3);
+    }
+
+    #[wasm_bindgen_test]
+    fn average_availability_interval_integer_truncation() {
+        let mut stats = ChunkTimingStats::new();
+        let b = cs_bucket();
+        // 1000ms + 1001ms → sum 2001 / 2 = 1000ms (integer division truncates).
+        stats.add_timing(b, Duration::milliseconds(1000), None, 1);
+        stats.add_timing(b, Duration::milliseconds(1001), None, 1);
+        assert_eq!(
+            stats.average_availability_interval(&b),
+            Some(Duration::milliseconds(1000))
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn per_bucket_stats_empty_when_no_samples() {
+        let stats = ChunkTimingStats::new();
+        assert!(stats.per_bucket_stats().is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn per_bucket_stats_fields_and_lag_counting() {
+        let mut stats = ChunkTimingStats::new();
+        let b = cs_bucket();
+        // Three availability intervals: 2000, 4000, 6000 → mean 4000ms.
+        // Two of them carry a lag (1000, 3000) → median 2000ms, lag_sample_count 2.
+        stats.add_timing(
+            b,
+            Duration::milliseconds(2000),
+            Some(Duration::seconds(1)),
+            1,
+        );
+        stats.add_timing(
+            b,
+            Duration::milliseconds(4000),
+            Some(Duration::seconds(3)),
+            1,
+        );
+        stats.add_timing(b, Duration::milliseconds(6000), None, 1);
+        let buckets = stats.per_bucket_stats();
+        assert_eq!(buckets.len(), 1);
+        let bs = &buckets[0];
+        assert_eq!(bs.characteristics, b);
+        assert_eq!(bs.sample_count, 3);
+        assert_eq!(bs.mean_duration_ms, 4000);
+        assert_eq!(bs.lag_sample_count, 2);
+        assert_eq!(bs.median_lag_ms, Some(2000));
+    }
+
+    #[wasm_bindgen_test]
+    fn per_bucket_stats_median_lag_none_without_lags() {
+        let mut stats = ChunkTimingStats::new();
+        let b = cs_bucket();
+        stats.add_timing(b, Duration::seconds(5), None, 1);
+        let buckets = stats.per_bucket_stats();
+        assert_eq!(buckets.len(), 1);
+        assert_eq!(buckets[0].median_lag_ms, None);
+        assert_eq!(buckets[0].lag_sample_count, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn per_bucket_stats_sorted_by_key_tuple() {
+        let mut stats = ChunkTimingStats::new();
+        // other_bucket is chunk_type=Start (order 0); cs_bucket is Intermediate (order 1).
+        // Start sorts before Intermediate regardless of insertion order.
+        let a = cs_bucket();
+        let b = other_bucket();
+        stats.add_timing(a, Duration::seconds(1), None, 1);
+        stats.add_timing(b, Duration::seconds(1), None, 1);
+        let buckets = stats.per_bucket_stats();
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(buckets[0].characteristics.chunk_type, ChunkType::Start);
+        assert_eq!(
+            buckets[1].characteristics.chunk_type,
+            ChunkType::Intermediate
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn get_statistics_reports_each_bucket() {
+        let mut stats = ChunkTimingStats::new();
+        let a = cs_bucket();
+        let b = other_bucket();
+        stats.add_timing(a, Duration::seconds(10), None, 3);
+        stats.add_timing(b, Duration::seconds(20), None, 1);
+        let mut rows = stats.get_statistics();
+        assert_eq!(rows.len(), 2);
+        // Find the cs_bucket row and check its derived values.
+        rows.sort_by_key(|(c, _, _)| chunk_type_order(c.chunk_type));
+        // Start bucket first (order 0): 20s interval, 1 attempt.
+        let (c0, dur0, att0) = &rows[0];
+        assert_eq!(c0.chunk_type, ChunkType::Start);
+        assert_eq!(*dur0, Some(Duration::seconds(20)));
+        assert!((att0.expect("attempts") - 1.0).abs() < 1e-9);
+        // Intermediate bucket: 10s interval, 3 attempts.
+        let (c1, dur1, att1) = &rows[1];
+        assert_eq!(c1.chunk_type, ChunkType::Intermediate);
+        assert_eq!(*dur1, Some(Duration::seconds(10)));
+        assert!((att1.expect("attempts") - 3.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn json_round_trips_multiple_buckets_and_lag() {
+        let mut stats = ChunkTimingStats::new();
+        let a = cs_bucket();
+        let b = other_bucket();
+        stats.add_timing(a, Duration::seconds(10), Some(Duration::seconds(2)), 1);
+        stats.add_timing(b, Duration::seconds(15), Some(Duration::seconds(6)), 4);
+        let json = stats.to_json().expect("serializes");
+        let back = ChunkTimingStats::from_json(&json).expect("parses");
+        assert_eq!(back.total_sample_count(), 2);
+        assert_eq!(
+            back.average_availability_interval(&a),
+            Some(Duration::seconds(10))
+        );
+        assert_eq!(
+            back.average_availability_interval(&b),
+            Some(Duration::seconds(15))
+        );
+        // Pooled lags [2000, 6000] → median (2000+6000)/2 = 4000ms = 4.0s.
+        let med = back.median_availability_lag_secs().expect("has lag");
+        assert!((med - 4.0).abs() < 1e-9, "got {med}");
+        // Attempts preserved on the other bucket.
+        let att = back.get_average_attempts(&b).expect("attempts");
+        assert!((att - 4.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn empty_stats_to_json_round_trips_to_empty() {
+        let stats = ChunkTimingStats::new();
+        let json = stats.to_json().expect("serializes empty");
+        let back = ChunkTimingStats::from_json(&json).expect("parses empty");
+        assert_eq!(back.total_sample_count(), 0);
+        assert!(back.per_bucket_stats().is_empty());
+    }
+}

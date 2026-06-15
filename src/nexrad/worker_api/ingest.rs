@@ -749,3 +749,181 @@ mod accum_tests {
         assert!(with_chunk_accum(|a| a.is_none()));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    //! Complementary coverage for the `CHUNK_ACCUM` accessor contract and the
+    //! `ChunkAccumulator` data holder. Distinct from `accum_tests` above: these
+    //! exercise the generic *return* path of the accessors, `set_chunk_accum`
+    //! replacing one accumulator with a *different* one (not just None<->Some),
+    //! and mutating the `Vec`/`Option` fields rather than the scalar counters.
+    //! Single-threaded worker model: each test clears the thread-local first.
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn fresh_accum() -> ChunkAccumulator {
+        ChunkAccumulator {
+            scan_key: ScanKey::new("KFTG", UnixMillis::from_secs_f64(2_000.0)),
+            site_id: "KFTG".to_string(),
+            current_radials: Vec::new(),
+            current_radial_metas: Vec::new(),
+            current_elevation: None,
+            completed_elevations: std::collections::HashSet::new(),
+            completed_sweep_metas: Vec::new(),
+            vcp: None,
+            has_vcp: false,
+            total_chunks: 0,
+            total_size_bytes: 0,
+            file_name: "fresh".to_string(),
+            timestamp_secs: 2_000.0,
+        }
+    }
+
+    fn sample_sweep(elev: u8) -> CachedSweep {
+        CachedSweep {
+            start: 100.0,
+            end: 200.0,
+            elevation: 0.5,
+            elevation_number: elev,
+            start_azimuth: 12.5,
+            cached_products: Vec::new(),
+        }
+    }
+
+    // `set_chunk_accum` must fully replace an existing accumulator, not merge.
+    // `accum_tests` only covers None->Some and Some->None; this covers Some->Some.
+    #[wasm_bindgen_test]
+    fn set_replaces_existing_accumulator() {
+        set_chunk_accum(None);
+        let mut a = fresh_accum();
+        a.total_chunks = 9;
+        a.file_name = "first".to_string();
+        set_chunk_accum(Some(a));
+
+        let mut b = fresh_accum();
+        b.total_chunks = 1;
+        b.file_name = "second".to_string();
+        set_chunk_accum(Some(b));
+
+        // Only the second accumulator's state survives — no carry-over.
+        assert_eq!(with_chunk_accum(|x| x.map(|v| v.total_chunks)), Some(1));
+        assert_eq!(
+            with_chunk_accum(|x| x.map(|v| v.file_name.clone())),
+            Some("second".to_string())
+        );
+    }
+
+    // `with_chunk_accum` is generic over its return type R; confirm a computed
+    // (non-bool) value passes through unchanged. Existing tests only return
+    // Option<u32>/bool from the closure.
+    #[wasm_bindgen_test]
+    fn with_chunk_accum_returns_computed_value() {
+        set_chunk_accum(None);
+        let mut a = fresh_accum();
+        a.total_size_bytes = 4_000;
+        a.total_chunks = 4;
+        set_chunk_accum(Some(a));
+
+        let avg = with_chunk_accum(|x| {
+            x.map(|v| v.total_size_bytes / v.total_chunks as u64)
+                .unwrap_or(0)
+        });
+        assert_eq!(avg, 1_000u64);
+    }
+
+    // `with_chunk_accum_mut` is also generic over R — the closure can both
+    // mutate and return a value. Existing mut tests return `()`.
+    #[wasm_bindgen_test]
+    fn with_chunk_accum_mut_returns_value_while_mutating() {
+        set_chunk_accum(None);
+        set_chunk_accum(Some(fresh_accum()));
+
+        let new_count = with_chunk_accum_mut(|x| {
+            let a = x.expect("installed");
+            a.total_chunks += 5;
+            a.total_chunks
+        });
+        assert_eq!(new_count, 5);
+        // And the mutation persisted into the thread-local.
+        assert_eq!(with_chunk_accum(|x| x.map(|v| v.total_chunks)), Some(5));
+    }
+
+    // Mutating the Vec field `completed_sweep_metas` (the response-log path
+    // used during flush) persists across borrows. Distinct field from the
+    // scalar/HashSet mutations in `accum_tests`.
+    #[wasm_bindgen_test]
+    fn completed_sweep_metas_vec_mutation_persists() {
+        set_chunk_accum(None);
+        set_chunk_accum(Some(fresh_accum()));
+
+        with_chunk_accum_mut(|x| {
+            let a = x.expect("installed");
+            a.completed_sweep_metas.push(sample_sweep(1));
+            a.completed_sweep_metas.push(sample_sweep(2));
+        });
+
+        let metas = with_chunk_accum(|x| {
+            x.map(|v| v.completed_sweep_metas.clone())
+                .unwrap_or_default()
+        });
+        assert_eq!(metas.len(), 2);
+        assert_eq!(metas[0].elevation_number, 1u8);
+        assert_eq!(metas[1].elevation_number, 2u8);
+        assert!((metas[0].start_azimuth - 12.5).abs() < 1e-6);
+    }
+
+    // Setting the optional `vcp` field through `with_chunk_accum_mut` (the
+    // VCP-upgrade path) persists, and reading it back yields the upgraded
+    // value. Uses an empty-elevation ExtractedVcp per the codebase idiom.
+    #[wasm_bindgen_test]
+    fn vcp_option_upgrade_persists() {
+        set_chunk_accum(None);
+        set_chunk_accum(Some(fresh_accum()));
+
+        // Initially None.
+        assert_eq!(
+            with_chunk_accum(|x| x.and_then(|v| v.vcp.as_ref().map(|p| p.number))),
+            None
+        );
+
+        with_chunk_accum_mut(|x| {
+            let a = x.expect("installed");
+            a.vcp = Some(ExtractedVcp {
+                number: 215,
+                elevations: Vec::new(),
+            });
+            a.has_vcp = true;
+        });
+
+        assert_eq!(
+            with_chunk_accum(|x| x.and_then(|v| v.vcp.as_ref().map(|p| p.number))),
+            Some(215u16)
+        );
+        assert_eq!(with_chunk_accum(|x| x.map(|v| v.has_vcp)), Some(true));
+    }
+
+    // Installing a fresh accumulator via `set_chunk_accum(Some(..))` wipes
+    // prior collection mutations entirely (reset-on-Start-chunk semantics).
+    #[wasm_bindgen_test]
+    fn fresh_set_wipes_prior_collections() {
+        set_chunk_accum(None);
+        set_chunk_accum(Some(fresh_accum()));
+        with_chunk_accum_mut(|x| {
+            let a = x.expect("installed");
+            a.completed_elevations.insert(7);
+            a.completed_sweep_metas.push(sample_sweep(7));
+            a.total_chunks = 99;
+        });
+
+        // Re-install a brand-new accumulator (e.g. a new Start chunk).
+        set_chunk_accum(Some(fresh_accum()));
+
+        assert_eq!(with_chunk_accum(|x| x.map(|v| v.total_chunks)), Some(0));
+        assert!(with_chunk_accum(|x| x
+            .map(|v| v.completed_elevations.is_empty())
+            .unwrap_or(false)));
+        assert!(with_chunk_accum(|x| x
+            .map(|v| v.completed_sweep_metas.is_empty())
+            .unwrap_or(false)));
+    }
+}
