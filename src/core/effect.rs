@@ -35,7 +35,6 @@ pub struct UrlPush {
 
 /// A side effect the core asks the shell to perform.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // Variants are wired in per migration phase (P1+).
 pub enum Effect {
     /// Push the current view state to the browser URL bar (throttled upstream).
     PushUrl(UrlPush),

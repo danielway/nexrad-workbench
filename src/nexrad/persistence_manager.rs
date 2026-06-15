@@ -1,23 +1,32 @@
 //! Persistence manager: URL state pushing and user preference saving.
 //!
-//! Throttles URL bar updates to ~1/sec and detects site changes.
+//! Holds the throttle marker and preference snapshot that the *pure* persistence
+//! decision ([`crate::core::decide_persist`]) reads. This shell injects the
+//! frame clock, adopts the decision's tracking updates, and returns the
+//! [`Effect`]s for [`crate::WorkbenchApp::apply_effects`] to execute. The
+//! throttle math and change-detection are tested headlessly in `core::persist`.
 
-use crate::state::{self, AppState};
+use crate::core::{decide_persist, Effect, PersistDecision};
+use crate::state::{self, AppState, UserPreferences};
 
 /// Manages URL state persistence, preference saving, and site change detection.
 pub struct PersistenceManager {
-    /// Monotonic instant of last URL push (for throttling to ~1/sec).
-    last_url_push: web_time::Instant,
+    /// Wall-clock seconds of the last URL push (for throttling to ~1/sec).
+    /// Wall-clock (the injected [`crate::state::FrameNow`]) rather than a
+    /// monotonic `Instant`, so the decision is clock-injectable and testable.
+    last_url_push_secs: f64,
     /// Last-saved user preferences snapshot (for change detection).
-    last_saved_preferences: state::UserPreferences,
+    last_saved_preferences: UserPreferences,
     /// Previous site ID to detect site changes.
     previous_site_id: String,
 }
 
 impl PersistenceManager {
-    pub fn new(initial_site_id: String, initial_prefs: state::UserPreferences) -> Self {
+    pub fn new(initial_site_id: String, initial_prefs: UserPreferences) -> Self {
         Self {
-            last_url_push: web_time::Instant::now(),
+            // Seed with the construction-time wall clock so the first push still
+            // waits a throttle window, preserving the old `Instant::now()` seed.
+            last_url_push_secs: state::TimeModel::wall_clock_time(),
             last_saved_preferences: initial_prefs,
             previous_site_id: initial_site_id,
         }
@@ -38,44 +47,41 @@ impl PersistenceManager {
         }
     }
 
-    /// Push current app state to the URL bar and save user preferences (throttled).
+    /// Decide and record persistence for this frame, returning the effects for
+    /// the shell to execute (throttled URL push + conditional preference save).
     ///
+    /// `now_secs` is the injected frame clock ([`crate::state::FrameNow::secs`]).
     /// `mping_api_key` is the current value from the diagnostics subsystem;
-    /// `is_live` is sourced from the Live subsystem; `playback` is the
-    /// Playback subsystem's state. All are passed in so the persistence
-    /// manager doesn't take back-references to subsystems.
+    /// `is_live` is sourced from the Live subsystem; `playback` is the Playback
+    /// subsystem's state. All are passed in so the persistence manager doesn't
+    /// take back-references to subsystems.
     pub fn persist_if_due(
         &mut self,
+        now_secs: f64,
         state: &AppState,
         playback: &state::PlaybackState,
         mping_api_key: Option<String>,
         is_live: bool,
-    ) {
-        let now = web_time::Instant::now();
-        if now.duration_since(self.last_url_push).as_secs_f64() < 1.0 {
-            return;
-        }
-        self.last_url_push = now;
-
-        // `ViewState::from_state` keeps the field-by-field mapping in
-        // one place; adding a new auxiliary view field is then a single
-        // edit there instead of two synchronized lists.
-        let view = state::url_state::ViewState::from_state(state, playback, is_live);
-        state::url_state::push_to_url(
-            &state.viz_state.site_id,
-            playback.playback_position(),
-            state.viz_state.product.short_code(),
-            state.viz_state.center_lat,
-            state.viz_state.center_lon,
-            &view,
-            state.dev_mode,
+    ) -> Vec<Effect> {
+        let PersistDecision {
+            effects,
+            last_url_push_secs,
+            saved_preferences,
+        } = decide_persist(
+            now_secs,
+            self.last_url_push_secs,
+            state,
+            playback,
+            is_live,
+            mping_api_key,
+            &self.last_saved_preferences,
         );
-
-        // Save user preferences if changed (piggyback on URL throttle)
-        let current_prefs = state::UserPreferences::from_app_state(state, playback, mping_api_key);
-        if current_prefs != self.last_saved_preferences {
-            current_prefs.save();
-            self.last_saved_preferences = current_prefs;
+        if let Some(t) = last_url_push_secs {
+            self.last_url_push_secs = t;
         }
+        if let Some(p) = saved_preferences {
+            self.last_saved_preferences = p;
+        }
+        effects
     }
 }

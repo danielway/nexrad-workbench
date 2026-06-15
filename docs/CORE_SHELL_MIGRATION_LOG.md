@@ -55,3 +55,26 @@ once the migration is complete.
 - **`#[allow(unused_imports)]` on the `core` re-exports** until P1 consumes them
   (bin crates flag `pub use` as unused). Same staging idiom as the existing
   `#[allow(dead_code)]` on `PrevSweepAction`.
+
+### D2 — P1 effect boundary + injectable clock
+- **Wall-clock throttle, not monotonic.** The old throttle used
+  `web_time::Instant` (monotonic). The roadmap says "extend the existing
+  `FrameNow` seam," and `FrameNow` is wall-clock (Unix seconds from `Date::now`).
+  Switched the throttle to compare injected wall-clock seconds. Behavior is
+  observably identical for a ~1/sec gate; the only divergence is if the system
+  clock jumps backward by >1s mid-session (extremely rare, and self-corrects next
+  push). This is the cost of making the decision clock-injectable/testable, which
+  the standard requires. Seeded `last_url_push_secs` with the construction-time
+  wall clock so the first push still waits a throttle window (preserving the old
+  `Instant::now()` seed semantics).
+- **`decide_persist` returns `PersistDecision`, not bare `Vec<Effect>`.** The
+  roadmap sketches `-> Vec<Effect>`; I return `{ effects, last_url_push_secs?,
+  saved_preferences? }`. Reason: the throttle marker and prefs snapshot are the
+  decision's "next state" — folding them into the return keeps the bookkeeping
+  pure and directly testable ("unchanged prefs emit no `SavePreferences` and
+  advance nothing"), instead of having the manager re-derive them by inspecting
+  the effects. `decision.effects` still *is* the `Vec<Effect>`.
+- **Effect runtime lives at `src/app/effects.rs`** as `impl WorkbenchApp`
+  (`apply_effects`/`apply_effect`). One exhaustive match so a new variant forces
+  a shell decision. This is the "effect runtime / imperative shell" box from the
+  standard's diagram.

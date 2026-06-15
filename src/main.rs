@@ -641,12 +641,18 @@ impl WorkbenchApp {
         // Encode `rt=` (reload re-enters live) only while the playhead is
         // attached to the live edge — a detached background stream's "current
         // view" is the scrubbed archive position, which the URL captures.
-        self.persistence.persist_if_due(
+        //
+        // The decision (throttle gate + prefs change-detection) is pure and
+        // clock-injected: we pass this frame's wall clock and execute the
+        // returned effects through the shell's effect runtime.
+        let effects = self.persistence.persist_if_due(
+            self.state.frame_now.secs(),
             &self.state,
             &self.playback.state,
             self.diagnostics.mping.api_key.clone(),
             self.live.app_mode == state::AppMode::Live,
         );
+        self.apply_effects(effects);
     }
 
     /// Push the current `AppMode`'s color to the browser favicon via the

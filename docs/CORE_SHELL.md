@@ -122,12 +122,15 @@ test seam. Effort S/M/L = relative size. **Status: P0 complete; in progress.**
   vocabulary exists; heavy per-decision effects keep their own local action
   enums (the `PrevSweepAction` idiom), `core::Effect` carries simple
   cross-cutting effects.
-- **P1 — Effect boundary + injectable clock (S→M).** Define how the core returns
-  effects (a `Vec<Effect>` / sink) covering GPU upload, worker dispatch, IDB,
-  localStorage, URL, geolocation, timers; make the persistence throttle clock
-  injectable (extend the existing `FrameNow` seam). Convert `persist_if_due` →
-  `decide_persist(state, now) -> Vec<Effect>`. Seam: persistence/preference-save
-  decisions assertable headlessly. Low risk (non-visual).
+- **P1 — Effect boundary + injectable clock (S→M). ✅ DONE.** Established the
+  effect boundary: the core returns `Vec<Effect>` and the shell's effect runtime
+  ([`WorkbenchApp::apply_effects`](../src/app/effects.rs)) executes them.
+  `persist_if_due` is now a thin shell over the pure
+  [`core::decide_persist`](../src/core/persist.rs) `-> PersistDecision { effects,
+  tracking }`; the throttle clock is injected as `FrameNow` wall-clock seconds
+  (replacing the monotonic `Instant`). 6 headless tests cover the throttle gate,
+  boundary, and prefs change-detection. Other effect categories (GPU/worker/IDB/
+  geolocation) are introduced by the phase that needs them rather than all here.
 - **P2 — Reference slice: Diagnostics overlays (M).** Migrate alerts + mPING + GPS
   end-to-end (details below) to prove the `intent → core → view-model → shell`
   loop on a low-risk, high-QA-value feature off the render hot path. Seam:

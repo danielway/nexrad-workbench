@@ -24,11 +24,12 @@
 
 pub mod effect;
 pub mod intent;
+pub mod persist;
 
-// The contract vocabulary is consumed starting in P1 (persistence effects) and
-// P5 (intents). The re-exports establish the canonical `core::{Effect, Intent}`
-// surface now; in a bin crate they read as unused until the first consumer lands.
-#[allow(unused_imports)]
-pub use effect::{Effect, UrlPush};
+pub use effect::Effect;
+pub use persist::{decide_persist, PersistDecision};
+
+// `Intent` is consumed starting P5; in a bin crate the re-export reads as unused
+// until the first consumer lands.
 #[allow(unused_imports)]
 pub use intent::Intent;

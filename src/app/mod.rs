@@ -8,6 +8,7 @@
 pub(crate) mod acquisition_intent;
 pub(crate) mod command_dispatch;
 pub(crate) mod download;
+pub(crate) mod effects;
 pub(crate) mod frame_setup;
 pub(crate) mod live_mode;
 pub(crate) mod render_loop;
