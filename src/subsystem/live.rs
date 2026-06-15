@@ -176,3 +176,173 @@ impl Live {
         );
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use crate::nexrad::RealtimeChannel;
+    use crate::state::{LiveExitReason, LivePhase, LoopBasis, PlaybackState};
+
+    fn live() -> Live {
+        Live::new(RealtimeChannel::new())
+    }
+
+    // ---- Live::new defaults -------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn new_starts_idle_and_unprojected() {
+        let l = live();
+        assert_eq!(l.app_mode, crate::state::AppMode::Idle);
+        assert!(l.frame_projection.is_none());
+        assert!(!l.mode_state.is_active());
+        assert_eq!(l.mode_state.phase, LivePhase::Idle);
+        assert!(!l.channel.is_active());
+        assert_eq!(l.mode_state.detached_since, None);
+    }
+
+    // ---- Live::stop ----------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn stop_resets_mode_state_and_records_reason() {
+        let mut l = live();
+        // Put it in an active, detached state first.
+        l.mode_state.phase = LivePhase::Streaming;
+        l.mode_state.detached_since = Some(12.0);
+        assert!(l.mode_state.is_active());
+
+        l.stop(LiveExitReason::ConnectionError);
+
+        assert_eq!(l.mode_state.phase, LivePhase::Idle);
+        assert!(!l.mode_state.is_active());
+        assert_eq!(l.mode_state.detached_since, None);
+        assert_eq!(
+            l.mode_state.last_exit_reason,
+            Some(LiveExitReason::ConnectionError)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn stop_preserves_exact_reason_variant() {
+        let mut l = live();
+        l.stop(LiveExitReason::DetachedTimeout);
+        assert_eq!(
+            l.mode_state.last_exit_reason,
+            Some(LiveExitReason::DetachedTimeout)
+        );
+    }
+
+    // ---- Live::is_detached --------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn is_detached_false_when_stream_inactive() {
+        let l = live(); // mode_state Idle => not active
+        let pb = PlaybackState::default(); // mode defaults to Free
+        assert!(!l.is_detached(&pb));
+    }
+
+    #[wasm_bindgen_test]
+    fn is_detached_true_when_active_and_playhead_free() {
+        let mut l = live();
+        l.mode_state.phase = LivePhase::Streaming;
+        let pb = PlaybackState::default(); // Free
+        assert!(l.is_detached(&pb));
+    }
+
+    #[wasm_bindgen_test]
+    fn is_detached_false_when_pinned() {
+        let mut l = live();
+        l.mode_state.phase = LivePhase::Streaming;
+        let mut pinned = PlaybackState::default();
+        pinned.enter_pinned_live(1000.0);
+        assert!(!l.is_detached(&pinned));
+    }
+
+    #[wasm_bindgen_test]
+    fn is_detached_false_when_lookback() {
+        let mut l = live();
+        l.mode_state.phase = LivePhase::Streaming;
+        let mut lookback = PlaybackState::default();
+        lookback.enter_pinned_live(1000.0);
+        lookback.enter_lookback(None, LoopBasis::default());
+        assert!(!l.is_detached(&lookback));
+    }
+
+    // ---- Live::countdown_remaining_secs -------------------------------
+
+    #[wasm_bindgen_test]
+    fn countdown_none_when_not_waiting_for_chunk() {
+        let mut l = live();
+        // Streaming (active) but not WaitingForChunk -> None regardless of proj.
+        l.mode_state.phase = LivePhase::Streaming;
+        assert_eq!(l.countdown_remaining_secs(1000.0), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn countdown_none_when_waiting_but_no_frame_projection() {
+        let mut l = live();
+        l.mode_state.phase = LivePhase::WaitingForChunk;
+        // frame_projection defaults to None at construction.
+        assert!(l.frame_projection.is_none());
+        assert_eq!(l.countdown_remaining_secs(1000.0), None);
+    }
+
+    // ---- Live::detach_playhead ----------------------------------------
+
+    #[wasm_bindgen_test]
+    fn detach_playhead_inactive_only_exits_live() {
+        let mut l = live(); // mode_state Idle => inactive
+        let mut pb = PlaybackState::default();
+        pb.enter_pinned_live(1000.0);
+
+        l.detach_playhead(&mut pb, 500.0, false);
+
+        // exit_live(Keep) flips the playhead out of pinned-live...
+        assert!(!pb.time_model.is_pinned());
+        assert!(!pb.time_model.is_lookback());
+        // ...but the inactive stream/state is untouched.
+        assert_eq!(l.mode_state.phase, LivePhase::Idle);
+        assert_eq!(l.mode_state.detached_since, None);
+        assert!(!l.channel.is_active());
+    }
+
+    #[wasm_bindgen_test]
+    fn detach_playhead_data_saver_stops_stream() {
+        let mut l = live();
+        l.mode_state.phase = LivePhase::Streaming;
+        let mut pb = PlaybackState::default();
+        pb.enter_pinned_live(1000.0);
+
+        l.detach_playhead(&mut pb, 700.0, /* pause_stream_while_reviewing */ true);
+
+        assert!(!pb.time_model.is_pinned());
+        assert_eq!(l.mode_state.phase, LivePhase::Idle);
+        assert!(!l.mode_state.is_active());
+        assert_eq!(
+            l.mode_state.last_exit_reason,
+            Some(LiveExitReason::UserStopped)
+        );
+        assert!(!l.channel.is_active());
+        // Data-saver path never latches detached_since (it stopped instead).
+        assert_eq!(l.mode_state.detached_since, None);
+    }
+
+    #[wasm_bindgen_test]
+    fn detach_playhead_default_latches_detached_since_once() {
+        let mut l = live();
+        l.mode_state.phase = LivePhase::Streaming;
+        let mut pb = PlaybackState::default();
+        pb.enter_pinned_live(1000.0);
+
+        l.detach_playhead(&mut pb, 123.0, false);
+        assert!(!pb.time_model.is_pinned());
+        assert_eq!(l.mode_state.detached_since, Some(123.0));
+        // Stream keeps running in the non-data-saver path.
+        assert!(l.mode_state.is_active());
+
+        // Second detach at a later time does NOT overwrite the latch.
+        l.detach_playhead(&mut pb, 999.0, false);
+        assert_eq!(l.mode_state.detached_since, Some(123.0));
+    }
+}
