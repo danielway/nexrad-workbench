@@ -276,3 +276,270 @@ mod tests {
         assert!(heavy_blend.seconds > default_blend.seconds);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::nexrad::timing::test_vcp::{build_vcp, TestElevation};
+    use chrono::Duration;
+    use nexrad_decode::messages::volume_coverage_pattern::{ChannelConfiguration, WaveformType};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // Two intra-sweep chunks at a fixed azimuth rate; convenient prev/next pair.
+    fn intra_pair() -> (ChunkMetadata, ChunkMetadata) {
+        let prev = ChunkMetadata::for_test(5, Some(1), 1, 6, false, 18.0);
+        let next = ChunkMetadata::for_test(6, Some(1), 2, 6, false, 18.0);
+        (prev, next)
+    }
+
+    fn cs_bucket() -> ChunkCharacteristics {
+        ChunkCharacteristics {
+            chunk_type: nexrad_data::aws::realtime::ChunkType::Intermediate,
+            waveform_type: WaveformType::CS,
+            channel_configuration: ChannelConfiguration::ConstantPhase,
+            is_first_in_sweep: false,
+        }
+    }
+
+    // ── estimate_interval: no-history / no-bucket branches ────────────────
+
+    #[wasm_bindgen_test]
+    fn estimate_interval_no_bucket_is_pure_physics() {
+        let (prev, next) = intra_pair();
+        let physics = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+
+        // next_bucket = None short-circuits both the stats_n and retry lookups.
+        let est = estimate_interval(&prev, &next, None, None, &TimingTuning::DEFAULT);
+        assert!(!est.used_historical);
+        assert_eq!(est.stats_n, 0);
+        assert!((est.retry_budget_secs - 0.0).abs() < 1e-12);
+        // seconds is a verbatim copy of physics.total_secs when no history.
+        assert!((est.seconds - physics.total_secs).abs() < 1e-12);
+        // The physics decomposition is always carried through verbatim.
+        assert!((est.physics.total_secs - physics.total_secs).abs() < 1e-12);
+        assert!(est.physics.case == physics.case);
+    }
+
+    #[wasm_bindgen_test]
+    fn estimate_interval_bucket_but_no_stats_is_pure_physics() {
+        let (prev, next) = intra_pair();
+        let bucket = cs_bucket();
+        let physics = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+
+        // Some(bucket) but stats = None: the (Some, Some) arm for stats_n is
+        // not taken, and the zip in the historical/retry lookups is None.
+        let est = estimate_interval(&prev, &next, Some(&bucket), None, &TimingTuning::DEFAULT);
+        assert!(!est.used_historical);
+        assert_eq!(est.stats_n, 0);
+        assert!((est.retry_budget_secs - 0.0).abs() < 1e-12);
+        assert!((est.seconds - physics.total_secs).abs() < 1e-12);
+    }
+
+    #[wasm_bindgen_test]
+    fn estimate_interval_stats_present_but_empty_bucket_is_pure_physics() {
+        let (prev, next) = intra_pair();
+        let bucket = cs_bucket();
+        let physics = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+
+        // Stats object exists but the probed bucket was never populated.
+        let stats = ChunkTimingStats::new();
+        let est = estimate_interval(
+            &prev,
+            &next,
+            Some(&bucket),
+            Some(&stats),
+            &TimingTuning::DEFAULT,
+        );
+        assert!(!est.used_historical);
+        assert_eq!(est.stats_n, 0);
+        assert!((est.retry_budget_secs - 0.0).abs() < 1e-12);
+        assert!((est.seconds - physics.total_secs).abs() < 1e-12);
+    }
+
+    // ── estimate_interval: stats_n + retry_budget plumbing ───────────────
+
+    #[wasm_bindgen_test]
+    fn estimate_interval_reports_sample_count_and_retry_budget() {
+        let (prev, next) = intra_pair();
+        let bucket = cs_bucket();
+
+        // Two availability-only samples (no collection observation) — they
+        // populate the bucket (stats_n) and carry attempts, but never become
+        // the historical term.
+        let mut stats = ChunkTimingStats::new();
+        stats.add_timing(bucket, Duration::seconds(10), None, 3);
+        stats.add_timing(bucket, Duration::seconds(10), None, 5);
+
+        let est = estimate_interval(
+            &prev,
+            &next,
+            Some(&bucket),
+            Some(&stats),
+            &TimingTuning::DEFAULT,
+        );
+        // Two samples in the bucket.
+        assert_eq!(est.stats_n, 2);
+        // Pure availability samples don't count as history.
+        assert!(!est.used_historical);
+        // avg_attempts = (3+5)/2 = 4.0 → retry = (4-1).max(0) = 3.0.
+        assert!((est.retry_budget_secs - 3.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn estimate_interval_retry_budget_clamps_at_zero_for_single_attempt() {
+        let (prev, next) = intra_pair();
+        let bucket = cs_bucket();
+
+        // A single-attempt sample: (1 - 1).max(0) = 0.0, no negative budget.
+        let mut stats = ChunkTimingStats::new();
+        stats.add_timing(bucket, Duration::seconds(10), None, 1);
+
+        let est = estimate_interval(
+            &prev,
+            &next,
+            Some(&bucket),
+            Some(&stats),
+            &TimingTuning::DEFAULT,
+        );
+        assert_eq!(est.stats_n, 1);
+        assert!((est.retry_budget_secs - 0.0).abs() < 1e-12);
+    }
+
+    #[wasm_bindgen_test]
+    fn estimate_interval_retry_budget_clamps_at_zero_for_zero_attempts() {
+        let (prev, next) = intra_pair();
+        let bucket = cs_bucket();
+
+        // attempts = 0 would give (0 - 1) = -1; .max(0.0) must clamp it.
+        let mut stats = ChunkTimingStats::new();
+        stats.add_timing(bucket, Duration::seconds(10), None, 0);
+
+        let est = estimate_interval(
+            &prev,
+            &next,
+            Some(&bucket),
+            Some(&stats),
+            &TimingTuning::DEFAULT,
+        );
+        assert!(est.retry_budget_secs >= 0.0);
+        assert!((est.retry_budget_secs - 0.0).abs() < 1e-12);
+    }
+
+    #[wasm_bindgen_test]
+    fn estimate_interval_averages_multiple_collection_intervals() {
+        let (prev, next) = intra_pair();
+        let bucket = cs_bucket();
+        let physics = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+
+        // Two collection observations: 20s and 40s → integer-mean 30s.
+        let mut stats = ChunkTimingStats::new();
+        stats.add_timing(bucket, Duration::seconds(10), None, 1);
+        stats.attach_collection_interval(&bucket, Duration::seconds(20));
+        stats.add_timing(bucket, Duration::seconds(10), None, 1);
+        stats.attach_collection_interval(&bucket, Duration::seconds(40));
+
+        let est = estimate_interval(
+            &prev,
+            &next,
+            Some(&bucket),
+            Some(&stats),
+            &TimingTuning::DEFAULT,
+        );
+        assert!(est.used_historical);
+        assert_eq!(est.stats_n, 2);
+        // DEFAULT.hist_weight = 0.3 → 0.7*physics + 0.3*30.
+        let expected = physics.total_secs * 0.7 + 30.0 * 0.3;
+        assert!((est.seconds - expected).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn estimate_interval_hist_weight_one_ignores_physics() {
+        let (prev, next) = intra_pair();
+        let bucket = cs_bucket();
+
+        let mut stats = ChunkTimingStats::new();
+        stats.add_timing(bucket, Duration::seconds(10), None, 1);
+        stats.attach_collection_interval(&bucket, Duration::seconds(42));
+
+        // hist_weight = 1.0 collapses the blend to the pure historical term.
+        let tuning = TimingTuning {
+            hist_weight: 1.0,
+            ..TimingTuning::DEFAULT
+        };
+        let est = estimate_interval(&prev, &next, Some(&bucket), Some(&stats), &tuning);
+        assert!(est.used_historical);
+        assert!((est.seconds - 42.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn estimate_interval_hist_weight_zero_ignores_history_value() {
+        let (prev, next) = intra_pair();
+        let bucket = cs_bucket();
+        let physics = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+
+        let mut stats = ChunkTimingStats::new();
+        stats.add_timing(bucket, Duration::seconds(10), None, 1);
+        stats.attach_collection_interval(&bucket, Duration::seconds(999));
+
+        // hist_weight = 0.0 still flags used_historical (history was present)
+        // but the blended value equals pure physics.
+        let tuning = TimingTuning {
+            hist_weight: 0.0,
+            ..TimingTuning::DEFAULT
+        };
+        let est = estimate_interval(&prev, &next, Some(&bucket), Some(&stats), &tuning);
+        assert!(est.used_historical);
+        assert!((est.seconds - physics.total_secs).abs() < 1e-9);
+    }
+
+    // ── chunk_characteristics ────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn chunk_characteristics_none_for_start_chunk() {
+        // elevation_number = None (the Start chunk) → early return None.
+        let vcp = build_vcp(&[TestElevation::standard_cs(0, 1 << 14)]);
+        let meta = ChunkMetadata::for_test(1, None, 0, 1, false, 0.0);
+        let result = chunk_characteristics(&meta, &vcp);
+        assert!(result.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn chunk_characteristics_none_when_elevation_out_of_range() {
+        // VCP has a single cut (index 0). elevation_number = 2 → get(1) → None.
+        let vcp = build_vcp(&[TestElevation::standard_cs(0, 1 << 14)]);
+        let meta = ChunkMetadata::for_test(7, Some(2), 0, 3, true, 18.0);
+        let result = chunk_characteristics(&meta, &vcp);
+        assert!(result.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn chunk_characteristics_resolves_waveform_channel_and_first_in_sweep() {
+        // Cut 0: CS / ConstantPhase. Cut 1: CDWO / RandomPhase. elevation_number
+        // is 1-based, so Some(2) resolves to index 1 (the second cut).
+        let cut0 = TestElevation::standard_cs(0, 1 << 14);
+        let cut1 = TestElevation {
+            super_res: false,
+            elevation_angle_raw: 0,
+            azimuth_rate_raw: 1 << 14,
+            waveform_raw: 3, // CDWO
+            channel_raw: 1,  // RandomPhase
+        };
+        let vcp = build_vcp(&[cut0, cut1]);
+
+        // is_first_in_sweep = true is forwarded onto the bucket key.
+        let meta = ChunkMetadata::for_test(8, Some(2), 0, 3, true, 18.0);
+        let resolved = chunk_characteristics(&meta, &vcp).expect("cut index 1 resolves");
+        assert!(resolved.chunk_type == nexrad_data::aws::realtime::ChunkType::Intermediate);
+        assert!(resolved.waveform_type == WaveformType::CDWO);
+        assert!(resolved.channel_configuration == ChannelConfiguration::RandomPhase);
+        assert!(resolved.is_first_in_sweep);
+
+        // The first cut (Some(1) → index 0) carries the CS / ConstantPhase key
+        // and an intra-sweep (is_first_in_sweep = false) flag.
+        let meta0 = ChunkMetadata::for_test(5, Some(1), 1, 3, false, 18.0);
+        let resolved0 = chunk_characteristics(&meta0, &vcp).expect("cut index 0 resolves");
+        assert!(resolved0.waveform_type == WaveformType::CS);
+        assert!(resolved0.channel_configuration == ChannelConfiguration::ConstantPhase);
+        assert!(!resolved0.is_first_in_sweep);
+    }
+}
