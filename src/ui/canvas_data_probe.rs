@@ -251,3 +251,46 @@ pub(crate) fn render_storm_cells(
         );
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn haversine_identical_points_is_zero() {
+        let d = haversine_km(41.73111, -93.72278, 41.73111, -93.72278);
+        assert!(d.abs() < 1e-9, "expected ~0, got {d}");
+    }
+
+    #[wasm_bindgen_test]
+    fn haversine_one_degree_longitude_at_equator() {
+        // 1 deg of longitude at the equator: r*pi/180 with r=6371.
+        let d = haversine_km(0.0, 0.0, 0.0, 1.0);
+        assert!((d - 111.19492664455873).abs() < 1e-6, "got {d}");
+    }
+
+    #[wasm_bindgen_test]
+    fn haversine_one_degree_latitude() {
+        // 1 deg of latitude (meridian arc) equals 1 deg of equatorial longitude.
+        let d = haversine_km(0.0, 0.0, 1.0, 0.0);
+        assert!((d - 111.19492664455873).abs() < 1e-6, "got {d}");
+    }
+
+    #[wasm_bindgen_test]
+    fn haversine_longitude_shrinks_with_latitude() {
+        // 1 deg of longitude at 45N is cos(45) of the equatorial span.
+        let d = haversine_km(45.0, 0.0, 45.0, 1.0);
+        assert!((d - 78.62618767687454).abs() < 1e-6, "got {d}");
+        // And it is strictly less than the equatorial 1-degree span.
+        assert!(d < 111.19492664455873);
+    }
+
+    #[wasm_bindgen_test]
+    fn haversine_is_symmetric() {
+        let ab = haversine_km(40.7128, -74.0060, 34.0522, -118.2437);
+        let ba = haversine_km(34.0522, -118.2437, 40.7128, -74.0060);
+        assert!((ab - 3935.746254609723).abs() < 1e-4, "got {ab}");
+        assert!((ab - ba).abs() < 1e-9, "asymmetry: {ab} vs {ba}");
+    }
+}

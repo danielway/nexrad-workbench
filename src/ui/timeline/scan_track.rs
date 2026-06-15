@@ -290,3 +290,99 @@ fn render_macro_acquisition(
     }
     let _ = acq_colors::ACTIVE; // palette intentionally neutral now.
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- faded() ---------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn faded_full_opacity_is_identity_on_opaque_color() {
+        // fade == 1.0 leaves a fully opaque color untouched.
+        let c = Color32::from_rgb(100, 150, 200); // stored [100,150,200,255]
+        let out = faded(c, 1.0);
+        assert!(out.r() == 100);
+        assert!(out.g() == 150);
+        assert!(out.b() == 200);
+        assert!(out.a() == 255);
+    }
+
+    #[wasm_bindgen_test]
+    fn faded_zero_fade_is_fully_transparent() {
+        // fade == 0.0 drives alpha to 0 → Color32::TRANSPARENT (all zeros).
+        let c = Color32::from_rgb(100, 150, 200);
+        let out = faded(c, 0.0);
+        assert!(out.r() == 0);
+        assert!(out.g() == 0);
+        assert!(out.b() == 0);
+        assert!(out.a() == 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn faded_scales_alpha_by_fade_factor() {
+        // Input alpha 200, fade 0.5 → (200 * 0.5) = 100 (truncated to u8).
+        // Use premultiplied ctor so the stored alpha byte is exactly 200.
+        let c = Color32::from_rgba_premultiplied(10, 20, 30, 200);
+        let out = faded(c, 0.5);
+        assert!(out.a() == 100);
+    }
+
+    #[wasm_bindgen_test]
+    fn faded_truncates_toward_zero() {
+        // 255 * 0.5 = 127.5 → truncates to 127 (cast, not round).
+        let c = Color32::from_rgb(1, 2, 3); // alpha 255
+        let out = faded(c, 0.5);
+        assert!(out.a() == 127);
+    }
+
+    // ---- should_merge() --------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn should_merge_false_when_fewer_than_two_scans() {
+        let empty: Vec<(f64, f64, bool)> = Vec::new();
+        assert!(!should_merge(&empty, 1.0));
+        let one = vec![(0.0_f64, 0.0_f64, false)];
+        assert!(!should_merge(&one, 1.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn should_merge_false_when_all_deltas_zero() {
+        // Duplicate start times → all deltas filtered out → not mergeable.
+        let scans = vec![(5.0, 5.0, false), (5.0, 5.0, false)];
+        assert!(!should_merge(&scans, 100.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn should_merge_true_when_dense() {
+        // Two scans 100s apart; zoom 0.01 → spacing_px = 1.0 < 3.0 → merge.
+        let scans = vec![(0.0, 0.0, false), (100.0, 0.0, false)];
+        assert!(should_merge(&scans, 0.01));
+    }
+
+    #[wasm_bindgen_test]
+    fn should_merge_false_when_sparse() {
+        // Same scans; zoom 0.05 → spacing_px = 5.0 (not < 3.0) → no merge.
+        let scans = vec![(0.0, 0.0, false), (100.0, 0.0, false)];
+        assert!(!should_merge(&scans, 0.05));
+    }
+
+    #[wasm_bindgen_test]
+    fn should_merge_uses_upper_median_for_odd_delta_count() {
+        // Starts [0,100,250] → deltas [100,150]; median index 2/2=1 → 150.
+        // zoom 0.01 → spacing_px = 1.5 < 3.0 → merge.
+        let scans = vec![(0.0, 0.0, false), (100.0, 0.0, false), (250.0, 0.0, false)];
+        assert!(should_merge(&scans, 0.01));
+        // zoom 0.025 → spacing_px = 3.75 (not < 3.0) → no merge.
+        assert!(!should_merge(&scans, 0.025));
+    }
+
+    #[wasm_bindgen_test]
+    fn should_merge_at_threshold_boundary_is_not_merged() {
+        // spacing_px exactly 3.0 is NOT < 3.0 → no merge.
+        // delta 100, zoom 0.03 → 3.0.
+        let scans = vec![(0.0, 0.0, false), (100.0, 0.0, false)];
+        assert!(!should_merge(&scans, 0.03));
+    }
+}

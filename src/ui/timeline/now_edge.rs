@@ -339,3 +339,98 @@ fn stop_live(
         .map(|r| r.message().to_string())
         .unwrap_or_default();
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ── NowCapState::is_streaming ──────────────────────────────────────
+    // Idle is the only non-streaming state.
+
+    #[wasm_bindgen_test]
+    fn is_streaming_idle_is_false() {
+        assert!(!NowCapState::Idle.is_streaming());
+    }
+
+    #[wasm_bindgen_test]
+    fn is_streaming_attached_and_detached_are_true() {
+        assert!(NowCapState::Attached.is_streaming());
+        assert!(NowCapState::Detached.is_streaming());
+    }
+
+    // ── cap_fill ───────────────────────────────────────────────────────
+    // Only assert the deterministic (alpha == 255, or alpha-only) branches.
+    // `from_rgba_unmultiplied` premultiplies r/g/b when 0 < alpha < 255, so
+    // those channels are not hand-computable; alpha itself is preserved.
+
+    #[wasm_bindgen_test]
+    fn cap_fill_idle_unhovered_returns_base() {
+        // Not live, not hovered → returns `base` unchanged.
+        let out = cap_fill(NOW_IDLE, false, false, 0.5);
+        assert!(out.to_array() == [200, 95, 95, 255]);
+
+        // base is whatever was passed in — confirm with LIVE_ACTIVE too.
+        let out2 = cap_fill(LIVE_ACTIVE, false, false, 0.0);
+        assert!(out2.to_array() == [255, 80, 80, 255]);
+    }
+
+    #[wasm_bindgen_test]
+    fn cap_fill_idle_hovered_brightens_to_live_active() {
+        // Not live but hovered → LIVE_ACTIVE regardless of `base`/`pulse`.
+        let out = cap_fill(NOW_IDLE, false, true, 0.5);
+        assert!(out.to_array() == [255, 80, 80, 255]);
+    }
+
+    #[wasm_bindgen_test]
+    fn cap_fill_live_full_pulse_is_opaque_live_active() {
+        // is_live=true, pulse=1.0 → alpha = (200 + 55) = 255 → opaque
+        // LIVE_ACTIVE (no premultiplication on the 255 fast-path).
+        // hovered is ignored once is_live.
+        let out = cap_fill(NOW_IDLE, true, false, 1.0);
+        assert!(out.to_array() == [255, 80, 80, 255]);
+    }
+
+    #[wasm_bindgen_test]
+    fn cap_fill_live_alpha_tracks_pulse() {
+        // alpha = (200.0 + 55.0 * pulse) as u8. Assert the alpha channel only,
+        // which is preserved exactly even when r/g/b get premultiplied.
+        assert!(cap_fill(NOW_IDLE, true, false, 0.0).a() == 200);
+        assert!(cap_fill(NOW_IDLE, true, true, 0.0).a() == 200);
+        // 200 + 55*0.5 = 227.5 → truncates to 227.
+        assert!(cap_fill(NOW_IDLE, true, false, 0.5).a() == 227);
+    }
+
+    // ── edge_color ─────────────────────────────────────────────────────
+    // Alpha is fixed at 220; channels are `c * 6 / 10` (u16 math) then
+    // premultiplied, so only assert deterministic cases.
+
+    #[wasm_bindgen_test]
+    fn edge_color_alpha_is_fixed_220() {
+        assert!(edge_color(Color32::from_rgb(255, 80, 80)).a() == 220);
+        assert!(edge_color(Color32::from_rgb(0, 0, 0)).a() == 220);
+        assert!(edge_color(Color32::from_rgb(123, 200, 17)).a() == 220);
+    }
+
+    #[wasm_bindgen_test]
+    fn edge_color_of_black_is_black_with_alpha() {
+        // 0 * 6 / 10 = 0 for every channel; premultiplying 0 stays 0.
+        let out = edge_color(Color32::from_rgb(0, 0, 0));
+        assert!(out.to_array() == [0, 0, 0, 220]);
+    }
+
+    #[wasm_bindgen_test]
+    fn edge_color_is_darker_than_input() {
+        // The border is a 6/10 shade of the fill: the *unmultiplied* channels
+        // must be no brighter than the source. Use to_srgba_unmultiplied to
+        // undo premultiplication and compare straight channel values.
+        let fill = Color32::from_rgb(200, 100, 50);
+        let edge = edge_color(fill);
+        let [er, eg, eb, _] = edge.to_srgba_unmultiplied();
+        // 200*6/10 = 120, 100*6/10 = 60, 50*6/10 = 30 (pre-premult targets).
+        // Allow ±2 for sRGB premult/unmult round-trip rounding.
+        assert!((er as i32 - 120).abs() <= 2);
+        assert!((eg as i32 - 60).abs() <= 2);
+        assert!((eb as i32 - 30).abs() <= 2);
+    }
+}
