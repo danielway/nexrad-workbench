@@ -209,3 +209,124 @@ once the migration is complete.
   logic — is already pure + 30-test-covered). So P6 extracts the gates and leaves
   the I/O sequencing in the shell, consistent with the worker-dispatch carve-out.
 - **`streaming.rs` untouched** — the carve-out explicitly defers its split.
+
+---
+
+# FINAL REPORT
+
+Branch `functional-core-migration` off `simplify-user-interface` @ `09241a3`.
+All seven phases landed; tree green at every phase.
+
+## 1. What changed, per phase (with commit hashes)
+
+| Phase | Commit | Summary |
+|---|---|---|
+| P0 | `b306eaf` | New `src/core/` module: `Intent` (= `AppCommand` alias) + `Effect` enum modeled on `PrevSweepAction`. Behavior-neutral derive additions (`ViewState`, `UserPreferences`, `InterpolationMode`). |
+| P1 | `7635aa1` | Effect boundary: pure `core::decide_persist -> PersistDecision`; throttle clock injected as `FrameNow` seconds; shell effect runtime `WorkbenchApp::apply_effects` executes `PushUrl`/`SavePreferences`. |
+| P2 | `a9fa02c` | **Reference slice.** `core::diagnostics`: pure `select_alert_at` (hit-test + severity rank), `compute_alert_focus`, `DiagnosticsIntent` + `reduce`, `DiagnosticsVm`. `Effect::StartGeolocation`. Canvas/modals/right-panel/top-bar (desktop+mobile)/site-modal emit intents; GPS drain routes through the reducer. |
+| P3 | `9a4ea4d` | `core::canvas`: sweep-line azimuth, `select_gpu_sweep`/`next_sweep_cache`/`between_sweeps`, `value_at_polar_*` (decoupled from GL via `PolarSweepMeta`), `find_nearest_azimuth_index` (moved), `geo_to_polar`, `cutout_lon_range_deg`. |
+| P4 | `5c91330` | `core::render`: `decide_prefetch_next_elevation` (lifted from `advance_playback`) + `should_dispatch` dedup gate (used by `RenderCoordinator`). |
+| P5 | `59bcc48` | `core::panels`: `query_radar_state_at_timestamp` (moved out of `left_panel`), `animation_frozen`, `archive_azimuth_from_progress`, `status_message_visibility`. **Partial — broad mutation→intent rewrite deferred (see §4).** |
+| P6 | `2188eb0` | `core::acquisition`: `decide_selection_gate`, `reactive_prefetch_allowed`, `dates_spanning`/`dates_in_range` (re-homed). |
+
+Net test growth: **510 → 555 (+45 headless tests)**. New core surface:
+`src/core/{mod,intent,effect,persist,diagnostics,canvas,render,panels,acquisition}.rs`.
+
+## 2. MANUAL-QA CHECKLIST (the only human touchpoint)
+
+Run `trunk serve` and verify the following. Bisect any regression to the phase
+commit above. Deep-link recipe: `?site=KDMX&t=<unix_seconds>` opens a detached
+archive view at that moment; add `&rt=true` for live; `&dev=true` for dev chrome.
+(Headless driving recipe: see `memory/reference_headless_verify.md`.)
+
+**Priority — P2 Diagnostics overlays** (highest-value, most surface changed):
+- [ ] Alerts: with live data + warnings/watches layers on, click an area covered
+      by multiple overlapping alerts → the **highest-severity** one opens in the
+      detail modal (overlap test). Click empty map → any mPING popover dismisses.
+- [ ] Top-bar alert chip: single alert in view → click opens detail; multiple →
+      click opens the list modal; click a list row → detail opens; "Refresh"
+      re-fetches; "Close"/backdrop closes.
+- [ ] Alert detail "Show on map" → centers the 2D view on the alert + enables its
+      class layer + closes the modal.
+- [ ] mPING (needs API key): gear opens settings; Save with a changed key
+      refetches + closes; Save unchanged just closes; Clear wipes reports; layer
+      checkbox is enabled only when **live AND key set**. Click a report marker →
+      popover; click empty → dismiss.
+- [ ] GPS "My Location": toggle on → browser permission prompt → dot appears
+      (coords). Deny/again → error text shows AND the checkbox auto-unticks.
+- [ ] Mobile layout (narrow window): the alert chip in the mobile top bar behaves
+      as desktop.
+
+**Priority — P3 Canvas hot path** (gate carefully — pure-math relocation):
+- [ ] Sweep animation (Advanced + Micro zoom + sweep-animation pref on): the
+      rotating sweep line sweeps smoothly; between sweeps it holds the last
+      position (stale styling), not a flash to 0°.
+- [ ] Fast-forward >30×: sweep line/azimuth freeze (no violent flashing).
+- [ ] Hover data-probe: tooltip shows correct lat/lon, azimuth, range, and the
+      product value at the cursor (current + prev-sweep regions during animation).
+- [ ] National-mosaic cutout hole stays a stable radar-coverage circle while
+      scrubbing elevations/products; correct at high latitude sites.
+
+**Priority — P4 Render/GPU** (perceived-latency + dedup):
+- [ ] Scrub the timeline → frames update without duplicate/stuttering renders.
+- [ ] Change elevation / product → repaints immediately (dedup doesn't suppress a
+      genuine change); re-selecting the same one doesn't re-fetch.
+- [ ] Play through a sweep boundary in Micro → next elevation is pre-fetched (no
+      stutter at the boundary).
+- [ ] 3D volume toggle still renders/updates on scrub.
+
+**Priority — P5 Panels:**
+- [ ] Left panel (Advanced + sidebar): azimuth dial, elevation, VCP number/name,
+      elevation-list highlight, scan progress all track the playhead (archive AND
+      live); freeze at >30×.
+- [ ] Top bar: a status message (e.g. after an action) fades after ~8 s and clears
+      at ~10 s.
+
+**P1 / P6** (non-visual, lower risk):
+- [ ] URL bar updates ~1×/sec as you pan/zoom/scrub; reload restores the view;
+      a preference change (e.g. palette) survives reload.
+- [ ] Select a short timeline range → it downloads immediately; select a >6 h
+      range → the confirm modal appears; "Download Anyway" proceeds.
+
+## 3. Decisions / assumptions log
+
+See entries **D0–D7** above (one per phase + conventions). Each records the
+ambiguity, the option taken, and the rationale.
+
+## 4. What is not complete, and why
+
+- **P5 broad mutation→intent rewrite (deferred, QA-gated).** The interactive
+  panels (`right_panel`, `bottom_panel`, `playback_controls`, `shortcuts`,
+  `canvas_interaction`, `top_bar`) still mutate subsystem state via `&mut` for
+  transport, layer checkboxes, camera motion, and text-edit buffers, and
+  `LayoutCtx` is still `&mut`-everything rather than `&ViewModel` + intent sink.
+  Rationale in **D6**: converting immediate `&mut` to queued intents introduces
+  one-frame lag / effect reordering on an interactive hot path that cannot be
+  unit-tested *or* run in this environment; several mutations (camera/WASD,
+  `playback.advance`, two-way checkbox bindings) must stay `&mut` regardless; and
+  the phase is explicitly "behind manual QA, file-by-file." The intent pattern is
+  proven end-to-end by P2, so the remainder is safe to apply incrementally during
+  the human QA pass. **Pure logic was extracted; the mechanical wiring remains.**
+- **Acquisition pump I/O sequencing stays shell (P6).** The pure gates are in
+  `core::acquisition`; the listing-fetch/enqueue/backoff sequencing in the pumps
+  stays imperative (same un-QA-able ordering risk; the real dispatch logic in
+  `download_queue` is already pure + tested).
+- **Carve-outs honored verbatim:** GPU paint stays shell; camera/projection math
+  left as-is (S4); `streaming.rs` (~1850 lines) split stays de-scoped.
+- **`query_radar_state_at_timestamp` has no unit test** — `subsystem::Live` isn't
+  headlessly constructible (owns channels/engine). It was relocated to the core
+  (behavior-identical) and its leaf helpers are tested; a full test awaits a
+  `Live` test fixture.
+
+## 5. Verification run (final)
+
+```
+cargo fmt -- --check           → clean
+cargo clippy --bin nexrad-workbench -- -D warnings
+                               → Finished (0 warnings)
+cargo test  --bin nexrad-workbench
+                               → test result: ok. 555 passed; 0 failed; 0 ignored; 0 filtered out
+```
+
+`tests/idb.rs` (browser-driven) was not run — unchanged by this migration and
+requires Chromium + chromedriver (CI-only per CLAUDE.md).
