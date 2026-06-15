@@ -98,3 +98,75 @@ mod tests {
         assert_eq!(p.sweeps[1].elevation_angle, 1.0);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::state::radar_data::{Scan, Sweep};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn sweep(elev: u8, start: f64, end: f64) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation: elev as f32 * 0.5,
+            elevation_number: elev,
+            start_azimuth: 0.0,
+            radials: vec![],
+            cached_products: vec![],
+        }
+    }
+
+    fn scan(vcp_pattern: Option<crate::data::keys::ExtractedVcp>, sweeps: Vec<Sweep>) -> Scan {
+        Scan {
+            start_time: 1000.0,
+            end_time: 1300.0,
+            key_timestamp: 1000.0,
+            vcp: 12,
+            vcp_pattern,
+            sweeps,
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn empty_scan_yields_no_sweeps_but_carries_volume_bounds() {
+        let p = scan_to_projection(&scan(None, vec![]));
+        assert!(p.sweeps.is_empty());
+        assert_eq!(p.volume_start, 1000.0);
+        assert_eq!(p.volume_end, 1300.0);
+        assert!(p.in_progress_elevation.is_none());
+        assert!(p.in_progress_radials.is_none());
+        assert!(p.next_scan_ghost.is_none());
+        assert!(p.extrapolation.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_pattern_is_preserved() {
+        let pattern = crate::data::keys::ExtractedVcp {
+            number: 215,
+            elevations: vec![],
+        };
+        let p = scan_to_projection(&scan(Some(pattern), vec![sweep(1, 1.0, 2.0)]));
+        assert_eq!(p.vcp_number, 12);
+        assert_eq!(p.vcp_pattern.as_ref().map(|v| v.number), Some(215));
+    }
+
+    #[wasm_bindgen_test]
+    fn archived_sweeps_have_no_streaming_chunk_metadata() {
+        // Archive scans are fully observed — none of the live-streaming counters
+        // apply, so every chunk/radial counter is zeroed and the role is fixed.
+        let p = scan_to_projection(&scan(None, vec![sweep(3, 5.0, 6.0)]));
+        let s = &p.sweeps[0];
+        assert_eq!(s.elevation_number, 3);
+        assert_eq!(s.elevation_angle, 1.5); // 3 * 0.5
+        assert!(matches!(s.scan_role, ProjectionScanRole::CurrentInProgress));
+        assert_eq!(s.chunks_in_sweep, 0);
+        assert_eq!(s.chunks_received, 0);
+        assert_eq!(s.radials_received, 0);
+        assert_eq!(s.azimuth_rate_dps, 0.0);
+        assert!(s.chunks.is_empty());
+    }
+}
