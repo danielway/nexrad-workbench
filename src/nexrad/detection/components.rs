@@ -190,8 +190,8 @@ mod coverage_tests {
         // Padded (negative) azimuths produce NaN gaps → never adjacent.
         let az = vec![0.0_f32, -1.0, 90.0];
         let adj = precompute_az_adjacency(&az, 3);
-        assert_eq!(adj[0], false);
-        assert_eq!(adj[1], false);
+        assert!(!adj[0]);
+        assert!(!adj[1]);
     }
 
     #[wasm_bindgen_test]

@@ -1529,8 +1529,8 @@ mod coverage_tests {
         // Unknown VCP, no pattern -> no target -> use the sweep's measured angle.
         let mut s = scan(0.0, 10.0);
         s.vcp = 9999;
-        let sw = sweep(0.0, 10.0, 3.14, 7);
-        assert!((s.display_angle(&sw) - 3.14).abs() < 1e-4);
+        let sw = sweep(0.0, 10.0, 3.25, 7);
+        assert!((s.display_angle(&sw) - 3.25).abs() < 1e-4);
     }
 
     // --- RadarTimeline::find_recent_scan (None branch when before all scans) ---
