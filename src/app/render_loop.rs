@@ -206,48 +206,47 @@ impl WorkbenchApp {
 
             if let Some(scan) = self.timeline.scans.find_scan_at_timestamp(playback_ts) {
                 if let Some((sweep_idx, sweep)) = scan.find_sweep_at_timestamp(playback_ts) {
-                    let time_to_end = sweep.end_time - playback_ts;
-                    if time_to_end > 0.0 && time_to_end < prefetch_lookahead {
-                        let next_elev_num = if sweep_idx + 1 < scan.sweeps.len() {
-                            Some(scan.sweeps[sweep_idx + 1].elevation_number)
-                        } else {
-                            let future_ts = playback_ts + prefetch_lookahead;
-                            self.timeline
-                                .scans
-                                .find_scan_at_timestamp(future_ts)
-                                .and_then(|next_scan| {
-                                    next_scan.sweeps.first().map(|s| s.elevation_number)
-                                })
-                        };
+                    let sweep_end = sweep.end_time;
+                    let cur_elev = self
+                        .state
+                        .viz_state
+                        .displayed
+                        .as_ref()
+                        .map(|d| d.identity.elevation_number);
+                    // Only the last-sweep-in-scan case consults the next scan;
+                    // mirror that so we don't do an extra timeline walk.
+                    let future_scan = if sweep_idx + 1 < scan.sweeps.len() {
+                        None
+                    } else {
+                        self.timeline
+                            .scans
+                            .find_scan_at_timestamp(playback_ts + prefetch_lookahead)
+                    };
+                    let next_elev = crate::core::render::decide_prefetch_next_elevation(
+                        scan,
+                        sweep_idx,
+                        sweep_end,
+                        playback_ts,
+                        prefetch_lookahead,
+                        future_scan,
+                        cur_elev,
+                    );
 
-                        if let Some(next_en) = next_elev_num {
-                            let cur_elev = self
-                                .state
-                                .viz_state
-                                .displayed
-                                .as_ref()
-                                .map(|d| d.identity.elevation_number);
-                            if cur_elev != Some(next_en) {
-                                if let Some(scan_key) = self.render.coordinator.scan_key().cloned()
-                                {
-                                    let product =
-                                        self.state.viz_state.product.to_worker_string().to_string();
-                                    let prefetch_identity = SweepIdentity::new(
-                                        scan_key.clone(),
-                                        next_en,
-                                        product.clone(),
-                                    );
-                                    log::debug!(
-                                        "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
-                                        next_en,
-                                        time_to_end,
-                                    );
-                                    self.render.coordinator.set_last_render(prefetch_identity);
-                                    self.render
-                                        .coordinator
-                                        .render_direct(&scan_key, next_en, product);
-                                }
-                            }
+                    if let Some(next_en) = next_elev {
+                        if let Some(scan_key) = self.render.coordinator.scan_key().cloned() {
+                            let product =
+                                self.state.viz_state.product.to_worker_string().to_string();
+                            let prefetch_identity =
+                                SweepIdentity::new(scan_key.clone(), next_en, product.clone());
+                            log::debug!(
+                                "Prefetching next sweep: elev_num={} ({:.1}s ahead)",
+                                next_en,
+                                sweep_end - playback_ts,
+                            );
+                            self.render.coordinator.set_last_render(prefetch_identity);
+                            self.render
+                                .coordinator
+                                .render_direct(&scan_key, next_en, product);
                         }
                     }
                 }

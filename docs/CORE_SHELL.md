@@ -159,12 +159,20 @@ test seam. Effort S/M/L = relative size. **Status: P0 complete; in progress.**
   Deferred: a single bundled `RadarFrameVM` struct — extracted as pure functions
   instead, to keep the paint orchestration untouched (lower regression risk with
   no runnable QA).
-- **P4 — GPU & worker effects as data (L).** Convert `sync_prev_sweep_texture`,
-  `request_render_if_needed`, prefetch, and clear-display in
-  `src/app/render_loop.rs` into pure `decide_render(...) -> Vec<Effect>` (extend
-  `PrevSweepAction` to the main sweep + worker dispatch); the shell executes
-  `UploadSweep` / `DispatchRender` / `ClearGpu`. Seam: the whole render-decision
-  loop assertable. Risk: high (perceived-latency path, dedup correctness).
+- **P4 — GPU & worker effects as data (L). ✅ DONE.** The render path's
+  effect-as-data was largely already realized via local action enums
+  ([`PrevSweepAction`](../src/state/playback_manager.rs) for the prev-sweep
+  texture, [`DesiredDisplay`] for the main sweep) — that *is* the PrevSweepAction
+  idiom the standard endorses, at a granularity that suits buffer uploads /
+  `postMessage` (heavy payloads stay out of a monolithic `Effect`, per D1). P4
+  closed the two remaining inline decisions in [`core::render`](../src/core/render.rs):
+  the prefetch-next-sweep target (`decide_prefetch_next_elevation`, lifted out of
+  `advance_playback`) and the request **dedup gate** (`should_dispatch`, now used
+  by `RenderCoordinator` for both single + volume renders). 6 headless tests
+  (prefetch boundary/next-in-scan/future-scan/skip-current; dedup
+  suppress/pass). GPU upload + worker dispatch stay shell (carve-out). Risk: high
+  (perceived-latency, dedup) — **gate behind manual QA** (scrub, elevation/product
+  switch, play-through sweep boundaries, 3D volume).
 - **P5 — Intent-ize remaining UI + widen the view-model (L).** Replace direct
   `&mut state` mutation in `right_panel` / `left_panel` / `canvas_interaction` /
   `shortcuts` with intents; replace direct subsystem reads with per-panel VM

@@ -140,3 +140,23 @@ once the migration is complete.
   `sweep_bounds` when `live_range.is_none() && animation` (was nested in the
   original `else if`), so the timeline lookup is skipped in exactly the same cases.
   `between_sweeps` reads the *post-update* cache (matches original ordering).
+
+### D5 — P4 GPU & worker effects as data
+- **No monolithic `decide_render(...) -> Vec<Effect>`.** Much of the render path
+  was *already* effect-as-data via local action enums: `PrevSweepAction`
+  (prev-sweep texture) and `DesiredDisplay` (main sweep) are exactly the
+  "imitate PrevSweepAction" pattern, and the GPU upload/clear + worker dispatch
+  are the shell executing them. Folding those into one `Effect` enum would force
+  `Vec<f32>` gate buffers + `egui::Context` + worker handles into variants — the
+  anti-pattern D1 explicitly avoided. So P4 = close the *remaining inline*
+  decisions, not rewrite the working ones.
+- **Extracted the prefetch-next-sweep decision** (`decide_prefetch_next_elevation`)
+  out of `advance_playback` — genuinely tangled timeline logic, now pure + tested.
+  The shell wrapper preserves the original's lazy future-scan lookup (only when
+  the current sweep is last in its scan) so no extra timeline walk happens.
+- **Formalized the dedup gate** as `should_dispatch<T: PartialEq>(new, last)` used
+  by `RenderCoordinator::request_render_for` and `request_volume_render`. The gate
+  was already a pure `==`; extracting it gives the roadmap's named "dedup
+  correctness" seam a unit test. The stateful dedup *cache* (`last_render`,
+  `set_last_render` on prefetch) stays in the coordinator (shell), per the
+  carve-out.

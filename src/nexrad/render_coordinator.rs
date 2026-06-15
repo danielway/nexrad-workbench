@@ -112,7 +112,7 @@ impl RenderCoordinator {
             return false;
         };
 
-        if self.last_render.as_ref() == Some(&identity) {
+        if !crate::core::render::should_dispatch(&identity, self.last_render.as_ref()) {
             return false;
         }
 
@@ -151,7 +151,7 @@ impl RenderCoordinator {
             product: product.to_string(),
         };
 
-        if self.last_volume_render.as_ref() == Some(&request) {
+        if !crate::core::render::should_dispatch(&request, self.last_volume_render.as_ref()) {
             return false;
         }
 

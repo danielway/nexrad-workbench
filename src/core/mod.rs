@@ -27,6 +27,7 @@ pub mod diagnostics;
 pub mod effect;
 pub mod intent;
 pub mod persist;
+pub mod render;
 
 pub use effect::Effect;
 pub use persist::{decide_persist, PersistDecision};
