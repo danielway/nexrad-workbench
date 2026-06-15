@@ -264,3 +264,150 @@ fn emit_subdivided(
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn cut(cx: f32, cy: f32, r: f32) -> RadarCutout {
+        RadarCutout {
+            center: Pos2::new(cx, cy),
+            radius: r,
+        }
+    }
+
+    // ---- classify_cell: geometry classification ------------------------
+
+    #[wasm_bindgen_test]
+    fn classify_inside_all_corners_within_radius() {
+        // Unit cell at origin; center in the middle; large radius swallows it.
+        // Farthest corner distance = sqrt(0.5^2 + 0.5^2) ~= 0.707 <= 5.
+        let c = cut(0.5, 0.5, 5.0);
+        let cls = classify_cell(
+            Pos2::new(0.0, 0.0),
+            Pos2::new(1.0, 0.0),
+            Pos2::new(0.0, 1.0),
+            Pos2::new(1.0, 1.0),
+            c,
+        );
+        assert!(matches!(cls, CellClass::Inside));
+    }
+
+    #[wasm_bindgen_test]
+    fn classify_outside_aabb_does_not_reach_circle() {
+        // Cell far from a small circle at the origin. AABB closest point is
+        // (10,10), distance sqrt(200) ~= 14.14 >= radius 5 -> Outside.
+        let c = cut(0.0, 0.0, 5.0);
+        let cls = classify_cell(
+            Pos2::new(10.0, 10.0),
+            Pos2::new(11.0, 10.0),
+            Pos2::new(10.0, 11.0),
+            Pos2::new(11.0, 11.0),
+            c,
+        );
+        assert!(matches!(cls, CellClass::Outside));
+    }
+
+    #[wasm_bindgen_test]
+    fn classify_straddle_circle_inside_single_cell() {
+        // Big cell, tiny circle fully contained. Farthest corner sqrt(50)~=7.07
+        // > radius 1 (not Inside); AABB closest point == center (dist 0) < 1
+        // (not Outside) -> Straddle.
+        let c = cut(5.0, 5.0, 1.0);
+        let cls = classify_cell(
+            Pos2::new(0.0, 0.0),
+            Pos2::new(10.0, 0.0),
+            Pos2::new(0.0, 10.0),
+            Pos2::new(10.0, 10.0),
+            c,
+        );
+        assert!(matches!(cls, CellClass::Straddle));
+    }
+
+    #[wasm_bindgen_test]
+    fn classify_straddle_boundary_crosses_corners() {
+        // 2x2 cell, circle radius 1 centered in the middle. Corner distance
+        // sqrt(2) ~= 1.414 > 1 (not Inside); closest AABB point is the center
+        // (dist 0 < 1) so not Outside -> Straddle.
+        let c = cut(1.0, 1.0, 1.0);
+        let cls = classify_cell(
+            Pos2::new(0.0, 0.0),
+            Pos2::new(2.0, 0.0),
+            Pos2::new(0.0, 2.0),
+            Pos2::new(2.0, 2.0),
+            c,
+        );
+        assert!(matches!(cls, CellClass::Straddle));
+    }
+
+    #[wasm_bindgen_test]
+    fn classify_outside_when_circle_just_misses_edge() {
+        // Cell [0,1]x[0,1], center at (3,0.5), radius 1.5. Closest AABB point
+        // is (1,0.5), distance 2.0 >= 1.5 -> Outside. Farthest corner is far,
+        // so not Inside.
+        let c = cut(3.0, 0.5, 1.5);
+        let cls = classify_cell(
+            Pos2::new(0.0, 0.0),
+            Pos2::new(1.0, 0.0),
+            Pos2::new(0.0, 1.0),
+            Pos2::new(1.0, 1.0),
+            c,
+        );
+        assert!(matches!(cls, CellClass::Outside));
+    }
+
+    // ---- emit_quad: pure Mesh struct population ------------------------
+
+    #[wasm_bindgen_test]
+    fn emit_quad_appends_four_vertices_and_six_indices() {
+        // Mesh::default() is a plain struct, no egui frame required.
+        let mut mesh = egui::Mesh::default();
+        // Opaque tint: premultiplication is identity, so .a() stays 255.
+        let tint = Color32::from_rgba_unmultiplied(255, 255, 255, 255);
+        let p00 = Pos2::new(0.0, 0.0);
+        let p10 = Pos2::new(4.0, 0.0);
+        let p01 = Pos2::new(0.0, 8.0);
+        let p11 = Pos2::new(4.0, 8.0);
+
+        emit_quad(&mut mesh, p00, p10, p01, p11, 0.1, 0.2, 0.3, 0.4, tint);
+
+        assert!(mesh.vertices.len() == 4);
+        // Two triangles -> six indices, base index 0.
+        assert!(mesh.indices == vec![0u32, 1, 2, 1, 3, 2]);
+
+        // Corner positions land on the matching vertices.
+        assert!((mesh.vertices[0].pos.x - 0.0).abs() < 1e-6);
+        assert!((mesh.vertices[0].pos.y - 0.0).abs() < 1e-6);
+        assert!((mesh.vertices[1].pos.x - 4.0).abs() < 1e-6);
+        assert!((mesh.vertices[2].pos.y - 8.0).abs() < 1e-6);
+        assert!((mesh.vertices[3].pos.x - 4.0).abs() < 1e-6);
+        assert!((mesh.vertices[3].pos.y - 8.0).abs() < 1e-6);
+
+        // UVs: p00 -> (fx0,fy0), p11 -> (fx1,fy1).
+        assert!((mesh.vertices[0].uv.x - 0.1).abs() < 1e-6);
+        assert!((mesh.vertices[0].uv.y - 0.3).abs() < 1e-6);
+        assert!((mesh.vertices[3].uv.x - 0.2).abs() < 1e-6);
+        assert!((mesh.vertices[3].uv.y - 0.4).abs() < 1e-6);
+
+        // Opaque tint preserved (alpha channel is premult-safe at 255).
+        assert!(mesh.vertices[0].color.a() == 255);
+    }
+
+    #[wasm_bindgen_test]
+    fn emit_quad_offsets_indices_by_existing_vertex_count() {
+        let mut mesh = egui::Mesh::default();
+        let tint = Color32::from_rgba_unmultiplied(255, 255, 255, 255);
+        let p = Pos2::new(0.0, 0.0);
+
+        // First quad occupies vertices 0..4.
+        emit_quad(&mut mesh, p, p, p, p, 0.0, 1.0, 0.0, 1.0, tint);
+        // Second quad must base its indices at 4.
+        emit_quad(&mut mesh, p, p, p, p, 0.0, 1.0, 0.0, 1.0, tint);
+
+        assert!(mesh.vertices.len() == 8);
+        assert!(mesh.indices.len() == 12);
+        // The second triangle group references the new vertex block.
+        assert!(mesh.indices[6..] == [4u32, 5, 6, 5, 7, 6]);
+    }
+}

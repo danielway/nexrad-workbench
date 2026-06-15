@@ -429,3 +429,132 @@ fn draw_event_modal(
             ui.add_space(4.0);
         });
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // 1705321845 == 2024-01-15 12:30:45 UTC
+    // 1705327200 == 2024-01-15 14:00:00 UTC
+    // 1700000000 == 2023-11-14 22:13:20 UTC
+
+    #[wasm_bindgen_test]
+    fn init_from_selection_formats_utc_fields() {
+        let mut s = EventModalState::default();
+        s.name = "stale".to_string();
+        s.init_from_selection("KTLX", 1705321845.0, 1705327200.0, false);
+
+        // name is cleared, site set
+        assert!(s.name.is_empty());
+        assert!(s.site_id == "KTLX");
+
+        // start = 2024-01-15 12:30:45
+        assert!(s.start_year == "2024");
+        assert!(s.start_month == "01");
+        assert!(s.start_day == "15");
+        assert!(s.start_hour == "12");
+        assert!(s.start_minute == "30");
+        assert!(s.start_second == "45");
+
+        // end = 2024-01-15 14:00:00
+        assert!(s.end_year == "2024");
+        assert!(s.end_month == "01");
+        assert!(s.end_day == "15");
+        assert!(s.end_hour == "14");
+        assert!(s.end_minute == "00");
+        assert!(s.end_second == "00");
+    }
+
+    #[wasm_bindgen_test]
+    fn init_from_event_sets_name_site_and_fields() {
+        let mut s = EventModalState::default();
+        s.init_from_event("Tornado", "KOUN", 1700000000.0, 1705321845.0, false);
+
+        assert!(s.name == "Tornado");
+        assert!(s.site_id == "KOUN");
+
+        // start = 2023-11-14 22:13:20
+        assert!(s.start_year == "2023");
+        assert!(s.start_month == "11");
+        assert!(s.start_day == "14");
+        assert!(s.start_hour == "22");
+        assert!(s.start_minute == "13");
+        assert!(s.start_second == "20");
+
+        // end = 2024-01-15 12:30:45
+        assert!(s.end_year == "2024");
+        assert!(s.end_month == "01");
+        assert!(s.end_day == "15");
+        assert!(s.end_hour == "12");
+        assert!(s.end_minute == "30");
+        assert!(s.end_second == "45");
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_start_and_end_roundtrip_utc() {
+        let mut s = EventModalState::default();
+        s.init_from_event("e", "KXXX", 1705321845.0, 1705327200.0, false);
+
+        let start = s.parse_start(false);
+        let end = s.parse_end(false);
+        assert!(start.is_some());
+        assert!(end.is_some());
+        assert!((start.unwrap() - 1705321845.0).abs() < 1.0);
+        assert!((end.unwrap() - 1705327200.0).abs() < 1.0);
+        // ordering holds for a valid selection
+        assert!(start.unwrap() < end.unwrap());
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_start_handles_raw_fields_utc() {
+        let mut s = EventModalState::default();
+        s.start_year = "2023".to_string();
+        s.start_month = "11".to_string();
+        s.start_day = "14".to_string();
+        s.start_hour = "22".to_string();
+        s.start_minute = "13".to_string();
+        s.start_second = "20".to_string();
+
+        let ts = s.parse_start(false);
+        assert!(ts.is_some());
+        assert!((ts.unwrap() - 1700000000.0).abs() < 1.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_start_none_on_empty_field() {
+        let mut s = EventModalState::default();
+        // year left empty -> parse::<i32>() fails -> None
+        s.start_month = "01".to_string();
+        s.start_day = "15".to_string();
+        s.start_hour = "12".to_string();
+        s.start_minute = "00".to_string();
+        s.start_second = "00".to_string();
+        assert!(s.parse_start(false).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_start_none_on_nonnumeric_field() {
+        let mut s = EventModalState::default();
+        s.start_year = "2024".to_string();
+        s.start_month = "abc".to_string();
+        s.start_day = "15".to_string();
+        s.start_hour = "12".to_string();
+        s.start_minute = "00".to_string();
+        s.start_second = "00".to_string();
+        assert!(s.parse_start(false).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_start_none_on_invalid_calendar_date() {
+        let mut s = EventModalState::default();
+        // month 13 is out of range -> chrono LocalResult is not Single -> None
+        s.start_year = "2024".to_string();
+        s.start_month = "13".to_string();
+        s.start_day = "15".to_string();
+        s.start_hour = "12".to_string();
+        s.start_minute = "00".to_string();
+        s.start_second = "00".to_string();
+        assert!(s.parse_start(false).is_none());
+    }
+}

@@ -224,3 +224,95 @@ fn shorten_url(url: &str) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---- status_color: HTTP status -> Color32 -------------------------
+    // All branches return fully opaque RGB (alpha = 255), so the r/g/b
+    // channels are not premultiplied away and can be asserted directly.
+
+    #[wasm_bindgen_test]
+    fn status_color_ok_2xx_is_green() {
+        let c = status_color(200, true);
+        assert!(c.r() == 100);
+        assert!(c.g() == 200);
+        assert!(c.b() == 100);
+        assert!(c.a() == 255);
+    }
+
+    #[wasm_bindgen_test]
+    fn status_color_3xx_is_yellow() {
+        let c = status_color(301, true);
+        assert!(c.r() == 255);
+        assert!(c.g() == 200);
+        assert!(c.b() == 80);
+        assert!(c.a() == 255);
+    }
+
+    #[wasm_bindgen_test]
+    fn status_color_4xx_is_red_even_when_ok() {
+        // 4xx forces red regardless of the `ok` flag.
+        let c = status_color(404, true);
+        assert!(c.r() == 255);
+        assert!(c.g() == 100);
+        assert!(c.b() == 100);
+        assert!(c.a() == 255);
+    }
+
+    #[wasm_bindgen_test]
+    fn status_color_zero_status_is_red() {
+        // status == 0 (network error) is red even when ok is true.
+        let c = status_color(0, true);
+        assert!(c.r() == 255);
+        assert!(c.g() == 100);
+        assert!(c.b() == 100);
+    }
+
+    #[wasm_bindgen_test]
+    fn status_color_not_ok_2xx_is_red() {
+        // A 2xx status but ok=false still classifies as an error (red).
+        let c = status_color(200, false);
+        assert!(c.r() == 255);
+        assert!(c.g() == 100);
+        assert!(c.b() == 100);
+    }
+
+    // ---- shorten_url: scheme stripping + truncation -------------------
+
+    #[wasm_bindgen_test]
+    fn shorten_url_strips_https_when_short() {
+        // Under MAX_LEN, the https:// scheme is removed and the rest kept verbatim.
+        assert!(shorten_url("https://example.com/path") == "example.com/path".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn shorten_url_strips_http_when_short() {
+        assert!(shorten_url("http://example.com/path") == "example.com/path".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn shorten_url_keeps_unknown_scheme_intact() {
+        // Only http:// and https:// are stripped; other schemes pass through.
+        assert!(shorten_url("ftp://x.com/a") == "ftp://x.com/a".to_string());
+    }
+
+    #[wasm_bindgen_test]
+    fn shorten_url_long_path_keeps_host_and_tail() {
+        // host (11) + "/" + 200-char path => over MAX_LEN(120); budget branch
+        // keeps the host, inserts "/.../", and keeps the last `budget` path chars.
+        let host = "example.com";
+        let path = "a".repeat(200);
+        let url = format!("https://{}/{}", host, path);
+        let out = shorten_url(&url);
+
+        // budget = 120 - (host.len() + 5) = 120 - 16 = 104.
+        let expected = format!("{}/.../{}", host, &"a".repeat(200)[200 - 104..]);
+        assert!(out == expected);
+        // Total length: host(11) + "/.../"(5) + 104 = 120.
+        assert!(out.len() == 120);
+        assert!(out.starts_with("example.com/.../"));
+    }
+}

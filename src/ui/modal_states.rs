@@ -49,3 +49,51 @@ impl ModalStates {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn new_with_preferred_site_marks_not_first_visit() {
+        let states = ModalStates::new(true);
+        assert!(!states.site.is_first_visit);
+    }
+
+    #[wasm_bindgen_test]
+    fn new_without_preferred_site_keeps_first_visit() {
+        let states = ModalStates::new(false);
+        assert!(states.site.is_first_visit);
+    }
+
+    #[wasm_bindgen_test]
+    fn new_site_mode_defaults_to_welcome() {
+        // SiteModalMode lacks Debug; compare via PartialEq through assert!.
+        let states = ModalStates::new(false);
+        assert!(states.site.mode == crate::ui::site_modal::SiteModalMode::Welcome);
+        let states2 = ModalStates::new(true);
+        assert!(states2.site.mode == crate::ui::site_modal::SiteModalMode::Welcome);
+    }
+
+    #[wasm_bindgen_test]
+    fn new_site_form_fields_start_empty() {
+        let states = ModalStates::new(true);
+        assert_eq!(states.site.filter, "");
+        assert_eq!(states.site.zip_input, "");
+        assert!(states.site.error_message.is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn new_event_modal_starts_with_empty_name() {
+        let states = ModalStates::new(false);
+        assert_eq!(states.event.name, "");
+        assert_eq!(states.event.site_id, "");
+    }
+
+    #[wasm_bindgen_test]
+    fn new_mping_modal_starts_with_empty_key_input() {
+        let states = ModalStates::new(true);
+        assert_eq!(states.mping.key_input, "");
+    }
+}
