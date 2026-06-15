@@ -558,3 +558,198 @@ mod tests {
         assert_eq!(b.chunk_type, ChunkType::Intermediate);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::super::test_vcp::{build_vcp, TestElevation};
+    use super::*;
+    use chrono::{DateTime, Utc};
+    use nexrad_data::aws::realtime::VolumeIndex;
+    use nexrad_decode::messages::volume_coverage_pattern;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn when() -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000, 0).unwrap()
+    }
+
+    fn chunk(sequence: usize, chunk_type: ChunkType) -> ChunkIdentifier {
+        ChunkIdentifier::new(
+            "KDMX".to_string(),
+            VolumeIndex::new(1),
+            when().naive_utc(),
+            sequence,
+            chunk_type,
+            Some(when()),
+        )
+    }
+
+    /// One super-res CS elevation at 22.5 dps → 6 chunks (seqs 2..=7), final 7.
+    fn vcp_1elev() -> volume_coverage_pattern::Message<'static> {
+        build_vcp(&[TestElevation {
+            super_res: true,
+            elevation_angle_raw: 0,
+            azimuth_rate_raw: 1 << 14, // 22.5 dps
+            waveform_raw: 1,           // CS
+            channel_raw: 0,            // ConstantPhase
+        }])
+    }
+
+    /// One STANDARD-res (3-chunk: seqs 2..=4, final 4) non-CS elevation.
+    /// waveform=CDW (raw 2), channel selectable so the legacy branch resolves
+    /// to either 7s (ConstantPhase) or 4s (RandomPhase).
+    fn vcp_1elev_non_cs(channel_raw: u8) -> volume_coverage_pattern::Message<'static> {
+        build_vcp(&[TestElevation {
+            super_res: false,
+            elevation_angle_raw: 0,
+            azimuth_rate_raw: 1 << 14, // 22.5 dps
+            waveform_raw: 2,           // CDW (non-CS)
+            channel_raw,
+        }])
+    }
+
+    const CHUNK_DUR: f64 = (360.0 / 22.5 - 0.67) / 6.0;
+
+    // ── SchedulerPath::short() — every variant (untested by mod tests) ──────
+
+    #[wasm_bindgen_test]
+    fn scheduler_path_short_covers_all_variants() {
+        assert_eq!(SchedulerPath::StartConstant.short(), "start");
+        assert_eq!(SchedulerPath::Blended.short(), "blend");
+        assert_eq!(SchedulerPath::Physics.short(), "phys");
+        assert_eq!(SchedulerPath::Legacy.short(), "legacy");
+    }
+
+    // ── estimate_chunk_availability_time — anchors to upload time ───────────
+
+    #[wasm_bindgen_test]
+    fn availability_time_for_start_chunk_is_anchor_plus_constant_gap() {
+        // Start chunk → 1500ms processing; anchor is the chunk's upload time
+        // (which our builder sets to `when()`), so availability is exactly
+        // when() + 1.5s.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let avail =
+            estimate_chunk_availability_time(&chunk(1, ChunkType::Start), &vcp, &mapper, None)
+                .unwrap();
+        let expected = when() + ChronoDuration::milliseconds(1500);
+        assert_eq!(avail, expected);
+    }
+
+    #[wasm_bindgen_test]
+    fn availability_time_for_physics_chunk_is_anchor_plus_processing() {
+        // Non-Start, no stats → physics chunk duration; availability is anchor
+        // (when()) + that processing time. Verify by differencing against the
+        // anchor rather than recomputing the millisecond truncation.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let cur = chunk(3, ChunkType::Intermediate);
+        let proc = estimate_chunk_processing_time(&cur, &vcp, &mapper, None).unwrap();
+        let avail = estimate_chunk_availability_time(&cur, &vcp, &mapper, None).unwrap();
+        assert_eq!(avail, when() + proc);
+        // And the processing component is the physics chunk duration.
+        let secs = proc.num_milliseconds() as f64 / 1000.0;
+        assert!((secs - CHUNK_DUR).abs() < 1e-3, "secs={secs}");
+    }
+
+    // ── estimate_chunk_processing_time — duration-only wrapper ──────────────
+
+    #[wasm_bindgen_test]
+    fn processing_time_equals_diagnostics_duration() {
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let cur = chunk(3, ChunkType::Intermediate);
+        let diag = estimate_chunk_processing_diagnostics(&cur, &vcp, &mapper, None).unwrap();
+        let dur = estimate_chunk_processing_time(&cur, &vcp, &mapper, None).unwrap();
+        assert_eq!(dur, diag.duration);
+    }
+
+    #[wasm_bindgen_test]
+    fn processing_time_is_none_when_diagnostics_is_none() {
+        // Sequence past the end of the volume: neither the metadata pair nor a
+        // legacy elevation resolves, so both diagnostics and the duration-only
+        // wrapper yield None.
+        let vcp = vcp_1elev(); // final sequence 7
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let oob = chunk(8, ChunkType::Intermediate);
+        assert!(estimate_chunk_processing_diagnostics(&oob, &vcp, &mapper, None).is_none());
+        assert!(estimate_chunk_processing_time(&oob, &vcp, &mapper, None).is_none());
+        assert!(estimate_chunk_availability_time(&oob, &vcp, &mapper, None).is_none());
+    }
+
+    // ── Legacy path: non-CS waveform branches via the PUBLIC function ───────
+
+    #[wasm_bindgen_test]
+    fn legacy_path_non_cs_constant_phase_yields_7s() {
+        // Standard-res single non-CS / ConstantPhase elevation: seqs 2..=4,
+        // final 4. Querying seq 4 fails the metadata pair (no seq 5) but the
+        // elevation resolves → legacy. Non-CS + ConstantPhase → 7s.
+        let vcp = vcp_1elev_non_cs(0); // ConstantPhase
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let e = estimate_chunk_processing_diagnostics(
+            &chunk(4, ChunkType::Intermediate),
+            &vcp,
+            &mapper,
+            None,
+        )
+        .unwrap();
+        assert_eq!(e.path, SchedulerPath::Legacy);
+        assert_eq!(e.duration, ChronoDuration::seconds(7));
+        assert!(e.bucket.is_none());
+        assert!(e.physics_breakdown.is_none());
+        assert_eq!(e.stats_n_at_prediction, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn legacy_path_non_cs_random_phase_yields_4s() {
+        // Same shape, RandomPhase channel → non-CS + non-ConstantPhase → 4s.
+        let vcp = vcp_1elev_non_cs(1); // RandomPhase
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let e = estimate_chunk_processing_diagnostics(
+            &chunk(4, ChunkType::Intermediate),
+            &vcp,
+            &mapper,
+            None,
+        )
+        .unwrap();
+        assert_eq!(e.path, SchedulerPath::Legacy);
+        assert_eq!(e.duration, ChronoDuration::seconds(4));
+    }
+
+    // ── estimate_chunk_processing_time_to_target — None / boundary paths ────
+
+    #[wasm_bindgen_test]
+    fn to_target_none_when_target_metadata_out_of_range() {
+        // Target beyond the final sequence: a hop reaches a sequence with no
+        // metadata, so the `?` short-circuits to None.
+        let vcp = vcp_1elev(); // final 7, total 7
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let cur = chunk(3, ChunkType::Intermediate);
+        assert!(estimate_chunk_processing_time_to_target(&cur, 20, &vcp, &mapper, None).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn to_target_equal_sequence_is_none() {
+        // target == current is non-advancing → None (distinct from the
+        // existing test's target<current and target=2 cases for seq 3).
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let cur = chunk(5, ChunkType::Intermediate);
+        assert!(estimate_chunk_processing_time_to_target(&cur, 5, &vcp, &mapper, None).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn to_target_single_hop_from_start_equals_start_constant() {
+        // current+1 single-hop short-circuit must equal the single-hop
+        // diagnostic even for the Start chunk (StartConstant path, 1.5s),
+        // exercising the delegation branch with a Start input.
+        let vcp = vcp_1elev();
+        let mapper = ElevationChunkMapper::new(&vcp);
+        let start = chunk(1, ChunkType::Start);
+        let single = estimate_chunk_processing_diagnostics(&start, &vcp, &mapper, None).unwrap();
+        let multi =
+            estimate_chunk_processing_time_to_target(&start, 2, &vcp, &mapper, None).unwrap();
+        assert_eq!(multi.path, SchedulerPath::StartConstant);
+        assert_eq!(multi.duration, single.duration);
+        assert_eq!(multi.duration, ChronoDuration::milliseconds(1500));
+    }
+}

@@ -920,3 +920,588 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+    use crate::data::ScanKey;
+    use crate::state::radar_data::{Radial, Scan, Sweep};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const MAX_AGE: f64 = 15.0 * 60.0;
+
+    // ── builders (re-declared; can't reach sibling module's private helpers) ──
+
+    fn sweep_with(
+        start: f64,
+        end: f64,
+        elev: f32,
+        elev_num: u8,
+        cached_products: Vec<&str>,
+    ) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation: elev,
+            elevation_number: elev_num,
+            start_azimuth: 0.0,
+            radials: Vec::<Radial>::new(),
+            cached_products: cached_products.into_iter().map(String::from).collect(),
+        }
+    }
+
+    fn scan_with(start: f64, end: f64, key_ts: f64, vcp: u16, sweeps: Vec<Sweep>) -> Scan {
+        Scan {
+            start_time: start,
+            end_time: end,
+            key_timestamp: key_ts,
+            vcp,
+            vcp_pattern: None,
+            sweeps,
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    fn timeline_with(scans: Vec<Scan>) -> RadarTimeline {
+        RadarTimeline { scans }
+    }
+
+    fn dummy_sweep_data(product: &str) -> CachedSweepData {
+        CachedSweepData {
+            gate_values: Vec::new(),
+            azimuths: Vec::new(),
+            azimuth_count: 0,
+            gate_count: 0,
+            first_gate_range_km: 0.0,
+            gate_interval_km: 0.25,
+            max_range_km: 460.0,
+            offset: 0.0,
+            scale: 1.0,
+            azimuth_spacing_deg: 1.0,
+            radial_times: Vec::new(),
+            sweep_start_secs: 0.0,
+            sweep_end_secs: 0.0,
+            product: product.to_string(),
+        }
+    }
+
+    fn extracted_elev(
+        angle: f32,
+        waveform: &str,
+        is_sails: bool,
+        is_mrle: bool,
+    ) -> ExtractedVcpElevation {
+        ExtractedVcpElevation {
+            angle,
+            waveform: waveform.to_string(),
+            prf_number: 1,
+            is_sails,
+            is_mrle,
+            is_base_tilt: false,
+            azimuth_rate: None,
+        }
+    }
+
+    // ── sweep_cache_key formatting ──────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn sweep_cache_key_concatenates_with_pipes() {
+        // Pure string formatting: "SCAN|ELEV|PRODUCT".
+        assert_eq!(
+            sweep_cache_key("KDMX|1700000000000", 3, "reflectivity"),
+            "KDMX|1700000000000|3|reflectivity"
+        );
+        // Elevation 0 and empty product still produce the trailing-pipe shape.
+        assert_eq!(sweep_cache_key("S|0", 0, ""), "S|0|0|");
+    }
+
+    // ── LRU SweepDataCache (via PlaybackManager) ────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn cache_roundtrips_inserted_entry() {
+        let mut pm = PlaybackManager::new();
+        pm.cache_sweep("k1".to_string(), dummy_sweep_data("reflectivity"));
+        let got = pm.get_cached_sweep("k1").expect("inserted entry present");
+        assert_eq!(got.product, "reflectivity");
+        assert!(pm.get_cached_sweep("missing").is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn cache_evicts_oldest_past_capacity() {
+        // Capacity is 4 (PlaybackManager::new). Insert 5 distinct keys;
+        // the first ("k0") must be evicted, the rest retained.
+        let mut pm = PlaybackManager::new();
+        for i in 0..5 {
+            pm.cache_sweep(format!("k{i}"), dummy_sweep_data("p"));
+        }
+        assert!(
+            pm.get_cached_sweep("k0").is_none(),
+            "oldest must be evicted"
+        );
+        for i in 1..5 {
+            assert!(
+                pm.get_cached_sweep(&format!("k{i}")).is_some(),
+                "k{i} retained"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn cache_reinsert_refreshes_recency_changing_eviction() {
+        // Fill to capacity, re-touch the oldest so it moves to the tail, then
+        // overflow by one. The *new* oldest (k1) is evicted, not k0.
+        let mut pm = PlaybackManager::new();
+        for i in 0..4 {
+            pm.cache_sweep(format!("k{i}"), dummy_sweep_data("p"));
+        }
+        // Re-insert k0 — moves it to most-recent, updates its value.
+        pm.cache_sweep("k0".to_string(), dummy_sweep_data("velocity"));
+        assert_eq!(pm.get_cached_sweep("k0").unwrap().product, "velocity");
+        // Now insert a 5th distinct key → evict the current oldest = k1.
+        pm.cache_sweep("k4".to_string(), dummy_sweep_data("p"));
+        assert!(
+            pm.get_cached_sweep("k1").is_none(),
+            "k1 is now oldest, evicted"
+        );
+        assert!(
+            pm.get_cached_sweep("k0").is_some(),
+            "k0 refreshed, retained"
+        );
+        assert!(pm.get_cached_sweep("k4").is_some());
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_cache_empties_entries() {
+        let mut pm = PlaybackManager::new();
+        pm.cache_sweep("k1".to_string(), dummy_sweep_data("p"));
+        pm.clear_cache();
+        assert!(pm.get_cached_sweep("k1").is_none());
+    }
+
+    // ── pending_prev_sweep_key get/set ──────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn pending_prev_key_get_set_roundtrip() {
+        let mut pm = PlaybackManager::new();
+        assert_eq!(pm.pending_prev_sweep_key(), None);
+        pm.set_pending_prev_sweep_key(Some("abc".to_string()));
+        assert_eq!(pm.pending_prev_sweep_key(), Some("abc"));
+        pm.set_pending_prev_sweep_key(None);
+        assert_eq!(pm.pending_prev_sweep_key(), None);
+    }
+
+    // ── find_prev_sweep ─────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn find_prev_returns_none_when_no_current_scan() {
+        // No scan within window → None for both modes.
+        let tl = timeline_with(vec![scan_with(
+            1000.0,
+            1020.0,
+            1000.0,
+            215,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        )]);
+        // Playback far beyond MAX_AGE.
+        assert!(PlaybackManager::find_prev_sweep(&tl, 9999.0, 1, true, MAX_AGE).is_none());
+        assert!(PlaybackManager::find_prev_sweep(&tl, 9999.0, 1, false, MAX_AGE).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn find_prev_auto_returns_previous_sweep_in_same_scan() {
+        // Latest mode, displayed elev 2 sits at idx 1 (>0) → prev is sweep idx 0
+        // (elev_num 1). display_angle falls to static VCP 215 → 0.5°.
+        let tl = timeline_with(vec![scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            215,
+            vec![
+                sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"]),
+                sweep_with(1010.0, 1020.0, 0.9, 2, vec!["reflectivity"]),
+            ],
+        )]);
+        let (key_ts, elev_num, elev_deg, start, end) =
+            PlaybackManager::find_prev_sweep(&tl, 1015.0, 2, true, MAX_AGE)
+                .expect("prev sweep within same scan");
+        assert!((key_ts - 1000.0).abs() < 1e-9);
+        assert_eq!(elev_num, 1);
+        assert!(
+            (elev_deg - 0.5).abs() < 1e-4,
+            "VCP-215 target angle for elev 1"
+        );
+        assert!((start - 1000.0).abs() < 1e-9);
+        assert!((end - 1010.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn find_prev_auto_first_sweep_falls_back_to_previous_scans_last() {
+        // Latest mode, displayed elev 1 is the FIRST sweep (idx 0) of the
+        // current scan → fall back to the previous scan's last sweep.
+        let prev_scan = scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            215,
+            vec![
+                sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"]),
+                sweep_with(1010.0, 1020.0, 0.9, 2, vec!["reflectivity"]),
+            ],
+        );
+        let cur_scan = scan_with(
+            2000.0,
+            2040.0,
+            2000.0,
+            215,
+            vec![sweep_with(2000.0, 2010.0, 0.5, 1, vec!["reflectivity"])],
+        );
+        let tl = timeline_with(vec![prev_scan, cur_scan]);
+        // Generous max_age so the ~1000s gap to the prior scan isn't age-gated
+        // (age gating is covered by its own test); this checks the fallback path.
+        let (key_ts, elev_num, _deg, start, end) =
+            PlaybackManager::find_prev_sweep(&tl, 2005.0, 1, true, 5_000.0)
+                .expect("falls back to prior scan's last sweep");
+        // Prev scan's LAST sweep = elev_num 2, 1010..1020.
+        assert!((key_ts - 1000.0).abs() < 1e-9);
+        assert_eq!(elev_num, 2);
+        assert!((start - 1010.0).abs() < 1e-9);
+        assert!((end - 1020.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn find_prev_auto_first_sweep_none_when_no_previous_scan() {
+        // Latest mode, single scan, displayed elev is the first sweep →
+        // no previous scan exists → None.
+        let tl = timeline_with(vec![scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            215,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        )]);
+        assert!(PlaybackManager::find_prev_sweep(&tl, 1005.0, 1, true, MAX_AGE).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn find_prev_fixed_picks_same_elevation_from_previous_scan() {
+        // Fixed mode: same elevation_number from the immediately-previous scan.
+        let prev_scan = scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            215,
+            vec![
+                sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"]),
+                sweep_with(1010.0, 1020.0, 0.9, 2, vec!["reflectivity"]),
+            ],
+        );
+        let cur_scan = scan_with(
+            2000.0,
+            2040.0,
+            2000.0,
+            215,
+            vec![sweep_with(2000.0, 2010.0, 0.5, 1, vec!["reflectivity"])],
+        );
+        let tl = timeline_with(vec![prev_scan, cur_scan]);
+        // Generous max_age so the ~1000s gap to the prior scan isn't age-gated.
+        let (key_ts, elev_num, _deg, start, end) =
+            PlaybackManager::find_prev_sweep(&tl, 2005.0, 2, false, 5_000.0)
+                .expect("prev scan has elev 2");
+        assert!((key_ts - 1000.0).abs() < 1e-9);
+        assert_eq!(elev_num, 2);
+        assert!((start - 1010.0).abs() < 1e-9);
+        assert!((end - 1020.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn find_prev_fixed_none_when_previous_scan_lacks_elevation() {
+        // Fixed mode: prev scan exists but has no matching elevation_number.
+        let prev_scan = scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            215,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        );
+        let cur_scan = scan_with(
+            2000.0,
+            2040.0,
+            2000.0,
+            215,
+            vec![sweep_with(2000.0, 2010.0, 0.5, 1, vec!["reflectivity"])],
+        );
+        let tl = timeline_with(vec![prev_scan, cur_scan]);
+        // Requesting elev 7 which the prev scan does not have.
+        assert!(PlaybackManager::find_prev_sweep(&tl, 2005.0, 7, false, MAX_AGE).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn find_prev_auto_elevation_not_found_uses_previous_scan_last() {
+        // Latest mode: displayed elev not present in current scan at all →
+        // position() is None → fall back to previous scan's last sweep.
+        let prev_scan = scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            215,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        );
+        let cur_scan = scan_with(
+            2000.0,
+            2040.0,
+            2000.0,
+            215,
+            vec![sweep_with(2000.0, 2010.0, 0.5, 1, vec!["reflectivity"])],
+        );
+        let tl = timeline_with(vec![prev_scan, cur_scan]);
+        // elev 9 absent from current scan → prev scan's last sweep (elev 1).
+        // Generous max_age so the ~1000s gap to the prior scan isn't age-gated.
+        let (key_ts, elev_num, _deg, _s, _e) =
+            PlaybackManager::find_prev_sweep(&tl, 2005.0, 9, true, 5_000.0)
+                .expect("falls back to prior scan last sweep");
+        assert!((key_ts - 1000.0).abs() < 1e-9);
+        assert_eq!(elev_num, 1);
+    }
+
+    // ── resolve_prev_sweep (PrevSweepAction state machine) ───────────────────
+
+    #[wasm_bindgen_test]
+    fn resolve_prev_already_loaded_when_gpu_matches() {
+        let mut pm = PlaybackManager::new();
+        let key = ScanKey::from_secs("KDMX", 1700);
+        let desired = sweep_cache_key(&key.to_storage_key(), 2, "reflectivity");
+        let action = pm.resolve_prev_sweep(&key, 2, Some(desired.as_str()), "reflectivity");
+        assert!(matches!(action, PrevSweepAction::AlreadyLoaded));
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_prev_upload_from_cache_when_present() {
+        let mut pm = PlaybackManager::new();
+        let key = ScanKey::from_secs("KDMX", 1700);
+        let desired = sweep_cache_key(&key.to_storage_key(), 2, "reflectivity");
+        pm.cache_sweep(desired.clone(), dummy_sweep_data("reflectivity"));
+        // GPU has something else loaded (None) → upload from cache.
+        let action = pm.resolve_prev_sweep(&key, 2, None, "reflectivity");
+        match action {
+            PrevSweepAction::UploadFromCache(k) => assert_eq!(k, desired),
+            other => panic!("expected UploadFromCache, got {:?}", debug_action(&other)),
+        }
+        // Upload path clears any pending key.
+        assert_eq!(pm.pending_prev_sweep_key(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_prev_fetch_from_worker_when_not_cached() {
+        let mut pm = PlaybackManager::new();
+        let key = ScanKey::from_secs("KDMX", 1700);
+        let action = pm.resolve_prev_sweep(&key, 4, None, "velocity");
+        match action {
+            PrevSweepAction::FetchFromWorker {
+                elevation_number,
+                product,
+                ..
+            } => {
+                assert_eq!(elevation_number, 4);
+                assert_eq!(product, "velocity");
+            }
+            other => panic!("expected FetchFromWorker, got {:?}", debug_action(&other)),
+        }
+        // The fetch marks the desired key as pending (in-flight).
+        let expected = sweep_cache_key(&key.to_storage_key(), 4, "velocity");
+        assert_eq!(pm.pending_prev_sweep_key(), Some(expected.as_str()));
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_prev_in_flight_returns_already_loaded() {
+        let mut pm = PlaybackManager::new();
+        let key = ScanKey::from_secs("KDMX", 1700);
+        // First call → FetchFromWorker, sets pending.
+        let _ = pm.resolve_prev_sweep(&key, 4, None, "velocity");
+        // Second call with a different identity to bypass the identity
+        // fast-path, then back — but simplest: invalidate identity and repeat
+        // the same desired key. The pending key already equals desired, so the
+        // resolver short-circuits to AlreadyLoaded (already in flight).
+        pm.invalidate_prev_cache();
+        let action = pm.resolve_prev_sweep(&key, 4, None, "velocity");
+        assert!(
+            matches!(action, PrevSweepAction::AlreadyLoaded),
+            "request already in flight should report AlreadyLoaded"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn resolve_prev_product_change_reresolves() {
+        // Same scan + elevation, different product → identity differs, so the
+        // cached fast-path does not apply and a fresh fetch is requested.
+        let mut pm = PlaybackManager::new();
+        let key = ScanKey::from_secs("KDMX", 1700);
+        let _ = pm.resolve_prev_sweep(&key, 2, None, "reflectivity");
+        let action = pm.resolve_prev_sweep(&key, 2, None, "velocity");
+        match action {
+            PrevSweepAction::FetchFromWorker { product, .. } => {
+                assert_eq!(product, "velocity")
+            }
+            other => panic!(
+                "expected FetchFromWorker for new product, got {:?}",
+                debug_action(&other)
+            ),
+        }
+    }
+
+    // Local debug helper — PrevSweepAction has no Debug derive.
+    fn debug_action(a: &PrevSweepAction) -> &'static str {
+        match a {
+            PrevSweepAction::AlreadyLoaded => "AlreadyLoaded",
+            PrevSweepAction::UploadFromCache(_) => "UploadFromCache",
+            PrevSweepAction::FetchFromWorker { .. } => "FetchFromWorker",
+            PrevSweepAction::Clear => "Clear",
+        }
+    }
+
+    // ── build_elevation_list ────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn build_elevation_list_prefers_extracted_pattern() {
+        let mut scan = scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            215,
+            vec![
+                sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"]),
+                sweep_with(1010.0, 1020.0, 0.9, 2, vec!["velocity"]),
+            ],
+        );
+        scan.vcp_pattern = Some(ExtractedVcp {
+            number: 215,
+            elevations: vec![
+                extracted_elev(0.48, "CS", false, false),
+                extracted_elev(0.91, "CDW", true, false),
+            ],
+        });
+        let list = build_elevation_list(&scan);
+        assert_eq!(list.len(), 2);
+        // Elevation numbers are 1-based index.
+        assert_eq!(list[0].elevation_number, 1);
+        assert_eq!(list[1].elevation_number, 2);
+        // Angle comes from the extracted pattern, not the sweep measured value.
+        assert!((list[0].angle - 0.48).abs() < 1e-4);
+        assert!((list[1].angle - 0.91).abs() < 1e-4);
+        assert_eq!(list[1].waveform, "CDW");
+        assert!(list[1].is_sails);
+        // products_for matches by elevation_number against the sweeps.
+        assert_eq!(list[0].cached_products, vec!["reflectivity".to_string()]);
+        assert_eq!(list[1].cached_products, vec!["velocity".to_string()]);
+    }
+
+    #[wasm_bindgen_test]
+    fn build_elevation_list_falls_back_to_static_vcp() {
+        // No extracted pattern, but vcp=215 has a static definition (14 cuts).
+        let scan = scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            215,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        );
+        let list = build_elevation_list(&scan);
+        // VCP 215 static table has many elevations (>= the 1 stored sweep).
+        assert!(list.len() >= 14, "VCP-215 static table has 14+ cuts");
+        assert_eq!(list[0].elevation_number, 1);
+        // First static cut is 0.5° CS.
+        assert!((list[0].angle - 0.5).abs() < 1e-4);
+        assert_eq!(list[0].waveform, "CS");
+        // Static fallback never marks SAILS/MRLE.
+        assert!(!list[0].is_sails);
+        assert!(!list[0].is_mrle);
+        // products_for found the stored elev-1 sweep's product.
+        assert_eq!(list[0].cached_products, vec!["reflectivity".to_string()]);
+        // Elev 2 has no stored sweep → empty products.
+        assert!(list[1].cached_products.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn build_elevation_list_falls_back_to_sweep_metadata_for_unknown_vcp() {
+        // Unknown VCP (0) → no static def → use sweep metadata directly.
+        let scan = scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            0,
+            vec![
+                sweep_with(1000.0, 1010.0, 0.53, 1, vec!["reflectivity"]),
+                sweep_with(1010.0, 1020.0, 0.91, 2, vec!["velocity", "reflectivity"]),
+            ],
+        );
+        let list = build_elevation_list(&scan);
+        assert_eq!(list.len(), 2);
+        // Angle is the per-sweep measured elevation, waveform empty.
+        assert!((list[0].angle - 0.53).abs() < 1e-4);
+        assert!((list[1].angle - 0.91).abs() < 1e-4);
+        assert_eq!(list[0].waveform, "");
+        assert_eq!(list[0].elevation_number, 1);
+        assert_eq!(list[1].elevation_number, 2);
+        assert_eq!(list[1].cached_products.len(), 2);
+        assert!(!list[0].is_sails && !list[0].is_mrle);
+    }
+
+    #[wasm_bindgen_test]
+    fn build_elevation_list_empty_pattern_skips_to_next_source() {
+        // An extracted pattern with NO elevations must not win; falls through
+        // to the static VCP 215 table.
+        let mut scan = scan_with(
+            1000.0,
+            1040.0,
+            1000.0,
+            215,
+            vec![sweep_with(1000.0, 1010.0, 0.5, 1, vec!["reflectivity"])],
+        );
+        scan.vcp_pattern = Some(ExtractedVcp {
+            number: 215,
+            elevations: Vec::new(),
+        });
+        let list = build_elevation_list(&scan);
+        assert!(
+            list.len() >= 14,
+            "empty pattern ignored → static VCP-215 used"
+        );
+        assert!((list[0].angle - 0.5).abs() < 1e-4);
+    }
+
+    // ── build_elevation_list_from_vcp ───────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn build_elevation_list_from_vcp_maps_indices_and_empties_products() {
+        let vcp = ExtractedVcp {
+            number: 35,
+            elevations: vec![
+                extracted_elev(0.5, "CS", false, false),
+                extracted_elev(1.5, "CDW", true, true),
+                extracted_elev(2.4, "CDWO", false, true),
+            ],
+        };
+        let list = build_elevation_list_from_vcp(&vcp);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].elevation_number, 1);
+        assert_eq!(list[2].elevation_number, 3);
+        assert!((list[1].angle - 1.5).abs() < 1e-4);
+        assert_eq!(list[1].waveform, "CDW");
+        assert!(list[1].is_sails);
+        assert!(list[1].is_mrle);
+        assert!(list[2].is_mrle && !list[2].is_sails);
+        // cached_products is always empty for the live-VCP path.
+        assert!(list.iter().all(|e| e.cached_products.is_empty()));
+    }
+
+    #[wasm_bindgen_test]
+    fn build_elevation_list_from_vcp_empty_yields_empty() {
+        let vcp = ExtractedVcp {
+            number: 0,
+            elevations: Vec::new(),
+        };
+        assert!(build_elevation_list_from_vcp(&vcp).is_empty());
+    }
+}

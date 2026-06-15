@@ -458,3 +458,214 @@ mod tests {
         assert!(m.matching_sequences_in_range(1, 5, |_| true).is_empty());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::super::test_vcp::{build_vcp, TestElevation};
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    /// A single standard (3-chunk) elevation VCP.
+    /// Layout: 1=Start, 2..=4 elev1; final=4, total=4.
+    /// Elevation angle raw 1<<11 decodes to 11.25 deg; azimuth raw 1<<13 to 11.25 dps.
+    fn mapper_1elev_standard() -> ElevationChunkMapper {
+        let vcp = build_vcp(&[TestElevation {
+            super_res: false,
+            elevation_angle_raw: 1 << 11, // 11.25 deg
+            azimuth_rate_raw: 1 << 13,    // 11.25 dps
+            waveform_raw: 1,              // CS
+            channel_raw: 0,
+        }]);
+        ElevationChunkMapper::new(&vcp)
+    }
+
+    /// Re-built 2-elev mix (elev1 super-res CS, elev2 standard CS) for tests
+    /// that need real VCP-derived metadata fields. Same layout as the sibling
+    /// module's `mapper_2elev`: 1=Start, 2..=7 elev1, 8..=10 elev2; final=10.
+    fn mapper_2elev() -> ElevationChunkMapper {
+        let vcp = build_vcp(&[
+            TestElevation {
+                super_res: true,
+                elevation_angle_raw: 1 << 11, // 11.25 deg
+                azimuth_rate_raw: 1 << 14,    // 22.5 dps
+                waveform_raw: 1,              // CS
+                channel_raw: 0,
+            },
+            TestElevation::standard_cs(0, 1 << 13), // 0 deg, 11.25 dps
+        ]);
+        ElevationChunkMapper::new(&vcp)
+    }
+
+    // ── ChunkMetadata::for_test constructor + getter coverage ────────────────
+
+    #[wasm_bindgen_test]
+    fn for_test_derives_is_last_and_is_start() {
+        // chunk_index_in_sweep + 1 == chunks_in_sweep → is_last_in_sweep true.
+        let last = ChunkMetadata::for_test(8, Some(2), 2, 3, false, 22.5);
+        assert!(last.is_last_in_sweep());
+        assert!(!last.is_first_in_sweep());
+        assert!(!last.is_start_chunk()); // sequence != 1
+
+        // Not the last index → is_last_in_sweep false.
+        let mid = ChunkMetadata::for_test(7, Some(2), 1, 3, false, 22.5);
+        assert!(!mid.is_last_in_sweep());
+
+        // sequence == 1 → is_start_chunk true (derived in for_test).
+        let start = ChunkMetadata::for_test(1, None, 0, 1, false, 0.0);
+        assert!(start.is_start_chunk());
+        // index 0, chunks_in_sweep 1 → 0+1==1 → is_last_in_sweep also true.
+        assert!(start.is_last_in_sweep());
+    }
+
+    #[wasm_bindgen_test]
+    fn for_test_getters_round_trip_inputs() {
+        let md = ChunkMetadata::for_test(5, Some(3), 2, 6, true, -33.75);
+        assert_eq!(md.sequence(), 5);
+        assert_eq!(md.elevation_number(), Some(3));
+        assert_eq!(md.chunk_index_in_sweep(), 2);
+        assert_eq!(md.chunks_in_sweep(), 6);
+        assert!(md.is_first_in_sweep());
+        assert!((md.azimuth_rate_dps() - (-33.75)).abs() < 1e-9);
+        // for_test hard-codes these two fields.
+        assert!((md.elevation_angle_deg() - 0.5).abs() < 1e-9);
+        assert_eq!(md.waveform_type(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn chunk_metadata_is_copy_and_eq() {
+        let a = ChunkMetadata::for_test(2, Some(1), 0, 6, true, 22.5);
+        let b = a; // Copy — `a` still usable below.
+        assert_eq!(a, b);
+        let c = ChunkMetadata::for_test(3, Some(1), 1, 6, false, 22.5);
+        assert_ne!(a, c);
+        // Debug renders something non-empty.
+        assert!(!format!("{a:?}").is_empty());
+    }
+
+    // ── Real-VCP metadata field propagation ──────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn start_chunk_metadata_fields_are_zeroed() {
+        let m = mapper_2elev();
+        let start = m.get_chunk_metadata(1).unwrap();
+        assert!(start.is_start_chunk());
+        assert_eq!(start.elevation_number(), None);
+        assert_eq!(start.chunk_index_in_sweep(), 0);
+        assert_eq!(start.chunks_in_sweep(), 1);
+        assert!(!start.is_last_in_sweep());
+        assert!((start.azimuth_rate_dps() - 0.0).abs() < 1e-9);
+        assert!((start.elevation_angle_deg() - 0.0).abs() < 1e-9);
+        assert_eq!(start.waveform_type(), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn data_chunk_metadata_carries_vcp_fields() {
+        let m = mapper_2elev();
+        // Elevation 1: super-res, 11.25 deg angle, 22.5 dps, CS waveform.
+        let e1 = m.get_chunk_metadata(2).unwrap();
+        assert_eq!(e1.elevation_number(), Some(1));
+        assert!((e1.elevation_angle_deg() - 11.25).abs() < 1e-9);
+        assert!((e1.azimuth_rate_dps() - 22.5).abs() < 1e-9);
+        assert_eq!(e1.waveform_type(), Some(WaveformType::CS));
+
+        // Elevation 2: standard, 0 deg angle, 11.25 dps, CS waveform.
+        let e2 = m.get_chunk_metadata(8).unwrap();
+        assert_eq!(e2.elevation_number(), Some(2));
+        assert!((e2.elevation_angle_deg() - 0.0).abs() < 1e-9);
+        assert!((e2.azimuth_rate_dps() - 11.25).abs() < 1e-9);
+        assert_eq!(e2.waveform_type(), Some(WaveformType::CS));
+    }
+
+    #[wasm_bindgen_test]
+    fn all_chunk_metadata_matches_total_and_indexing() {
+        let m = mapper_2elev();
+        let all = m.all_chunk_metadata();
+        assert_eq!(all.len(), m.total_chunks());
+        assert_eq!(all.len(), 10);
+        // Index 0 is the Start chunk (sequence 1).
+        assert!(all[0].is_start_chunk());
+        assert_eq!(all[0].sequence(), 1);
+        // Sequence is index + 1 throughout, and `get_chunk_metadata` agrees.
+        for (i, md) in all.iter().enumerate() {
+            assert_eq!(md.sequence(), i + 1);
+            assert_eq!(m.get_chunk_metadata(i + 1).unwrap(), md);
+        }
+    }
+
+    // ── Single-elevation standard layout ─────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn single_standard_elevation_layout() {
+        let m = mapper_1elev_standard();
+        // Start chunk + 3 standard data chunks.
+        assert_eq!(m.total_chunks(), 4);
+        assert_eq!(m.final_sequence(), 4);
+        assert_eq!(m.get_sequence_elevation_number(1), None); // start chunk
+                                                              // seqs 2..=4 all belong to elevation 1.
+        for seq in 2..=4 {
+            assert_eq!(m.get_sequence_elevation_number(seq), Some(1));
+            let md = m.get_chunk_metadata(seq).unwrap();
+            assert_eq!(md.chunks_in_sweep(), 3);
+        }
+        assert!(m.get_chunk_metadata(2).unwrap().is_first_in_sweep());
+        assert!(m.get_chunk_metadata(4).unwrap().is_last_in_sweep());
+        assert!(!m.get_chunk_metadata(4).unwrap().is_first_in_sweep());
+        // Past the final sequence → no elevation.
+        assert_eq!(m.get_sequence_elevation_number(5), None);
+    }
+
+    // ── next_matching_sequence_after additional branches ─────────────────────
+
+    #[wasm_bindgen_test]
+    fn next_matching_after_at_or_past_final_returns_none() {
+        let m = mapper_2elev(); // final = 10
+                                // Starting exactly at final: range 11..=10 is empty → None.
+        assert_eq!(m.next_matching_sequence_after(10, true, |_| true), None);
+        // Starting past final → None.
+        assert_eq!(m.next_matching_sequence_after(20, true, |_| true), None);
+        // accept_end only fires when the candidate IS final; here the loop never
+        // reaches final because start > final.
+        assert_eq!(m.next_matching_sequence_after(10, true, |_| false), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn next_matching_after_predicate_wins_over_accept_end() {
+        let m = mapper_2elev();
+        // From seq 8, the next elev-2 match is 9 — returned before reaching the
+        // accept_end branch at final (10).
+        let elev2 = |e: Option<usize>| e == Some(2);
+        assert_eq!(m.next_matching_sequence_after(8, true, elev2), Some(9));
+        // From seq 9, the predicate matches 10 directly (it's elev 2), so the
+        // accept_end branch is not what returns it — but the value is still 10.
+        assert_eq!(m.next_matching_sequence_after(9, true, elev2), Some(10));
+    }
+
+    // ── matching_sequences_in_range / has_remaining_match extra branches ──────
+
+    #[wasm_bindgen_test]
+    fn matching_range_lower_clamps_to_one_and_filters_nonexistent() {
+        let m = mapper_2elev();
+        // lower < 1 clamps up to 1; upper exactly at final is inclusive.
+        let r = m.matching_sequences_in_range(0, 10, |e| e == Some(1));
+        assert_eq!(r, (2..=7).collect::<Vec<_>>());
+        // An elevation that does not exist in this VCP yields no sequences.
+        assert!(m
+            .matching_sequences_in_range(1, 10, |e| e == Some(99))
+            .is_empty());
+        // upper clamps down to final (10): asking for 50 still stops at 10.
+        let tail = m.matching_sequences_in_range(8, 50, |_| true);
+        assert_eq!(tail, vec![8, 9, 10]);
+    }
+
+    #[wasm_bindgen_test]
+    fn has_remaining_match_finds_existing_elevation_chunks() {
+        let m = mapper_2elev(); // elevations 1 and 2 exist
+                                // Elevation 1 has matches while before its last chunk (seq 7)...
+        assert!(m.has_remaining_match(StreamingFilter::Elevation(1), 1));
+        // ...and querying after_seq=6 still finds seq 7.
+        assert!(m.has_remaining_match(StreamingFilter::Elevation(1), 6));
+        // Note: a filter for a nonexistent elevation still reports remaining
+        // matches because non-elevation chunks (elev == None, e.g. Start/End)
+        // are accepted by every elevation filter — see StreamingFilter::accepts.
+    }
+}
