@@ -161,3 +161,59 @@ mod tests {
         assert!(!s.already_resolved());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::PrefetchSettle;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn default_is_not_resolved() {
+        let s = PrefetchSettle::default();
+        assert!(!s.already_resolved());
+    }
+
+    #[wasm_bindgen_test]
+    fn poll_at_exact_settle_boundary_fires() {
+        let mut s = PrefetchSettle::default();
+        // Use a non-zero signature so the timer starts at now=1000.
+        assert!(!s.poll(5, 1000.0, 500.0));
+        // Exactly settle_ms later: 1500 - 1000 = 500 >= 500 → settled.
+        assert!(s.poll(5, 1500.0, 500.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn signature_zero_collides_with_default_and_never_starts_timer() {
+        // The default last_signature is 0, so the first poll of signature 0 sees
+        // "no change", never sets settled_since_ms, and reports unsettled even
+        // with a zero window. (Real signatures are hashes, so 0 is vanishingly
+        // unlikely — this pins the documented edge.)
+        let mut s = PrefetchSettle::default();
+        assert!(!s.poll(0, 500.0, 0.0));
+        assert!(!s.poll(0, 9999.0, 0.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn resolved_marker_survives_repolling_same_signature() {
+        let mut s = PrefetchSettle::default();
+        s.poll(11, 0.0, 0.0);
+        s.mark_resolved();
+        assert!(s.already_resolved());
+        // Re-polling the SAME signature must not clear the resolved marker.
+        s.poll(11, 100.0, 0.0);
+        assert!(s.already_resolved());
+    }
+
+    #[wasm_bindgen_test]
+    fn resolved_marker_is_per_signature() {
+        let mut s = PrefetchSettle::default();
+        s.poll(1, 0.0, 0.0);
+        s.mark_resolved();
+        // Different signature → not resolved; back to the first → also not
+        // resolved (the marker tracks only the latest signature).
+        s.poll(2, 0.0, 0.0);
+        assert!(!s.already_resolved());
+        s.poll(1, 0.0, 0.0);
+        assert!(!s.already_resolved());
+    }
+}

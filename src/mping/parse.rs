@@ -196,3 +196,85 @@ mod tests {
         assert_eq!(ReportCategory::parse("xyz"), ReportCategory::Other);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn one_result_body(inner: &str) -> String {
+        format!(r#"{{"count":1,"results":[{inner}]}}"#)
+    }
+
+    #[wasm_bindgen_test]
+    fn invalid_json_is_an_error() {
+        assert!(parse_response("not json at all").is_err());
+        assert!(parse_response("").is_err());
+        assert!(parse_response("{").is_err());
+    }
+
+    #[wasm_bindgen_test]
+    fn empty_results_array_is_ok_with_zero_reports() {
+        let parsed = parse_response(r#"{"count":0,"results":[]}"#).unwrap();
+        assert!(parsed.reports.is_empty());
+        assert_eq!(parsed.total_count, 0);
+        // Without count, falls back to results.len() == 0.
+        let parsed = parse_response(r#"{"results":[]}"#).unwrap();
+        assert_eq!(parsed.total_count, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn report_without_integer_id_is_skipped() {
+        // id absent.
+        let b = one_result_body(
+            r#"{"obtime":"1970-01-01T00:00:01+00:00","geom":{"coordinates":[1.0,2.0]}}"#,
+        );
+        assert!(parse_response(&b).unwrap().reports.is_empty());
+        // id present but a string, not an integer.
+        let b = one_result_body(
+            r#"{"id":"x","obtime":"1970-01-01T00:00:01+00:00","geom":{"coordinates":[1.0,2.0]}}"#,
+        );
+        assert!(parse_response(&b).unwrap().reports.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn coordinates_with_fewer_than_two_elements_are_skipped() {
+        let b = one_result_body(
+            r#"{"id":1,"obtime":"1970-01-01T00:00:01+00:00","geom":{"coordinates":[1.0]}}"#,
+        );
+        assert!(parse_response(&b).unwrap().reports.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn invalid_obtime_is_skipped() {
+        let b =
+            one_result_body(r#"{"id":1,"obtime":"not-a-date","geom":{"coordinates":[1.0,2.0]}}"#);
+        assert!(parse_response(&b).unwrap().reports.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn missing_description_and_category_use_defaults() {
+        // No description, no category fields — defaults to "" and Other.
+        let b = one_result_body(
+            r#"{"id":7,"obtime":"1970-01-01T00:00:01+00:00","geom":{"coordinates":[-97.0,35.0]}}"#,
+        );
+        let parsed = parse_response(&b).unwrap();
+        assert_eq!(parsed.reports.len(), 1);
+        let r = &parsed.reports[0];
+        assert_eq!(r.id, 7);
+        assert_eq!(r.description, "");
+        assert_eq!(r.category, ReportCategory::Other);
+    }
+
+    #[wasm_bindgen_test]
+    fn count_exceeding_page_results_is_preserved() {
+        // Server reports 500 total but this page only carries one usable result.
+        let b = format!(
+            r#"{{"count":500,"results":[{}]}}"#,
+            r#"{"id":1,"obtime":"1970-01-01T00:00:01+00:00","category":"Hail","geom":{"coordinates":[-97.0,35.0]}}"#
+        );
+        let parsed = parse_response(&b).unwrap();
+        assert_eq!(parsed.reports.len(), 1);
+        assert_eq!(parsed.total_count, 500);
+    }
+}
