@@ -156,3 +156,108 @@ mod tests {
         assert!(!bbox_intersects(&a, (-180.0, -90.0, 180.0, 90.0)));
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::alerts::types::{Alert, AlertGeometry, AlertSeverity, Ring};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn alert_with_polygons(polygons: Vec<Vec<Ring>>) -> Alert {
+        let mut geometry = AlertGeometry {
+            polygons,
+            bbox: None,
+        };
+        geometry.recompute_bbox();
+        Alert {
+            id: "t".into(),
+            event: "T".into(),
+            headline: String::new(),
+            description: String::new(),
+            instruction: String::new(),
+            severity: AlertSeverity::Unknown,
+            urgency: String::new(),
+            certainty: String::new(),
+            area_desc: String::new(),
+            sender: String::new(),
+            effective_secs: None,
+            onset_secs: None,
+            expires_secs: None,
+            ends_secs: None,
+            geometry,
+            affected_zones: Vec::new(),
+            fill_triangles: Vec::new(),
+        }
+    }
+
+    fn square(min: f64, max: f64) -> Ring {
+        vec![(min, min), (max, min), (max, max), (min, max), (min, min)]
+    }
+
+    /// A plus/cross-shaped concave ring spanning 0..3 with arms of width 1.
+    fn plus() -> Ring {
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (2.0, 1.0),
+            (3.0, 1.0),
+            (3.0, 2.0),
+            (2.0, 2.0),
+            (2.0, 3.0),
+            (1.0, 3.0),
+            (1.0, 2.0),
+            (0.0, 2.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (1.0, 0.0),
+        ]
+    }
+
+    #[wasm_bindgen_test]
+    fn point_in_ring_concave_even_odd_rule() {
+        let p = plus();
+        // Inside the cross body / arms.
+        assert!(point_in_ring(&p, 1.5, 1.5)); // center
+        assert!(point_in_ring(&p, 1.5, 0.5)); // bottom arm
+        assert!(point_in_ring(&p, 0.5, 1.5)); // left arm
+        assert!(point_in_ring(&p, 2.5, 1.5)); // right arm
+                                              // Concave notches (the four corner squares) are OUTSIDE.
+        assert!(!point_in_ring(&p, 0.5, 0.5));
+        assert!(!point_in_ring(&p, 2.5, 2.5));
+        assert!(!point_in_ring(&p, 0.5, 2.5));
+        assert!(!point_in_ring(&p, 2.5, 0.5));
+    }
+
+    #[wasm_bindgen_test]
+    fn point_in_ring_triangle() {
+        let tri = vec![(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)];
+        assert!(point_in_ring(&tri, 1.0, 1.0)); // interior
+        assert!(!point_in_ring(&tri, 3.0, 3.0)); // beyond the hypotenuse
+        assert!(!point_in_ring(&tri, -1.0, 1.0)); // left of the triangle
+    }
+
+    #[wasm_bindgen_test]
+    fn point_in_ring_rejects_under_three_vertices() {
+        assert!(!point_in_ring(&[], 0.0, 0.0));
+        assert!(!point_in_ring(&[(0.0, 0.0)], 0.0, 0.0));
+        assert!(!point_in_ring(&[(0.0, 0.0), (1.0, 1.0)], 0.5, 0.5));
+    }
+
+    #[wasm_bindgen_test]
+    fn contains_point_false_for_zone_only_alert() {
+        // No polygons at all → never contains a point.
+        let a = alert_with_polygons(vec![]);
+        assert!(!contains_point(&a, 0.0, 0.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn bbox_intersects_containment_either_direction() {
+        let a = alert_with_polygons(vec![vec![square(0.0, 10.0)]]);
+        // View bounds fully INSIDE the alert bbox.
+        assert!(bbox_intersects(&a, (2.0, 2.0, 8.0, 8.0)));
+        // Alert bbox fully inside the view bounds.
+        assert!(bbox_intersects(&a, (-50.0, -50.0, 50.0, 50.0)));
+        // Disjoint above and to the left both reject.
+        assert!(!bbox_intersects(&a, (-30.0, 20.0, -20.0, 30.0)));
+    }
+}
