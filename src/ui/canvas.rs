@@ -129,9 +129,10 @@ pub fn render_canvas_with_geo(
                     if !has_data {
                         return None;
                     }
-                    let km_to_deg = 1.0 / 111.0;
-                    let lat_correction = state.viz_state.center_lat.to_radians().cos();
-                    let lon_range = NEXRAD_MAX_RANGE_KM * km_to_deg / lat_correction;
+                    let lon_range = crate::core::canvas::cutout_lon_range_deg(
+                        state.viz_state.center_lat,
+                        NEXRAD_MAX_RANGE_KM,
+                    );
                     let center = projection.geo_to_screen(Coord {
                         x: state.viz_state.center_lon,
                         y: state.viz_state.center_lat,
@@ -567,16 +568,17 @@ fn compute_gpu_sweep_state(
     // regardless of the user's sweep_animation preference. The overlay
     // suppresses the rotating lines separately when the toggle is off.
     // The archive branch still respects effective_sweep_animation().
-    let gpu_sweep = if let Some((first_az, last_az)) = live
+    // The live partial's azimuth range is the GPU's sweep boundary; otherwise,
+    // when animating, resolve the archive sweep the playhead sits in. The
+    // before/within/after classification + sentinel handling is pure core.
+    let live_range = live
         .radar_model
         .active_sweep
         .as_ref()
-        .and_then(|s| s.data_azimuth_range)
-    {
-        Some((last_az, first_az))
-    } else if derived.effective_sweep_animation {
-        let playback_ts = playback.state.playback_position();
-        let sweep_bounds = timeline
+        .and_then(|s| s.data_azimuth_range);
+    let playback_ts = playback.state.playback_position();
+    let sweep_bounds = if live_range.is_none() && derived.effective_sweep_animation {
+        timeline
             .scans
             .find_recent_scan(playback_ts, 15.0 * 60.0)
             .and_then(|scan| {
@@ -595,28 +597,31 @@ fn compute_gpu_sweep_state(
                             .find(|s| Some(s.elevation_number) == displayed_elev)
                     })
                     .map(|s| (s.start_time, s.end_time))
-            });
-        match sweep_bounds {
-            Some((s, _)) if playback_ts < s => Some((0.0, 0.0)),
-            Some((_, e)) if playback_ts <= e => sweep_info,
-            _ => None,
-        }
+            })
     } else {
         None
     };
 
-    // Cache sweep position for between-sweep display
-    if let Some((az, start)) = gpu_sweep {
-        if az != 0.0 || start != 0.0 {
-            state.viz_state.last_sweep_line_cache = Some((az, start));
-        }
-    }
-    if !derived.effective_sweep_animation {
-        state.viz_state.last_sweep_line_cache = None;
-    }
-    let between_sweeps = derived.effective_sweep_animation
-        && gpu_sweep.is_none()
-        && state.viz_state.last_sweep_line_cache.is_some();
+    let gpu_sweep = crate::core::canvas::select_gpu_sweep(
+        live_range,
+        derived.effective_sweep_animation,
+        sweep_bounds,
+        playback_ts,
+        sweep_info,
+    );
+
+    // Cache the sweep position for between-sweep display (pure rule).
+    let new_cache = crate::core::canvas::next_sweep_cache(
+        state.viz_state.last_sweep_line_cache,
+        gpu_sweep,
+        derived.effective_sweep_animation,
+    );
+    state.viz_state.last_sweep_line_cache = new_cache;
+    let between_sweeps = crate::core::canvas::between_sweeps(
+        derived.effective_sweep_animation,
+        gpu_sweep,
+        new_cache,
+    );
 
     (gpu_sweep, between_sweeps)
 }
@@ -632,56 +637,12 @@ fn compute_sweep_line_azimuth(
 
     let ts = playback.state.playback_position();
 
-    // Try to find azimuth from persisted scan/sweep data first
-    if let Some(scan) = timeline.scans.find_scan_at_timestamp(ts) {
-        if let Some((_, sweep)) = scan.find_sweep_at_timestamp(ts) {
-            let duration = sweep.end_time - sweep.start_time;
-            if duration > 0.0 {
-                // If per-radial azimuth data is available, interpolate from actual azimuths
-                if !sweep.radials.is_empty() {
-                    let start_az = sweep.radials[0].azimuth;
-                    let mut last_az = start_az;
-                    let mut last_time = sweep.start_time;
-                    let mut next_az = start_az + 360.0;
-                    let mut next_time = sweep.end_time;
-
-                    for radial in &sweep.radials {
-                        if radial.start_time <= ts {
-                            last_az = radial.azimuth;
-                            last_time = radial.start_time;
-                        } else {
-                            next_az = radial.azimuth;
-                            next_time = radial.start_time;
-                            break;
-                        }
-                    }
-
-                    let mut delta_az = next_az - last_az;
-                    if delta_az < -180.0 {
-                        delta_az += 360.0;
-                    } else if delta_az > 180.0 {
-                        delta_az -= 360.0;
-                    }
-
-                    let dt = next_time - last_time;
-                    if dt > 0.0 {
-                        let frac = (ts - last_time) / dt;
-                        let az = ((last_az + delta_az * frac as f32) % 360.0 + 360.0) % 360.0;
-                        return Some((az, start_az));
-                    }
-                    return Some((last_az, start_az));
-                }
-
-                // Fallback: linear interpolation assuming uniform rotation from start azimuth
-                let start_az = sweep.start_azimuth;
-                let progress = (ts - sweep.start_time) / duration;
-                let az = ((start_az + progress as f32 * 360.0) % 360.0 + 360.0) % 360.0;
-                return Some((az, start_az));
-            }
-        }
-    }
-
-    None
+    // Find the sweep the playhead is in, then interpolate its azimuth (pure).
+    timeline
+        .scans
+        .find_scan_at_timestamp(ts)
+        .and_then(|scan| scan.find_sweep_at_timestamp(ts))
+        .and_then(|(_, sweep)| crate::core::canvas::sweep_line_azimuth(sweep, ts))
 }
 
 pub(super) fn format_time_short(ts: f64, use_local: bool) -> String {

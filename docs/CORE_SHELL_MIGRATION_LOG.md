@@ -117,3 +117,26 @@ once the migration is complete.
 - **One-frame lag is now uniform for diagnostics modal/selection interactions**
   (they go through the command queue, drained next frame) — same as the
   pre-existing `OpenAlert` path; imperceptible and consistent.
+
+### D4 — P3 canvas decision extraction
+- **Pure functions, not a monolithic `RadarFrameVM`.** The roadmap sketches
+  `core::render_view_model(...) -> RadarFrameVM`. I extracted the *decisions* as
+  pure functions in `core::canvas` and left `ui::canvas`'s paint orchestration
+  in place, rather than restructuring the hot paint path around one VM struct.
+  Reason: P3 is the highest-regression-risk phase and I cannot run the egui/GL
+  app, so I minimized churn to the paint sequence. The decisions are all
+  individually pure + tested, which is what the standard actually requires; a
+  later cosmetic bundling into a struct is cheap if wanted.
+- **`value_at_polar` decoupled from the GL object via `PolarSweepMeta`.** The pure
+  lookup takes plain slices + a metadata struct; `RadarGpuRenderer` builds the
+  meta from its `SweepState` and passes its CPU shadow buffers. Behavior copied
+  line-for-line (sentinel `raw <= 1.0`, `scale == 0.0` passthrough, sparse vs
+  evenly-spaced azimuth indexing for current vs prev), then covered by tests.
+- **`find_nearest_azimuth_index` moved** from `gpu_renderer` (where it was a
+  private fn used only by the inspector) into `core::canvas` — core must not
+  depend on the renderer, so the pure helper belongs in core and the renderer
+  calls it from there.
+- **Behavior-preservation note for QA:** `select_gpu_sweep` only computes
+  `sweep_bounds` when `live_range.is_none() && animation` (was nested in the
+  original `else if`), so the timeline lookup is skipped in exactly the same cases.
+  `between_sweeps` reads the *post-update* cache (matches original ordering).

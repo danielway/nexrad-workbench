@@ -145,12 +145,20 @@ test seam. Effort S/M/L = relative size. **Status: P0 complete; in progress.**
   gating, tie-break, mPING gating, GPS enable→effect / fail→auto-off, key
   save/clear). Deferred: VM-ifying trivially-projected overlay reads (pure
   projection, no logic) — left direct.
-- **P3 — Canvas decision extraction (M→L).** Move sweep matching
-  (`compute_gpu_sweep_state`), sweep-line azimuth, cutout math, and data-probe
-  polar/value computation out of `src/ui/canvas.rs` into a pure
-  `core::render_view_model(...) -> RadarFrameVM`; decouple `value_at_polar` from the
-  GL object. Seam: sweep-matching / between-sweeps / probe values unit-tested.
-  Risk: medium-high (hot path) — gate behind manual canvas QA.
+- **P3 — Canvas decision extraction (M→L). ✅ DONE.** Moved the canvas decision
+  math into the pure [`core::canvas`](../src/core/canvas.rs): sweep-line azimuth
+  interpolation (`sweep_line_azimuth`), the live/archive sweep selection +
+  between-sweeps + cache rules (`select_gpu_sweep` / `next_sweep_cache` /
+  `between_sweeps`), the data-probe `value_at_polar` lookup (`value_at_polar_current`
+  / `_prev`, `collection_time_*`, `find_nearest_azimuth_index` moved out of
+  `gpu_renderer`), `polar_in_prev_region`, and the geometry (`geo_to_polar`,
+  `cutout_lon_range_deg`). `value_at_polar` is decoupled from the GL object — the
+  renderer now binds the pure lookup to its CPU shadow buffers via
+  `PolarSweepMeta`. 13 headless tests. GPU paint stays shell (carve-out). Risk:
+  hot path — **gate behind manual canvas QA** (sweep animation, hover probe).
+  Deferred: a single bundled `RadarFrameVM` struct — extracted as pure functions
+  instead, to keep the paint orchestration untouched (lower regression risk with
+  no runnable QA).
 - **P4 — GPU & worker effects as data (L).** Convert `sync_prev_sweep_texture`,
   `request_render_if_needed`, prefetch, and clear-display in
   `src/app/render_loop.rs` into pure `decide_render(...) -> Vec<Effect>` (extend

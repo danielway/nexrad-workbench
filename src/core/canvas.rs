@@ -1,0 +1,534 @@
+//! Pure canvas-render decisions, lifted out of the `ui::canvas` hot path.
+//!
+//! The canvas paints radar to a GPU texture — that pixel-pushing is irreducibly
+//! shell (the P3 carve-out). But the *decisions* around it are pure and live
+//! here, unit-tested with no egui/GL:
+//!
+//! - **Sweep animation:** which sweep the playhead is in, the rotating sweep-line
+//!   azimuth (radial interpolation + the 0-vs-2 "between sweeps" rule), and the
+//!   prev-sweep cache update.
+//! - **Polar lookup:** the data-probe value/time lookup (`value_at_polar`),
+//!   decoupled from the GL renderer object so it can be tested over plain buffers.
+//! - **Geometry:** screen→polar conversion and the coverage-cutout longitude span.
+//!
+//! The shell wrappers (`ui::canvas`, `gpu_renderer::inspect`) feed these the data
+//! they read from subsystems / GL handles and apply the results.
+
+use crate::state::radar_data::Sweep;
+
+// ---------------------------------------------------------------------------
+// Sweep-animation decisions
+// ---------------------------------------------------------------------------
+
+/// Interpolate the rotating sweep-line azimuth within `sweep` at playback time
+/// `ts`, returning `(current_az, start_az)` in degrees, or `None` if the sweep
+/// has no positive duration.
+///
+/// Mirrors the original `compute_sweep_line_azimuth` body exactly: per-radial
+/// interpolation with 360° wrap-around bridging when radials are present, else a
+/// uniform-rotation fallback from `start_azimuth`.
+pub fn sweep_line_azimuth(sweep: &Sweep, ts: f64) -> Option<(f32, f32)> {
+    let duration = sweep.end_time - sweep.start_time;
+    if duration <= 0.0 {
+        return None;
+    }
+
+    if !sweep.radials.is_empty() {
+        let start_az = sweep.radials[0].azimuth;
+        let mut last_az = start_az;
+        let mut last_time = sweep.start_time;
+        let mut next_az = start_az + 360.0;
+        let mut next_time = sweep.end_time;
+
+        for radial in &sweep.radials {
+            if radial.start_time <= ts {
+                last_az = radial.azimuth;
+                last_time = radial.start_time;
+            } else {
+                next_az = radial.azimuth;
+                next_time = radial.start_time;
+                break;
+            }
+        }
+
+        let mut delta_az = next_az - last_az;
+        if delta_az < -180.0 {
+            delta_az += 360.0;
+        } else if delta_az > 180.0 {
+            delta_az -= 360.0;
+        }
+
+        let dt = next_time - last_time;
+        if dt > 0.0 {
+            let frac = (ts - last_time) / dt;
+            let az = ((last_az + delta_az * frac as f32) % 360.0 + 360.0) % 360.0;
+            return Some((az, start_az));
+        }
+        return Some((last_az, start_az));
+    }
+
+    // Fallback: uniform rotation from the sweep's first azimuth.
+    let start_az = sweep.start_azimuth;
+    let progress = (ts - sweep.start_time) / duration;
+    let az = ((start_az + progress as f32 * 360.0) % 360.0 + 360.0) % 360.0;
+    Some((az, start_az))
+}
+
+/// Select the `(azimuth, start)` pair the GPU should treat as the sweep boundary
+/// this frame, or `None` to show no rotating sweep.
+///
+/// Precedence (mirrors `compute_gpu_sweep_state`):
+/// 1. Live partial: the live model's `(first_az, last_az)` data range wins,
+///    emitted as `(last_az, first_az)` regardless of the animation toggle.
+/// 2. Archive animation: when `effective_sweep_animation`, classify the playhead
+///    against the resolved sweep's `(start_time, end_time)` — before start →
+///    `(0.0, 0.0)` sentinel, within → the interpolated `sweep_info`, after → none.
+/// 3. Otherwise none.
+pub fn select_gpu_sweep(
+    live_data_azimuth_range: Option<(f32, f32)>,
+    effective_sweep_animation: bool,
+    sweep_bounds: Option<(f64, f64)>,
+    playback_ts: f64,
+    sweep_info: Option<(f32, f32)>,
+) -> Option<(f32, f32)> {
+    if let Some((first_az, last_az)) = live_data_azimuth_range {
+        return Some((last_az, first_az));
+    }
+    if effective_sweep_animation {
+        return match sweep_bounds {
+            Some((s, _)) if playback_ts < s => Some((0.0, 0.0)),
+            Some((_, e)) if playback_ts <= e => sweep_info,
+            _ => None,
+        };
+    }
+    None
+}
+
+/// The next value of `last_sweep_line_cache` given this frame's `gpu_sweep`.
+///
+/// Caches a real sweep position (skipping the `(0.0, 0.0)` "reveal not started"
+/// sentinel), and clears the cache entirely when animation is off.
+pub fn next_sweep_cache(
+    prev: Option<(f32, f32)>,
+    gpu_sweep: Option<(f32, f32)>,
+    effective_sweep_animation: bool,
+) -> Option<(f32, f32)> {
+    let mut cache = prev;
+    if let Some((az, start)) = gpu_sweep {
+        if az != 0.0 || start != 0.0 {
+            cache = Some((az, start));
+        }
+    }
+    if !effective_sweep_animation {
+        cache = None;
+    }
+    cache
+}
+
+/// Whether the canvas is "between sweeps": animation on, no live/archive sweep
+/// resolved this frame, but a cached position exists (so the stale line shows).
+pub fn between_sweeps(
+    effective_sweep_animation: bool,
+    gpu_sweep: Option<(f32, f32)>,
+    cache: Option<(f32, f32)>,
+) -> bool {
+    effective_sweep_animation && gpu_sweep.is_none() && cache.is_some()
+}
+
+// ---------------------------------------------------------------------------
+// Polar lookup (data probe) — decoupled from the GL renderer object
+// ---------------------------------------------------------------------------
+
+/// Spatial metadata for a single sweep's CPU buffers, mirrored from the GL
+/// renderer's `SweepState`. Lets the polar lookups be pure over plain slices.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PolarSweepMeta {
+    pub azimuth_count: u32,
+    pub gate_count: u32,
+    pub first_gate_km: f64,
+    pub gate_interval_km: f64,
+    pub max_range_km: f64,
+    pub data_offset: f32,
+    pub data_scale: f32,
+}
+
+/// Nearest azimuth index for `target_deg` among `azimuths` (sparse radial
+/// layout, negative slots skipped), or `None` if the closest radial is more than
+/// 1.5× the nominal spacing away. Was `gpu_renderer::find_nearest_azimuth_index`.
+pub fn find_nearest_azimuth_index(
+    azimuths: &[f32],
+    azimuth_count: usize,
+    target_deg: f32,
+) -> Option<usize> {
+    let mut best_idx = 0usize;
+    let mut best_dist = 360.0f32;
+    let mut found = false;
+    for (i, &az) in azimuths.iter().enumerate() {
+        if az < 0.0 {
+            continue;
+        }
+        let mut d = (target_deg - az).abs();
+        if d > 180.0 {
+            d = 360.0 - d;
+        }
+        if d < best_dist {
+            best_dist = d;
+            best_idx = i;
+            found = true;
+        }
+    }
+
+    if !found {
+        return None;
+    }
+
+    let az_spacing = 360.0 / azimuth_count as f32;
+    if best_dist > az_spacing * 1.5 {
+        return None;
+    }
+
+    Some(best_idx)
+}
+
+/// Whether a polar query at `azimuth_deg` falls in the *previous*-sweep region,
+/// given the active sweep's `(sweep_az, sweep_start)`. `None` params → always
+/// current sweep.
+pub fn polar_in_prev_region(azimuth_deg: f32, sweep_params: Option<(f32, f32)>) -> bool {
+    if let Some((sweep_az, sweep_start)) = sweep_params {
+        let swept_arc = (sweep_az - sweep_start).rem_euclid(360.0);
+        let pixel_from_start = (azimuth_deg - sweep_start).rem_euclid(360.0);
+        pixel_from_start >= swept_arc
+    } else {
+        false
+    }
+}
+
+/// Convert a raw gate value to physical units (`(raw - offset) / scale`), or
+/// `None` for the below-threshold/range-folded sentinels (`raw <= 1.0`). A zero
+/// scale signals "raw == physical".
+fn scale_raw(raw: f32, offset: f32, scale: f32) -> Option<f32> {
+    if raw <= 1.0 {
+        return None;
+    }
+    if scale == 0.0 {
+        Some(raw)
+    } else {
+        Some((raw - offset) / scale)
+    }
+}
+
+/// Current-sweep value lookup using sparse nearest-azimuth indexing (with gap
+/// detection). Mirrors `RadarGpuRenderer::value_at_polar`'s current branch.
+pub fn value_at_polar_current(
+    azimuth_deg: f32,
+    range_km: f64,
+    meta: &PolarSweepMeta,
+    azimuths: &[f32],
+    gate_values: &[f32],
+) -> Option<f32> {
+    if azimuths.is_empty() {
+        return None;
+    }
+    if range_km < meta.first_gate_km || range_km >= meta.max_range_km {
+        return None;
+    }
+    let az_idx = find_nearest_azimuth_index(azimuths, meta.azimuth_count as usize, azimuth_deg)?;
+    let gate_count = meta.gate_count as usize;
+    let gate_idx = ((range_km - meta.first_gate_km) / meta.gate_interval_km).floor() as usize;
+    if gate_idx >= gate_count {
+        return None;
+    }
+    let offset = az_idx * gate_count + gate_idx;
+    let raw = *gate_values.get(offset)?;
+    scale_raw(raw, meta.data_offset, meta.data_scale)
+}
+
+/// Previous-sweep value lookup using evenly-spaced azimuth indexing (matches the
+/// GPU shader's prev-sweep sampling). Mirrors `prev_value_at_polar`.
+pub fn value_at_polar_prev(
+    azimuth_deg: f32,
+    range_km: f64,
+    meta: &PolarSweepMeta,
+    gate_values: &[f32],
+) -> Option<f32> {
+    let az_count = meta.azimuth_count as usize;
+    let gate_count = meta.gate_count as usize;
+    if az_count == 0 || gate_count == 0 || gate_values.is_empty() {
+        return None;
+    }
+    if range_km < meta.first_gate_km || range_km >= meta.max_range_km {
+        return None;
+    }
+    let az_idx = ((azimuth_deg * az_count as f32 / 360.0).round() as usize) % az_count;
+    let gate_idx = ((range_km - meta.first_gate_km) / meta.gate_interval_km).floor() as usize;
+    if gate_idx >= gate_count {
+        return None;
+    }
+    let offset = az_idx * gate_count + gate_idx;
+    let raw = *gate_values.get(offset)?;
+    scale_raw(raw, meta.data_offset, meta.data_scale)
+}
+
+/// Current-sweep collection-time lookup (sparse azimuth indexing). Mirrors
+/// `collection_time_at_polar`'s current branch.
+pub fn collection_time_current(
+    azimuth_deg: f32,
+    azimuth_count: u32,
+    azimuths: &[f32],
+    radial_times: &[f64],
+) -> Option<f64> {
+    if radial_times.is_empty() || azimuths.is_empty() {
+        return None;
+    }
+    let az_idx = find_nearest_azimuth_index(azimuths, azimuth_count as usize, azimuth_deg)?;
+    radial_times.get(az_idx).copied()
+}
+
+/// Previous-sweep collection-time lookup (evenly-spaced azimuth indexing).
+pub fn collection_time_prev(
+    azimuth_deg: f32,
+    azimuth_count: u32,
+    radial_times: &[f64],
+) -> Option<f64> {
+    let az_count = azimuth_count as usize;
+    if az_count == 0 || radial_times.is_empty() {
+        return None;
+    }
+    let az_idx = ((azimuth_deg * az_count as f32 / 360.0).round() as usize) % az_count;
+    radial_times.get(az_idx).copied()
+}
+
+// ---------------------------------------------------------------------------
+// Geometry
+// ---------------------------------------------------------------------------
+
+/// Equirectangular km-per-degree used throughout the canvas polar math.
+pub const KM_PER_DEGREE: f64 = 111.0;
+
+/// Convert a geographic point to radar-relative polar `(azimuth_deg, range_km)`.
+///
+/// Equirectangular approximation (matches the canvas projection): longitude is
+/// scaled by `cos(radar_lat)`. Mirrors the data-probe's inline math.
+pub fn geo_to_polar(lat: f64, lon: f64, radar_lat: f64, radar_lon: f64) -> (f64, f64) {
+    let dlat = lat - radar_lat;
+    let dlon = (lon - radar_lon) * radar_lat.to_radians().cos();
+    let range_km = (dlat * dlat + dlon * dlon).sqrt() * KM_PER_DEGREE;
+    let azimuth_deg = (dlon.atan2(dlat).to_degrees() + 360.0) % 360.0;
+    (azimuth_deg, range_km)
+}
+
+/// Longitude span (degrees) covering `range_km` at `center_lat`, accounting for
+/// meridian convergence (`/cos(lat)`). The coverage-cutout circle's radius is
+/// this span projected to screen. Mirrors the canvas cutout math.
+pub fn cutout_lon_range_deg(center_lat: f64, range_km: f64) -> f64 {
+    let lat_correction = center_lat.to_radians().cos();
+    range_km / KM_PER_DEGREE / lat_correction
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::radar_data::Radial;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn sweep(start: f64, end: f64, start_az: f32, radials: Vec<Radial>) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation: 0.5,
+            elevation_number: 1,
+            start_azimuth: start_az,
+            radials,
+            cached_products: Vec::new(),
+        }
+    }
+
+    fn radial(start_time: f64, azimuth: f32) -> Radial {
+        Radial {
+            start_time,
+            duration: 0.1,
+            azimuth,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_line_azimuth_none_for_zero_duration() {
+        assert_eq!(
+            sweep_line_azimuth(&sweep(10.0, 10.0, 0.0, vec![]), 10.0),
+            None
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_line_azimuth_uniform_fallback() {
+        // No radials → uniform rotation. Halfway through a 0..10s sweep starting
+        // at az 0 → ~180°.
+        let s = sweep(0.0, 10.0, 0.0, vec![]);
+        let (az, start) = sweep_line_azimuth(&s, 5.0).unwrap();
+        assert!((az - 180.0).abs() < 1e-3, "az was {az}");
+        assert_eq!(start, 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_line_azimuth_interpolates_radials() {
+        // Radials at t=0 az=10, t=10 az=20. At t=5 → az 15, start_az 10.
+        let s = sweep(0.0, 20.0, 10.0, vec![radial(0.0, 10.0), radial(10.0, 20.0)]);
+        let (az, start) = sweep_line_azimuth(&s, 5.0).unwrap();
+        assert!((az - 15.0).abs() < 1e-3, "az was {az}");
+        assert_eq!(start, 10.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_line_azimuth_wraps_short_way() {
+        // last az 350, next az 10 → delta should wrap to +20 (not -340).
+        let s = sweep(
+            0.0,
+            20.0,
+            350.0,
+            vec![radial(0.0, 350.0), radial(10.0, 10.0)],
+        );
+        let (az, _) = sweep_line_azimuth(&s, 5.0).unwrap();
+        // Halfway: 350 + 20*0.5 = 360 → 0.
+        assert!(az < 1.0 || az > 359.0, "az was {az}");
+    }
+
+    #[wasm_bindgen_test]
+    fn select_gpu_sweep_live_wins_and_swaps() {
+        // Live (first=30, last=120) → (last, first) = (120, 30), ignoring archive.
+        let g = select_gpu_sweep(Some((30.0, 120.0)), false, None, 0.0, None);
+        assert_eq!(g, Some((120.0, 30.0)));
+    }
+
+    #[wasm_bindgen_test]
+    fn select_gpu_sweep_archive_phases() {
+        // Before start → sentinel (0,0).
+        assert_eq!(
+            select_gpu_sweep(None, true, Some((10.0, 20.0)), 5.0, Some((1.0, 2.0))),
+            Some((0.0, 0.0))
+        );
+        // Within → the interpolated info.
+        assert_eq!(
+            select_gpu_sweep(None, true, Some((10.0, 20.0)), 15.0, Some((1.0, 2.0))),
+            Some((1.0, 2.0))
+        );
+        // After → none.
+        assert_eq!(
+            select_gpu_sweep(None, true, Some((10.0, 20.0)), 25.0, Some((1.0, 2.0))),
+            None
+        );
+        // Animation off → none even with bounds.
+        assert_eq!(
+            select_gpu_sweep(None, false, Some((10.0, 20.0)), 15.0, Some((1.0, 2.0))),
+            None
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn cache_and_between_sweeps_rules() {
+        // Real position caches; sentinel does not.
+        assert_eq!(
+            next_sweep_cache(None, Some((90.0, 0.0)), true),
+            Some((90.0, 0.0))
+        );
+        assert_eq!(
+            next_sweep_cache(Some((90.0, 0.0)), Some((0.0, 0.0)), true),
+            Some((90.0, 0.0))
+        );
+        // Animation off clears.
+        assert_eq!(next_sweep_cache(Some((90.0, 0.0)), None, false), None);
+        // Between sweeps: anim on, no current sweep, cache present.
+        assert!(between_sweeps(true, None, Some((90.0, 0.0))));
+        assert!(!between_sweeps(true, Some((1.0, 2.0)), Some((90.0, 0.0))));
+        assert!(!between_sweeps(false, None, Some((90.0, 0.0))));
+        assert!(!between_sweeps(true, None, None));
+    }
+
+    #[wasm_bindgen_test]
+    fn nearest_azimuth_gap_detection() {
+        // Spacing 90° (4 azimuths). Target 5° near az 0 → idx 0.
+        let az = [0.0, 90.0, 180.0, 270.0];
+        assert_eq!(find_nearest_azimuth_index(&az, 4, 5.0), Some(0));
+        // Target 45° is exactly half-spacing from both 0 and 90 (45 <= 135), hit.
+        assert!(find_nearest_azimuth_index(&az, 4, 44.0).is_some());
+        // A huge gap: only one azimuth, target far away → None (gap > 1.5×spacing).
+        let sparse = [0.0_f32];
+        assert_eq!(find_nearest_azimuth_index(&sparse, 360, 180.0), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn polar_region_split() {
+        // swept_arc = 90; az 45 (< 90 from start 0) → current.
+        assert!(!polar_in_prev_region(45.0, Some((90.0, 0.0))));
+        // az 120 (>= 90) → prev.
+        assert!(polar_in_prev_region(120.0, Some((90.0, 0.0))));
+        // No params → never prev.
+        assert!(!polar_in_prev_region(120.0, None));
+    }
+
+    fn meta() -> PolarSweepMeta {
+        PolarSweepMeta {
+            azimuth_count: 4,
+            gate_count: 3,
+            first_gate_km: 0.0,
+            gate_interval_km: 1.0,
+            max_range_km: 3.0,
+            data_offset: 2.0,
+            data_scale: 0.5,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn value_at_polar_current_scales_and_thresholds() {
+        let m = meta();
+        let azimuths = [0.0, 90.0, 180.0, 270.0];
+        // 4 az × 3 gates. az_idx 0, gate 1 → offset 1.
+        let gates = [
+            0.0, 10.0, 0.0, /*az1*/ 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        ];
+        // (raw 10 - offset 2) / scale 0.5 = 16.
+        let v = value_at_polar_current(0.0, 1.5, &m, &azimuths, &gates).unwrap();
+        assert!((v - 16.0).abs() < 1e-3, "v was {v}");
+        // Sentinel raw <= 1.0 → None (gate 0 of az0 is 0.0).
+        assert_eq!(
+            value_at_polar_current(0.0, 0.5, &m, &azimuths, &gates),
+            None
+        );
+        // Out of range → None.
+        assert_eq!(
+            value_at_polar_current(0.0, 5.0, &m, &azimuths, &gates),
+            None
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn value_at_polar_prev_even_spacing() {
+        let m = meta();
+        // az 0 → idx 0, gate 1 → offset 1 = raw 10 → (10-2)/0.5 = 16.
+        let gates = [0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let v = value_at_polar_prev(0.0, 1.5, &m, &gates).unwrap();
+        assert!((v - 16.0).abs() < 1e-3, "v was {v}");
+    }
+
+    #[wasm_bindgen_test]
+    fn geo_to_polar_due_north_and_east() {
+        // Due north: 1° lat north → az 0, range 111 km.
+        let (az, rng) = geo_to_polar(41.0, -90.0, 40.0, -90.0);
+        assert!(az.abs() < 1e-6 || (az - 360.0).abs() < 1e-6, "az {az}");
+        assert!((rng - 111.0).abs() < 1e-3, "rng {rng}");
+        // Due east at the equator-ish: az ~90.
+        let (az_e, _) = geo_to_polar(0.0, 1.0, 0.0, 0.0);
+        assert!((az_e - 90.0).abs() < 1e-6, "az_e {az_e}");
+    }
+
+    #[wasm_bindgen_test]
+    fn cutout_lon_range_scales_with_latitude() {
+        // At the equator cos=1 → range_km/111.
+        let r0 = cutout_lon_range_deg(0.0, 460.0);
+        assert!((r0 - 460.0 / 111.0).abs() < 1e-6);
+        // Higher latitude widens the lon span (cos < 1).
+        let r60 = cutout_lon_range_deg(60.0, 460.0);
+        assert!(r60 > r0);
+        // cos(60°) = 0.5 → exactly double.
+        assert!((r60 - r0 * 2.0).abs() < 1e-3, "r60 {r60} r0 {r0}");
+    }
+}

@@ -31,11 +31,8 @@ pub(crate) fn render_data_probe(
     let lat = geo.y;
     let lon = geo.x;
 
-    // Compute polar coordinates relative to radar site
-    let dlat = lat - radar_lat;
-    let dlon = (lon - radar_lon) * radar_lat.to_radians().cos();
-    let range_km = (dlat * dlat + dlon * dlon).sqrt() * 111.0;
-    let azimuth_deg = (dlon.atan2(dlat).to_degrees() + 360.0) % 360.0;
+    // Polar coordinates relative to the radar site (pure core).
+    let (azimuth_deg, range_km) = crate::core::canvas::geo_to_polar(lat, lon, radar_lat, radar_lon);
 
     // Look up data value and collection time (sweep-aware when animating)
     let (value, collection_time) = gpu_renderer

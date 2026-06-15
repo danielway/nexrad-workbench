@@ -11,47 +11,8 @@ use crate::state::RenderProcessing;
 use glow::HasContext;
 use std::sync::Arc;
 
-/// Find the nearest azimuth index in an array of azimuth angles.
-///
-/// Returns `None` if the nearest azimuth is farther than 1.5x the expected spacing
-/// (gap detection). Used by CPU-side inspector lookups.
-///
-/// Azimuths < 0 mark empty padded slots from the live partial-sweep path and
-/// are skipped.
-fn find_nearest_azimuth_index(
-    azimuths: &[f32],
-    azimuth_count: usize,
-    target_deg: f32,
-) -> Option<usize> {
-    let mut best_idx = 0usize;
-    let mut best_dist = 360.0f32;
-    let mut found = false;
-    for (i, &az) in azimuths.iter().enumerate() {
-        if az < 0.0 {
-            continue;
-        }
-        let mut d = (target_deg - az).abs();
-        if d > 180.0 {
-            d = 360.0 - d;
-        }
-        if d < best_dist {
-            best_dist = d;
-            best_idx = i;
-            found = true;
-        }
-    }
-
-    if !found {
-        return None;
-    }
-
-    let az_spacing = 360.0 / azimuth_count as f32;
-    if best_dist > az_spacing * 1.5 {
-        return None;
-    }
-
-    Some(best_idx)
-}
+// `find_nearest_azimuth_index` moved to `crate::core::canvas` (pure, tested);
+// the CPU inspector lookups call it from there.
 
 /// All uniform locations for the radar shader program.
 struct UniformLocations {
