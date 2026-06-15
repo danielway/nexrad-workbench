@@ -420,3 +420,231 @@ mod tests {
         assert!(!p.is_active(), "Done + empty is not active");
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ── PipelineStatus::is_active branch matrix ──
+
+    #[wasm_bindgen_test]
+    fn pipeline_is_active_all_idle_is_false() {
+        let p = PipelineStatus::default();
+        assert!(!p.is_active());
+    }
+
+    #[wasm_bindgen_test]
+    fn pipeline_is_active_downloading_count() {
+        let mut p = PipelineStatus::default();
+        p.downloading = 1;
+        assert!(p.is_active(), "downloading > 0 is active");
+        p.downloading = 0;
+        assert!(!p.is_active(), "downloading == 0 alone is not active");
+    }
+
+    #[wasm_bindgen_test]
+    fn pipeline_is_active_processing_flag() {
+        let mut p = PipelineStatus::default();
+        p.processing = true;
+        assert!(p.is_active());
+    }
+
+    #[wasm_bindgen_test]
+    fn pipeline_is_active_rendering_flag() {
+        let mut p = PipelineStatus::default();
+        p.rendering = true;
+        assert!(p.is_active());
+    }
+
+    // ── PipelineStatus::phase_visible deterministic branches ──
+    // (The `now - last_done_ms < LINGER_MS` branch reads js_sys::Date::now()
+    //  and is intentionally not asserted; only the deterministic branches are.)
+
+    #[wasm_bindgen_test]
+    fn phase_visible_active_short_circuits_true() {
+        let p = PipelineStatus::default();
+        // active == true returns true regardless of last_done_ms (even <= 0).
+        assert!(p.phase_visible(true, 0.0));
+        assert!(p.phase_visible(true, -100.0));
+    }
+
+    #[wasm_bindgen_test]
+    fn phase_visible_inactive_with_no_completion_is_false() {
+        let p = PipelineStatus::default();
+        // Not active and last_done_ms <= 0.0 → false (never completed).
+        assert!(!p.phase_visible(false, 0.0));
+        assert!(!p.phase_visible(false, -1.0));
+    }
+
+    // ── PipelineStatus mark_* deterministic side effects ──
+    // (The timestamp itself comes from js_sys::Date::now() and is not asserted;
+    //  the flag clears and ever_active set are deterministic.)
+
+    #[wasm_bindgen_test]
+    fn mark_processing_done_clears_flag_and_marks_ever_active() {
+        let mut p = PipelineStatus::default();
+        p.processing = true;
+        assert!(!p.ever_active);
+        p.mark_processing_done();
+        assert!(!p.processing, "processing flag cleared");
+        assert!(p.ever_active, "ever_active set");
+    }
+
+    #[wasm_bindgen_test]
+    fn mark_render_done_clears_flag_and_marks_ever_active() {
+        let mut p = PipelineStatus::default();
+        p.rendering = true;
+        assert!(!p.ever_active);
+        p.mark_render_done();
+        assert!(!p.rendering, "rendering flag cleared");
+        assert!(p.ever_active, "ever_active set");
+    }
+
+    // ── SessionStats::new defaults ──
+
+    #[wasm_bindgen_test]
+    fn session_stats_new_is_all_zero_and_none() {
+        let s = SessionStats::new();
+        assert_eq!(s.cache_size_bytes, 0);
+        assert_eq!(s.session_request_count, 0);
+        assert_eq!(s.session_transferred_bytes, 0);
+        assert_eq!(s.active_request_count, 0);
+        assert_eq!(s.median_chunk_latency_ms, None);
+        assert_eq!(s.median_processing_time_ms, None);
+        assert_eq!(s.avg_render_time_ms, None);
+        assert_eq!(s.avg_fps, None);
+        assert!(s.last_ingest_detail.is_none());
+        assert!(s.last_render_detail.is_none());
+    }
+
+    // ── SessionStats::update_from_network_stats ──
+
+    #[wasm_bindgen_test]
+    fn update_from_network_stats_copies_counts_and_mirrors_downloading() {
+        let net = NetworkStats::new();
+        // request_started increments both active and total counts.
+        net.request_started();
+        net.request_started();
+        net.request_started();
+        // One completes, transferring 4096 bytes; active drops to 2, total stays 3.
+        net.request_completed(4096);
+
+        let mut s = SessionStats::new();
+        s.update_from_network_stats(&net);
+
+        assert_eq!(s.session_request_count, 3, "total requests");
+        assert_eq!(s.active_request_count, 2, "active = started - completed");
+        assert_eq!(s.session_transferred_bytes, 4096);
+        // pipeline.downloading mirrors active_request_count.
+        assert_eq!(s.pipeline.downloading, 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn update_from_network_stats_zero_state() {
+        let net = NetworkStats::new();
+        let mut s = SessionStats::new();
+        s.pipeline.downloading = 7; // pre-existing value should be overwritten
+        s.update_from_network_stats(&net);
+        assert_eq!(s.session_request_count, 0);
+        assert_eq!(s.active_request_count, 0);
+        assert_eq!(s.session_transferred_bytes, 0);
+        assert_eq!(
+            s.pipeline.downloading, 0,
+            "downloading reset to active count"
+        );
+    }
+
+    // ── SessionStats::format_cache_size / format_transferred (delegate to format_bytes) ──
+
+    #[wasm_bindgen_test]
+    fn format_cache_size_units() {
+        let mut s = SessionStats::new();
+        s.cache_size_bytes = 0;
+        assert_eq!(s.format_cache_size(), "0 B");
+        s.cache_size_bytes = 1024;
+        assert_eq!(s.format_cache_size(), "1 KB");
+        s.cache_size_bytes = 1024 * 1024;
+        assert_eq!(s.format_cache_size(), "1 MB");
+        s.cache_size_bytes = 1024 * 1024 * 1024;
+        assert_eq!(s.format_cache_size(), "1.0 GB");
+    }
+
+    #[wasm_bindgen_test]
+    fn format_transferred_uses_transferred_bytes() {
+        let mut s = SessionStats::new();
+        s.session_transferred_bytes = 12 * 1024 * 1024; // 12 MB exactly
+        assert_eq!(s.format_transferred(), "12 MB");
+        // Below 1 KB renders as raw bytes.
+        s.session_transferred_bytes = 512;
+        assert_eq!(s.format_transferred(), "512 B");
+    }
+
+    // ── SessionStats::format_latency_stats combinations ──
+
+    #[wasm_bindgen_test]
+    fn format_latency_stats_empty_is_emdash() {
+        let s = SessionStats::new();
+        assert_eq!(s.format_latency_stats(), "\u{2014}");
+    }
+
+    #[wasm_bindgen_test]
+    fn format_latency_stats_single_part() {
+        let mut s = SessionStats::new();
+        s.median_chunk_latency_ms = Some(42.7);
+        // {:.0} rounds 42.7 → 43.
+        assert_eq!(s.format_latency_stats(), "dl: 43ms");
+    }
+
+    #[wasm_bindgen_test]
+    fn format_latency_stats_all_parts_ordered_and_joined() {
+        let mut s = SessionStats::new();
+        s.median_chunk_latency_ms = Some(10.0);
+        s.median_processing_time_ms = Some(20.0);
+        s.avg_render_time_ms = Some(30.0);
+        // Order is dl, proc, gpu joined by " · " (U+00B7 with surrounding spaces).
+        assert_eq!(
+            s.format_latency_stats(),
+            "dl: 10ms \u{00b7} proc: 20ms \u{00b7} gpu: 30ms"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn format_latency_stats_partial_skips_none() {
+        let mut s = SessionStats::new();
+        // Only proc and gpu present; dl is None and omitted.
+        s.median_processing_time_ms = Some(5.0);
+        s.avg_render_time_ms = Some(8.0);
+        assert_eq!(s.format_latency_stats(), "proc: 5ms \u{00b7} gpu: 8ms");
+    }
+
+    // ── DownloadPhase default ──
+
+    #[wasm_bindgen_test]
+    fn download_phase_default_is_idle() {
+        assert_eq!(DownloadPhase::default(), DownloadPhase::Idle);
+    }
+
+    // ── DownloadProgress::clear resets every field ──
+
+    #[wasm_bindgen_test]
+    fn clear_resets_all_state() {
+        let mut p = DownloadProgress::default();
+        p.pending_scans.push((1, 2));
+        p.active_scans.push((3, 4));
+        p.in_flight_scans.push((5, 6));
+        p.phase = DownloadPhase::Decoding;
+        p.batch_total = 9;
+        p.batch_completed = 4;
+
+        p.clear();
+
+        assert!(p.pending_scans.is_empty());
+        assert!(p.active_scans.is_empty());
+        assert!(p.in_flight_scans.is_empty());
+        assert_eq!(p.phase, DownloadPhase::Idle);
+        assert_eq!(p.batch_total, 0);
+        assert_eq!(p.batch_completed, 0);
+        assert!(!p.is_active(), "cleared progress is inactive");
+    }
+}

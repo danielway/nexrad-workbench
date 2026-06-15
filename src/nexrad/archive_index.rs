@@ -497,3 +497,236 @@ mod tests {
         assert!(idx.get("KDMX", &date).is_some());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use chrono::NaiveDate;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn file(name: &str, timestamp: i64) -> ArchiveFileMeta {
+        ArchiveFileMeta {
+            name: name.to_string(),
+            size: 0,
+            timestamp,
+        }
+    }
+
+    fn listing(files: Vec<ArchiveFileMeta>) -> ArchiveListing {
+        ArchiveListing {
+            files,
+            fetched_at: 0.0,
+        }
+    }
+
+    // --- parse_timestamp_from_name: untested error/edge branches ---
+
+    /// Minute 60 is out of range for `and_hms_opt`, so the chrono construction
+    /// returns None even though the substrings parse as integers.
+    #[wasm_bindgen_test]
+    fn parse_timestamp_invalid_minute() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        assert!(
+            ArchiveFileMeta::parse_timestamp_from_name("KDMX20240501_126000_V06", &date).is_none()
+        );
+    }
+
+    /// Second 60 is likewise rejected by `and_hms_opt` (no leap-second slot here).
+    #[wasm_bindgen_test]
+    fn parse_timestamp_invalid_second() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        assert!(
+            ArchiveFileMeta::parse_timestamp_from_name("KDMX20240501_120060_V06", &date).is_none()
+        );
+    }
+
+    /// Non-numeric characters in the HHMMSS window fail the `.parse().ok()?`.
+    #[wasm_bindgen_test]
+    fn parse_timestamp_non_numeric_time() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        assert!(
+            ArchiveFileMeta::parse_timestamp_from_name("KDMX20240501_12ab00_V06", &date).is_none()
+        );
+    }
+
+    /// Exactly 18 chars: `name.len() < 19` is true → early None. (One short of
+    /// the minimum the existing "short" test never pins precisely.)
+    #[wasm_bindgen_test]
+    fn parse_timestamp_length_boundary_18_is_none() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        // 18 chars: "KDMX20240501_12000" (site8 + _ + 5 time digits = 18)
+        let name = "KDMX20240501_12000";
+        assert_eq!(name.len(), 18);
+        assert!(ArchiveFileMeta::parse_timestamp_from_name(name, &date).is_none());
+    }
+
+    /// Exactly 19 chars passes the length gate and the slice 13..19 reads the
+    /// full HHMMSS even with no trailing `_V06`. "KDMX20240501_010203" → 01:02:03.
+    #[wasm_bindgen_test]
+    fn parse_timestamp_length_boundary_19_parses() {
+        let date = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        let name = "KDMX20240501_010203";
+        assert_eq!(name.len(), 19);
+        let ts = ArchiveFileMeta::parse_timestamp_from_name(name, &date).unwrap();
+        let expected = date.and_hms_opt(1, 2, 3).unwrap().and_utc().timestamp();
+        assert_eq!(ts, expected);
+    }
+
+    /// The hour/minute/second window is at fixed offset 13..19; a longer site
+    /// prefix is NOT special-cased, so the bytes there are interpreted as time.
+    /// Using a pre-epoch date yields a negative Unix timestamp.
+    #[wasm_bindgen_test]
+    fn parse_timestamp_pre_epoch_negative() {
+        let date = NaiveDate::from_ymd_opt(1969, 12, 31).unwrap();
+        let ts =
+            ArchiveFileMeta::parse_timestamp_from_name("KDMX19691231_235959_V06", &date).unwrap();
+        // One second before the epoch.
+        assert_eq!(ts, -1);
+    }
+
+    // --- ArchiveIndexKey equality / hashing ---
+
+    /// `new` accepts any Into<String>; keys are equal iff both site and date
+    /// match. Used as the HashMap key, so this equality is load-bearing.
+    #[wasm_bindgen_test]
+    fn index_key_equality() {
+        let d1 = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        let d2 = NaiveDate::from_ymd_opt(2024, 5, 2).unwrap();
+        let a = ArchiveIndexKey::new("KDMX", d1);
+        let b = ArchiveIndexKey::new(String::from("KDMX"), d1);
+        let c = ArchiveIndexKey::new("KDMX", d2);
+        let e = ArchiveIndexKey::new("KABR", d1);
+        assert_eq!(a, b);
+        assert_ne!(a, c); // different date
+        assert_ne!(a, e); // different site
+    }
+
+    // --- scan_boundaries: average-interval branch with non-uniform gaps ---
+
+    /// With >2 files and unequal gaps, the LAST scan's end uses the AVERAGE
+    /// interval, not the final gap. Files at 1000, 1100, 1900 → total span 900
+    /// over 2 intervals → avg 450 → last end = 1900 + 450 = 2350.
+    #[wasm_bindgen_test]
+    fn scan_boundaries_last_uses_average_not_final_gap() {
+        let l = listing(vec![file("a", 1000), file("b", 1100), file("c", 1900)]);
+        let b = l.scan_boundaries();
+        assert_eq!(b.len(), 3);
+        assert_eq!((b[0].start, b[0].end), (1000, 1100));
+        assert_eq!((b[1].start, b[1].end), (1100, 1900));
+        // avg = (1900 - 1000) / 2 = 450
+        assert_eq!((b[2].start, b[2].end), (1900, 2350));
+    }
+
+    /// Two-file case: average interval equals the single gap, so the last end
+    /// is one more interval out. 2000, 2500 → gap 500 → last end 3000.
+    #[wasm_bindgen_test]
+    fn scan_boundaries_two_files_average_equals_gap() {
+        let l = listing(vec![file("a", 2000), file("b", 2500)]);
+        let b = l.scan_boundaries();
+        assert_eq!(b.len(), 2);
+        assert_eq!((b[0].start, b[0].end), (2000, 2500));
+        assert_eq!((b[1].start, b[1].end), (2500, 3000));
+    }
+
+    // --- scans_intersecting / scan_at_or_before: empty + extra branches ---
+
+    #[wasm_bindgen_test]
+    fn scans_intersecting_empty_listing() {
+        let l = listing(vec![]);
+        assert!(l.scans_intersecting(0, 10_000).is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_at_or_before_empty_listing_is_none() {
+        let l = listing(vec![]);
+        assert!(l.scan_at_or_before(1000).is_none());
+    }
+
+    /// Filter is `b.start <= timestamp` (inclusive); a cursor exactly on a
+    /// scan's start selects that scan, not the prior one.
+    #[wasm_bindgen_test]
+    fn scan_at_or_before_exact_start_is_inclusive() {
+        let l = listing(vec![file("a", 1000), file("b", 1300)]);
+        assert_eq!(l.scan_at_or_before(1300).unwrap().0.name, "b");
+        assert_eq!(l.scan_at_or_before(1000).unwrap().0.name, "a");
+    }
+
+    /// Well past every start → the latest-started scan (max_by_key on start).
+    #[wasm_bindgen_test]
+    fn scan_at_or_before_past_all_picks_last() {
+        let l = listing(vec![file("a", 1000), file("b", 1300), file("c", 1600)]);
+        assert_eq!(l.scan_at_or_before(999_999).unwrap().0.name, "c");
+    }
+
+    // --- has_fresh: exact-TTL boundary + missing-site path ---
+
+    /// The freshness test is strict `<`: at exactly the TTL the listing is NOT
+    /// fresh (the `has_fresh_ttl_only_applies_to_today` case only probes
+    /// TTL-1 and TTL+1, never the exact edge).
+    #[wasm_bindgen_test]
+    fn has_fresh_exact_ttl_edge_is_not_fresh() {
+        let mut idx = ArchiveIndex::new();
+        let today = NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+        let now = 10_000.0;
+        idx.listings.insert(
+            ArchiveIndexKey::new("KDMX", today),
+            ArchiveListing {
+                files: vec![file("b", 2000)],
+                fetched_at: now - TODAY_LISTING_TTL_SECS, // age == TTL exactly
+            },
+        );
+        // now - fetched_at == TTL, and TTL < TTL is false → stale.
+        assert!(!idx.has_fresh("KDMX", &today, now, today));
+    }
+
+    /// A cached listing for one site does not make a different site "fresh"
+    /// (key includes site_id → cache miss → false).
+    #[wasm_bindgen_test]
+    fn has_fresh_other_site_is_false() {
+        let mut idx = ArchiveIndex::new();
+        let day = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        let today = NaiveDate::from_ymd_opt(2026, 6, 11).unwrap();
+        idx.listings.insert(
+            ArchiveIndexKey::new("KDMX", day),
+            listing(vec![file("a", 1000)]),
+        );
+        assert!(!idx.has_fresh("KABR", &day, 10_000.0, today));
+    }
+
+    // --- ArchiveIndex::get / all_boundaries_for_site: miss paths ---
+
+    /// `get` keys on both site and date: a matching site but wrong date misses,
+    /// and a matching date but wrong site misses.
+    #[wasm_bindgen_test]
+    fn get_misses_on_wrong_date_or_site() {
+        let mut idx = ArchiveIndex::new();
+        let day = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        let other_day = NaiveDate::from_ymd_opt(2024, 5, 2).unwrap();
+        idx.listings.insert(
+            ArchiveIndexKey::new("KDMX", day),
+            listing(vec![file("a", 1000)]),
+        );
+        assert!(idx.get("KDMX", &day).is_some());
+        assert!(idx.get("KDMX", &other_day).is_none()); // wrong date
+        assert!(idx.get("KABR", &day).is_none()); // wrong site
+    }
+
+    /// No listings cached for the requested site → empty boundary set (covers
+    /// both the empty-index and unknown-site filter outcomes).
+    #[wasm_bindgen_test]
+    fn all_boundaries_unknown_site_is_empty() {
+        let mut idx = ArchiveIndex::new();
+        // Empty index first.
+        assert!(idx.all_boundaries_for_site("KDMX").is_empty());
+
+        let day = NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        idx.listings.insert(
+            ArchiveIndexKey::new("KDMX", day),
+            listing(vec![file("a", 1000), file("b", 1300)]),
+        );
+        // Querying a different site yields nothing.
+        assert!(idx.all_boundaries_for_site("KABR").is_empty());
+        // Sanity: the known site does return boundaries.
+        assert_eq!(idx.all_boundaries_for_site("KDMX").len(), 2);
+    }
+}

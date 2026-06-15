@@ -457,3 +457,178 @@ mod tests {
         assert_eq!(pen(Some(CDW), Some(CDWO)), 2.0);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    const EPS: f64 = 1e-9;
+
+    // ---- IntervalCase::short() — untested in the sibling module ----
+
+    #[wasm_bindgen_test]
+    fn interval_case_short_strings() {
+        assert_eq!(IntervalCase::IntraSweep.short(), "intra");
+        assert_eq!(IntervalCase::InterSweep.short(), "inter_sweep");
+        assert_eq!(IntervalCase::InterVolume.short(), "inter_volume");
+    }
+
+    // ---- sweep_duration_secs boundary (exactly cancels the bias) ----
+
+    #[wasm_bindgen_test]
+    fn sweep_duration_at_bias_boundary_is_zero() {
+        // 360/rate == 0.67 exactly when rate == 360/0.67 ≈ 537.313...,
+        // so the duration lands on 0.0 (the boundary between the existing
+        // "normal positive" and "high-rate negative" tests).
+        let rate = 360.0 / 0.67;
+        let d = ChunkTimingModel::sweep_duration_secs(rate).unwrap();
+        assert!(d.abs() < 1e-6, "got {d}");
+    }
+
+    // ---- chunk_duration_secs: both guards simultaneously ----
+
+    #[wasm_bindgen_test]
+    fn chunk_duration_zero_chunks_takes_precedence_over_bad_rate() {
+        // chunks_in_sweep == 0 is checked first, so even with a valid rate it's
+        // None; and with both invalid it's still None (no panic / no div).
+        assert_eq!(ChunkTimingModel::chunk_duration_secs(18.0, 0), None);
+        assert_eq!(ChunkTimingModel::chunk_duration_secs(0.0, 0), None);
+        assert_eq!(ChunkTimingModel::chunk_duration_secs(-1.0, 0), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn chunk_duration_single_chunk_equals_full_sweep() {
+        // chunks_in_sweep == 1 → chunk duration == sweep duration.
+        let sweep = ChunkTimingModel::sweep_duration_secs(18.0).unwrap();
+        let chunk = ChunkTimingModel::chunk_duration_secs(18.0, 1).unwrap();
+        assert!((chunk - sweep).abs() < EPS, "chunk {chunk} sweep {sweep}");
+    }
+
+    // ---- inter_sweep_gap_secs: slew term uses |delta| (reverse direction) ----
+
+    #[wasm_bindgen_test]
+    fn inter_sweep_gap_elevation_delta_is_absolute() {
+        // Descending elevation (to < from) must give the same slew as ascending:
+        // |6 - 1| == |1 - 6| == 5 → 0.7 + 5*0.08 = 1.1.
+        let up = ChunkTimingModel::inter_sweep_gap_secs(1.0, 6.0, None, None);
+        let down = ChunkTimingModel::inter_sweep_gap_secs(6.0, 1.0, None, None);
+        assert!((up - 1.1).abs() < EPS, "up {up}");
+        assert!((down - 1.1).abs() < EPS, "down {down}");
+        assert!((up - down).abs() < EPS);
+    }
+
+    #[wasm_bindgen_test]
+    fn inter_sweep_gap_single_side_waveform_no_penalty() {
+        // Only one waveform known → penalty branch returns 0.0, so the gap is
+        // base + slew only. 2° change → 0.7 + 2*0.08 = 0.86.
+        let g1 = ChunkTimingModel::inter_sweep_gap_secs(0.5, 2.5, Some(WaveformType::CS), None);
+        assert!((g1 - 0.86).abs() < EPS, "g1 {g1}");
+        let g2 = ChunkTimingModel::inter_sweep_gap_secs(0.5, 2.5, None, Some(WaveformType::CDW));
+        assert!((g2 - 0.86).abs() < EPS, "g2 {g2}");
+    }
+
+    #[wasm_bindgen_test]
+    fn inter_sweep_gap_same_waveform_discriminant_no_penalty() {
+        // Same waveform type on both sides → 0 penalty even when Some/Some.
+        // No elevation change → exactly the 0.7 base.
+        let g = ChunkTimingModel::inter_sweep_gap_secs(
+            3.0,
+            3.0,
+            Some(WaveformType::CDW),
+            Some(WaveformType::CDW),
+        );
+        assert!((g - 0.7).abs() < EPS, "got {g}");
+    }
+
+    #[wasm_bindgen_test]
+    fn inter_sweep_gap_combines_slew_and_b_to_cdwo_penalty() {
+        // 10° change + B→CDWO penalty (3.5): 0.7 + 10*0.08 + 3.5 = 5.0.
+        let g = ChunkTimingModel::inter_sweep_gap_secs(
+            0.0,
+            10.0,
+            Some(WaveformType::B),
+            Some(WaveformType::CDWO),
+        );
+        assert!((g - 5.0).abs() < EPS, "got {g}");
+    }
+
+    // ---- waveform penalty table: match-arm precedence & untested pairs ----
+
+    #[wasm_bindgen_test]
+    fn waveform_penalty_cdwo_leaving_beats_catch_all() {
+        use WaveformType::*;
+        let pen = waveform_transition_penalty_secs;
+        // (CDWO, _) arm fires before the generic catch-all for an untabulated
+        // target like SPP → 1.0, not 2.0.
+        assert_eq!(pen(Some(CDWO), Some(SPP)), 1.0);
+        assert_eq!(pen(Some(CDWO), Some(CDW)), 1.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn waveform_penalty_arriving_at_b_arm() {
+        use WaveformType::*;
+        let pen = waveform_transition_penalty_secs;
+        // (_, B) arm → 1.0 for sources not otherwise tabulated.
+        assert_eq!(pen(Some(CDW), Some(B)), 1.0);
+        assert_eq!(pen(Some(SPP), Some(B)), 1.0);
+        assert_eq!(pen(Some(Unknown), Some(B)), 1.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn waveform_penalty_catch_all_untabulated_pairs() {
+        use WaveformType::*;
+        let pen = waveform_transition_penalty_secs;
+        // None of the specific/asymmetric arms match → catch-all 2.0.
+        assert_eq!(pen(Some(SPP), Some(CDW)), 2.0);
+        assert_eq!(pen(Some(B), Some(CS)), 2.0); // arriving at CS, not B; B isn't CDWO target
+        assert_eq!(pen(Some(CS), Some(Unknown)), 2.0);
+        assert_eq!(pen(Some(SPP), Some(CDWO)), 2.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn waveform_penalty_unknown_same_discriminant_is_zero() {
+        use WaveformType::*;
+        let pen = waveform_transition_penalty_secs;
+        // Unknown→Unknown hits the same-discriminant short-circuit → 0.0.
+        assert_eq!(pen(Some(Unknown), Some(Unknown)), 0.0);
+    }
+
+    // ---- estimate_chunk_interval_secs thin wrapper == breakdown.total_secs ----
+
+    #[wasm_bindgen_test]
+    fn estimate_secs_matches_breakdown_total_across_cases() {
+        // Inter-volume (next is Start, sequence 1).
+        let prev_v = ChunkMetadata::for_test(20, Some(3), 5, 6, false, 18.0);
+        let next_v = ChunkMetadata::for_test(1, None, 0, 1, false, 0.0);
+        let total_v = ChunkTimingModel::estimate_chunk_interval_secs(&prev_v, &next_v);
+        let bd_v = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev_v, &next_v);
+        assert!((total_v - bd_v.total_secs).abs() < EPS);
+        assert!((total_v - 8.5).abs() < EPS, "got {total_v}");
+
+        // Intra-sweep.
+        let prev_i = ChunkMetadata::for_test(9, Some(2), 1, 6, false, 18.0);
+        let next_i = ChunkMetadata::for_test(10, Some(2), 2, 6, false, 18.0);
+        let total_i = ChunkTimingModel::estimate_chunk_interval_secs(&prev_i, &next_i);
+        let bd_i = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev_i, &next_i);
+        assert!((total_i - bd_i.total_secs).abs() < EPS);
+        assert!((total_i - 19.33 / 6.0).abs() < EPS, "got {total_i}");
+    }
+
+    // ---- Start chunk takes precedence even if is_first_in_sweep is also set ----
+
+    #[wasm_bindgen_test]
+    fn breakdown_start_chunk_precedes_first_in_sweep() {
+        // next.is_start_chunk() (sequence == 1) is checked first, so even with
+        // is_first_in_sweep=true the result is the fixed inter-volume gap, NOT
+        // the inter-sweep branch.
+        let prev = ChunkMetadata::for_test(20, Some(3), 5, 6, false, 18.0);
+        let next = ChunkMetadata::for_test(1, None, 0, 6, true, 18.0);
+        let b = ChunkTimingModel::estimate_chunk_interval_breakdown(&prev, &next);
+        assert_eq!(b.case, IntervalCase::InterVolume);
+        assert!((b.total_secs - 8.5).abs() < EPS, "got {}", b.total_secs);
+        assert_eq!(b.chunk_duration_secs, None);
+        assert_eq!(b.inter_sweep_gap_secs, None);
+        assert_eq!(b.waveform_penalty_secs, None);
+    }
+}

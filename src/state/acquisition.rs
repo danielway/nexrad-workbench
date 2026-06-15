@@ -986,3 +986,515 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn download_kind(scan_start: i64) -> OperationKind {
+        OperationKind::ArchiveDownload {
+            site_id: "KDMX".to_string(),
+            file_name: format!("KDMX_{scan_start}"),
+            scan_start,
+            scan_end: scan_start + 300,
+        }
+    }
+
+    fn chunk_kind(site: &str, chunk_index: u32, scan_timestamp: i64) -> OperationKind {
+        OperationKind::RealtimeChunk {
+            site_id: site.to_string(),
+            chunk_index,
+            is_start: false,
+            is_end: false,
+            scan_timestamp,
+        }
+    }
+
+    fn listing_kind(site: &str, y: i32, m: u32, d: u32) -> OperationKind {
+        OperationKind::ArchiveListing {
+            site_id: site.to_string(),
+            date: chrono::NaiveDate::from_ymd_opt(y, m, d).unwrap(),
+        }
+    }
+
+    // ── create_operation: ids, default fields, queue activation ──────────────
+
+    /// IDs are monotonically increasing starting from 1, and creating the first
+    /// operation flips an Empty queue to Running. New ops start Queued/Idle.
+    #[wasm_bindgen_test]
+    fn create_operation_assigns_increasing_ids_and_starts_queue() {
+        let mut acq = AcquisitionState::default();
+        assert_eq!(acq.queue_state, QueueState::Empty);
+        let a = acq.create_operation(download_kind(1000));
+        let b = acq.create_operation(download_kind(2000));
+        let c = acq.create_operation(download_kind(3000));
+        assert_eq!(a, 1);
+        assert_eq!(b, 2);
+        assert_eq!(c, 3);
+        // First create activates the queue.
+        assert_eq!(acq.queue_state, QueueState::Running);
+        // Default field values on a fresh op.
+        let op = acq.find(a).unwrap();
+        assert_eq!(op.status, OperationStatus::Queued);
+        assert_eq!(op.phase, DownloadPhase::Idle);
+        assert!(op.started_at_ms.is_none());
+        assert!(op.completed_at_ms.is_none());
+        assert!(op.network_request_ids.is_empty());
+    }
+
+    /// The ring buffer evicts the oldest operation once it exceeds MAX_RETAINED
+    /// (200): after 201 inserts the length caps at 200 and the front is the
+    /// SECOND id created (id 1 was popped).
+    #[wasm_bindgen_test]
+    fn create_operation_ring_buffer_evicts_oldest() {
+        let mut acq = AcquisitionState::default();
+        let mut first_kept = None;
+        for i in 0..201u32 {
+            let id = acq.create_operation(download_kind(i as i64));
+            if i == 1 {
+                first_kept = Some(id);
+            }
+        }
+        // Capacity is enforced at 200.
+        assert_eq!(acq.operations.len(), 200);
+        // id 1 (the very first) was evicted; id 2 is now the oldest retained.
+        assert!(acq.find(1).is_none());
+        assert_eq!(acq.operations.front().unwrap().id, first_kept.unwrap());
+        assert_eq!(acq.operations.front().unwrap().id, 2);
+        // The newest id is 201.
+        assert_eq!(acq.operations.back().unwrap().id, 201);
+    }
+
+    // ── no-op guards on missing ids ──────────────────────────────────────────
+
+    /// Mutating helpers against an unknown id are silent no-ops (find returns
+    /// None internally) and never panic or touch other operations.
+    #[wasm_bindgen_test]
+    fn mutators_on_unknown_id_are_noops() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(1000));
+        // 999 does not exist.
+        acq.mark_active(999);
+        acq.set_phase(999, DownloadPhase::Decoding);
+        acq.mark_completed(999, 5);
+        acq.mark_failed(999, "x".to_string());
+        acq.cancel_operation(999);
+        acq.retry_failed(999);
+        // The real op is untouched: still Queued/Idle.
+        let op = acq.find(a).unwrap();
+        assert_eq!(op.status, OperationStatus::Queued);
+        assert_eq!(op.phase, DownloadPhase::Idle);
+        // find on a missing id is None.
+        assert!(acq.find(999).is_none());
+    }
+
+    /// `set_phase` updates only the phase, leaving status untouched.
+    #[wasm_bindgen_test]
+    fn set_phase_updates_phase_only() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(1000));
+        acq.mark_active(a);
+        acq.set_phase(a, DownloadPhase::Ingesting);
+        let op = acq.find(a).unwrap();
+        assert_eq!(op.phase, DownloadPhase::Ingesting);
+        assert_eq!(op.status, OperationStatus::Active);
+        // Move to a different phase.
+        acq.set_phase(a, DownloadPhase::Decoding);
+        assert_eq!(acq.find(a).unwrap().phase, DownloadPhase::Decoding);
+    }
+
+    // ── mark_active / mark_completed field effects ───────────────────────────
+
+    /// `mark_active` sets status Active and phase Downloading.
+    #[wasm_bindgen_test]
+    fn mark_active_sets_status_and_phase() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(1000));
+        acq.mark_active(a);
+        let op = acq.find(a).unwrap();
+        assert_eq!(op.status, OperationStatus::Active);
+        assert_eq!(op.phase, DownloadPhase::Downloading);
+        assert!(op.started_at_ms.is_some());
+    }
+
+    /// `mark_completed` records the byte count, sets phase Done, and (being the
+    /// only op) settles the queue to Empty.
+    #[wasm_bindgen_test]
+    fn mark_completed_records_bytes_and_settles_empty() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(1000));
+        acq.mark_active(a);
+        acq.mark_completed(a, 4096);
+        let op = acq.find(a).unwrap();
+        assert_eq!(op.phase, DownloadPhase::Done);
+        assert!(op.completed_at_ms.is_some());
+        match op.status {
+            OperationStatus::Completed { bytes, .. } => assert_eq!(bytes, 4096),
+            ref other => panic!("expected Completed, got {other:?}"),
+        }
+        assert_eq!(acq.queue_state, QueueState::Empty);
+    }
+
+    // ── pause / resume guards ────────────────────────────────────────────────
+
+    /// `pause` only fires from Running; on an Empty queue it is a no-op, and
+    /// `resume` only un-pauses a Paused queue.
+    #[wasm_bindgen_test]
+    fn pause_resume_only_transition_from_their_source_state() {
+        let mut acq = AcquisitionState::default();
+        // Empty queue: pause is a no-op (cannot pause nothing).
+        acq.pause();
+        assert_eq!(acq.queue_state, QueueState::Empty);
+        assert!(!acq.is_paused());
+        // resume on Empty is also a no-op.
+        acq.resume();
+        assert_eq!(acq.queue_state, QueueState::Empty);
+
+        // With work present → Running, pause works, resume restores Running.
+        let a = acq.create_operation(download_kind(1000));
+        acq.mark_active(a);
+        assert_eq!(acq.queue_state, QueueState::Running);
+        acq.pause();
+        assert!(acq.is_paused());
+        // pause again is a no-op (not Running anymore).
+        acq.pause();
+        assert!(acq.is_paused());
+        acq.resume();
+        assert_eq!(acq.queue_state, QueueState::Running);
+        assert!(!acq.is_paused());
+    }
+
+    // ── cancel_operation single ──────────────────────────────────────────────
+
+    /// Cancelling the sole active op marks it Cancelled and settles the queue to
+    /// Empty via update_queue_state.
+    #[wasm_bindgen_test]
+    fn cancel_operation_single_settles_empty() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(1000));
+        acq.mark_active(a);
+        acq.cancel_operation(a);
+        let op = acq.find(a).unwrap();
+        assert_eq!(op.status, OperationStatus::Cancelled);
+        assert!(op.completed_at_ms.is_some());
+        assert_eq!(acq.queue_state, QueueState::Empty);
+    }
+
+    // ── skip_failed ──────────────────────────────────────────────────────────
+
+    /// `skip_failed` cancels the failed op and forces the queue back to Running.
+    #[wasm_bindgen_test]
+    fn skip_failed_cancels_and_resumes() {
+        let mut acq = AcquisitionState::default();
+        let a = acq.create_operation(download_kind(1000));
+        acq.mark_active(a);
+        acq.mark_failed(a, "boom".to_string());
+        acq.skip_failed(a);
+        assert_eq!(acq.find(a).unwrap().status, OperationStatus::Cancelled);
+        assert_eq!(acq.queue_state, QueueState::Running);
+    }
+
+    // ── retry_failed reorders to front of pending ────────────────────────────
+
+    /// `retry_failed` resets the op to Queued and inserts it before the first
+    /// pending (Queued/Active) op. With [completed, queued, failed], retrying
+    /// the failed one yields [completed, retried, queued].
+    #[wasm_bindgen_test]
+    fn retry_failed_moves_before_first_pending() {
+        let mut acq = AcquisitionState::default();
+        let done = acq.create_operation(download_kind(1000));
+        let queued = acq.create_operation(download_kind(2000));
+        let failed = acq.create_operation(download_kind(3000));
+        acq.mark_active(done);
+        acq.mark_completed(done, 1);
+        acq.mark_active(failed);
+        acq.mark_failed(failed, "boom".to_string());
+        // queued is left Queued.
+
+        let order = |acq: &AcquisitionState| -> Vec<OperationId> {
+            acq.operations.iter().map(|o| o.id).collect()
+        };
+        assert_eq!(order(&acq), vec![done, queued, failed]);
+
+        acq.retry_failed(failed);
+        // Inserted before the first pending op (queued), after the completed one.
+        assert_eq!(order(&acq), vec![done, failed, queued]);
+        assert_eq!(acq.find(failed).unwrap().status, OperationStatus::Queued);
+        assert_eq!(acq.find(failed).unwrap().phase, DownloadPhase::Idle);
+        assert_eq!(acq.queue_state, QueueState::Running);
+    }
+
+    // ── counters on empty / mixed ────────────────────────────────────────────
+
+    /// Counters and has_active_operations on a fresh state are all zero/false.
+    #[wasm_bindgen_test]
+    fn counters_on_empty_state() {
+        let acq = AcquisitionState::default();
+        assert_eq!(acq.queued_count(), 0);
+        assert_eq!(acq.active_count(), 0);
+        assert!(!acq.has_active_operations());
+        assert!(acq.next_queued_id().is_none());
+    }
+
+    /// Counters reflect a mixed set; has_active_operations is true while any
+    /// Queued OR Active op exists and false once all are terminal.
+    #[wasm_bindgen_test]
+    fn counters_on_mixed_set() {
+        let mut acq = AcquisitionState::default();
+        let active = acq.create_operation(download_kind(1000));
+        let q1 = acq.create_operation(download_kind(2000));
+        let _q2 = acq.create_operation(download_kind(3000));
+        acq.mark_active(active);
+        assert_eq!(acq.active_count(), 1);
+        assert_eq!(acq.queued_count(), 2);
+        assert!(acq.has_active_operations());
+        // First queued in insertion order is q1.
+        assert_eq!(acq.next_queued_id(), Some(q1));
+
+        // Drain everything to terminal states.
+        acq.cancel_operation(active);
+        acq.cancel_all_queued();
+        assert_eq!(acq.active_count(), 0);
+        assert_eq!(acq.queued_count(), 0);
+        assert!(!acq.has_active_operations());
+        assert!(acq.next_queued_id().is_none());
+    }
+
+    // ── failed_scan_starts ───────────────────────────────────────────────────
+
+    /// `failed_scan_starts` collects scan_start ONLY from Failed ArchiveDownload
+    /// ops — ignoring failed-but-non-download kinds and non-failed downloads —
+    /// in oldest→newest order.
+    #[wasm_bindgen_test]
+    fn failed_scan_starts_filters_to_failed_downloads() {
+        let mut acq = AcquisitionState::default();
+        let d1 = acq.create_operation(download_kind(1000));
+        let d2 = acq.create_operation(download_kind(2000));
+        let ok = acq.create_operation(download_kind(3000));
+        let chunk = acq.create_operation(chunk_kind("KDMX", 0, 9999));
+        acq.mark_active(d1);
+        acq.mark_failed(d1, "boom".to_string());
+        acq.mark_active(d2);
+        acq.mark_failed(d2, "boom".to_string());
+        // ok completes fine; chunk fails but is not an ArchiveDownload.
+        acq.mark_active(ok);
+        acq.mark_completed(ok, 1);
+        acq.mark_active(chunk);
+        acq.mark_failed(chunk, "boom".to_string());
+
+        assert_eq!(acq.failed_scan_starts(), vec![1000, 2000]);
+    }
+
+    // ── failed_operation_for_scan_start: tolerance + newest + non-match ───────
+
+    /// The tolerance is inclusive at the boundary and excludes anything beyond;
+    /// when two failed downloads are within tolerance, the NEWEST (latest in the
+    /// deque) wins, and a non-failed download never matches.
+    #[wasm_bindgen_test]
+    fn failed_operation_for_scan_start_tolerance_and_newest() {
+        let mut acq = AcquisitionState::default();
+        let old = acq.create_operation(download_kind(1000));
+        let new = acq.create_operation(download_kind(1005));
+        acq.mark_active(old);
+        acq.mark_failed(old, "boom".to_string());
+        acq.mark_active(new);
+        acq.mark_failed(new, "boom".to_string());
+
+        // Both within tolerance of 1000 → newest (1005) wins.
+        assert_eq!(acq.failed_operation_for_scan_start(1000, 10), Some(new));
+        // Exactly at the tolerance boundary (|1000-995|=5 <= 5) still matches old only.
+        // Query 990: |1000-990|=10 > 5 for old, |1005-990|=15 > 5 for new → None.
+        assert_eq!(acq.failed_operation_for_scan_start(990, 5), None);
+        // Query 998 with tol 5: |1000-998|=2 ok, |1005-998|=7 no → old only.
+        assert_eq!(acq.failed_operation_for_scan_start(998, 5), Some(old));
+
+        // A non-failed (completed) download in range is never returned.
+        let mut acq2 = AcquisitionState::default();
+        let c = acq2.create_operation(download_kind(2000));
+        acq2.mark_active(c);
+        acq2.mark_completed(c, 1);
+        assert_eq!(acq2.failed_operation_for_scan_start(2000, 60), None);
+    }
+
+    // ── operation_description: listing + realtime branches ───────────────────
+
+    /// `operation_description` for ArchiveListing renders "List SITE DATE".
+    #[wasm_bindgen_test]
+    fn operation_description_listing() {
+        let kind = listing_kind("KDMX", 2024, 5, 1);
+        assert_eq!(
+            AcquisitionState::operation_description(&kind),
+            "List KDMX 2024-05-01"
+        );
+    }
+
+    /// `operation_description` for a RealtimeChunk with a valid timestamp formats
+    /// "SITE live HH:MM:SS chunk #N"; an unrepresentable timestamp degrades to
+    /// "SITE chunk #N".
+    #[wasm_bindgen_test]
+    fn operation_description_realtime_valid_and_invalid_ts() {
+        // 3661s = 01:01:01 UTC.
+        let valid = chunk_kind("KDMX", 7, 3661);
+        assert_eq!(
+            AcquisitionState::operation_description(&valid),
+            "KDMX live 01:01:01 chunk #7"
+        );
+        // i64::MAX is not a representable timestamp → fallback branch.
+        let invalid = chunk_kind("KABR", 2, i64::MAX);
+        assert_eq!(
+            AcquisitionState::operation_description(&invalid),
+            "KABR chunk #2"
+        );
+    }
+
+    // ── network_group_key / scan_group_key / scan_group_description ───────────
+
+    /// Realtime chunks group by (site, scan_timestamp); all other kinds group by
+    /// their individual operation id.
+    #[wasm_bindgen_test]
+    fn network_group_key_realtime_vs_other() {
+        let mut acq = AcquisitionState::default();
+        let dl_id = acq.create_operation(download_kind(1000));
+        let chunk_id = acq.create_operation(chunk_kind("KDMX", 4, 1700));
+
+        let dl = acq.find(dl_id).unwrap();
+        assert_eq!(
+            AcquisitionState::network_group_key(dl),
+            NetworkGroupKey::Operation(dl_id)
+        );
+
+        let chunk = acq.find(chunk_id).unwrap();
+        assert_eq!(
+            AcquisitionState::network_group_key(chunk),
+            NetworkGroupKey::RealtimeScan {
+                site_id: "KDMX".to_string(),
+                scan_timestamp: 1700,
+            }
+        );
+    }
+
+    /// `scan_group_key` returns Some only for realtime chunks; None for download
+    /// and listing kinds.
+    #[wasm_bindgen_test]
+    fn scan_group_key_some_only_for_realtime() {
+        assert_eq!(
+            AcquisitionState::scan_group_key(&chunk_kind("KDMX", 1, 4242)),
+            Some(("KDMX".to_string(), 4242))
+        );
+        assert_eq!(AcquisitionState::scan_group_key(&download_kind(1000)), None);
+        assert_eq!(
+            AcquisitionState::scan_group_key(&listing_kind("KDMX", 2024, 5, 1)),
+            None
+        );
+    }
+
+    /// `scan_group_description` formats a valid timestamp as "SITE live scan
+    /// HH:MM:SSZ"; an unrepresentable timestamp falls back to the raw integer.
+    #[wasm_bindgen_test]
+    fn scan_group_description_valid_and_invalid() {
+        // ts 0 → 00:00:00Z UTC.
+        assert_eq!(
+            AcquisitionState::scan_group_description("KDMX", 0),
+            "KDMX live scan 00:00:00Z"
+        );
+        // Unrepresentable → raw integer fallback.
+        assert_eq!(
+            AcquisitionState::scan_group_description("KABR", i64::MAX),
+            format!("KABR live scan {}", i64::MAX)
+        );
+    }
+
+    // ── record_chunk_latency / clear_latencies ───────────────────────────────
+
+    /// Recording a chunk with no first-radial time leaves end-to-end latency None
+    /// (no NaN), while a present first-radial time yields Some(_). clear() empties.
+    #[wasm_bindgen_test]
+    fn record_chunk_latency_e2e_presence_and_clear() {
+        let mut acq = AcquisitionState::default();
+        // No first-radial → end_to_end_latency_ms is None.
+        acq.record_chunk_latency(0, 12.0, None, None);
+        assert_eq!(acq.chunk_latencies.len(), 1);
+        let m0 = &acq.chunk_latencies[0];
+        assert_eq!(m0.chunk_index, 0);
+        assert!((m0.fetch_latency_ms - 12.0).abs() < 1e-9);
+        assert!(m0.end_to_end_latency_ms.is_none());
+
+        // With a first-radial time, e2e is computed as Some(_) (value depends on
+        // wall clock, so only assert presence and finiteness).
+        acq.record_chunk_latency(1, 8.0, Some(1.0), Some(2.0));
+        let m1 = &acq.chunk_latencies[1];
+        assert_eq!(m1.chunk_index, 1);
+        assert!(m1.end_to_end_latency_ms.is_some());
+        assert!(m1.end_to_end_latency_ms.unwrap().is_finite());
+
+        acq.clear_latencies();
+        assert!(acq.chunk_latencies.is_empty());
+        assert!(acq.latency_summary().is_none());
+    }
+
+    // ── correlate_network_request: realtime + miss path ──────────────────────
+
+    /// A realtime chunk op matches a chunks-bucket URL containing its site, and a
+    /// completely unrelated URL correlates to nothing (None).
+    #[wasm_bindgen_test]
+    fn correlate_realtime_and_miss() {
+        let mut acq = AcquisitionState::default();
+        let id = acq.create_operation(chunk_kind("KDMX", 0, 1700));
+        acq.mark_active(id);
+        assert_eq!(
+            acq.correlate_network_request("https://nexrad-level2-chunks/KDMX/0001"),
+            Some(id)
+        );
+        // Unrelated host → no correlation.
+        assert_eq!(
+            acq.correlate_network_request("https://example.com/unrelated"),
+            None
+        );
+        // Empty state correlates to nothing.
+        let empty = AcquisitionState::default();
+        assert_eq!(empty.correlate_network_request("anything"), None);
+    }
+
+    // ── enum / type defaults ─────────────────────────────────────────────────
+
+    /// Default impls land on the documented variants.
+    #[wasm_bindgen_test]
+    fn type_defaults() {
+        assert_eq!(QueueState::default(), QueueState::Empty);
+        assert_eq!(DrawerTab::default(), DrawerTab::Queue);
+        let acq = AcquisitionState::default();
+        assert!(!acq.drawer_expanded);
+        assert!((acq.drawer_height - 250.0).abs() < 1e-6);
+        assert_eq!(acq.active_tab, DrawerTab::Queue);
+        assert!(acq.operations.is_empty());
+        assert!(acq.expanded_network_groups.is_empty());
+    }
+
+    // ── latency_summary p95 boundary for a larger n ──────────────────────────
+
+    /// For n=10 the implementation indexes p50 = sorted[10/2]=sorted[5] and
+    /// p95 = sorted[(10*0.95)=9.5→9]=sorted[9] (the max). Samples 1..=10 ms.
+    #[wasm_bindgen_test]
+    fn latency_summary_n10_indices() {
+        let mut acq = AcquisitionState::default();
+        // Insert reversed to exercise the internal sort.
+        for v in (1..=10).rev() {
+            acq.chunk_latencies.push(ChunkLatencyMetrics {
+                chunk_index: 0,
+                first_radial_time_secs: None,
+                last_radial_time_secs: None,
+                fetch_latency_ms: v as f64,
+                download_complete_time_ms: 0.0,
+                end_to_end_latency_ms: None,
+            });
+        }
+        let s = acq.latency_summary().unwrap();
+        // mean of 1..=10 = 5.5
+        assert!((s.avg_fetch_ms - 5.5).abs() < 1e-9);
+        // sorted = [1..10]; index 5 → 6
+        assert!((s.p50_fetch_ms - 6.0).abs() < 1e-9);
+        // index 9 → 10 (the max)
+        assert!((s.p95_fetch_ms - 10.0).abs() < 1e-9);
+    }
+}

@@ -739,3 +739,366 @@ mod tests {
         assert!(q.auto_fetch_cap_reached());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn item(scan_start: i64, elevation_filter: Option<u8>) -> QueueItem {
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 5, 1).unwrap();
+        QueueItem::new(
+            date,
+            format!("f{scan_start}"),
+            scan_start,
+            scan_start + 300,
+            elevation_filter,
+        )
+    }
+
+    // ── QueueItem construction ──────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn new_item_defaults_to_pending_no_op_zero_priority() {
+        let it = item(500, Some(2));
+        assert!(matches!(it.state, QueueItemState::Pending));
+        assert_eq!(it.operation_id, None);
+        assert_eq!(it.priority, 0);
+        assert_eq!(it.scan_start, 500);
+        assert_eq!(it.scan_end, 800); // scan_start + 300 from the builder
+        assert_eq!(it.elevation_filter, Some(2));
+        assert_eq!(it.file_name, "f500");
+    }
+
+    #[wasm_bindgen_test]
+    fn with_operation_attaches_id_and_preserves_rest() {
+        let it = item(500, None).with_operation(77);
+        assert_eq!(it.operation_id, Some(77));
+        assert_eq!(it.scan_start, 500);
+        assert!(matches!(it.state, QueueItemState::Pending));
+    }
+
+    // ── has_work / active_count / clear ─────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn has_work_false_when_empty_true_with_pending_and_active() {
+        let mut q = DownloadQueueManager::new();
+        assert!(!q.has_work(), "empty queue has no work");
+        q.enqueue([item(100, None)]);
+        assert!(q.has_work(), "a Pending item is work");
+        // Dispatch → Active is still work.
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload { .. }
+        ));
+        assert!(q.has_work(), "an Active item is still work");
+        // Mark done → no more work pending/active.
+        q.mark_active_done(100);
+        assert!(!q.has_work(), "only a Done item remains — no work");
+    }
+
+    #[wasm_bindgen_test]
+    fn clear_empties_queue_and_drops_work() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None), item(400, None)]);
+        assert!(q.has_work());
+        q.clear();
+        assert!(!q.has_work());
+        assert!(q.find_by_scan_start(100).is_none());
+        // After clear, advance reports Complete (nothing pending, nothing active).
+        assert!(matches!(q.advance(false), QueueAction::Complete));
+    }
+
+    #[wasm_bindgen_test]
+    fn active_count_reflects_dispatched_items() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None), item(400, None)]);
+        assert_eq!(q.active_count(), 0);
+        q.reprioritize(0, true);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload { .. }
+        ));
+        assert_eq!(q.active_count(), 1);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload { .. }
+        ));
+        assert_eq!(q.active_count(), 2);
+        q.mark_active_done(100);
+        assert_eq!(q.active_count(), 1);
+    }
+
+    // ── active_items / pending_items iterators ──────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn active_and_pending_iterators_partition_by_state() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None), item(400, None), item(900, None)]);
+        // Activate exactly one (nearest the playhead at 100).
+        q.reprioritize(100, true);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload { .. }
+        ));
+
+        let active: Vec<i64> = q.active_items().map(|i| i.scan_start).collect();
+        assert_eq!(active, vec![100]);
+
+        let mut pending: Vec<i64> = q.pending_items().map(|i| i.scan_start).collect();
+        pending.sort();
+        assert_eq!(pending, vec![400, 900]);
+    }
+
+    #[wasm_bindgen_test]
+    fn iterators_empty_when_no_matching_state() {
+        let q = DownloadQueueManager::new();
+        assert_eq!(q.active_items().count(), 0);
+        assert_eq!(q.pending_items().count(), 0);
+    }
+
+    // ── advance: Paused / Saturated / remaining ─────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn advance_paused_short_circuits_without_dispatch() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None)]);
+        assert!(matches!(q.advance(true), QueueAction::Paused));
+        // Paused did NOT dispatch — the item is still Pending.
+        assert_eq!(q.active_count(), 0);
+        assert_eq!(q.pending_items().count(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn advance_saturated_at_concurrency_ceiling() {
+        let mut q = DownloadQueueManager::new();
+        // DEFAULT_MAX_PARALLEL == 4; enqueue 5 so one stays pending at the cap.
+        q.enqueue([
+            item(100, None),
+            item(200, None),
+            item(300, None),
+            item(400, None),
+            item(500, None),
+        ]);
+        for _ in 0..DEFAULT_MAX_PARALLEL {
+            assert!(matches!(
+                q.advance(false),
+                QueueAction::StartDownload { .. }
+            ));
+        }
+        assert_eq!(q.active_count(), DEFAULT_MAX_PARALLEL);
+        // Ceiling reached, one still pending → Saturated, not a dispatch.
+        assert!(matches!(q.advance(false), QueueAction::Saturated));
+        assert_eq!(q.pending_items().count(), 1);
+    }
+
+    #[wasm_bindgen_test]
+    fn advance_remaining_counts_pending_including_self() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None), item(200, None), item(300, None)]);
+        q.reprioritize(0, true);
+        // First dispatch: 3 items pending at the moment it's measured.
+        match q.advance(false) {
+            QueueAction::StartDownload { remaining, .. } => assert_eq!(remaining, 3),
+            other => panic!("expected dispatch, got {other:?}"),
+        }
+        // Second dispatch: 2 remain.
+        match q.advance(false) {
+            QueueAction::StartDownload { remaining, .. } => assert_eq!(remaining, 2),
+            other => panic!("expected dispatch, got {other:?}"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn advance_complete_only_when_nothing_pending_or_active() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None)]);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload { .. }
+        ));
+        // In flight, nothing pending → Saturated (NOT Complete), since active>0.
+        assert!(matches!(q.advance(false), QueueAction::Saturated));
+        q.mark_active_done(100);
+        // Now nothing pending and nothing active → Complete (and queue cleared).
+        assert!(matches!(q.advance(false), QueueAction::Complete));
+        assert!(
+            q.find_by_scan_start(100).is_none(),
+            "Complete clears the queue"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn advance_ties_dispatch_in_enqueue_order() {
+        let mut q = DownloadQueueManager::new();
+        // Distinct scan_starts but all equally far ahead of the playhead → same
+        // priority; min_by_key is stable, so enqueue order wins the tie.
+        q.enqueue([item(1000, None), item(2000, None), item(3000, None)]);
+        // Playhead far behind all; forward. Priorities differ by distance, so to
+        // force a tie, reprioritize against a playhead that makes them equal is
+        // hard — instead leave priorities at default 0 (no reprioritize).
+        let mut order = Vec::new();
+        while let QueueAction::StartDownload { scan_start, .. } = q.advance(false) {
+            order.push(scan_start);
+            q.mark_active_done(scan_start);
+        }
+        // All priority 0 (default) → enqueue order preserved.
+        assert_eq!(order, vec![1000, 2000, 3000]);
+    }
+
+    // ── mark_active_done idempotency / state guards ─────────────────────────
+
+    #[wasm_bindgen_test]
+    fn mark_active_done_is_noop_on_pending() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None)]);
+        // Item is Pending, not Active — marking done must NOT touch it.
+        q.mark_active_done(100);
+        assert_eq!(q.pending_items().count(), 1, "Pending item untouched");
+        // It still dispatches normally.
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload { .. }
+        ));
+    }
+
+    #[wasm_bindgen_test]
+    fn mark_active_done_is_idempotent_and_ignores_unknown() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None)]);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload { .. }
+        ));
+        q.mark_active_done(100);
+        assert_eq!(q.active_count(), 0);
+        // Second call is a no-op (already Done), and an unknown scan_start too.
+        q.mark_active_done(100);
+        q.mark_active_done(424242);
+        assert_eq!(q.active_count(), 0);
+    }
+
+    // ── find_by_scan_start ──────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn find_by_scan_start_returns_none_when_absent() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None)]);
+        assert!(q.find_by_scan_start(100).is_some());
+        assert!(q.find_by_scan_start(101).is_none());
+    }
+
+    // ── reprioritize only touches Pending ───────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn reprioritize_skips_active_items() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(1000, None), item(5000, None)]);
+        // Dispatch the nearest (1000) so it's Active.
+        q.reprioritize(900, true);
+        assert!(matches!(
+            q.advance(false),
+            QueueAction::StartDownload {
+                scan_start: 1000,
+                ..
+            }
+        ));
+        // Reprioritize with a far playhead. The Active 1000 must keep whatever it
+        // had; the Pending 5000 gets its priority recomputed.
+        q.reprioritize(4900, true);
+        // 5000 covers... playhead 4900 < scan_start 5000 → dist 100, ahead → 100.
+        let pending: Vec<_> = q.pending_items().collect();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].scan_start, 5000);
+        assert_eq!(pending[0].priority, 100);
+    }
+
+    // ── playhead_priority edge / boundary cases ─────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn playhead_priority_boundaries_are_inclusive_zero() {
+        // playhead exactly at scan_start → inside window → 0.
+        assert_eq!(playhead_priority(100, 400, 100, true), 0);
+        // playhead exactly at scan_end → inside window → 0.
+        assert_eq!(playhead_priority(100, 400, 400, true), 0);
+        // playhead one before start: ahead forward, plain distance 1.
+        assert_eq!(playhead_priority(100, 400, 99, true), 1);
+        // playhead one after end, forward → behind → 4x penalty.
+        assert_eq!(playhead_priority(100, 400, 401, true), 4);
+    }
+
+    #[wasm_bindgen_test]
+    fn playhead_priority_ahead_boundary_scan_start_eq_playhead_is_inside() {
+        // When playhead < scan_start is false AND playhead > scan_end is false,
+        // we're inside → 0, regardless of the `ahead` test. Verify the just-ahead
+        // case (playhead just below scan_start) is treated as ahead forward.
+        // scan_start == playhead is inside (covered above); test scan ahead by 1.
+        assert_eq!(playhead_priority(200, 500, 199, true), 1); // ahead, plain
+                                                               // Backward: scan_end <= playhead defines "ahead". scan ends below playhead.
+        assert_eq!(playhead_priority(100, 150, 200, false), 50); // ahead backward, plain
+                                                                 // Backward against direction: scan starts above playhead → 4x.
+        assert_eq!(playhead_priority(300, 600, 200, false), 400); // dist 100 *4
+    }
+
+    #[wasm_bindgen_test]
+    fn playhead_priority_saturates_on_overflow() {
+        // A behind scan whose 4x distance would overflow i64 must saturate, not
+        // panic. dist = i64::MAX (playhead far above scan_end), behind forward.
+        // scan_end = 0, playhead = i64::MAX → dist = i64::MAX; *4 saturates.
+        let p = playhead_priority(-10, 0, i64::MAX, true);
+        assert_eq!(p, i64::MAX, "4x penalty saturates at i64::MAX");
+    }
+
+    // ── prefetch_window: paused ignores speed; playing takes the max ─────────
+
+    #[wasm_bindgen_test]
+    fn prefetch_window_paused_lead_independent_of_speed() {
+        let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
+        // Huge speed but paused → lead is the fixed PAUSED constant, not scaled.
+        let (s, e) = prefetch_window(0.0, 1_000_000.0, false, true);
+        assert_eq!(s, (-trail) as i64);
+        assert_eq!(e, crate::PREFETCH_LOOKAHEAD_SECS_PAUSED as i64);
+    }
+
+    #[wasm_bindgen_test]
+    fn prefetch_window_playing_slow_floors_at_paused_lead() {
+        // Playing but slow: speed*PLAY_LEAD < PAUSED, so .max() picks PAUSED.
+        // speed 1.0 * PREFETCH_PLAY_LEAD_SECS(4.0) = 4.0 < 600.0.
+        let (_, e) = prefetch_window(0.0, 1.0, true, true);
+        assert_eq!(e, crate::PREFETCH_LOOKAHEAD_SECS_PAUSED as i64);
+    }
+
+    #[wasm_bindgen_test]
+    fn prefetch_window_playing_fast_backward_mirrors_lead() {
+        let trail = 2.0 * crate::FALLBACK_SCAN_DURATION_SECS as f64;
+        let speed = 1000.0;
+        let expected_lead = speed * crate::PREFETCH_PLAY_LEAD_SECS; // 4000 > 600
+        let (s, e) = prefetch_window(50_000.0, speed, true, false);
+        // Backward: lead extends behind, trail ahead.
+        assert_eq!(s, (50_000.0 - expected_lead) as i64);
+        assert_eq!(e, (50_000.0 + trail) as i64);
+    }
+
+    // ── prune_pending: keep-all and drop-all extremes ───────────────────────
+
+    #[wasm_bindgen_test]
+    fn prune_pending_keep_all_returns_nothing() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None), item(200, None)]);
+        let pruned = q.prune_pending(|_| true);
+        assert!(pruned.is_empty());
+        assert_eq!(q.pending_items().count(), 2);
+    }
+
+    #[wasm_bindgen_test]
+    fn prune_pending_drop_all_returns_every_pending() {
+        let mut q = DownloadQueueManager::new();
+        q.enqueue([item(100, None), item(200, None)]);
+        let pruned = q.prune_pending(|_| false);
+        let mut starts: Vec<i64> = pruned.iter().map(|i| i.scan_start).collect();
+        starts.sort();
+        assert_eq!(starts, vec![100, 200]);
+        assert_eq!(q.pending_items().count(), 0);
+        assert!(!q.has_work());
+    }
+}

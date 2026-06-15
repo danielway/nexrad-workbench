@@ -1347,3 +1347,487 @@ mod tests {
         assert_eq!(scan(1000.0, 1010.0).display_end_time(), 1010.0);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    use crate::state::ElevationSelection;
+
+    // --- local builders (mirror the sibling `mod tests` private helpers) ---
+
+    fn scan(start: f64, end: f64) -> Scan {
+        Scan {
+            start_time: start,
+            end_time: end,
+            key_timestamp: start,
+            vcp: 215,
+            vcp_pattern: None,
+            sweeps: Vec::new(),
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    fn scan_with_sweeps(start: f64, end: f64, sweeps: Vec<Sweep>) -> Scan {
+        Scan {
+            start_time: start,
+            end_time: end,
+            key_timestamp: start,
+            vcp: 215,
+            vcp_pattern: None,
+            sweeps,
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    fn sweep(start: f64, end: f64, elevation: f32, elev_num: u8) -> Sweep {
+        sweep_products(start, end, elevation, elev_num, &["reflectivity"])
+    }
+
+    fn sweep_products(
+        start: f64,
+        end: f64,
+        elevation: f32,
+        elev_num: u8,
+        products: &[&str],
+    ) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation,
+            elevation_number: elev_num,
+            start_azimuth: 0.0,
+            radials: Vec::new(),
+            cached_products: products.iter().map(|p| p.to_string()).collect(),
+        }
+    }
+
+    fn fixed(elev_num: u8) -> ElevationSelection {
+        ElevationSelection::Fixed {
+            elevation_number: elev_num,
+            angle: 0.5,
+        }
+    }
+
+    // --- Sweep::duration / Scan::duration ---
+
+    #[wasm_bindgen_test]
+    fn sweep_duration_is_end_minus_start() {
+        let sw = sweep(1000.0, 1012.5, 0.5, 1);
+        assert!((sw.duration() - 12.5).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_duration_is_end_minus_start() {
+        let s = scan(2000.0, 2300.0);
+        assert!((s.duration() - 300.0).abs() < 1e-9);
+    }
+
+    // --- Scan::key_ms ---
+
+    #[wasm_bindgen_test]
+    fn scan_key_ms_converts_seconds_to_millis() {
+        // key_timestamp == start_time in the builder; 1700000000.789s -> ms (rounded).
+        let mut s = scan(1000.0, 1100.0);
+        s.key_timestamp = 1_700_000_000.789;
+        assert_eq!(s.key_ms(), 1_700_000_000_789);
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_key_ms_whole_second() {
+        let mut s = scan(0.0, 10.0);
+        s.key_timestamp = 1500.0;
+        assert_eq!(s.key_ms(), 1_500_000);
+    }
+
+    // --- Scan::target_elevation_angle (static VCP table fallback) ---
+
+    #[wasm_bindgen_test]
+    fn target_elevation_angle_uses_static_vcp_table_when_no_pattern() {
+        // vcp 215, no extracted pattern -> falls through to the static table.
+        // elevation_number 1 maps to index 0 (angle 0.5); number 5 -> index 4 (2.4).
+        let s = scan(0.0, 10.0); // vcp 215, vcp_pattern None
+        assert!((s.target_elevation_angle(1).unwrap() - 0.5).abs() < 1e-4);
+        assert!((s.target_elevation_angle(5).unwrap() - 2.4).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn target_elevation_angle_number_zero_saturates_to_first() {
+        // elevation_number 0 saturating_sub(1) -> idx 0.
+        let s = scan(0.0, 10.0);
+        assert!((s.target_elevation_angle(0).unwrap() - 0.5).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn target_elevation_angle_out_of_range_is_none() {
+        // VCP 215 has 14 elevations; number 99 -> idx 98 is out of range, and
+        // there is no extracted pattern, so neither source has an entry.
+        let s = scan(0.0, 10.0);
+        assert_eq!(s.target_elevation_angle(99), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn target_elevation_angle_unknown_vcp_is_none() {
+        // A VCP number with no static definition and no pattern -> None.
+        let mut s = scan(0.0, 10.0);
+        s.vcp = 9999;
+        assert_eq!(s.target_elevation_angle(1), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn target_elevation_angle_prefers_extracted_pattern() {
+        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+        let mut s = scan(0.0, 10.0);
+        s.vcp_pattern = Some(ExtractedVcp {
+            number: 215,
+            elevations: vec![
+                ExtractedVcpElevation {
+                    angle: 7.25,
+                    waveform: "CS".to_string(),
+                    prf_number: 1,
+                    is_sails: false,
+                    is_mrle: false,
+                    is_base_tilt: false,
+                    azimuth_rate: None,
+                },
+                ExtractedVcpElevation {
+                    angle: 8.5,
+                    waveform: "CS".to_string(),
+                    prf_number: 1,
+                    is_sails: false,
+                    is_mrle: false,
+                    is_base_tilt: false,
+                    azimuth_rate: None,
+                },
+            ],
+        });
+        // Pattern wins over the static 215 table (0.5/0.9).
+        assert!((s.target_elevation_angle(1).unwrap() - 7.25).abs() < 1e-4);
+        assert!((s.target_elevation_angle(2).unwrap() - 8.5).abs() < 1e-4);
+        // Number past the pattern (idx 2) falls back to the static table: idx 2 = 1.3.
+        assert!((s.target_elevation_angle(3).unwrap() - 1.3).abs() < 1e-4);
+    }
+
+    // --- Scan::display_angle ---
+
+    #[wasm_bindgen_test]
+    fn display_angle_uses_vcp_target_when_available() {
+        // sweep measured average is noisy (0.61); display angle anchors to the
+        // commanded 0.5 from the static VCP 215 table for elevation_number 1.
+        let s = scan(0.0, 10.0);
+        let sw = sweep(0.0, 10.0, 0.61, 1);
+        assert!((s.display_angle(&sw) - 0.5).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn display_angle_falls_back_to_measured_when_no_target() {
+        // Unknown VCP, no pattern -> no target -> use the sweep's measured angle.
+        let mut s = scan(0.0, 10.0);
+        s.vcp = 9999;
+        let sw = sweep(0.0, 10.0, 3.14, 7);
+        assert!((s.display_angle(&sw) - 3.14).abs() < 1e-4);
+    }
+
+    // --- RadarTimeline::find_recent_scan (None branch when before all scans) ---
+
+    #[wasm_bindgen_test]
+    fn find_recent_scan_none_before_all_scans() {
+        let tl = RadarTimeline {
+            scans: vec![scan(1000.0, 1300.0), scan(1300.0, 1600.0)],
+        };
+        // ts before the first scan -> partition_point == 0 -> wrapping_sub None.
+        assert!(tl.find_recent_scan(500.0, 10_000.0).is_none());
+    }
+
+    // --- RadarTimeline::find_previous_scan (entirely untested) ---
+
+    #[wasm_bindgen_test]
+    fn find_previous_scan_returns_scan_two_before() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan(1000.0, 1300.0),
+                scan(1300.0, 1600.0),
+                scan(1600.0, 1900.0),
+            ],
+        };
+        // ts inside the third scan (idx 2) -> idx==3 -> idx-2==1 is the previous scan.
+        let prev = tl.find_previous_scan(1700.0, 10_000.0).unwrap();
+        assert_eq!(prev.start_time, 1300.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn find_previous_scan_none_inside_first_scan() {
+        let tl = RadarTimeline {
+            scans: vec![scan(1000.0, 1300.0), scan(1300.0, 1600.0)],
+        };
+        // ts inside the first scan -> idx==1 (<2) -> None.
+        assert!(tl.find_previous_scan(1100.0, 10_000.0).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn find_previous_scan_none_when_too_old() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan(1000.0, 1300.0),
+                scan(2000.0, 2300.0),
+                scan(2400.0, 2700.0),
+            ],
+        };
+        // ts in scan 3; previous (idx 1) starts at 2000; ts-2000 = 600 > 100 window.
+        assert!(tl.find_previous_scan(2600.0, 100.0).is_none());
+        // Wider window admits it.
+        let prev = tl.find_previous_scan(2600.0, 10_000.0).unwrap();
+        assert_eq!(prev.start_time, 2000.0);
+    }
+
+    // --- RadarTimeline::scan_timestamp ---
+
+    #[wasm_bindgen_test]
+    fn scan_timestamp_truncates_start_time_to_i64() {
+        let s = scan(1700.9, 1800.0);
+        assert_eq!(RadarTimeline::scan_timestamp(&s), 1700);
+    }
+
+    // --- find_scan_at_timestamp edge: empty + before-all ---
+
+    #[wasm_bindgen_test]
+    fn find_scan_at_timestamp_empty_and_before_all() {
+        let empty = RadarTimeline { scans: vec![] };
+        assert!(empty.find_scan_at_timestamp(1000.0).is_none());
+
+        let tl = RadarTimeline {
+            scans: vec![scan(1000.0, 1300.0)],
+        };
+        // ts before any scan -> partition_point 0 -> wrapping_sub underflow -> None.
+        assert!(tl.find_scan_at_timestamp(500.0).is_none());
+        // ts inside the gap after the scan's end -> None (end check fails).
+        assert!(tl.find_scan_at_timestamp(1400.0).is_none());
+    }
+
+    // --- next_any_sweep_end / prev_any_sweep_end (untested) ---
+
+    #[wasm_bindgen_test]
+    fn next_any_sweep_end_returns_first_future_sweep() {
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1040.0,
+                vec![
+                    sweep(1000.0, 1010.0, 0.5, 1),
+                    sweep(1010.0, 1020.0, 0.9, 2),
+                    sweep(1020.0, 1030.0, 1.3, 3),
+                ],
+            )],
+        };
+        // From ts=1012: 1010 is not > 1012.5, 1020 is -> 1020.
+        assert_eq!(tl.next_any_sweep_end(1012.0), Some(1020.0));
+        // Past the last sweep -> None.
+        assert_eq!(tl.next_any_sweep_end(1030.0), None);
+    }
+
+    #[wasm_bindgen_test]
+    fn prev_any_sweep_end_returns_latest_past_sweep() {
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1040.0,
+                vec![
+                    sweep(1000.0, 1010.0, 0.5, 1),
+                    sweep(1010.0, 1020.0, 0.9, 2),
+                    sweep(1020.0, 1030.0, 1.3, 3),
+                ],
+            )],
+        };
+        // From ts=1025: sweeps ending < 1024.5 are 1010, 1020 -> latest 1020.
+        assert_eq!(tl.prev_any_sweep_end(1025.0), Some(1020.0));
+        // Before all sweeps -> None.
+        assert_eq!(tl.prev_any_sweep_end(1005.0), None);
+    }
+
+    // --- next_matching_sweep_end_by_number None when no later match ---
+
+    #[wasm_bindgen_test]
+    fn next_matching_sweep_end_by_number_none_when_absent() {
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1020.0,
+                vec![sweep(1000.0, 1010.0, 0.5, 1)],
+            )],
+        };
+        // No elevation_number 2 exists at all.
+        assert_eq!(tl.next_matching_sweep_end_by_number(1000.0, 2), None);
+        // elevation_number 1 exists but its only sweep ends at/<= ts+0.5.
+        assert_eq!(tl.next_matching_sweep_end_by_number(1010.0, 1), None);
+    }
+
+    // --- matching_sweep_end_times: dedup near-equal end times ---
+
+    #[wasm_bindgen_test]
+    fn matching_sweep_end_times_dedups_near_equal() {
+        // Two scans with an elev-1 sweep ending at ~the same time (within 0.01).
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(1000.0, 1010.0, vec![sweep(1000.0, 1010.0, 0.5, 1)]),
+                scan_with_sweeps(1010.0, 1020.0, vec![sweep(1010.0, 1010.005, 0.5, 1)]),
+            ],
+        };
+        let times = tl.matching_sweep_end_times_by_number(1, "reflectivity", None);
+        assert_eq!(times.len(), 1);
+        assert!((times[0] - 1010.0).abs() < 0.01);
+    }
+
+    // --- matching_sweep_end_times: scan-level bounds cull whole scan ---
+
+    #[wasm_bindgen_test]
+    fn matching_sweep_end_times_culls_scan_outside_bounds() {
+        let tl = RadarTimeline {
+            scans: vec![
+                scan_with_sweeps(1000.0, 1010.0, vec![sweep(1000.0, 1010.0, 0.5, 1)]),
+                scan_with_sweeps(5000.0, 5010.0, vec![sweep(5000.0, 5010.0, 0.5, 1)]),
+            ],
+        };
+        // Bounds only cover the first scan; the second scan's start_time > end.
+        let times = tl.matching_sweep_end_times_by_number(1, "reflectivity", Some((900.0, 1100.0)));
+        assert_eq!(times, vec![1010.0]);
+    }
+
+    // --- lookback_window: Latest mode none when no frames before now ---
+
+    #[wasm_bindgen_test]
+    fn lookback_window_latest_none_before_now() {
+        let tl = RadarTimeline {
+            scans: vec![scan_with_sweeps(
+                1000.0,
+                1010.0,
+                vec![sweep(1000.0, 1010.0, 0.5, 1)],
+            )],
+        };
+        assert!(tl
+            .lookback_window(&ElevationSelection::Latest, "reflectivity", 100.0, 5)
+            .is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn lookback_window_n_zero_treated_as_one() {
+        // frames at 100,200,300; n=0 -> n.max(1)=1 -> only the last frame.
+        let scans = (1..=3)
+            .map(|i| {
+                let end = (i as f64) * 100.0;
+                scan_with_sweeps(end - 50.0, end, vec![sweep(end - 50.0, end, 0.5, 1)])
+            })
+            .collect();
+        let tl = RadarTimeline { scans };
+        let w = tl
+            .lookback_window(&fixed(1), "reflectivity", 10_000.0, 0)
+            .unwrap();
+        assert_eq!(w, (300.0, 300.0));
+    }
+
+    // --- display_end_time: real end wins when later than VCP projection ---
+
+    #[wasm_bindgen_test]
+    fn display_end_time_keeps_real_end_when_data_extends_past_vcp() {
+        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+        // VCP projects a 120s volume (360/3) -> projected end 1120. But the real
+        // data already extends to 1500, so the max keeps 1500.
+        let mut s = scan(1000.0, 1500.0);
+        s.vcp_pattern = Some(ExtractedVcp {
+            number: 215,
+            elevations: vec![ExtractedVcpElevation {
+                angle: 0.5,
+                waveform: "CS".to_string(),
+                prf_number: 1,
+                is_sails: false,
+                is_mrle: false,
+                is_base_tilt: false,
+                azimuth_rate: Some(3.0),
+            }],
+        });
+        assert!((s.display_end_time() - 1500.0).abs() < 1e-6);
+    }
+
+    // --- from_metadata ---
+
+    fn meta(
+        site: &str,
+        scan_start_secs: i64,
+        end_timestamp: Option<i64>,
+        sweeps: Option<Vec<crate::data::CachedSweep>>,
+    ) -> ScanMetadata {
+        ScanMetadata {
+            key: crate::data::keys::ScanKey::from_secs(site, scan_start_secs),
+            file_name: "f".to_string(),
+            file_size: 0,
+            end_timestamp,
+            vcp: None,
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+            sweeps,
+        }
+    }
+
+    fn cached_sweep(start: f64, end: f64, elev: f32, num: u8) -> crate::data::CachedSweep {
+        crate::data::CachedSweep {
+            start,
+            end,
+            elevation: elev,
+            elevation_number: num,
+            start_azimuth: 12.0,
+            cached_products: vec!["reflectivity".to_string()],
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn from_metadata_default_duration_when_end_unknown() {
+        // No end_timestamp, no sweeps -> end defaults to start + 300s.
+        let tl = RadarTimeline::from_metadata(vec![meta("KDMX", 1000, None, None)]);
+        assert_eq!(tl.scans.len(), 1);
+        let s = &tl.scans[0];
+        assert!((s.start_time - 1000.0).abs() < 1e-6);
+        assert!((s.end_time - 1300.0).abs() < 1e-6);
+        assert!((s.key_timestamp - 1000.0).abs() < 1e-6);
+        assert_eq!(s.vcp, 0); // no vcp -> 0
+        assert!(s.sweeps.is_empty());
+    }
+
+    #[wasm_bindgen_test]
+    fn from_metadata_expands_bounds_to_contain_sweeps() {
+        // Sweep starts before the nominal scan start and ends after the
+        // declared end_timestamp -> both bounds expand to cover the sweep.
+        let sweeps = Some(vec![cached_sweep(990.0, 1320.0, 0.5, 1)]);
+        let tl = RadarTimeline::from_metadata(vec![meta("KDMX", 1000, Some(1100), sweeps)]);
+        let s = &tl.scans[0];
+        // start_time pulled earlier to the sweep start.
+        assert!((s.start_time - 990.0).abs() < 1e-6);
+        // end_time pushed later to the sweep end (past declared 1100).
+        assert!((s.end_time - 1320.0).abs() < 1e-6);
+        // key_timestamp stays anchored to the nominal scan start.
+        assert!((s.key_timestamp - 1000.0).abs() < 1e-6);
+        // Sweep fields carried over; radials left empty for the metadata path.
+        assert_eq!(s.sweeps.len(), 1);
+        assert_eq!(s.sweeps[0].elevation_number, 1);
+        assert!((s.sweeps[0].start_azimuth - 12.0).abs() < 1e-6);
+        assert!(s.sweeps[0].radials.is_empty());
+        assert_eq!(
+            s.sweeps[0].cached_products,
+            vec!["reflectivity".to_string()]
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn from_metadata_keeps_declared_bounds_when_sweeps_within() {
+        // Sweep fully inside [1000, 1100] -> bounds unchanged.
+        let sweeps = Some(vec![cached_sweep(1010.0, 1090.0, 0.5, 1)]);
+        let tl = RadarTimeline::from_metadata(vec![meta("KDMX", 1000, Some(1100), sweeps)]);
+        let s = &tl.scans[0];
+        assert!((s.start_time - 1000.0).abs() < 1e-6);
+        assert!((s.end_time - 1100.0).abs() < 1e-6);
+    }
+}

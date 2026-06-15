@@ -1432,3 +1432,369 @@ mod tests {
         assert_eq!(header.gate_count, 2);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ── KeyParseError Display ────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn key_parse_error_display_all_variants() {
+        let wrong = KeyParseError::WrongFieldCount {
+            expected: 2,
+            got: 3,
+        };
+        assert_eq!(format!("{wrong}"), "expected 2 '|'-separated fields, got 3");
+
+        let bad_ts = KeyParseError::BadTimestamp("xyz".to_string());
+        // The {s:?} debug formatting wraps the field in quotes.
+        assert_eq!(format!("{bad_ts}"), "bad timestamp field \"xyz\"");
+
+        let bad_elev = KeyParseError::BadElevation("999".to_string());
+        assert_eq!(format!("{bad_elev}"), "bad elevation field \"999\"");
+    }
+
+    // ── Display impls for the key types ──────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn scan_key_display_format() {
+        let key = ScanKey::new("KDMX", UnixMillis(1700000000000));
+        // ScanKey Display is "{site}@{scan_start}"; SiteId and UnixMillis
+        // Display are the bare string / integer.
+        assert_eq!(format!("{key}"), "KDMX@1700000000000");
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_data_key_display_format() {
+        let scan = ScanKey::new("KLOT", UnixMillis(1700000000000));
+        let key = SweepDataKey::new(scan, 3, "velocity");
+        // "{scan}@{elev}#{product}" where scan itself renders as "site@ms".
+        assert_eq!(format!("{key}"), "KLOT@1700000000000@3#velocity");
+    }
+
+    #[wasm_bindgen_test]
+    fn unix_millis_display_is_raw_integer() {
+        assert_eq!(format!("{}", UnixMillis(0)), "0");
+        assert_eq!(format!("{}", UnixMillis(-5)), "-5");
+        assert_eq!(format!("{}", UnixMillis(1700000000000)), "1700000000000");
+    }
+
+    // ── UnixMillis conversions: truncation / negatives ───────────────────────
+
+    #[wasm_bindgen_test]
+    fn unix_millis_as_secs_truncates_toward_zero() {
+        // 1999 ms -> 1 s (integer division drops the fractional second).
+        assert_eq!(UnixMillis(1999).as_secs(), 1);
+        assert_eq!(UnixMillis(1000).as_secs(), 1);
+        assert_eq!(UnixMillis(999).as_secs(), 0);
+        // Negative integer division in Rust truncates toward zero.
+        assert_eq!(UnixMillis(-1999).as_secs(), -1);
+        assert_eq!(UnixMillis(-1).as_secs(), 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn unix_millis_from_secs_and_as_secs_f64_negative() {
+        let ms = UnixMillis::from_secs(-1234);
+        assert_eq!(ms.0, -1_234_000);
+        assert_eq!(ms.as_secs(), -1234);
+        assert!((ms.as_secs_f64() - (-1234.0)).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn unix_millis_from_secs_f64_rounds_to_nearest_ms() {
+        // 0.0014 s = 1.4 ms -> rounds to 1.
+        assert_eq!(UnixMillis::from_secs_f64(0.0014).0, 1);
+        // 0.0015 s = 1.5 ms -> rounds half away from zero to 2.
+        assert_eq!(UnixMillis::from_secs_f64(0.0015).0, 2);
+        // 0.0016 s = 1.6 ms -> 2.
+        assert_eq!(UnixMillis::from_secs_f64(0.0016).0, 2);
+        // Negative fractional rounds magnitude away from zero.
+        assert_eq!(UnixMillis::from_secs_f64(-0.0015).0, -2);
+    }
+
+    // ── LiveVolumeAnchor ─────────────────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn live_anchor_new_uses_provisional_until_confirmed() {
+        let scan = ScanKey::from_secs("KDMX", 1_700_000_000);
+        let anchor = LiveVolumeAnchor::new(scan.clone(), ProvisionalStart(1_700_000_001.25));
+        // No confirmed value yet -> best_start_secs is the provisional value.
+        assert!(anchor.confirmed.is_none());
+        assert!((anchor.best_start_secs() - 1_700_000_001.25).abs() < 1e-9);
+        // scan_key is preserved verbatim.
+        assert_eq!(anchor.scan_key, scan);
+        assert!((anchor.provisional.0 - 1_700_000_001.25).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn live_anchor_confirm_swaps_best_start_and_is_idempotent() {
+        let scan = ScanKey::from_secs("KDMX", 1_700_000_000);
+        let mut anchor = LiveVolumeAnchor::new(scan, ProvisionalStart(1_700_000_001.25));
+
+        anchor.confirm(ConfirmedStart(1_700_000_000.5));
+        // Once confirmed, best_start_secs prefers the confirmed value.
+        assert!((anchor.best_start_secs() - 1_700_000_000.5).abs() < 1e-9);
+        assert_eq!(anchor.confirmed, Some(ConfirmedStart(1_700_000_000.5)));
+
+        // Re-confirming overwrites (idempotent in shape; last write wins).
+        anchor.confirm(ConfirmedStart(1_700_000_000.75));
+        assert!((anchor.best_start_secs() - 1_700_000_000.75).abs() < 1e-9);
+        // Provisional is untouched by confirm.
+        assert!((anchor.provisional.0 - 1_700_000_001.25).abs() < 1e-9);
+    }
+
+    // ── ScanCompleteness::from_counts: branches the existing test misses ──────
+
+    #[wasm_bindgen_test]
+    fn completeness_partial_no_planned_with_vcp_is_partial_with_vcp() {
+        // planned = None but has_vcp = true -> PartialWithVcp (the
+        // `None if has_vcp` arm, not exercised by the existing test which only
+        // pairs has_vcp with a Some(planned)).
+        assert_eq!(
+            ScanCompleteness::from_counts(true, 5, None),
+            ScanCompleteness::PartialWithVcp
+        );
+        // planned = None and has_vcp = false -> PartialNoVcp.
+        assert_eq!(
+            ScanCompleteness::from_counts(false, 5, None),
+            ScanCompleteness::PartialNoVcp
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn completeness_zero_cached_is_always_missing() {
+        // cached == 0 short-circuits to Missing regardless of vcp/planned.
+        assert_eq!(
+            ScanCompleteness::from_counts(true, 0, Some(10)),
+            ScanCompleteness::Missing
+        );
+        assert_eq!(
+            ScanCompleteness::from_counts(true, 0, None),
+            ScanCompleteness::Missing
+        );
+        assert_eq!(
+            ScanCompleteness::from_counts(false, 0, Some(10)),
+            ScanCompleteness::Missing
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn completeness_partial_with_planned_no_vcp() {
+        // planned = Some, cached < planned, has_vcp = false -> PartialNoVcp.
+        assert_eq!(
+            ScanCompleteness::from_counts(false, 3, Some(10)),
+            ScanCompleteness::PartialNoVcp
+        );
+        // exact-boundary: cached == planned -> Complete (>= check).
+        assert_eq!(
+            ScanCompleteness::from_counts(true, 10, Some(10)),
+            ScanCompleteness::Complete
+        );
+    }
+
+    // ── ElevationUpload::to_cached_sweep ─────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn elevation_upload_to_cached_sweep_maps_fields_and_products() {
+        let upload = ElevationUpload {
+            elevation_number: 4,
+            timing: SweepTiming {
+                start_secs: 100.5,
+                end_secs: 110.75,
+                elevation_angle: 1.45,
+                start_azimuth: 271.0,
+            },
+            blobs: vec![
+                ProductBlob {
+                    product: "reflectivity",
+                    bytes: vec![1, 2, 3],
+                },
+                ProductBlob {
+                    product: "velocity",
+                    bytes: vec![4, 5],
+                },
+            ],
+        };
+        let cs = upload.to_cached_sweep();
+        assert!((cs.start - 100.5).abs() < 1e-9);
+        assert!((cs.end - 110.75).abs() < 1e-9);
+        assert!((cs.elevation - 1.45).abs() < 1e-6);
+        assert_eq!(cs.elevation_number, 4);
+        assert!((cs.start_azimuth - 271.0).abs() < 1e-6);
+        // Product names are collected in order.
+        assert_eq!(cs.cached_products, vec!["reflectivity", "velocity"]);
+    }
+
+    #[wasm_bindgen_test]
+    fn elevation_upload_to_cached_sweep_empty_blobs_yields_no_products() {
+        let upload = ElevationUpload {
+            elevation_number: 1,
+            timing: SweepTiming {
+                start_secs: 0.0,
+                end_secs: 0.0,
+                elevation_angle: 0.5,
+                start_azimuth: 0.0,
+            },
+            blobs: vec![],
+        };
+        let cs = upload.to_cached_sweep();
+        assert!(cs.cached_products.is_empty());
+        assert_eq!(cs.elevation_number, 1);
+    }
+
+    // ── ScanIndexEntry accessors ─────────────────────────────────────────────
+
+    fn mk_cached(elevation_number: u8, start: f64, end: f64) -> CachedSweep {
+        CachedSweep {
+            start,
+            end,
+            elevation: 0.5,
+            elevation_number,
+            start_azimuth: 0.0,
+            cached_products: vec![],
+        }
+    }
+
+    fn mk_elev(rate: Option<f32>) -> ExtractedVcpElevation {
+        ExtractedVcpElevation {
+            angle: 0.5,
+            waveform: "CS".to_string(),
+            prf_number: 1,
+            is_sails: false,
+            is_mrle: false,
+            is_base_tilt: false,
+            azimuth_rate: rate,
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_index_entry_counts_and_has_vcp() {
+        let entry = ScanIndexEntry {
+            scan: ScanKey::from_secs("KDMX", 1_700_000_000),
+            vcp: Some(ExtractedVcp {
+                number: 212,
+                elevations: vec![mk_elev(None), mk_elev(None), mk_elev(None)],
+            }),
+            file_name: None,
+            cached_sweeps: vec![mk_cached(1, 0.0, 1.0), mk_cached(2, 1.0, 2.0)],
+            total_size_bytes: 0,
+        };
+        assert!(entry.has_vcp());
+        assert_eq!(entry.planned_sweep_count(), Some(3));
+        assert_eq!(entry.cached_sweep_count(), 2);
+
+        let no_vcp = ScanIndexEntry {
+            scan: ScanKey::from_secs("KDMX", 1_700_000_000),
+            vcp: None,
+            file_name: None,
+            cached_sweeps: vec![],
+            total_size_bytes: 0,
+        };
+        assert!(!no_vcp.has_vcp());
+        assert_eq!(no_vcp.planned_sweep_count(), None);
+        assert_eq!(no_vcp.cached_sweep_count(), 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn scan_index_entry_end_timestamp_max_and_none() {
+        // No sweeps -> None.
+        let empty = ScanIndexEntry {
+            scan: ScanKey::from_secs("KDMX", 1_700_000_000),
+            vcp: None,
+            file_name: None,
+            cached_sweeps: vec![],
+            total_size_bytes: 0,
+        };
+        assert_eq!(empty.end_timestamp_secs(), None);
+
+        // Max across sweeps; the `end as i64` cast truncates the fraction.
+        let entry = ScanIndexEntry {
+            scan: ScanKey::from_secs("KDMX", 1_700_000_000),
+            vcp: None,
+            file_name: None,
+            cached_sweeps: vec![
+                mk_cached(1, 100.0, 110.9),
+                mk_cached(2, 120.0, 130.6),
+                mk_cached(3, 105.0, 115.2),
+            ],
+            total_size_bytes: 0,
+        };
+        // Largest end is 130.6 -> truncated to 130.
+        assert_eq!(entry.end_timestamp_secs(), Some(130));
+    }
+
+    // ── SweepDataKey::from_storage_key elevation overflow / negative ──────────
+
+    #[wasm_bindgen_test]
+    fn sweep_data_key_elevation_out_of_u8_range_is_bad_elevation() {
+        // 256 overflows u8 -> BadElevation (existing test only checks "999").
+        assert_eq!(
+            SweepDataKey::from_storage_key("KDMX|1700000000000|256|reflectivity"),
+            Err(KeyParseError::BadElevation("256".into()))
+        );
+        // Negative is not a valid u8 either.
+        assert_eq!(
+            SweepDataKey::from_storage_key("KDMX|1700000000000|-1|reflectivity"),
+            Err(KeyParseError::BadElevation("-1".into()))
+        );
+        // 255 is the inclusive upper bound of u8 and parses fine.
+        let ok = SweepDataKey::from_storage_key("KDMX|1700000000000|255|reflectivity").unwrap();
+        assert_eq!(ok.elevation_number, 255);
+    }
+
+    // ── parse_sweep_header boundary / version-1 with zero azimuths ────────────
+
+    #[wasm_bindgen_test]
+    fn parse_sweep_header_exact_header_size_zero_arrays() {
+        // A sweep with zero azimuths/gates serializes to exactly HEADER_SIZE
+        // (72) bytes for version 0, and parses at the boundary (len < 72 is the
+        // only error case).
+        let sweep = PrecomputedSweep {
+            azimuth_count: 0,
+            gate_count: 0,
+            first_gate_range_km: 1.0,
+            gate_interval_km: 0.5,
+            max_range_km: 2.0,
+            scale: 3.0,
+            offset: 4.0,
+            radial_count: 0,
+            mean_elevation: 7.5,
+            sweep_start_secs: 100.0,
+            sweep_end_secs: 110.0,
+            azimuths: vec![],
+            radial_times: vec![],
+            gate_values: GateValues::U8(vec![]),
+        };
+        let bytes = sweep.to_bytes();
+        assert_eq!(bytes.len(), 72);
+        let header = parse_sweep_header(&bytes).unwrap();
+        assert_eq!(header.azimuth_count, 0);
+        assert_eq!(header.gate_count, 0);
+        assert_eq!(header.data_word_size, 1);
+        assert!((header.scale - 3.0).abs() < 1e-6);
+        assert!((header.offset - 4.0).abs() < 1e-6);
+        assert!((header.mean_elevation - 7.5).abs() < 1e-6);
+        // Version 0 (no radial_times): radial_times_offset == 0 and
+        // gate_values_offset sits right after the (empty) azimuth array.
+        assert_eq!(header.radial_times_offset, 0);
+        assert_eq!(header.azimuths_offset, 72);
+        assert_eq!(header.gate_values_offset, 72);
+    }
+
+    #[wasm_bindgen_test]
+    fn parse_sweep_header_too_small_by_one_byte() {
+        // 71 bytes is one short of the header and must error.
+        let data = vec![0u8; HEADER_SIZE - 1];
+        assert!(parse_sweep_header(&data).is_err());
+        // The error message names both lengths. (SweepHeader has no Debug, so
+        // unwrap_err() won't compile — match the Err out instead.)
+        let msg = match parse_sweep_header(&data) {
+            Err(m) => m,
+            Ok(_) => panic!("expected a too-small error"),
+        };
+        assert!(msg.contains("71"));
+        assert!(msg.contains("72"));
+    }
+}

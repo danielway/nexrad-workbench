@@ -447,3 +447,316 @@ mod tests {
         assert_eq!(tier, TimelineTier::Macro);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::state::radar_data::{Scan, Sweep};
+    use crate::state::SavedEvent;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // A fixed UTC day start: 2026-06-01 00:00:00 UTC = 1_780_272_000 (multiple
+    // of DAY_SECS). Re-declared here since the sibling `mod tests` helpers are
+    // private to that module.
+    const DAY0: f64 = 1_780_272_000.0;
+
+    fn scan_span(start: f64, end: f64, cached: bool) -> Scan {
+        let products: Vec<String> = if cached {
+            vec!["reflectivity".to_string()]
+        } else {
+            Vec::new()
+        };
+        Scan {
+            start_time: start,
+            end_time: end,
+            key_timestamp: start,
+            vcp: 215,
+            vcp_pattern: None,
+            sweeps: vec![Sweep {
+                start_time: start,
+                end_time: end,
+                elevation: 0.5,
+                elevation_number: 1,
+                start_azimuth: 0.0,
+                radials: Vec::new(),
+                cached_products: products,
+            }],
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    fn no_events() -> SavedEvents {
+        SavedEvents::default()
+    }
+
+    // --- utc_day_start edge / negative / exact-boundary cases ---
+
+    #[wasm_bindgen_test]
+    fn utc_day_start_at_zero_is_zero() {
+        // The epoch itself is a day boundary.
+        assert_eq!(utc_day_start(0.0), 0.0);
+        // Just inside the first day still floors to 0.
+        assert_eq!(utc_day_start(1.0), 0.0);
+        assert_eq!(utc_day_start(DAY_SECS - 1.0), 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn utc_day_start_negative_floors_toward_minus_infinity() {
+        // floor(-0.5) = -1, so a tiny negative ts belongs to the day [-DAY_SECS, 0).
+        assert_eq!(utc_day_start(-1.0), -DAY_SECS);
+        // Exact negative boundary maps to itself.
+        assert_eq!(utc_day_start(-DAY_SECS), -DAY_SECS);
+        // Mid negative day.
+        assert_eq!(utc_day_start(-DAY_SECS + 100.0), -DAY_SECS);
+    }
+
+    // --- aggregate_day_buckets: argument-order independence ---
+
+    #[wasm_bindgen_test]
+    fn reversed_view_bounds_yield_same_buckets() {
+        // The aggregator uses min/max on the bounds, so swapping start/end must
+        // produce identical buckets.
+        let cache = RadarTimeline {
+            scans: vec![scan_span(DAY0 + 1000.0, DAY0 + 4600.0, true)],
+        };
+        let forward = aggregate_day_buckets(
+            &cache,
+            &[],
+            &no_events(),
+            "KDMX",
+            DAY0,
+            DAY0 + 2.0 * DAY_SECS,
+        );
+        let reversed = aggregate_day_buckets(
+            &cache,
+            &[],
+            &no_events(),
+            "KDMX",
+            DAY0 + 2.0 * DAY_SECS,
+            DAY0,
+        );
+        assert_eq!(forward.len(), reversed.len());
+        assert_eq!(forward, reversed);
+    }
+
+    // --- availability clamps to 1.0 for an over-full day ---
+
+    #[wasm_bindgen_test]
+    fn day_fully_covered_clamps_availability_to_one() {
+        // A shadow span longer than the whole day; its day-slice is exactly one
+        // day of seconds, so availability_frac == 1.0 (and cache_frac == 0).
+        let cache = RadarTimeline { scans: Vec::new() };
+        let shadows = vec![ScanBoundary {
+            start: (DAY0 - DAY_SECS) as i64,
+            end: (DAY0 + 2.0 * DAY_SECS) as i64,
+        }];
+        let buckets =
+            aggregate_day_buckets(&cache, &shadows, &no_events(), "KDMX", DAY0, DAY0 + 100.0);
+        assert_eq!(buckets.len(), 1);
+        assert!(
+            (buckets[0].availability_frac - 1.0).abs() < 1e-6,
+            "{}",
+            buckets[0].availability_frac
+        );
+        assert_eq!(buckets[0].cache_frac, 0.0);
+    }
+
+    // --- cache_frac <= availability_frac invariant across both sources ---
+
+    #[wasm_bindgen_test]
+    fn cache_frac_never_exceeds_availability_frac() {
+        // Cache covers [1000,7600]=6600s; a small disjoint shadow adds more
+        // availability. Cache stays a subset of availability.
+        let cache = RadarTimeline {
+            scans: vec![scan_span(DAY0 + 1000.0, DAY0 + 7600.0, true)],
+        };
+        let shadows = vec![ScanBoundary {
+            start: (DAY0 + 10000.0) as i64,
+            end: (DAY0 + 11000.0) as i64,
+        }];
+        let buckets =
+            aggregate_day_buckets(&cache, &shadows, &no_events(), "KDMX", DAY0, DAY0 + 100.0);
+        let b = buckets[0];
+        // Cache = 6600s, availability = 6600 + 1000 = 7600s.
+        let expected_cache = (6600.0 / DAY_SECS) as f32;
+        let expected_avail = (7600.0 / DAY_SECS) as f32;
+        assert!(
+            (b.cache_frac - expected_cache).abs() < 1e-4,
+            "{}",
+            b.cache_frac
+        );
+        assert!(
+            (b.availability_frac - expected_avail).abs() < 1e-4,
+            "{}",
+            b.availability_frac
+        );
+        assert!(b.cache_frac <= b.availability_frac);
+    }
+
+    // --- zero-length / inverted span contributes nothing ---
+
+    #[wasm_bindgen_test]
+    fn zero_length_scan_span_contributes_no_coverage() {
+        // A scan with end == start (and no VCP projection) is ignored.
+        let cache = RadarTimeline {
+            scans: vec![scan_span(DAY0 + 2000.0, DAY0 + 2000.0, true)],
+        };
+        let buckets = aggregate_day_buckets(&cache, &[], &no_events(), "KDMX", DAY0, DAY0 + 100.0);
+        assert_eq!(buckets[0].cache_frac, 0.0);
+        assert_eq!(buckets[0].availability_frac, 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn inverted_shadow_span_contributes_no_coverage() {
+        // end < start → push_span early-returns, no availability.
+        let cache = RadarTimeline { scans: Vec::new() };
+        let shadows = vec![ScanBoundary {
+            start: (DAY0 + 5000.0) as i64,
+            end: (DAY0 + 1000.0) as i64,
+        }];
+        let buckets =
+            aggregate_day_buckets(&cache, &shadows, &no_events(), "KDMX", DAY0, DAY0 + 100.0);
+        assert_eq!(buckets[0].availability_frac, 0.0);
+    }
+
+    // --- union across the two sources: cache + overlapping shadow don't double count ---
+
+    #[wasm_bindgen_test]
+    fn cache_and_overlapping_shadow_union_in_availability() {
+        // Cache [1000,4600] and shadow [3000,6000] overlap; availability union is
+        // [1000,6000]=5000s (NOT 3600+3000).
+        let cache = RadarTimeline {
+            scans: vec![scan_span(DAY0 + 1000.0, DAY0 + 4600.0, true)],
+        };
+        let shadows = vec![ScanBoundary {
+            start: (DAY0 + 3000.0) as i64,
+            end: (DAY0 + 6000.0) as i64,
+        }];
+        let buckets =
+            aggregate_day_buckets(&cache, &shadows, &no_events(), "KDMX", DAY0, DAY0 + 100.0);
+        let expected_avail = (5000.0 / DAY_SECS) as f32;
+        assert!(
+            (buckets[0].availability_frac - expected_avail).abs() < 1e-4,
+            "{}",
+            buckets[0].availability_frac
+        );
+    }
+
+    // --- adjacent (touching) spans merge in union_seconds (via aggregate) ---
+
+    #[wasm_bindgen_test]
+    fn adjacent_touching_spans_merge_without_gap() {
+        // Two cached scans that touch end-to-start: [1000,4000] and [4000,7000].
+        // Union is [1000,7000]=6000s, contiguous (s == cur_e is not a gap).
+        let cache = RadarTimeline {
+            scans: vec![
+                scan_span(DAY0 + 1000.0, DAY0 + 4000.0, true),
+                scan_span(DAY0 + 4000.0, DAY0 + 7000.0, true),
+            ],
+        };
+        let buckets = aggregate_day_buckets(&cache, &[], &no_events(), "KDMX", DAY0, DAY0 + 100.0);
+        let expected = (6000.0 / DAY_SECS) as f32;
+        assert!(
+            (buckets[0].cache_frac - expected).abs() < 1e-4,
+            "{}",
+            buckets[0].cache_frac
+        );
+    }
+
+    // --- multi-day event flagging ---
+
+    #[wasm_bindgen_test]
+    fn event_spanning_multiple_days_flags_each_day() {
+        // Event from DAY0+12h through DAY0+2days+12h covers days 0, 1, 2.
+        let cache = RadarTimeline { scans: Vec::new() };
+        let mut events = SavedEvents::default();
+        events.events.push(SavedEvent {
+            id: 7,
+            name: "Multi-day".to_string(),
+            site_id: "KDMX".to_string(),
+            start_time: DAY0 + DAY_SECS / 2.0,
+            end_time: DAY0 + 2.0 * DAY_SECS + DAY_SECS / 2.0,
+        });
+        let buckets =
+            aggregate_day_buckets(&cache, &[], &events, "KDMX", DAY0, DAY0 + 3.0 * DAY_SECS);
+        assert_eq!(buckets.len(), 4);
+        assert!(buckets[0].has_events);
+        assert!(buckets[1].has_events);
+        assert!(buckets[2].has_events);
+        // Day 3 is past the event end → not flagged.
+        assert!(!buckets[3].has_events);
+    }
+
+    #[wasm_bindgen_test]
+    fn event_with_reversed_times_still_flags() {
+        // start_time > end_time → the aggregator min/max-normalises them.
+        let cache = RadarTimeline { scans: Vec::new() };
+        let mut events = SavedEvents::default();
+        events.events.push(SavedEvent {
+            id: 9,
+            name: "Reversed".to_string(),
+            site_id: "KDMX".to_string(),
+            start_time: DAY0 + 9000.0,
+            end_time: DAY0 + 5000.0,
+        });
+        let buckets = aggregate_day_buckets(&cache, &[], &events, "KDMX", DAY0, DAY0 + 100.0);
+        assert!(buckets[0].has_events);
+    }
+
+    #[wasm_bindgen_test]
+    fn event_outside_view_window_does_not_flag() {
+        // Event entirely on a later day, view only covers DAY0.
+        let cache = RadarTimeline { scans: Vec::new() };
+        let mut events = SavedEvents::default();
+        events.events.push(SavedEvent {
+            id: 11,
+            name: "Far".to_string(),
+            site_id: "KDMX".to_string(),
+            start_time: DAY0 + 5.0 * DAY_SECS,
+            end_time: DAY0 + 5.0 * DAY_SECS + 3600.0,
+        });
+        let buckets = aggregate_day_buckets(&cache, &[], &events, "KDMX", DAY0, DAY0 + 100.0);
+        assert_eq!(buckets.len(), 1);
+        assert!(!buckets[0].has_events);
+    }
+
+    // --- DayBucket equality / Copy semantics on an empty day ---
+
+    #[wasm_bindgen_test]
+    fn empty_day_buckets_compare_equal() {
+        let cache = RadarTimeline { scans: Vec::new() };
+        let a = aggregate_day_buckets(&cache, &[], &no_events(), "KDMX", DAY0, DAY0 + 100.0);
+        let b = aggregate_day_buckets(&cache, &[], &no_events(), "KDMX", DAY0, DAY0 + 100.0);
+        assert_eq!(a[0], b[0]);
+        // Copy: the bucket can be duplicated and remains equal.
+        let copied = a[0];
+        assert_eq!(copied, a[0]);
+        assert_eq!(copied.day_start, DAY0);
+    }
+
+    // --- day_tap_macro_view: zoom scales with width; view_start width-independent ---
+
+    #[wasm_bindgen_test]
+    fn day_tap_zoom_scales_linearly_with_width() {
+        let (vs1, z1) = day_tap_macro_view(DAY0, 1000.0);
+        let (vs2, z2) = day_tap_macro_view(DAY0, 2000.0);
+        // zoom = width / span, so doubling width doubles zoom.
+        assert!((z2 - 2.0 * z1).abs() < 1e-9, "{} {}", z1, z2);
+        // view_start depends only on the day, not the pixel width.
+        assert!((vs1 - vs2).abs() < 1e-9, "{} {}", vs1, vs2);
+        // Concrete: span == DAY_SECS, so z1 == 1000 / DAY_SECS.
+        assert!((z1 - 1000.0 / DAY_SECS).abs() < 1e-12, "{}", z1);
+    }
+
+    #[wasm_bindgen_test]
+    fn macro_landing_span_equals_one_day() {
+        // The landing span constant is exactly one UTC day.
+        assert_eq!(MACRO_LANDING_SPAN_SECS, DAY_SECS);
+        // And the view places the day midpoint at the centre: view_start is half
+        // a day before the day midpoint, i.e. at the day start itself.
+        let (view_start, _zoom) = day_tap_macro_view(DAY0, 800.0);
+        assert!((view_start - DAY0).abs() < 1e-6, "{}", view_start);
+    }
+}

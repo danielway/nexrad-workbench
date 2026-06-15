@@ -1647,3 +1647,535 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // Re-declared helpers (the sibling `mod tests` ones are private).
+    fn planet() -> Camera {
+        let mut c = Camera::centered_on(39.0, -98.0);
+        c.switch_to_planet_orbit();
+        c
+    }
+    fn site() -> Camera {
+        let mut c = Camera::centered_on(39.0, -98.0);
+        c.switch_to_site_orbit();
+        c
+    }
+    fn free() -> Camera {
+        let mut c = Camera::centered_on(39.0, -98.0);
+        c.switch_to_free_look();
+        c
+    }
+
+    fn planet_state(c: &Camera) -> &PlanetOrbitState {
+        match c {
+            Camera::PlanetOrbit(s) => s,
+            _ => panic!("expected planet orbit"),
+        }
+    }
+    fn site_state(c: &Camera) -> &SiteOrbitState {
+        match c {
+            Camera::SiteOrbit(s) => s,
+            _ => panic!("expected site orbit"),
+        }
+    }
+    fn free_state(c: &Camera) -> &FreeLookState {
+        match c {
+            Camera::FreeLook(s) => s,
+            _ => panic!("expected free look"),
+        }
+    }
+
+    // ── CameraMode enum: label / next / key_hint / default ──────────────
+
+    #[wasm_bindgen_test]
+    fn camera_mode_labels() {
+        assert_eq!(CameraMode::PlanetOrbit.label(), "Planet Orbit");
+        assert_eq!(CameraMode::SiteOrbit.label(), "Site Orbit");
+        assert_eq!(CameraMode::FreeLook.label(), "Free Look");
+    }
+
+    #[wasm_bindgen_test]
+    fn camera_mode_next_cycles() {
+        assert_eq!(CameraMode::PlanetOrbit.next(), CameraMode::SiteOrbit);
+        assert_eq!(CameraMode::SiteOrbit.next(), CameraMode::FreeLook);
+        assert_eq!(CameraMode::FreeLook.next(), CameraMode::PlanetOrbit);
+        // Three nexts return to start.
+        assert_eq!(
+            CameraMode::PlanetOrbit.next().next().next(),
+            CameraMode::PlanetOrbit
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn camera_mode_key_hints() {
+        assert_eq!(CameraMode::SiteOrbit.key_hint(), "2");
+        assert_eq!(CameraMode::PlanetOrbit.key_hint(), "3");
+        assert_eq!(CameraMode::FreeLook.key_hint(), "4");
+    }
+
+    #[wasm_bindgen_test]
+    fn camera_mode_default_is_planet_orbit() {
+        assert_eq!(CameraMode::default(), CameraMode::PlanetOrbit);
+    }
+
+    // ── Accessors: is_2d / flat_2d / flat_2d_mut None paths ─────────────
+
+    #[wasm_bindgen_test]
+    fn is_2d_false_in_3d_modes() {
+        assert!(!planet().is_2d());
+        assert!(!site().is_2d());
+        assert!(!free().is_2d());
+        assert!(Camera::default().is_2d());
+    }
+
+    #[wasm_bindgen_test]
+    fn flat_2d_accessors_none_in_3d() {
+        let mut c = planet();
+        assert!(c.flat_2d().is_none());
+        assert!(c.flat_2d_mut().is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn flat_2d_accessor_some_in_2d() {
+        let c = Camera::default();
+        let v = c.flat_2d().expect("2d view present");
+        assert!((v.zoom - 1.0).abs() < 1e-6);
+    }
+
+    // ── Defaults of carried structs ─────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn flat2dstate_default_values() {
+        let d = Flat2DState::default();
+        assert!((d.zoom - 1.0).abs() < 1e-6);
+        assert!(d.pan_offset.x.abs() < 1e-6 && d.pan_offset.y.abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn url_snapshot_default_matches_historical() {
+        let d = UrlCameraSnapshot::default();
+        assert!((d.distance - DEFAULT_SITE_DISTANCE).abs() < 1e-6);
+        assert!(d.center_lat.abs() < 1e-6 && d.center_lon.abs() < 1e-6);
+        assert!((d.orbit_bearing - 180.0).abs() < 1e-6);
+        assert!((d.orbit_elevation - 45.0).abs() < 1e-6);
+        assert!((d.free_pos[2] - DEFAULT_SITE_DISTANCE).abs() < 1e-6);
+        assert!((d.free_speed - DEFAULT_FREE_SPEED).abs() < 1e-6);
+    }
+
+    // ── orbit(): longitude wrap, latitude clamp (Planet) ────────────────
+
+    #[wasm_bindgen_test]
+    fn orbit_planet_clamps_latitude() {
+        let mut c = planet();
+        // Huge positive dy pushes center_lat well past the pole; clamp at 89.9.
+        c.orbit(0.0, 100000.0, 600.0);
+        assert!((planet_state(&c).center_lat - 89.9).abs() < 1e-3);
+        // Huge negative dy clamps at -89.9.
+        c.orbit(0.0, -200000.0, 600.0);
+        assert!((planet_state(&c).center_lat - (-89.9)).abs() < 1e-3);
+    }
+
+    #[wasm_bindgen_test]
+    fn orbit_planet_wraps_longitude_into_range() {
+        let mut c = planet();
+        // Drive longitude far in both directions; result must stay in [-180,180]
+        // after a single-step wrap each call.
+        for _ in 0..50 {
+            c.orbit(500.0, 0.0, 600.0);
+            let lon = planet_state(&c).center_lon;
+            assert!((-180.0..=180.0).contains(&lon), "lon out of range: {lon}");
+        }
+        for _ in 0..120 {
+            c.orbit(-500.0, 0.0, 600.0);
+            let lon = planet_state(&c).center_lon;
+            assert!((-180.0..=180.0).contains(&lon), "lon out of range: {lon}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn orbit_site_wraps_bearing_and_clamps_elevation() {
+        let mut c = site();
+        // Drive bearing negative then positive; always normalized to [0,360).
+        for _ in 0..40 {
+            c.orbit(500.0, 0.0, 600.0);
+            let b = site_state(&c).orbit_bearing;
+            assert!((0.0..360.0).contains(&b), "bearing out of range: {b}");
+        }
+        // Elevation clamps to [5,175].
+        c.orbit(0.0, 100000.0, 600.0);
+        assert!(site_state(&c).orbit_elevation <= 175.0 + 1e-3);
+        c.orbit(0.0, -200000.0, 600.0);
+        assert!(site_state(&c).orbit_elevation >= 5.0 - 1e-3);
+    }
+
+    #[wasm_bindgen_test]
+    fn orbit_noop_in_free_and_2d() {
+        let mut f = free();
+        let before = free_state(&f).free_pos;
+        f.orbit(50.0, 50.0, 600.0);
+        let after = free_state(&f).free_pos;
+        assert!((before - after).length() < 1e-9);
+
+        let mut two = Camera::default();
+        two.orbit(50.0, 50.0, 600.0); // must not panic / change variant
+        assert!(two.is_2d());
+    }
+
+    // ── tilt_rotate(): clamp + wrap + no-op ─────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn tilt_rotate_clamps_tilt_and_wraps_rotation() {
+        let mut c = planet();
+        c.tilt_rotate(0.0, 1_000_000.0, 600.0); // huge pitch
+        assert!(planet_state(&c).tilt <= 89.0 + 1e-3);
+        c.tilt_rotate(0.0, -2_000_000.0, 600.0);
+        assert!(planet_state(&c).tilt >= -89.0 - 1e-3);
+        // Rotation stays wrapped within (-180,180] band after each call.
+        let mut c2 = planet();
+        for _ in 0..200 {
+            c2.tilt_rotate(500.0, 0.0, 600.0);
+            let r = planet_state(&c2).rotation;
+            assert!((-180.0..=180.0).contains(&r), "rotation out of range: {r}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn tilt_rotate_noop_in_free_and_2d() {
+        let mut f = free();
+        let before = (free_state(&f).free_yaw, free_state(&f).free_pitch);
+        f.tilt_rotate(40.0, 40.0, 600.0);
+        let after = (free_state(&f).free_yaw, free_state(&f).free_pitch);
+        assert!((before.0 - after.0).abs() < 1e-9 && (before.1 - after.1).abs() < 1e-9);
+
+        let mut two = Camera::default();
+        two.tilt_rotate(40.0, 40.0, 600.0);
+        assert!(two.is_2d());
+    }
+
+    // ── free_look(): pitch clamp + yaw wrap + no-op ─────────────────────
+
+    #[wasm_bindgen_test]
+    fn free_look_clamps_pitch_and_wraps_yaw() {
+        let mut c = free();
+        // Large negative dy raises pitch toward +89 (pitch -= dy*...).
+        c.free_look(0.0, -1_000_000.0, 600.0);
+        assert!(free_state(&c).free_pitch <= 89.0 + 1e-3);
+        c.free_look(0.0, 1_000_000.0, 600.0);
+        assert!(free_state(&c).free_pitch >= -89.0 - 1e-3);
+        // Yaw remains wrapped.
+        for _ in 0..200 {
+            c.free_look(500.0, 0.0, 600.0);
+            let y = free_state(&c).free_yaw;
+            assert!((-180.0..=180.0).contains(&y), "yaw out of range: {y}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn free_look_noop_in_orbit_and_2d() {
+        let mut p = planet();
+        let before = planet_state(&p).center_lat;
+        p.free_look(40.0, 40.0, 600.0); // ignored in planet orbit
+        assert!((planet_state(&p).center_lat - before).abs() < 1e-9);
+
+        let mut two = Camera::default();
+        two.free_look(40.0, 40.0, 600.0);
+        assert!(two.is_2d());
+    }
+
+    // ── zoom(): free-look speed factor + clamp, 2D no-op ────────────────
+
+    #[wasm_bindgen_test]
+    fn zoom_freelook_scales_speed() {
+        let mut c = free();
+        // free_speed starts at DEFAULT_FREE_SPEED = 0.5; factor = 1 + 100*0.003 = 1.3
+        c.zoom(100.0);
+        assert!((free_state(&c).free_speed - 0.5 * 1.3).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_freelook_clamps_speed_range() {
+        let mut c = free();
+        for _ in 0..5000 {
+            c.zoom(1000.0); // positive → speed up
+        }
+        assert!(free_state(&c).free_speed <= 50.0 + 1e-3);
+        for _ in 0..10000 {
+            c.zoom(-1000.0); // negative → slow down
+        }
+        assert!(free_state(&c).free_speed >= 0.01 - 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn zoom_noop_in_2d() {
+        let mut c = Camera::default();
+        c.zoom(500.0);
+        assert!(c.is_2d());
+        // 2D zoom is handled on Flat2DState, not via Camera::zoom.
+        assert!((c.flat_2d().unwrap().zoom - 1.0).abs() < 1e-6);
+    }
+
+    // ── recenter / reset / focus_site / align_north / level_horizon ─────
+
+    #[wasm_bindgen_test]
+    fn recenter_resets_orbit_angles_keeps_distance() {
+        let mut c = planet();
+        c.zoom(100.0); // change distance
+        let dist = planet_state(&c).distance;
+        c.tilt_rotate(30.0, 30.0, 600.0);
+        c.move_pivot_to(10.0, 20.0);
+        c.recenter();
+        let s = planet_state(&c);
+        // Center snaps back to site; tilt/rotation cleared; distance untouched.
+        assert!((s.center_lat - 39.0).abs() < 1e-4);
+        assert!((s.center_lon - (-98.0)).abs() < 1e-4);
+        assert!(s.tilt.abs() < 1e-6 && s.rotation.abs() < 1e-6);
+        assert!((s.distance - dist).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn reset_site_orbit_restores_defaults() {
+        let mut c = site();
+        c.zoom(200.0);
+        c.orbit(40.0, 40.0, 600.0);
+        c.reset();
+        let s = site_state(&c);
+        assert!((s.orbit_bearing - 180.0).abs() < 1e-5);
+        assert!((s.orbit_elevation - 45.0).abs() < 1e-5);
+        assert!((s.distance - DEFAULT_SITE_DISTANCE).abs() < 1e-5);
+        assert!(s.tilt.abs() < 1e-6 && s.rotation.abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn reset_freelook_restores_speed_and_points_at_center() {
+        let mut c = free();
+        c.zoom(100.0); // perturb speed
+        c.free_move(2.0, 1.0, 0.0, 1.0); // perturb pos
+        c.reset();
+        let s = free_state(&c);
+        assert!((s.free_speed - DEFAULT_FREE_SPEED).abs() < 1e-6);
+        // free_pos is on the site ray at DEFAULT_SITE_DISTANCE from the origin.
+        assert!((s.free_pos.length() - DEFAULT_SITE_DISTANCE).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn focus_site_planet_snaps_center_to_site() {
+        let mut c = planet();
+        c.move_pivot_to(10.0, 20.0);
+        c.focus_site();
+        let s = planet_state(&c);
+        assert!((s.center_lat - s.common.site_lat).abs() < 1e-6);
+        assert!((s.center_lon - s.common.site_lon).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn focus_site_site_orbit_sets_bearing_south() {
+        let mut c = site();
+        c.orbit(123.0, 0.0, 600.0); // move bearing off 180
+        c.focus_site();
+        assert!((site_state(&c).orbit_bearing - 180.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn align_north_clears_rotation() {
+        let mut p = planet();
+        p.tilt_rotate(40.0, 0.0, 600.0);
+        p.align_north();
+        assert!(planet_state(&p).rotation.abs() < 1e-6);
+
+        let mut s = site();
+        s.tilt_rotate(40.0, 40.0, 600.0);
+        s.align_north();
+        // Site orbit align_north clears both rotation and tilt.
+        assert!(site_state(&s).rotation.abs() < 1e-6);
+        assert!(site_state(&s).tilt.abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn level_horizon_clears_tilt_or_pitch() {
+        let mut p = planet();
+        p.tilt_rotate(0.0, 40.0, 600.0);
+        p.level_horizon();
+        assert!(planet_state(&p).tilt.abs() < 1e-6);
+
+        let mut f = free();
+        f.free_look(0.0, -100.0, 600.0); // raise pitch
+        f.level_horizon();
+        assert!(free_state(&f).free_pitch.abs() < 1e-6);
+    }
+
+    // ── keyboard_move(): false on no input / 2d, true otherwise ─────────
+
+    #[wasm_bindgen_test]
+    fn keyboard_move_no_input_returns_false() {
+        let mut c = planet();
+        assert!(!c.keyboard_move(0.0, 0.0, 0.0, 1.0, 0.016));
+    }
+
+    #[wasm_bindgen_test]
+    fn keyboard_move_2d_returns_false() {
+        let mut c = Camera::default();
+        assert!(!c.keyboard_move(1.0, 0.0, 0.0, 1.0, 0.016));
+        assert!(c.is_2d());
+    }
+
+    #[wasm_bindgen_test]
+    fn keyboard_move_planet_returns_true_and_moves() {
+        let mut c = planet();
+        let before = planet_state(&c).center_lat;
+        assert!(c.keyboard_move(1.0, 0.0, 0.0, 1.0, 0.1));
+        // forward>0 raises center_lat (before distance/zoom effects).
+        assert!(planet_state(&c).center_lat > before);
+    }
+
+    #[wasm_bindgen_test]
+    fn keyboard_move_site_wraps_bearing() {
+        let mut c = site();
+        // Large dt + right input drives bearing past 360; result normalized.
+        for _ in 0..50 {
+            assert!(c.keyboard_move(0.0, 1.0, 0.0, 4.0, 1.0));
+            let b = site_state(&c).orbit_bearing;
+            assert!((0.0..360.0).contains(&b), "bearing out of range: {b}");
+        }
+    }
+
+    // ── set_site / set_aspect ───────────────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn set_site_updates_common_without_moving_view() {
+        let mut c = site();
+        let bearing_before = site_state(&c).orbit_bearing;
+        c.set_site(12.0, 34.0);
+        let s = site_state(&c);
+        assert!((s.common.site_lat - 12.0).abs() < 1e-4);
+        assert!((s.common.site_lon - 34.0).abs() < 1e-4);
+        // View angle untouched.
+        assert!((s.orbit_bearing - bearing_before).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_site_works_in_2d_via_seed() {
+        // common_mut routes to the carried seed in 2D.
+        let mut c = Camera::default();
+        c.set_site(5.0, 6.0);
+        c.switch_to_planet_orbit();
+        let s = planet_state(&c);
+        assert!((s.common.site_lat - 5.0).abs() < 1e-4);
+        assert!((s.common.site_lon - 6.0).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_aspect_sets_ratio_and_guards_zero_height() {
+        let mut c = planet();
+        let rect = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 400.0));
+        c.set_aspect(rect);
+        // aspect = 800/400 = 2.0
+        match &c {
+            Camera::PlanetOrbit(s) => assert!((s.common.aspect - 2.0).abs() < 1e-5),
+            _ => panic!("planet"),
+        }
+        // Zero-height rect leaves aspect unchanged (no div-by-zero).
+        let bad = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 0.0));
+        c.set_aspect(bad);
+        match &c {
+            Camera::PlanetOrbit(s) => assert!((s.common.aspect - 2.0).abs() < 1e-5),
+            _ => panic!("planet"),
+        }
+    }
+
+    // ── view_matrix / camera_world_pos 2D defaults ──────────────────────
+
+    #[wasm_bindgen_test]
+    fn view_matrix_identity_in_2d() {
+        let c = Camera::default();
+        let m = c.view_matrix();
+        let id = Mat4::IDENTITY.to_cols_array();
+        for (a, b) in m.to_cols_array().iter().zip(id.iter()) {
+            assert!((a - b).abs() < 1e-9);
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn camera_world_pos_2d_default() {
+        let c = Camera::default();
+        let p = c.camera_world_pos();
+        assert!(p.x.abs() < 1e-6 && p.y.abs() < 1e-6);
+        assert!((p.z - DEFAULT_SITE_DISTANCE).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn camera_world_pos_freelook_is_free_pos() {
+        let c = free();
+        let s = free_state(&c);
+        let p = c.camera_world_pos();
+        assert!((p - s.free_pos).length() < 1e-6);
+    }
+
+    // ── static geo_to_world wrapper equals free fn ──────────────────────
+
+    #[wasm_bindgen_test]
+    fn static_geo_to_world_matches_inline_math() {
+        // Spot-check: lat 0, lon 90 → +X axis.
+        let v = Camera::geo_to_world(0.0, 90.0);
+        assert!((v.x - 1.0).abs() < 1e-5);
+        assert!(v.y.abs() < 1e-5);
+        assert!(v.z.abs() < 1e-5);
+    }
+
+    // ── switch_to_* idempotency for site & free ─────────────────────────
+
+    #[wasm_bindgen_test]
+    fn switch_to_site_orbit_idempotent() {
+        let mut c = site();
+        c.orbit(33.0, 0.0, 600.0);
+        let before = site_state(&c).orbit_bearing;
+        c.switch_to_site_orbit(); // already site → no reconstruction
+        assert!((site_state(&c).orbit_bearing - before).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn switch_to_free_look_idempotent() {
+        let mut c = free();
+        c.free_move(1.0, 0.0, 0.0, 1.0);
+        let before = free_state(&c).free_pos;
+        c.switch_to_free_look(); // already free → unchanged
+        assert!((free_state(&c).free_pos - before).length() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn switch_to_3d_dispatches_each_mode() {
+        let mut c = Camera::centered_on(39.0, -98.0);
+        c.switch_to_3d(CameraMode::SiteOrbit);
+        assert_eq!(c.camera_mode(), Some(CameraMode::SiteOrbit));
+        c.switch_to_3d(CameraMode::FreeLook);
+        assert_eq!(c.camera_mode(), Some(CameraMode::FreeLook));
+        c.switch_to_3d(CameraMode::PlanetOrbit);
+        assert_eq!(c.camera_mode(), Some(CameraMode::PlanetOrbit));
+    }
+
+    // ── move_pivot_to per-mode targets ──────────────────────────────────
+
+    #[wasm_bindgen_test]
+    fn move_pivot_to_planet_sets_center() {
+        let mut c = planet();
+        c.move_pivot_to(11.0, 22.0);
+        let s = planet_state(&c);
+        assert!((s.center_lat - 11.0).abs() < 1e-4);
+        assert!((s.center_lon - 22.0).abs() < 1e-4);
+        // Site (common) is NOT moved in planet orbit.
+        assert!((s.common.site_lat - 39.0).abs() < 1e-4);
+    }
+
+    #[wasm_bindgen_test]
+    fn move_pivot_to_site_moves_the_site() {
+        let mut c = site();
+        c.move_pivot_to(11.0, 22.0);
+        let s = site_state(&c);
+        // In site orbit, double-click moves the orbit pivot (the site itself).
+        assert!((s.common.site_lat - 11.0).abs() < 1e-4);
+        assert!((s.common.site_lon - 22.0).abs() < 1e-4);
+    }
+}

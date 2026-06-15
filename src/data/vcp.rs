@@ -409,3 +409,182 @@ mod tests {
         assert!(even_sweep_durations(300.0, 0).is_empty());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    #[wasm_bindgen_test]
+    fn vcp_215_metadata_fields() {
+        let def = get_vcp_definition(215).unwrap();
+        assert_eq!(def.number, 215);
+        assert_eq!(
+            def.description,
+            "Precipitation Mode - 14 elevations, ~5 min scan"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_35_metadata_fields() {
+        let def = get_vcp_definition(35).unwrap();
+        assert_eq!(def.number, 35);
+        assert_eq!(def.name, "Clear Air");
+        assert_eq!(
+            def.description,
+            "Clear Air Mode - 5 elevations, ~10 min scan"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_212_metadata_fields() {
+        let def = get_vcp_definition(212).unwrap();
+        assert_eq!(def.number, 212);
+        assert_eq!(
+            def.description,
+            "Precipitation Mode (Fast) - 14 elevations, ~4.5 min scan"
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_215_waveform_and_prf_transitions() {
+        let def = get_vcp_definition(215).unwrap();
+        // First four sweeps are Contiguous Surveillance / Low PRF.
+        assert_eq!(def.elevations[0].waveform, "CS");
+        assert_eq!(def.elevations[0].prf, "Low");
+        assert_eq!(def.elevations[3].waveform, "CS");
+        assert_eq!(def.elevations[3].prf, "Low");
+        // Doppler begins at index 4 (2.4 deg), Med PRF.
+        assert_eq!(def.elevations[4].waveform, "CD");
+        assert_eq!(def.elevations[4].prf, "Med");
+        // 4.0 deg in VCP 215 is Med PRF (index 6).
+        assert!((def.elevations[6].angle - 4.0).abs() < 1e-6);
+        assert_eq!(def.elevations[6].prf, "Med");
+        // High PRF starts at 5.1 deg (index 7).
+        assert_eq!(def.elevations[7].prf, "High");
+        assert_eq!(def.elevations[13].prf, "High");
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_212_differs_from_215_at_4deg() {
+        // VCP 212's 4.0-deg sweep is High PRF, whereas VCP 215's is Med.
+        let v212 = get_vcp_definition(212).unwrap();
+        let v215 = get_vcp_definition(215).unwrap();
+        assert!((v212.elevations[6].angle - 4.0).abs() < 1e-6);
+        assert_eq!(v212.elevations[6].prf, "High");
+        assert_eq!(v215.elevations[6].prf, "Med");
+    }
+
+    #[wasm_bindgen_test]
+    fn vcp_35_all_contiguous_surveillance_low() {
+        let def = get_vcp_definition(35).unwrap();
+        for e in def.elevations {
+            assert_eq!(e.waveform, "CS");
+            assert_eq!(e.prf, "Low");
+        }
+        // Whole-degree-plus-half spacing: 0.5, 1.5, 2.5, 3.5, 4.5.
+        assert!((def.elevations[1].angle - 1.5).abs() < 1e-6);
+        assert!((def.elevations[2].angle - 2.5).abs() < 1e-6);
+        assert!((def.elevations[3].angle - 3.5).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn is_clear_air_vcp_boundaries() {
+        // Just outside the 31|32|35 set.
+        assert!(!is_clear_air_vcp(30));
+        assert!(!is_clear_air_vcp(33));
+        assert!(!is_clear_air_vcp(34));
+        assert!(!is_clear_air_vcp(36));
+        assert!(!is_clear_air_vcp(0));
+        // Inside the set.
+        assert!(is_clear_air_vcp(31));
+        assert!(is_clear_air_vcp(32));
+    }
+
+    #[wasm_bindgen_test]
+    fn fallback_rate_clear_air_cs_arms() {
+        assert!((fallback_azimuth_rate(true, "CS", 1) - 5.0).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(true, "CS", 2) - 5.5).abs() < 1e-9);
+        // CS with prf outside 1/2 falls to the CS default (5.0), not the
+        // generic clear-air default (10.0).
+        assert!((fallback_azimuth_rate(true, "CS", 3) - 5.0).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(true, "CS", 0) - 5.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn fallback_rate_clear_air_doppler_and_batch_arms() {
+        // CDW / CDWO ignore the PRF number.
+        assert!((fallback_azimuth_rate(true, "CDW", 7) - 15.7).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(true, "CDWO", 1) - 8.5).abs() < 1e-9);
+        // Batch arms for clear air.
+        assert!((fallback_azimuth_rate(true, "Batch", 3) - 14.6).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(true, "B", 4) - 17.8).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(true, "B", 5) - 16.9).abs() < 1e-9);
+        // Batch default (prf not 3/4/5).
+        assert!((fallback_azimuth_rate(true, "Batch", 6) - 18.1).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(true, "B", 0) - 18.1).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn fallback_rate_clear_air_unknown_default() {
+        // An unrecognized waveform falls to the conservative clear-air default.
+        assert!((fallback_azimuth_rate(true, "ZZ", 1) - 10.0).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(true, "", 9) - 10.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn fallback_rate_precip_cs_arms() {
+        assert!((fallback_azimuth_rate(false, "CS", 1) - 21.1).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(false, "CS", 2) - 23.0).abs() < 1e-9);
+        // CS default for prf outside 1/2.
+        assert!((fallback_azimuth_rate(false, "CS", 5) - 21.1).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(false, "CS", 0) - 21.1).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn fallback_rate_precip_doppler_batch_and_default() {
+        assert!((fallback_azimuth_rate(false, "CDW", 2) - 18.8).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(false, "CDWO", 4) - 28.5).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(false, "Batch", 3) - 26.2).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(false, "B", 4) - 26.9).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(false, "B", 5) - 27.7).abs() < 1e-9);
+        // Batch default arm (prf not 3/4/5).
+        assert!((fallback_azimuth_rate(false, "Batch", 6) - 26.8).abs() < 1e-9);
+        assert!((fallback_azimuth_rate(false, "B", 0) - 26.8).abs() < 1e-9);
+        // Unknown precip waveform default.
+        assert!((fallback_azimuth_rate(false, "ZZ", 1) - 22.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn fallback_rate_clear_air_always_below_precip_for_batch() {
+        // Across the shared Batch PRF arms, clear-air is the slower mode.
+        for prf in [3u8, 4, 5, 6] {
+            let ca = fallback_azimuth_rate(true, "B", prf);
+            let pr = fallback_azimuth_rate(false, "B", prf);
+            assert!(ca < pr, "clear-air {ca} not < precip {pr} at prf={prf}");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn even_sweep_durations_single_and_nonexact() {
+        // count == 1 returns the whole total in one slot.
+        let one = even_sweep_durations(42.0, 1);
+        assert_eq!(one.len(), 1);
+        assert!((one[0] - 42.0).abs() < 1e-9);
+
+        // Non-evenly-divisible: each slot is total/count, and the sum still
+        // reconstructs total within float tolerance.
+        let three = even_sweep_durations(10.0, 3);
+        assert_eq!(three.len(), 3);
+        for d in &three {
+            assert!((d - 10.0 / 3.0).abs() < 1e-9);
+        }
+        let sum: f64 = three.iter().sum();
+        assert!((sum - 10.0).abs() < 1e-9);
+
+        // Zero total with positive count yields zeros, not an empty vec.
+        let zeros = even_sweep_durations(0.0, 4);
+        assert_eq!(zeros.len(), 4);
+        assert!(zeros.iter().all(|&d| d == 0.0));
+    }
+}

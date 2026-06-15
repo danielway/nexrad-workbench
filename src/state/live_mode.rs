@@ -1046,3 +1046,356 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::data::{ScanKey, UnixMillis};
+    use crate::nexrad::projection::VolumeObservations;
+    use crate::nexrad::StreamingPlan;
+    use crate::state::ChunkArrivalStat;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn scan_key(start_ms: i64) -> ScanKey {
+        ScanKey::new("KDMX", UnixMillis(start_ms))
+    }
+
+    fn plan_without_target() -> StreamingPlan {
+        StreamingPlan::with_next_target_key_for_test(None)
+    }
+
+    fn vcp_with_one_elevation() -> crate::data::keys::ExtractedVcp {
+        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+        ExtractedVcp {
+            number: 215,
+            elevations: vec![ExtractedVcpElevation {
+                angle: 0.5,
+                waveform: "CS".to_string(),
+                prf_number: 1,
+                is_sails: false,
+                is_mrle: false,
+                is_base_tilt: false,
+                azimuth_rate: Some(20.0),
+            }],
+        }
+    }
+
+    fn vcp_empty() -> crate::data::keys::ExtractedVcp {
+        use crate::data::keys::ExtractedVcp;
+        ExtractedVcp {
+            number: 215,
+            elevations: vec![],
+        }
+    }
+
+    // ── LivePhase::default / label / color ──
+
+    #[wasm_bindgen_test]
+    fn live_phase_default_is_idle() {
+        assert_eq!(LivePhase::default(), LivePhase::Idle);
+    }
+
+    #[wasm_bindgen_test]
+    fn live_phase_labels_each_variant() {
+        assert_eq!(LivePhase::Idle.label(), "Idle");
+        assert_eq!(LivePhase::AcquiringLock.label(), "CONNECTING");
+        assert_eq!(LivePhase::Streaming.label(), "LIVE");
+        assert_eq!(LivePhase::WaitingForChunk.label(), "WAITING");
+        assert_eq!(LivePhase::Error.label(), "ERROR");
+    }
+
+    #[wasm_bindgen_test]
+    fn live_phase_colors_each_variant() {
+        assert_eq!(LivePhase::Idle.color(), (100, 100, 100));
+        assert_eq!(LivePhase::AcquiringLock.color(), (255, 180, 50));
+        assert_eq!(LivePhase::Streaming.color(), (255, 80, 80));
+        assert_eq!(LivePhase::WaitingForChunk.color(), (100, 180, 255));
+        assert_eq!(LivePhase::Error.color(), (255, 50, 50));
+    }
+
+    // ── LiveExitReason::message ──
+
+    #[wasm_bindgen_test]
+    fn live_exit_reason_messages() {
+        assert_eq!(
+            LiveExitReason::ConnectionError.message(),
+            "Live mode error: connection lost"
+        );
+        assert_eq!(LiveExitReason::UserStopped.message(), "Live mode stopped");
+        assert_eq!(
+            LiveExitReason::DetachedTimeout.message(),
+            "Live stream stopped after extended browsing — GO LIVE to resume"
+        );
+    }
+
+    // ── Default / new() field invariants not asserted by sibling tests ──
+
+    #[wasm_bindgen_test]
+    fn new_state_is_idle_with_clean_defaults() {
+        let s = LiveModeState::new();
+        assert_eq!(s.phase, LivePhase::Idle);
+        assert_eq!(s.phase_started_at, None);
+        assert_eq!(s.chunks_received, 0);
+        assert_eq!(s.detached_since, None);
+        assert_eq!(s.pulse_phase, 0.0);
+        assert!(s.auto_scroll_enabled);
+        assert!(s.current_volume.is_none());
+        assert!(s.chunk_arrivals.is_empty());
+        assert!(s.last_chunk_arrivals.is_empty());
+        assert!(!s.is_active());
+    }
+
+    // ── phase_elapsed_secs ──
+
+    #[wasm_bindgen_test]
+    fn phase_elapsed_none_start_is_zero() {
+        let mut s = LiveModeState::new();
+        s.phase_started_at = None;
+        assert_eq!(s.phase_elapsed_secs(500.0), 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn phase_elapsed_some_start_subtracts() {
+        let mut s = LiveModeState::new();
+        s.phase_started_at = Some(100.0);
+        assert!((s.phase_elapsed_secs(137.5) - 37.5).abs() < 1e-9);
+    }
+
+    // ── set_error ──
+
+    #[wasm_bindgen_test]
+    fn set_error_enters_error_phase_with_message_and_reason() {
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::Streaming;
+        s.set_error("boom".to_string());
+        assert_eq!(s.phase, LivePhase::Error);
+        assert_eq!(s.error_message.as_deref(), Some("boom"));
+        assert_eq!(s.last_exit_reason, Some(LiveExitReason::ConnectionError));
+    }
+
+    // ── wait_for_next_chunk ──
+
+    #[wasm_bindgen_test]
+    fn wait_for_next_chunk_sets_phase_and_increments_count() {
+        let mut s = LiveModeState::new();
+        s.chunks_received = 4;
+        s.wait_for_next_chunk(250.0);
+        assert_eq!(s.phase, LivePhase::WaitingForChunk);
+        assert_eq!(s.phase_started_at, Some(250.0));
+        assert_eq!(s.chunks_received, 5, "incremented, not overwritten");
+    }
+
+    // ── update_pulse ──
+
+    #[wasm_bindgen_test]
+    fn update_pulse_inactive_phase_is_noop() {
+        for phase in [LivePhase::Idle, LivePhase::Error] {
+            let mut s = LiveModeState::new();
+            s.phase = phase;
+            s.pulse_phase = 0.3;
+            s.update_pulse(0.4);
+            assert_eq!(s.pulse_phase, 0.3, "no advance while inactive ({phase:?})");
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn update_pulse_active_advances_by_dt() {
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::Streaming;
+        s.pulse_phase = 0.2;
+        s.update_pulse(0.3);
+        assert!((s.pulse_phase - 0.5).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn update_pulse_active_wraps_past_one() {
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::WaitingForChunk;
+        s.pulse_phase = 0.9;
+        s.update_pulse(0.2);
+        // (0.9 + 0.2) % 1.0 == 0.1
+        assert!((s.pulse_phase - 0.1).abs() < 1e-6, "got {}", s.pulse_phase);
+    }
+
+    // ── pulse_alpha ──
+
+    #[wasm_bindgen_test]
+    fn pulse_alpha_inactive_is_zero() {
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::Idle;
+        s.pulse_phase = 0.25; // would be 1.0 if active; inactive forces 0.0
+        assert_eq!(s.pulse_alpha(), 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn pulse_alpha_active_sine_endpoints() {
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::Streaming;
+        // phase 0 → 0.5 + 0.5*sin(0) = 0.5
+        s.pulse_phase = 0.0;
+        assert!((s.pulse_alpha() - 0.5).abs() < 1e-6);
+        // phase 0.25 → 0.5 + 0.5*sin(π/2) = 1.0
+        s.pulse_phase = 0.25;
+        assert!((s.pulse_alpha() - 1.0).abs() < 1e-6);
+        // phase 0.75 → 0.5 + 0.5*sin(3π/2) = 0.0
+        s.pulse_phase = 0.75;
+        assert!(s.pulse_alpha().abs() < 1e-6);
+    }
+
+    // ── status_text ──
+
+    #[wasm_bindgen_test]
+    fn status_text_idle_is_empty() {
+        let s = LiveModeState::new();
+        assert_eq!(s.status_text(999.0), "");
+    }
+
+    #[wasm_bindgen_test]
+    fn status_text_acquiring_lock_shows_truncated_elapsed() {
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::AcquiringLock;
+        s.phase_started_at = Some(100.0);
+        // elapsed 5.9s truncates to 5
+        assert_eq!(s.status_text(105.9), "Acquiring lock... 5s");
+    }
+
+    #[wasm_bindgen_test]
+    fn status_text_streaming_shows_chunk_count() {
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::Streaming;
+        s.chunks_received = 42;
+        assert_eq!(s.status_text(0.0), "LIVE (42 chunks)");
+    }
+
+    #[wasm_bindgen_test]
+    fn status_text_waiting_is_fixed_string() {
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::WaitingForChunk;
+        assert_eq!(s.status_text(0.0), "Waiting for chunk...");
+    }
+
+    #[wasm_bindgen_test]
+    fn status_text_error_uses_message_or_fallback() {
+        let mut s = LiveModeState::new();
+        s.phase = LivePhase::Error;
+        // With a message.
+        s.error_message = Some("connection timeout".to_string());
+        assert_eq!(s.status_text(0.0), "connection timeout");
+        // Without a message → fallback.
+        s.error_message = None;
+        assert_eq!(s.status_text(0.0), "Unknown error");
+    }
+
+    // ── record_last_radial selective updates ──
+
+    #[wasm_bindgen_test]
+    fn record_last_radial_only_overwrites_provided_fields() {
+        let mut s = LiveModeState::new();
+        s.last_radial_azimuth = Some(10.0);
+        s.last_radial_time_secs = Some(20.0);
+
+        // None args must leave both fields untouched.
+        s.record_last_radial(None, None);
+        assert_eq!(s.last_radial_azimuth, Some(10.0));
+        assert_eq!(s.last_radial_time_secs, Some(20.0));
+
+        // Some azimuth, None time → only azimuth updates.
+        s.record_last_radial(Some(33.0), None);
+        assert_eq!(s.last_radial_azimuth, Some(33.0));
+        assert_eq!(s.last_radial_time_secs, Some(20.0));
+
+        // Some time, None azimuth → only time updates.
+        s.record_last_radial(None, Some(44.0));
+        assert_eq!(s.last_radial_azimuth, Some(33.0));
+        assert_eq!(s.last_radial_time_secs, Some(44.0));
+    }
+
+    // ── on_in_progress_elevation_changed ──
+
+    #[wasm_bindgen_test]
+    fn on_in_progress_elevation_changed_clears_only_sweep_start() {
+        let mut s = LiveModeState::new();
+        s.sweep_start_azimuth = Some(90.0);
+        s.live_data_azimuth_range = Some((0.0, 180.0));
+        s.on_in_progress_elevation_changed();
+        assert_eq!(s.sweep_start_azimuth, None);
+        assert_eq!(
+            s.live_data_azimuth_range,
+            Some((0.0, 180.0)),
+            "az range kept to avoid compositing flash"
+        );
+    }
+
+    // ── derive_current_volume_forecast None paths ──
+
+    #[wasm_bindgen_test]
+    fn derive_forecast_none_when_no_vcp_pattern() {
+        let mut s = LiveModeState::new();
+        s.set_or_confirm_volume(scan_key(1000), 100.0, None);
+        s.volume_start_plan = Some(plan_without_target());
+        let obs = VolumeObservations::default(); // current_vcp_pattern is None
+        assert!(s.derive_current_volume_forecast(&obs).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn derive_forecast_none_when_no_volume_start_plan() {
+        let mut s = LiveModeState::new();
+        s.set_or_confirm_volume(scan_key(1000), 100.0, None);
+        // volume_start_plan stays None.
+        let mut obs = VolumeObservations::default();
+        obs.current_vcp_pattern = Some(vcp_with_one_elevation());
+        assert!(s.derive_current_volume_forecast(&obs).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn derive_forecast_none_when_no_current_volume() {
+        let mut s = LiveModeState::new();
+        s.volume_start_plan = Some(plan_without_target());
+        // current_volume stays None.
+        let mut obs = VolumeObservations::default();
+        obs.current_vcp_pattern = Some(vcp_with_one_elevation());
+        assert!(s.derive_current_volume_forecast(&obs).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn derive_forecast_none_when_vcp_elevations_empty() {
+        let mut s = LiveModeState::new();
+        s.set_or_confirm_volume(scan_key(1000), 100.0, None);
+        s.volume_start_plan = Some(plan_without_target());
+        let mut obs = VolumeObservations::default();
+        obs.current_vcp_pattern = Some(vcp_empty()); // empty elevations → None
+        assert!(s.derive_current_volume_forecast(&obs).is_none());
+    }
+
+    // ── try_capture_volume_start_plan early-return when already captured ──
+
+    #[wasm_bindgen_test]
+    fn try_capture_volume_start_plan_already_some_returns_early_even_without_volume() {
+        let mut s = LiveModeState::new();
+        // No current_volume, but a plan is already captured (revision 3).
+        let mut existing = plan_without_target();
+        existing.revision = 3;
+        s.volume_start_plan = Some(existing);
+        // current_volume is None — would normally also block — but the
+        // already-some guard fires first; the new plan is ignored.
+        let mut incoming = plan_without_target();
+        incoming.revision = 9;
+        s.try_capture_volume_start_plan(&incoming);
+        assert_eq!(s.volume_start_plan.as_ref().unwrap().revision, 3);
+    }
+
+    // ── chunk arrival cap boundary: exactly 1024 still accepts the 1024th ──
+
+    #[wasm_bindgen_test]
+    fn record_chunk_arrival_accepts_up_to_cap_then_rejects() {
+        let mut s = LiveModeState::new();
+        for i in 0..1024u32 {
+            s.record_chunk_arrival(ChunkArrivalStat::minimal_for_test(i, i as f64));
+        }
+        assert_eq!(s.chunk_arrivals.len(), 1024);
+        // At cap, further pushes are rejected and last stays sequence 1023.
+        s.record_chunk_arrival(ChunkArrivalStat::minimal_for_test(9999, 0.0));
+        assert_eq!(s.chunk_arrivals.len(), 1024);
+        assert_eq!(s.chunk_arrivals.last().unwrap().sequence, 1023);
+    }
+}

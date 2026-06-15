@@ -2194,3 +2194,458 @@ mod tests {
         assert!(ps.pending_loop_window.is_none());
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // ---------------------------------------------------------------
+    // PlaybackSpeed: labels, multipliers, fps mapping, enum tables
+    // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn speed_micro_labels_are_times_notation() {
+        assert_eq!(PlaybackSpeed::Realtime.label(), "1×");
+        assert_eq!(PlaybackSpeed::RealtimeDouble.label(), "2×");
+        assert_eq!(PlaybackSpeed::FifteenToOne.label(), "15×");
+        assert_eq!(PlaybackSpeed::ThirtyToOne.label(), "30×");
+        assert_eq!(PlaybackSpeed::Quarter.label(), "60×");
+        assert_eq!(PlaybackSpeed::Half.label(), "120×");
+        assert_eq!(PlaybackSpeed::Normal.label(), "300×");
+        assert_eq!(PlaybackSpeed::Double.label(), "600×");
+        assert_eq!(PlaybackSpeed::Quadruple.label(), "1200×");
+    }
+
+    #[wasm_bindgen_test]
+    fn speed_macro_labels_are_fps_strings() {
+        assert_eq!(PlaybackSpeed::Realtime.macro_label(), "1x (real)");
+        assert_eq!(PlaybackSpeed::RealtimeDouble.macro_label(), "2x (real)");
+        assert_eq!(PlaybackSpeed::FifteenToOne.macro_label(), "15s/s");
+        assert_eq!(PlaybackSpeed::ThirtyToOne.macro_label(), "30s/s");
+        assert_eq!(PlaybackSpeed::Quarter.macro_label(), "1 fps");
+        assert_eq!(PlaybackSpeed::Half.macro_label(), "2 fps");
+        assert_eq!(PlaybackSpeed::Normal.macro_label(), "5 fps");
+        assert_eq!(PlaybackSpeed::Double.macro_label(), "10 fps");
+        assert_eq!(PlaybackSpeed::Quadruple.macro_label(), "15 fps");
+    }
+
+    #[wasm_bindgen_test]
+    fn speed_macro_fps_none_for_realtime_rungs_some_otherwise() {
+        // The sub-minute / realtime rungs have no macro fps.
+        assert_eq!(PlaybackSpeed::Realtime.macro_frames_per_second(), None);
+        assert_eq!(
+            PlaybackSpeed::RealtimeDouble.macro_frames_per_second(),
+            None
+        );
+        assert_eq!(PlaybackSpeed::FifteenToOne.macro_frames_per_second(), None);
+        assert_eq!(PlaybackSpeed::ThirtyToOne.macro_frames_per_second(), None);
+        // The macro-capable rungs map to concrete fps.
+        assert_eq!(PlaybackSpeed::Quarter.macro_frames_per_second(), Some(1.0));
+        assert_eq!(PlaybackSpeed::Half.macro_frames_per_second(), Some(2.0));
+        assert_eq!(PlaybackSpeed::Normal.macro_frames_per_second(), Some(5.0));
+        assert_eq!(PlaybackSpeed::Double.macro_frames_per_second(), Some(10.0));
+        assert_eq!(
+            PlaybackSpeed::Quadruple.macro_frames_per_second(),
+            Some(15.0)
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn speed_timeline_multiples_match_labels() {
+        let eps = 1e-9;
+        assert!((PlaybackSpeed::Realtime.timeline_seconds_per_real_second() - 1.0).abs() < eps);
+        assert!(
+            (PlaybackSpeed::RealtimeDouble.timeline_seconds_per_real_second() - 2.0).abs() < eps
+        );
+        assert!(
+            (PlaybackSpeed::FifteenToOne.timeline_seconds_per_real_second() - 15.0).abs() < eps
+        );
+        assert!((PlaybackSpeed::ThirtyToOne.timeline_seconds_per_real_second() - 30.0).abs() < eps);
+        assert!((PlaybackSpeed::Quarter.timeline_seconds_per_real_second() - 60.0).abs() < eps);
+        assert!((PlaybackSpeed::Half.timeline_seconds_per_real_second() - 120.0).abs() < eps);
+        assert!((PlaybackSpeed::Normal.timeline_seconds_per_real_second() - 300.0).abs() < eps);
+        assert!((PlaybackSpeed::Double.timeline_seconds_per_real_second() - 600.0).abs() < eps);
+        assert!((PlaybackSpeed::Quadruple.timeline_seconds_per_real_second() - 1200.0).abs() < eps);
+    }
+
+    #[wasm_bindgen_test]
+    fn speed_tables_have_expected_membership() {
+        // `all()` lists every variant; `macro_speeds()` is the Quarter..Quadruple
+        // tail. Use lower bounds + representative membership, not fragile lengths.
+        let all = PlaybackSpeed::all();
+        assert_eq!(all.len(), 9);
+        assert!(all.contains(&PlaybackSpeed::Realtime));
+        assert!(all.contains(&PlaybackSpeed::Quadruple));
+        let macros = PlaybackSpeed::macro_speeds();
+        assert_eq!(macros.len(), 5);
+        // Every macro speed must have a concrete fps.
+        assert!(macros.iter().all(|s| s.macro_frames_per_second().is_some()));
+        assert!(!macros.contains(&PlaybackSpeed::Realtime));
+        assert_eq!(macros[0], PlaybackSpeed::Quarter);
+        assert_eq!(macros[macros.len() - 1], PlaybackSpeed::Quadruple);
+    }
+
+    #[wasm_bindgen_test]
+    fn nearest_macro_fps_defaults_slowest_for_nonpositive() {
+        // Non-positive target → slowest macro speed (Quarter, 1 fps).
+        assert_eq!(
+            PlaybackSpeed::nearest_macro_fps(0.0),
+            PlaybackSpeed::Quarter
+        );
+        assert_eq!(
+            PlaybackSpeed::nearest_macro_fps(-100.0),
+            PlaybackSpeed::Quarter
+        );
+        // Exact match lands on that rung.
+        assert_eq!(
+            PlaybackSpeed::nearest_macro_fps(10.0),
+            PlaybackSpeed::Double
+        );
+        // Between 5 and 10 fps on a log scale: sqrt(50) ≈ 7.07 is the midpoint.
+        // 8 fps sits closer to 10 (Double) than 5 (Normal).
+        assert_eq!(PlaybackSpeed::nearest_macro_fps(8.0), PlaybackSpeed::Double);
+    }
+
+    #[wasm_bindgen_test]
+    fn nearest_micro_multiple_matches_exact_and_picks_log_nearest() {
+        // Exact multiples land on their rung.
+        assert_eq!(
+            PlaybackSpeed::nearest_micro_multiple(300.0),
+            PlaybackSpeed::Normal
+        );
+        assert_eq!(
+            PlaybackSpeed::nearest_micro_multiple(1.0),
+            PlaybackSpeed::Realtime
+        );
+        // Above the top rung clamps to the fastest (1200×).
+        assert_eq!(
+            PlaybackSpeed::nearest_micro_multiple(100000.0),
+            PlaybackSpeed::Quadruple
+        );
+        // 900 sits between 600 and 1200; on a log scale sqrt(600*1200)≈848 is the
+        // midpoint, so 900 is closer to 1200 (Quadruple).
+        assert_eq!(
+            PlaybackSpeed::nearest_micro_multiple(900.0),
+            PlaybackSpeed::Quadruple
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // LoopMode / LoopBasis / LoopPreset labels & tables
+    // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn loop_mode_labels_and_table() {
+        assert_eq!(LoopMode::Loop.label(), "Loop");
+        assert_eq!(LoopMode::PingPong.label(), "Ping-Pong");
+        assert_eq!(LoopMode::Once.label(), "Once");
+        let all = LoopMode::all();
+        assert_eq!(all.len(), 3);
+        // LoopMode has no Debug derive, so compare via PartialEq.
+        assert!(all[0] == LoopMode::Loop);
+        assert!(all.contains(&LoopMode::PingPong));
+        assert!(all.contains(&LoopMode::Once));
+        // Default is Loop.
+        assert!(LoopMode::default() == LoopMode::Loop);
+    }
+
+    #[wasm_bindgen_test]
+    fn loop_basis_label_branches() {
+        assert_eq!(LoopBasis::FrameCount(6).label(), "6 frames");
+        assert_eq!(LoopBasis::FrameCount(1).label(), "1 frames");
+        // Under an hour → "min".
+        assert_eq!(LoopBasis::Duration(30.0 * 60.0).label(), "30 min");
+        // Just under an hour stays minutes.
+        assert_eq!(LoopBasis::Duration(59.0 * 60.0).label(), "59 min");
+        // At/above an hour → "h".
+        assert_eq!(LoopBasis::Duration(60.0 * 60.0).label(), "1 h");
+        assert_eq!(LoopBasis::Duration(120.0 * 60.0).label(), "2 h");
+    }
+
+    #[wasm_bindgen_test]
+    fn loop_preset_label_branches() {
+        assert_eq!(LoopPreset::PinToLive.label(), "Pin to live");
+        assert_eq!(LoopPreset::LastFrames(4).label(), "Last 4 frames");
+        // Duration under an hour → min; at/above → h.
+        assert_eq!(LoopPreset::LastDuration(30.0 * 60.0).label(), "Last 30 min");
+        assert_eq!(LoopPreset::LastDuration(60.0 * 60.0).label(), "Last 1 h");
+        assert_eq!(LoopPreset::LastDuration(90.0 * 60.0).label(), "Last 2 h");
+    }
+
+    // ---------------------------------------------------------------
+    // TimeSelection: range None width gate, between, slide_end_to a>b branch
+    // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn time_selection_range_requires_meaningful_width() {
+        // Sub-second / zero width → None (the > 1.0 gate).
+        let tiny = TimeSelection::between(100.0, 100.5);
+        assert_eq!(tiny.range(), None);
+        assert!(!tiny.contains(100.2));
+        // Exactly at the 1.0 boundary is NOT meaningful ( > 1.0, not >= ).
+        let edge = TimeSelection::between(100.0, 101.0);
+        assert_eq!(edge.range(), None);
+        // Just over 1.0 is meaningful, and normalizes regardless of order.
+        let ok = TimeSelection::between(500.0, 200.0);
+        assert_eq!(ok.range(), Some((200.0, 500.0)));
+        assert!(ok.contains(200.0)); // inclusive endpoints
+        assert!(ok.contains(500.0));
+        assert!(!ok.contains(199.0));
+        // `between` is a static (unanchored, not-in-progress) selection.
+        assert!(!ok.in_progress);
+        assert!(!ok.anchored_to_live);
+    }
+
+    #[wasm_bindgen_test]
+    fn time_selection_slide_end_to_moves_the_later_logical_edge() {
+        // a <= b: b is the moved edge.
+        let mut s = TimeSelection::between(100.0, 200.0);
+        s.slide_end_to(350.0);
+        assert_eq!(s.b, 350.0);
+        assert_eq!(s.a, 100.0);
+        assert_eq!(s.range(), Some((100.0, 350.0)));
+        // a > b: a is the moved edge (drag started past the eventual end).
+        let mut r = TimeSelection {
+            a: 500.0,
+            b: 100.0,
+            in_progress: false,
+            anchored_to_live: true,
+        };
+        r.slide_end_to(700.0);
+        assert_eq!(r.a, 700.0);
+        assert_eq!(r.b, 100.0);
+        assert_eq!(r.range(), Some((100.0, 700.0)));
+    }
+
+    // ---------------------------------------------------------------
+    // TimeModel::advance + apply_bounds: Loop / PingPong / Once at both ends
+    // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn advance_loop_wraps_at_upper_bound() {
+        let mut tm = TimeModel::at_position(90.0);
+        tm.set_bounds_from_selection(0.0, 100.0); // resets direction Forward
+        tm.loop_mode = LoopMode::Loop;
+        tm.playback_position = 90.0;
+        // Realtime = 1 timeline-sec per real-sec; advance 20 → 110 wraps to 10.
+        tm.advance(20.0, PlaybackSpeed::Realtime);
+        assert!((tm.playback_position - 10.0).abs() < 1e-9);
+        assert!(tm.direction == PlaybackDirection::Forward);
+    }
+
+    #[wasm_bindgen_test]
+    fn advance_loop_wraps_at_lower_bound_going_backward() {
+        let mut tm = TimeModel::at_position(10.0);
+        tm.set_bounds_from_selection(0.0, 100.0);
+        tm.loop_mode = LoopMode::Loop;
+        tm.direction = PlaybackDirection::Backward;
+        tm.playback_position = 10.0;
+        // Backward 20 → -10 ≤ start; Loop wraps to end - 10 = 90.
+        tm.advance(20.0, PlaybackSpeed::Realtime);
+        assert!((tm.playback_position - 90.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn advance_pingpong_reflects_at_both_bounds() {
+        let mut tm = TimeModel::at_position(90.0);
+        tm.set_bounds_from_selection(0.0, 100.0);
+        tm.loop_mode = LoopMode::PingPong;
+        tm.direction = PlaybackDirection::Forward;
+        tm.playback_position = 90.0;
+        // Forward overshoot by 10 → reflect to 90, flip to Backward.
+        tm.advance(20.0, PlaybackSpeed::Realtime);
+        assert!((tm.playback_position - 90.0).abs() < 1e-9);
+        assert!(tm.direction == PlaybackDirection::Backward);
+        // Now backward from 90 by 100 → undershoot start by 10 → reflect to 10,
+        // flip to Forward.
+        tm.playback_position = 90.0;
+        tm.advance(100.0, PlaybackSpeed::Realtime);
+        assert!((tm.playback_position - 10.0).abs() < 1e-9);
+        assert!(tm.direction == PlaybackDirection::Forward);
+    }
+
+    #[wasm_bindgen_test]
+    fn advance_once_clamps_at_each_bound() {
+        // Once forward: clamp at end.
+        let mut tm = TimeModel::at_position(90.0);
+        tm.set_bounds_from_selection(0.0, 100.0);
+        tm.loop_mode = LoopMode::Once;
+        tm.playback_position = 90.0;
+        tm.advance(20.0, PlaybackSpeed::Realtime);
+        assert!((tm.playback_position - 100.0).abs() < 1e-9);
+        // Once backward: clamp at start.
+        tm.direction = PlaybackDirection::Backward;
+        tm.playback_position = 10.0;
+        tm.advance(20.0, PlaybackSpeed::Realtime);
+        assert!((tm.playback_position - 0.0).abs() < 1e-9);
+    }
+
+    #[wasm_bindgen_test]
+    fn advance_unbounded_moves_freely_and_speed_scales() {
+        let mut tm = TimeModel::at_position(1000.0);
+        assert_eq!(tm.playback_bounds, None);
+        // 10 real seconds at Double (600×) = 6000 timeline seconds forward.
+        tm.advance(10.0, PlaybackSpeed::Double);
+        assert!((tm.playback_position - 7000.0).abs() < 1e-6);
+        // Backward direction negates the advance.
+        tm.direction = PlaybackDirection::Backward;
+        tm.advance(10.0, PlaybackSpeed::Double);
+        assert!((tm.playback_position - 1000.0).abs() < 1e-6);
+    }
+
+    #[wasm_bindgen_test]
+    fn set_bounds_from_selection_orders_clamps_and_resets_direction() {
+        let mut tm = TimeModel::at_position(300.0);
+        tm.direction = PlaybackDirection::Backward;
+        // Reversed args are ordered; position outside is clamped into range.
+        tm.set_bounds_from_selection(200.0, 50.0);
+        assert_eq!(tm.playback_bounds, Some((50.0, 200.0)));
+        assert!(tm.direction == PlaybackDirection::Forward);
+        assert!((tm.playback_position - 200.0).abs() < 1e-9); // clamped down
+                                                              // clear_bounds drops them and re-resets direction.
+        tm.direction = PlaybackDirection::Backward;
+        tm.clear_bounds();
+        assert_eq!(tm.playback_bounds, None);
+        assert!(tm.direction == PlaybackDirection::Forward);
+    }
+
+    // ---------------------------------------------------------------
+    // PlaybackState: view math, macro frame stepping & sync, mode derivation
+    // ---------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn view_width_secs_and_center_view_on() {
+        let mut ps = PlaybackState::default();
+        ps.timeline_width_px = 1000.0;
+        ps.timeline_zoom = 2.0;
+        // span = width / zoom = 500.
+        assert!((ps.view_width_secs() - 500.0).abs() < 1e-9);
+        // Centering puts ts at the middle: view_start = ts - span/2.
+        ps.center_view_on(1000.0);
+        assert!((ps.timeline_view_start - (1000.0 - 250.0)).abs() < 1e-9);
+        // Zero zoom guards against division → 0 width.
+        ps.timeline_zoom = 0.0;
+        assert_eq!(ps.view_width_secs(), 0.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn sync_macro_frame_index_picks_nearest_frame() {
+        let mut ps = PlaybackState::default();
+        ps.macro_playback.sweep_frames = vec![100.0, 200.0, 300.0];
+        // Closer to the lower neighbor (240 → 200, since |200-240|<|300-240|).
+        ps.time_model.playback_position = 240.0;
+        ps.sync_macro_frame_index();
+        assert_eq!(ps.macro_playback.current_frame_index, 1);
+        // Closer to the upper neighbor (290 → 300).
+        ps.time_model.playback_position = 290.0;
+        ps.sync_macro_frame_index();
+        assert_eq!(ps.macro_playback.current_frame_index, 2);
+        // Before the first frame clamps to index 0.
+        ps.time_model.playback_position = 50.0;
+        ps.sync_macro_frame_index();
+        assert_eq!(ps.macro_playback.current_frame_index, 0);
+        // After the last frame clamps to the final index.
+        ps.time_model.playback_position = 9999.0;
+        ps.sync_macro_frame_index();
+        assert_eq!(ps.macro_playback.current_frame_index, 2);
+        // Empty list resets to 0.
+        ps.macro_playback.sweep_frames.clear();
+        ps.macro_playback.current_frame_index = 5;
+        ps.sync_macro_frame_index();
+        assert_eq!(ps.macro_playback.current_frame_index, 0);
+    }
+
+    #[wasm_bindgen_test]
+    fn step_macro_frame_pingpong_and_once_at_boundaries() {
+        // PingPong forward off the end flips to Backward and parks at last idx.
+        let mut ps = PlaybackState::default();
+        ps.macro_playback.sweep_frames = vec![10.0, 20.0, 30.0];
+        ps.macro_playback.current_frame_index = 2;
+        ps.time_model.loop_mode = LoopMode::PingPong;
+        ps.step_macro_frame(1);
+        assert_eq!(ps.macro_playback.current_frame_index, 2);
+        assert!(ps.time_model.direction == PlaybackDirection::Backward);
+        assert_eq!(ps.time_model.playback_position, 30.0); // snapped to frame
+
+        // PingPong backward off the start flips to Forward and parks at index 0.
+        ps.macro_playback.current_frame_index = 0;
+        ps.time_model.direction = PlaybackDirection::Backward;
+        ps.step_macro_frame(-1);
+        assert_eq!(ps.macro_playback.current_frame_index, 0);
+        assert!(ps.time_model.direction == PlaybackDirection::Forward);
+
+        // Once forward at the end stops playback and snaps to the last frame.
+        ps.time_model.loop_mode = LoopMode::Once;
+        ps.macro_playback.current_frame_index = 2;
+        ps.playing = true;
+        ps.step_macro_frame(1);
+        assert_eq!(ps.macro_playback.current_frame_index, 2);
+        assert!(!ps.playing);
+        assert_eq!(ps.time_model.playback_position, 30.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn step_and_advance_macro_are_inert_on_empty_frames() {
+        let mut ps = PlaybackState::default();
+        ps.macro_playback.sweep_frames.clear();
+        ps.macro_playback.current_frame_index = 0;
+        ps.time_model.playback_position = 555.0;
+        ps.playing = true;
+        // No frames: neither path moves the cursor or position.
+        ps.step_macro_frame(1);
+        ps.advance_macro(10.0);
+        assert_eq!(ps.macro_playback.current_frame_index, 0);
+        assert_eq!(ps.time_model.playback_position, 555.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn enter_pinned_live_drops_bounds_window_and_pending() {
+        let mut ps = PlaybackState::default();
+        ps.time_model.set_bounds_from_selection(100.0, 200.0);
+        ps.loop_window = Some(LoopWindow::default());
+        ps.pending_loop_window = Some((1.0, 2.0));
+        ps.enter_pinned_live(1234.0);
+        assert_eq!(ps.time_model.mode, PlayheadMode::PinnedToNow);
+        assert!(ps.time_model.is_pinned());
+        assert!(!ps.time_model.is_lookback());
+        assert_eq!(ps.time_model.playback_bounds, None);
+        assert!(ps.loop_window.is_none());
+        assert!(ps.pending_loop_window.is_none());
+        assert_eq!(ps.playback_position(), 1234.0);
+    }
+
+    #[wasm_bindgen_test]
+    fn playback_mode_derives_from_tier_ignoring_lookback() {
+        // playback_mode() always passes is_lookback=false: Micro tier → Micro.
+        let mut ps = PlaybackState::default();
+        ps.set_timeline_zoom(2.0, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Micro);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Micro);
+        // Macro tier → Macro.
+        ps.set_timeline_zoom(0.5, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Macro);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Macro);
+        // Archive tier → Macro mode (frame-stepping, but playback disallowed).
+        let zoom_61h = 1000.0 / (61.0 * 3600.0);
+        ps.set_timeline_zoom(zoom_61h, 1000.0, FALLBACK_FRAME_SPACING_SECS);
+        assert_eq!(ps.timeline_tier, TimelineTier::Archive);
+        assert_eq!(ps.playback_mode(), PlaybackMode::Macro);
+    }
+
+    #[wasm_bindgen_test]
+    fn commit_pinned_window_orders_reversed_target_args() {
+        // order_pair (via commit) normalizes a reversed target while paused.
+        let mut ps = PlaybackState::default();
+        assert!(!ps.playing);
+        let w = ps.commit_pinned_window(400.0, 100.0);
+        assert_eq!(w, (100.0, 400.0));
+        // While playing with no prior bounds the reversed target is taken
+        // immediately, still ordered.
+        ps.playing = true;
+        ps.time_model.playback_bounds = None;
+        let w2 = ps.commit_pinned_window(260.0, 150.0);
+        assert_eq!(w2, (150.0, 260.0));
+        assert!(ps.pending_loop_window.is_none());
+    }
+}
