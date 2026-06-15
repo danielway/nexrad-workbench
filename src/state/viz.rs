@@ -233,7 +233,7 @@ pub struct ElevationListEntry {
 }
 
 /// Interpolation mode for radar rendering.
-#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InterpolationMode {
     /// Raw nearest-neighbor sampling (blocky, traditional).
     #[default]

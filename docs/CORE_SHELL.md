@@ -113,11 +113,15 @@ needs eyes.
 
 Grounded in the 2026-06-14 coupling audit. Build on the existing seams,
 lowest-risk-first, behavior-preserving; each phase establishes a concrete headless
-test seam. Effort S/M/L = relative size. **Status: not started.**
+test seam. Effort S/M/L = relative size. **Status: P0 complete; in progress.**
+(Running decisions log: [CORE_SHELL_MIGRATION_LOG.md](CORE_SHELL_MIGRATION_LOG.md).)
 
-- **P0 — Contract types (S).** Introduce `Intent` (superset of today's
-  `AppCommand`) and an `Effect` enum, modeled on `PrevSweepAction`. No behavior
-  change. Seam: the vocabulary exists; pure `derive_*` fns re-homed under the core.
+- **P0 — Contract types (S). ✅ DONE.** Introduced `Intent` (alias of today's
+  `AppCommand`, to grow into the superset) and an `Effect` enum, modeled on
+  `PrevSweepAction`, in the new `src/core/` module. No behavior change. The
+  vocabulary exists; heavy per-decision effects keep their own local action
+  enums (the `PrevSweepAction` idiom), `core::Effect` carries simple
+  cross-cutting effects.
 - **P1 — Effect boundary + injectable clock (S→M).** Define how the core returns
   effects (a `Vec<Effect>` / sink) covering GPU upload, worker dispatch, IDB,
   localStorage, URL, geolocation, timers; make the persistence throttle clock

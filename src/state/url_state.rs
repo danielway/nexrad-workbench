@@ -21,7 +21,7 @@ fn camera_mode_code(mode: super::CameraMode) -> u8 {
 }
 
 /// Opaque view-state blob encoded in the `v` URL parameter.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ViewState {
     /// Map zoom level (f32).
     #[serde(skip_serializing_if = "Option::is_none")]

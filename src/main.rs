@@ -12,6 +12,7 @@
 
 mod alerts;
 mod app;
+mod core;
 mod data;
 mod geo;
 mod mping;

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::{AppState, ElevationSelection, InterpolationMode, PlaybackSpeed};
 
 /// User preferences that persist across page reloads.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UserPreferences {
     #[serde(default)]
     pub speed: PlaybackSpeed,
