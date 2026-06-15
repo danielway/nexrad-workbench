@@ -2,7 +2,10 @@
 
 A WebAssembly-based NEXRAD weather radar visualization application built with Rust and egui.
 
-This is the canonical engineering map of the codebase. For depth on a specific
+This is the canonical engineering map of the codebase. For a **diagram-first
+overview** — structural relationships plus runtime sequence/flow diagrams — see
+the visual companion [ARCHITECTURE_DIAGRAMS.md](docs/ARCHITECTURE_DIAGRAMS.md).
+For depth on a specific
 subsystem, follow the dedicated references: [RENDERING.md](docs/RENDERING.md)
 (GPU shader pipeline + 3D), [STREAMING.md](docs/STREAMING.md) (real-time
 sequencing/timing), [TIMING.md](docs/TIMING.md) (the three time categories), and
