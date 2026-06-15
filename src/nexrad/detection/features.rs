@@ -161,3 +161,99 @@ fn pca(sxx: f64, syy: f64, sxy: f64) -> (f32, f32) {
 
     (compass_deg as f32, elongation)
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // -- pca ------------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn pca_isotropic_is_unit_elongation() {
+        // Equal variance, no covariance → circular blob → elongation 1.
+        let (_orient, elong) = pca(1.0, 1.0, 0.0);
+        assert!((elong - 1.0).abs() < 1e-5, "elong {elong}");
+    }
+
+    #[wasm_bindgen_test]
+    fn pca_major_axis_east_west_reads_90_degrees() {
+        // Variance concentrated along x (east) → major axis is E–W → compass 90.
+        let (orient, elong) = pca(4.0, 1.0, 0.0);
+        assert!((orient - 90.0).abs() < 1e-3, "orient {orient}");
+        assert!((elong - 2.0).abs() < 1e-4, "elong {elong}"); // sqrt(4/1)
+    }
+
+    #[wasm_bindgen_test]
+    fn pca_major_axis_north_south_reads_0_degrees() {
+        // Variance along y (north) → major axis is N–S → compass 0.
+        let (orient, elong) = pca(1.0, 4.0, 0.0);
+        assert!(orient.abs() < 1e-3, "orient {orient}");
+        assert!((elong - 2.0).abs() < 1e-4, "elong {elong}");
+    }
+
+    #[wasm_bindgen_test]
+    fn pca_orientation_folds_into_zero_to_180() {
+        for &(sxx, syy, sxy) in &[
+            (5.0, 1.0, 2.0),
+            (1.0, 5.0, -2.0),
+            (3.0, 3.0, 1.5),
+            (10.0, 0.5, -4.0),
+        ] {
+            let (orient, _e) = pca(sxx, syy, sxy);
+            assert!(
+                (0.0..180.0).contains(&orient),
+                "orient {orient} out of range"
+            );
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn pca_degenerate_minor_axis_falls_back_to_unit_elongation() {
+        // Perfectly collinear (minor eigenvalue 0) → guard returns 1.0, not inf.
+        let (_o, elong) = pca(4.0, 0.0, 0.0);
+        assert_eq!(elong, 1.0);
+    }
+
+    // -- summarize ------------------------------------------------------
+
+    #[wasm_bindgen_test]
+    fn summarize_single_pixel_due_east_gives_bearing_90_and_range() {
+        // A single foreground gate at azimuth 90° (east), 3 km out.
+        let azimuths = [90.0_f32, 0.0, 0.0, 0.0];
+        let input = DetectionInput {
+            azimuths: &azimuths,
+            gate_values: &[], // unused by summarize (reads the decoded grid)
+            azimuth_count: 4,
+            gate_count: 4,
+            first_gate_km: 0.0,
+            gate_interval_km: 2.0,
+            data_scale: 0.0,
+            data_offset: 0.0,
+            radar_lat: 35.0,
+            radar_lon: -97.0,
+        };
+        // grid index = az_idx * gate_count + g = 0*4 + 1 = 1; gate g=1 → range
+        // = 0 + (1 + 0.5) * 2 = 3 km.
+        let mut grid = vec![f32::NAN; 16];
+        grid[1] = 50.0;
+        let pixels = vec![(0u16, 1u16)];
+
+        let cell = summarize(&pixels, &grid, &input, 30.0);
+        assert_eq!(cell.gate_count, 1);
+        assert_eq!(cell.max_dbz, 50.0);
+        assert!((cell.mean_dbz - 50.0).abs() < 1e-3);
+        assert!(
+            (cell.range_from_radar_km - 3.0).abs() < 1e-3,
+            "range {}",
+            cell.range_from_radar_km
+        );
+        assert!(
+            (cell.bearing_from_radar_deg - 90.0).abs() < 0.5,
+            "bearing {}",
+            cell.bearing_from_radar_deg
+        );
+        // Single pixel → degenerate covariance → unit elongation.
+        assert_eq!(cell.elongation, 1.0);
+    }
+}
