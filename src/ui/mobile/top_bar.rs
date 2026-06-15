@@ -40,6 +40,7 @@ impl Layer for MobileTopBarLayer {
             ctx.acquisition,
             ctx.diagnostics,
             ctx.derived,
+            ctx.diagnostics_vm,
             ctx.chrome,
         );
     }
@@ -134,6 +135,7 @@ fn draw_mobile_top_bar(
     acquisition: &crate::subsystem::Acquisition,
     diagnostics: &mut crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
+    diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     // iOS safe area: when installed as a home-screen PWA, the canvas extends
@@ -193,7 +195,14 @@ fn draw_mobile_top_bar(
                 render_mobile_time_readout(ui, state);
 
                 // Alerts chip (reuses the desktop helper).
-                super::super::top_bar::render_alerts_chip(ui, state, diagnostics, derived, chrome);
+                super::super::top_bar::render_alerts_chip(
+                    ui,
+                    state,
+                    diagnostics,
+                    derived,
+                    diagnostics_vm,
+                    chrome,
+                );
 
                 // Worker error banner — critical, must be visible on mobile too.
                 if let Some(ref error_msg) = state.worker_init_error {

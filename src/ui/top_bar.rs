@@ -27,6 +27,7 @@ impl Layer for TopBarLayer {
             ctx.playback,
             ctx.diagnostics,
             ctx.derived,
+            ctx.diagnostics_vm,
             ctx.chrome,
         );
     }
@@ -41,6 +42,7 @@ fn draw_top_bar(
     playback: &mut crate::subsystem::Playback,
     diagnostics: &mut crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
+    diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
     chrome: &mut crate::subsystem::Chrome,
 ) {
     // Detect status message changes: if the message content differs from when we
@@ -103,7 +105,7 @@ fn draw_top_bar(
 
                 // NWS alerts chip — shown only in 2D when one or more alerts
                 // intersect the visible map bounds.
-                render_alerts_chip(ui, state, diagnostics, derived, chrome);
+                render_alerts_chip(ui, state, diagnostics, derived, diagnostics_vm, chrome);
 
                 // Recent-errors chip — surfaces failures from the unified
                 // ErrorContext aggregator. Quiet when no errors have been
@@ -621,10 +623,12 @@ fn render_version_link(ui: &mut egui::Ui) {
 pub(super) fn render_alerts_chip(
     ui: &mut egui::Ui,
     state: &mut AppState,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    diagnostics: &crate::subsystem::Diagnostics,
     derived: &crate::subsystem::Derived,
+    diagnostics_vm: &crate::core::diagnostics::DiagnosticsVm,
     _chrome: &mut crate::subsystem::Chrome,
 ) {
+    use crate::core::diagnostics::DiagnosticsIntent;
     // Show a subtle loading/error hint on the first fetch so the user knows
     // the feed is being contacted. After the first success, stay quiet unless
     // there are alerts to surface.
@@ -640,16 +644,16 @@ pub(super) fn render_alerts_chip(
         return;
     }
 
-    let Some(bounds) = derived.visible_bounds else {
+    if derived.visible_bounds.is_none() {
         // 3D globe view or canvas hasn't rendered yet.
         return;
-    };
+    }
 
-    let visible: Vec<(String, String, AlertSeverity, bool)> = diagnostics
-        .alerts
-        .visible_in(bounds)
-        .into_iter()
-        .map(|a| (a.id.clone(), a.event.clone(), a.severity, a.is_warning()))
+    // The severity-sorted visible-alert list is the view-model.
+    let visible: Vec<(String, String, AlertSeverity, bool)> = diagnostics_vm
+        .visible_alerts
+        .iter()
+        .map(|a| (a.id.clone(), a.event.clone(), a.severity, a.is_warning))
         .collect();
 
     if visible.is_empty() {
@@ -676,7 +680,7 @@ pub(super) fn render_alerts_chip(
         let response = ui.add(egui::Label::new(icon).sense(egui::Sense::click()));
         response.clone().on_hover_text(tooltip);
         if response.clicked() {
-            state.push_command(AppCommand::RefreshAlerts);
+            state.push_command(AppCommand::Diagnostics(DiagnosticsIntent::RefreshAlerts));
         }
         ui.separator();
         return;
@@ -736,9 +740,11 @@ pub(super) fn render_alerts_chip(
 
     if response.on_hover_text(hover).clicked() {
         if visible.len() == 1 {
-            state.push_command(AppCommand::OpenAlert(visible[0].0.clone()));
+            state.push_command(AppCommand::Diagnostics(DiagnosticsIntent::SelectAlert(
+                visible[0].0.clone(),
+            )));
         } else {
-            diagnostics.alerts.list_modal_open = true;
+            state.push_command(AppCommand::Diagnostics(DiagnosticsIntent::OpenAlertList));
         }
     }
 

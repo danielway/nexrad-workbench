@@ -89,6 +89,9 @@ pub struct LayoutCtx<'a> {
     pub chrome: &'a mut Chrome,
     pub diagnostics: &'a mut Diagnostics,
     pub derived: &'a Derived,
+    /// Read-only diagnostics projection (severity-sorted alerts in view) for the
+    /// alerts chip + list modal — "view-model out" for the P2 reference slice.
+    pub diagnostics_vm: &'a crate::core::diagnostics::DiagnosticsVm,
     pub modals: &'a mut ModalStates,
 }
 

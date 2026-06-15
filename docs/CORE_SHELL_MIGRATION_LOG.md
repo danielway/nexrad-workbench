@@ -78,3 +78,42 @@ once the migration is complete.
   (`apply_effects`/`apply_effect`). One exhaustive match so a new variant forces
   a shell decision. This is the "effect runtime / imperative shell" box from the
   standard's diagram.
+
+### D3 — P2 Diagnostics reference slice
+- **`DiagnosticsIntent` sub-enum wrapped by `AppCommand::Diagnostics(..)`**, not
+  flat variants. Folded the existing flat `OpenAlert`/`CloseAlert`/`RefreshAlerts`
+  into it (roadmap: "folding the existing alert AppCommands in"). `CloseAlert` had
+  no emit site, so it was dropped (its behavior split into `ClearAlertSelection` +
+  `CloseAlertList`). `DiagnosticsIntent` lives in `core::diagnostics`; `AppCommand`
+  (in `state`) references it — module cycles are fine in Rust.
+- **`reduce(DiagnosticsStateMut, intent) -> Vec<Effect>`**, a borrow-bundle of the
+  state it touches (`alerts`, `mping`, `gps`, and `gps_layer_active` = the
+  `layer_state.geo.gps_location` toggle the GPS-failure path auto-clears). One
+  total reducer; the only effect is `StartGeolocation`. Everything else
+  (`refresh_requested`, `invalidate_requested`, selections) is pure state
+  mutation, not an Effect — those flags are read by the manager ticks, not I/O.
+- **`ShowAlertOnMap(id)` is a separate top-level `AppCommand`, not a
+  `DiagnosticsIntent`.** "Show on map" mutates `viz_state`/camera (P5/carve-out
+  territory), which `DiagnosticsStateMut` doesn't carry. Handled in the shell
+  (`command_dispatch`) via the pure `compute_alert_focus(alert) -> AlertFocus`,
+  keeping the *decision* (which layer, which centroid) tested while the camera
+  write stays shell. Calls the already-verified `camera.center_on` (S4 carve-out).
+- **`GpsState`/channel stays out of the core.** `Effect::StartGeolocation` carries
+  no payload; the shell pulls `gps.result_sender()` + `ctx` when executing. GPS
+  *results* (the async drain) are fed back through the same `reduce` as
+  `GpsResolved`/`GpsFailed` intents, applied inline in `update()` (not queued) to
+  preserve same-frame display.
+- **`DiagnosticsVm` is an owned snapshot** (clones the severity-sorted visible
+  alerts), built once per frame from `derived.visible_bounds` and threaded via a
+  new `LayoutCtx.diagnostics_vm` field. The chip keeps its own `visible_bounds`
+  None-check (3D globe → render nothing) — distinct from "bounds present, no
+  alerts". Only the genuine UI-side computation (`AlertsState::visible_in`) was
+  VM-ified; trivially-projected overlay reads were left direct (pure projection,
+  not logic).
+- **`alerts::types` made `pub(crate)`** (was private) so the cross-module
+  `core::diagnostics` tests can build `Alert`/`AlertGeometry`/`Ring` fixtures.
+  Chose this over crate-wide re-exports, which would read as unused in non-test
+  builds and trip the clippy gate.
+- **One-frame lag is now uniform for diagnostics modal/selection interactions**
+  (they go through the command queue, drained next frame) — same as the
+  pre-existing `OpenAlert` path; imperceptible and consistent.

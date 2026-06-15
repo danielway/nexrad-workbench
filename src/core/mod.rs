@@ -22,6 +22,7 @@
 //! orchestration during the migration lands here as `decide_*` / `reduce`
 //! functions.
 
+pub mod diagnostics;
 pub mod effect;
 pub mod intent;
 pub mod persist;

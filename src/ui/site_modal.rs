@@ -127,7 +127,9 @@ pub(super) fn apply_site_selection(
     state.push_command(crate::state::AppCommand::RefreshTimeline {
         auto_position: true,
     });
-    state.push_command(crate::state::AppCommand::RefreshAlerts);
+    state.push_command(crate::state::AppCommand::Diagnostics(
+        crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts,
+    ));
     state.preferred_site = Some(site_id.to_string());
     chrome.site_modal_open = false;
 

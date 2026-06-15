@@ -40,6 +40,7 @@ impl super::layout::Layer for MpingModalLayer {
         let playback_secs = ctx.playback.state.playback_position();
         draw_mping_modal(
             ctx.ctx,
+            ctx.state,
             ctx.diagnostics,
             playback_secs,
             &mut ctx.modals.mping,
@@ -47,32 +48,36 @@ impl super::layout::Layer for MpingModalLayer {
     }
 }
 
-/// Returns `true` if the user just saved a new (or cleared) API key,
-/// indicating the manager should invalidate its cache and refetch.
-/// Currently the caller ignores the return value.
+/// Render the mPING settings modal. Key save/clear/close are emitted as
+/// [`DiagnosticsIntent`]s (applied by the pure reducer); only the transient
+/// text-edit buffer (`modal_state`) is mutated locally.
 fn draw_mping_modal(
     ctx: &egui::Context,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    state: &mut crate::state::AppState,
+    diagnostics: &crate::subsystem::Diagnostics,
     playback_secs: f64,
     modal_state: &mut MpingModalState,
-) -> bool {
+) {
+    use crate::core::diagnostics::DiagnosticsIntent;
+    use crate::state::AppCommand;
+
     if !diagnostics.mping.settings_modal_open {
         modal_state.seeded = false;
-        return false;
+        return;
     }
 
     if super::modal_helper::modal_backdrop(ctx, "mping_modal_backdrop", 180) {
-        diagnostics.mping.settings_modal_open = false;
+        state.push_command(AppCommand::Diagnostics(
+            DiagnosticsIntent::CloseMpingSettings,
+        ));
         modal_state.seeded = false;
-        return false;
+        return;
     }
 
     if !modal_state.seeded {
         modal_state.key_input = diagnostics.mping.api_key.clone().unwrap_or_default();
         modal_state.seeded = true;
     }
-
-    let mut saved = false;
 
     egui::Window::new("mPING Storm Reports")
         .collapsible(false)
@@ -166,7 +171,9 @@ fn draw_mping_modal(
 
             ui.horizontal(|ui| {
                 if ui.button("Cancel").clicked() {
-                    diagnostics.mping.settings_modal_open = false;
+                    state.push_command(AppCommand::Diagnostics(
+                        DiagnosticsIntent::CloseMpingSettings,
+                    ));
                     modal_state.seeded = false;
                 }
 
@@ -182,13 +189,11 @@ fn draw_mping_modal(
                         } else {
                             Some(trimmed.to_string())
                         };
-                        if diagnostics.mping.api_key.as_deref() != new_key.as_deref() {
-                            diagnostics.mping.api_key = new_key;
-                            diagnostics.mping.last_error = None;
-                            diagnostics.mping.invalidate_requested = true;
-                            saved = true;
-                        }
-                        diagnostics.mping.settings_modal_open = false;
+                        // The reducer guards on key change, clears the error,
+                        // requests invalidation, and closes the modal.
+                        state.push_command(AppCommand::Diagnostics(
+                            DiagnosticsIntent::SaveMpingApiKey(new_key),
+                        ));
                         modal_state.seeded = false;
                     }
 
@@ -197,20 +202,14 @@ fn draw_mping_modal(
                             .button(RichText::new("Clear").color(Color32::from_rgb(220, 120, 120)))
                             .clicked()
                     {
-                        diagnostics.mping.api_key = None;
-                        diagnostics.mping.reports.clear();
-                        diagnostics.mping.total_count = 0;
-                        diagnostics.mping.last_error = None;
-                        diagnostics.mping.last_success_ms = 0.0;
-                        diagnostics.mping.invalidate_requested = true;
+                        state.push_command(AppCommand::Diagnostics(
+                            DiagnosticsIntent::ClearMpingKey,
+                        ));
                         modal_state.key_input.clear();
-                        saved = true;
                     }
                 });
             });
 
             ui.add_space(4.0);
         });
-
-    saved
 }

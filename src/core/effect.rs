@@ -40,4 +40,8 @@ pub enum Effect {
     PushUrl(UrlPush),
     /// Persist user preferences to localStorage.
     SavePreferences(Box<UserPreferences>),
+    /// Begin a one-shot browser geolocation lookup for the "My Location" overlay.
+    /// The shell supplies the result sink (a `GpsState` channel) and `egui`
+    /// context, so the effect itself carries no payload.
+    StartGeolocation,
 }

@@ -637,7 +637,7 @@ impl WorkbenchApp {
     }
 
     /// Push current app state to the URL bar and save user preferences (throttled).
-    fn persist_url_state(&mut self) {
+    fn persist_url_state(&mut self, ctx: &egui::Context) {
         // Encode `rt=` (reload re-enters live) only while the playhead is
         // attached to the live edge — a detached background stream's "current
         // view" is the scrubbed archive position, which the URL captures.
@@ -652,7 +652,7 @@ impl WorkbenchApp {
             self.diagnostics.mping.api_key.clone(),
             self.live.app_mode == state::AppMode::Live,
         );
-        self.apply_effects(effects);
+        self.apply_effects(ctx, effects);
     }
 
     /// Push the current `AppMode`'s color to the browser favicon via the
@@ -803,7 +803,7 @@ impl eframe::App for WorkbenchApp {
         self.sync_prev_sweep_texture();
         self.request_render_if_needed();
         self.update_network_stats();
-        self.persist_url_state();
+        self.persist_url_state(ctx);
 
         // 14-17. FRAME SNAPSHOT: materialize the per-frame state UI reads.
         // Live::refresh derives everything from this frame's shared `now`.
@@ -817,19 +817,19 @@ impl eframe::App for WorkbenchApp {
 
         // Drain GPS-overlay async results before panels render so the
         // "My Location" checkbox sees coords/error on the same frame the
-        // geolocation callback fires.
+        // geolocation callback fires. Each result is applied through the pure
+        // diagnostics reducer (same path as user intents) rather than mutated
+        // inline — so the success/auto-off-on-failure rules stay testable.
         for r in self.diagnostics.gps.drain_results() {
-            match r {
+            let intent = match r {
                 ui::LocationResult::Success(lat, lon) => {
-                    self.diagnostics.gps.coords = Some((lat, lon));
-                    self.diagnostics.gps.error = None;
+                    core::diagnostics::DiagnosticsIntent::GpsResolved(lat, lon)
                 }
                 ui::LocationResult::Error(msg) => {
-                    self.diagnostics.gps.error = Some(msg);
-                    self.diagnostics.gps.coords = None;
-                    self.state.layer_state.geo.gps_location = false;
+                    core::diagnostics::DiagnosticsIntent::GpsFailed(msg)
                 }
-            }
+            };
+            self.handle_diagnostics_intent(ctx, intent);
         }
 
         // 18. Recolor the favicon if the AppMode changed this frame.
@@ -887,6 +887,12 @@ impl eframe::App for WorkbenchApp {
         // mobile layouts pick the chrome panel set; the modal set is
         // shared. Visibility predicates absorb per-panel and per-modal
         // visibility guards that previously lived in each function body.
+        // Diagnostics view-model: the read-only projection (severity-sorted
+        // alerts in view) the chip + list modal render, built once from this
+        // frame's bounds so neither recomputes `visible_in`.
+        let diagnostics_vm =
+            core::diagnostics::DiagnosticsVm::build(&self.diagnostics, derived.visible_bounds);
+
         let is_mobile = self.state.is_mobile;
         let mut layout_ctx = ui::LayoutCtx {
             ctx,
@@ -898,6 +904,7 @@ impl eframe::App for WorkbenchApp {
             chrome: &mut self.chrome,
             diagnostics: &mut self.diagnostics,
             derived: &derived,
+            diagnostics_vm: &diagnostics_vm,
             modals: &mut self.modals,
         };
         ui::render_layout(is_mobile, &mut layout_ctx);

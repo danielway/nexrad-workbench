@@ -100,14 +100,59 @@ impl WorkbenchApp {
             // ---- Worker lifecycle -------------------------------------
             AppCommand::RetryWorker => self.handle_retry_worker(ctx),
 
-            // ---- Alerts -----------------------------------------------
-            AppCommand::RefreshAlerts => self.diagnostics.alerts.refresh_requested = true,
-            AppCommand::OpenAlert(id) => self.diagnostics.alerts.selected_alert_id = Some(id),
-            AppCommand::CloseAlert => {
-                self.diagnostics.alerts.selected_alert_id = None;
-                self.diagnostics.alerts.list_modal_open = false;
-            }
+            // ---- Diagnostics overlays (alerts / mPING / GPS) ----------
+            AppCommand::Diagnostics(intent) => self.handle_diagnostics_intent(ctx, intent),
+            AppCommand::ShowAlertOnMap(id) => self.handle_show_alert_on_map(id),
         }
+    }
+
+    /// Apply a diagnostics overlay intent through the pure
+    /// [`crate::core::diagnostics::reduce`], executing any effects it returns.
+    pub(crate) fn handle_diagnostics_intent(
+        &mut self,
+        ctx: &egui::Context,
+        intent: crate::core::diagnostics::DiagnosticsIntent,
+    ) {
+        let effects = crate::core::diagnostics::reduce(
+            crate::core::diagnostics::DiagnosticsStateMut {
+                alerts: &mut self.diagnostics.alerts,
+                mping: &mut self.diagnostics.mping,
+                gps: &mut self.diagnostics.gps,
+                gps_layer_active: &mut self.state.layer_state.geo.gps_location,
+            },
+            intent,
+        );
+        self.apply_effects(ctx, effects);
+    }
+
+    /// "Show on map": enable the alert's overlay class and center the 2D view on
+    /// its bbox centroid (pure [`crate::core::diagnostics::compute_alert_focus`]),
+    /// then close the detail modal. Cross-cuts diagnostics + viz, so it lives in
+    /// the shell where both are reachable.
+    fn handle_show_alert_on_map(&mut self, id: String) {
+        let Some(alert) = self.diagnostics.alerts.find(&id) else {
+            return;
+        };
+        let focus = crate::core::diagnostics::compute_alert_focus(alert);
+
+        if focus.is_warning {
+            self.state.layer_state.geo.alerts_warnings = true;
+        } else {
+            self.state.layer_state.geo.alerts_other = true;
+        }
+        if let Some((center_lat, center_lon)) = focus.center {
+            self.state.viz_state.center_lat = center_lat;
+            self.state.viz_state.center_lon = center_lon;
+            self.state
+                .viz_state
+                .set_pan_offset(eframe::egui::Vec2::ZERO);
+            self.state
+                .viz_state
+                .camera
+                .center_on(center_lat, center_lon);
+        }
+        // The original "Show on map" closed the detail modal after focusing.
+        self.diagnostics.alerts.selected_alert_id = None;
     }
 
     /// Retry a failed archive download — the documented two-state-machine

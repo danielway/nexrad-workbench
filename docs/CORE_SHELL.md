@@ -131,10 +131,20 @@ test seam. Effort S/M/L = relative size. **Status: P0 complete; in progress.**
   (replacing the monotonic `Instant`). 6 headless tests cover the throttle gate,
   boundary, and prefs change-detection. Other effect categories (GPU/worker/IDB/
   geolocation) are introduced by the phase that needs them rather than all here.
-- **P2 — Reference slice: Diagnostics overlays (M).** Migrate alerts + mPING + GPS
-  end-to-end (details below) to prove the `intent → core → view-model → shell`
-  loop on a low-risk, high-QA-value feature off the render hot path. Seam:
-  `core + click/toggle intents → assert selected alert / VM`.
+- **P2 — Reference slice: Diagnostics overlays (M). ✅ DONE.** Migrated alerts +
+  mPING + GPS end-to-end, proving the full `intent → core → view-model → shell`
+  loop. New [`core::diagnostics`](../src/core/diagnostics.rs): pure
+  `select_alert_at` (hit-test + severity-rank tie-break) and `compute_alert_focus`;
+  a `DiagnosticsIntent` + pure `reduce(state, intent) -> Vec<Effect>`; and a
+  `DiagnosticsVm` (severity-sorted visible alerts) the chip + list modal render.
+  `Effect::StartGeolocation` joins the effect runtime. The canvas, both alert
+  modals, the mPING modal, the right panel, the top bar (desktop + mobile), and
+  the site modal now emit intents instead of mutating overlay state. The GPS
+  result drain routes through the same reducer (auto-off-on-failure stays a tested
+  rule). 14 headless tests (overlapping warning+advisory → highest rank, class
+  gating, tie-break, mPING gating, GPS enable→effect / fail→auto-off, key
+  save/clear). Deferred: VM-ifying trivially-projected overlay reads (pure
+  projection, no logic) — left direct.
 - **P3 — Canvas decision extraction (M→L).** Move sweep matching
   (`compute_gpu_sweep_state`), sweep-line azimuth, cutout math, and data-probe
   polar/value computation out of `src/ui/canvas.rs` into a pure

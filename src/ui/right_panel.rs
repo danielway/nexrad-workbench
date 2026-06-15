@@ -310,22 +310,21 @@ pub(super) fn render_layers_section(
             });
 
             let was_gps_on = state.layer_state.geo.gps_location;
-            let gps_resp = ui
-                .checkbox(&mut state.layer_state.geo.gps_location, "My Location")
+            ui.checkbox(&mut state.layer_state.geo.gps_location, "My Location")
                 .on_hover_text(
                     "Show your device's GPS location as a dot on the map \
                      (one-shot lookup; requires browser permission)",
                 );
+            // The enable/disable side effects (clear coords, start the one-shot
+            // geolocation) are decided by the diagnostics reducer.
             if !was_gps_on && state.layer_state.geo.gps_location {
-                diagnostics.gps.coords = None;
-                diagnostics.gps.error = None;
-                crate::ui::start_geolocation(
-                    diagnostics.gps.result_sender(),
-                    gps_resp.ctx.clone(),
-                );
+                state.push_command(crate::state::AppCommand::Diagnostics(
+                    crate::core::diagnostics::DiagnosticsIntent::EnableGps,
+                ));
             } else if was_gps_on && !state.layer_state.geo.gps_location {
-                diagnostics.gps.coords = None;
-                diagnostics.gps.error = None;
+                state.push_command(crate::state::AppCommand::Diagnostics(
+                    crate::core::diagnostics::DiagnosticsIntent::DisableGps,
+                ));
             }
             if let Some(err) = diagnostics.gps.error.clone() {
                 ui.colored_label(egui::Color32::from_rgb(220, 80, 80), err);
@@ -334,7 +333,9 @@ pub(super) fn render_layers_section(
             if advanced {
                 ui.horizontal(|ui| {
                     let has_key = diagnostics.mping.api_key.is_some();
-                    ui.add_enabled_ui(live && has_key, |ui| {
+                    let mping_available =
+                        crate::core::diagnostics::mping_layer_available(live, has_key);
+                    ui.add_enabled_ui(mping_available, |ui| {
                         let resp =
                             ui.checkbox(&mut state.layer_state.geo.mping, "Storm Reports (mPING)")
                                 .on_hover_text(
@@ -354,7 +355,9 @@ pub(super) fn render_layers_section(
                         .on_hover_text("mPING settings (API key)")
                         .clicked()
                     {
-                        diagnostics.mping.settings_modal_open = true;
+                        state.push_command(crate::state::AppCommand::Diagnostics(
+                            crate::core::diagnostics::DiagnosticsIntent::OpenMpingSettings,
+                        ));
                     }
                 });
             }

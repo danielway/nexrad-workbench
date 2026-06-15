@@ -128,13 +128,15 @@ pub enum AppCommand {
     ReorderOperation(OperationId, isize),
     /// Retry initializing the decode worker after a failure.
     RetryWorker,
-    /// Request an immediate refresh of the NWS alerts feed.
-    RefreshAlerts,
-    /// Open the alert detail modal for a specific alert id.
-    OpenAlert(String),
-    /// Close any open alert modal (detail or list).
-    #[allow(dead_code)] // Provided for symmetry; modals close via their own buttons.
-    CloseAlert,
+    /// An intent for the diagnostics overlays (NWS alerts / mPING / GPS). The
+    /// alerts/mPING/GPS UI emits these instead of mutating overlay state; the
+    /// main loop applies them through the pure
+    /// [`crate::core::diagnostics::reduce`].
+    Diagnostics(crate::core::diagnostics::DiagnosticsIntent),
+    /// "Show on map" for an alert: enable its overlay class and center the 2D
+    /// view on its bbox. Cross-cuts diagnostics + viz, so it's handled in the
+    /// shell (with viz access) via the pure `compute_alert_focus`.
+    ShowAlertOnMap(String),
 }
 
 /// Root application state containing all sub-states.

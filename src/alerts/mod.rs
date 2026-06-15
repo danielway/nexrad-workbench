@@ -12,7 +12,7 @@ mod channel;
 mod geometry;
 mod manager;
 mod parse;
-mod types;
+pub(crate) mod types;
 mod zones;
 
 pub use geometry::{bbox_intersects, contains_point};

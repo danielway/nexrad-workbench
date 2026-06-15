@@ -180,7 +180,9 @@ pub(crate) fn handle_canvas_interaction(
                     &diagnostics.mping.reports,
                     playback.state.playback_position(),
                 ) {
-                    diagnostics.mping.selected_report_id = Some(id);
+                    state.push_command(crate::state::AppCommand::Diagnostics(
+                        crate::core::diagnostics::DiagnosticsIntent::SelectMpingReport(id),
+                    ));
                     handled = true;
                 }
             }
@@ -189,35 +191,27 @@ pub(crate) fn handle_canvas_interaction(
             if !handled && (show_warnings || show_other) && derived.data_is_live {
                 let geo = projection.screen_to_geo(click_pos);
                 let bounds = projection.visible_bounds();
-                let mut best: Option<(u8, String)> = None;
-                for alert in &diagnostics.alerts.alerts {
-                    // Only hit-test alerts whose class is actually visible.
-                    if !(if alert.is_warning() {
-                        show_warnings
-                    } else {
-                        show_other
-                    }) {
-                        continue;
-                    }
-                    if !crate::alerts::bbox_intersects(alert, bounds) {
-                        continue;
-                    }
-                    if crate::alerts::contains_point(alert, geo.x, geo.y) {
-                        let rank = alert.severity.rank();
-                        if best.as_ref().is_none_or(|(r, _)| rank > *r) {
-                            best = Some((rank, alert.id.clone()));
-                        }
-                    }
-                }
-                if let Some((_, id)) = best {
-                    state.push_command(crate::state::AppCommand::OpenAlert(id));
+                // Pure hit-test + severity-rank tie-break lives in the core.
+                if let Some(id) = crate::core::diagnostics::select_alert_at(
+                    &diagnostics.alerts.alerts,
+                    geo.x,
+                    geo.y,
+                    bounds,
+                    show_warnings,
+                    show_other,
+                ) {
+                    state.push_command(crate::state::AppCommand::Diagnostics(
+                        crate::core::diagnostics::DiagnosticsIntent::SelectAlert(id),
+                    ));
                     handled = true;
                 }
             }
             // Click missed every interactive overlay — dismiss any open
             // mPING popover.
             if !handled {
-                diagnostics.mping.selected_report_id = None;
+                state.push_command(crate::state::AppCommand::Diagnostics(
+                    crate::core::diagnostics::DiagnosticsIntent::ClearMpingSelection,
+                ));
             }
         }
     }

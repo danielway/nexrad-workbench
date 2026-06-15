@@ -9,18 +9,19 @@
 
 use crate::core::Effect;
 use crate::WorkbenchApp;
+use eframe::egui;
 
 impl WorkbenchApp {
     /// Execute a batch of effects in order.
-    pub(crate) fn apply_effects(&mut self, effects: Vec<Effect>) {
+    pub(crate) fn apply_effects(&mut self, ctx: &egui::Context, effects: Vec<Effect>) {
         for effect in effects {
-            self.apply_effect(effect);
+            self.apply_effect(ctx, effect);
         }
     }
 
     /// Execute a single effect. The match is exhaustive so a new `Effect`
     /// variant forces a decision about how the shell performs it.
-    fn apply_effect(&mut self, effect: Effect) {
+    fn apply_effect(&mut self, ctx: &egui::Context, effect: Effect) {
         match effect {
             Effect::PushUrl(p) => {
                 crate::state::url_state::push_to_url(
@@ -28,6 +29,9 @@ impl WorkbenchApp {
                 );
             }
             Effect::SavePreferences(prefs) => prefs.save(),
+            Effect::StartGeolocation => {
+                crate::ui::start_geolocation(self.diagnostics.gps.result_sender(), ctx.clone());
+            }
         }
     }
 }

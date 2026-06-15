@@ -14,6 +14,7 @@
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::modal_helper::modal_backdrop;
 use crate::alerts::{event_color, Alert};
+use crate::core::diagnostics::{DiagnosticsIntent, DiagnosticsVm};
 use crate::state::{AppCommand, AppState};
 use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
 
@@ -31,7 +32,7 @@ impl Layer for AlertsModalsLayer {
     }
     fn render(&self, ctx: &mut LayoutCtx) {
         if ctx.diagnostics.alerts.list_modal_open {
-            render_list_modal(ctx.ctx, ctx.state, ctx.diagnostics, ctx.derived);
+            render_list_modal(ctx.ctx, ctx.state, ctx.diagnostics_vm, ctx.derived);
         }
         if ctx.diagnostics.alerts.selected_alert_id.is_some() {
             render_detail_modal(ctx.ctx, ctx.state, ctx.diagnostics);
@@ -42,35 +43,16 @@ impl Layer for AlertsModalsLayer {
 fn render_list_modal(
     ctx: &egui::Context,
     state: &mut AppState,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    vm: &DiagnosticsVm,
     derived: &crate::subsystem::Derived,
 ) {
     if modal_backdrop(ctx, "alerts_list_backdrop", 140) {
-        diagnostics.alerts.list_modal_open = false;
+        state.push_command(AppCommand::Diagnostics(DiagnosticsIntent::CloseAlertList));
         return;
     }
 
-    // Collect the filtered list now, then release the borrow of diagnostics.alerts
-    // before we render (so we can push commands freely inside the closure).
-    let visible: Vec<(String, String, String, Option<f64>)> = match derived.visible_bounds {
-        Some(bounds) => diagnostics
-            .alerts
-            .visible_in(bounds)
-            .into_iter()
-            .map(|a| {
-                (
-                    a.id.clone(),
-                    a.event.clone(),
-                    a.area_desc.clone(),
-                    a.expires_secs,
-                )
-            })
-            .collect(),
-        None => Vec::new(),
-    };
-
-    let mut selected_id: Option<String> = None;
-    let mut close = false;
+    // The severity-sorted visible-alert list is the view-model; no recompute here.
+    let visible = &vm.visible_alerts;
 
     egui::Window::new("Active Alerts in View")
         .collapsible(false)
@@ -91,7 +73,9 @@ fn render_list_modal(
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Close").clicked() {
-                        close = true;
+                        state.push_command(AppCommand::Diagnostics(
+                            DiagnosticsIntent::CloseAlertList,
+                        ));
                     }
                     if ui
                         .small_button(RichText::new(format!(
@@ -101,7 +85,9 @@ fn render_list_modal(
                         .on_hover_text("Re-fetch the NWS alerts feed")
                         .clicked()
                     {
-                        state.push_command(AppCommand::RefreshAlerts);
+                        state.push_command(AppCommand::Diagnostics(
+                            DiagnosticsIntent::RefreshAlerts,
+                        ));
                     }
                 });
             });
@@ -119,9 +105,9 @@ fn render_list_modal(
             }
 
             ScrollArea::vertical().max_height(480.0).show(ui, |ui| {
-                for (id, event, area_desc, expires) in &visible {
+                for va in visible {
                     ui.add_space(2.0);
-                    let bg_stroke = event_stroke(event);
+                    let bg_stroke = event_stroke(&va.event);
                     let frame = egui::Frame::default()
                         .stroke(bg_stroke)
                         .inner_margin(egui::Margin::symmetric(10, 8))
@@ -129,21 +115,21 @@ fn render_list_modal(
                     let response = frame
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                event_dot(ui, event);
+                                event_dot(ui, &va.event);
                                 ui.vertical(|ui| {
-                                    ui.label(RichText::new(event).size(14.0).strong());
-                                    if !area_desc.is_empty() {
+                                    ui.label(RichText::new(&va.event).size(14.0).strong());
+                                    if !va.area_desc.is_empty() {
                                         ui.label(
-                                            RichText::new(truncate(area_desc, 120))
+                                            RichText::new(truncate(&va.area_desc, 120))
                                                 .size(11.0)
                                                 .color(Color32::from_rgb(170, 170, 170)),
                                         );
                                     }
-                                    if let Some(exp) = expires {
+                                    if let Some(exp) = va.expires_secs {
                                         ui.label(
                                             RichText::new(format!(
                                                 "Expires {}",
-                                                format_relative(derived.frame_now_secs, *exp)
+                                                format_relative(derived.frame_now_secs, exp)
                                             ))
                                             .size(10.0)
                                             .color(Color32::from_rgb(140, 140, 140)),
@@ -159,28 +145,25 @@ fn render_list_modal(
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
                     if response.clicked() {
-                        selected_id = Some(id.clone());
+                        state.push_command(AppCommand::Diagnostics(
+                            DiagnosticsIntent::SelectAlert(va.id.clone()),
+                        ));
                     }
                     ui.add_space(2.0);
                 }
             });
         });
-
-    if close {
-        diagnostics.alerts.list_modal_open = false;
-    }
-    if let Some(id) = selected_id {
-        diagnostics.alerts.selected_alert_id = Some(id);
-    }
 }
 
 fn render_detail_modal(
     ctx: &egui::Context,
     state: &mut AppState,
-    diagnostics: &mut crate::subsystem::Diagnostics,
+    diagnostics: &crate::subsystem::Diagnostics,
 ) {
     if modal_backdrop(ctx, "alerts_detail_backdrop", 160) {
-        diagnostics.alerts.selected_alert_id = None;
+        state.push_command(AppCommand::Diagnostics(
+            DiagnosticsIntent::ClearAlertSelection,
+        ));
         return;
     }
 
@@ -194,12 +177,12 @@ fn render_detail_modal(
         Some(a) => a.clone(),
         None => {
             // Stale selection (e.g. alert expired while modal was open).
-            diagnostics.alerts.selected_alert_id = None;
+            state.push_command(AppCommand::Diagnostics(
+                DiagnosticsIntent::ClearAlertSelection,
+            ));
             return;
         }
     };
-
-    let mut close = false;
 
     egui::Window::new(format!("{} — {}", alert.severity.label(), alert.event))
         .collapsible(false)
@@ -305,40 +288,20 @@ fn render_detail_modal(
                     .on_hover_text("Center the 2D map on the alert and enable the alerts overlay")
                     .clicked()
                 {
-                    focus_on_alert(state, &alert);
-                    close = true;
+                    // The handler centers the view, enables the class layer, and
+                    // closes this modal — all via the pure `compute_alert_focus`.
+                    state.push_command(AppCommand::ShowAlertOnMap(alert.id.clone()));
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").clicked() {
-                        close = true;
+                        state.push_command(AppCommand::Diagnostics(
+                            DiagnosticsIntent::ClearAlertSelection,
+                        ));
                     }
                 });
             });
         });
-
-    if close {
-        diagnostics.alerts.selected_alert_id = None;
-    }
-}
-
-fn focus_on_alert(state: &mut AppState, alert: &Alert) {
-    // Turn on the overlay layer matching this alert's class.
-    if alert.is_warning() {
-        state.layer_state.geo.alerts_warnings = true;
-    } else {
-        state.layer_state.geo.alerts_other = true;
-    }
-
-    // Center the 2D view on the alert bbox centroid if we have one.
-    if let Some((min_lon, min_lat, max_lon, max_lat)) = alert.geometry.bbox {
-        let center_lat = (min_lat + max_lat) * 0.5;
-        let center_lon = (min_lon + max_lon) * 0.5;
-        state.viz_state.center_lat = center_lat;
-        state.viz_state.center_lon = center_lon;
-        state.viz_state.set_pan_offset(egui::Vec2::ZERO);
-        state.viz_state.camera.center_on(center_lat, center_lon);
-    }
 }
 
 fn event_dot(ui: &mut egui::Ui, event: &str) {
