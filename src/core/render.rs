@@ -168,3 +168,187 @@ mod tests {
         assert!(should_dispatch(&"a", None)); // nothing prior → dispatch
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::state::radar_data::{Scan, Sweep};
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn sweep(elev_num: u8, start: f64, end: f64) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation: elev_num as f32 * 0.5,
+            elevation_number: elev_num,
+            start_azimuth: 0.0,
+            radials: Vec::new(),
+            cached_products: Vec::new(),
+        }
+    }
+
+    fn scan(key_ts: f64, sweeps: Vec<Sweep>) -> Scan {
+        Scan {
+            start_time: key_ts,
+            end_time: key_ts + 300.0,
+            key_timestamp: key_ts,
+            vcp: 215,
+            vcp_pattern: None,
+            sweeps,
+            completeness: None,
+            cached_sweep_count: None,
+            planned_sweep_count: None,
+        }
+    }
+
+    // --- decide_prefetch_next_elevation boundary conditions ---
+
+    // The window guard is strict: `time_to_end > 0 && time_to_end < lookahead`.
+    // Exactly at the lookahead boundary (time_to_end == lookahead) is NOT inside.
+    #[wasm_bindgen_test]
+    fn no_prefetch_exactly_at_lookahead_boundary() {
+        let s = scan(
+            1000.0,
+            vec![sweep(1, 1000.0, 1010.0), sweep(2, 1010.0, 1020.0)],
+        );
+        // end=1010, ts=1008 → time_to_end=2.0 == lookahead 2.0 → excluded.
+        assert_eq!(
+            decide_prefetch_next_elevation(&s, 0, 1010.0, 1008.0, 2.0, None, Some(1)),
+            None
+        );
+    }
+
+    // Just inside the upper boundary (time_to_end slightly below lookahead) → prefetch.
+    #[wasm_bindgen_test]
+    fn prefetch_just_inside_lookahead_boundary() {
+        let s = scan(
+            1000.0,
+            vec![sweep(1, 1000.0, 1010.0), sweep(2, 1010.0, 1020.0)],
+        );
+        // end=1010, ts=1008.001 → time_to_end ≈ 1.999 < 2.0 → in window → next elev 2.
+        assert_eq!(
+            decide_prefetch_next_elevation(&s, 0, 1010.0, 1008.001, 2.0, None, Some(1)),
+            Some(2)
+        );
+    }
+
+    // Exactly at the sweep end (time_to_end == 0) is excluded by the strict `> 0`.
+    #[wasm_bindgen_test]
+    fn no_prefetch_exactly_at_sweep_end() {
+        let s = scan(
+            1000.0,
+            vec![sweep(1, 1000.0, 1010.0), sweep(2, 1010.0, 1020.0)],
+        );
+        // ts == end → time_to_end == 0.0 → excluded.
+        assert_eq!(
+            decide_prefetch_next_elevation(&s, 0, 1010.0, 1010.0, 5.0, None, Some(1)),
+            None
+        );
+    }
+
+    // --- cur_elev = None: nothing currently displayed, so always take next ---
+
+    #[wasm_bindgen_test]
+    fn prefetches_next_when_cur_elev_is_none() {
+        let s = scan(
+            1000.0,
+            vec![sweep(1, 1000.0, 1010.0), sweep(2, 1010.0, 1020.0)],
+        );
+        // cur_elev None != Some(2) → dispatch next elev 2.
+        assert_eq!(
+            decide_prefetch_next_elevation(&s, 0, 1010.0, 1009.0, 2.0, None, None),
+            Some(2)
+        );
+    }
+
+    // --- in-scan next sweep takes precedence; future_scan is ignored ---
+
+    #[wasm_bindgen_test]
+    fn future_scan_ignored_when_in_scan_next_exists() {
+        let s = scan(
+            1000.0,
+            vec![sweep(1, 1000.0, 1010.0), sweep(7, 1010.0, 1020.0)],
+        );
+        let future = scan(1010.0, vec![sweep(9, 1010.0, 1020.0)]);
+        // sweep_idx 0 is not the last sweep, so the in-scan next (elev 7) wins,
+        // never the future scan's elev 9.
+        assert_eq!(
+            decide_prefetch_next_elevation(&s, 0, 1010.0, 1009.0, 2.0, Some(&future), Some(1)),
+            Some(7)
+        );
+    }
+
+    // --- future scan with no sweeps → first() is None → no prefetch ---
+
+    #[wasm_bindgen_test]
+    fn no_prefetch_when_future_scan_empty() {
+        let s = scan(1000.0, vec![sweep(1, 1000.0, 1010.0)]);
+        let empty_future = scan(1010.0, Vec::new());
+        // last sweep in scan, future scan has no sweeps → next_elev_num None → None.
+        assert_eq!(
+            decide_prefetch_next_elevation(
+                &s,
+                0,
+                1010.0,
+                1009.0,
+                2.0,
+                Some(&empty_future),
+                Some(1)
+            ),
+            None
+        );
+    }
+
+    // --- future scan's first sweep equals cur_elev → suppressed (no churn) ---
+
+    #[wasm_bindgen_test]
+    fn future_scan_first_equals_cur_elev_suppressed() {
+        let s = scan(1000.0, vec![sweep(3, 1000.0, 1010.0)]);
+        let future = scan(1010.0, vec![sweep(3, 1010.0, 1020.0)]);
+        // future first elev 3 == cur_elev Some(3) → no churn → None.
+        assert_eq!(
+            decide_prefetch_next_elevation(&s, 0, 1010.0, 1009.0, 2.0, Some(&future), Some(3)),
+            None
+        );
+    }
+
+    // Confirms the in-scan path also de-churns when next equals cur (distinct from
+    // the existing test by using a non-adjacent elevation numbering).
+    #[wasm_bindgen_test]
+    fn in_scan_next_equals_cur_elev_suppressed() {
+        let s = scan(
+            1000.0,
+            vec![sweep(4, 1000.0, 1010.0), sweep(6, 1010.0, 1020.0)],
+        );
+        // next would be elev 6, but cur_elev is already 6 → None.
+        assert_eq!(
+            decide_prefetch_next_elevation(&s, 0, 1010.0, 1009.0, 2.0, None, Some(6)),
+            None
+        );
+    }
+
+    // --- should_dispatch with non-string PartialEq types ---
+
+    #[wasm_bindgen_test]
+    fn dispatch_gate_on_tuple_identity() {
+        // Same-valued (but distinct) tuples are structurally equal → suppress.
+        let new = (3u8, "ref".to_string());
+        let last = (3u8, "ref".to_string());
+        assert!(!should_dispatch(&new, Some(&last)));
+
+        // Differ in the numeric field only → dispatch.
+        let changed = (4u8, "ref".to_string());
+        assert!(should_dispatch(&new, Some(&changed)));
+
+        // Differ in the string field only → dispatch.
+        let changed_str = (3u8, "vel".to_string());
+        assert!(should_dispatch(&new, Some(&changed_str)));
+    }
+
+    #[wasm_bindgen_test]
+    fn dispatch_gate_on_integers() {
+        assert!(should_dispatch(&42i32, None)); // no prior → dispatch
+        assert!(!should_dispatch(&42i32, Some(&42i32))); // equal → suppress
+        assert!(should_dispatch(&42i32, Some(&7i32))); // changed → dispatch
+    }
+}

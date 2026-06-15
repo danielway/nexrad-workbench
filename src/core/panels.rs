@@ -300,3 +300,199 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    // --- animation_frozen: boundary just above the 30 s/s ceiling, negatives ---
+
+    #[wasm_bindgen_test]
+    fn animation_frozen_just_above_ceiling() {
+        // Strictly greater than 30.0 freezes, even by an epsilon.
+        assert!(animation_frozen(true, 30.000001));
+        // Paused never freezes regardless of speed.
+        assert!(!animation_frozen(false, 30.000001));
+        // Negative speed (reverse) is below the ceiling → not frozen.
+        assert!(!animation_frozen(true, -100.0));
+        // Exactly 30.0 is not strictly greater → not frozen.
+        assert!(!animation_frozen(true, 30.0));
+    }
+
+    // --- archive_azimuth_from_progress: the `% 360.0` wrap and negative paths ---
+
+    #[wasm_bindgen_test]
+    fn archive_azimuth_wraps_past_full_revolution() {
+        // ts == end → progress 1.0 → 360.0 as f32 % 360.0 == 0.0 (wrap to zero).
+        match archive_azimuth_from_progress(0.0, 10.0, 10.0) {
+            Some(a) => assert!((a - 0.0).abs() < 1e-3, "az {a}"),
+            None => panic!("expected Some"),
+        }
+        // ts well past end → progress 2.0 → 720.0 % 360.0 == 0.0.
+        match archive_azimuth_from_progress(0.0, 10.0, 20.0) {
+            Some(a) => assert!((a - 0.0).abs() < 1e-3, "az {a}"),
+            None => panic!("expected Some"),
+        }
+        // progress 1.5 → 540.0 % 360.0 == 180.0.
+        match archive_azimuth_from_progress(0.0, 10.0, 15.0) {
+            Some(a) => assert!((a - 180.0).abs() < 1e-3, "az {a}"),
+            None => panic!("expected Some"),
+        }
+        // progress 1.25 → 450.0 % 360.0 == 90.0.
+        match archive_azimuth_from_progress(0.0, 10.0, 12.5) {
+            Some(a) => assert!((a - 90.0).abs() < 1e-3, "az {a}"),
+            None => panic!("expected Some"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn archive_azimuth_negative_progress_keeps_sign() {
+        // ts before start → progress -0.5 → (-180.0) % 360.0 == -180.0
+        // (f32 remainder takes the sign of the dividend).
+        match archive_azimuth_from_progress(0.0, 10.0, -5.0) {
+            Some(a) => assert!((a - (-180.0)).abs() < 1e-3, "az {a}"),
+            None => panic!("expected Some"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn archive_azimuth_nonzero_start_offset() {
+        // start=100, end=200, ts=150 → progress 0.5 → 180.0.
+        match archive_azimuth_from_progress(100.0, 200.0, 150.0) {
+            Some(a) => assert!((a - 180.0).abs() < 1e-3, "az {a}"),
+            None => panic!("expected Some"),
+        }
+        // start=100, end=200, ts=125 → progress 0.25 → 90.0.
+        match archive_azimuth_from_progress(100.0, 200.0, 125.0) {
+            Some(a) => assert!((a - 90.0).abs() < 1e-3, "az {a}"),
+            None => panic!("expected Some"),
+        }
+    }
+
+    // --- status_message_visibility: fade-window boundaries and sentinels ---
+
+    #[wasm_bindgen_test]
+    fn status_visibility_fade_start_edge() {
+        // Age exactly 8000 ms: enters the fade branch, t == 1.0 → alpha 255,
+        // and `fading` is true because 8000 is the inclusive start of the window.
+        match status_message_visibility(1000.0, 1000.0 + 8000.0) {
+            StatusVisibility::Visible { alpha, fading } => {
+                assert_eq!(alpha, 255);
+                assert!(fading);
+            }
+            other => panic!("expected Visible, got {other:?}"),
+        }
+        // Age just below 8000 (7999): steady branch → opaque, not fading.
+        match status_message_visibility(1000.0, 1000.0 + 7999.0) {
+            StatusVisibility::Visible { alpha, fading } => {
+                assert_eq!(alpha, 255);
+                assert!(!fading);
+            }
+            other => panic!("expected Visible, got {other:?}"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn status_visibility_near_dismiss_edge() {
+        // Age 9000 → t = 1 - 1000/2000 = 0.5 → alpha (0.5*255) as u8 == 127, fading.
+        match status_message_visibility(1000.0, 1000.0 + 9000.0) {
+            StatusVisibility::Visible { alpha, fading } => {
+                assert_eq!(alpha, 127);
+                assert!(fading);
+            }
+            other => panic!("expected Visible, got {other:?}"),
+        }
+        // Age 9999 → t ~= 0.0005 → alpha (0.1275) as u8 == 0, still fading & visible.
+        match status_message_visibility(1000.0, 1000.0 + 9999.0) {
+            StatusVisibility::Visible { alpha, fading } => {
+                assert_eq!(alpha, 0);
+                assert!(fading);
+            }
+            other => panic!("expected Visible, got {other:?}"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn status_visibility_exact_dismiss_threshold() {
+        // Age exactly 10000 ms with set_ms > 0 → Dismiss (>= is inclusive).
+        assert_eq!(
+            status_message_visibility(1000.0, 1000.0 + 10000.0),
+            StatusVisibility::Dismiss
+        );
+        // Age slightly below 10000 (9999.9) → still Visible (not dismissed).
+        match status_message_visibility(1000.0, 1000.0 + 9999.9) {
+            StatusVisibility::Visible { .. } => {}
+            other => panic!("expected Visible, got {other:?}"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn status_visibility_negative_age_is_opaque() {
+        // now before set (clock skew): age negative, set_ms > 0 → not dismissed,
+        // alpha 255 (age < fade-start), not fading (window excludes negatives).
+        match status_message_visibility(5000.0, 1000.0) {
+            StatusVisibility::Visible { alpha, fading } => {
+                assert_eq!(alpha, 255);
+                assert!(!fading);
+            }
+            other => panic!("expected Visible, got {other:?}"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn status_visibility_never_set_never_dismisses() {
+        // set_ms == 0 sentinel: even a huge `now` never dismisses and stays opaque,
+        // because the dismiss/alpha-fade gates both require set_ms > 0.
+        assert_eq!(
+            status_message_visibility(0.0, 1_000_000.0),
+            StatusVisibility::Visible {
+                alpha: 255,
+                fading: false,
+            }
+        );
+        // Negative set_ms is also treated as never-set.
+        assert_eq!(
+            status_message_visibility(-1.0, 1_000_000.0),
+            StatusVisibility::Visible {
+                alpha: 255,
+                fading: false,
+            }
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn status_visibility_never_set_but_fading_window_quirk() {
+        // set_ms == 0 yet now lands inside the [8000,10000) age window: the alpha
+        // stays 255 (set_ms<=0 short-circuits the fade math) but `fading` is true,
+        // since that flag depends only on age_ms, not on set_ms.
+        match status_message_visibility(0.0, 9000.0) {
+            StatusVisibility::Visible { alpha, fading } => {
+                assert_eq!(alpha, 255);
+                assert!(fading);
+            }
+            other => panic!("expected Visible, got {other:?}"),
+        }
+    }
+
+    #[wasm_bindgen_test]
+    fn status_visibility_variant_is_copy_and_eq() {
+        // StatusVisibility derives Copy + PartialEq; pin the enum identity table.
+        let v = StatusVisibility::Visible {
+            alpha: 10,
+            fading: true,
+        };
+        let v_copy = v; // Copy, not move.
+        assert_eq!(v, v_copy);
+        assert!(v != StatusVisibility::Dismiss);
+        assert!(
+            StatusVisibility::Visible {
+                alpha: 10,
+                fading: true
+            } != StatusVisibility::Visible {
+                alpha: 10,
+                fading: false
+            }
+        );
+    }
+}

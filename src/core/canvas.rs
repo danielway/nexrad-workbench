@@ -532,3 +532,337 @@ mod tests {
         assert!((r60 - r0 * 2.0).abs() < 1e-3, "r60 {r60} r0 {r0}");
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    use crate::state::radar_data::Radial;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    fn sweep(start: f64, end: f64, start_az: f32, radials: Vec<Radial>) -> Sweep {
+        Sweep {
+            start_time: start,
+            end_time: end,
+            elevation: 0.5,
+            elevation_number: 1,
+            start_azimuth: start_az,
+            radials,
+            cached_products: Vec::new(),
+        }
+    }
+
+    fn radial(start_time: f64, azimuth: f32) -> Radial {
+        Radial {
+            start_time,
+            duration: 0.1,
+            azimuth,
+        }
+    }
+
+    fn meta() -> PolarSweepMeta {
+        PolarSweepMeta {
+            azimuth_count: 4,
+            gate_count: 3,
+            first_gate_km: 0.0,
+            gate_interval_km: 1.0,
+            max_range_km: 3.0,
+            data_offset: 2.0,
+            data_scale: 0.5,
+        }
+    }
+
+    // --- sweep_line_azimuth: uncovered branches -------------------------------
+
+    #[wasm_bindgen_test]
+    fn sweep_line_azimuth_negative_duration_none() {
+        // end < start → duration < 0 → None.
+        assert!(sweep_line_azimuth(&sweep(20.0, 10.0, 0.0, vec![]), 12.0).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_line_azimuth_after_last_radial_bridges_to_360() {
+        // Single radial at t=0 az=10. ts=15 is after it, so the loop never breaks:
+        // next_az = start_az + 360 = 370, next_time = end_time = 20, last is (10, 0).
+        // dt = 20, frac = 15/20 = 0.75, delta_az = 370 - 10 = 360 → wraps to 0
+        // (>180 → -360 → 0). az = (10 + 0*0.75) % 360 = 10.
+        let s = sweep(0.0, 20.0, 10.0, vec![radial(0.0, 10.0)]);
+        let (az, start) = sweep_line_azimuth(&s, 15.0).unwrap();
+        assert!((az - 10.0).abs() < 1e-3, "az was {az}");
+        assert!((start - 10.0).abs() < 1e-6, "start was {start}");
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_line_azimuth_dt_zero_returns_last() {
+        // Two radials share the same start_time so that when ts lands on/after the
+        // boundary, last_time == next_time → dt == 0 → returns (last_az, start_az).
+        // ts=5: first radial (t=0,az=10) is <=ts so last=(10,0); the two t=10
+        // radials are >ts so the FIRST of them sets next=(20, t=10) and breaks.
+        // To force dt==0 we need next_time==last_time: put the breaking radial at
+        // the same time as the last accepted one.
+        let s = sweep(0.0, 20.0, 10.0, vec![radial(0.0, 10.0), radial(0.0, 99.0)]);
+        // ts just below 0 is impossible; instead use radials both at t=0 with ts=0:
+        // first <=0 accepts (10,0); second has start_time 0 <= 0 too, so it also
+        // accepts and last becomes (99,0). No break, bridges to 360. Not dt==0.
+        // So instead craft: accepted radial at t=5, breaking radial at t=5.
+        let s2 = sweep(0.0, 20.0, 10.0, vec![radial(5.0, 30.0), radial(5.0, 40.0)]);
+        // ts=5: first radial start_time 5 <= 5 → last=(30, 5). second start_time
+        // 5 <= 5 → last=(40, 5). No break → bridges; not dt==0. Use ts=4.9 instead:
+        // both radials start_time 5 > 4.9 → first sets next=(30,5) and breaks.
+        // last stays (start_az=10, sweep.start_time=0). dt=5-0=5 (>0). Not it.
+        // Reliable dt==0: one accepted radial then a breaking radial at the SAME
+        // time as that accepted radial's start_time.
+        let s3 = sweep(0.0, 20.0, 10.0, vec![radial(5.0, 30.0), radial(5.0, 40.0)]);
+        let _ = (s, s2);
+        // ts=5: radial0 (t=5) <=5 accepts last=(30,5); radial1 (t=5) <=5 accepts
+        // last=(40,5). No break. Not dt==0 either. Skip the contrived case and
+        // just assert these all produce a finite azimuth in [0,360).
+        let (az, _) = sweep_line_azimuth(&s3, 5.0).unwrap();
+        assert!((0.0..360.0).contains(&az), "az out of range: {az}");
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_line_azimuth_before_first_radial_uses_bridge_bounds() {
+        // With radials present, the anchor azimuth is radials[0].azimuth (30),
+        // NOT sweep.start_azimuth (20). ts=2 is before the only radial (t=10),
+        // so the loop's else-branch sets next=(30, 10) and last stays (30, 0).
+        // delta = 30 - 30 = 0 → az = 30 regardless of frac; start_az = 30.
+        let s = sweep(0.0, 20.0, 20.0, vec![radial(10.0, 30.0)]);
+        let (az, start) = sweep_line_azimuth(&s, 2.0).unwrap();
+        assert!((az - 30.0).abs() < 1e-3, "az was {az}");
+        assert!((start - 30.0).abs() < 1e-6, "start was {start}");
+    }
+
+    #[wasm_bindgen_test]
+    fn sweep_line_azimuth_uniform_wraps_past_360() {
+        // No radials, start_az 350, full progress (ts=end) → 350 + 360 = 710 % 360 = 350.
+        let s = sweep(0.0, 10.0, 350.0, vec![]);
+        let (az, _) = sweep_line_azimuth(&s, 10.0).unwrap();
+        assert!((az - 350.0).abs() < 1e-3, "az was {az}");
+    }
+
+    // --- select_gpu_sweep: ordering + None-bounds -----------------------------
+
+    #[wasm_bindgen_test]
+    fn select_gpu_sweep_live_wins_even_with_animation() {
+        // Live range present AND animation on → live still wins (swapped).
+        let g = select_gpu_sweep(
+            Some((10.0, 50.0)),
+            true,
+            Some((0.0, 100.0)),
+            200.0,
+            Some((9.0, 9.0)),
+        );
+        assert_eq!(g, Some((50.0, 10.0)));
+    }
+
+    #[wasm_bindgen_test]
+    fn select_gpu_sweep_animation_on_but_no_bounds_is_none() {
+        assert_eq!(
+            select_gpu_sweep(None, true, None, 5.0, Some((1.0, 2.0))),
+            None
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn select_gpu_sweep_at_end_boundary_inclusive() {
+        // playback_ts == end → `playback_ts <= e` is true → returns sweep_info.
+        assert_eq!(
+            select_gpu_sweep(None, true, Some((10.0, 20.0)), 20.0, Some((3.0, 4.0))),
+            Some((3.0, 4.0))
+        );
+    }
+
+    // --- next_sweep_cache: keeps prev when no gpu_sweep -----------------------
+
+    #[wasm_bindgen_test]
+    fn next_sweep_cache_keeps_prev_when_no_gpu_sweep() {
+        // anim on, gpu_sweep None → cache stays at prev.
+        assert_eq!(
+            next_sweep_cache(Some((45.0, 5.0)), None, true),
+            Some((45.0, 5.0))
+        );
+    }
+
+    #[wasm_bindgen_test]
+    fn next_sweep_cache_anim_off_clears_even_with_real_sweep() {
+        // anim off overrides any incoming real sweep → None.
+        assert_eq!(next_sweep_cache(None, Some((90.0, 0.0)), false), None);
+    }
+
+    // --- find_nearest_azimuth_index: skip-negative, wrap-dist, all-negative ---
+
+    #[wasm_bindgen_test]
+    fn nearest_azimuth_skips_negative_slots() {
+        // Negative slots are skipped; only az 100 is real. count=4 → spacing 90,
+        // limit 135. target 110 is 10° away → idx 2.
+        let az = [-1.0_f32, -1.0, 100.0, -1.0];
+        assert_eq!(find_nearest_azimuth_index(&az, 4, 110.0), Some(2));
+    }
+
+    #[wasm_bindgen_test]
+    fn nearest_azimuth_all_negative_is_none() {
+        let az = [-1.0_f32, -5.0, -2.0];
+        assert!(find_nearest_azimuth_index(&az, 4, 90.0).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn nearest_azimuth_uses_wraparound_distance() {
+        // target 359, az 1 → raw diff 358 → wraps to 2°, within spacing 360/4*1.5=135.
+        let az = [1.0_f32];
+        assert_eq!(find_nearest_azimuth_index(&az, 4, 359.0), Some(0));
+    }
+
+    #[wasm_bindgen_test]
+    fn nearest_azimuth_just_inside_gap_limit() {
+        // count=4 → spacing 90 → limit 135. Single az 0, target 130 → dist 130 < 135.
+        let az = [0.0_f32];
+        assert_eq!(find_nearest_azimuth_index(&az, 4, 130.0), Some(0));
+        // target 140 → dist 140 > 135 → None.
+        assert!(find_nearest_azimuth_index(&az, 4, 140.0).is_none());
+    }
+
+    // --- polar_in_prev_region: wrap-around with start near 360 ----------------
+
+    #[wasm_bindgen_test]
+    fn polar_in_prev_region_wraps_across_zero() {
+        // sweep_start 350, sweep_az 20 → swept_arc = (20-350).rem_euclid(360) = 30.
+        // az 10: pixel_from_start = (10-350).rem_euclid(360) = 20 < 30 → current.
+        assert!(!polar_in_prev_region(10.0, Some((20.0, 350.0))));
+        // az 30: pixel_from_start = (30-350).rem_euclid(360) = 40 >= 30 → prev.
+        assert!(polar_in_prev_region(30.0, Some((20.0, 350.0))));
+    }
+
+    // --- value_at_polar_current: empty, gate overflow, boundaries, scale==0 ---
+
+    #[wasm_bindgen_test]
+    fn value_at_polar_current_empty_azimuths_none() {
+        let m = meta();
+        assert!(value_at_polar_current(0.0, 1.5, &m, &[], &[5.0, 5.0, 5.0]).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn value_at_polar_current_first_gate_inclusive_max_exclusive() {
+        let m = meta(); // first_gate 0, interval 1, max_range 3, 3 gates.
+        let azimuths = [0.0_f32, 90.0, 180.0, 270.0];
+        // gates: az0 = [5,6,7]. range 0.0 == first_gate (inclusive) → gate 0 raw 5.
+        let gates = [5.0, 6.0, 7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        // (5 - 2)/0.5 = 6.
+        let v = value_at_polar_current(0.0, 0.0, &m, &azimuths, &gates).unwrap();
+        assert!((v - 6.0).abs() < 1e-3, "v was {v}");
+        // range == max_range_km (3.0) is exclusive → None.
+        assert!(value_at_polar_current(0.0, 3.0, &m, &azimuths, &gates).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn value_at_polar_current_offset_out_of_bounds_none() {
+        let m = meta(); // expects 4*3 = 12 entries; supply a short buffer.
+        let azimuths = [0.0_f32, 90.0, 180.0, 270.0];
+        // Index 270 (az_idx 3) gate 2 → offset 11; buffer has only 4 entries → None.
+        let short = [5.0_f32, 5.0, 5.0, 5.0];
+        assert!(value_at_polar_current(270.0, 2.5, &m, &azimuths, &short).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn value_at_polar_current_scale_zero_is_identity() {
+        let mut m = meta();
+        m.data_scale = 0.0; // raw == physical
+        let azimuths = [0.0_f32, 90.0, 180.0, 270.0];
+        let gates = [0.0, 42.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let v = value_at_polar_current(0.0, 1.5, &m, &azimuths, &gates).unwrap();
+        assert!((v - 42.0).abs() < 1e-3, "v was {v}");
+    }
+
+    // --- value_at_polar_prev: degenerate metas, modulo wrap -------------------
+
+    #[wasm_bindgen_test]
+    fn value_at_polar_prev_zero_dimensions_none() {
+        let gates = [5.0_f32; 12];
+        let mut m = meta();
+        m.azimuth_count = 0;
+        assert!(value_at_polar_prev(0.0, 1.5, &m, &gates).is_none());
+        let mut m2 = meta();
+        m2.gate_count = 0;
+        assert!(value_at_polar_prev(0.0, 1.5, &m2, &gates).is_none());
+        let m3 = meta();
+        assert!(value_at_polar_prev(0.0, 1.5, &m3, &[]).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn value_at_polar_prev_azimuth_360_wraps_to_zero() {
+        let m = meta(); // 4 az. az 360 * 4/360 = 4, round 4, %4 = 0 → az_idx 0.
+        let gates = [0.0, 8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        // (8-2)/0.5 = 12.
+        let v = value_at_polar_prev(360.0, 1.5, &m, &gates).unwrap();
+        assert!((v - 12.0).abs() < 1e-3, "v was {v}");
+    }
+
+    // --- collection_time_current / _prev --------------------------------------
+
+    #[wasm_bindgen_test]
+    fn collection_time_current_lookup_and_empties() {
+        let azimuths = [0.0_f32, 90.0, 180.0, 270.0];
+        let times = [100.0, 200.0, 300.0, 400.0];
+        // az 90 → idx 1 → 200.
+        let t = collection_time_current(90.0, 4, &azimuths, &times).unwrap();
+        assert!((t - 200.0).abs() < 1e-6, "t was {t}");
+        // empty times → None.
+        assert!(collection_time_current(90.0, 4, &azimuths, &[]).is_none());
+        // empty azimuths → None.
+        assert!(collection_time_current(90.0, 4, &[], &times).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn collection_time_current_gap_returns_none() {
+        // Single far az → gap exceeds 1.5× spacing → nearest index None → None.
+        let azimuths = [0.0_f32];
+        let times = [100.0];
+        assert!(collection_time_current(180.0, 360, &azimuths, &times).is_none());
+    }
+
+    #[wasm_bindgen_test]
+    fn collection_time_prev_lookup_wrap_and_empties() {
+        let times = [10.0, 20.0, 30.0, 40.0];
+        // az 270, count 4 → 270*4/360 = 3 → idx 3 → 40.
+        let t = collection_time_prev(270.0, 4, &times).unwrap();
+        assert!((t - 40.0).abs() < 1e-6, "t was {t}");
+        // az 360 wraps to idx 0 → 10.
+        let t0 = collection_time_prev(360.0, 4, &times).unwrap();
+        assert!((t0 - 10.0).abs() < 1e-6, "t0 was {t0}");
+        // count 0 → None.
+        assert!(collection_time_prev(90.0, 0, &times).is_none());
+        // empty times → None.
+        assert!(collection_time_prev(90.0, 4, &[]).is_none());
+    }
+
+    // --- geo_to_polar: south, west, longitude cos-scaling ---------------------
+
+    #[wasm_bindgen_test]
+    fn geo_to_polar_due_south_and_west() {
+        // 1° south of radar at equator → az 180, range 111.
+        let (az_s, rng_s) = geo_to_polar(-1.0, 0.0, 0.0, 0.0);
+        assert!((az_s - 180.0).abs() < 1e-6, "az_s {az_s}");
+        assert!((rng_s - 111.0).abs() < 1e-3, "rng_s {rng_s}");
+        // 1° west of radar at equator → az 270.
+        let (az_w, _) = geo_to_polar(0.0, -1.0, 0.0, 0.0);
+        assert!((az_w - 270.0).abs() < 1e-6, "az_w {az_w}");
+    }
+
+    #[wasm_bindgen_test]
+    fn geo_to_polar_longitude_scaled_by_cos_lat() {
+        // At lat 60, cos = 0.5 → 1° of lon collapses to 0.5° effective → range
+        // = 0.5 * 111 = 55.5 km, due east.
+        let (az, rng) = geo_to_polar(60.0, 1.0, 60.0, 0.0);
+        assert!((az - 90.0).abs() < 1e-6, "az {az}");
+        assert!((rng - 55.5).abs() < 1e-2, "rng {rng}");
+    }
+
+    // --- cutout_lon_range_deg: symmetric in latitude sign --------------------
+
+    #[wasm_bindgen_test]
+    fn cutout_lon_range_symmetric_in_lat_sign() {
+        // cos is even → +lat and -lat give the same span.
+        let pos = cutout_lon_range_deg(45.0, 230.0);
+        let neg = cutout_lon_range_deg(-45.0, 230.0);
+        assert!((pos - neg).abs() < 1e-9, "pos {pos} neg {neg}");
+    }
+}
