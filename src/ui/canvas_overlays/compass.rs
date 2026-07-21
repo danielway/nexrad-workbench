@@ -43,7 +43,7 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) {
     painter.circle_stroke(
         center,
         radius + 4.0,
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(80, 80, 100, 160)),
+        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(80, 80, 100, 160)),
     );
 
     // Compute compass rotation to match the camera's on-screen orientation.
@@ -94,7 +94,7 @@ fn draw_compass(ui: &mut egui::Ui, rect: &Rect, camera: &Camera) {
         let outer = center + dir * (radius - 2.0);
         painter.line_segment(
             [inner, outer],
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 120, 140, 140)),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(120, 120, 140, 140)),
         );
     }
 

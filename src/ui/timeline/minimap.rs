@@ -244,7 +244,7 @@ pub(super) fn render_minimap(
     painter.rect_stroke(
         window_rect,
         1.0,
-        Stroke::new(1.0, minimap_window_edge()),
+        Stroke::new(1.0_f32, minimap_window_edge()),
         StrokeKind::Inside,
     );
 
@@ -257,7 +257,7 @@ pub(super) fn render_minimap(
                 Pos2::new(x, full_rect.top()),
                 Pos2::new(x, full_rect.bottom()),
             ],
-            Stroke::new(1.5, tl_colors::LIVE_ACTIVE),
+            Stroke::new(1.5_f32, tl_colors::LIVE_ACTIVE),
         );
     }
 
@@ -270,7 +270,7 @@ pub(super) fn render_minimap(
                 Pos2::new(x, full_rect.top() + 1.0),
                 Pos2::new(x, full_rect.bottom() - 1.0),
             ],
-            Stroke::new(1.0, tl_colors::selection(dark)),
+            Stroke::new(1.0_f32, tl_colors::selection(dark)),
         );
     }
 

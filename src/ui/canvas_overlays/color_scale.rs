@@ -88,7 +88,7 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::state::Rada
     painter.rect_stroke(
         bar_rect,
         0.0,
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 120, 130, 180)),
+        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(120, 120, 130, 180)),
         StrokeKind::Outside,
     );
 
@@ -115,7 +115,7 @@ fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::state::Rada
         // Tick line
         painter.line_segment(
             [Pos2::new(bar_left - 3.0, y), Pos2::new(bar_left, y)],
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(180, 180, 190, 200)),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(180, 180, 190, 200)),
         );
 
         // Label

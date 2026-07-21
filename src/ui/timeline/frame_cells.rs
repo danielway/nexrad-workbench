@@ -84,7 +84,7 @@ pub(super) fn paint_container(
                 painter,
                 box_rect,
                 DashedBorder::uniform(
-                    Stroke::new(1.0, tl_colors::container_border(dark)),
+                    Stroke::new(1.0_f32, tl_colors::container_border(dark)),
                     4.0,
                     7.0,
                 ),
@@ -93,7 +93,7 @@ pub(super) fn paint_container(
             painter.rect_stroke(
                 box_rect,
                 2.0,
-                Stroke::new(1.0, tl_colors::container_border(dark)),
+                Stroke::new(1.0_f32, tl_colors::container_border(dark)),
                 StrokeKind::Inside,
             );
         }
@@ -111,7 +111,7 @@ pub(super) fn paint_container(
             if x > box_rect.left() + 0.5 && x < box_rect.right() - 0.5 {
                 painter.line_segment(
                     [Pos2::new(x, top), Pos2::new(x, bot)],
-                    Stroke::new(0.5, tex),
+                    Stroke::new(0.5_f32, tex),
                 );
             }
         }
@@ -194,7 +194,7 @@ fn paint_cell(
                 painter,
                 rect,
                 DashedBorder::uniform(
-                    Stroke::new(1.0, tl_colors::cell_available_border(dark)),
+                    Stroke::new(1.0_f32, tl_colors::cell_available_border(dark)),
                     4.0,
                     7.0,
                 ),
@@ -214,7 +214,7 @@ fn paint_cell(
             fill_hatched_rect(
                 painter,
                 rect,
-                Stroke::new(0.75, tl_colors::cell_queued_hatch(dark)),
+                Stroke::new(0.75_f32, tl_colors::cell_queued_hatch(dark)),
                 4.0,
             );
         }
@@ -224,7 +224,7 @@ fn paint_cell(
                 painter,
                 rect,
                 DashedBorder::uniform(
-                    Stroke::new(0.75, tl_colors::cell_projected_border(dark)),
+                    Stroke::new(0.75_f32, tl_colors::cell_projected_border(dark)),
                     3.0,
                     6.0,
                 ),
@@ -256,7 +256,7 @@ fn paint_cell(
                 painter,
                 rect,
                 DashedBorder::uniform(
-                    Stroke::new(1.0, tl_colors::cell_available_border(dark)),
+                    Stroke::new(1.0_f32, tl_colors::cell_available_border(dark)),
                     3.0,
                     6.0,
                 ),
@@ -274,14 +274,14 @@ fn paint_cell(
         painter.rect_stroke(
             rect,
             1.0,
-            Stroke::new(2.0, tl_colors::ACTIVE_SWEEP),
+            Stroke::new(2.0_f32, tl_colors::ACTIVE_SWEEP),
             StrokeKind::Outside,
         );
     } else if cell.is_prev_active {
         painter.rect_stroke(
             rect,
             1.0,
-            Stroke::new(1.5, tl_colors::PREV_ACTIVE_SWEEP),
+            Stroke::new(1.5_f32, tl_colors::PREV_ACTIVE_SWEEP),
             StrokeKind::Outside,
         );
     }
@@ -381,7 +381,7 @@ fn paint_inflight(
                 painter,
                 rect,
                 DashedBorder::uniform(
-                    Stroke::new(1.0, tl_colors::cell_inflight_border(dark)),
+                    Stroke::new(1.0_f32, tl_colors::cell_inflight_border(dark)),
                     4.0,
                     8.0,
                 ),
@@ -408,7 +408,7 @@ fn paint_inflight(
             painter.rect_stroke(
                 rect,
                 1.0,
-                Stroke::new(1.0, tl_colors::cell_inflight_border(dark)),
+                Stroke::new(1.0_f32, tl_colors::cell_inflight_border(dark)),
                 StrokeKind::Inside,
             );
         }
@@ -430,7 +430,7 @@ fn failure_tick(painter: &Painter, rect: Rect) -> Rect {
     painter.add(egui::Shape::convex_polygon(
         pts,
         acq_colors::FAILED,
-        Stroke::new(0.5, Color32::from_rgb(120, 30, 30)),
+        Stroke::new(0.5_f32, Color32::from_rgb(120, 30, 30)),
     ));
     // "!" mark for redundancy with shape (grayscale legibility).
     if size >= 8.0 {

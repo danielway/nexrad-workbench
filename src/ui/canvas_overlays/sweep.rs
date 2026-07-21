@@ -95,7 +95,7 @@ pub(crate) fn render_radar_sweep(
         } else {
             ring_color
         };
-        let width = if is_major { 1.5 } else { 1.0 };
+        let width = if is_major { 1.5_f32 } else { 1.0_f32 };
         painter.circle_stroke(center, ring_radius, Stroke::new(width, color));
     }
 
@@ -107,7 +107,7 @@ pub(crate) fn render_radar_sweep(
         let end_y = center.y + radius * angle.sin();
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
-            Stroke::new(0.5, radial_color),
+            Stroke::new(0.5_f32, radial_color),
         );
     }
 
@@ -143,7 +143,7 @@ pub(crate) fn render_radar_sweep(
     painter.circle_stroke(
         center,
         4.0,
-        Stroke::new(1.0, canvas_colors::center_marker_stroke(dark)),
+        Stroke::new(1.0_f32, canvas_colors::center_marker_stroke(dark)),
     );
 
     // Sweep overlay drawing. The donut (data-age coverage indicator)
@@ -159,10 +159,10 @@ pub(crate) fn render_radar_sweep(
             (
                 radar::sweep_start_line_stale(),
                 radar::sweep_line_stale(),
-                2.0,
+                2.0_f32,
             )
         } else {
-            (radar::sweep_start_line(), radar::SWEEP_LINE, 3.0)
+            (radar::sweep_start_line(), radar::SWEEP_LINE, 3.0_f32)
         };
 
         if show_lines {
@@ -172,7 +172,7 @@ pub(crate) fn render_radar_sweep(
                 center.x + radius * start_angle_rad.cos(),
                 center.y + radius * start_angle_rad.sin(),
             );
-            painter.line_segment([center, start_end], Stroke::new(1.5, start_line_color));
+            painter.line_segment([center, start_end], Stroke::new(1.5_f32, start_line_color));
 
             // Line at data trailing edge
             let data_angle_rad = (az - 90.0) * PI / 180.0;
@@ -184,7 +184,10 @@ pub(crate) fn render_radar_sweep(
                         center.y + radius * data_angle_rad.sin(),
                     ),
                 ],
-                Stroke::new(if is_live { 2.0 } else { data_edge_width }, data_edge_color),
+                Stroke::new(
+                    if is_live { 2.0_f32 } else { data_edge_width },
+                    data_edge_color,
+                ),
             );
         }
 
@@ -201,7 +204,7 @@ pub(crate) fn render_radar_sweep(
                             center.y + radius * now_rad.sin(),
                         ),
                     ],
-                    Stroke::new(2.0, now_color),
+                    Stroke::new(2.0_f32, now_color),
                 );
 
                 // "NOW" label — same metadata style as slice labels.
@@ -269,7 +272,8 @@ pub(crate) fn render_radar_sweep(
                 {
                     let a = (c.last_az - 90.0) * PI / 180.0;
                     let p_end = Pos2::new(center.x + radius * a.cos(), center.y + radius * a.sin());
-                    painter.line_segment([center, p_end], Stroke::new(1.0, boundary_line_color));
+                    painter
+                        .line_segment([center, p_end], Stroke::new(1.0_f32, boundary_line_color));
                 }
             }
         }

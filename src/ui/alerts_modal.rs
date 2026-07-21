@@ -322,7 +322,7 @@ fn severity_badge(ui: &mut egui::Ui, alert: &Alert) {
 fn chip_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
     let text = RichText::new(label).size(11.0).strong().color(color);
     egui::Frame::default()
-        .stroke(egui::Stroke::new(1.0, color))
+        .stroke(egui::Stroke::new(1.0_f32, color))
         .inner_margin(egui::Margin::symmetric(6, 2))
         .corner_radius(egui::CornerRadius::same(3))
         .show(ui, |ui| {
@@ -332,7 +332,7 @@ fn chip_badge(ui: &mut egui::Ui, label: &str, color: Color32) {
 
 fn event_stroke(event: &str) -> egui::Stroke {
     let (r, g, b) = event_color(event);
-    egui::Stroke::new(1.0, Color32::from_rgb(r, g, b))
+    egui::Stroke::new(1.0_f32, Color32::from_rgb(r, g, b))
 }
 
 fn meta_row(ui: &mut egui::Ui, label: &str, value: &str) {

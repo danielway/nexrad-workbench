@@ -78,7 +78,7 @@ pub(crate) fn render_data_probe(
     painter.rect_stroke(
         bg_rect,
         4.0,
-        Stroke::new(1.0, Color32::from_rgb(80, 80, 100)),
+        Stroke::new(1.0_f32, Color32::from_rgb(80, 80, 100)),
         StrokeKind::Outside,
     );
     painter.galley(tooltip_pos, galley, Color32::WHITE);
@@ -91,14 +91,14 @@ pub(crate) fn render_data_probe(
             hover_pos - Vec2::new(cross_size, 0.0),
             hover_pos + Vec2::new(cross_size, 0.0),
         ],
-        Stroke::new(1.0, cross_color),
+        Stroke::new(1.0_f32, cross_color),
     );
     painter.line_segment(
         [
             hover_pos - Vec2::new(0.0, cross_size),
             hover_pos + Vec2::new(0.0, cross_size),
         ],
-        Stroke::new(1.0, cross_color),
+        Stroke::new(1.0_f32, cross_color),
     );
 }
 
@@ -119,7 +119,7 @@ pub(crate) fn render_distance_measurement(
 
     // Draw start marker
     painter.circle_filled(start_screen, 5.0, Color32::from_rgb(255, 100, 100));
-    painter.circle_stroke(start_screen, 5.0, Stroke::new(1.5, Color32::WHITE));
+    painter.circle_stroke(start_screen, 5.0, Stroke::new(1.5_f32, Color32::WHITE));
 
     if let Some((end_lat, end_lon)) = end {
         let end_screen = projection.geo_to_screen(Coord {
@@ -130,12 +130,12 @@ pub(crate) fn render_distance_measurement(
         // Draw line
         painter.line_segment(
             [start_screen, end_screen],
-            Stroke::new(2.0, Color32::from_rgb(255, 100, 100)),
+            Stroke::new(2.0_f32, Color32::from_rgb(255, 100, 100)),
         );
 
         // Draw end marker
         painter.circle_filled(end_screen, 5.0, Color32::from_rgb(255, 100, 100));
-        painter.circle_stroke(end_screen, 5.0, Stroke::new(1.5, Color32::WHITE));
+        painter.circle_stroke(end_screen, 5.0, Stroke::new(1.5_f32, Color32::WHITE));
 
         // Compute great-circle distance using Haversine formula
         let distance_km = haversine_km(start_lat, start_lon, end_lat, end_lon);
@@ -167,7 +167,7 @@ pub(crate) fn render_distance_measurement(
         painter.rect_stroke(
             bg_rect,
             3.0,
-            Stroke::new(1.0, Color32::from_rgb(255, 100, 100)),
+            Stroke::new(1.0_f32, Color32::from_rgb(255, 100, 100)),
             StrokeKind::Outside,
         );
         painter.galley(label_pos, galley, Color32::WHITE);
@@ -236,12 +236,12 @@ pub(crate) fn render_storm_cells(
             let lon = cell.lon + dx_km / (111.0 * cos_lat);
             points.push(projection.geo_to_screen(Coord { x: lon, y: lat }));
         }
-        painter.add(Shape::closed_line(points, Stroke::new(1.5, color)));
+        painter.add(Shape::closed_line(points, Stroke::new(1.5_f32, color)));
 
         // Small centroid marker + max-dBZ label. Bearing/range stay
         // available in the state struct for future tooltip / side-panel
         // consumers; surfacing them inline on the map was too noisy.
-        painter.circle_stroke(center, 3.0, Stroke::new(1.5, color));
+        painter.circle_stroke(center, 3.0, Stroke::new(1.5_f32, color));
         painter.text(
             center + Vec2::new(6.0, -6.0),
             egui::Align2::LEFT_BOTTOM,

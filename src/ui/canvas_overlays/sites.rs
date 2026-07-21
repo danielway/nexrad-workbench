@@ -55,7 +55,7 @@ pub(crate) fn render_nexrad_sites(
                     painter.circle_stroke(
                         screen_pos,
                         4.0,
-                        Stroke::new(1.0, site_colors::OTHER_STROKE),
+                        Stroke::new(1.0_f32, site_colors::OTHER_STROKE),
                     );
                 }
                 GeoPass::Labels => {
@@ -85,7 +85,7 @@ pub(crate) fn render_nexrad_sites(
                 painter.circle_stroke(
                     screen_pos,
                     6.0,
-                    Stroke::new(1.5, site_colors::CURRENT_STROKE),
+                    Stroke::new(1.5_f32, site_colors::CURRENT_STROKE),
                 );
             }
             GeoPass::Labels => {

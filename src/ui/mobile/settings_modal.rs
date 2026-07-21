@@ -149,7 +149,7 @@ fn render_tab_strip(
                         egui::pos2(rect.left() + 10.0, underline_y),
                         egui::pos2(rect.right() - 10.0, underline_y),
                     ],
-                    egui::Stroke::new(2.0, ui.visuals().strong_text_color()),
+                    egui::Stroke::new(2.0_f32, ui.visuals().strong_text_color()),
                 );
             }
         }

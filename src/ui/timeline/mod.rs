@@ -355,7 +355,7 @@ pub(super) fn render_timeline(
     painter.rect_stroke(
         scan_rect,
         2.0,
-        Stroke::new(1.0, tl_colors::border(dark)),
+        Stroke::new(1.0_f32, tl_colors::border(dark)),
         StrokeKind::Outside,
     );
 
@@ -610,7 +610,7 @@ pub(super) fn render_timeline(
                         Pos2::new(start_x, overlay_rect.top()),
                         Pos2::new(start_x, overlay_rect.bottom()),
                     ],
-                    Stroke::new(1.5, tl_colors::selection_edge()),
+                    Stroke::new(1.5_f32, tl_colors::selection_edge()),
                 );
             }
             if end_x >= overlay_rect.left() && end_x <= overlay_rect.right() {
@@ -619,7 +619,7 @@ pub(super) fn render_timeline(
                         Pos2::new(end_x, overlay_rect.top()),
                         Pos2::new(end_x, overlay_rect.bottom()),
                     ],
-                    Stroke::new(1.5, tl_colors::selection_edge()),
+                    Stroke::new(1.5_f32, tl_colors::selection_edge()),
                 );
             }
         }

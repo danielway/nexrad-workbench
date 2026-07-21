@@ -96,7 +96,7 @@ pub(super) fn render_macro_track(
                 painter.rect_stroke(
                     tick,
                     0.0,
-                    Stroke::new(1.0, faded(tl_colors::cell_available_border(dark), fade)),
+                    Stroke::new(1.0_f32, faded(tl_colors::cell_available_border(dark), fade)),
                     StrokeKind::Inside,
                 );
             } else {
@@ -183,7 +183,7 @@ fn draw_gap_glyphs(
                     Pos2::new(x + dx - 1.5, cy + 4.0),
                     Pos2::new(x + dx + 1.5, cy - 4.0),
                 ],
-                Stroke::new(1.0, glyph),
+                Stroke::new(1.0_f32, glyph),
             );
         }
     }
@@ -242,7 +242,7 @@ fn render_shadow_regions(painter: &Painter, frame: &TimelineFrame<'_>, fade: f32
                 painter,
                 block,
                 DashedBorder::uniform(
-                    Stroke::new(1.0, faded(tl_colors::cell_available_border(dark), fade)),
+                    Stroke::new(1.0_f32, faded(tl_colors::cell_available_border(dark), fade)),
                     4.0,
                     7.0,
                 ),

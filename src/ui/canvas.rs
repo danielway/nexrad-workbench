@@ -219,7 +219,7 @@ pub fn render_canvas_with_geo(
                         painter.circle_stroke(
                             c.center,
                             c.radius,
-                            Stroke::new(1.5, canvas_colors::ring_major(dark)),
+                            Stroke::new(1.5_f32, canvas_colors::ring_major(dark)),
                         );
                     }
                     // Request only as fast as the visible animation requires. A

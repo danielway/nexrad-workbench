@@ -157,7 +157,7 @@ fn paint_day_cell(painter: &Painter, rect: Rect, bucket: &DayBucket, dark: bool)
     painter.rect_stroke(
         rect,
         1.0,
-        Stroke::new(1.0, tl_colors::container_border(dark)),
+        Stroke::new(1.0_f32, tl_colors::container_border(dark)),
         StrokeKind::Inside,
     );
 
@@ -199,7 +199,7 @@ fn paint_month_marker(
             Pos2::new(x, track.top() + 1.0),
             Pos2::new(x, track.bottom() - 1.0),
         ],
-        Stroke::new(1.0, tl_colors::tick_major(dark)),
+        Stroke::new(1.0_f32, tl_colors::tick_major(dark)),
     );
     // Month label in the tick lane.
     let label = format!("{} {}", comps.month_abbrev(), comps.year);

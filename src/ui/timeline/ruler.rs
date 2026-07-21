@@ -53,7 +53,7 @@ pub(super) fn render_tick_marks(painter: &Painter, frame: &TimelineFrame<'_>) {
                     Pos2::new(x, tick_rect.bottom() - tick_height),
                     Pos2::new(x, tick_rect.bottom()),
                 ],
-                Stroke::new(1.0, tick_color),
+                Stroke::new(1.0_f32, tick_color),
             );
 
             // Label for major ticks — above tick marks
@@ -93,7 +93,7 @@ pub(super) fn render_playback_cursor(
             Pos2::new(sel_x, overlay_rect.top()),
             Pos2::new(sel_x, overlay_rect.bottom()),
         ],
-        Stroke::new(2.0, marker_color),
+        Stroke::new(2.0_f32, marker_color),
     );
 
     let triangle = vec![

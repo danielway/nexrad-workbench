@@ -869,7 +869,7 @@ pub(super) fn render_mode_badge(
     };
 
     let fill = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 40);
-    let stroke = egui::Stroke::new(1.0, color);
+    let stroke = egui::Stroke::new(1.0_f32, color);
     let inner = egui::Frame::default()
         .fill(fill)
         .stroke(stroke)

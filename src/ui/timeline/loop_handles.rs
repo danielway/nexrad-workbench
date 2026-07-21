@@ -215,7 +215,7 @@ fn paint_handle(
             Pos2::new(x, overlay.bottom() - 1.0),
             Pos2::new(x, band_rect.bottom() - 2.0),
         ],
-        Stroke::new(1.5, color),
+        Stroke::new(1.5_f32, color),
     );
 
     // The tab glyph: a small rounded rect centered on x within the band.
@@ -224,7 +224,7 @@ fn paint_handle(
         Pos2::new(x + LOOP_HANDLE_GLYPH_W / 2.0, band_rect.bottom() - 1.0),
     );
     painter.rect_filled(glyph, 2.0, fill_for(color, fused));
-    painter.rect_stroke(glyph, 2.0, Stroke::new(1.0, color), StrokeKind::Inside);
+    painter.rect_stroke(glyph, 2.0, Stroke::new(1.0_f32, color), StrokeKind::Inside);
 }
 
 /// Tab fill: the edge color washed down, or a fuller live red when fused with

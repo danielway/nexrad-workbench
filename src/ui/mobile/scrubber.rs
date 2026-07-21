@@ -135,7 +135,7 @@ pub(super) fn render_scrubber(
                     Pos2::new(x, full_rect.top() + 2.0),
                     Pos2::new(x, full_rect.bottom() - 2.0),
                 ],
-                Stroke::new(1.5, tl_colors::LIVE_ACTIVE),
+                Stroke::new(1.5_f32, tl_colors::LIVE_ACTIVE),
             );
         }
     }
@@ -150,14 +150,14 @@ pub(super) fn render_scrubber(
     painter.circle_stroke(
         Pos2::new(thumb_x, track_y),
         thumb_r,
-        Stroke::new(1.5, tl_colors::background(dark)),
+        Stroke::new(1.5_f32, tl_colors::background(dark)),
     );
 
     // Outline for the whole hit area (subtle so it reads as draggable).
     painter.rect_stroke(
         full_rect,
         4.0,
-        Stroke::new(0.5, Color32::from_rgba_unmultiplied(128, 128, 128, 40)),
+        Stroke::new(0.5_f32, Color32::from_rgba_unmultiplied(128, 128, 128, 40)),
         StrokeKind::Inside,
     );
 

@@ -17,5 +17,5 @@ pub(crate) fn render_gps_location(
     let (lat, lon) = coords;
     let screen_pos = projection.geo_to_screen(Coord { x: lon, y: lat });
     painter.circle_filled(screen_pos, 6.0, Color32::from_rgb(33, 150, 243));
-    painter.circle_stroke(screen_pos, 6.0, Stroke::new(2.0, Color32::WHITE));
+    painter.circle_stroke(screen_pos, 6.0, Stroke::new(2.0_f32, Color32::WHITE));
 }

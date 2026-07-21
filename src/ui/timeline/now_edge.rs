@@ -229,7 +229,7 @@ fn render_edge_chip(
     painter.rect_stroke(
         chip_rect,
         3.0,
-        Stroke::new(1.0, edge_color(fill)),
+        Stroke::new(1.0_f32, edge_color(fill)),
         StrokeKind::Inside,
     );
     let galley = painter.layout_no_wrap(label, font, Color32::WHITE);
@@ -271,7 +271,7 @@ fn draw_cap(painter: &Painter, rect: Rect, label: &str, fill: Color32) {
     painter.rect_stroke(
         rect,
         3.0,
-        Stroke::new(1.0, edge_color(fill)),
+        Stroke::new(1.0_f32, edge_color(fill)),
         StrokeKind::Inside,
     );
     let pad = egui::vec2(6.0, 2.5);

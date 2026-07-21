@@ -57,11 +57,11 @@ pub(crate) fn render_mping_reports(
         let is_selected = selected_report_id == Some(report.id);
         let radius = if is_selected { 6.5 } else { 4.5 };
         painter.circle_filled(pos, radius, fill);
-        painter.circle_stroke(pos, radius, Stroke::new(1.0, mping_colors::STROKE));
+        painter.circle_stroke(pos, radius, Stroke::new(1.0_f32, mping_colors::STROKE));
         if is_selected {
             // Bright halo so the selected marker is visually distinct from
             // the dozens of unselected ones around it.
-            painter.circle_stroke(pos, radius + 2.5, Stroke::new(1.5, Color32::WHITE));
+            painter.circle_stroke(pos, radius + 2.5, Stroke::new(1.5_f32, Color32::WHITE));
         }
     }
 }
@@ -188,7 +188,7 @@ pub(crate) fn render_mping_detail(
     painter.rect_stroke(
         bg_rect,
         4.0,
-        Stroke::new(1.0, Color32::from_rgb(80, 80, 100)),
+        Stroke::new(1.0_f32, Color32::from_rgb(80, 80, 100)),
         StrokeKind::Outside,
     );
     let edge = Rect::from_min_size(bg_rect.min, Vec2::new(3.0, bg_rect.height()));
@@ -215,7 +215,7 @@ pub(crate) fn render_mping_detail(
     };
     painter.line_segment(
         [marker_pos, line_target],
-        Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 100)),
+        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 100)),
     );
 }
 

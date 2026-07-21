@@ -71,7 +71,7 @@ pub(crate) fn render_alerts(
 
     // Slightly wider black halo so warning strokes stay legible over bright
     // radar fills. Only warnings get it — watches stay subdued.
-    let halo = Stroke::new(4.5, Color32::BLACK);
+    let halo = Stroke::new(4.5_f32, Color32::BLACK);
 
     for alert in ordered {
         let warning = alert.is_warning();
@@ -92,7 +92,11 @@ pub(crate) fn render_alerts(
                     draw_fill(painter, projection, bounds, &alert.fill_triangles, fill);
                 }
                 // Outline, segment by segment (no miter joins → no spikes).
-                let (width, alpha) = if warning { (2.5, 220) } else { (2.0, 190) };
+                let (width, alpha) = if warning {
+                    (2.5_f32, 220)
+                } else {
+                    (2.0_f32, 190)
+                };
                 let stroke = Stroke::new(width, Color32::from_rgba_unmultiplied(r, g, b, alpha));
                 for polygon in &alert.geometry.polygons {
                     for ring in polygon {

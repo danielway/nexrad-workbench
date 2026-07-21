@@ -54,7 +54,7 @@ pub(super) fn render_saved_events(
                     Pos2::new(start_x, overlay_rect.top()),
                     Pos2::new(start_x, overlay_rect.bottom()),
                 ],
-                Stroke::new(1.0, border_color),
+                Stroke::new(1.0_f32, border_color),
             );
             // Bookmark tick: a small downward pennant at the start so the event
             // reads by shape even in grayscale.
@@ -72,7 +72,7 @@ pub(super) fn render_saved_events(
                     Pos2::new(end_x, overlay_rect.top()),
                     Pos2::new(end_x, overlay_rect.bottom()),
                 ],
-                Stroke::new(1.0, border_color),
+                Stroke::new(1.0_f32, border_color),
             );
         }
 

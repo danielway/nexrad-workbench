@@ -145,7 +145,7 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
         Color32::from_rgb(170, 170, 190)
     };
     for factor in [0.33, 0.66, 1.0] {
-        painter.circle_stroke(center, radius * factor, Stroke::new(1.0, ring_color));
+        painter.circle_stroke(center, radius * factor, Stroke::new(1.0_f32, ring_color));
     }
 
     // Cardinal direction labels (inside the radar circle for cleaner look)
@@ -199,7 +199,7 @@ fn render_top_down_view(ui: &mut egui::Ui, azimuth: Option<f32>, is_live: bool) 
 
         painter.line_segment(
             [center, Pos2::new(end_x, end_y)],
-            Stroke::new(2.0, Color32::from_rgb(100, 255, 100)),
+            Stroke::new(2.0_f32, Color32::from_rgb(100, 255, 100)),
         );
 
         ui.label(RichText::new(format!("{:.1}\u{00B0}", az)).small());
@@ -234,7 +234,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
             Pos2::new(rect.left() + 5.0, ground_y),
             Pos2::new(rect.right() - 5.0, ground_y),
         ],
-        Stroke::new(2.0, ground_color),
+        Stroke::new(2.0_f32, ground_color),
     );
 
     // Tower/dish on left side
@@ -253,7 +253,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
             Pos2::new(tower_x, tower_bottom),
             Pos2::new(tower_x, tower_top),
         ],
-        Stroke::new(3.0, tower_color),
+        Stroke::new(3.0_f32, tower_color),
     );
 
     // Dish (small circle at top of tower)
@@ -286,7 +286,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
 
         painter.line_segment(
             [beam_origin, Pos2::new(end_x, end_y)],
-            Stroke::new(1.0, ref_line_color),
+            Stroke::new(1.0_f32, ref_line_color),
         );
 
         // Angle label at end of line
@@ -309,7 +309,7 @@ fn render_side_view(ui: &mut egui::Ui, elevation: Option<f32>) {
 
         painter.line_segment(
             [beam_origin, Pos2::new(end_x, end_y)],
-            Stroke::new(2.5, Color32::from_rgb(100, 255, 100)),
+            Stroke::new(2.5_f32, Color32::from_rgb(100, 255, 100)),
         );
 
         ui.label(RichText::new(format!("{:.1}\u{00B0}", elev)).small());
