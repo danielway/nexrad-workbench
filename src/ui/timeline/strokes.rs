@@ -175,7 +175,7 @@ mod coverage_tests {
     // into BOTH the horizontal and vertical fields, and default to all edges.
     #[wasm_bindgen_test]
     fn uniform_mirrors_dash_into_h_and_v() {
-        let stroke = Stroke::new(2.0, Color32::from_rgb(10, 20, 30));
+        let stroke = Stroke::new(2.0_f32, Color32::from_rgb(10, 20, 30));
         let b = DashedBorder::uniform(stroke, 4.0, 8.0);
 
         assert!((b.h_dash - 4.0).abs() < 1e-6);
@@ -190,7 +190,7 @@ mod coverage_tests {
     // The stroke passed in must be preserved verbatim.
     #[wasm_bindgen_test]
     fn uniform_preserves_stroke() {
-        let stroke = Stroke::new(1.5, Color32::from_rgb(200, 100, 50));
+        let stroke = Stroke::new(1.5_f32, Color32::from_rgb(200, 100, 50));
         let b = DashedBorder::uniform(stroke, 3.0, 6.0);
 
         assert!((b.stroke.width - 1.5).abs() < 1e-6);
@@ -204,7 +204,7 @@ mod coverage_tests {
     // A uniform border always dashes every edge.
     #[wasm_bindgen_test]
     fn uniform_sets_all_edges() {
-        let stroke = Stroke::new(1.0, Color32::WHITE);
+        let stroke = Stroke::new(1.0_f32, Color32::WHITE);
         let b = DashedBorder::uniform(stroke, 1.0, 2.0);
 
         assert!(b.edges.top);
