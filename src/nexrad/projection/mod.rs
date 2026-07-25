@@ -204,7 +204,7 @@ pub struct ScanProjection {
     /// Full VCP pattern for elevation-angle lookups (display); `None` pre-VCP.
     pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
     /// Expected-vs-received elevation roster for the in-progress volume.
-    pub roster: crate::state::VolumeElevationRoster,
+    pub roster: crate::core::VolumeElevationRoster,
     /// Elevation currently being received (`None` between cuts). Mirrors the
     /// engine's in-progress input exactly — independent of per-sweep status.
     pub in_progress_elevation: Option<u8>,
@@ -291,7 +291,7 @@ pub fn assemble_live_scan(
     sweeps: &[SweepProjection],
     vcp_number: u16,
     vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
-    roster: crate::state::VolumeElevationRoster,
+    roster: crate::core::VolumeElevationRoster,
     in_progress_elevation: Option<u8>,
     in_progress_radials: Option<u32>,
     volume_start: f64,
@@ -321,7 +321,7 @@ pub fn assemble_live_scan(
         Some(Box::new(ScanProjection {
             vcp_number,
             vcp_pattern: vcp_pattern.clone(),
-            roster: crate::state::VolumeElevationRoster::default(),
+            roster: crate::core::VolumeElevationRoster::default(),
             in_progress_elevation: None,
             in_progress_radials: None,
             volume_start: gs,
@@ -434,7 +434,7 @@ mod tests {
         ScanProjection {
             vcp_number: 0,
             vcp_pattern: None,
-            roster: crate::state::VolumeElevationRoster::default(),
+            roster: crate::core::VolumeElevationRoster::default(),
             in_progress_elevation: None,
             in_progress_radials: None,
             volume_start: vol_start,
@@ -581,7 +581,7 @@ mod coverage_tests {
         ScanProjection {
             vcp_number: 0,
             vcp_pattern: None,
-            roster: crate::state::VolumeElevationRoster::default(),
+            roster: crate::core::VolumeElevationRoster::default(),
             in_progress_elevation: None,
             in_progress_radials: None,
             volume_start: vs,
@@ -838,7 +838,7 @@ mod coverage_tests {
             &sweeps,
             212,
             None,
-            crate::state::VolumeElevationRoster::default(),
+            crate::core::VolumeElevationRoster::default(),
             Some(2),
             Some(7),
             1000.0,
@@ -891,7 +891,7 @@ mod coverage_tests {
             &sweeps,
             12,
             None,
-            crate::state::VolumeElevationRoster::default(),
+            crate::core::VolumeElevationRoster::default(),
             None,
             None,
             1000.0,
@@ -915,7 +915,7 @@ mod coverage_tests {
             &sweeps,
             35,
             None,
-            crate::state::VolumeElevationRoster::default(),
+            crate::core::VolumeElevationRoster::default(),
             None,
             None,
             2000.0,

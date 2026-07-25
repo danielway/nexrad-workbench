@@ -17,8 +17,8 @@
 //! Variants are added per migration phase as decisions are extracted; the enum
 //! is `#[non_exhaustive]`-in-spirit and grows.
 
-use crate::state::url_state::ViewState;
-use crate::state::UserPreferences;
+use crate::core::UserPreferences;
+use crate::core::ViewState;
 
 /// Result of an async location operation (browser geolocation or zip-code
 /// geocoding) — the response vocabulary of [`Effect::StartGeolocation`].

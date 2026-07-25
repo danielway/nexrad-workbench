@@ -70,8 +70,9 @@ mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
+    use crate::core::FrameNow;
     use crate::nexrad::RealtimeChannel;
-    use crate::state::{FrameNow, LiveExitReason, LivePhase, LoopBasis, TimelineTier};
+    use crate::state::{LiveExitReason, LivePhase, LoopBasis, TimelineTier};
 
     fn live() -> Live {
         Live::new(RealtimeChannel::new())

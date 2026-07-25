@@ -731,7 +731,7 @@ pub(super) async fn streaming_loop(
     // How the wait before this chunk's fetch resolved. Set by the adaptive
     // cross-volume wait helper (early-fire / re-anchor); stays
     // `SleptToPrediction` for the plain single-sleep path.
-    let mut cur_wait_resolution = crate::state::WaitResolution::SleptToPrediction;
+    let mut cur_wait_resolution = crate::core::WaitResolution::SleptToPrediction;
     // Revision of the plan that produced cur_forecast, captured at the
     // same moment so the per-chunk arrival stat can record which plan
     // version made the prediction. Diagnostics use this to tell
@@ -775,7 +775,7 @@ pub(super) async fn streaming_loop(
             cur_forecast = None;
             cur_predicted_wait_secs = None;
             cur_plan_revision = None;
-            cur_wait_resolution = crate::state::WaitResolution::SleptToPrediction;
+            cur_wait_resolution = crate::core::WaitResolution::SleptToPrediction;
             none_retries = 0;
             let emitted = run_mid_stream_backfill(
                 &site_id,
@@ -1023,7 +1023,7 @@ pub(super) async fn streaming_loop(
             cur_forecast = None;
             cur_predicted_wait_secs = None;
             cur_plan_revision = None;
-            cur_wait_resolution = crate::state::WaitResolution::SleptToPrediction;
+            cur_wait_resolution = crate::core::WaitResolution::SleptToPrediction;
             continue;
         }
 
@@ -1170,7 +1170,7 @@ pub(super) async fn streaming_loop(
                         Some(f) => (
                             f.bucket
                                 .as_ref()
-                                .map(crate::state::BucketKey::from_characteristics),
+                                .map(crate::core::BucketKey::from_characteristics),
                             f.stats_n,
                             Some(f.scheduler_path),
                             Some(f.physics_breakdown),
@@ -1178,7 +1178,7 @@ pub(super) async fn streaming_loop(
                         None => (None, 0, None, None),
                     };
 
-                let arrival_stat = crate::state::ChunkArrivalStat {
+                let arrival_stat = crate::core::ChunkArrivalStat {
                     sequence: chunks_in_volume,
                     wait_resolution: cur_wait_resolution,
                     chunk_type: type_label,
@@ -1208,7 +1208,7 @@ pub(super) async fn streaming_loop(
                 cur_forecast = None;
                 cur_predicted_wait_secs = None;
                 cur_plan_revision = None;
-                cur_wait_resolution = crate::state::WaitResolution::SleptToPrediction;
+                cur_wait_resolution = crate::core::WaitResolution::SleptToPrediction;
                 let chunk_is_last_in_sweep = iter
                     .chunk_metadata(chunk.identifier.sequence())
                     .map(|m| m.is_last_in_sweep());
@@ -1443,8 +1443,8 @@ async fn wait_for_next_target(
     target_volume: nexrad_data::aws::realtime::VolumeIndex,
     prev_anchor_upload_secs: Option<f64>,
     wake_epoch: u64,
-) -> (SleepOutcome, crate::state::WaitResolution) {
-    use crate::state::WaitResolution;
+) -> (SleepOutcome, crate::core::WaitResolution) {
+    use crate::core::WaitResolution;
     use nexrad_data::aws::realtime::{list_chunks_in_volume, ChunkType};
 
     let cadence_ms = (LIST_PROBE_CADENCE_SECS * 1000.0) as u32;

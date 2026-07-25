@@ -486,7 +486,7 @@ impl WorkbenchApp {
             });
         }
 
-        let initial_prefs = state::UserPreferences::from_app_state(
+        let initial_prefs = core::UserPreferences::from_app_state(
             &state,
             &playback.state,
             loaded_mping_api_key.clone(),

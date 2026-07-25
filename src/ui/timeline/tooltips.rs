@@ -350,7 +350,7 @@ fn render_realtime_volume_tooltip(
 
     // -- Per-sweep tooltip when hovering the sweep track --
     if in_sweep_track && expected_count > 0 {
-        let vcp_def = crate::state::get_vcp_definition(vcp_num);
+        let vcp_def = crate::data::vcp::get_vcp_definition(vcp_num);
 
         // Find which sweep block contains hover_ts (or snap to nearest).
         let mut hovered_sweep: Option<&crate::nexrad::projection::SweepProjection> = None;
@@ -526,7 +526,7 @@ fn render_scan_tooltip_content(
     ui: &mut egui::Ui,
     scan: &crate::core::Scan,
     live_state: &crate::state::LiveModeState,
-    live_roster: Option<&crate::state::VolumeElevationRoster>,
+    live_roster: Option<&crate::core::VolumeElevationRoster>,
     use_local: bool,
 ) {
     let (status, status_color) = match scan.completeness {

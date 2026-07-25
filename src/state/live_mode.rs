@@ -30,7 +30,7 @@
 //! timeline ghost, VCP panel position, the in-progress sweep), rebuilt once
 //! per frame so read sites in the same frame stay consistent. Diagnostics
 //! snapshots come from [`LiveModeState::derive_current_volume_forecast`] / the
-//! [`crate::state::derive_volume_forecast`] free function.
+//! [`crate::core::derive_volume_forecast`] free function.
 
 /// Whether a background (detached) live stream should auto-stop because the
 /// playhead has stayed detached longer than `threshold_secs`.
@@ -182,7 +182,7 @@ pub struct LiveModeState {
     /// the diagnostics modal even after the corresponding sweeps complete
     /// (their per-chunk `forecast` becomes `None` once they're past).
     ///
-    /// The diagnostics modal derives a [`crate::state::VolumeForecastSnapshot`]
+    /// The diagnostics modal derives a [`crate::core::VolumeForecastSnapshot`]
     /// on demand from this plan + the rolling observation state below;
     /// nothing in the live state is mutated as sweeps complete.
     pub volume_start_plan: Option<crate::nexrad::StreamingPlan>,
@@ -191,8 +191,8 @@ pub struct LiveModeState {
     /// the diagnostics modal can still render predicted-vs-actual data
     /// after the live state has rolled over. Replaces the old pre-derived
     /// `last_volume_forecast`; the snapshot is rebuilt on demand from
-    /// this record via [`crate::state::derive_volume_forecast`].
-    pub last_completed_volume: Option<crate::state::CompletedVolumeRecord>,
+    /// this record via [`crate::core::derive_volume_forecast`].
+    pub last_completed_volume: Option<crate::core::CompletedVolumeRecord>,
 
     /// Observed end timestamp of the previous volume (Unix seconds). Survives
     /// the reset in `handle_volume_complete` so the next volume's snapshot
@@ -202,11 +202,11 @@ pub struct LiveModeState {
     /// Per-chunk arrival diagnostics for the current volume. One entry per
     /// successful fetch, in arrival order. Reset on `handle_volume_complete`
     /// (a trimmed copy is attached to `last_volume_forecast` via the modal).
-    pub chunk_arrivals: Vec<crate::state::ChunkArrivalStat>,
+    pub chunk_arrivals: Vec<crate::core::ChunkArrivalStat>,
 
     /// Most recent volume's `chunk_arrivals`, preserved for the diagnostics
     /// modal alongside `last_volume_forecast`.
-    pub last_chunk_arrivals: Vec<crate::state::ChunkArrivalStat>,
+    pub last_chunk_arrivals: Vec<crate::core::ChunkArrivalStat>,
 }
 
 impl Default for LiveModeState {
@@ -449,7 +449,7 @@ impl LiveModeState {
             self.volume_start_plan.take(),
             obs.current_vcp_pattern.clone(),
         ) {
-            self.last_completed_volume = Some(crate::state::CompletedVolumeRecord {
+            self.last_completed_volume = Some(crate::core::CompletedVolumeRecord {
                 vcp,
                 volume_start_plan: plan,
                 volume_start_secs: start,
@@ -531,7 +531,7 @@ impl LiveModeState {
     }
 
     /// Append a chunk arrival diagnostic sample for the current volume.
-    pub fn record_chunk_arrival(&mut self, stat: crate::state::ChunkArrivalStat) {
+    pub fn record_chunk_arrival(&mut self, stat: crate::core::ChunkArrivalStat) {
         // Bound memory — clamp to 1024 per volume; anything beyond that is
         // pathological and unhelpful to the diagnostics modal.
         if self.chunk_arrivals.len() < 1024 {
@@ -573,14 +573,14 @@ impl LiveModeState {
     pub fn derive_current_volume_forecast(
         &self,
         obs: &crate::nexrad::projection::VolumeObservations,
-    ) -> Option<crate::state::VolumeForecastSnapshot> {
+    ) -> Option<crate::core::VolumeForecastSnapshot> {
         let vcp = obs.current_vcp_pattern.as_ref()?;
         let plan = self.volume_start_plan.as_ref()?;
         let volume_start_secs = self.current_volume.as_ref().map(|a| a.best_start_secs())?;
         if vcp.elevations.is_empty() {
             return None;
         }
-        Some(crate::state::derive_volume_forecast(
+        Some(crate::core::derive_volume_forecast(
             vcp,
             plan,
             volume_start_secs,
@@ -596,10 +596,10 @@ impl LiveModeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ChunkArrivalStat;
     use crate::data::{ScanKey, UnixMillis};
     use crate::nexrad::projection::VolumeObservations;
     use crate::nexrad::StreamingPlan;
-    use crate::state::ChunkArrivalStat;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn scan_key(start_ms: i64) -> ScanKey {
@@ -1050,10 +1050,10 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
+    use crate::core::ChunkArrivalStat;
     use crate::data::{ScanKey, UnixMillis};
     use crate::nexrad::projection::VolumeObservations;
     use crate::nexrad::StreamingPlan;
-    use crate::state::ChunkArrivalStat;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn scan_key(start_ms: i64) -> ScanKey {

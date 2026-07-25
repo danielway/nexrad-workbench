@@ -32,13 +32,25 @@ pub mod panels;
 pub mod persist;
 pub mod render;
 
+pub use domain::forecast::{
+    derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord,
+    ForecastTimingLabel, SweepForecast, SweepStatus, VolumeForecastSnapshot, WaitResolution,
+};
+// Consumed only by test modules today; in a bin crate that reads as unused.
+#[allow(unused_imports)]
+pub use domain::forecast::RateSource;
+pub use domain::ops::OperationId;
+pub use domain::prefs::UserPreferences;
 pub use domain::radar::{RadarTimeline, Scan, ScanMetadata, Sweep};
 #[allow(unused_imports)]
 pub use domain::radar::{Radial, TimeRange};
+pub use domain::time::FrameNow;
+pub use domain::view::ViewState;
 pub use domain::viz::{
     DisplayedSweep, ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct,
     RenderProcessing, StormCellInfo, SweepIdentity,
 };
+pub use domain::volume::VolumeElevationRoster;
 pub use effect::{Effect, LocationResult};
 pub use persist::{decide_persist, PersistDecision};
 

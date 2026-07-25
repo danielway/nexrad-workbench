@@ -25,7 +25,7 @@ pub struct RenderCoordinator {
     /// Elevations the GPU can render right now for the *currently
     /// displayed* scan, populated from worker ingest results in either the
     /// live or archive flow. Distinct from
-    /// [`crate::state::VolumeElevationRoster::received`], which is the
+    /// [`crate::core::VolumeElevationRoster::received`], which is the
     /// in-progress *live* volume's observation roster — different scope,
     /// different lifecycle. Don't mix the two.
     available_elevations: Vec<u8>,

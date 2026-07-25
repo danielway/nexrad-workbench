@@ -6,13 +6,14 @@
 //! [`Effect`]s for [`crate::WorkbenchApp::apply_effects`] to execute. The
 //! throttle math and change-detection are tested headlessly in `core::persist`.
 
+use crate::core::UserPreferences;
 use crate::core::{decide_persist, Effect, PersistDecision};
-use crate::state::{self, AppState, UserPreferences};
+use crate::state::{self, AppState};
 
 /// Manages URL state persistence, preference saving, and site change detection.
 pub struct PersistenceManager {
     /// Wall-clock seconds of the last URL push (for throttling to ~1/sec).
-    /// Wall-clock (the injected [`crate::state::FrameNow`]) rather than a
+    /// Wall-clock (the injected [`crate::core::FrameNow`]) rather than a
     /// monotonic `Instant`, so the decision is clock-injectable and testable.
     last_url_push_secs: f64,
     /// Last-saved user preferences snapshot (for change detection).
@@ -50,7 +51,7 @@ impl PersistenceManager {
     /// Decide and record persistence for this frame, returning the effects for
     /// the shell to execute (throttled URL push + conditional preference save).
     ///
-    /// `now_secs` is the injected frame clock ([`crate::state::FrameNow::secs`]).
+    /// `now_secs` is the injected frame clock ([`crate::core::FrameNow::secs`]).
     /// `mping_api_key` is the current value from the diagnostics subsystem;
     /// `is_live` is sourced from the Live subsystem; `playback` is the Playback
     /// subsystem's state. All are passed in so the persistence manager doesn't

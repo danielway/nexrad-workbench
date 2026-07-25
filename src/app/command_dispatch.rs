@@ -161,7 +161,7 @@ impl WorkbenchApp {
     /// failed item was marked Done. So we must ALSO re-enqueue a `QueueItem`
     /// (reusing the same operation id so both machines stay correlated). Without
     /// the requeue the retry resets the drawer row but never re-fetches.
-    fn handle_retry_failed(&mut self, op_id: state::OperationId) {
+    fn handle_retry_failed(&mut self, op_id: crate::core::OperationId) {
         // Reconstruct the scan's download params from the operation kind before
         // we flip it back to Queued.
         let scan_params = self.acquisition.state.find(op_id).and_then(|op| {

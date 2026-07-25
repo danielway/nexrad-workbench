@@ -13,9 +13,9 @@
 //! elevation roster, the expected volume duration, the VCP-weighted fallback
 //! durations) move here as methods so the single owner produces them.
 
+use crate::core::VolumeElevationRoster;
 use crate::data::keys::ExtractedVcp;
 use crate::data::CachedSweep;
-use crate::state::VolumeElevationRoster;
 
 /// Default expected volume duration (seconds) when neither a completed volume
 /// nor a VCP estimate is available — mirrors the worker's old `unwrap_or(300.0)`.

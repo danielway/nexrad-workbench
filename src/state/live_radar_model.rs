@@ -63,8 +63,8 @@ pub struct LiveVolumeModel {
     /// Combined expected/received view for the volume's elevations.
     /// Replaces parallel `elevations_complete` + `elevations_expected`
     /// fields so consumers read one place — see
-    /// [`crate::state::VolumeElevationRoster`] for the divergence helpers.
-    pub roster: crate::state::VolumeElevationRoster,
+    /// [`crate::core::VolumeElevationRoster`] for the divergence helpers.
+    pub roster: crate::core::VolumeElevationRoster,
 }
 
 impl LiveVolumeModel {
@@ -255,7 +255,7 @@ mod coverage_tests {
         ScanProjection {
             vcp_number: 0,
             vcp_pattern: None,
-            roster: crate::state::VolumeElevationRoster::default(),
+            roster: crate::core::VolumeElevationRoster::default(),
             in_progress_elevation: None,
             in_progress_radials: None,
             volume_start: vol_start,
@@ -335,10 +335,7 @@ mod coverage_tests {
         // volume is always Some when active; vcp/roster empty without a position.
         let volume = model.volume.expect("active volume");
         assert!(volume.vcp_pattern.is_none());
-        assert_eq!(
-            volume.roster,
-            crate::state::VolumeElevationRoster::default()
-        );
+        assert_eq!(volume.roster, crate::core::VolumeElevationRoster::default());
         // No active sweep without a position.
         assert!(model.active_sweep.is_none());
         // frame_now all None without a position.
@@ -483,7 +480,7 @@ mod coverage_tests {
         // 1-based elevation_number indexes (n-1) into vcp.elevations.
         let vm = LiveVolumeModel {
             vcp_pattern: Some(vcp_one_elev(0.5)),
-            roster: crate::state::VolumeElevationRoster::default(),
+            roster: crate::core::VolumeElevationRoster::default(),
         };
         // Elevation 1 → index 0 → angle 0.5.
         let a = vm.target_elevation_angle(1).expect("angle for elev 1");
@@ -499,7 +496,7 @@ mod coverage_tests {
         // No VCP attached → always None.
         let vm_none = LiveVolumeModel {
             vcp_pattern: None,
-            roster: crate::state::VolumeElevationRoster::default(),
+            roster: crate::core::VolumeElevationRoster::default(),
         };
         assert!(vm_none.target_elevation_angle(1).is_none());
     }

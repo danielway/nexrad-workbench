@@ -793,7 +793,7 @@ mod tests {
         ScanProjection {
             vcp_number: 212,
             vcp_pattern: None,
-            roster: crate::state::VolumeElevationRoster::default(),
+            roster: crate::core::VolumeElevationRoster::default(),
             in_progress_elevation: None,
             in_progress_radials: None,
             volume_start: 1_700_000_000.0,
@@ -1356,7 +1356,7 @@ mod coverage_tests {
         ScanProjection {
             vcp_number: 212,
             vcp_pattern: None,
-            roster: crate::state::VolumeElevationRoster::default(),
+            roster: crate::core::VolumeElevationRoster::default(),
             in_progress_elevation: None,
             in_progress_radials: None,
             volume_start: 1_700_000_000.0,

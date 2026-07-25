@@ -466,7 +466,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::core::ElevationLis
     }
 
     // 2. Fall back to static VCP definition
-    if let Some(def) = crate::state::get_vcp_definition(scan.vcp) {
+    if let Some(def) = crate::data::vcp::get_vcp_definition(scan.vcp) {
         return def
             .elevations
             .iter()

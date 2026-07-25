@@ -36,7 +36,7 @@ pub fn scan_to_projection(scan: &Scan) -> ScanProjection {
     ScanProjection {
         vcp_number: scan.vcp,
         vcp_pattern: scan.vcp_pattern.clone(),
-        roster: crate::state::VolumeElevationRoster::new(
+        roster: crate::core::VolumeElevationRoster::new(
             Some(scan.sweeps.len()),
             scan.sweeps.iter().map(|s| s.elevation_number).collect(),
         ),

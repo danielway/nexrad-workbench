@@ -28,7 +28,7 @@ pub struct LiveRefreshInputs<'a> {
     /// next-scan extent.
     pub archive_boundaries: &'a [crate::nexrad::ScanBoundary],
     /// This frame's wall clock (from `AppState::frame_now`).
-    pub now: crate::state::FrameNow,
+    pub now: crate::core::FrameNow,
 }
 
 /// Owner of the real-time streaming pipeline and the derived

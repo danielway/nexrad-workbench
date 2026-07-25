@@ -245,7 +245,7 @@ pub fn cascade_current_sweeps(inp: &CascadeInputs) -> Vec<SweepBounds> {
         offsets
     };
 
-    let vcp_def = crate::state::get_vcp_definition(inp.vcp_number);
+    let vcp_def = crate::data::vcp::get_vcp_definition(inp.vcp_number);
     let elev_angle_for = |elev_num: u8| -> f32 {
         if let Some(vcp) = inp.vcp_pattern {
             if let Some(e) = vcp.elevations.get(elev_num.saturating_sub(1) as usize) {
@@ -449,7 +449,7 @@ fn elev_angle(
             return e.angle;
         }
     }
-    crate::state::get_vcp_definition(vcp_number)
+    crate::data::vcp::get_vcp_definition(vcp_number)
         .and_then(|d| d.elevations.get(elev_num.saturating_sub(1) as usize))
         .map(|e| e.angle)
         .unwrap_or(0.5 * elev_num as f32)

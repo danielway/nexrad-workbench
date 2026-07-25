@@ -40,7 +40,7 @@ pub(crate) struct QueueItem {
     /// Acquisition-drawer operation representing this item, created by the
     /// enqueuer. Carried on the item (rather than paired FIFO at dispatch)
     /// so priority-ordered dispatch and pruning stay correlated.
-    pub operation_id: Option<crate::state::OperationId>,
+    pub operation_id: Option<crate::core::OperationId>,
     /// Dispatch priority — lower dispatches sooner. Recomputed against the
     /// playhead by [`DownloadQueueManager::reprioritize`] each pump.
     pub priority: i64,
@@ -67,7 +67,7 @@ impl QueueItem {
     }
 
     /// Attach the acquisition operation that tracks this item.
-    pub fn with_operation(mut self, id: crate::state::OperationId) -> Self {
+    pub fn with_operation(mut self, id: crate::core::OperationId) -> Self {
         self.operation_id = Some(id);
         self
     }
@@ -140,7 +140,7 @@ pub(crate) enum QueueAction {
         scan_start: i64,
         scan_end: i64,
         elevation_filter: Option<u8>,
-        operation_id: Option<crate::state::OperationId>,
+        operation_id: Option<crate::core::OperationId>,
         remaining: usize,
     },
     /// All items are done/failed — queue is drained.
@@ -177,7 +177,7 @@ pub(crate) struct DownloadQueueManager {
     /// Maps an Active item's `scan_start` to the acquisition operation ID
     /// that represents it. Keeps correlation correct when multiple downloads
     /// are in flight simultaneously.
-    active_operation_ids: std::collections::HashMap<i64, crate::state::OperationId>,
+    active_operation_ids: std::collections::HashMap<i64, crate::core::OperationId>,
     max_parallel: usize,
     /// Running total of bytes fetched via reactive prefetch this session.
     /// Bounds runaway background downloading; not reset on queue clear.
@@ -325,12 +325,12 @@ impl DownloadQueueManager {
     }
 
     /// Associate an acquisition operation ID with an active download.
-    pub fn set_operation_id(&mut self, scan_start: i64, id: crate::state::OperationId) {
+    pub fn set_operation_id(&mut self, scan_start: i64, id: crate::core::OperationId) {
         self.active_operation_ids.insert(scan_start, id);
     }
 
     /// Take (remove) the operation ID for the given scan_start.
-    pub fn take_operation_id(&mut self, scan_start: i64) -> Option<crate::state::OperationId> {
+    pub fn take_operation_id(&mut self, scan_start: i64) -> Option<crate::core::OperationId> {
         self.active_operation_ids.remove(&scan_start)
     }
 

@@ -8,7 +8,7 @@
 //!   [`ChunkProjectedTimes::poll_at_secs`]).
 //! - The timeline's countdown and future-chunk markers.
 //! - The VCP forecast panel.
-//! - Per-chunk arrival diagnostics ([`crate::state::ChunkArrivalStat`]).
+//! - Per-chunk arrival diagnostics ([`crate::core::ChunkArrivalStat`]).
 //!
 //! Before this module existed there were two parallel computation paths —
 //! `StreamingState::time_until_next` / `next_matching_chunk_diagnostics` /
@@ -245,13 +245,13 @@ impl StreamingPlan {
     }
 
     /// Test plan with explicit current-volume chunks and end-of-volume
-    /// collection time — the two fields [`crate::state::derive_volume_forecast`]
+    /// collection time — the two fields [`crate::core::derive_volume_forecast`]
     /// reads to build its library-projection bounds. The filter defaults to
     /// `All` (forecast derivation never reads `plan.filter`), and
     /// `next_volume_chunks` / `next_target_key` are left empty. Lets the
-    /// `vcp_forecast` test module — which can't name the crate-private
-    /// `StreamingFilter` — exercise the projection-library vs. cum-offset
-    /// branches without standing up a full projection.
+    /// `core::domain::forecast` test module — which can't name the
+    /// crate-private `StreamingFilter` — exercise the projection-library vs.
+    /// cum-offset branches without standing up a full projection.
     #[cfg(test)]
     pub(crate) fn for_test(
         current_volume_chunks: Vec<ChunkProjectionInfo>,

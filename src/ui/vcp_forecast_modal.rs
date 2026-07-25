@@ -15,11 +15,12 @@
 
 use super::colors::ui as ui_colors;
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::nexrad::timing::{AnchorSource, IntervalCase, PhysicsBreakdown, SchedulerPath};
-use crate::state::{
-    AppState, BucketKey, ChunkArrivalStat, ForecastTimingLabel, SweepForecast, SweepStatus,
+use crate::core::{
+    BucketKey, ChunkArrivalStat, ForecastTimingLabel, SweepForecast, SweepStatus,
     VolumeForecastSnapshot,
 };
+use crate::nexrad::timing::{AnchorSource, IntervalCase, PhysicsBreakdown, SchedulerPath};
+use crate::state::AppState;
 use eframe::egui::{self, RichText, Vec2};
 use std::collections::BTreeMap;
 
@@ -60,7 +61,7 @@ fn draw_vcp_forecast_modal(
         if let Some(snap) = live.derive_current_volume_forecast(obs) {
             (Some(snap), live.chunk_arrivals.clone())
         } else if let Some(record) = live.last_completed_volume.as_ref() {
-            let snap = crate::state::derive_volume_forecast(
+            let snap = crate::core::derive_volume_forecast(
                 &record.vcp,
                 &record.volume_start_plan,
                 record.volume_start_secs,
@@ -1063,7 +1064,7 @@ pub(super) fn format_anchor_tally(t: &[(AnchorSource, u32); 3]) -> String {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::state::vcp_forecast::RateSource;
+    use crate::core::RateSource;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     // ── builders ────────────────────────────────────────────────────────

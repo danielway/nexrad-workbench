@@ -149,7 +149,7 @@ impl Scan {
                 return Some(elev.angle);
             }
         }
-        if let Some(def) = crate::state::get_vcp_definition(self.vcp) {
+        if let Some(def) = crate::data::vcp::get_vcp_definition(self.vcp) {
             if let Some(elev) = def.elevations.get(idx) {
                 return Some(elev.angle);
             }

@@ -11,7 +11,7 @@ use super::vcp_forecast_modal::{
     fmt_elev, fmt_physics, format_anchor_tally, format_path_tally, format_time,
     scheduler_path_tally, stats_on, total_empty_polls,
 };
-use crate::state::{
+use crate::core::{
     BucketKey, ChunkArrivalStat, ForecastTimingLabel, SweepStatus, VolumeForecastSnapshot,
 };
 use std::fmt::Write as _;
@@ -319,8 +319,8 @@ fn trim_str(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::state::vcp_forecast::RateSource;
-    use crate::state::SweepForecast;
+    use crate::core::RateSource;
+    use crate::core::SweepForecast;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     // ---- trim_str (private, fully pure, no JS) ----

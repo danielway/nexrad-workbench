@@ -33,7 +33,7 @@ pub struct NetworkRequest {
     /// Error message, if the request failed.
     pub error: Option<String>,
     /// Correlated acquisition operation ID (populated by URL matching in main loop).
-    pub operation_id: Option<crate::state::OperationId>,
+    pub operation_id: Option<crate::core::OperationId>,
 }
 
 /// Aggregate network statistics for the session.

@@ -13,7 +13,7 @@ impl WorkbenchApp {
         // THE wall-clock capture for this frame. Every frame-path consumer
         // (staleness, live tick, timeline, countdowns) reads this value so
         // they can't drift against each other within a frame.
-        self.state.frame_now = crate::state::FrameNow::capture();
+        self.state.frame_now = crate::core::FrameNow::capture();
 
         // Record frame time for FPS meter (dev mode only)
         if self.state.dev_mode {

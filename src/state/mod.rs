@@ -4,7 +4,9 @@
 //! State is organized into logical groupings that correspond to different
 //! areas of functionality.
 
-use crate::core::{ElevationListEntry, RadarTimeline, RenderProcessing};
+use crate::core::{
+    ElevationListEntry, FrameNow, OperationId, RadarTimeline, RenderProcessing, UserPreferences,
+};
 
 #[allow(dead_code)]
 pub(crate) mod acquisition;
@@ -29,19 +31,15 @@ mod stats;
 pub(crate) mod theme;
 mod timeline_view;
 pub(crate) mod url_state;
-pub(crate) mod vcp;
-pub(crate) mod vcp_forecast;
 mod viz;
-mod volume_elevation_roster;
 
 pub use acquisition::{
-    AcquisitionState, DrawerTab, NetworkGroupKey, OperationId, OperationKind, OperationStatus,
+    AcquisitionState, DrawerTab, NetworkGroupKey, OperationKind, OperationStatus,
 };
 pub use alerts::AlertsState;
 pub use app_mode::{derive_app_mode, AppMode};
 pub use calendar::{aggregate_day_buckets, day_tap_macro_view, DayBucket, DAY_SECS};
 pub use errors::{AppError, ErrorContext};
-pub use frame_clock::FrameNow;
 pub use gps::GpsState;
 pub use layer::LayerState;
 pub use live_mode::{should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase};
@@ -52,7 +50,6 @@ pub use playback::{
     PlaybackMode, PlaybackSpeed, PlaybackState, RebuildCause, TimeModel, TimeSelection,
     TimelineTier, TIMELINE_ZOOM_MAX,
 };
-pub use preferences::UserPreferences;
 pub use render_cache::{PrevSweepCacheKey, RenderCache};
 pub use saved_events::{SavedEvent, SavedEvents};
 pub use settings::{format_bytes, StorageSettings};
@@ -66,13 +63,7 @@ pub use timeline_view::{
     FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView,
     SCAN_JOIN_TOLERANCE_SECS,
 };
-pub use vcp::get_vcp_definition;
-pub use vcp_forecast::{
-    derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord,
-    ForecastTimingLabel, SweepForecast, SweepStatus, VolumeForecastSnapshot, WaitResolution,
-};
 pub use viz::{derive_canvas_caption, CanvasCaption, VizState};
-pub use volume_elevation_roster::VolumeElevationRoster;
 
 /// Cap on the recent-network-requests ring used by the UI log.
 pub const MAX_RECENT_NETWORK_REQUESTS: usize = 100;

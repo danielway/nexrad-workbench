@@ -170,7 +170,7 @@ pub fn derive_volume_forecast(
     use std::collections::BTreeMap;
 
     let vcp_number = vcp.number;
-    let vcp_name = crate::state::get_vcp_definition(vcp_number).map(|d| d.name);
+    let vcp_name = crate::data::vcp::get_vcp_definition(vcp_number).map(|d| d.name);
     let is_clear_air = crate::data::vcp::is_clear_air_vcp(vcp_number);
 
     let total_vol_dur = vcp.estimated_volume_duration().unwrap_or(300.0);
@@ -785,8 +785,8 @@ impl WaitResolution {
 }
 
 /// Compact serialisable bucket key. Mirrors `ChunkCharacteristics` but
-/// without depending on the timing crate's enum types — keeps the diagnostics
-/// state layer free of upstream imports.
+/// without depending on the timing crate's enum types — keeps the stored
+/// diagnostics vocabulary free of upstream imports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BucketKey {
     pub chunk_type: &'static str,

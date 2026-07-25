@@ -3,7 +3,7 @@
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::panels::{query_radar_state_at_timestamp, RadarStateAtTimestamp};
 use crate::core::Scan;
-use crate::state::get_vcp_definition;
+use crate::data::vcp::get_vcp_definition;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
 
@@ -394,7 +394,7 @@ struct ElevRow<'a> {
 fn build_elevation_rows<'a>(
     scan: Option<&'a Scan>,
     extracted_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
-    vcp_def: Option<&'a crate::state::vcp::VcpDefinition>,
+    vcp_def: Option<&'a crate::data::vcp::VcpDefinition>,
     position: Option<&crate::nexrad::projection::ScanProjection>,
     current_elevation_number: Option<u8>,
 ) -> Vec<ElevRow<'a>> {

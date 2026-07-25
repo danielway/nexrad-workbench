@@ -3,10 +3,9 @@
 
 use std::collections::VecDeque;
 
-use super::DownloadPhase;
+use crate::core::OperationId;
 
-/// Unique identifier for an acquisition operation.
-pub type OperationId = u64;
+use super::DownloadPhase;
 
 /// Maximum operations retained in the ring buffer.
 const MAX_RETAINED: usize = 200;

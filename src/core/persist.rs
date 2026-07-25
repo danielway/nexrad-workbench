@@ -10,8 +10,9 @@
 //! returned tracking updates, and executes the [`Effect`]s.
 
 use crate::core::effect::{Effect, UrlPush};
-use crate::state::url_state::ViewState;
-use crate::state::{AppState, PlaybackState, UserPreferences};
+use crate::core::UserPreferences;
+use crate::core::ViewState;
+use crate::state::{AppState, PlaybackState};
 
 /// Minimum wall-clock seconds between URL-bar pushes. Preference saves piggyback
 /// on the same throttle window. (Was a hardcoded `1.0` inside `persist_if_due`.)

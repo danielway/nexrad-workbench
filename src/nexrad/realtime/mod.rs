@@ -133,7 +133,7 @@ pub enum RealtimeResult {
         plan: Option<super::StreamingPlan>,
         /// Arrival diagnostics (empty-poll counts, predicted vs. actual time).
         /// `None` on synthetic emissions such as the resume-from-cache path.
-        arrival_stat: Option<crate::state::ChunkArrivalStat>,
+        arrival_stat: Option<crate::core::ChunkArrivalStat>,
     },
     /// Raw chunk data for incremental ingest
     ChunkData {
