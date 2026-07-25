@@ -702,7 +702,7 @@ mod tests {
         // The hop into it is the InterVolume case (fixed 8.5s gap).
         assert_eq!(
             first.physics_breakdown().case,
-            crate::nexrad::timing::IntervalCase::InterVolume
+            crate::core::timing::IntervalCase::InterVolume
         );
         assert!((first.physics_breakdown().total_secs - 8.5).abs() < 1e-9);
     }

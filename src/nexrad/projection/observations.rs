@@ -22,7 +22,7 @@ use crate::data::ExtractedVcp;
 /// Sourced from the global tuning default (`TimingTuning`), the single home
 /// for timing constants.
 const DEFAULT_VOLUME_DURATION_SECS: f64 =
-    crate::nexrad::timing::TimingTuning::DEFAULT.default_volume_duration_secs;
+    crate::core::timing::TimingTuning::DEFAULT.default_volume_duration_secs;
 
 /// Accumulated observations for the in-progress volume. Reset to `default()` at
 /// each volume boundary via [`super::ProjectionEngine::reset_volume_observations`].

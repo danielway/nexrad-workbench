@@ -11,7 +11,7 @@
 //! streaming loop feeds the shared engine separately. The cursor never crosses
 //! into the engine, so the two can't disagree.
 
-use crate::nexrad::timing::{ChunkMetadata, ElevationChunkMapper};
+use crate::core::timing::{ChunkMetadata, ElevationChunkMapper};
 use log::debug;
 use nexrad_data::aws::realtime::{
     download_chunk, list_chunks_in_volume, Chunk, ChunkIdentifier, ChunkType, DownloadedChunk,

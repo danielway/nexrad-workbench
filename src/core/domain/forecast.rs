@@ -34,7 +34,7 @@ pub(crate) enum SweepStatus {
     },
     Future,
 }
-use crate::nexrad::timing::{AnchorSource, ChunkCharacteristics, PhysicsBreakdown, SchedulerPath};
+use crate::core::timing::{AnchorSource, ChunkCharacteristics, PhysicsBreakdown, SchedulerPath};
 use nexrad_data::aws::realtime::ChunkType;
 use nexrad_decode::messages::volume_coverage_pattern::{ChannelConfiguration, WaveformType};
 
@@ -137,7 +137,7 @@ pub(crate) struct CompletedVolumeRecord {
     /// library-projected predicted times so the diagnostics modal can
     /// reproduce them after sweeps complete (their per-chunk forecast
     /// becomes `None` once they're past).
-    pub volume_start_plan: crate::nexrad::StreamingPlan,
+    pub volume_start_plan: crate::core::StreamingPlan,
     pub volume_start_secs: f64,
     pub volume_end_secs: f64,
     pub previous_volume_end_secs: Option<f64>,
@@ -160,7 +160,7 @@ pub(crate) struct CompletedVolumeRecord {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn derive_volume_forecast(
     vcp: &crate::data::ExtractedVcp,
-    volume_start_plan: &crate::nexrad::StreamingPlan,
+    volume_start_plan: &crate::core::StreamingPlan,
     volume_start_secs: f64,
     completed_sweep_metas: &[crate::data::CachedSweep],
     chunk_elev_spans: &[(u8, f64, f64, u32)],
@@ -398,7 +398,7 @@ pub(crate) struct ChunkArrivalStat {
     /// `collection_time_secs` to compute the per-chunk interval prediction
     /// error in collection space.
     pub predicted_wait_secs: Option<f64>,
-    /// Revision number of the [`crate::nexrad::StreamingPlan`] that
+    /// Revision number of the [`crate::core::StreamingPlan`] that
     /// produced this chunk's prediction. Bumped monotonically by the
     /// projector on each `build_plan` call. Lets the diagnostics modal
     /// distinguish "model wrong" from "stale prediction" and trace which
@@ -412,9 +412,9 @@ pub(crate) struct ChunkArrivalStat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};
     use crate::data::CachedSweep;
     use crate::data::{ExtractedVcp, ExtractedVcpElevation};
-    use crate::nexrad::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     /// One elevation cut. `rate` is the VCP-message azimuth rate; `waveform`
@@ -453,7 +453,7 @@ mod tests {
                 poll_at_secs: c,
                 physics_breakdown: test_support::physics_stub(),
                 stats_n: 0,
-                scheduler_path: crate::nexrad::timing::SchedulerPath::Physics,
+                scheduler_path: crate::core::timing::SchedulerPath::Physics,
                 bucket: None,
             }),
         }
@@ -737,7 +737,7 @@ mod tests {
 /// kept out of the `tests` module so they read clearly.
 #[cfg(test)]
 mod test_support {
-    use crate::nexrad::timing::{IntervalCase, PhysicsBreakdown};
+    use crate::core::timing::{IntervalCase, PhysicsBreakdown};
 
     /// A throwaway `PhysicsBreakdown` for building `ChunkProjectedTimes` in
     /// tests — its fields are never read by `derive_volume_forecast`.

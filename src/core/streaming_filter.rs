@@ -1,8 +1,9 @@
 //! Active filter on the realtime chunk stream.
 //!
-//! Lifted out of [`super::realtime`] so the projection layer
-//! ([`super::streaming_state`], [`super::streaming_plan`]) can depend on
-//! it without creating a cycle through `realtime`. The
+//! The pure elevation-cut filter vocabulary shared by the streaming loop
+//! ([`crate::nexrad::live::realtime`]), the per-volume plan
+//! ([`super::streaming_plan`]), and the timing mapper
+//! ([`super::timing::ElevationChunkMapper`] consumers). The
 //! `From<&crate::core::ElevationSelection>` translation stays in
 //! `realtime.rs` since it depends on the UI-side selection type.
 

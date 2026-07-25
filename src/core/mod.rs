@@ -33,7 +33,10 @@ pub(crate) mod live_radar_model;
 pub(crate) mod panels;
 pub(crate) mod persist;
 pub(crate) mod render;
+pub(crate) mod streaming_filter;
+pub(crate) mod streaming_plan;
 pub(crate) mod timeline_view;
+pub(crate) mod timing;
 
 #[allow(unused_imports)]
 pub(crate) use domain::errors::TimestampedError;
@@ -73,6 +76,8 @@ pub(crate) use live_mode::{
 };
 pub(crate) use live_radar_model::LiveRadarModel;
 pub(crate) use persist::{decide_persist, persist_due, PersistDecision};
+pub(crate) use streaming_filter::StreamingFilter;
+pub(crate) use streaming_plan::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};
 pub(crate) use timeline_view::{
     FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView,
     SCAN_JOIN_TOLERANCE_SECS,

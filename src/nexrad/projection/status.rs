@@ -11,7 +11,7 @@ use super::inventory::{ChunkCoord, KnownChunkInventory};
 use super::{
     ChunkSpan, ProjectionScanRole, SweepProjection, SweepProjectionStatus, SweepTimingProvenance,
 };
-use crate::nexrad::ChunkProjectionInfo;
+use crate::core::ChunkProjectionInfo;
 use nexrad_data::aws::realtime::VolumeIndex;
 use std::collections::HashMap;
 
@@ -555,8 +555,8 @@ pub(crate) fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nexrad::live::realtime::ChunkProjectedTimes;
-    use crate::nexrad::timing::{IntervalCase, PhysicsBreakdown, SchedulerPath};
+    use crate::core::timing::{IntervalCase, PhysicsBreakdown, SchedulerPath};
+    use crate::core::ChunkProjectedTimes;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn vol(n: usize) -> VolumeIndex {
@@ -1018,8 +1018,8 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::nexrad::live::realtime::ChunkProjectedTimes;
-    use crate::nexrad::timing::{IntervalCase, PhysicsBreakdown, SchedulerPath};
+    use crate::core::timing::{IntervalCase, PhysicsBreakdown, SchedulerPath};
+    use crate::core::ChunkProjectedTimes;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn vol(n: usize) -> VolumeIndex {

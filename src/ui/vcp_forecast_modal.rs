@@ -15,11 +15,11 @@
 
 use super::colors::ui as ui_colors;
 use super::layout::{Layer, LayerKind, LayoutCtx};
+use crate::core::timing::{AnchorSource, IntervalCase, PhysicsBreakdown, SchedulerPath};
 use crate::core::{
     BucketKey, ChunkArrivalStat, ForecastTimingLabel, SweepForecast, SweepStatus,
     VolumeForecastSnapshot,
 };
-use crate::nexrad::timing::{AnchorSource, IntervalCase, PhysicsBreakdown, SchedulerPath};
 use crate::state::AppState;
 use eframe::egui::{self, RichText, Vec2};
 use std::collections::BTreeMap;

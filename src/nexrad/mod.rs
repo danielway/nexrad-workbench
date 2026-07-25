@@ -11,8 +11,8 @@
 //! - **Render** ([`render`]): GPU-based radar rendering via WebGL2 shaders
 //!   with polar-to-Cartesian conversion, OKLab color interpolation, and 3D
 //!   globe/volume ray-marching
-//! - **Timing/projection** ([`timing`], [`projection`]): chunk-arrival
-//!   physics and the live-scan projection engine
+//! - **Projection** ([`projection`]): the live-scan projection engine
+//!   (the pure chunk-arrival timing physics lives in [`crate::core::timing`])
 
 pub(crate) mod acquisition;
 pub(crate) mod decode;
@@ -21,7 +21,6 @@ pub(crate) mod live;
 pub(crate) mod projection;
 mod projector;
 pub(crate) mod render;
-pub(crate) mod timing;
 
 // Module aliases preserving pre-regroup `crate::nexrad::<module>` paths used
 // outside this module.
@@ -37,10 +36,7 @@ pub(crate) use decode::decode_worker::{
     default_pool_size, ChunkIngestResult, DecodeResult, IngestResult, VolumeData, VolumeSweepMeta,
     WorkerOutcome, WorkerPool,
 };
-pub(crate) use live::realtime::{
-    ChunkProjectedTimes, ChunkProjectionInfo, RealtimeChannel, RealtimeResult,
-};
-pub(crate) use live::streaming_plan::StreamingPlan;
+pub(crate) use live::realtime::{RealtimeChannel, RealtimeResult};
 pub(crate) use projector::ProjectorObservation;
 pub(crate) use render::globe_radar_renderer::GlobeRadarRenderer;
 pub(crate) use render::gpu_renderer::RadarGpuRenderer;

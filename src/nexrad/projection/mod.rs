@@ -38,8 +38,7 @@ pub(crate) use status::{
     SweepBuildCtx,
 };
 
-use super::live::streaming_plan::StreamingPlan;
-use super::ChunkProjectionInfo;
+use crate::core::{ChunkProjectionInfo, StreamingPlan};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -391,7 +390,7 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nexrad::live::streaming_filter::StreamingFilter;
+    use crate::core::StreamingFilter;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     #[wasm_bindgen_test]

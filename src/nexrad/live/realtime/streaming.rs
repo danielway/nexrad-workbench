@@ -6,15 +6,15 @@
 //! from `streaming_loop` (or from `super::mod`'s `RealtimeChannel::start`).
 
 use super::{ControlMessage, RealtimeResult};
+use crate::core::StreamingFilter;
+use crate::core::StreamingPlan;
 use crate::data::facade::DataFacade;
 use crate::net::retry::{
     attempt_with_timeout, compute_delay, sleep_duration, sleep_ms, Verdict, REALTIME_CHUNK_POLICY,
 };
 use crate::nexrad::acquisition::download::NetworkStats;
-use crate::nexrad::live::streaming_filter::StreamingFilter;
 use crate::nexrad::live::streaming_state::StreamingState;
 use crate::nexrad::projection::{ChunkCoord, KnownChunk, SharedProjectionEngine};
-use crate::nexrad::StreamingPlan;
 use eframe::egui;
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_util::future::join_all;
@@ -726,7 +726,7 @@ pub(super) async fn streaming_loop(
     // Captures `target.projected.clone()` on a chunk's first attempt so retry
     // iterations don't overwrite it with a fresh (post-anchor-advance)
     // projection. Read at success time into the per-chunk arrival stat.
-    let mut cur_forecast: Option<super::ChunkProjectedTimes> = None;
+    let mut cur_forecast: Option<crate::core::ChunkProjectedTimes> = None;
     let mut cur_predicted_wait_secs: Option<f64> = None;
     // How the wait before this chunk's fetch resolved. Set by the adaptive
     // cross-volume wait helper (early-fire / re-anchor); stays
@@ -1696,7 +1696,7 @@ fn timing_stats_key(site_id: &str) -> String {
 
 /// Persist the site's rolling chunk-timing statistics to localStorage so the
 /// next session starts warm instead of cold-starting from pure physics.
-fn save_timing_stats(site_id: &str, stats: &crate::nexrad::timing::ChunkTimingStats) {
+fn save_timing_stats(site_id: &str, stats: &crate::core::timing::ChunkTimingStats) {
     let Some(json) = stats.to_json() else {
         return;
     };
@@ -1710,11 +1710,11 @@ fn save_timing_stats(site_id: &str, stats: &crate::nexrad::timing::ChunkTimingSt
 }
 
 /// Read a previously-persisted timing stats snapshot for the site, if any.
-fn load_cached_timing_stats(site_id: &str) -> Option<crate::nexrad::timing::ChunkTimingStats> {
+fn load_cached_timing_stats(site_id: &str) -> Option<crate::core::timing::ChunkTimingStats> {
     let window = web_sys::window()?;
     let storage = window.local_storage().ok()??;
     let raw = storage.get_item(&timing_stats_key(site_id)).ok()??;
-    crate::nexrad::timing::ChunkTimingStats::from_json(&raw)
+    crate::core::timing::ChunkTimingStats::from_json(&raw)
 }
 
 /// Discover the latest volume for a site and initialize a [`StreamingState`] at

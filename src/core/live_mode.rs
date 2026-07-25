@@ -8,7 +8,7 @@
 //! `LiveModeState` owns **ACTUAL** state parsed from radial/message headers
 //! (`current_volume.confirmed`, `completed_sweep_metas`,
 //! `last_radial_time_secs`, `chunk_elev_spans`) plus the streaming state
-//! machine. **PROJECTED** timing (the forward-looking [`crate::nexrad::StreamingPlan`])
+//! machine. **PROJECTED** timing (the forward-looking [`crate::core::StreamingPlan`])
 //! is produced and owned by the shared [`crate::nexrad::projection::ProjectionEngine`];
 //! the per-frame `Projection` is held on [`crate::subsystem::Live::frame_projection`]
 //! and read from there (countdown, next-target, chunk-in-sweep), never written
@@ -182,7 +182,7 @@ pub(crate) struct LiveModeState {
     /// The diagnostics modal derives a [`crate::core::VolumeForecastSnapshot`]
     /// on demand from this plan + the rolling observation state below;
     /// nothing in the live state is mutated as sweeps complete.
-    pub volume_start_plan: Option<crate::nexrad::StreamingPlan>,
+    pub volume_start_plan: Option<crate::core::StreamingPlan>,
 
     /// Frozen inputs from the most recently completed volume, retained so
     /// the diagnostics modal can still render predicted-vs-actual data
@@ -377,7 +377,7 @@ impl LiveModeState {
         &mut self,
         chunks_in_volume: u32,
         now: f64,
-        plan: Option<&crate::nexrad::StreamingPlan>,
+        plan: Option<&crate::core::StreamingPlan>,
     ) {
         self.chunks_received = chunks_in_volume;
         // Phase is gated by whether the plan has a `next_target`: when it
@@ -399,7 +399,7 @@ impl LiveModeState {
     /// is known. Called once per frame from [`crate::subsystem::Live::refresh`]
     /// with the engine's plan. Idempotent: once captured, never overwrites
     /// until the next `handle_volume_complete` clears it.
-    pub(crate) fn try_capture_volume_start_plan(&mut self, plan: &crate::nexrad::StreamingPlan) {
+    pub(crate) fn try_capture_volume_start_plan(&mut self, plan: &crate::core::StreamingPlan) {
         if self.volume_start_plan.is_some() {
             return;
         }
@@ -593,9 +593,9 @@ impl LiveModeState {
 mod tests {
     use super::*;
     use crate::core::ChunkArrivalStat;
+    use crate::core::StreamingPlan;
     use crate::data::{ScanKey, UnixMillis};
     use crate::nexrad::projection::VolumeObservations;
-    use crate::nexrad::StreamingPlan;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn scan_key(start_ms: i64) -> ScanKey {
@@ -1047,9 +1047,9 @@ mod tests {
 mod coverage_tests {
     use super::*;
     use crate::core::ChunkArrivalStat;
+    use crate::core::StreamingPlan;
     use crate::data::{ScanKey, UnixMillis};
     use crate::nexrad::projection::VolumeObservations;
-    use crate::nexrad::StreamingPlan;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn scan_key(start_ms: i64) -> ScanKey {

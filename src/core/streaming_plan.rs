@@ -1,8 +1,9 @@
 //! Canonical forward-looking model for the real-time stream.
 //!
 //! [`StreamingPlan`] is the single source of truth for "what will happen next,
-//! when." It is computed once per streaming-loop iteration by
-//! [`super::streaming_state::StreamingState::build_plan`] and consumed by:
+//! when." It is computed once per streaming-loop iteration by the projector
+//! kernel (`Projector::build_plan_with_collection` in
+//! `crate::nexrad::projector`) and consumed by:
 //!
 //! - The streaming loop's sleep target (via [`StreamingPlan::next_target`]'s
 //!   [`ChunkProjectedTimes::poll_at_secs`]).
@@ -21,15 +22,75 @@
 //! otherwise.
 
 use super::streaming_filter::StreamingFilter;
-use crate::nexrad::timing::{ScanTimingProjection, SchedulerPath};
-use crate::nexrad::{ChunkProjectedTimes, ChunkProjectionInfo};
+use crate::core::timing::{ScanTimingProjection, SchedulerPath};
+
+/// Projected timing & diagnostics for a single future chunk.
+///
+/// Present iff the parent [`ChunkProjectionInfo`] describes a chunk that
+/// hasn't been observed yet — past chunks have `projected: None`. Carries
+/// the diagnostic bundle the projector computed for this chunk so
+/// downstream surfaces (per-sweep confidence display, prediction-error
+/// attribution, the diagnostics modal) can read attribution data per chunk
+/// rather than only for the immediate next download target.
+#[derive(Clone, Debug)]
+pub(crate) struct ChunkProjectedTimes {
+    /// COLLECTION category: projected Unix-seconds time the radar physically
+    /// emits/receives for this chunk.
+    pub collection_time_secs: f64,
+    /// AVAILABILITY category: projected Unix-seconds time this chunk
+    /// becomes available in S3 (`collection_at + lag`).
+    pub available_at_secs: f64,
+    /// POLL category: projected time the scheduler will fire its first
+    /// download poll (`available_at + retry_budget + POLL_BIAS`). The
+    /// retry budget is already folded in; the streaming loop sleeps
+    /// directly to this target without additional padding.
+    pub poll_at_secs: f64,
+    /// Physics decomposition for the hop into this chunk (azimuth gap,
+    /// inter-sweep transition, inter-volume gap).
+    pub physics_breakdown: crate::core::timing::PhysicsBreakdown,
+    /// Bucket sample count consulted at projection time. `0` when no
+    /// historical samples were available.
+    pub stats_n: usize,
+    /// Which projector branch supplied the interval: `Blended` when
+    /// historical samples contributed, `Physics` otherwise.
+    pub scheduler_path: crate::core::timing::SchedulerPath,
+    /// The bucket key the lookup hit (or missed). `None` when no
+    /// elevation was resolvable (Start chunk).
+    pub bucket: Option<crate::core::timing::ChunkCharacteristics>,
+}
+
+/// Projected timing and structural info for a single chunk in the volume.
+///
+/// Combines structural metadata from `ChunkMetadata` (available for every
+/// chunk in the volume) with an optional `forecast` ([`ChunkProjectedTimes`])
+/// that's present iff the chunk is in the future from the streaming loop's
+/// anchor. Past chunks carry only structural fields.
+#[derive(Clone, Debug)]
+pub(crate) struct ChunkProjectionInfo {
+    /// 1-based sequence number in the volume.
+    pub sequence: usize,
+    /// Elevation number (1-based), None for the Start chunk.
+    pub elevation_number: Option<usize>,
+    /// Azimuth rotation rate in degrees/second from the VCP.
+    pub azimuth_rate_dps: f64,
+    /// 0-based index of this chunk within its sweep.
+    pub chunk_index_in_sweep: usize,
+    /// Total chunks in this sweep (3 for standard, 6 for super-res).
+    pub chunks_in_sweep: usize,
+    /// Projected timing & projector diagnostics. `Some` iff this chunk is
+    /// in the future (the projector emitted a
+    /// [`crate::core::timing::ChunkProjection`] for it); `None` for past
+    /// chunks.
+    pub projected: Option<ChunkProjectedTimes>,
+}
 
 /// Canonical projection of the real-time stream's near future.
 ///
-/// Built once per streaming-loop iteration from a snapshot of
-/// [`super::streaming_state::StreamingState`]. Everything downstream that
-/// needs to know "what comes next" — the loop's sleep target, the timeline's
-/// countdown, the VCP forecast panel — reads from this object.
+/// Built once per streaming-loop iteration from a snapshot of the
+/// projector's state (`crate::nexrad::projector::Projector`). Everything
+/// downstream that needs to know "what comes next" — the loop's sleep
+/// target, the timeline's countdown, the VCP forecast panel — reads from
+/// this object.
 #[derive(Clone, Debug)]
 pub(crate) struct StreamingPlan {
     /// Active filter at plan-build time. Diagnostic only — consumers
@@ -45,9 +106,10 @@ pub(crate) struct StreamingPlan {
     // Doc above: staleness context read alongside `revision` in diagnostics.
     pub built_at_secs: f64,
     /// Monotonically-incrementing per-projector counter, bumped on every
-    /// [`crate::nexrad::projector::Projector::build_plan`] call. Lets diagnostics
-    /// attribute a prediction to a specific plan revision and lets UI
-    /// skip redraws when the plan hasn't changed since the last frame.
+    /// `Projector::build_plan_with_collection` call (in
+    /// `crate::nexrad::projector`). Lets diagnostics attribute a prediction
+    /// to a specific plan revision and lets UI skip redraws when the plan
+    /// hasn't changed since the last frame.
     pub revision: u64,
     /// Per-chunk info for the current in-progress volume. Carries
     /// structural metadata for every chunk and (via `forecast`) projected
@@ -79,14 +141,17 @@ impl StreamingPlan {
     ///
     /// `current_volume_chunk_meta` must be every chunk's structural
     /// metadata for the current volume (from
-    /// [`crate::nexrad::timing::ElevationChunkMapper::all_chunk_metadata`]), in
+    /// [`crate::core::timing::ElevationChunkMapper::all_chunk_metadata`]), in
     /// sequence order. Each chunk's `forecast` is populated by looking up
     /// `(volume_offset, sequence)` in `projection.chunks()` so pass-1 and
     /// pass-2 entries don't collide.
-    pub(in crate::nexrad) fn from_projection(
+    ///
+    /// The sole constructor is the projector kernel
+    /// (`crate::nexrad::projector::Projector`).
+    pub(crate) fn from_projection(
         projection: ScanTimingProjection,
         filter: StreamingFilter,
-        current_volume_chunk_meta: &[crate::nexrad::timing::ChunkMetadata],
+        current_volume_chunk_meta: &[crate::core::timing::ChunkMetadata],
         now_secs: f64,
         revision: u64,
     ) -> Self {
@@ -123,7 +188,7 @@ impl StreamingPlan {
         }
 
         let mut make_info =
-            |meta: &crate::nexrad::timing::ChunkMetadata, volume_offset: u8| ChunkProjectionInfo {
+            |meta: &crate::core::timing::ChunkMetadata, volume_offset: u8| ChunkProjectionInfo {
                 sequence: meta.sequence(),
                 elevation_number: meta.elevation_number(),
                 azimuth_rate_dps: meta.azimuth_rate_dps(),
@@ -371,8 +436,8 @@ mod coverage_tests {
             collection_time_secs: collection,
             available_at_secs: available,
             poll_at_secs: poll,
-            physics_breakdown: crate::nexrad::timing::PhysicsBreakdown {
-                case: crate::nexrad::timing::IntervalCase::IntraSweep,
+            physics_breakdown: crate::core::timing::PhysicsBreakdown {
+                case: crate::core::timing::IntervalCase::IntraSweep,
                 total_secs: 0.0,
                 chunk_duration_secs: None,
                 inter_sweep_gap_secs: None,

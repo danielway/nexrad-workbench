@@ -1,4 +1,3 @@
-use crate::nexrad::live::streaming_filter::StreamingFilter;
 use nexrad_decode::messages::volume_coverage_pattern::{self, WaveformType};
 
 /// Metadata describing a chunk's position within the volume scan.
@@ -250,19 +249,24 @@ impl ElevationChunkMapper {
     }
 
     /// Whether any sequence strictly after `after_seq` carries a chunk the
-    /// filter accepts. Used by the projector to decide whether to extend
-    /// projection into the next volume — when the active filter has no
-    /// remaining match in the current volume, the next download lands in
-    /// the next volume's chunks, and projected times for that hop need to
-    /// be available to the scheduler and UI.
+    /// elevation predicate accepts (`accepts` receives the chunk's 1-based
+    /// elevation number, `None` for the Start chunk). Used by the projector
+    /// to decide whether to extend projection into the next volume — when
+    /// the active filter has no remaining match in the current volume, the
+    /// next download lands in the next volume's chunks, and projected times
+    /// for that hop need to be available to the scheduler and UI.
     ///
-    /// For [`StreamingFilter::All`] this returns `true` whenever any chunk
-    /// remains (Start chunks are always accepted), so the projector won't
-    /// extend — the streaming loop's next fetch naturally rolls over via
-    /// the existing `try_fetch_volume_start` path without needing
-    /// chained projection.
-    pub(crate) fn has_remaining_match(&self, filter: StreamingFilter, after_seq: usize) -> bool {
-        self.next_matching_sequence_after(after_seq, false, |elev| filter.accepts(elev))
+    /// For an accept-all predicate (the `All` filter) this returns `true`
+    /// whenever any chunk remains (Start chunks are always accepted), so
+    /// the projector won't extend — the streaming loop's next fetch
+    /// naturally rolls over via the existing `try_fetch_volume_start` path
+    /// without needing chained projection.
+    pub(crate) fn has_remaining_match(
+        &self,
+        after_seq: usize,
+        accepts: impl FnMut(Option<usize>) -> bool,
+    ) -> bool {
+        self.next_matching_sequence_after(after_seq, false, accepts)
             .is_some()
     }
 
@@ -409,18 +413,23 @@ mod tests {
     #[wasm_bindgen_test]
     fn has_remaining_match_honors_filter() {
         let m = mapper_2elev();
-        // `All` always has a remaining match while chunks remain (so the
-        // projector never extends into the next volume for All).
-        assert!(m.has_remaining_match(StreamingFilter::All, 1));
-        assert!(m.has_remaining_match(StreamingFilter::All, 9));
+        // An accept-all predicate (the `All` filter) always has a remaining
+        // match while chunks remain (so the projector never extends into the
+        // next volume for All).
+        let all = |_: Option<usize>| true;
+        assert!(m.has_remaining_match(1, all));
+        assert!(m.has_remaining_match(9, all));
         // After the final sequence, nothing remains even for All.
-        assert!(!m.has_remaining_match(StreamingFilter::All, 10));
-        // Filtering to elevation 2: a remaining match exists before seq 10 but
-        // not at/after it.
-        assert!(m.has_remaining_match(StreamingFilter::Elevation(2), 1));
-        assert!(!m.has_remaining_match(StreamingFilter::Elevation(2), 10));
+        assert!(!m.has_remaining_match(10, all));
+        // Filtering to elevation 2 (Start chunks — elev None — always
+        // accepted, mirroring the streaming filter): a remaining match
+        // exists before seq 10 but not at/after it.
+        let elev2 = |e: Option<usize>| e.is_none() || e == Some(2);
+        assert!(m.has_remaining_match(1, elev2));
+        assert!(!m.has_remaining_match(10, elev2));
         // Filtering to elevation 1: no remaining match once we're past seq 7.
-        assert!(!m.has_remaining_match(StreamingFilter::Elevation(1), 7));
+        let elev1 = |e: Option<usize>| e.is_none() || e == Some(1);
+        assert!(!m.has_remaining_match(7, elev1));
     }
 
     #[wasm_bindgen_test]
@@ -660,12 +669,14 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn has_remaining_match_finds_existing_elevation_chunks() {
         let m = mapper_2elev(); // elevations 1 and 2 exist
-                                // Elevation 1 has matches while before its last chunk (seq 7)...
-        assert!(m.has_remaining_match(StreamingFilter::Elevation(1), 1));
+        let elev1 = |e: Option<usize>| e.is_none() || e == Some(1);
+        // Elevation 1 has matches while before its last chunk (seq 7)...
+        assert!(m.has_remaining_match(1, elev1));
         // ...and querying after_seq=6 still finds seq 7.
-        assert!(m.has_remaining_match(StreamingFilter::Elevation(1), 6));
-        // Note: a filter for a nonexistent elevation still reports remaining
-        // matches because non-elevation chunks (elev == None, e.g. Start/End)
-        // are accepted by every elevation filter — see StreamingFilter::accepts.
+        assert!(m.has_remaining_match(6, elev1));
+        // Note: a predicate for a nonexistent elevation still reports
+        // remaining matches when it accepts non-elevation chunks (elev ==
+        // None, e.g. Start/End) — every elevation filter does, see
+        // StreamingFilter::accepts.
     }
 }

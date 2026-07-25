@@ -280,7 +280,7 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::nexrad::timing::test_vcp::{build_vcp, TestElevation};
+    use crate::core::timing::test_vcp::{build_vcp, TestElevation};
     use chrono::Duration;
     use nexrad_decode::messages::volume_coverage_pattern::{ChannelConfiguration, WaveformType};
     use wasm_bindgen_test::wasm_bindgen_test;

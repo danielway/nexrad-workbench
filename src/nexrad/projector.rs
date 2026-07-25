@@ -12,12 +12,11 @@
 //! commit moves ownership to the main thread so observations from the
 //! worker pipeline can feed projection without an async round-trip.
 
-use super::live::streaming_filter::StreamingFilter;
-use super::live::streaming_plan::StreamingPlan;
-use super::timing::{
+use crate::core::timing::{
     project_scan_timing_with_next, AnchorSource, ChunkCharacteristics, ChunkTimingStats,
     ElevationChunkMapper, TimingTuning,
 };
+use crate::core::{StreamingFilter, StreamingPlan};
 use chrono::Duration as ChronoDuration;
 use nexrad_data::aws::realtime::{ChunkIdentifier, ChunkType};
 use nexrad_decode::messages::volume_coverage_pattern;
@@ -117,7 +116,9 @@ impl Projector {
         // remaining match in this volume. `has_remaining_match` returns
         // `true` for `StreamingFilter::All` whenever chunks remain, so
         // the All branch naturally never triggers an extension.
-        let include_next_volume = !mapper.has_remaining_match(self.filter, anchor_chunk.sequence());
+        let filter = self.filter;
+        let include_next_volume =
+            !mapper.has_remaining_match(anchor_chunk.sequence(), |e| filter.accepts(e));
 
         let projection = project_scan_timing_with_next(
             anchor_chunk,

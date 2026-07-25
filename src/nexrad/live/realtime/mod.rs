@@ -25,7 +25,7 @@
 //! as local variables; nothing about per-stream coordination requires
 //! `Rc<RefCell<_>>` anymore.
 
-use super::streaming_filter::StreamingFilter;
+use crate::core::StreamingFilter;
 use crate::data::facade::DataFacade;
 use crate::nexrad::acquisition::download::NetworkStats;
 use eframe::egui;
@@ -45,65 +45,6 @@ impl From<&crate::core::ElevationSelection> for StreamingFilter {
             } => StreamingFilter::Elevation(*elevation_number),
         }
     }
-}
-
-/// Projected timing & diagnostics for a single future chunk.
-///
-/// Present iff the parent [`ChunkProjectionInfo`] describes a chunk that
-/// hasn't been observed yet — past chunks have `projected: None`. Carries
-/// the diagnostic bundle the projector computed for this chunk so
-/// downstream surfaces (per-sweep confidence display, prediction-error
-/// attribution, the diagnostics modal) can read attribution data per chunk
-/// rather than only for the immediate next download target.
-#[derive(Clone, Debug)]
-pub(crate) struct ChunkProjectedTimes {
-    /// COLLECTION category: projected Unix-seconds time the radar physically
-    /// emits/receives for this chunk.
-    pub collection_time_secs: f64,
-    /// AVAILABILITY category: projected Unix-seconds time this chunk
-    /// becomes available in S3 (`collection_at + lag`).
-    pub available_at_secs: f64,
-    /// POLL category: projected time the scheduler will fire its first
-    /// download poll (`available_at + retry_budget + POLL_BIAS`). The
-    /// retry budget is already folded in; the streaming loop sleeps
-    /// directly to this target without additional padding.
-    pub poll_at_secs: f64,
-    /// Physics decomposition for the hop into this chunk (azimuth gap,
-    /// inter-sweep transition, inter-volume gap).
-    pub physics_breakdown: crate::nexrad::timing::PhysicsBreakdown,
-    /// Bucket sample count consulted at projection time. `0` when no
-    /// historical samples were available.
-    pub stats_n: usize,
-    /// Which projector branch supplied the interval: `Blended` when
-    /// historical samples contributed, `Physics` otherwise.
-    pub scheduler_path: crate::nexrad::timing::SchedulerPath,
-    /// The bucket key the lookup hit (or missed). `None` when no
-    /// elevation was resolvable (Start chunk).
-    pub bucket: Option<crate::nexrad::timing::ChunkCharacteristics>,
-}
-
-/// Projected timing and structural info for a single chunk in the volume.
-///
-/// Combines structural metadata from `ChunkMetadata` (available for every
-/// chunk in the volume) with an optional `forecast` ([`ChunkProjectedTimes`])
-/// that's present iff the chunk is in the future from the streaming loop's
-/// anchor. Past chunks carry only structural fields.
-#[derive(Clone, Debug)]
-pub(crate) struct ChunkProjectionInfo {
-    /// 1-based sequence number in the volume.
-    pub sequence: usize,
-    /// Elevation number (1-based), None for the Start chunk.
-    pub elevation_number: Option<usize>,
-    /// Azimuth rotation rate in degrees/second from the VCP.
-    pub azimuth_rate_dps: f64,
-    /// 0-based index of this chunk within its sweep.
-    pub chunk_index_in_sweep: usize,
-    /// Total chunks in this sweep (3 for standard, 6 for super-res).
-    pub chunks_in_sweep: usize,
-    /// Projected timing & projector diagnostics. `Some` iff this chunk is
-    /// in the future (the projector emitted a [`crate::nexrad::timing::ChunkProjection`]
-    /// for it); `None` for past chunks.
-    pub projected: Option<ChunkProjectedTimes>,
 }
 
 /// Result type for realtime streaming events.
@@ -130,7 +71,7 @@ pub(crate) enum RealtimeResult {
         chunks_in_volume: u32,
         is_volume_end: bool,
         fetch_latency_ms: f64,
-        plan: Option<super::streaming_plan::StreamingPlan>,
+        plan: Option<crate::core::StreamingPlan>,
         /// Arrival diagnostics (empty-poll counts, predicted vs. actual time).
         /// `None` on synthetic emissions such as the resume-from-cache path.
         arrival_stat: Option<crate::core::ChunkArrivalStat>,
