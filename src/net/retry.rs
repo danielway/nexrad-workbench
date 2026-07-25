@@ -254,7 +254,6 @@ pub(crate) fn sleep_ms(ms: u32) -> impl Future<Output = ()> {
 ///
 /// Accepts either delta-seconds (e.g., `"120"`) or HTTP-date. Returns `None`
 /// for malformed values; HTTP-date parsing is best-effort via chrono.
-#[allow(dead_code)] // wired in by the alerts endpoint in a follow-up commit
 pub(crate) fn parse_retry_after(header: &str) -> Option<Duration> {
     let trimmed = header.trim();
     if let Ok(secs) = trimmed.parse::<u64>() {

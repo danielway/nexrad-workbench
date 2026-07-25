@@ -7,7 +7,6 @@ use crate::core::OperationId;
 
 /// A single completed network request reported by the service worker.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub(crate) struct NetworkRequest {
     /// Request URL (truncated for display).
     pub url: String,
@@ -21,8 +20,6 @@ pub(crate) struct NetworkRequest {
     pub ok: bool,
     /// Timestamp when this metric was received (ms since epoch).
     pub timestamp_ms: f64,
-    /// Error message, if the request failed.
-    pub error: Option<String>,
     /// Correlated acquisition operation ID (populated by URL matching in main loop).
     pub operation_id: Option<OperationId>,
 }

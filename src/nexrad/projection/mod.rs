@@ -171,7 +171,7 @@ impl SweepProjection {
         self.status == SweepProjectionStatus::InProgress
     }
     /// This cut hasn't started and isn't published yet.
-    #[allow(dead_code)] // status mapped to FrameCellState::Projected in the join.
+    #[cfg(test)]
     pub(crate) fn is_future(&self) -> bool {
         self.status == SweepProjectionStatus::FutureExpected
     }
@@ -371,15 +371,9 @@ impl Projection {
     }
 
     /// Whether the immediate next download target falls in the *next* volume.
-    #[allow(dead_code)] // consumed by the next-volume ghost path; retained delegator.
+    #[cfg(test)]
     pub(crate) fn next_target_in_next_volume(&self) -> bool {
         self.plan.next_target_in_next_volume()
-    }
-
-    /// Elevation number (1-based) of the immediate next download target.
-    #[allow(dead_code)] // consumed by the next-volume ghost path; retained delegator.
-    pub(crate) fn next_target_elevation(&self) -> Option<u8> {
-        self.plan.next_target_elevation()
     }
 
     /// Seconds from `now_secs` until the next target becomes available in S3

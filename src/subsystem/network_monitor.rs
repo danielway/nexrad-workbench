@@ -72,10 +72,6 @@ impl NetworkMonitor {
                     .ok()
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let error = js_sys::Reflect::get(&data, &"error".into())
-                    .ok()
-                    .and_then(|v| v.as_string());
-
                 let req = NetworkRequest {
                     url,
                     status,
@@ -83,7 +79,6 @@ impl NetworkMonitor {
                     duration_ms: duration,
                     ok,
                     timestamp_ms: js_sys::Date::now(),
-                    error,
                     operation_id: None,
                 };
 

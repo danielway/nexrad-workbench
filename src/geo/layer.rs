@@ -58,7 +58,6 @@ impl Default for GeoLayerVisibility {
 
 /// Type of geographic layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum GeoLayerType {
     States,
     Counties,
@@ -127,7 +126,6 @@ pub enum GeoFeature {
     /// renderer can skip the per-frame shoelace pass.
     Polygon {
         exterior: Vec<Coord<f64>>,
-        #[allow(dead_code)]
         holes: Vec<Vec<Coord<f64>>>,
         label: Option<String>,
         label_anchor: Coord<f64>,

@@ -17,6 +17,7 @@ pub struct NexradSite {
     pub lon: f64,
     /// Elevation in feet above sea level
     #[allow(dead_code)]
+    // Column of the vendored NOAA/NCEI station dataset; kept to match source.
     pub elevation_ft: i32,
 }
 

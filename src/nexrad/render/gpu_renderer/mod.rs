@@ -90,7 +90,7 @@ struct CpuShadowData {
 pub struct RadarGpuRenderer {
     program: glow::Program,
     vao: glow::VertexArray,
-    #[allow(dead_code)] // Retained to prevent GPU resource deallocation
+    #[allow(dead_code)] // Owns the GPU buffer handle so the quad VBO isn't orphaned/deallocated.
     vbo: glow::Buffer,
 
     data_texture: glow::Texture,

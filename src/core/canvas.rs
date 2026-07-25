@@ -346,7 +346,6 @@ mod tests {
     fn radial(start_time: f64, azimuth: f32) -> Radial {
         Radial {
             start_time,
-            duration: 0.1,
             azimuth,
         }
     }
@@ -554,7 +553,6 @@ mod coverage_tests {
     fn radial(start_time: f64, azimuth: f32) -> Radial {
         Radial {
             start_time,
-            duration: 0.1,
             azimuth,
         }
     }

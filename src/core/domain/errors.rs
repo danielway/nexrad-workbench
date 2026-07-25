@@ -52,15 +52,16 @@ pub(crate) enum WorkerErrorKind {
 /// Variants identify the originating subsystem so the UI can show an
 /// appropriate icon / link without parsing the message string.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // `Other` is reserved for future reporters not yet migrated.
 pub(crate) enum AppError {
     /// Failure from the decode worker.
     Worker {
+        #[allow(dead_code)] // Module docs: taxonomy for UI dispatch as reporters migrate.
         kind: WorkerErrorKind,
         message: String,
         /// Scan timestamp (Unix seconds) the failing request was for,
         /// when the receive path could correlate it with a pending
         /// context. Lets UI link the error back to a timeline scan.
+        #[allow(dead_code)] // Doc above: retained so UI can link errors to timeline scans.
         scan_timestamp_secs: Option<f64>,
     },
     /// Failure from an archive S3 download.
@@ -68,6 +69,7 @@ pub(crate) enum AppError {
         message: String,
         /// `scan_start` (Unix seconds, archive resolution) of the
         /// failing scan when known.
+        #[allow(dead_code)] // Doc above: retained so UI can link errors to timeline scans.
         scan_start_secs: Option<i64>,
     },
     /// Failure from the NWS alerts polling.
@@ -75,6 +77,7 @@ pub(crate) enum AppError {
     /// Failure from the mPING storm-report fetch.
     Mping { message: String },
     /// Catch-all for anything that doesn't fit a more specific variant.
+    #[allow(dead_code)] // Module docs: reserved for reporters not yet migrated.
     Other { message: String },
 }
 
@@ -138,7 +141,7 @@ impl ErrorContext {
     }
 
     /// Most recent error, if any.
-    #[allow(dead_code)] // Available for callers; current UI iterates instead.
+    #[cfg(test)]
     pub(crate) fn most_recent(&self) -> Option<&TimestampedError> {
         self.recent.back()
     }

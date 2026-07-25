@@ -15,7 +15,6 @@ use crate::core::{RadarTimeline, Scan, Sweep};
 ///
 /// Stores a small number of recent decode results so the renderer can load
 /// any two sweeps (current + previous) without depending on decode arrival order.
-#[allow(dead_code)] // Fields read when loading from cache into GPU
 pub(crate) struct CachedSweepData {
     pub gate_values: Vec<f32>,
     pub azimuths: Vec<f32>,
@@ -28,8 +27,7 @@ pub(crate) struct CachedSweepData {
     pub scale: f32,
     pub azimuth_spacing_deg: f32,
     pub radial_times: Vec<f64>,
-    pub sweep_start_secs: f64,
-    pub sweep_end_secs: f64,
+    #[allow(dead_code)] // Cache-entry identity; asserted by tests, keys carry product in prod.
     pub product: String,
 }
 
@@ -89,7 +87,6 @@ impl SweepDataCache {
 // ---------------------------------------------------------------------------
 
 /// Action to take for the previous-sweep GPU texture.
-#[allow(dead_code)]
 pub(crate) enum PrevSweepAction {
     /// Previous sweep data is already loaded in GPU — no action needed.
     AlreadyLoaded,
@@ -102,6 +99,7 @@ pub(crate) enum PrevSweepAction {
         product: String,
     },
     /// Clear the previous sweep (no suitable prev exists).
+    #[allow(dead_code)] // Effect vocabulary (see core/effect.rs docs); render_loop handles it.
     Clear,
 }
 
@@ -213,7 +211,7 @@ impl PlaybackManager {
     }
 
     /// Invalidate the cached prev-sweep identity (call on scan or elevation change).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn invalidate_prev_cache(&mut self) {
         self.cached_prev_identity = None;
     }
@@ -982,8 +980,6 @@ mod coverage_tests {
             scale: 1.0,
             azimuth_spacing_deg: 1.0,
             radial_times: Vec::new(),
-            sweep_start_secs: 0.0,
-            sweep_end_secs: 0.0,
             product: product.to_string(),
         }
     }

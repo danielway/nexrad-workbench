@@ -36,12 +36,13 @@ pub(crate) struct StreamingPlan {
     /// already know the active filter via the streaming channel; this
     /// is preserved so a captured plan (e.g. for a per-chunk arrival
     /// stat) carries enough context to be interpreted standalone.
-    #[allow(dead_code)] // Diagnostic context for captured plans.
+    #[allow(dead_code)] // Doc above: diagnostic context so captured plans read standalone.
     pub filter: StreamingFilter,
     /// Wall-clock time (Unix seconds) the plan was built. Lets consumers
     /// reason about plan staleness without threading `now` through every
     /// derivation.
-    #[allow(dead_code)] // Read alongside `revision` for diagnostic display.
+    #[allow(dead_code)]
+    // Doc above: staleness context read alongside `revision` in diagnostics.
     pub built_at_secs: f64,
     /// Monotonically-incrementing per-projector counter, bumped on every
     /// [`crate::nexrad::projector::Projector::build_plan`] call. Lets diagnostics
@@ -205,6 +206,7 @@ impl StreamingPlan {
     /// Elevation number (1-based) of the immediate next download target, or
     /// `None` for a Start chunk / when no target exists. Used to highlight
     /// the matching sweep in the next-volume ghost.
+    #[cfg(test)]
     pub(crate) fn next_target_elevation(&self) -> Option<u8> {
         self.next_target()
             .and_then(|c| c.elevation_number)
@@ -222,7 +224,7 @@ impl StreamingPlan {
 
     /// Convenience: seconds from `now_secs` until the streaming loop's next
     /// poll fires (the sleep target).
-    #[allow(dead_code)] // Public-surface accessor; UI debug overlay consumes it.
+    #[cfg(test)]
     pub(crate) fn next_poll_in_secs(&self, now_secs: f64) -> Option<f64> {
         self.next_target()
             .and_then(|t| t.projected.as_ref())

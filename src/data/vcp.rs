@@ -18,11 +18,13 @@ pub struct VcpElevation {
 pub struct VcpDefinition {
     /// VCP number (e.g., 215, 35)
     #[allow(dead_code)]
+    // Static VCP table metadata; pinned by coverage tests, no prod reader yet.
     pub number: u16,
     /// Short name for the VCP
     pub name: &'static str,
     /// Description of when this VCP is used
     #[allow(dead_code)]
+    // Static VCP table metadata; pinned by coverage tests, no prod reader yet.
     pub description: &'static str,
     /// List of elevation angles in this VCP
     pub elevations: &'static [VcpElevation],
@@ -284,7 +286,7 @@ pub fn fallback_azimuth_rate(is_clear_air: bool, waveform: &str, prf_number: u8)
 
 /// Compute even-distribution sweep durations (fallback when no VCP elevation data
 /// is available). Returns a vec of `count` equal durations summing to `total`.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn even_sweep_durations(total: f64, count: usize) -> Vec<f64> {
     if count == 0 {
         return Vec::new();

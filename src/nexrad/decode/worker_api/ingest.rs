@@ -178,10 +178,8 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
 /// Accumulator for per-chunk ingest. Holds decoded radials across chunks
 /// until an elevation is complete, then flushes sweep blobs to IDB.
-#[allow(dead_code)]
 pub(super) struct ChunkAccumulator {
     pub scan_key: ScanKey,
-    pub site_id: String,
     /// Radials for the current (in-progress) elevation only.
     /// Previous elevations are flushed to IDB on transition.
     pub current_radials: Vec<::nexrad::model::data::Radial>,
@@ -198,9 +196,6 @@ pub(super) struct ChunkAccumulator {
     pub total_chunks: u32,
     pub total_size_bytes: u64,
     pub file_name: String,
-    /// Volume scan start (Unix seconds, sub-second precision). Same value
-    /// for every chunk in a volume; used to construct the IDB scan key.
-    pub timestamp_secs: f64,
 }
 
 // Per-worker chunk accumulator.
@@ -330,7 +325,6 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             // --- Reset accumulator ---
             set_chunk_accum(Some(ChunkAccumulator {
                 scan_key,
-                site_id: site_id.clone(),
                 current_radials: Vec::new(),
                 current_radial_metas: Vec::new(),
                 current_elevation: None,
@@ -341,7 +335,6 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                 total_chunks: 0,
                 total_size_bytes: 0,
                 file_name: file_name.clone(),
-                timestamp_secs,
             }));
         } else {
             let accum_has_full_vcp = with_chunk_accum(|accum| {
@@ -682,7 +675,6 @@ mod accum_tests {
     fn sample_accum() -> ChunkAccumulator {
         ChunkAccumulator {
             scan_key: ScanKey::new("KDMX", UnixMillis::from_secs_f64(1_000.0)),
-            site_id: "KDMX".to_string(),
             current_radials: Vec::new(),
             current_radial_metas: Vec::new(),
             current_elevation: Some(2),
@@ -693,7 +685,6 @@ mod accum_tests {
             total_chunks: 3,
             total_size_bytes: 4_096,
             file_name: "test-chunk".to_string(),
-            timestamp_secs: 1_000.0,
         }
     }
 
@@ -771,7 +762,6 @@ mod coverage_tests {
     fn fresh_accum() -> ChunkAccumulator {
         ChunkAccumulator {
             scan_key: ScanKey::new("KFTG", UnixMillis::from_secs_f64(2_000.0)),
-            site_id: "KFTG".to_string(),
             current_radials: Vec::new(),
             current_radial_metas: Vec::new(),
             current_elevation: None,
@@ -782,7 +772,6 @@ mod coverage_tests {
             total_chunks: 0,
             total_size_bytes: 0,
             file_name: "fresh".to_string(),
-            timestamp_secs: 2_000.0,
         }
     }
 

@@ -152,7 +152,7 @@ impl SweepIdentity {
         self.scan_key.scan_start.as_secs_f64()
     }
 
-    #[allow(dead_code)] // Read by tests and reserved for cross-site checks.
+    #[cfg(test)]
     pub(crate) fn site_id(&self) -> &str {
         &self.scan_key.site.0
     }
@@ -280,7 +280,6 @@ impl Default for RenderProcessing {
 
 /// Lightweight storm cell info for rendering on the canvas.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct StormCellInfo {
     /// Reflectivity-weighted centroid latitude.
     pub lat: f64,

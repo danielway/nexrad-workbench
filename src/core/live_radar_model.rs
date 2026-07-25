@@ -87,21 +87,15 @@ pub(crate) struct LiveSweepModel {
     pub elevation_number: u8,
 
     /// Radials received so far for this elevation.
-    #[allow(dead_code)]
     pub radials_received: u32,
 
     /// Azimuth range of actual received data (first_az, last_az).
     pub data_azimuth_range: Option<(f32, f32)>,
 
-    /// Starting azimuth of the sweep (first radial).
-    #[allow(dead_code)]
-    pub sweep_start_azimuth: Option<f32>,
-
     /// Per-chunk azimuth boundaries within this sweep.
     pub chunks: Vec<LiveChunkBoundary>,
 
     /// Expected total chunks for this sweep (from VCP timing).
-    #[allow(dead_code)]
     pub chunks_expected: Option<u32>,
 
     /// Per-chunk time spans for the current elevation (start_secs, end_secs, radial_count).
@@ -111,10 +105,13 @@ pub(crate) struct LiveSweepModel {
 
 /// A single chunk's azimuth boundary within a sweep.
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub(crate) struct LiveChunkBoundary {
+    #[allow(dead_code)]
+    // VM parity with worker chunk spans; exercised by tests, overlay reads last_az.
     pub first_az: f32,
     pub last_az: f32,
+    #[allow(dead_code)]
+    // VM parity with worker chunk spans; exercised by tests, overlay reads last_az.
     pub radial_count: u32,
 }
 
@@ -196,7 +193,6 @@ impl LiveModeState {
                 elevation_number: elev,
                 radials_received: p.in_progress_radials.unwrap_or(0),
                 data_azimuth_range: self.live_data_azimuth_range,
-                sweep_start_azimuth: self.sweep_start_azimuth,
                 chunks,
                 chunks_expected,
                 chunk_time_spans,

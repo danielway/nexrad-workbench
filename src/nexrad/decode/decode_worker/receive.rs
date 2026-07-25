@@ -650,18 +650,15 @@ mod coverage_tests {
         IngestContext {
             scan_key: scan_key(site, ms),
             timestamp_secs: ts,
-            file_name: "f".to_string(),
             fetch_latency_ms: 0.0,
         }
     }
 
     fn chunk_ctx(site: &str, ms: i64, ts: f64) -> ChunkIngestContext {
         ChunkIngestContext {
-            site_id: site.to_string(),
             scan_key: scan_key(site, ms),
             timestamp_secs: ts,
             chunk_index: 0,
-            is_end: false,
         }
     }
 

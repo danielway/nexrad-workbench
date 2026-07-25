@@ -271,11 +271,7 @@ async fn fetch_archive_listing(site_id: &str, date: NaiveDate) -> ListingResult 
         .filter_map(|f| {
             let name = f.name().to_string();
             let timestamp = ArchiveFileMeta::parse_timestamp_from_name(&name, &date)?;
-            Some(ArchiveFileMeta {
-                name,
-                size: 0,
-                timestamp,
-            })
+            Some(ArchiveFileMeta { name, timestamp })
         })
         .collect();
 
@@ -549,7 +545,6 @@ mod coverage_tests {
         let listing = ArchiveListing {
             files: vec![ArchiveFileMeta {
                 name: "KDMX20240501_120000_V06".to_string(),
-                size: 0,
                 timestamp: 1_714_564_800,
             }],
             fetched_at: 0.0,

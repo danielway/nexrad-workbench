@@ -5,7 +5,6 @@ use geo_types::Coord;
 
 /// Population tier for controlling visibility at different zoom levels.
 #[derive(Clone, Copy)]
-#[allow(dead_code)]
 enum Tier {
     /// Major metro (pop > 500k) — visible at all zoom levels
     Major,
@@ -15,11 +14,12 @@ enum Tier {
     Small,
 }
 
-#[allow(dead_code)]
 struct CityEntry {
     name: &'static str,
     lat: f64,
     lon: f64,
+    #[allow(dead_code)]
+    // Curated zoom-visibility tier (doc on `Tier`); city-layer LOD not wired yet.
     tier: Tier,
 }
 

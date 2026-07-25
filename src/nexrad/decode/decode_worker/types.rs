@@ -361,7 +361,6 @@ pub(super) struct RenderLiveRequestMsg<'a> {
 pub(super) type RequestId = u64;
 
 /// Context for an ingest request.
-#[allow(dead_code)]
 pub(crate) struct IngestContext {
     /// Typed identifier for the volume being ingested. Built once at
     /// dispatch (in `WorkerPool::ingest`) so the worker round-trip
@@ -371,7 +370,6 @@ pub(crate) struct IngestContext {
     /// Volume scan start (Unix seconds, sub-second precision). Same value
     /// `scan_key` was built from; kept for diagnostics.
     pub timestamp_secs: f64,
-    pub file_name: String,
     pub fetch_latency_ms: f64,
 }
 
@@ -392,6 +390,7 @@ pub(crate) struct IngestResult {
     /// Full extracted VCP pattern (from Message Type 5).
     /// Available for direct VCP inspection; primary propagation is via IDB metadata.
     #[allow(dead_code)]
+    // Doc above: kept for direct VCP inspection; IDB metadata is the live path.
     pub vcp: Option<crate::data::keys::ExtractedVcp>,
     /// Total time in worker (ms).
     pub total_ms: f64,
@@ -410,9 +409,7 @@ pub(crate) struct IngestResult {
 }
 
 /// Context for a per-chunk ingest request (real-time streaming).
-#[allow(dead_code)]
 pub(crate) struct ChunkIngestContext {
-    pub site_id: String,
     /// Typed identifier for the in-progress volume. Built once at dispatch
     /// from `(site_id, timestamp_secs)`; every chunk of the volume shares
     /// the same value. Consumers should read this rather than re-parsing
@@ -422,7 +419,6 @@ pub(crate) struct ChunkIngestContext {
     /// `scan_key` was built from; kept for diagnostics and lag math.
     pub timestamp_secs: f64,
     pub chunk_index: u32,
-    pub is_end: bool,
 }
 
 /// Successful per-chunk ingest result from the worker.
@@ -454,7 +450,8 @@ pub(crate) struct ChunkIngestResult {
     /// Volume header date/time in Unix seconds (authoritative scan start time).
     pub volume_header_time_secs: Option<f64>,
     /// Earliest radial collection time (Unix seconds) observed in this chunk.
-    #[allow(dead_code)] // Consumed by debug UI in a later commit.
+    #[allow(dead_code)]
+    // Pairs with chunk_max_time_secs; consumed by the timing debug UI later.
     pub chunk_min_time_secs: Option<f64>,
     /// Latest radial collection time (Unix seconds) observed in this chunk.
     /// Paired with the chunk's S3 upload time yields the per-chunk
@@ -469,7 +466,6 @@ pub(crate) struct ChunkIngestResult {
 }
 
 /// Context for a render/decode request.
-#[allow(dead_code)]
 pub(crate) struct RenderContext {
     /// Typed identifier for the scan being rendered. The wire-protocol
     /// uses `to_storage_key()` once at dispatch.
@@ -480,7 +476,6 @@ pub(crate) struct RenderContext {
 
 /// Decoded radar sweep data from the worker (raw data for GPU rendering).
 pub(crate) struct DecodeResult {
-    #[allow(dead_code)]
     pub context: RenderContext,
     /// Sorted azimuth angles in degrees.
     pub azimuths: Vec<f32>,
@@ -573,7 +568,6 @@ pub(crate) enum WorkerOutcome {
 }
 
 /// Context for a volume render request.
-#[allow(dead_code)]
 pub(crate) struct VolumeRenderContext {
     pub scan_key: crate::data::ScanKey,
 }

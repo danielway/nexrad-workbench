@@ -42,7 +42,6 @@ use web_sys::{IdbDatabase, IdbObjectStore, IdbRequest, IdbTransactionMode};
 
 /// Structured error type for IndexedDB operations.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum DataError {
     /// The database has not been opened yet.
     NotOpen,
@@ -52,8 +51,6 @@ pub enum DataError {
     RequestFailed(String),
     /// Browser storage quota exceeded.
     QuotaExceeded { available_mb: f64, required_mb: f64 },
-    /// The requested key was not found.
-    NotFound,
     /// (De)serialization of stored data failed.
     SerdeError(String),
     /// Another async task is already performing an upsert for this scan.
@@ -77,7 +74,6 @@ impl std::fmt::Display for DataError {
                 "Insufficient storage quota: {:.1} MB available, {:.1} MB required",
                 available_mb, required_mb
             ),
-            DataError::NotFound => write!(f, "Not found"),
             DataError::SerdeError(msg) => write!(f, "Serde error: {}", msg),
             DataError::ConcurrentUpsert { scan_key } => {
                 write!(f, "Concurrent upsert in flight for scan {}", scan_key)
@@ -108,7 +104,7 @@ impl DataError {
         match self {
             DataError::NotOpen | DataError::ConcurrentUpsert { .. } => ErrorKind::Transient,
             DataError::QuotaExceeded { .. } => ErrorKind::Quota,
-            DataError::NotFound | DataError::SerdeError(_) => ErrorKind::Permanent,
+            DataError::SerdeError(_) => ErrorKind::Permanent,
             DataError::TransactionFailed(msg) | DataError::RequestFailed(msg) => {
                 classify_js_error(msg)
             }
@@ -945,7 +941,6 @@ mod tests {
             .kind(),
             ErrorKind::Quota
         );
-        assert_eq!(DataError::NotFound.kind(), ErrorKind::Permanent);
         assert_eq!(
             DataError::SerdeError("bad".into()).kind(),
             ErrorKind::Permanent

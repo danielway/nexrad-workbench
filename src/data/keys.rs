@@ -300,7 +300,7 @@ impl SweepDataKey {
     /// reconstructs sweep keys today (the worker boundary ships scan keys);
     /// kept so the key vocabulary parses both ways — exercised by the
     /// `data::keys` tests.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Doc above: symmetric parse kept deliberately; test-exercised only.
     pub fn from_storage_key(key: &str) -> Result<Self, KeyParseError> {
         let parts: Vec<&str> = key.splitn(4, '|').collect();
         if parts.len() != 4 {

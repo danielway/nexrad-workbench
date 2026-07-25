@@ -180,9 +180,9 @@ pub(crate) struct SweepBounds {
     /// Bound-derivation flags (received roster / in-progress). Orthogonal to
     /// the acquisition `status`; asserted by the cascade golden test, not read
     /// in production.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Doc above: golden-test contract field, not read in production.
     pub is_complete: bool,
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Doc above: golden-test contract field, not read in production.
     pub is_in_progress: bool,
     pub radials_received: u32,
     pub chunks_received: u32,

@@ -432,7 +432,6 @@ impl WorkbenchApp {
     }
 
     /// Stop live mode streaming.
-    #[allow(dead_code)] // Called from UI when user stops live mode
     pub(crate) fn stop_live_mode(&mut self, reason: crate::core::LiveExitReason) {
         log::info!("Stopping live mode: {:?}", reason);
 
@@ -495,11 +494,11 @@ impl WorkbenchApp {
                     self.live.mode_state.record_chunk_arrival(stat);
                 }
 
-                // Record chunk latency for the acquisition drawer
+                // Record chunk latency for the acquisition drawer. No radial
+                // timestamp is known at download time, so e2e stays None here.
                 self.acquisition.state.record_chunk_latency(
                     chunks_in_volume,
                     fetch_latency_ms,
-                    None, // radial timestamps populated after ingest
                     None,
                 );
             }

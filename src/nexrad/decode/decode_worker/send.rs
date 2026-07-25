@@ -30,7 +30,6 @@ impl DecodeWorker {
             IngestContext {
                 scan_key,
                 timestamp_secs,
-                file_name: file_name.clone(),
                 fetch_latency_ms,
             },
         );
@@ -163,11 +162,9 @@ impl DecodeWorker {
         self.pending_chunk_ingest.borrow_mut().insert(
             id,
             ChunkIngestContext {
-                site_id: site_id.clone(),
                 scan_key,
                 timestamp_secs,
                 chunk_index,
-                is_end,
             },
         );
 

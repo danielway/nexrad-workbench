@@ -47,7 +47,7 @@ impl VolumeElevationRoster {
     }
 
     /// Number of distinct elevations observed so far.
-    #[allow(dead_code)] // Public API; production callers iterate `received` directly.
+    #[allow(dead_code)] // Roster API (module docs); production callers iterate `received` directly.
     pub(crate) fn received_count(&self) -> usize {
         self.received.len()
     }
@@ -56,7 +56,7 @@ impl VolumeElevationRoster {
     /// received. Returns `false` while the VCP is unknown — callers can
     /// distinguish "incomplete because still streaming" from "incomplete
     /// because unknown" via `expected_count().is_some()`.
-    #[allow(dead_code)] // Public API; reserved for diagnostics overlays.
+    #[allow(dead_code)] // Roster API (module docs); reserved for status-bar surfaces.
     pub(crate) fn is_complete(&self) -> bool {
         match self.expected_count {
             Some(n) => self.received.len() >= n,
@@ -71,7 +71,7 @@ impl VolumeElevationRoster {
 
     /// Elevation numbers expected per the VCP but not yet received.
     /// Empty before the VCP arrives, or once the volume is complete.
-    #[allow(dead_code)] // Public API; reserved for diagnostics overlays.
+    #[allow(dead_code)] // Roster API (module docs); reserved for diagnostics overlays.
     pub(crate) fn expected_but_not_received(&self) -> Vec<u8> {
         let Some(count) = self.expected_count else {
             return Vec::new();
@@ -86,7 +86,7 @@ impl VolumeElevationRoster {
     /// either a split-cut VCP not described in the message or radial-header
     /// drift. Useful for diagnostics — surfacing this to a debug overlay
     /// would catch a class of bugs that's currently silent.
-    #[allow(dead_code)] // Public API; reserved for diagnostics overlays.
+    #[allow(dead_code)] // Doc above: diagnostics surface for silent VCP/radial-header drift.
     pub(crate) fn received_but_not_expected(&self) -> Vec<u8> {
         let Some(count) = self.expected_count else {
             return Vec::new();
@@ -100,7 +100,7 @@ impl VolumeElevationRoster {
 
     /// Short label suitable for status text: "5 of 7" when the VCP is
     /// known, "5" when it isn't.
-    #[allow(dead_code)] // Public API; reserved for status-bar surfaces.
+    #[allow(dead_code)] // Roster API (module docs); reserved for status-bar surfaces.
     pub(crate) fn status_label(&self) -> String {
         match self.expected_count {
             Some(n) => format!("{} of {}", self.received.len(), n),

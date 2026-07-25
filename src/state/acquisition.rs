@@ -14,6 +14,7 @@ const MAX_RETAINED: usize = 200;
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum OperationKind {
     /// Archive listing fetch (S3 LIST).
+    #[allow(dead_code)] // Drawer vocabulary; listing fetches don't create operations today.
     ArchiveListing {
         site_id: String,
         date: chrono::NaiveDate,
@@ -75,11 +76,8 @@ pub(crate) struct AcquisitionOperation {
     pub id: OperationId,
     pub kind: OperationKind,
     pub status: OperationStatus,
-    pub created_at_ms: f64,
     pub started_at_ms: Option<f64>,
     pub completed_at_ms: Option<f64>,
-    /// Indices into `recent_network_requests` correlated to this operation.
-    pub network_request_ids: Vec<usize>,
     /// Current pipeline phase.
     pub phase: DownloadPhase,
 }
@@ -87,13 +85,10 @@ pub(crate) struct AcquisitionOperation {
 /// Per-chunk latency metrics for streaming mode.
 #[derive(Clone, Debug)]
 pub(crate) struct ChunkLatencyMetrics {
+    #[allow(dead_code)] // Sample identity; asserted by tests, drawer plots fetch_latency_ms only.
     pub chunk_index: u32,
-    pub first_radial_time_secs: Option<f64>,
-    pub last_radial_time_secs: Option<f64>,
     /// Time to download the chunk from S3 (ms).
     pub fetch_latency_ms: f64,
-    /// Wall-clock time when download completed (ms since epoch).
-    pub download_complete_time_ms: f64,
     /// Computed: download_complete - first_radial_time (ms). Radar collection to app.
     pub end_to_end_latency_ms: Option<f64>,
 }
@@ -122,6 +117,7 @@ pub(crate) enum DrawerTab {
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LatencySummary {
     pub avg_fetch_ms: f64,
+    #[allow(dead_code)] // Computed with avg/p95 (tests pin the math); drawer displays avg+p95.
     pub p50_fetch_ms: f64,
     pub p95_fetch_ms: f64,
     pub avg_e2e_ms: Option<f64>,
@@ -172,10 +168,8 @@ impl AcquisitionState {
             id,
             kind,
             status: OperationStatus::Queued,
-            created_at_ms: js_sys::Date::now(),
             started_at_ms: None,
             completed_at_ms: None,
-            network_request_ids: Vec::new(),
             phase: DownloadPhase::Idle,
         };
 
@@ -202,6 +196,7 @@ impl AcquisitionState {
     }
 
     /// Update the phase of an active operation.
+    #[cfg(test)]
     pub(crate) fn set_phase(&mut self, id: OperationId, phase: DownloadPhase) {
         if let Some(op) = self.find_mut(id) {
             op.phase = phase;
@@ -247,6 +242,7 @@ impl AcquisitionState {
     }
 
     /// Cancel all queued operations (e.g., on selection change).
+    #[cfg(test)]
     pub(crate) fn cancel_all_queued(&mut self) {
         let now = js_sys::Date::now();
         for op in self.operations.iter_mut() {
@@ -259,6 +255,7 @@ impl AcquisitionState {
     }
 
     /// Cancel all pending and active operations (selection change: cancel all + rebuild).
+    #[cfg(test)]
     pub(crate) fn cancel_all(&mut self) {
         let now = js_sys::Date::now();
         for op in self.operations.iter_mut() {
@@ -397,15 +394,11 @@ impl AcquisitionState {
         chunk_index: u32,
         fetch_latency_ms: f64,
         first_radial_secs: Option<f64>,
-        last_radial_secs: Option<f64>,
     ) {
         let now_ms = js_sys::Date::now();
         let metrics = ChunkLatencyMetrics {
             chunk_index,
-            first_radial_time_secs: first_radial_secs,
-            last_radial_time_secs: last_radial_secs,
             fetch_latency_ms,
-            download_complete_time_ms: now_ms,
             end_to_end_latency_ms: first_radial_secs.map(|frs| (now_ms / 1000.0 - frs) * 1000.0),
         };
         self.chunk_latencies.push(metrics);
@@ -449,6 +442,7 @@ impl AcquisitionState {
     }
 
     /// Clear streaming latency data (e.g., when stopping live mode).
+    #[cfg(test)]
     pub(crate) fn clear_latencies(&mut self) {
         self.chunk_latencies.clear();
     }
@@ -533,6 +527,7 @@ impl AcquisitionState {
     /// For realtime chunks this returns `Some((site_id, scan_timestamp))` so
     /// that all chunks belonging to the same volume are grouped together in
     /// the network tab. For other operation kinds returns `None`.
+    #[cfg(test)]
     pub(crate) fn scan_group_key(kind: &OperationKind) -> Option<(String, i64)> {
         match kind {
             OperationKind::RealtimeChunk {
@@ -614,6 +609,7 @@ impl AcquisitionState {
     }
 
     /// Get the next queued operation ID (for the download pump to start).
+    #[cfg(test)]
     pub(crate) fn next_queued_id(&self) -> Option<OperationId> {
         self.operations
             .iter()
@@ -737,10 +733,7 @@ mod tests {
     fn latency(fetch_ms: f64, e2e_ms: Option<f64>) -> ChunkLatencyMetrics {
         ChunkLatencyMetrics {
             chunk_index: 0,
-            first_radial_time_secs: None,
-            last_radial_time_secs: None,
             fetch_latency_ms: fetch_ms,
-            download_complete_time_ms: 0.0,
             end_to_end_latency_ms: e2e_ms,
         }
     }
@@ -1039,7 +1032,6 @@ mod coverage_tests {
         assert_eq!(op.phase, DownloadPhase::Idle);
         assert!(op.started_at_ms.is_none());
         assert!(op.completed_at_ms.is_none());
-        assert!(op.network_request_ids.is_empty());
     }
 
     /// The ring buffer evicts the oldest operation once it exceeds MAX_RETAINED
@@ -1412,7 +1404,7 @@ mod coverage_tests {
     fn record_chunk_latency_e2e_presence_and_clear() {
         let mut acq = AcquisitionState::default();
         // No first-radial → end_to_end_latency_ms is None.
-        acq.record_chunk_latency(0, 12.0, None, None);
+        acq.record_chunk_latency(0, 12.0, None);
         assert_eq!(acq.chunk_latencies.len(), 1);
         let m0 = &acq.chunk_latencies[0];
         assert_eq!(m0.chunk_index, 0);
@@ -1421,7 +1413,7 @@ mod coverage_tests {
 
         // With a first-radial time, e2e is computed as Some(_) (value depends on
         // wall clock, so only assert presence and finiteness).
-        acq.record_chunk_latency(1, 8.0, Some(1.0), Some(2.0));
+        acq.record_chunk_latency(1, 8.0, Some(1.0));
         let m1 = &acq.chunk_latencies[1];
         assert_eq!(m1.chunk_index, 1);
         assert!(m1.end_to_end_latency_ms.is_some());
@@ -1481,10 +1473,7 @@ mod coverage_tests {
         for v in (1..=10).rev() {
             acq.chunk_latencies.push(ChunkLatencyMetrics {
                 chunk_index: 0,
-                first_radial_time_secs: None,
-                last_radial_time_secs: None,
                 fetch_latency_ms: v as f64,
-                download_complete_time_ms: 0.0,
                 end_to_end_latency_ms: None,
             });
         }

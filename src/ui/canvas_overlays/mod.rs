@@ -64,6 +64,7 @@ pub(crate) struct OverlayContext<'a> {
     /// hide the color scale while data is stale) can gate on it
     /// without changing the signature.
     #[allow(dead_code)]
+    // Doc above: kept so future overlay predicates don't change the signature.
     pub derived: &'a Derived,
 }
 

@@ -19,7 +19,7 @@ impl TimeRange {
     }
 
     /// Returns the duration of this range in seconds.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn duration(&self) -> f64 {
         self.end - self.start
     }
@@ -32,12 +32,9 @@ impl TimeRange {
 
 /// A single radial (one azimuth direction at one elevation)
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub(crate) struct Radial {
     /// Start timestamp (Unix seconds with sub-second precision)
     pub start_time: f64,
-    /// Duration in seconds
-    pub duration: f64,
     /// Azimuth angle in degrees
     pub azimuth: f32,
 }
@@ -65,7 +62,7 @@ pub(crate) struct Sweep {
 }
 
 impl Sweep {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }
@@ -106,7 +103,7 @@ pub(crate) struct Scan {
 }
 
 impl Scan {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn duration(&self) -> f64 {
         self.end_time - self.start_time
     }
@@ -259,7 +256,6 @@ impl RadarTimeline {
     ///
     /// This is a convenience method that returns the bounding box of all ranges.
     /// For checking if data exists in a specific period, use `time_ranges()` instead.
-    #[allow(dead_code)]
     pub(crate) fn overall_time_range(&self) -> Option<(f64, f64)> {
         if self.scans.is_empty() {
             return None;
@@ -304,86 +300,6 @@ impl RadarTimeline {
         } else {
             None
         }
-    }
-
-    /// Get the timestamp of a scan for identification purposes.
-    /// Used to check if we need to load a different scan.
-    #[allow(dead_code)] // Utility method
-    pub(crate) fn scan_timestamp(scan: &Scan) -> i64 {
-        scan.start_time as i64
-    }
-
-    /// Generate sample data for testing/demo purposes
-    /// Creates scans for the specified duration ending at `end_time`
-    #[allow(dead_code)] // Kept for testing/demo purposes
-    pub(crate) fn generate_sample_data(end_time: f64, duration_hours: f64) -> Self {
-        let mut scans = Vec::new();
-        let start_time = end_time - duration_hours * 3600.0;
-
-        // VCP 215 typical elevations (degrees)
-        let elevations: &[f32] = &[
-            0.5, 0.9, 1.3, 1.8, 2.4, 3.1, 4.0, 5.1, 6.4, 8.0, 10.0, 12.5, 15.6, 19.5,
-        ];
-
-        let mut current_time = start_time;
-        let scan_interval = 300.0; // ~5 minutes between scan starts
-
-        while current_time < end_time {
-            let scan_start = current_time;
-            let mut sweeps = Vec::new();
-            let mut sweep_time = scan_start;
-
-            for (elev_idx, &elevation) in elevations.iter().enumerate() {
-                let sweep_start = sweep_time;
-                // Sweep duration varies slightly by elevation (higher = faster)
-                let sweep_duration = 10.0 + (15.0 - elevation as f64).max(0.0) * 0.5;
-                let sweep_end = sweep_start + sweep_duration;
-
-                // Generate radials for this sweep (typically ~720 radials for 0.5 degree azimuth resolution)
-                let num_radials = 720;
-                let radial_duration = sweep_duration / num_radials as f64;
-                let mut radials = Vec::new();
-
-                for i in 0..num_radials {
-                    let azimuth = (i as f32) * 0.5; // 0.5 degree resolution
-                    radials.push(Radial {
-                        start_time: sweep_start + (i as f64) * radial_duration,
-                        duration: radial_duration,
-                        azimuth,
-                    });
-                }
-
-                sweeps.push(Sweep {
-                    start_time: sweep_start,
-                    end_time: sweep_end,
-                    elevation,
-                    elevation_number: (elev_idx + 1) as u8,
-                    start_azimuth: radials.first().map(|r| r.azimuth).unwrap_or(0.0),
-                    radials,
-                    cached_products: Vec::new(),
-                });
-
-                sweep_time = sweep_end + 0.5; // Small gap between sweeps
-            }
-
-            let scan_end = sweep_time;
-            scans.push(Scan {
-                start_time: scan_start,
-                end_time: scan_end,
-                key_timestamp: scan_start,
-                vcp: 215,
-                vcp_pattern: None,
-                sweeps,
-                completeness: Some(ScanCompleteness::Complete),
-                cached_sweep_count: None,
-                planned_sweep_count: None,
-            });
-
-            // Next scan starts after the interval
-            current_time = scan_start + scan_interval;
-        }
-
-        Self { scans }
     }
 
     /// Collect all sweep end-times matching the given elevation number AND
@@ -667,7 +583,7 @@ impl RadarTimeline {
     /// extent (`end_time`). The display counterpart is
     /// [`Self::scans_in_visual_range`]; keep this for callers that need the
     /// scan's true cached-data bounds rather than the projected block.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Doc above: retained real-data-extent counterpart to the visual-range query.
     pub(crate) fn scans_in_range(&self, start: f64, end: f64) -> impl Iterator<Item = &Scan> {
         self.scans
             .iter()
@@ -1618,14 +1534,6 @@ mod coverage_tests {
         // Wider window admits it.
         let prev = tl.find_previous_scan(2600.0, 10_000.0).unwrap();
         assert_eq!(prev.start_time, 2000.0);
-    }
-
-    // --- RadarTimeline::scan_timestamp ---
-
-    #[wasm_bindgen_test]
-    fn scan_timestamp_truncates_start_time_to_i64() {
-        let s = scan(1700.9, 1800.0);
-        assert_eq!(RadarTimeline::scan_timestamp(&s), 1700);
     }
 
     // --- find_scan_at_timestamp edge: empty + before-all ---

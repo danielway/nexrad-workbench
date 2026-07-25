@@ -48,12 +48,6 @@ impl WorkerPool {
         })
     }
 
-    /// Number of workers in the pool.
-    #[allow(dead_code)]
-    pub(crate) fn size(&self) -> usize {
-        self.workers.len()
-    }
-
     fn next_ingest_index(&mut self) -> usize {
         let idx = self.next_ingest % self.workers.len();
         self.next_ingest = self.next_ingest.wrapping_add(1);

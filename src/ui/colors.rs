@@ -39,13 +39,13 @@ pub(crate) mod live {
     /// Orange - acquiring lock/connecting. Part of the live palette; the
     /// transport-row badge moved to a stateful LIVE button, so this is reserved
     /// for the queue sheet / connection detail next phase.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Doc above: reserved for the queue-sheet / connection-detail phase.
     pub(crate) const ACQUIRING: Color32 = Color32::from_rgb(255, 180, 50);
     /// Red - actively streaming.
     pub(crate) const STREAMING: Color32 = Color32::from_rgb(255, 80, 80);
     /// Blue - waiting for next chunk. Reserved alongside [`ACQUIRING`] for the
     /// next-phase queue sheet / countdown chrome.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Doc above: reserved for the queue-sheet / countdown chrome phase.
     pub(crate) const WAITING: Color32 = Color32::from_rgb(100, 180, 255);
 }
 

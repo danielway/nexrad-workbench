@@ -50,7 +50,6 @@ pub enum CameraMode {
     FreeLook,
 }
 
-#[allow(dead_code)]
 impl CameraMode {
     pub fn label(&self) -> &'static str {
         match self {
@@ -372,7 +371,6 @@ fn keyboard_zoom_distance(distance: f32, forward: f32, speed_mult: f32, dt: f32)
     new_log.clamp(MIN_DISTANCE.ln(), MAX_DISTANCE.ln()).exp()
 }
 
-#[allow(dead_code)]
 impl Camera {
     // ── Construction ────────────────────────────────────────────────
 
@@ -1192,7 +1190,6 @@ impl Default for UrlCameraSnapshot {
     }
 }
 
-#[allow(dead_code)]
 impl Camera {
     /// Flatten the active variant's state for URL persistence, filling
     /// non-owned fields with historical defaults. The site center seeds
@@ -1282,7 +1279,7 @@ impl Camera {
 /// `&dyn Projection` today; the 3D side is wired through this wrapper for
 /// the future hybrid path or 3D overlays that may want to share the same
 /// call sites.
-#[allow(dead_code)] // 3D overlays are not yet sharing the &dyn Projection call sites.
+#[allow(dead_code)] // Doc above: 3D overlays don't share the &dyn Projection call sites yet.
 pub(crate) struct GlobeProjection<'a> {
     pub camera: &'a Camera,
     pub screen_rect: Rect,

@@ -65,12 +65,13 @@ pub(crate) enum LivePhase {
     WaitingForChunk,
     /// Connection failed or lost.
     #[allow(dead_code)]
+    // State-machine vocabulary; prod error path exits via stop(ConnectionError).
     Error,
 }
 
 impl LivePhase {
     /// Human-readable label for the phase.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn label(&self) -> &'static str {
         match self {
             LivePhase::Idle => "Idle",
@@ -82,7 +83,7 @@ impl LivePhase {
     }
 
     /// Color for the phase indicator (RGB).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn color(&self) -> (u8, u8, u8) {
         match self {
             LivePhase::Idle => (100, 100, 100),
@@ -143,10 +144,6 @@ pub(crate) struct LiveModeState {
 
     /// Animation pulse phase (0.0 to 1.0, wraps)
     pub pulse_phase: f32,
-
-    /// Whether to auto-scroll timeline to follow live data.
-    #[allow(dead_code)] // Used when auto-scroll feature is implemented
-    pub auto_scroll_enabled: bool,
 
     /// Identity + provisional/confirmed start time for the current
     /// in-progress volume. `None` between volumes; populated when the first
@@ -219,7 +216,6 @@ impl Default for LiveModeState {
             chunks_received: 0,
             detached_since: None,
             pulse_phase: 0.0,
-            auto_scroll_enabled: true,
             current_volume: None,
             sweep_start_azimuth: None,
             live_data_azimuth_range: None,
@@ -236,13 +232,13 @@ impl Default for LiveModeState {
 
 impl LiveModeState {
     /// Create a new idle live mode state.
-    #[allow(dead_code)] // Convenience constructor
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Create a state initialized for testing with dummy streaming data.
-    #[allow(dead_code)] // Used for testing different live mode states
+    #[cfg(test)]
     pub(crate) fn with_dummy_streaming(phase: LivePhase, now: f64) -> Self {
         let mut state = Self::new();
         state.phase = phase;
@@ -299,7 +295,7 @@ impl LiveModeState {
     }
 
     /// Set error state with message.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn set_error(&mut self, message: String) {
         self.phase = LivePhase::Error;
         self.error_message = Some(message);
@@ -314,7 +310,7 @@ impl LiveModeState {
 
     /// Transition to WaitingForChunk phase. The countdown displayed downstream
     /// is driven by the frame projection's next target if present.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn wait_for_next_chunk(&mut self, now: f64) {
         self.phase = LivePhase::WaitingForChunk;
         self.phase_started_at = Some(now);
@@ -354,7 +350,7 @@ impl LiveModeState {
     }
 
     /// Format status text for display.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn status_text(&self, now: f64) -> String {
         match self.phase {
             LivePhase::Idle => String::new(),
@@ -1138,7 +1134,6 @@ mod coverage_tests {
         assert_eq!(s.chunks_received, 0);
         assert_eq!(s.detached_since, None);
         assert_eq!(s.pulse_phase, 0.0);
-        assert!(s.auto_scroll_enabled);
         assert!(s.current_volume.is_none());
         assert!(s.chunk_arrivals.is_empty());
         assert!(s.last_chunk_arrivals.is_empty());

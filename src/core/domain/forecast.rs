@@ -12,10 +12,11 @@
 /// only produces `Observed` today — `Anchored`/`Estimated` await the
 /// accuracy-tuning work that will label partially-derived bounds.
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)] // Unproduced variants are display vocabulary (see above).
 pub(crate) enum ForecastTimingLabel {
     Observed,
+    #[allow(dead_code)] // Doc above: display vocabulary awaiting the accuracy-tuning derive.
     Anchored,
+    #[allow(dead_code)] // Doc above: display vocabulary awaiting the accuracy-tuning derive.
     Estimated,
 }
 
@@ -23,9 +24,9 @@ pub(crate) enum ForecastTimingLabel {
 /// renders all variants; the derive path currently produces only
 /// `Complete`/`Future` (`InProgress` awaits a mid-volume derive pass).
 #[derive(Clone, Debug, PartialEq)]
-#[allow(dead_code)] // `InProgress` is display vocabulary (see above).
 pub(crate) enum SweepStatus {
     Complete,
+    #[allow(dead_code)] // Doc above: display vocabulary awaiting a mid-volume derive pass.
     InProgress {
         radials_received: u32,
         chunks_received: u32,
@@ -404,7 +405,7 @@ pub(crate) struct ChunkArrivalStat {
     /// plan version was active when each arrival's forecast was captured.
     /// `None` when the prediction was captured from a path that didn't
     /// snapshot the plan revision (e.g. resume-from-cache emissions).
-    #[allow(dead_code)] // Wired to display in the diagnostics modal in a follow-up.
+    #[allow(dead_code)] // Doc above: diagnostics-modal display wiring is the planned consumer.
     pub predicted_with_plan_revision: Option<u64>,
 }
 

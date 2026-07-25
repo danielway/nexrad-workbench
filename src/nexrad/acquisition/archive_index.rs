@@ -11,9 +11,6 @@ use std::collections::HashMap;
 pub(crate) struct ArchiveFileMeta {
     /// File name (e.g., "KDMX20240501_000000_V06")
     pub name: String,
-    /// File size in bytes (may be 0 if not available from listing).
-    #[allow(dead_code)] // Populated from listing but not yet displayed in UI
-    pub size: u64,
     /// Timestamp extracted from filename (Unix seconds)
     pub timestamp: i64,
 }
@@ -60,7 +57,6 @@ pub(crate) struct ArchiveListing {
     /// Files available in the archive, sorted by timestamp
     pub files: Vec<ArchiveFileMeta>,
     /// When this listing was fetched (for potential TTL)
-    #[allow(dead_code)]
     pub fetched_at: f64,
 }
 
@@ -234,7 +230,6 @@ mod tests {
     fn file(name: &str, timestamp: i64) -> ArchiveFileMeta {
         ArchiveFileMeta {
             name: name.to_string(),
-            size: 0,
             timestamp,
         }
     }
@@ -510,7 +505,6 @@ mod coverage_tests {
     fn file(name: &str, timestamp: i64) -> ArchiveFileMeta {
         ArchiveFileMeta {
             name: name.to_string(),
-            size: 0,
             timestamp,
         }
     }

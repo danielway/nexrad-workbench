@@ -32,7 +32,7 @@ impl DataFacade {
     /// (which links the lib target) to run against a throwaway database —
     /// hence dead in the bin.
     #[doc(hidden)]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Doc above: tests/idb.rs-only constructor, dead in the bin target.
     pub fn with_store(store: IndexedDbStore) -> Self {
         Self { store }
     }

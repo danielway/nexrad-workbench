@@ -9,7 +9,6 @@ use crate::core::{
     RenderProcessing, UserPreferences,
 };
 
-#[allow(dead_code)]
 pub(crate) mod acquisition;
 mod app_mode;
 pub(crate) mod calendar;

@@ -46,8 +46,8 @@ impl Layer for QueueSheetLayer {
 ///
 /// Completed operations carry their real transferred byte count. Active /
 /// queued operations have no real size — the S3 listing in this client's
-/// `nexrad-data` version exposes only file names, not sizes (so
-/// `ArchiveFileMeta.size` is always 0), and per-sweep blob sizes live in IDB
+/// `nexrad-data` version exposes only file names, not sizes, and per-sweep
+/// blob sizes live in IDB
 /// behind an async read we don't add this phase. So in-flight/queued archive
 /// downloads fall back to a flat per-scan estimate, the same idiom the
 /// range-download modal uses. Returns `None` for kinds with no meaningful size

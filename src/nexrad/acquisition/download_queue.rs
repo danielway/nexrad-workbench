@@ -18,9 +18,6 @@ pub(crate) enum QueueItemState {
     Active,
     /// Download completed successfully.
     Done,
-    /// Download failed with an error message.
-    #[allow(dead_code)]
-    Failed(String),
 }
 
 /// A single file in the download queue.
@@ -129,12 +126,10 @@ pub(crate) fn prefetch_window(
 }
 
 /// Action the caller should take after a queue operation.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) enum QueueAction {
     /// Start downloading a specific file.
     StartDownload {
-        idx: usize,
         date: chrono::NaiveDate,
         file_name: String,
         scan_start: i64,
@@ -296,7 +291,6 @@ impl DownloadQueueManager {
                 .count();
             let item = &self.queue[idx];
             let action = QueueAction::StartDownload {
-                idx,
                 date: item.date,
                 file_name: item.file_name.clone(),
                 scan_start: item.scan_start,
@@ -308,7 +302,7 @@ impl DownloadQueueManager {
             self.queue[idx].state = QueueItemState::Active;
             action
         } else if self.active_count() == 0 {
-            // All items are Done/Failed and nothing is in flight — queue drained.
+            // All items are Done and nothing is in flight — queue drained.
             self.queue.clear();
             QueueAction::Complete
         } else {

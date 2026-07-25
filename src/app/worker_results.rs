@@ -653,8 +653,6 @@ impl WorkbenchApp {
                 scale: result.scale,
                 azimuth_spacing_deg: result.azimuth_spacing_deg,
                 radial_times: result.radial_times.clone(),
-                sweep_start_secs: result.sweep_start_secs,
-                sweep_end_secs: result.sweep_end_secs,
                 product: result.product.clone(),
             },
         );

@@ -126,7 +126,7 @@ impl KnownChunkInventory {
     }
 
     /// The newest known chunk across all volumes (the availability anchor).
-    #[allow(dead_code)] // Exercised by tests; no prod caller.
+    #[cfg(test)]
     pub(crate) fn newest(&self) -> Option<KnownChunk> {
         self.newest
     }

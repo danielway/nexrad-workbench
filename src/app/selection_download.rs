@@ -96,7 +96,6 @@ impl WorkbenchApp {
                 .advance(is_paused)
             {
                 QueueAction::StartDownload {
-                    idx: _,
                     date,
                     file_name,
                     scan_start,

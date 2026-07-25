@@ -84,9 +84,9 @@ const SELECTION_BULK_CONFIRM_SECS: f64 = 6.0 * 3600.0;
 const SELECTION_FETCH_DEADLINE_SECS: f64 = 30.0;
 
 /// Approximate compressed bytes per volume scan, used only to estimate a
-/// selection's download size in the confirm modal. `ArchiveFileMeta.size` is
-/// not populated from S3 listings, so this is a rough, tunable constant rather
-/// than a measured value.
+/// selection's download size in the confirm modal. The S3 listing exposes no
+/// file sizes, so this is a rough, tunable constant rather than a measured
+/// value.
 const AVG_SCAN_BYTES: u64 = 5 * 1024 * 1024;
 
 /// How long a live stream keeps ingesting after the playhead detaches (the
