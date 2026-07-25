@@ -19,24 +19,24 @@ impl super::Overlay for ColorScaleOverlay {
     }
 }
 
-fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::state::RadarProduct) {
+fn draw_color_scale(ui: &mut egui::Ui, rect: &Rect, product: &crate::core::RadarProduct) {
     use crate::nexrad::color_table::{build_reflectivity_lut, product_value_range};
     use nexrad_render::Product;
 
     let product_nr = match product {
-        crate::state::RadarProduct::Reflectivity => Product::Reflectivity,
-        crate::state::RadarProduct::Velocity => Product::Velocity,
-        crate::state::RadarProduct::SpectrumWidth => Product::SpectrumWidth,
-        crate::state::RadarProduct::DifferentialReflectivity => Product::DifferentialReflectivity,
-        crate::state::RadarProduct::CorrelationCoefficient => Product::CorrelationCoefficient,
-        crate::state::RadarProduct::DifferentialPhase => Product::DifferentialPhase,
-        crate::state::RadarProduct::ClutterFilterPower => Product::ClutterFilterPower,
+        crate::core::RadarProduct::Reflectivity => Product::Reflectivity,
+        crate::core::RadarProduct::Velocity => Product::Velocity,
+        crate::core::RadarProduct::SpectrumWidth => Product::SpectrumWidth,
+        crate::core::RadarProduct::DifferentialReflectivity => Product::DifferentialReflectivity,
+        crate::core::RadarProduct::CorrelationCoefficient => Product::CorrelationCoefficient,
+        crate::core::RadarProduct::DifferentialPhase => Product::DifferentialPhase,
+        crate::core::RadarProduct::ClutterFilterPower => Product::ClutterFilterPower,
     };
 
     let (min_val, max_val) = product_value_range(product_nr);
 
     // Build the LUT (1024 entries) — for reflectivity uses OKLab, others use crate scale
-    let lut = if matches!(product, crate::state::RadarProduct::Reflectivity) {
+    let lut = if matches!(product, crate::core::RadarProduct::Reflectivity) {
         build_reflectivity_lut(min_val, max_val)
     } else {
         let color_scale = crate::nexrad::color_table::continuous_color_scale(product_nr);

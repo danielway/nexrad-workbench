@@ -5,9 +5,9 @@
 //! steps through the radar volume shell, and samples radar data via trilinear
 //! interpolation across azimuth, range, and elevation dimensions.
 
+use crate::core::RenderProcessing;
 use crate::geo::Camera;
 use crate::nexrad::VolumeSweepMeta;
-use crate::state::RenderProcessing;
 use glow::HasContext;
 use std::sync::Arc;
 

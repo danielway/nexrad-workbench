@@ -406,7 +406,7 @@ pub(super) fn step_frame(
             let step = playback.state.speed.timeline_seconds_per_real_second();
             let fallback = current_pos + step * direction as f64;
             let new_pos = match &state.viz_state.elevation_selection {
-                crate::state::ElevationSelection::Fixed {
+                crate::core::ElevationSelection::Fixed {
                     elevation_number, ..
                 } => {
                     if direction < 0 {
@@ -421,7 +421,7 @@ pub(super) fn step_frame(
                             .unwrap_or(fallback)
                     }
                 }
-                crate::state::ElevationSelection::Latest => {
+                crate::core::ElevationSelection::Latest => {
                     if direction < 0 {
                         timeline
                             .scans

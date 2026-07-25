@@ -1,9 +1,8 @@
 //! Right panel UI: product selection, layers, and rendering controls.
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::state::{
-    format_bytes, AppState, ElevationSelection, InterpolationMode, RadarProduct, StorageSettings,
-};
+use crate::core::{ElevationSelection, InterpolationMode, RadarProduct};
+use crate::state::{format_bytes, AppState, StorageSettings};
 use eframe::egui::{self, RichText, ScrollArea};
 
 pub(super) struct RightPanelLayer;

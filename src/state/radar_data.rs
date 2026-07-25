@@ -446,16 +446,16 @@ impl RadarTimeline {
     /// bounds (looping divides by the span width).
     pub fn lookback_window(
         &self,
-        elevation_selection: &crate::state::ElevationSelection,
+        elevation_selection: &crate::core::ElevationSelection,
         product: &str,
         now: f64,
         n: usize,
     ) -> Option<(f64, f64)> {
         let frames = match elevation_selection {
-            crate::state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             } => self.matching_sweep_end_times_by_number(*elevation_number, product, None),
-            crate::state::ElevationSelection::Latest => self.all_sweep_end_times(product, None),
+            crate::core::ElevationSelection::Latest => self.all_sweep_end_times(product, None),
         };
         // `frames` is sorted ascending; keep those at/<= now (small slack so a
         // just-completed frame whose end_time rounds a hair past `now` counts).
@@ -775,7 +775,7 @@ mod tests {
 
     // --- lookback_window tests ---
 
-    use crate::state::ElevationSelection;
+    use crate::core::ElevationSelection;
 
     fn fixed(elev_num: u8) -> ElevationSelection {
         ElevationSelection::Fixed {
@@ -1353,7 +1353,7 @@ mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
-    use crate::state::ElevationSelection;
+    use crate::core::ElevationSelection;
 
     // --- local builders (mirror the sibling `mod tests` private helpers) ---
 

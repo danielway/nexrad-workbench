@@ -357,7 +357,7 @@ fn apply_url_params(
     }
 
     if let Some(ref product_code) = url_params.product {
-        if let Some(product) = state::RadarProduct::from_short_code(product_code) {
+        if let Some(product) = crate::core::RadarProduct::from_short_code(product_code) {
             state.viz_state.product = product;
         }
     }

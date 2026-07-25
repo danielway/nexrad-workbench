@@ -31,7 +31,7 @@ use crate::state::playback_manager::PlaybackManager;
 #[derive(Default)]
 pub struct ScrubCache {
     pub last_playback_ts: Option<f64>,
-    pub last_elevation_selection: Option<crate::state::ElevationSelection>,
+    pub last_elevation_selection: Option<crate::core::ElevationSelection>,
     pub last_scan_count: usize,
     /// Active scan timestamp (sub-second Unix seconds) from
     /// `RenderCoordinator::scan_key`.

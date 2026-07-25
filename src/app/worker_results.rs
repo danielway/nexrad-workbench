@@ -6,8 +6,8 @@
 //! plus the small helpers (`set_active_scan`, `advance_active_scan_chunk`,
 //! `clear_active_scan`) that bridge worker output and `RenderCoordinator`.
 
+use crate::core::SweepIdentity;
 use crate::state::playback_manager::{sweep_cache_key, CachedSweepData};
-use crate::state::SweepIdentity;
 use crate::{data, nexrad, state, WorkbenchApp, MAX_SCAN_AGE_SECS};
 use eframe::egui;
 
@@ -672,7 +672,7 @@ impl WorkbenchApp {
         // Stale results from rapid clicks or in-flight prefetches fail
         // this check and stay cached (for prev-sweep upload) without
         // clobbering the main GPU texture.
-        let result_identity = state::SweepIdentity::new(
+        let result_identity = SweepIdentity::new(
             result.context.scan_key.clone(),
             result.context.elevation_number,
             result.product.clone(),
@@ -758,7 +758,7 @@ impl WorkbenchApp {
             .unwrap_or(result.mean_elevation);
 
         if gpu_upload_succeeded {
-            self.state.viz_state.displayed = Some(state::DisplayedSweep {
+            self.state.viz_state.displayed = Some(crate::core::DisplayedSweep {
                 identity: result_identity.clone(),
                 start_time: result.sweep_start_secs,
                 end_time: result.sweep_end_secs,
@@ -873,7 +873,7 @@ impl WorkbenchApp {
                 // *different* sweep, so we only roll it into
                 // `previous_displayed` then. Repeated partial-sweep uploads
                 // for the *same* elevation overwrite `displayed` in place.
-                let new_displayed = state::DisplayedSweep {
+                let new_displayed = crate::core::DisplayedSweep {
                     identity: SweepIdentity::new(
                         result.context.scan_key.clone(),
                         result.context.elevation_number,

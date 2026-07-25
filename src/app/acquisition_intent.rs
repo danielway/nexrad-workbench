@@ -153,10 +153,10 @@ impl WorkbenchApp {
             return;
         };
         let elevation_filter = match &self.state.viz_state.elevation_selection {
-            state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             } => Some(*elevation_number),
-            state::ElevationSelection::Latest => None,
+            crate::core::ElevationSelection::Latest => None,
         };
         let site_id = self.state.viz_state.site_id.clone();
         let intent = {
@@ -227,10 +227,10 @@ impl WorkbenchApp {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         bucket.hash(&mut h);
         match &self.state.viz_state.elevation_selection {
-            state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             } => (1u8, *elevation_number).hash(&mut h),
-            state::ElevationSelection::Latest => (0u8, 0u8).hash(&mut h),
+            crate::core::ElevationSelection::Latest => (0u8, 0u8).hash(&mut h),
         }
         self.state.viz_state.product.to_worker_string().hash(&mut h);
         self.state.viz_state.site_id.hash(&mut h);
@@ -249,10 +249,10 @@ impl WorkbenchApp {
         // Elevation scope: a Fixed cut scopes ingest to that elevation; Latest
         // may render any cut as the cursor advances, so fetch the whole volume.
         let elevation_filter = match &self.state.viz_state.elevation_selection {
-            state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             } => Some(*elevation_number),
-            state::ElevationSelection::Latest => None,
+            crate::core::ElevationSelection::Latest => None,
         };
 
         // Prefetch window: direction-aware, speed-scaled while playing, with
@@ -527,10 +527,10 @@ impl WorkbenchApp {
         }
 
         let elevation_filter = match &self.state.viz_state.elevation_selection {
-            state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             } => Some(*elevation_number),
-            state::ElevationSelection::Latest => None,
+            crate::core::ElevationSelection::Latest => None,
         };
         let site_id = self.state.viz_state.site_id.clone();
         let today = chrono::DateTime::from_timestamp(now_secs as i64, 0)
@@ -650,10 +650,10 @@ impl WorkbenchApp {
         let win_end_i64 = now as i64;
         let win_start_i64 = resolved_start.min(now - basis.fallback_span_secs()) as i64;
         let elevation_filter = match &self.state.viz_state.elevation_selection {
-            state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             } => Some(*elevation_number),
-            state::ElevationSelection::Latest => None,
+            crate::core::ElevationSelection::Latest => None,
         };
 
         let (intents, _listing_pending) = self.compute_intents_for_window(

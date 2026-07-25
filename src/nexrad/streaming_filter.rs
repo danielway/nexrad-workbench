@@ -3,7 +3,7 @@
 //! Lifted out of [`super::realtime`] so the projection layer
 //! ([`super::streaming_state`], [`super::streaming_plan`]) can depend on
 //! it without creating a cycle through `realtime`. The
-//! `From<&crate::state::ElevationSelection>` translation stays in
+//! `From<&crate::core::ElevationSelection>` translation stays in
 //! `realtime.rs` since it depends on the UI-side selection type.
 
 /// Active filter on the realtime chunk stream.

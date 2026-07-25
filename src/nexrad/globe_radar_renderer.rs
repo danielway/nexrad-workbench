@@ -5,8 +5,8 @@
 //! color LUT logic as the flat renderer — only the coordinate source differs:
 //! polar coords come from vertex attributes instead of screen-space math.
 
+use crate::core::RenderProcessing;
 use crate::geo::Camera;
-use crate::state::RenderProcessing;
 use glow::HasContext;
 use std::sync::Arc;
 
@@ -354,8 +354,8 @@ impl GlobeRadarRenderer {
 
             // Processing uniforms
             let interp_mode = match processing.interpolation {
-                crate::state::InterpolationMode::Nearest => 0,
-                crate::state::InterpolationMode::Bilinear => 1,
+                crate::core::InterpolationMode::Nearest => 0,
+                crate::core::InterpolationMode::Bilinear => 1,
             };
             gl.uniform_1_i32(Some(&self.u_interpolation), interp_mode);
             gl.uniform_1_f32(Some(&self.u_opacity), processing.opacity);

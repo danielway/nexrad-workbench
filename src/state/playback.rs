@@ -101,7 +101,7 @@ fn mode_of_tier(tier: TimelineTier, is_lookback: bool) -> PlaybackMode {
 /// previous build's inputs to decide whether a rebuild is needed.
 #[derive(PartialEq, Clone, Default)]
 pub struct MacroFrameInputs {
-    pub elevation: super::viz::ElevationSelection,
+    pub elevation: crate::core::ElevationSelection,
     /// Selected product (worker-string). A frame is a sweep matching the
     /// product AND tilt, so the list must rebuild when the product changes —
     /// otherwise a stale list survives a product switch. Borrowed `&'static str`
@@ -1706,7 +1706,7 @@ mod tests {
     fn rebuild_cause_distinguishes_elevation_from_window_changes() {
         let mut mp = MacroPlaybackState::default();
         let base = MacroFrameInputs {
-            elevation: crate::state::ElevationSelection::default(),
+            elevation: crate::core::ElevationSelection::default(),
             product: "reflectivity",
             bounds: None,
             scan_count: 3,
@@ -1751,7 +1751,7 @@ mod tests {
         // Elevation change → ElevationChanged, even when the window moved too
         // (elevation wins because it carries the snap-to-frame side effect).
         let elev_changed = MacroFrameInputs {
-            elevation: crate::state::ElevationSelection::Fixed {
+            elevation: crate::core::ElevationSelection::Fixed {
                 elevation_number: 2,
                 angle: 1.45,
             },

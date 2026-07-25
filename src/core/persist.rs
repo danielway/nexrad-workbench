@@ -173,7 +173,7 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::state::RadarProduct;
+    use crate::core::RadarProduct;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     // Same baseline-snapshot idiom as `mod tests::fixture`: a prefs snapshot

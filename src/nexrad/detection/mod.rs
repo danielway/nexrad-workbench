@@ -13,7 +13,7 @@
 mod components;
 mod features;
 
-use crate::state::StormCellInfo;
+use crate::core::StormCellInfo;
 
 /// Borrowed view of the sweep data needed to run detection.
 pub struct DetectionInput<'a> {

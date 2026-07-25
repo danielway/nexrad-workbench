@@ -264,10 +264,10 @@ impl WorkbenchApp {
     /// to that elevation; Latest fetches the whole volume.
     fn active_elevation_filter(&self) -> Option<u8> {
         match &self.state.viz_state.elevation_selection {
-            state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             } => Some(*elevation_number),
-            state::ElevationSelection::Latest => None,
+            crate::core::ElevationSelection::Latest => None,
         }
     }
 

@@ -1,7 +1,7 @@
 //! Render request parameter types.
 //!
 //! Single-elevation requests are identified by [`SweepIdentity`] (defined in
-//! `state::viz`) so the dedup cache shares one type with the on-GPU
+//! `core::domain::viz`) so the dedup cache shares one type with the on-GPU
 //! `displayed` slot and the resolver. Volume requests keep their own type
 //! because they span elevations.
 

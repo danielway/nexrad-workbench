@@ -305,7 +305,7 @@ impl WorkbenchApp {
     /// Build the elevation list from a scan's VCP data.
     pub(crate) fn build_elevation_list(
         scan: &crate::state::radar_data::Scan,
-    ) -> Vec<crate::state::ElevationListEntry> {
+    ) -> Vec<crate::core::ElevationListEntry> {
         state::playback_manager::build_elevation_list(scan)
     }
 

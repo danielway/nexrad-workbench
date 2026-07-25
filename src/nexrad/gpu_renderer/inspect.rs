@@ -101,7 +101,7 @@ impl RadarGpuRenderer {
         radar_lat: f64,
         radar_lon: f64,
         threshold_dbz: f32,
-    ) -> Vec<crate::state::StormCellInfo> {
+    ) -> Vec<crate::core::StormCellInfo> {
         if !self.has_data || self.cpu.azimuths.is_empty() {
             return Vec::new();
         }

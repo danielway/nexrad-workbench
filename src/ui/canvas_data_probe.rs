@@ -6,9 +6,9 @@
 //! distinguishes this map-space hover tool from the scan inspector (the
 //! per-scan volume breakdown), which is a separate surface.
 
+use crate::core::StormCellInfo;
 use crate::geo::MapProjection;
 use crate::nexrad::RadarGpuRenderer;
-use crate::state::StormCellInfo;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2};
 use geo_types::Coord;
 use std::sync::{Arc, Mutex};
@@ -23,7 +23,7 @@ pub(crate) fn render_data_probe(
     radar_lat: f64,
     radar_lon: f64,
     gpu_renderer: Option<&Arc<Mutex<RadarGpuRenderer>>>,
-    product: &crate::state::RadarProduct,
+    product: &crate::core::RadarProduct,
     use_local_time: bool,
     sweep_params: Option<(f32, f32)>,
 ) {

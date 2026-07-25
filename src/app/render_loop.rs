@@ -5,8 +5,8 @@
 //! latest decoded sweep is visible) and before UI panels render (so the
 //! canvas reflects the new frame).
 
+use crate::core::SweepIdentity;
 use crate::state::playback_manager::{PlaybackManager, PrevSweepAction};
-use crate::state::SweepIdentity;
 use crate::{data, state, WorkbenchApp, MAX_SCAN_AGE_SECS, PREFETCH_LOOKAHEAD_SECS};
 
 impl WorkbenchApp {
@@ -32,14 +32,14 @@ impl WorkbenchApp {
 
             if let Some(cause) = self.playback.state.macro_playback.rebuild_cause(&inputs) {
                 let frames = match &inputs.elevation {
-                    crate::state::ElevationSelection::Fixed {
+                    crate::core::ElevationSelection::Fixed {
                         elevation_number, ..
                     } => self.timeline.scans.matching_sweep_end_times_by_number(
                         *elevation_number,
                         product,
                         inputs.bounds,
                     ),
-                    crate::state::ElevationSelection::Latest => self
+                    crate::core::ElevationSelection::Latest => self
                         .timeline
                         .scans
                         .all_sweep_end_times(product, inputs.bounds),
@@ -388,8 +388,8 @@ impl WorkbenchApp {
         // the current main-slot product (prev animation only makes sense
         // within a single product channel).
         let prev_product = self.state.viz_state.product.to_worker_string().to_string();
-        self.state.viz_state.previous_displayed = Some(state::DisplayedSweep {
-            identity: state::SweepIdentity::new(prev_scan_key.clone(), prev_elev_num, prev_product),
+        self.state.viz_state.previous_displayed = Some(crate::core::DisplayedSweep {
+            identity: SweepIdentity::new(prev_scan_key.clone(), prev_elev_num, prev_product),
             start_time: prev_start,
             end_time: prev_end,
             elevation_deg: prev_elev_deg,

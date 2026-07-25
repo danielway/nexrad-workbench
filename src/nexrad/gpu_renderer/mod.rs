@@ -7,7 +7,7 @@ mod inspect;
 pub(crate) mod shaders;
 mod textures;
 
-use crate::state::RenderProcessing;
+use crate::core::RenderProcessing;
 use glow::HasContext;
 use std::sync::Arc;
 
@@ -359,8 +359,8 @@ impl RadarGpuRenderer {
 
             // Processing uniforms
             let interp_mode = match processing.interpolation {
-                crate::state::InterpolationMode::Nearest => 0,
-                crate::state::InterpolationMode::Bilinear => 1,
+                crate::core::InterpolationMode::Nearest => 0,
+                crate::core::InterpolationMode::Bilinear => 1,
             };
             gl.uniform_1_i32(Some(&self.uniforms.interpolation), interp_mode);
             gl.uniform_1_f32(Some(&self.uniforms.opacity), processing.opacity);

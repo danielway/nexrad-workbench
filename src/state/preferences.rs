@@ -5,7 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::{AppState, ElevationSelection, InterpolationMode, PlaybackSpeed};
+use crate::core::{ElevationSelection, InterpolationMode};
+
+use super::{AppState, PlaybackSpeed};
 
 /// User preferences that persist across page reloads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

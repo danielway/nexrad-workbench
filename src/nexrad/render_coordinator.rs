@@ -5,8 +5,8 @@
 
 use super::decode_worker::{default_pool_size, WorkerOutcome, WorkerPool};
 use super::render_request::VolumeRenderRequest;
+use crate::core::SweepIdentity;
 use crate::data::ScanKey;
-use crate::state::SweepIdentity;
 
 /// Coordinates render requests to a pool of decode workers, deduplicating
 /// identical requests and owning the current scan/elevation state.

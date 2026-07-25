@@ -25,12 +25,17 @@
 pub mod acquisition;
 pub mod canvas;
 pub mod diagnostics;
+pub mod domain;
 pub mod effect;
 pub mod intent;
 pub mod panels;
 pub mod persist;
 pub mod render;
 
+pub use domain::viz::{
+    DisplayedSweep, ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct,
+    RenderProcessing, StormCellInfo, SweepIdentity,
+};
 pub use effect::{Effect, LocationResult};
 pub use persist::{decide_persist, PersistDecision};
 

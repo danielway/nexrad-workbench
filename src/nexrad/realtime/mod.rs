@@ -36,11 +36,11 @@ use std::rc::Rc;
 mod streaming;
 use streaming::streaming_loop;
 
-impl From<&crate::state::ElevationSelection> for StreamingFilter {
-    fn from(selection: &crate::state::ElevationSelection) -> Self {
+impl From<&crate::core::ElevationSelection> for StreamingFilter {
+    fn from(selection: &crate::core::ElevationSelection) -> Self {
         match selection {
-            crate::state::ElevationSelection::Latest => StreamingFilter::All,
-            crate::state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Latest => StreamingFilter::All,
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             } => StreamingFilter::Elevation(*elevation_number),
         }
@@ -395,7 +395,7 @@ impl RealtimeChannel {
     /// Push the user's elevation selection down as a [`StreamingFilter`].
     /// Called once per frame from the UI; the loop's de-dupe makes this
     /// cheap.
-    pub fn sync_filter(&self, selection: &crate::state::ElevationSelection) {
+    pub fn sync_filter(&self, selection: &crate::core::ElevationSelection) {
         self.set_filter(StreamingFilter::from(selection));
     }
 
@@ -418,14 +418,14 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn filter_from_latest_is_all() {
-        let sel = crate::state::ElevationSelection::Latest;
+        let sel = crate::core::ElevationSelection::Latest;
         let filter = StreamingFilter::from(&sel);
         assert_eq!(filter, StreamingFilter::All);
     }
 
     #[wasm_bindgen_test]
     fn filter_from_fixed_maps_to_elevation_number() {
-        let sel = crate::state::ElevationSelection::Fixed {
+        let sel = crate::core::ElevationSelection::Fixed {
             elevation_number: 3,
             angle: 1.5,
         };
@@ -435,11 +435,11 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn filter_from_fixed_preserves_distinct_numbers() {
-        let sel1 = crate::state::ElevationSelection::Fixed {
+        let sel1 = crate::core::ElevationSelection::Fixed {
             elevation_number: 1,
             angle: 0.5,
         };
-        let sel7 = crate::state::ElevationSelection::Fixed {
+        let sel7 = crate::core::ElevationSelection::Fixed {
             elevation_number: 7,
             angle: 4.0,
         };
@@ -451,7 +451,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn filter_from_default_selection_is_elevation_one() {
         // ElevationSelection::default() is Fixed { 1, 0.5 }.
-        let sel = crate::state::ElevationSelection::default();
+        let sel = crate::core::ElevationSelection::default();
         assert_eq!(StreamingFilter::from(&sel), StreamingFilter::Elevation(1));
     }
 
@@ -534,7 +534,7 @@ mod coverage_tests {
         let ch = RealtimeChannel::new();
         ch.set_filter(StreamingFilter::Elevation(2));
         ch.set_filter(StreamingFilter::All);
-        let sel = crate::state::ElevationSelection::Fixed {
+        let sel = crate::core::ElevationSelection::Fixed {
             elevation_number: 4,
             angle: 2.4,
         };

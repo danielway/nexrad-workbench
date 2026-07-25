@@ -4,6 +4,8 @@
 //! State is organized into logical groupings that correspond to different
 //! areas of functionality.
 
+use crate::core::{ElevationListEntry, RenderProcessing};
+
 #[allow(dead_code)]
 pub(crate) mod acquisition;
 mod alerts;
@@ -71,10 +73,7 @@ pub use vcp_forecast::{
     derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord,
     ForecastTimingLabel, SweepForecast, SweepStatus, VolumeForecastSnapshot, WaitResolution,
 };
-pub use viz::{
-    derive_canvas_caption, CanvasCaption, DisplayedSweep, ElevationListEntry, ElevationSelection,
-    InterpolationMode, RadarProduct, RenderProcessing, StormCellInfo, SweepIdentity, VizState,
-};
+pub use viz::{derive_canvas_caption, CanvasCaption, VizState};
 pub use volume_elevation_roster::VolumeElevationRoster;
 
 /// Cap on the recent-network-requests ring used by the UI log.

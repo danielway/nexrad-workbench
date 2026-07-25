@@ -15,8 +15,9 @@
 //! and live-mode interactions there don't generalize; its entry in the
 //! help overlay still lives here so users see the full set in one place.
 
+use crate::core::RadarProduct;
 use crate::geo::ViewMode;
-use crate::state::{AppState, PlaybackSpeed, RadarProduct};
+use crate::state::{AppState, PlaybackSpeed};
 use eframe::egui::{self, RichText};
 
 // ---------------------------------------------------------------------------
@@ -449,7 +450,7 @@ fn handle_frame_step(
     detach_for_seek(state, live, playback);
     let new_pos = match (&state.viz_state.elevation_selection, dir) {
         (
-            crate::state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             },
             StepDir::Forward,
@@ -458,7 +459,7 @@ fn handle_frame_step(
             .next_matching_sweep_end_by_number(pos, *elevation_number)
             .unwrap_or(pos + fallback),
         (
-            crate::state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             },
             StepDir::Backward,
@@ -466,11 +467,11 @@ fn handle_frame_step(
             .scans
             .prev_matching_sweep_end_by_number(pos, *elevation_number)
             .unwrap_or(pos - fallback),
-        (crate::state::ElevationSelection::Latest, StepDir::Forward) => timeline
+        (crate::core::ElevationSelection::Latest, StepDir::Forward) => timeline
             .scans
             .next_any_sweep_end(pos)
             .unwrap_or(pos + fallback),
-        (crate::state::ElevationSelection::Latest, StepDir::Backward) => timeline
+        (crate::core::ElevationSelection::Latest, StepDir::Backward) => timeline
             .scans
             .prev_any_sweep_end(pos)
             .unwrap_or(pos - fallback),
@@ -497,7 +498,7 @@ fn handle_scan_step(
     detach_for_seek(state, live, playback);
     let new_pos = match (&state.viz_state.elevation_selection, dir) {
         (
-            crate::state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             },
             StepDir::Forward,
@@ -506,7 +507,7 @@ fn handle_scan_step(
             .next_scan_matching_sweep_end_by_number(pos, *elevation_number)
             .unwrap_or(pos + fallback),
         (
-            crate::state::ElevationSelection::Fixed {
+            crate::core::ElevationSelection::Fixed {
                 elevation_number, ..
             },
             StepDir::Backward,
@@ -514,11 +515,11 @@ fn handle_scan_step(
             .scans
             .prev_scan_matching_sweep_end_by_number(pos, *elevation_number)
             .unwrap_or(pos - fallback),
-        (crate::state::ElevationSelection::Latest, StepDir::Forward) => timeline
+        (crate::core::ElevationSelection::Latest, StepDir::Forward) => timeline
             .scans
             .next_scan_any_sweep_end(pos)
             .unwrap_or(pos + fallback),
-        (crate::state::ElevationSelection::Latest, StepDir::Backward) => timeline
+        (crate::core::ElevationSelection::Latest, StepDir::Backward) => timeline
             .scans
             .prev_scan_any_sweep_end(pos)
             .unwrap_or(pos - fallback),
@@ -753,17 +754,17 @@ fn handle_cycle_elevation(
         return;
     }
     let current_idx = match &state.viz_state.elevation_selection {
-        crate::state::ElevationSelection::Fixed {
+        crate::core::ElevationSelection::Fixed {
             elevation_number, ..
         } => entries
             .iter()
             .position(|e| e.elevation_number == *elevation_number)
             .unwrap_or(0),
-        crate::state::ElevationSelection::Latest => 0,
+        crate::core::ElevationSelection::Latest => 0,
     };
     let next_idx = (current_idx + 1) % entries.len();
     let entry = &entries[next_idx];
-    state.viz_state.elevation_selection = crate::state::ElevationSelection::Fixed {
+    state.viz_state.elevation_selection = crate::core::ElevationSelection::Fixed {
         elevation_number: entry.elevation_number,
         angle: entry.angle,
     };

@@ -297,16 +297,16 @@ impl PlaybackManager {
 pub(crate) fn resolve_active_sweep_target(
     site_id: &str,
     playback_position: f64,
-    elevation_selection: &crate::state::ElevationSelection,
-    product: crate::state::RadarProduct,
+    elevation_selection: &crate::core::ElevationSelection,
+    product: crate::core::RadarProduct,
     timeline: &RadarTimeline,
     max_scan_age_secs: f64,
-) -> Option<crate::state::SweepIdentity> {
+) -> Option<crate::core::SweepIdentity> {
     let scan = timeline.find_recent_scan(playback_position, max_scan_age_secs)?;
     let product_str = product.to_worker_string();
 
     let sweep = match elevation_selection {
-        crate::state::ElevationSelection::Fixed {
+        crate::core::ElevationSelection::Fixed {
             elevation_number, ..
         } => scan
             .sweeps
@@ -318,7 +318,7 @@ pub(crate) fn resolve_active_sweep_target(
                     .partial_cmp(&b.start_time)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })?,
-        crate::state::ElevationSelection::Latest => scan
+        crate::core::ElevationSelection::Latest => scan
             .sweeps
             .iter()
             .filter(|s| s.start_time <= playback_position)
@@ -336,7 +336,7 @@ pub(crate) fn resolve_active_sweep_target(
         return None;
     }
 
-    Some(crate::state::SweepIdentity::new(
+    Some(crate::core::SweepIdentity::new(
         crate::data::ScanKey::from_secs_f64(site_id, scan.key_timestamp),
         sweep.elevation_number,
         product_str,
@@ -358,7 +358,7 @@ pub(crate) enum DesiredDisplay {
     /// Produced by the chunk-ingest → `render_live` → `LiveDecoded` path.
     LivePartial { elevation_number: u8 },
     /// Render a finalized/cached sweep blob (worker decode → `Decoded` upload).
-    Cached(crate::state::SweepIdentity),
+    Cached(crate::core::SweepIdentity),
     /// Nothing matches the user's intent. Callers must not blindly blank: a
     /// valid live partial may legitimately hold the canvas (see the caller's
     /// `Blank` handling).
@@ -386,8 +386,8 @@ pub(crate) enum DesiredDisplay {
 pub(crate) fn resolve_desired_display(
     site_id: &str,
     playback_position: f64,
-    elevation_selection: &crate::state::ElevationSelection,
-    product: crate::state::RadarProduct,
+    elevation_selection: &crate::core::ElevationSelection,
+    product: crate::core::RadarProduct,
     timeline: &RadarTimeline,
     max_scan_age_secs: f64,
     live_cut: Option<(u8, i64)>,
@@ -400,12 +400,12 @@ pub(crate) fn resolve_desired_display(
             let scan_ms = scan.key_ms();
             let intent_is_live_cut = scan_ms == anchor_ms
                 && match elevation_selection {
-                    crate::state::ElevationSelection::Fixed {
+                    crate::core::ElevationSelection::Fixed {
                         elevation_number, ..
                     } => *elevation_number == elev,
                     // The collecting cut *is* the latest, so `Latest` always
                     // points at it while the resolved scan is the live volume.
-                    crate::state::ElevationSelection::Latest => true,
+                    crate::core::ElevationSelection::Latest => true,
                 };
             if intent_is_live_cut {
                 return DesiredDisplay::LivePartial {
@@ -434,7 +434,7 @@ pub(crate) fn resolve_desired_display(
 /// identity (e.g. "0.5°") — not the encoder's measured average, which
 /// wobbles a few hundredths of a degree per sweep. We only fall back to
 /// the measured value when no VCP info is available at all.
-pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationListEntry> {
+pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::core::ElevationListEntry> {
     let products_for = |elev_num: u8| -> Vec<String> {
         scan.sweeps
             .iter()
@@ -452,7 +452,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
                 .enumerate()
                 .map(|(i, e)| {
                     let elevation_number = (i + 1) as u8;
-                    crate::state::ElevationListEntry {
+                    crate::core::ElevationListEntry {
                         elevation_number,
                         angle: e.angle,
                         waveform: e.waveform.clone(),
@@ -473,7 +473,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
             .enumerate()
             .map(|(i, e)| {
                 let elevation_number = (i + 1) as u8;
-                crate::state::ElevationListEntry {
+                crate::core::ElevationListEntry {
                     elevation_number,
                     angle: e.angle,
                     waveform: e.waveform.to_string(),
@@ -488,7 +488,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
     // 3. Fall back to sweep metadata (no VCP available)
     scan.sweeps
         .iter()
-        .map(|s| crate::state::ElevationListEntry {
+        .map(|s| crate::core::ElevationListEntry {
             elevation_number: s.elevation_number,
             angle: s.elevation,
             waveform: String::new(),
@@ -505,11 +505,11 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::state::ElevationLi
 /// completed sweep narrows it down.
 pub(crate) fn build_elevation_list_from_vcp(
     vcp: &crate::data::keys::ExtractedVcp,
-) -> Vec<crate::state::ElevationListEntry> {
+) -> Vec<crate::core::ElevationListEntry> {
     vcp.elevations
         .iter()
         .enumerate()
-        .map(|(i, e)| crate::state::ElevationListEntry {
+        .map(|(i, e)| crate::core::ElevationListEntry {
             elevation_number: (i + 1) as u8,
             angle: e.angle,
             waveform: e.waveform.clone(),
@@ -523,8 +523,8 @@ pub(crate) fn build_elevation_list_from_vcp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{ElevationSelection, RadarProduct};
     use crate::state::radar_data::{Radial, Scan, Sweep};
-    use crate::state::{ElevationSelection, RadarProduct};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     const MAX_AGE: f64 = 15.0 * 60.0;
