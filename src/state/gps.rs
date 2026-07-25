@@ -10,7 +10,7 @@
 
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
 
-use crate::ui::LocationResult;
+use crate::core::LocationResult;
 
 pub struct GpsState {
     /// Last successfully fetched coordinates, as (latitude, longitude).

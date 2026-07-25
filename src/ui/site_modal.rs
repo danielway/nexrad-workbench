@@ -5,6 +5,7 @@
 //! visit (no preferred site saved), shows welcome verbiage; on subsequent
 //! visits, shows a shorter "change site" heading instead.
 
+use crate::core::LocationResult;
 use crate::data::{all_sites_sorted, get_site, nearest_site};
 use crate::net::retry::{with_retry, Verdict, DEFAULT_POLICY};
 use crate::state::AppState;
@@ -25,14 +26,6 @@ pub enum SiteModalMode {
     ZipEntry,
     /// Waiting for an async location result (geolocation or zip lookup).
     Pending,
-}
-
-/// A location result delivered by an async operation (geolocation or zip).
-pub(crate) enum LocationResult {
-    /// Successfully resolved to a lat/lon.
-    Success(f64, f64),
-    /// The operation failed with an error message.
-    Error(String),
 }
 
 /// Persistent state for the site modal.

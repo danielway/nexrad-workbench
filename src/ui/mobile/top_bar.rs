@@ -144,7 +144,7 @@ fn draw_mobile_top_bar(
     let (inset_top, _inset_right, _inset_bottom, _inset_left) = super::safe_area_insets();
 
     let panel_fill = ctx.style().visuals.panel_fill;
-    let accent_color = live.app_mode.color();
+    let accent_color = crate::ui::colors::mode::color(live.app_mode);
 
     // Zero inner-margin frame so the content sits as high as possible —
     // egui's default top-panel frame adds a couple of pixels of padding on

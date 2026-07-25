@@ -58,7 +58,7 @@ fn draw_top_bar(
     egui::TopBottomPanel::top("mode_accent")
         .resizable(false)
         .exact_height(3.0)
-        .frame(Frame::NONE.fill(live.app_mode.color()))
+        .frame(Frame::NONE.fill(crate::ui::colors::mode::color(live.app_mode)))
         .show(ctx, |ui| {
             ui.allocate_space(ui.available_size());
         });
@@ -846,7 +846,7 @@ pub(super) fn render_mode_badge(
     playback: &crate::subsystem::Playback,
 ) {
     let mode = live.app_mode;
-    let color = mode.color();
+    let color = crate::ui::colors::mode::color(mode);
 
     let icon_str = match mode {
         AppMode::Idle => egui_phosphor::regular::PAUSE_CIRCLE,

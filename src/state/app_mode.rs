@@ -2,9 +2,6 @@
 //! currently doing. Recomputed once per frame from `live_mode_state` and
 //! `radar_timeline`; never set directly.
 
-use crate::ui::colors::mode;
-use eframe::egui::Color32;
-
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AppMode {
     /// No data under the playback cursor and not streaming.
@@ -40,14 +37,6 @@ impl AppMode {
             AppMode::Idle => "IDLE",
             AppMode::Archive => "ARCHIVE",
             AppMode::Live => "LIVE",
-        }
-    }
-
-    pub fn color(self) -> Color32 {
-        match self {
-            AppMode::Idle => mode::IDLE,
-            AppMode::Archive => mode::ARCHIVE,
-            AppMode::Live => mode::LIVE,
         }
     }
 }

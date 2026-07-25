@@ -31,7 +31,7 @@ pub mod panels;
 pub mod persist;
 pub mod render;
 
-pub use effect::Effect;
+pub use effect::{Effect, LocationResult};
 pub use persist::{decide_persist, PersistDecision};
 
 // `Intent` is consumed starting P5; in a bin crate the re-export reads as unused

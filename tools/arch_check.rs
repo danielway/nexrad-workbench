@@ -108,11 +108,6 @@ const GRANDFATHERED: &[(&str, &str, &str)] = &[
         "RenderProcessing/Scan/Sweep etc. live in state — rehome per A1",
     ),
     (
-        "state",
-        "ui",
-        "LocationResult defined in ui/site_modal; ui::colors::mode used by app_mode — A1",
-    ),
-    (
         "alerts",
         "state",
         "manager mutates AlertsState/ErrorContext directly — feed-skeleton rework, Phase D",

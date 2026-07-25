@@ -670,7 +670,7 @@ impl WorkbenchApp {
         if self.last_favicon_mode == Some(mode) {
             return;
         }
-        let c = mode.color();
+        let c = ui::colors::mode::color(mode);
         let hex = format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
         let _ = js_set_favicon_color(&hex);
 
@@ -822,10 +822,10 @@ impl eframe::App for WorkbenchApp {
         // inline — so the success/auto-off-on-failure rules stay testable.
         for r in self.diagnostics.gps.drain_results() {
             let intent = match r {
-                ui::LocationResult::Success(lat, lon) => {
+                core::LocationResult::Success(lat, lon) => {
                     core::diagnostics::DiagnosticsIntent::GpsResolved(lat, lon)
                 }
-                ui::LocationResult::Error(msg) => {
+                core::LocationResult::Error(msg) => {
                     core::diagnostics::DiagnosticsIntent::GpsFailed(msg)
                 }
             };

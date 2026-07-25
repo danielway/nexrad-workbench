@@ -59,6 +59,16 @@ pub mod mode {
     pub const ARCHIVE: Color32 = Color32::from_rgb(100, 180, 255);
     /// Live - real-time streaming locked to now.
     pub const LIVE: Color32 = Color32::from_rgb(255, 80, 80);
+
+    /// Shell-side mapping from the derived [`AppMode`](crate::state::AppMode)
+    /// to its accent color (the core stays color-free).
+    pub fn color(mode: crate::state::AppMode) -> Color32 {
+        match mode {
+            crate::state::AppMode::Idle => IDLE,
+            crate::state::AppMode::Archive => ARCHIVE,
+            crate::state::AppMode::Live => LIVE,
+        }
+    }
 }
 
 /// Colors for radar sweep visualization (theme-independent).

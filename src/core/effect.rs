@@ -20,6 +20,15 @@
 use crate::state::url_state::ViewState;
 use crate::state::UserPreferences;
 
+/// Result of an async location operation (browser geolocation or zip-code
+/// geocoding) — the response vocabulary of [`Effect::StartGeolocation`].
+pub enum LocationResult {
+    /// Successfully resolved to a lat/lon.
+    Success(f64, f64),
+    /// The operation failed with an error message.
+    Error(String),
+}
+
 /// A fully-described URL-bar push (`history.replaceState`). The core builds this
 /// from the current view; the shell calls [`crate::state::url_state::push_to_url`].
 #[derive(Debug, Clone, PartialEq)]
