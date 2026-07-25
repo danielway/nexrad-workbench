@@ -1,5 +1,6 @@
 //! Domain vocabulary — the pure data types shared by every layer.
 
+pub mod errors;
 pub mod feeds;
 pub mod forecast;
 pub mod ops;

@@ -35,6 +35,9 @@ pub mod persist;
 pub mod render;
 pub mod timeline_view;
 
+#[allow(unused_imports)]
+pub use domain::errors::TimestampedError;
+pub use domain::errors::{AppError, ErrorContext, WorkerErrorKind};
 pub use domain::feeds::{AlertsState, GpsState, MpingState};
 pub use domain::forecast::{
     derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord,

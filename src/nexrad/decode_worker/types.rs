@@ -1,5 +1,6 @@
 //! Type definitions for worker message payloads and public result types.
 
+use crate::core::WorkerErrorKind;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -79,33 +80,6 @@ impl ResponseType {
             _ => return None,
         })
     }
-}
-
-/// Classification of a worker error.
-///
-/// Carried across the worker boundary as a snake_case JSON tag so callers
-/// can dispatch on the error category (prompt the user, retry silently,
-/// offer to free space) instead of doing brittle string checks on the
-/// `message` field.
-///
-/// The wire format is owned by `worker.js`'s `classifyError` and pinned by
-/// `tests::worker_error_kind_deserializes_known_strings` below.
-#[derive(Copy, Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkerErrorKind {
-    /// Browser storage quota exceeded — user must free space.
-    QuotaExceeded,
-    /// IDB read/write failure (transient or DB corruption).
-    IdbFailure,
-    /// Requested sweep/scan not found in the cache.
-    NotFound,
-    /// Decoded data malformed or version-mismatched.
-    InvalidData,
-    /// Worker WASM initialization failed.
-    InitFailed,
-    /// Unclassified failure (default when no kind is supplied).
-    #[serde(other)]
-    Unknown,
 }
 
 // ---------------------------------------------------------------------------
@@ -647,37 +621,6 @@ mod tests {
         assert_eq!(RequestType::Render.as_str(), "render");
         assert_eq!(RequestType::RenderLive.as_str(), "render_live");
         assert_eq!(RequestType::RenderVolume.as_str(), "render_volume");
-    }
-
-    #[wasm_bindgen_test]
-    fn worker_error_kind_deserializes_known_strings() {
-        // Pin the wire format that `worker.js` produces via classifyError.
-        // Adding a new variant here REQUIRES a parallel addition in
-        // worker.js (so the matching `err.name` branch sends the right
-        // tag).
-        let cases = [
-            ("quota_exceeded", WorkerErrorKind::QuotaExceeded),
-            ("idb_failure", WorkerErrorKind::IdbFailure),
-            ("not_found", WorkerErrorKind::NotFound),
-            ("invalid_data", WorkerErrorKind::InvalidData),
-            ("init_failed", WorkerErrorKind::InitFailed),
-            ("unknown", WorkerErrorKind::Unknown),
-        ];
-        for (s, expected) in cases {
-            let v = serde_wasm_bindgen::to_value(s).unwrap();
-            let parsed: WorkerErrorKind = serde_wasm_bindgen::from_value(v).unwrap();
-            assert_eq!(parsed, expected, "round-trip failed for {:?}", s);
-        }
-    }
-
-    #[wasm_bindgen_test]
-    fn worker_error_kind_unknown_tag_falls_back_to_unknown() {
-        // serde `#[serde(other)]` on `Unknown` ensures forward-compat:
-        // a future kind worker.js learns to emit won't fail deserialization
-        // on older clients — it just degrades to `Unknown`.
-        let v = serde_wasm_bindgen::to_value("some_future_kind").unwrap();
-        let parsed: WorkerErrorKind = serde_wasm_bindgen::from_value(v).unwrap();
-        assert_eq!(parsed, WorkerErrorKind::Unknown);
     }
 }
 

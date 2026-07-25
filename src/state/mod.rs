@@ -5,7 +5,7 @@
 //! areas of functionality.
 
 use crate::core::{
-    ElevationListEntry, FrameNow, Intent, PlaybackMode, PlaybackState, RadarTimeline,
+    ElevationListEntry, ErrorContext, FrameNow, Intent, PlaybackMode, PlaybackState, RadarTimeline,
     RenderProcessing, UserPreferences,
 };
 
@@ -13,7 +13,6 @@ use crate::core::{
 pub(crate) mod acquisition;
 mod app_mode;
 pub(crate) mod calendar;
-mod errors;
 mod frame_clock;
 mod layer;
 mod playback;
@@ -33,7 +32,6 @@ pub use acquisition::{
 };
 pub use app_mode::{derive_app_mode, AppMode};
 pub use calendar::{aggregate_day_buckets, day_tap_macro_view, DayBucket, DAY_SECS};
-pub use errors::{AppError, ErrorContext};
 pub use layer::LayerState;
 pub use render_cache::{PrevSweepCacheKey, RenderCache};
 pub use saved_events::{SavedEvent, SavedEvents};

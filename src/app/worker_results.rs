@@ -1001,7 +1001,7 @@ impl WorkbenchApp {
     fn handle_worker_error_outcome(
         &mut self,
         id: u64,
-        kind: nexrad::WorkerErrorKind,
+        kind: crate::core::WorkerErrorKind,
         message: String,
         failed_scan_timestamp_secs: Option<f64>,
     ) {
@@ -1012,7 +1012,7 @@ impl WorkbenchApp {
             message
         );
         self.state.status_message = format!("Worker error: {}", message);
-        self.state.errors.push(state::AppError::Worker {
+        self.state.errors.push(crate::core::AppError::Worker {
             kind,
             message: message.clone(),
             scan_timestamp_secs: failed_scan_timestamp_secs,
@@ -1023,7 +1023,7 @@ impl WorkbenchApp {
         // the timeline already knows — nothing matches their current filter.
         // Dispatch on the typed kind so transient errors (worker disconnect,
         // IDB failure) keep the last-good view instead of blanking.
-        if kind == nexrad::WorkerErrorKind::NotFound {
+        if kind == crate::core::WorkerErrorKind::NotFound {
             self.clear_display_no_sweep();
         }
 

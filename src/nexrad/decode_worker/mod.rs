@@ -12,8 +12,7 @@ mod types;
 pub use pool::{default_pool_size, WorkerPool};
 pub use types::{
     ChunkIngestContext, ChunkIngestResult, DecodeResult, IngestContext, IngestResult,
-    RenderContext, VolumeData, VolumeRenderContext, VolumeSweepMeta, WorkerErrorKind,
-    WorkerOutcome,
+    RenderContext, VolumeData, VolumeRenderContext, VolumeSweepMeta, WorkerOutcome,
 };
 
 use std::cell::RefCell;

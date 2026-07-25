@@ -57,7 +57,7 @@ impl AlertsManager {
         ctx: &egui::Context,
         alerts: &mut AlertsState,
         is_live: bool,
-        errors: &mut crate::state::ErrorContext,
+        errors: &mut crate::core::ErrorContext,
     ) {
         // Drain events produced by any in-flight fetch.
         let events = self.channel.drain();
@@ -115,7 +115,7 @@ impl AlertsManager {
         &mut self,
         alerts: &mut AlertsState,
         event: AlertsEvent,
-        errors: &mut crate::state::ErrorContext,
+        errors: &mut crate::core::ErrorContext,
     ) {
         alerts.fetch_in_flight = false;
         match event {
@@ -137,7 +137,7 @@ impl AlertsManager {
             AlertsEvent::Error(msg) => {
                 log::warn!("NWS alerts fetch failed: {}", msg);
                 alerts.last_error = Some(msg.clone());
-                errors.push(crate::state::AppError::Alerts { message: msg });
+                errors.push(crate::core::AppError::Alerts { message: msg });
             }
         }
     }

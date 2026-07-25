@@ -8,6 +8,7 @@
 //! a zombie entry in the pending map.
 #![allow(clippy::too_many_arguments)]
 
+use crate::core::WorkerErrorKind;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

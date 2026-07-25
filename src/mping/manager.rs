@@ -100,7 +100,7 @@ impl MpingManager {
         ctx: &egui::Context,
         mping: &mut MpingState,
         inputs: MpingTickInputs<'_>,
-        errors: &mut crate::state::ErrorContext,
+        errors: &mut crate::core::ErrorContext,
     ) {
         let events = self.channel.drain();
         if !events.is_empty() {
@@ -186,7 +186,7 @@ impl MpingManager {
         &mut self,
         mping: &mut MpingState,
         event: MpingEvent,
-        errors: &mut crate::state::ErrorContext,
+        errors: &mut crate::core::ErrorContext,
     ) {
         mping.fetch_in_flight = false;
         match event {
@@ -215,7 +215,7 @@ impl MpingManager {
             MpingEvent::Error(msg) => {
                 log::warn!("mPING fetch failed: {}", msg);
                 mping.last_error = Some(msg.clone());
-                errors.push(crate::state::AppError::Mping { message: msg });
+                errors.push(crate::core::AppError::Mping { message: msg });
                 // Drop any stale reports so the user isn't shown them as if
                 // they were fresh.
                 mping.reports.clear();

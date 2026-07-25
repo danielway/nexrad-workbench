@@ -107,16 +107,6 @@ const GRANDFATHERED: &[(&str, &str, &str)] = &[
         "RenderProcessing/Scan/Sweep etc. live in state — rehome per A1",
     ),
     (
-        "alerts",
-        "state",
-        "manager mutates AlertsState/ErrorContext directly — feed-skeleton rework, Phase D",
-    ),
-    (
-        "mping",
-        "state",
-        "manager mutates MpingState/ErrorContext directly — feed-skeleton rework, Phase D",
-    ),
-    (
         "app",
         "ui",
         "geolocation effect executor lives in ui — move executor into app, Phase C2",

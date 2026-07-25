@@ -4,10 +4,11 @@ use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::overflow_menu::overflow_menu;
 use super::time_format::{format_clock_12h, format_updated_ago, Compaction};
 use crate::alerts::{event_color, AlertSeverity};
+use crate::core::ErrorContext;
 use crate::core::Intent;
 use crate::core::RadarProduct;
 use crate::geo::{CameraMode, ViewMode};
-use crate::state::{AppMode, AppState, ErrorContext, WidthTier};
+use crate::state::{AppMode, AppState, WidthTier};
 use eframe::egui::{self, Color32, Frame, RichText};
 
 pub(super) struct TopBarLayer;
