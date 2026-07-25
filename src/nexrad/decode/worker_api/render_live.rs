@@ -73,8 +73,8 @@ pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsVa
 
         // Convert gate values to f32 array
         let gate_values_f32: Vec<f32> = match &sweep.gate_values {
-            crate::data::keys::GateValues::U8(v) => v.iter().map(|&x| x as f32).collect(),
-            crate::data::keys::GateValues::U16(v) => v.iter().map(|&x| x as f32).collect(),
+            crate::data::GateValues::U8(v) => v.iter().map(|&x| x as f32).collect(),
+            crate::data::GateValues::U16(v) => v.iter().map(|&x| x as f32).collect(),
         };
 
         let az_array = js_sys::Float32Array::from(sweep.azimuths.as_slice());

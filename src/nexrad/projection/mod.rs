@@ -202,7 +202,7 @@ impl SweepProjection {
 pub(crate) struct ScanProjection {
     pub vcp_number: u16,
     /// Full VCP pattern for elevation-angle lookups (display); `None` pre-VCP.
-    pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
+    pub vcp_pattern: Option<crate::data::ExtractedVcp>,
     /// Expected-vs-received elevation roster for the in-progress volume.
     pub roster: crate::core::VolumeElevationRoster,
     /// Elevation currently being received (`None` between cuts). Mirrors the
@@ -290,7 +290,7 @@ impl ScanProjection {
 pub(crate) fn assemble_live_scan(
     sweeps: &[SweepProjection],
     vcp_number: u16,
-    vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
+    vcp_pattern: Option<crate::data::ExtractedVcp>,
     roster: crate::core::VolumeElevationRoster,
     in_progress_elevation: Option<u8>,
     in_progress_radials: Option<u32>,

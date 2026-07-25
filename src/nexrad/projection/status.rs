@@ -85,7 +85,7 @@ pub(crate) struct SweepBuildCtx<'a> {
     /// `received[elev_idx]` — elevation `elev_idx + 1` fully received.
     pub received: &'a [bool],
     pub vcp_number: u16,
-    pub vcp_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
+    pub vcp_pattern: Option<&'a crate::data::ExtractedVcp>,
     pub vol_start_secs: f64,
     pub expected_dur_secs: f64,
     pub completed_sweep_metas: &'a [crate::data::CachedSweep],
@@ -158,7 +158,7 @@ pub(crate) struct CascadeInputs<'a> {
     /// `received[elev_idx]` — elevation `elev_idx + 1` is fully received.
     pub received: &'a [bool],
     pub vcp_number: u16,
-    pub vcp_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
+    pub vcp_pattern: Option<&'a crate::data::ExtractedVcp>,
     pub expected_dur: f64,
     pub current_volume_chunks: &'a [ChunkProjectionInfo],
     pub completed_sweep_metas: &'a [crate::data::CachedSweep],
@@ -440,7 +440,7 @@ pub(crate) fn cascade_current_sweeps(inp: &CascadeInputs) -> Vec<SweepBounds> {
 /// Resolve an elevation angle from the live VCP pattern, else the static VCP
 /// definition, else a 0.5°-per-cut fallback.
 fn elev_angle(
-    vcp_pattern: Option<&crate::data::keys::ExtractedVcp>,
+    vcp_pattern: Option<&crate::data::ExtractedVcp>,
     vcp_number: u16,
     elev_num: u8,
 ) -> f32 {

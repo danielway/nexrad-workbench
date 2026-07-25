@@ -14,8 +14,8 @@
 //! durations) move here as methods so the single owner produces them.
 
 use crate::core::VolumeElevationRoster;
-use crate::data::keys::ExtractedVcp;
 use crate::data::CachedSweep;
+use crate::data::ExtractedVcp;
 
 /// Default expected volume duration (seconds) when neither a completed volume
 /// nor a VCP estimate is available — mirrors the worker's old `unwrap_or(300.0)`.
@@ -244,8 +244,8 @@ mod coverage_tests {
     use wasm_bindgen_test::wasm_bindgen_test;
 
     // Local builders re-declared (sibling `mod tests` helpers are private).
-    fn elev(angle: f32, waveform: &str, prf: u8) -> crate::data::keys::ExtractedVcpElevation {
-        crate::data::keys::ExtractedVcpElevation {
+    fn elev(angle: f32, waveform: &str, prf: u8) -> crate::data::ExtractedVcpElevation {
+        crate::data::ExtractedVcpElevation {
             angle,
             waveform: waveform.to_string(),
             prf_number: prf,
@@ -256,7 +256,7 @@ mod coverage_tests {
         }
     }
 
-    fn vcp(number: u16, elevations: Vec<crate::data::keys::ExtractedVcpElevation>) -> ExtractedVcp {
+    fn vcp(number: u16, elevations: Vec<crate::data::ExtractedVcpElevation>) -> ExtractedVcp {
         ExtractedVcp { number, elevations }
     }
 

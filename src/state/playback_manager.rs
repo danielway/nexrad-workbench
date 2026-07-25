@@ -502,7 +502,7 @@ pub(crate) fn build_elevation_list(scan: &Scan) -> Vec<crate::core::ElevationLis
 /// that as "unknown — allow" so all products are selectable until a
 /// completed sweep narrows it down.
 pub(crate) fn build_elevation_list_from_vcp(
-    vcp: &crate::data::keys::ExtractedVcp,
+    vcp: &crate::data::ExtractedVcp,
 ) -> Vec<crate::core::ElevationListEntry> {
     vcp.elevations
         .iter()
@@ -923,8 +923,8 @@ mod tests {
 mod coverage_tests {
     use super::*;
     use crate::core::{Radial, Scan, Sweep};
-    use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
     use crate::data::ScanKey;
+    use crate::data::{ExtractedVcp, ExtractedVcpElevation};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     const MAX_AGE: f64 = 15.0 * 60.0;

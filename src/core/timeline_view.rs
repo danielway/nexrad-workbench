@@ -921,7 +921,7 @@ mod tests {
     /// sparse and its VCP projection would overrun the following ghosted scan.
     #[wasm_bindgen_test]
     fn visual_extent_uses_authoritative_archive_boundary() {
-        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
 
         // Sparse scan at key 1000: real data [1000, 1010], VCP projects 120s
         // (→ 1120), but the archive says the next volume starts at 1060.
@@ -966,7 +966,7 @@ mod tests {
     /// downloaded scan's start, and culling uses that clamped extent.
     #[wasm_bindgen_test]
     fn visual_extent_falls_back_to_next_downloaded_scan() {
-        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
 
         let mut sparse = cached_scan(1000.0, Vec::new());
         sparse.start_time = 1000.0;

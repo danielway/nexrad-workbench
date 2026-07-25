@@ -556,7 +556,7 @@ impl AppState {
         &self,
         playback: &PlaybackState,
         timeline: &RadarTimeline,
-        live_vcp_pattern: Option<&crate::data::keys::ExtractedVcp>,
+        live_vcp_pattern: Option<&crate::data::ExtractedVcp>,
     ) -> Vec<ElevationListEntry> {
         let ts = playback.playback_position();
         if let Some(scan) = timeline.find_scan_at_timestamp(ts) {

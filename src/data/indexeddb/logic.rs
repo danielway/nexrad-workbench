@@ -85,8 +85,9 @@ pub(super) fn filter_scans_by_time_window(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::keys::{CachedSweep, ExtractedVcp, ScanCompleteness};
+    use crate::data::keys::{CachedSweep, ScanCompleteness};
     use crate::data::quota::QuotaPolicy;
+    use crate::data::vcp_timing::ExtractedVcp;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     // --- helpers ---
@@ -300,7 +301,7 @@ mod tests {
         ExtractedVcp {
             number: 215,
             elevations: (0..elevations)
-                .map(|i| crate::data::keys::ExtractedVcpElevation {
+                .map(|i| crate::data::vcp_timing::ExtractedVcpElevation {
                     angle: 0.5 + i as f32,
                     waveform: "CS".to_string(),
                     prf_number: 1,

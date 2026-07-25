@@ -117,7 +117,7 @@ mod coverage_tests {
         }
     }
 
-    fn scan(vcp_pattern: Option<crate::data::keys::ExtractedVcp>, sweeps: Vec<Sweep>) -> Scan {
+    fn scan(vcp_pattern: Option<crate::data::ExtractedVcp>, sweeps: Vec<Sweep>) -> Scan {
         Scan {
             start_time: 1000.0,
             end_time: 1300.0,
@@ -145,7 +145,7 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn vcp_pattern_is_preserved() {
-        let pattern = crate::data::keys::ExtractedVcp {
+        let pattern = crate::data::ExtractedVcp {
             number: 215,
             elevations: vec![],
         };

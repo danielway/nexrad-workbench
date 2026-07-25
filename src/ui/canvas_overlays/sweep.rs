@@ -459,7 +459,7 @@ fn draw_sweep_donut(
     };
 
     // Helper to look up elevation angle from VCP pattern
-    let elev_angle_str = |elev_num: u8, vcp: Option<&crate::data::keys::ExtractedVcp>| -> String {
+    let elev_angle_str = |elev_num: u8, vcp: Option<&crate::data::ExtractedVcp>| -> String {
         vcp.and_then(|v| {
             v.elevations
                 .get(elev_num.saturating_sub(1) as usize)

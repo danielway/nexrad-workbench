@@ -91,7 +91,7 @@ pub(crate) struct Scan {
     /// Volume Coverage Pattern number (e.g., 215, 35, 212)
     pub vcp: u16,
     /// Full extracted VCP pattern with per-elevation metadata.
-    pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
+    pub vcp_pattern: Option<crate::data::ExtractedVcp>,
     /// Sweeps in this scan, ordered by elevation
     pub sweeps: Vec<Sweep>,
     /// Completeness state for this scan (from cache metadata).
@@ -196,7 +196,7 @@ pub(crate) struct ScanMetadata {
     /// End timestamp of the scan in seconds (populated when scan is decoded)
     pub end_timestamp: Option<i64>,
     /// Full Volume Coverage Pattern extracted from scan data.
-    pub vcp: Option<crate::data::keys::ExtractedVcp>,
+    pub vcp: Option<crate::data::ExtractedVcp>,
     /// Completeness state for this scan.
     pub completeness: Option<crate::data::ScanCompleteness>,
     /// Number of sweeps actually cached for this scan.
@@ -1271,7 +1271,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn display_end_time_projects_sparse_scan_to_full_vcp_volume() {
-        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
 
         // A sparse scan whose cached sweeps ended early: real data spans only
         // [1000, 1010], but the VCP plan projects a 120s volume so the drawn
@@ -1432,7 +1432,7 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn target_elevation_angle_prefers_extracted_pattern() {
-        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
         let mut s = scan(0.0, 10.0);
         s.vcp_pattern = Some(ExtractedVcp {
             number: 215,
@@ -1676,7 +1676,7 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn display_end_time_keeps_real_end_when_data_extends_past_vcp() {
-        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
         // VCP projects a 120s volume (360/3) -> projected end 1120. But the real
         // data already extends to 1500, so the max keeps 1500.
         let mut s = scan(1000.0, 1500.0);

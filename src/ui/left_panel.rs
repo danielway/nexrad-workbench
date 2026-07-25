@@ -399,7 +399,7 @@ struct ElevRow<'a> {
 
 fn build_elevation_rows<'a>(
     scan: Option<&'a Scan>,
-    extracted_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
+    extracted_pattern: Option<&'a crate::data::ExtractedVcp>,
     vcp_def: Option<&'a crate::data::vcp::VcpDefinition>,
     position: Option<&crate::nexrad::projection::ScanProjection>,
     current_elevation_number: Option<u8>,

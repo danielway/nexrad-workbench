@@ -132,7 +132,7 @@ pub(crate) struct VolumeForecastSnapshot {
 /// [`crate::core::LiveModeState::derive_current_volume_forecast`].
 #[derive(Clone, Debug)]
 pub(crate) struct CompletedVolumeRecord {
-    pub vcp: crate::data::keys::ExtractedVcp,
+    pub vcp: crate::data::ExtractedVcp,
     /// Plan as captured at the start of this volume — preserves the
     /// library-projected predicted times so the diagnostics modal can
     /// reproduce them after sweeps complete (their per-chunk forecast
@@ -159,7 +159,7 @@ pub(crate) struct CompletedVolumeRecord {
 /// VCP cum-offset fallback.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn derive_volume_forecast(
-    vcp: &crate::data::keys::ExtractedVcp,
+    vcp: &crate::data::ExtractedVcp,
     volume_start_plan: &crate::nexrad::StreamingPlan,
     volume_start_secs: f64,
     completed_sweep_metas: &[crate::data::CachedSweep],
@@ -412,8 +412,8 @@ pub(crate) struct ChunkArrivalStat {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
     use crate::data::CachedSweep;
+    use crate::data::{ExtractedVcp, ExtractedVcpElevation};
     use crate::nexrad::{ChunkProjectedTimes, ChunkProjectionInfo, StreamingPlan};
     use wasm_bindgen_test::wasm_bindgen_test;
 

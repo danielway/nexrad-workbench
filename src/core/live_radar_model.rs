@@ -58,7 +58,7 @@ pub(crate) struct FrameDerivedPosition {
 #[derive(Clone, Debug)]
 pub(crate) struct LiveVolumeModel {
     /// VCP pattern for elevation angle lookups.
-    pub vcp_pattern: Option<crate::data::keys::ExtractedVcp>,
+    pub vcp_pattern: Option<crate::data::ExtractedVcp>,
 
     /// Combined expected/received view for the volume's elevations.
     /// Replaces parallel `elevations_complete` + `elevations_expected`
@@ -274,8 +274,8 @@ mod coverage_tests {
         s
     }
 
-    fn vcp_one_elev(angle: f32) -> crate::data::keys::ExtractedVcp {
-        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+    fn vcp_one_elev(angle: f32) -> crate::data::ExtractedVcp {
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
         ExtractedVcp {
             number: 215,
             elevations: vec![ExtractedVcpElevation {

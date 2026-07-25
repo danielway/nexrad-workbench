@@ -124,7 +124,7 @@ pub(super) struct IngestResultMsg {
     #[serde(default)]
     pub sweeps: Vec<crate::data::CachedSweep>,
     #[serde(default)]
-    pub vcp: Option<crate::data::keys::ExtractedVcp>,
+    pub vcp: Option<crate::data::ExtractedVcp>,
 }
 
 /// Chunk ingest result payload from the worker. Note: the worker also
@@ -144,7 +144,7 @@ pub(super) struct ChunkIngestResultMsg {
     #[serde(default)]
     pub sweeps: Vec<crate::data::CachedSweep>,
     #[serde(default)]
-    pub vcp: Option<crate::data::keys::ExtractedVcp>,
+    pub vcp: Option<crate::data::ExtractedVcp>,
     #[serde(default)]
     pub current_elevation: Option<u8>,
     #[serde(default)]
@@ -391,7 +391,7 @@ pub(crate) struct IngestResult {
     /// Available for direct VCP inspection; primary propagation is via IDB metadata.
     #[allow(dead_code)]
     // Doc above: kept for direct VCP inspection; IDB metadata is the live path.
-    pub vcp: Option<crate::data::keys::ExtractedVcp>,
+    pub vcp: Option<crate::data::ExtractedVcp>,
     /// Total time in worker (ms).
     pub total_ms: f64,
     /// Sub-phase timing: record splitting.
@@ -436,7 +436,7 @@ pub(crate) struct ChunkIngestResult {
     /// Per-sweep metadata for all completed elevations so far.
     pub sweeps: Vec<crate::data::CachedSweep>,
     /// VCP pattern if extracted.
-    pub vcp: Option<crate::data::keys::ExtractedVcp>,
+    pub vcp: Option<crate::data::ExtractedVcp>,
     /// Total processing time in worker (ms).
     pub total_ms: f64,
     /// Elevation number currently being accumulated (partial sweep in progress).

@@ -93,7 +93,7 @@ pub(crate) struct RadarStateAtTimestamp<'a> {
     /// Reference to the current scan (for the elevation list).
     pub scan: Option<&'a Scan>,
     /// Extracted VCP pattern from live streaming (used when `scan` is `None`).
-    pub live_vcp_pattern: Option<&'a crate::data::keys::ExtractedVcp>,
+    pub live_vcp_pattern: Option<&'a crate::data::ExtractedVcp>,
     /// Unified position model with sweep timing (live or archived).
     pub position: Option<crate::nexrad::projection::ScanProjection>,
 }

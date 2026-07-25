@@ -613,8 +613,8 @@ mod tests {
         StreamingPlan::with_next_target_key_for_test(None)
     }
 
-    fn vcp_with_one_elevation() -> crate::data::keys::ExtractedVcp {
-        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+    fn vcp_with_one_elevation() -> crate::data::ExtractedVcp {
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
         ExtractedVcp {
             number: 215,
             elevations: vec![ExtractedVcpElevation {
@@ -1060,8 +1060,8 @@ mod coverage_tests {
         StreamingPlan::with_next_target_key_for_test(None)
     }
 
-    fn vcp_with_one_elevation() -> crate::data::keys::ExtractedVcp {
-        use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
+    fn vcp_with_one_elevation() -> crate::data::ExtractedVcp {
+        use crate::data::{ExtractedVcp, ExtractedVcpElevation};
         ExtractedVcp {
             number: 215,
             elevations: vec![ExtractedVcpElevation {
@@ -1076,8 +1076,8 @@ mod coverage_tests {
         }
     }
 
-    fn vcp_empty() -> crate::data::keys::ExtractedVcp {
-        use crate::data::keys::ExtractedVcp;
+    fn vcp_empty() -> crate::data::ExtractedVcp {
+        use crate::data::ExtractedVcp;
         ExtractedVcp {
             number: 215,
             elevations: vec![],

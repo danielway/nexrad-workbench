@@ -34,9 +34,10 @@
 
 use nexrad_workbench::data::indexeddb::IndexedDbStore;
 use nexrad_workbench::data::keys::{
-    ElevationUpload, ExtractedVcp, ProductBlob, ScanHeader, ScanKey, SiteId, SweepDataKey,
-    SweepTiming, UnixMillis,
+    ElevationUpload, ProductBlob, ScanHeader, ScanKey, SiteId, SweepDataKey, SweepTiming,
+    UnixMillis,
 };
+use nexrad_workbench::data::vcp_timing::ExtractedVcp;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 

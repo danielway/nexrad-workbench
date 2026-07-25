@@ -5,6 +5,7 @@
 //! pre-computed sweep blob generation for IndexedDB storage.
 
 use crate::data::keys::*;
+use crate::data::{ExtractedVcp, ExtractedVcpElevation};
 use std::collections::HashMap;
 
 pub(crate) const PRODUCTS: &[(nexrad_render::Product, &str)] = &[

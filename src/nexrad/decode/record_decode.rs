@@ -3,7 +3,7 @@
 //! Provides functions to decompress and decode individual LDM records
 //! into radials, and to extract pre-computed sweep data from radials.
 
-use crate::data::keys::{GateValues, PrecomputedSweep};
+use crate::data::{GateValues, PrecomputedSweep};
 use ::nexrad::model::data::{DataMoment, Radial};
 use nexrad_data::volume::Record;
 use nexrad_render::Product;
