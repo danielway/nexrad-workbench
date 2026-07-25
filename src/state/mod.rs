@@ -5,8 +5,8 @@
 //! areas of functionality.
 
 use crate::core::{
-    ElevationListEntry, FrameNow, LoopPreset, OperationId, PlaybackMode, PlaybackState,
-    RadarTimeline, RenderProcessing, UserPreferences,
+    ElevationListEntry, FrameNow, Intent, PlaybackMode, PlaybackState, RadarTimeline,
+    RenderProcessing, UserPreferences,
 };
 
 #[allow(dead_code)]
@@ -41,70 +41,11 @@ pub use settings::{format_bytes, StorageSettings};
 pub use stats::{
     DownloadPhase, DownloadProgress, IngestTimingDetail, RenderTimingDetail, SessionStats,
 };
-// Re-export the command type for ergonomic access.
-// AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
 pub use viz::{derive_canvas_caption, CanvasCaption, VizState};
 
 /// Cap on the recent-network-requests ring used by the UI log.
 pub const MAX_RECENT_NETWORK_REQUESTS: usize = 100;
-
-/// Commands dispatched by UI code and consumed by the main update loop.
-///
-/// Replaces scattered boolean `*_requested` flags with an explicit command queue,
-/// making state transitions easier to follow and impossible to forget to clear.
-#[derive(Debug, Clone, PartialEq)]
-pub enum AppCommand {
-    /// Refresh the timeline from the cache. Optionally auto-position the cursor.
-    RefreshTimeline { auto_position: bool },
-    /// Clear the record cache.
-    ClearCache,
-    /// Start live/real-time streaming.
-    StartLive,
-    /// Re-pin the playhead to the live edge. Instant when the stream is
-    /// already running (detached browsing); otherwise starts a stream.
-    ReturnToLive,
-    /// Apply a loop preset (spec §8): pin-to-live, last N frames, or a duration
-    /// window. Resolved into a [`crate::core::LoopWindow`] + the right playhead transition.
-    ApplyLoopPreset(LoopPreset),
-    /// Clear any active loop (selection bounds / pinned replay).
-    ClearLoop,
-    /// Check and run eviction after a storage operation.
-    CheckEviction,
-    /// Wipe all data (IndexedDB + localStorage) and reload.
-    WipeAll,
-    /// Pause the acquisition queue.
-    PauseQueue,
-    /// Resume the acquisition queue.
-    ResumeQueue,
-    /// Retry a failed operation.
-    RetryFailed(OperationId),
-    /// Explicitly fetch one archive scan (scan inspector's tap-to-fetch).
-    /// `elevation_filter = Some(n)` scopes the decode/store to one tilt
-    /// ("fetch this sweep"); `None` fetches the whole volume ("fetch whole
-    /// scan"). `scan_start` is the scan's start time in Unix seconds.
-    FetchScan {
-        scan_start: i64,
-        elevation_filter: Option<u8>,
-    },
-    /// Skip a failed operation and continue.
-    SkipFailed(OperationId),
-    /// Cancel a specific operation.
-    CancelOperation(OperationId),
-    /// Reorder an operation (delta: -1 = up, +1 = down).
-    ReorderOperation(OperationId, isize),
-    /// Retry initializing the decode worker after a failure.
-    RetryWorker,
-    /// An intent for the diagnostics overlays (NWS alerts / mPING / GPS). The
-    /// alerts/mPING/GPS UI emits these instead of mutating overlay state; the
-    /// main loop applies them through the pure
-    /// [`crate::core::diagnostics::reduce`].
-    Diagnostics(crate::core::diagnostics::DiagnosticsIntent),
-    /// "Show on map" for an alert: enable its overlay class and center the 2D
-    /// view on its bbox. Cross-cuts diagnostics + viz, so it's handled in the
-    /// shell (with viz access) via the pure `compute_alert_focus`.
-    ShowAlertOnMap(String),
-}
 
 /// Root application state containing all sub-states.
 #[derive(Default)]
@@ -134,7 +75,7 @@ pub struct AppState {
 
     /// Command queue for cross-component signaling.
     /// UI code pushes commands; the main update loop drains and dispatches them.
-    pub commands: std::collections::VecDeque<AppCommand>,
+    pub commands: std::collections::VecDeque<Intent>,
 
     /// A timeline range selection finalized this frame (shift+click/drag),
     /// snapshotted as `(start, end)` seconds. The main update loop consumes it,
@@ -506,7 +447,7 @@ impl AppState {
 
         let mut commands = std::collections::VecDeque::new();
         // Request timeline refresh on startup to load from cache
-        commands.push_back(AppCommand::RefreshTimeline {
+        commands.push_back(Intent::RefreshTimeline {
             auto_position: false,
         });
 
@@ -547,12 +488,12 @@ impl AppState {
     }
 
     /// Push a command onto the queue for the main update loop to process.
-    pub fn push_command(&mut self, cmd: AppCommand) {
+    pub fn push_command(&mut self, cmd: Intent) {
         self.commands.push_back(cmd);
     }
 
     /// Drain all pending commands from the queue.
-    pub fn drain_commands(&mut self) -> Vec<AppCommand> {
+    pub fn drain_commands(&mut self) -> Vec<Intent> {
         self.commands.drain(..).collect()
     }
 
@@ -842,16 +783,16 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn app_state_push_and_drain_commands_fifo() {
         let mut state = AppState::default();
-        state.push_command(AppCommand::ClearCache);
-        state.push_command(AppCommand::StartLive);
-        state.push_command(AppCommand::ClearLoop);
+        state.push_command(Intent::ClearCache);
+        state.push_command(Intent::StartLive);
+        state.push_command(Intent::ClearLoop);
         assert_eq!(state.commands.len(), 3);
 
         let drained = state.drain_commands();
         assert_eq!(drained.len(), 3);
-        assert_eq!(drained[0], AppCommand::ClearCache);
-        assert_eq!(drained[1], AppCommand::StartLive);
-        assert_eq!(drained[2], AppCommand::ClearLoop);
+        assert_eq!(drained[0], Intent::ClearCache);
+        assert_eq!(drained[1], Intent::StartLive);
+        assert_eq!(drained[2], Intent::ClearLoop);
         // Draining empties the queue.
         assert!(state.commands.is_empty());
         assert!(state.drain_commands().is_empty());

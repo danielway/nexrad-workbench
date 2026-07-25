@@ -17,9 +17,10 @@
 //! Red is reserved exclusively for this concept: muted red ([`NOW_IDLE`]) as
 //! an invitation, bright pulsing red ([`LIVE_ACTIVE`]) while live.
 
+use crate::core::Intent;
 use crate::core::LiveExitReason;
 use crate::core::PlaybackSpeed;
-use crate::state::{AppCommand, AppState};
+use crate::state::AppState;
 use crate::ui::colors::timeline::{LIVE_ACTIVE, NOW_IDLE};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Sense, Stroke, StrokeKind};
 
@@ -167,7 +168,7 @@ fn render_inline_now(
         match live_state {
             NowCapState::Attached => stop_live(state, live, playback),
             // Instant re-pin — the stream never stopped.
-            NowCapState::Detached => state.push_command(AppCommand::ReturnToLive),
+            NowCapState::Detached => state.push_command(Intent::ReturnToLive),
             NowCapState::Idle => go_live(state, playback),
         }
     }
@@ -242,7 +243,7 @@ fn render_edge_chip(
         // the archive. Instant when a background stream is already running.
         playback.state.center_view_on(now_ts);
         match live_state {
-            NowCapState::Detached => state.push_command(AppCommand::ReturnToLive),
+            NowCapState::Detached => state.push_command(Intent::ReturnToLive),
             NowCapState::Idle => go_live(state, playback),
             NowCapState::Attached => {}
         }
@@ -317,7 +318,7 @@ fn label_size(painter: &Painter, label: &str) -> (egui::Vec2, egui::FontId) {
 /// re-centers as needed, so we only queue the command and set realtime speed.
 fn go_live(state: &mut AppState, playback: &mut crate::subsystem::Playback) {
     playback.state.clear_selection();
-    state.push_command(AppCommand::StartLive);
+    state.push_command(Intent::StartLive);
     playback.state.speed = PlaybackSpeed::Realtime;
 }
 

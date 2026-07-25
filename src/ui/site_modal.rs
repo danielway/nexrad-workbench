@@ -117,10 +117,10 @@ pub(super) fn apply_site_selection(
     state.viz_state.center_lon = lon;
     state.viz_state.set_pan_offset(Vec2::ZERO);
     state.viz_state.camera.center_on(lat, lon);
-    state.push_command(crate::state::AppCommand::RefreshTimeline {
+    state.push_command(crate::core::Intent::RefreshTimeline {
         auto_position: true,
     });
-    state.push_command(crate::state::AppCommand::Diagnostics(
+    state.push_command(crate::core::Intent::Diagnostics(
         crate::core::diagnostics::DiagnosticsIntent::RefreshAlerts,
     ));
     state.preferred_site = Some(site_id.to_string());
@@ -130,7 +130,7 @@ pub(super) fn apply_site_selection(
     // site exists, open tethered to live (spec §7). One-shot — consumed here so
     // later mid-session site re-selections don't auto-tether.
     if std::mem::take(&mut state.start_live_on_site_select) {
-        state.push_command(crate::state::AppCommand::StartLive);
+        state.push_command(crate::core::Intent::StartLive);
     }
 }
 

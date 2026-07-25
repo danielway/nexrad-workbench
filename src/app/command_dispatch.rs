@@ -1,4 +1,4 @@
-//! Drain the [`AppCommand`] queue and execute each command.
+//! Drain the [`Intent`] queue and execute each command.
 //!
 //! Commands flow from UI panels via [`AppState::push_command`] and are
 //! drained once per frame. Each command falls into one of three shapes:
@@ -46,63 +46,63 @@ impl WorkbenchApp {
     fn handle_command(
         &mut self,
         ctx: &egui::Context,
-        cmd: state::AppCommand,
+        cmd: crate::core::Intent,
         outcome: &mut CommandOutcome,
     ) {
-        use state::AppCommand;
+        use crate::core::Intent;
         match cmd {
             // ---- Storage lifecycle ------------------------------------
-            AppCommand::ClearCache => self.handle_clear_cache(ctx),
-            AppCommand::WipeAll => self.handle_wipe_all(),
-            AppCommand::CheckEviction => self.handle_check_eviction(ctx),
+            Intent::ClearCache => self.handle_clear_cache(ctx),
+            Intent::WipeAll => self.handle_wipe_all(),
+            Intent::CheckEviction => self.handle_check_eviction(ctx),
 
             // ---- Timeline ---------------------------------------------
-            AppCommand::RefreshTimeline { auto_position } => {
+            Intent::RefreshTimeline { auto_position } => {
                 self.handle_refresh_timeline(ctx, auto_position);
             }
 
             // ---- Live mode --------------------------------------------
-            AppCommand::StartLive => self.start_live_mode(ctx),
-            AppCommand::ReturnToLive => self.return_to_live(ctx),
+            Intent::StartLive => self.start_live_mode(ctx),
+            Intent::ReturnToLive => self.return_to_live(ctx),
 
             // ---- Loop presets -----------------------------------------
-            AppCommand::ApplyLoopPreset(preset) => self.apply_loop_preset(preset, ctx),
-            AppCommand::ClearLoop => self.playback.state.clear_selection(),
+            Intent::ApplyLoopPreset(preset) => self.apply_loop_preset(preset, ctx),
+            Intent::ClearLoop => self.playback.state.clear_selection(),
 
             // ---- Queue management -------------------------------------
             // Mutations that may unblock work flip `pump_queue` so the
             // post-results queue pump runs in the same frame.
-            AppCommand::PauseQueue => self.acquisition.state.pause(),
-            AppCommand::ResumeQueue => {
+            Intent::PauseQueue => self.acquisition.state.pause(),
+            Intent::ResumeQueue => {
                 self.acquisition.state.resume();
                 outcome.pump_queue = true;
             }
-            AppCommand::RetryFailed(op_id) => {
+            Intent::RetryFailed(op_id) => {
                 self.handle_retry_failed(op_id);
                 outcome.pump_queue = true;
             }
-            AppCommand::FetchScan {
+            Intent::FetchScan {
                 scan_start,
                 elevation_filter,
             } => {
                 self.handle_fetch_scan(scan_start, elevation_filter);
                 outcome.pump_queue = true;
             }
-            AppCommand::SkipFailed(op_id) => {
+            Intent::SkipFailed(op_id) => {
                 self.acquisition.state.skip_failed(op_id);
                 outcome.pump_queue = true;
             }
-            AppCommand::CancelOperation(op_id) => self.acquisition.state.cancel_operation(op_id),
-            AppCommand::ReorderOperation(op_id, delta) => {
+            Intent::CancelOperation(op_id) => self.acquisition.state.cancel_operation(op_id),
+            Intent::ReorderOperation(op_id, delta) => {
                 self.acquisition.state.reorder_operation(op_id, delta);
             }
 
             // ---- Worker lifecycle -------------------------------------
-            AppCommand::RetryWorker => self.handle_retry_worker(ctx),
+            Intent::RetryWorker => self.handle_retry_worker(ctx),
 
             // ---- Diagnostics overlays (alerts / mPING / GPS) ----------
-            AppCommand::Diagnostics(intent) => self.handle_diagnostics_intent(ctx, intent),
-            AppCommand::ShowAlertOnMap(id) => self.handle_show_alert_on_map(id),
+            Intent::Diagnostics(intent) => self.handle_diagnostics_intent(ctx, intent),
+            Intent::ShowAlertOnMap(id) => self.handle_show_alert_on_map(id),
         }
     }
 
@@ -284,7 +284,7 @@ impl WorkbenchApp {
             self.clear_display_no_scan();
         } else {
             // Cache loader is busy; replay the request on the next frame.
-            self.state.push_command(state::AppCommand::ClearCache);
+            self.state.push_command(crate::core::Intent::ClearCache);
         }
     }
 
@@ -318,9 +318,10 @@ impl WorkbenchApp {
                 );
         } else {
             // Cache loader is busy; replay (without auto-position) next frame.
-            self.state.push_command(state::AppCommand::RefreshTimeline {
-                auto_position: false,
-            });
+            self.state
+                .push_command(crate::core::Intent::RefreshTimeline {
+                    auto_position: false,
+                });
         }
     }
 

@@ -183,12 +183,13 @@ impl WorkbenchApp {
             scan_start_secs,
         );
         // Refresh timeline to include the new scan
-        self.state.push_command(state::AppCommand::RefreshTimeline {
-            auto_position: false,
-        });
+        self.state
+            .push_command(crate::core::Intent::RefreshTimeline {
+                auto_position: false,
+            });
 
         // Request eviction check
-        self.state.push_command(state::AppCommand::CheckEviction);
+        self.state.push_command(crate::core::Intent::CheckEviction);
 
         // Force a fresh render
         self.render.coordinator.force_fresh_render();
@@ -541,9 +542,10 @@ impl WorkbenchApp {
                 result.elevations_completed.len(),
                 self.render.coordinator.available_elevations(),
             );
-            self.state.push_command(state::AppCommand::RefreshTimeline {
-                auto_position: !is_live,
-            });
+            self.state
+                .push_command(crate::core::Intent::RefreshTimeline {
+                    auto_position: !is_live,
+                });
 
             if is_live {
                 self.state.status_message = format!(
@@ -584,10 +586,11 @@ impl WorkbenchApp {
                 source,
                 self.render.coordinator.available_elevations().len()
             );
-            self.state.push_command(state::AppCommand::RefreshTimeline {
-                auto_position: !is_live,
-            });
-            self.state.push_command(state::AppCommand::CheckEviction);
+            self.state
+                .push_command(crate::core::Intent::RefreshTimeline {
+                    auto_position: !is_live,
+                });
+            self.state.push_command(crate::core::Intent::CheckEviction);
             self.state.session_stats.pipeline.mark_processing_done();
 
             self.render.coordinator.force_fresh_render();

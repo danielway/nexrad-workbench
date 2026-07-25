@@ -591,7 +591,7 @@ impl AcquisitionState {
 
     /// The id of a Failed archive-download operation whose `scan_start` matches
     /// `scan_start_secs` within `tolerance_secs`. Used to wire a timeline
-    /// failed-cell tick back to `AppCommand::RetryFailed`. Returns the most
+    /// failed-cell tick back to `Intent::RetryFailed`. Returns the most
     /// recent match (operations iterate oldest→newest).
     pub fn failed_operation_for_scan_start(
         &self,

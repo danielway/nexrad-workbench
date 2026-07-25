@@ -317,11 +317,11 @@ pub(super) fn render_layers_section(
             // The enable/disable side effects (clear coords, start the one-shot
             // geolocation) are decided by the diagnostics reducer.
             if !was_gps_on && state.layer_state.geo.gps_location {
-                state.push_command(crate::state::AppCommand::Diagnostics(
+                state.push_command(crate::core::Intent::Diagnostics(
                     crate::core::diagnostics::DiagnosticsIntent::EnableGps,
                 ));
             } else if was_gps_on && !state.layer_state.geo.gps_location {
-                state.push_command(crate::state::AppCommand::Diagnostics(
+                state.push_command(crate::core::Intent::Diagnostics(
                     crate::core::diagnostics::DiagnosticsIntent::DisableGps,
                 ));
             }
@@ -354,7 +354,7 @@ pub(super) fn render_layers_section(
                         .on_hover_text("mPING settings (API key)")
                         .clicked()
                     {
-                        state.push_command(crate::state::AppCommand::Diagnostics(
+                        state.push_command(crate::core::Intent::Diagnostics(
                             crate::core::diagnostics::DiagnosticsIntent::OpenMpingSettings,
                         ));
                     }
@@ -647,7 +647,7 @@ fn navigate_to_event(
             state.viz_state.center_lon = site.lon;
             state.viz_state.set_pan_offset(egui::Vec2::ZERO);
             state.viz_state.camera.center_on(site.lat, site.lon);
-            state.push_command(crate::state::AppCommand::RefreshTimeline {
+            state.push_command(crate::core::Intent::RefreshTimeline {
                 auto_position: false,
             });
         }
@@ -770,7 +770,7 @@ pub(super) fn render_storage_section(
                 .on_hover_text("Delete all cached radar data")
                 .clicked()
             {
-                state.push_command(crate::state::AppCommand::ClearCache);
+                state.push_command(crate::core::Intent::ClearCache);
             }
 
             ui.add_space(4.0);

@@ -216,7 +216,7 @@ pub(super) fn render_scrubber(
         .filter(|_| response.dragged() || response.clicked());
     if let Some(pos) = interact_pos {
         if response.clicked() && pill_rect.is_some_and(|r| r.contains(pos)) {
-            state.push_command(crate::state::AppCommand::ReturnToLive);
+            state.push_command(crate::core::Intent::ReturnToLive);
             return;
         }
         let new_ts = x_to_ts(pos.x);

@@ -128,9 +128,10 @@ impl WorkbenchApp {
             }
 
             // Refresh timeline to show the new/loaded scan
-            self.state.push_command(state::AppCommand::RefreshTimeline {
-                auto_position: false,
-            });
+            self.state
+                .push_command(crate::core::Intent::RefreshTimeline {
+                    auto_position: false,
+                });
         }
 
         // Mark acquisition operation completed on success

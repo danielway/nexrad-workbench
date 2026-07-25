@@ -217,7 +217,7 @@ fn draw_mobile_top_bar(
                         .small_button(RichText::new("Retry").size(11.0).color(error_color))
                         .clicked()
                     {
-                        state.push_command(crate::state::AppCommand::RetryWorker);
+                        state.push_command(crate::core::Intent::RetryWorker);
                     }
                 }
 

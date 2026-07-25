@@ -180,7 +180,7 @@ pub(crate) fn handle_canvas_interaction(
                     &diagnostics.mping.reports,
                     playback.state.playback_position(),
                 ) {
-                    state.push_command(crate::state::AppCommand::Diagnostics(
+                    state.push_command(crate::core::Intent::Diagnostics(
                         crate::core::diagnostics::DiagnosticsIntent::SelectMpingReport(id),
                     ));
                     handled = true;
@@ -200,7 +200,7 @@ pub(crate) fn handle_canvas_interaction(
                     show_warnings,
                     show_other,
                 ) {
-                    state.push_command(crate::state::AppCommand::Diagnostics(
+                    state.push_command(crate::core::Intent::Diagnostics(
                         crate::core::diagnostics::DiagnosticsIntent::SelectAlert(id),
                     ));
                     handled = true;
@@ -209,7 +209,7 @@ pub(crate) fn handle_canvas_interaction(
             // Click missed every interactive overlay — dismiss any open
             // mPING popover.
             if !handled {
-                state.push_command(crate::state::AppCommand::Diagnostics(
+                state.push_command(crate::core::Intent::Diagnostics(
                     crate::core::diagnostics::DiagnosticsIntent::ClearMpingSelection,
                 ));
             }

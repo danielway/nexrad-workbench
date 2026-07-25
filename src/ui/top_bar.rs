@@ -4,9 +4,10 @@ use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::overflow_menu::overflow_menu;
 use super::time_format::{format_clock_12h, format_updated_ago, Compaction};
 use crate::alerts::{event_color, AlertSeverity};
+use crate::core::Intent;
 use crate::core::RadarProduct;
 use crate::geo::{CameraMode, ViewMode};
-use crate::state::{AppCommand, AppMode, AppState, ErrorContext, WidthTier};
+use crate::state::{AppMode, AppState, ErrorContext, WidthTier};
 use eframe::egui::{self, Color32, Frame, RichText};
 
 pub(super) struct TopBarLayer;
@@ -130,7 +131,7 @@ fn draw_top_bar(
                         .on_hover_text("Retry worker initialization")
                         .clicked()
                     {
-                        state.push_command(crate::state::AppCommand::RetryWorker);
+                        state.push_command(crate::core::Intent::RetryWorker);
                     }
                 }
 
@@ -673,7 +674,7 @@ pub(super) fn render_alerts_chip(
         let response = ui.add(egui::Label::new(icon).sense(egui::Sense::click()));
         response.clone().on_hover_text(tooltip);
         if response.clicked() {
-            state.push_command(AppCommand::Diagnostics(DiagnosticsIntent::RefreshAlerts));
+            state.push_command(Intent::Diagnostics(DiagnosticsIntent::RefreshAlerts));
         }
         ui.separator();
         return;
@@ -733,11 +734,11 @@ pub(super) fn render_alerts_chip(
 
     if response.on_hover_text(hover).clicked() {
         if visible.len() == 1 {
-            state.push_command(AppCommand::Diagnostics(DiagnosticsIntent::SelectAlert(
+            state.push_command(Intent::Diagnostics(DiagnosticsIntent::SelectAlert(
                 visible[0].0.clone(),
             )));
         } else {
-            state.push_command(AppCommand::Diagnostics(DiagnosticsIntent::OpenAlertList));
+            state.push_command(Intent::Diagnostics(DiagnosticsIntent::OpenAlertList));
         }
     }
 

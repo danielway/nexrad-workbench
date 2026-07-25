@@ -14,8 +14,9 @@
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::timeline::format_timestamp_full;
+use crate::core::Intent;
 use crate::core::{FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView};
-use crate::state::{format_bytes, AppCommand, AppState};
+use crate::state::{format_bytes, AppState};
 use crate::subsystem::{Acquisition, Chrome, Live, Playback, Timeline};
 use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
 use egui_phosphor::regular as icons;
@@ -129,7 +130,7 @@ fn draw_scan_inspector(
     let use_local = state.use_local_time;
     let dark = state.is_dark;
     let now_secs = state.frame_now.secs();
-    let mut commands: Vec<AppCommand> = Vec::new();
+    let mut commands: Vec<Intent> = Vec::new();
     let mut close = false;
     let mut loop_from_here = false;
 
@@ -176,7 +177,7 @@ fn draw_scan_inspector(
                         .on_hover_text("Download the full volume (all tilts)")
                         .clicked()
                 {
-                    commands.push(AppCommand::FetchScan {
+                    commands.push(Intent::FetchScan {
                         scan_start: scan_start.round() as i64,
                         elevation_filter: None,
                     });
@@ -246,7 +247,7 @@ fn render_sweep_table(
     container: &ScanContainer,
     dark: bool,
     scan_start: f64,
-    commands: &mut Vec<AppCommand>,
+    commands: &mut Vec<Intent>,
 ) {
     let value_color = super::colors::ui::value(dark);
     let label_color = super::colors::ui::label(dark);
@@ -311,7 +312,7 @@ fn render_sweep_table(
                                 let label =
                                     format!("{} Fetch", egui_phosphor::regular::DOWNLOAD_SIMPLE);
                                 if ui.small_button(label).clicked() {
-                                    commands.push(AppCommand::FetchScan {
+                                    commands.push(Intent::FetchScan {
                                         scan_start: scan_start.round() as i64,
                                         elevation_filter: Some(cell.elevation_number),
                                     });

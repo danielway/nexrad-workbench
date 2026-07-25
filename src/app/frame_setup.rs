@@ -94,7 +94,7 @@ impl WorkbenchApp {
                     || self.playback.state.time_model.is_lookback();
                 self.stop_live_mode(crate::core::LiveExitReason::UserStopped);
                 if was_attached {
-                    self.state.push_command(crate::state::AppCommand::StartLive);
+                    self.state.push_command(crate::core::Intent::StartLive);
                 }
             }
             if let Some(ref renderer) = self.gpu.gpu {

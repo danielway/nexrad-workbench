@@ -15,7 +15,8 @@ use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::modal_helper::modal_backdrop;
 use crate::alerts::{event_color, Alert};
 use crate::core::diagnostics::{DiagnosticsIntent, DiagnosticsVm};
-use crate::state::{AppCommand, AppState};
+use crate::core::Intent;
+use crate::state::AppState;
 use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
 
 pub(super) struct AlertsModalsLayer;
@@ -47,7 +48,7 @@ fn render_list_modal(
     derived: &crate::subsystem::Derived,
 ) {
     if modal_backdrop(ctx, "alerts_list_backdrop", 140) {
-        state.push_command(AppCommand::Diagnostics(DiagnosticsIntent::CloseAlertList));
+        state.push_command(Intent::Diagnostics(DiagnosticsIntent::CloseAlertList));
         return;
     }
 
@@ -73,9 +74,7 @@ fn render_list_modal(
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.small_button("Close").clicked() {
-                        state.push_command(AppCommand::Diagnostics(
-                            DiagnosticsIntent::CloseAlertList,
-                        ));
+                        state.push_command(Intent::Diagnostics(DiagnosticsIntent::CloseAlertList));
                     }
                     if ui
                         .small_button(RichText::new(format!(
@@ -85,9 +84,7 @@ fn render_list_modal(
                         .on_hover_text("Re-fetch the NWS alerts feed")
                         .clicked()
                     {
-                        state.push_command(AppCommand::Diagnostics(
-                            DiagnosticsIntent::RefreshAlerts,
-                        ));
+                        state.push_command(Intent::Diagnostics(DiagnosticsIntent::RefreshAlerts));
                     }
                 });
             });
@@ -145,9 +142,9 @@ fn render_list_modal(
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
                     if response.clicked() {
-                        state.push_command(AppCommand::Diagnostics(
-                            DiagnosticsIntent::SelectAlert(va.id.clone()),
-                        ));
+                        state.push_command(Intent::Diagnostics(DiagnosticsIntent::SelectAlert(
+                            va.id.clone(),
+                        )));
                     }
                     ui.add_space(2.0);
                 }
@@ -161,9 +158,7 @@ fn render_detail_modal(
     diagnostics: &crate::subsystem::Diagnostics,
 ) {
     if modal_backdrop(ctx, "alerts_detail_backdrop", 160) {
-        state.push_command(AppCommand::Diagnostics(
-            DiagnosticsIntent::ClearAlertSelection,
-        ));
+        state.push_command(Intent::Diagnostics(DiagnosticsIntent::ClearAlertSelection));
         return;
     }
 
@@ -177,9 +172,7 @@ fn render_detail_modal(
         Some(a) => a.clone(),
         None => {
             // Stale selection (e.g. alert expired while modal was open).
-            state.push_command(AppCommand::Diagnostics(
-                DiagnosticsIntent::ClearAlertSelection,
-            ));
+            state.push_command(Intent::Diagnostics(DiagnosticsIntent::ClearAlertSelection));
             return;
         }
     };
@@ -290,12 +283,12 @@ fn render_detail_modal(
                 {
                     // The handler centers the view, enables the class layer, and
                     // closes this modal — all via the pure `compute_alert_focus`.
-                    state.push_command(AppCommand::ShowAlertOnMap(alert.id.clone()));
+                    state.push_command(Intent::ShowAlertOnMap(alert.id.clone()));
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Close").clicked() {
-                        state.push_command(AppCommand::Diagnostics(
+                        state.push_command(Intent::Diagnostics(
                             DiagnosticsIntent::ClearAlertSelection,
                         ));
                     }

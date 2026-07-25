@@ -74,7 +74,7 @@ fn draw_wipe_modal(
                     );
                     if reset_btn.clicked() {
                         chrome.wipe_modal_open = false;
-                        state.push_command(crate::state::AppCommand::WipeAll);
+                        state.push_command(crate::core::Intent::WipeAll);
                     }
                 });
             });

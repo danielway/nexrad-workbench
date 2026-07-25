@@ -260,7 +260,7 @@ fn apply_url_params(
                 .camera
                 .center_on(site_info.lat, site_info.lon);
         }
-        state.push_command(state::AppCommand::RefreshTimeline {
+        state.push_command(crate::core::Intent::RefreshTimeline {
             auto_position: false,
         });
     }
@@ -401,7 +401,7 @@ fn apply_url_params(
         if site_known {
             // Queued behind the initial RefreshTimeline so the timeline
             // populates first (same as the legacy `rt=true` restore).
-            state.push_command(state::AppCommand::StartLive);
+            state.push_command(crate::core::Intent::StartLive);
         } else {
             state.start_live_on_site_select = true;
         }

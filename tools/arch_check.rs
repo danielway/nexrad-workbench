@@ -93,11 +93,6 @@ const ALLOWED: &[(&str, &str)] = &[
 const GRANDFATHERED: &[(&str, &str, &str)] = &[
     (
         "core",
-        "state",
-        "misplaced domain types (Scan/Sweep/AppCommand/...) live in state — arch-review F1/A1",
-    ),
-    (
-        "core",
         "subsystem",
         "core decision fns read subsystem containers directly — arch-review F1/A1",
     ),

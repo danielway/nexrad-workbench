@@ -5,9 +5,9 @@
 //! - Network: shows network requests grouped by operation
 
 use super::colors::{acquisition as acq_colors, ui as ui_colors};
+use crate::core::Intent;
 use crate::state::{
-    format_bytes, AcquisitionState, AppCommand, AppState, DrawerTab, NetworkGroupKey,
-    OperationStatus,
+    format_bytes, AcquisitionState, AppState, DrawerTab, NetworkGroupKey, OperationStatus,
 };
 use crate::subsystem::Acquisition;
 use eframe::egui::{self, Color32, RichText, ScrollArea};
@@ -56,12 +56,12 @@ pub fn render_acquisition_drawer(
                 if acquisition.state.active_tab == DrawerTab::Queue {
                     if acquisition.state.is_paused() {
                         if ui.small_button(format!("{} Resume", icons::PLAY)).clicked() {
-                            state.push_command(AppCommand::ResumeQueue);
+                            state.push_command(Intent::ResumeQueue);
                         }
                     } else if acquisition.state.has_active_operations()
                         && ui.small_button(format!("{} Pause", icons::PAUSE)).clicked()
                     {
-                        state.push_command(AppCommand::PauseQueue);
+                        state.push_command(Intent::PauseQueue);
                     }
                 } else {
                     // Network tab: link to full log
@@ -151,7 +151,7 @@ fn render_queue_tab(
             }
 
             // Collect operations for display (newest at top for active/queued, then completed)
-            let mut commands_to_push: Vec<AppCommand> = Vec::new();
+            let mut commands_to_push: Vec<Intent> = Vec::new();
 
             // Display operations in reverse order (most recent first)
             let ops: Vec<_> = acquisition.state.operations.iter().rev().cloned().collect();
@@ -220,21 +220,21 @@ fn render_queue_tab(
                         |ui| match &op.status {
                             OperationStatus::Queued => {
                                 if ui.small_button(icons::X).on_hover_text("Cancel").clicked() {
-                                    commands_to_push.push(AppCommand::CancelOperation(op.id));
+                                    commands_to_push.push(Intent::CancelOperation(op.id));
                                 }
                                 if ui
                                     .small_button(icons::CARET_DOWN)
                                     .on_hover_text("Move down")
                                     .clicked()
                                 {
-                                    commands_to_push.push(AppCommand::ReorderOperation(op.id, 1));
+                                    commands_to_push.push(Intent::ReorderOperation(op.id, 1));
                                 }
                                 if ui
                                     .small_button(icons::CARET_UP)
                                     .on_hover_text("Move up")
                                     .clicked()
                                 {
-                                    commands_to_push.push(AppCommand::ReorderOperation(op.id, -1));
+                                    commands_to_push.push(Intent::ReorderOperation(op.id, -1));
                                 }
                             }
                             OperationStatus::Failed { .. } => {
@@ -242,13 +242,13 @@ fn render_queue_tab(
                                     .small_button(format!("{} Retry", icons::ARROW_CLOCKWISE))
                                     .clicked()
                                 {
-                                    commands_to_push.push(AppCommand::RetryFailed(op.id));
+                                    commands_to_push.push(Intent::RetryFailed(op.id));
                                 }
                                 if ui
                                     .small_button(format!("{} Skip", icons::SKIP_FORWARD))
                                     .clicked()
                                 {
-                                    commands_to_push.push(AppCommand::SkipFailed(op.id));
+                                    commands_to_push.push(Intent::SkipFailed(op.id));
                                 }
                             }
                             _ => {}

@@ -272,7 +272,7 @@ fn render_live_button(
             .on_hover_text("Stream running in background — tap to rejoin live")
             .clicked()
         {
-            state.push_command(crate::state::AppCommand::ReturnToLive);
+            state.push_command(crate::core::Intent::ReturnToLive);
         }
         return;
     }
@@ -292,7 +292,7 @@ fn render_live_button(
         .clicked()
     {
         playback.state.clear_selection();
-        state.push_command(crate::state::AppCommand::StartLive);
+        state.push_command(crate::core::Intent::StartLive);
         playback.state.speed = crate::core::PlaybackSpeed::Realtime;
     }
 }
@@ -349,14 +349,14 @@ fn render_loop_button(
                 ui.label(RichText::new(header).size(11.0).weak());
                 for preset in LoopPreset::menu() {
                     if ui.button(preset.label()).clicked() {
-                        state.push_command(crate::state::AppCommand::ApplyLoopPreset(*preset));
+                        state.push_command(crate::core::Intent::ApplyLoopPreset(*preset));
                         ui.close();
                     }
                 }
                 if has_loop {
                     ui.separator();
                     if ui.button("Clear loop").clicked() {
-                        state.push_command(crate::state::AppCommand::ClearLoop);
+                        state.push_command(crate::core::Intent::ClearLoop);
                         ui.close();
                     }
                 }

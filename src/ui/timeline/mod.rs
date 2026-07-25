@@ -690,7 +690,7 @@ pub(super) fn render_timeline(
 
     // -- Failed-cell retry ticks --
     // A click on a failed cell's alert triangle pushes the existing
-    // `AppCommand::RetryFailed` for the matching operation. The tick rects are
+    // `Intent::RetryFailed` for the matching operation. The tick rects are
     // added to `suppress_rects` unconditionally below so the generic press-seek
     // never also fires on a tick.
     if response.clicked() {
@@ -700,7 +700,7 @@ pub(super) fn render_timeline(
                     tick.key_secs.round() as i64,
                     crate::SCAN_CACHE_MATCH_TOLERANCE_SECS,
                 ) {
-                    state.push_command(crate::state::AppCommand::RetryFailed(op_id));
+                    state.push_command(crate::core::Intent::RetryFailed(op_id));
                 }
             }
         }

@@ -717,7 +717,7 @@ fn handle_go_live(
     _chrome: &mut crate::subsystem::Chrome,
     _: &egui::Context,
 ) {
-    state.push_command(crate::state::AppCommand::ReturnToLive);
+    state.push_command(crate::core::Intent::ReturnToLive);
 }
 
 fn handle_cycle_product(

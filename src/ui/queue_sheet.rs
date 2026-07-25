@@ -17,9 +17,8 @@
 
 use super::colors::{acquisition as acq_colors, ui as ui_colors};
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::state::{
-    format_bytes, AcquisitionState, AppCommand, AppState, OperationKind, OperationStatus,
-};
+use crate::core::Intent;
+use crate::state::{format_bytes, AcquisitionState, AppState, OperationKind, OperationStatus};
 use crate::subsystem::{Acquisition, Chrome};
 use eframe::egui::{self, RichText, ScrollArea, Vec2};
 use egui_phosphor::regular as icons;
@@ -83,7 +82,7 @@ fn draw_queue_sheet(
     }
 
     let dark = state.is_dark;
-    let mut commands: Vec<AppCommand> = Vec::new();
+    let mut commands: Vec<Intent> = Vec::new();
 
     egui::Window::new(format!("{} Downloads", icons::DOWNLOAD_SIMPLE))
         .collapsible(false)
@@ -117,12 +116,12 @@ fn draw_queue_sheet(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if acquisition.state.is_paused() {
                         if ui.small_button(format!("{} Resume", icons::PLAY)).clicked() {
-                            commands.push(AppCommand::ResumeQueue);
+                            commands.push(Intent::ResumeQueue);
                         }
                     } else if acquisition.state.has_active_operations()
                         && ui.small_button(format!("{} Pause", icons::PAUSE)).clicked()
                     {
-                        commands.push(AppCommand::PauseQueue);
+                        commands.push(Intent::PauseQueue);
                     }
                 });
             });
@@ -159,7 +158,7 @@ fn render_operation_list(
     ui: &mut egui::Ui,
     acquisition: &mut Acquisition,
     dark: bool,
-    commands: &mut Vec<AppCommand>,
+    commands: &mut Vec<Intent>,
 ) {
     let label_color = ui_colors::label(dark);
     let value_color = ui_colors::value(dark);
@@ -231,21 +230,21 @@ fn render_operation_list(
                             }
                             OperationStatus::Queued => {
                                 if ui.small_button(icons::X).on_hover_text("Cancel").clicked() {
-                                    commands.push(AppCommand::CancelOperation(op.id));
+                                    commands.push(Intent::CancelOperation(op.id));
                                 }
                                 if ui
                                     .small_button(icons::CARET_DOWN)
                                     .on_hover_text("Move down")
                                     .clicked()
                                 {
-                                    commands.push(AppCommand::ReorderOperation(op.id, 1));
+                                    commands.push(Intent::ReorderOperation(op.id, 1));
                                 }
                                 if ui
                                     .small_button(icons::CARET_UP)
                                     .on_hover_text("Move up")
                                     .clicked()
                                 {
-                                    commands.push(AppCommand::ReorderOperation(op.id, -1));
+                                    commands.push(Intent::ReorderOperation(op.id, -1));
                                 }
                             }
                             OperationStatus::Failed { error } => {
@@ -253,10 +252,10 @@ fn render_operation_list(
                                     .small_button(format!("{} Retry", icons::ARROW_CLOCKWISE))
                                     .clicked()
                                 {
-                                    commands.push(AppCommand::RetryFailed(op.id));
+                                    commands.push(Intent::RetryFailed(op.id));
                                 }
                                 if ui.small_button("Skip").clicked() {
-                                    commands.push(AppCommand::SkipFailed(op.id));
+                                    commands.push(Intent::SkipFailed(op.id));
                                 }
                                 ui.label(
                                     RichText::new("failed").size(10.0).color(acq_colors::FAILED),

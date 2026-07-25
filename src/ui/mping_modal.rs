@@ -59,7 +59,7 @@ fn draw_mping_modal(
     modal_state: &mut MpingModalState,
 ) {
     use crate::core::diagnostics::DiagnosticsIntent;
-    use crate::state::AppCommand;
+    use crate::core::Intent;
 
     if !diagnostics.mping.settings_modal_open {
         modal_state.seeded = false;
@@ -67,9 +67,7 @@ fn draw_mping_modal(
     }
 
     if super::modal_helper::modal_backdrop(ctx, "mping_modal_backdrop", 180) {
-        state.push_command(AppCommand::Diagnostics(
-            DiagnosticsIntent::CloseMpingSettings,
-        ));
+        state.push_command(Intent::Diagnostics(DiagnosticsIntent::CloseMpingSettings));
         modal_state.seeded = false;
         return;
     }
@@ -171,9 +169,7 @@ fn draw_mping_modal(
 
             ui.horizontal(|ui| {
                 if ui.button("Cancel").clicked() {
-                    state.push_command(AppCommand::Diagnostics(
-                        DiagnosticsIntent::CloseMpingSettings,
-                    ));
+                    state.push_command(Intent::Diagnostics(DiagnosticsIntent::CloseMpingSettings));
                     modal_state.seeded = false;
                 }
 
@@ -191,7 +187,7 @@ fn draw_mping_modal(
                         };
                         // The reducer guards on key change, clears the error,
                         // requests invalidation, and closes the modal.
-                        state.push_command(AppCommand::Diagnostics(
+                        state.push_command(Intent::Diagnostics(
                             DiagnosticsIntent::SaveMpingApiKey(new_key),
                         ));
                         modal_state.seeded = false;
@@ -202,9 +198,7 @@ fn draw_mping_modal(
                             .button(RichText::new("Clear").color(Color32::from_rgb(220, 120, 120)))
                             .clicked()
                     {
-                        state.push_command(AppCommand::Diagnostics(
-                            DiagnosticsIntent::ClearMpingKey,
-                        ));
+                        state.push_command(Intent::Diagnostics(DiagnosticsIntent::ClearMpingKey));
                         modal_state.key_input.clear();
                     }
                 });
