@@ -7,8 +7,8 @@
 //! throttle math and change-detection are tested headlessly in `core::persist`.
 
 use crate::core::UserPreferences;
-use crate::core::{decide_persist, Effect, PersistDecision};
-use crate::state::{self, AppState};
+use crate::core::{decide_persist, Effect, PersistDecision, PlaybackState, TimeModel};
+use crate::state::AppState;
 
 /// Manages URL state persistence, preference saving, and site change detection.
 pub struct PersistenceManager {
@@ -27,7 +27,7 @@ impl PersistenceManager {
         Self {
             // Seed with the construction-time wall clock so the first push still
             // waits a throttle window, preserving the old `Instant::now()` seed.
-            last_url_push_secs: state::TimeModel::wall_clock_time(),
+            last_url_push_secs: TimeModel::wall_clock_time(),
             last_saved_preferences: initial_prefs,
             previous_site_id: initial_site_id,
         }
@@ -60,7 +60,7 @@ impl PersistenceManager {
         &mut self,
         now_secs: f64,
         state: &AppState,
-        playback: &state::PlaybackState,
+        playback: &PlaybackState,
         mping_api_key: Option<String>,
         is_live: bool,
     ) -> Vec<Effect> {

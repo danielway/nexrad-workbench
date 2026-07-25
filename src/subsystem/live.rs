@@ -13,10 +13,11 @@
 //! once at the top of the update loop so every UI consumer sees the
 //! same snapshot for that frame.
 
+use crate::core::PlaybackState;
 use crate::core::RadarTimeline;
 use crate::nexrad::projection::{new_shared_engine, Projection, SharedProjectionEngine};
 use crate::nexrad::RealtimeChannel;
-use crate::state::{AppMode, LiveModeState, LiveRadarModel, PlaybackState};
+use crate::state::{AppMode, LiveModeState, LiveRadarModel};
 
 /// Inputs the per-frame `refresh` call reads from outside the
 /// subsystem. Kept explicit so [`Live`] doesn't take a back-reference
@@ -98,7 +99,7 @@ impl Live {
         now: f64,
         pause_stream_while_reviewing: bool,
     ) {
-        playback.exit_live(crate::state::FreezeAt::Keep);
+        playback.exit_live(crate::core::FreezeAt::Keep);
         if !self.mode_state.is_active() {
             return;
         }
@@ -183,8 +184,9 @@ mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
+    use crate::core::{LoopBasis, PlaybackState};
     use crate::nexrad::RealtimeChannel;
-    use crate::state::{LiveExitReason, LivePhase, LoopBasis, PlaybackState};
+    use crate::state::{LiveExitReason, LivePhase};
 
     fn live() -> Live {
         Live::new(RealtimeChannel::new())

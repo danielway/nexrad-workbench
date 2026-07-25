@@ -5,7 +5,8 @@
 //! areas of functionality.
 
 use crate::core::{
-    ElevationListEntry, FrameNow, OperationId, RadarTimeline, RenderProcessing, UserPreferences,
+    ElevationListEntry, FrameNow, LoopPreset, OperationId, PlaybackMode, PlaybackState,
+    RadarTimeline, RenderProcessing, UserPreferences,
 };
 
 #[allow(dead_code)]
@@ -45,11 +46,6 @@ pub use layer::LayerState;
 pub use live_mode::{should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase};
 pub use live_radar_model::LiveRadarModel;
 pub use mping::MpingState;
-pub use playback::{
-    format_lag, FreezeAt, LoopBasis, LoopMode, LoopPreset, MacroFrameInputs, PlaybackDirection,
-    PlaybackMode, PlaybackSpeed, PlaybackState, RebuildCause, TimeModel, TimeSelection,
-    TimelineTier, TIMELINE_ZOOM_MAX,
-};
 pub use render_cache::{PrevSweepCacheKey, RenderCache};
 pub use saved_events::{SavedEvent, SavedEvents};
 pub use settings::{format_bytes, StorageSettings};
@@ -84,7 +80,7 @@ pub enum AppCommand {
     /// already running (detached browsing); otherwise starts a stream.
     ReturnToLive,
     /// Apply a loop preset (spec §8): pin-to-live, last N frames, or a duration
-    /// window. Resolved into a [`LoopWindow`] + the right playhead transition.
+    /// window. Resolved into a [`crate::core::LoopWindow`] + the right playhead transition.
     ApplyLoopPreset(LoopPreset),
     /// Clear any active loop (selection bounds / pinned replay).
     ClearLoop,

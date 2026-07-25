@@ -12,7 +12,7 @@
 //! visible in every function signature, and avoids the situation where
 //! every other field on AppState reads as similarly playback-related.
 
-use crate::state::PlaybackState;
+use crate::core::PlaybackState;
 
 /// Owner of cursor state, playback rate, and animation timing.
 #[derive(Default)]

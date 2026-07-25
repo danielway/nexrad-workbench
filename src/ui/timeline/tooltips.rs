@@ -90,7 +90,7 @@ pub(super) fn render_timeline_tooltip(
     let track = &frame.rects.scan;
     let cell_top = track.top() + super::style::CONTAINER_INSET_Y + super::style::CELL_INSET_Y;
     let cell_bot = track.bottom() - super::style::CONTAINER_INSET_Y - super::style::CELL_INSET_Y;
-    let in_sweep_track = frame.tier == crate::state::TimelineTier::Micro
+    let in_sweep_track = frame.tier == crate::core::TimelineTier::Micro
         && hover_pos.y >= cell_top
         && hover_pos.y <= cell_bot;
 

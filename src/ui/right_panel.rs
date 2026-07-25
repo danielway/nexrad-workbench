@@ -369,7 +369,7 @@ pub(super) fn render_rendering_section(
     playback: &crate::subsystem::Playback,
     _chrome: &mut crate::subsystem::Chrome,
 ) {
-    let in_macro = playback.state.playback_mode() == crate::state::PlaybackMode::Macro;
+    let in_macro = playback.state.playback_mode() == crate::core::PlaybackMode::Macro;
     egui::CollapsingHeader::new(RichText::new("Rendering").strong())
         .default_open(true)
         .show(ui, |ui| {

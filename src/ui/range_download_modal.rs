@@ -96,7 +96,7 @@ fn draw_range_download_modal(
                         if let Some(range) = chrome.range_download_modal.take() {
                             acquisition.selection_fetch_target = Some(SelectionFetchTarget {
                                 range,
-                                armed_at_secs: crate::state::TimeModel::wall_clock_time(),
+                                armed_at_secs: crate::core::TimeModel::wall_clock_time(),
                             });
                         }
                     }

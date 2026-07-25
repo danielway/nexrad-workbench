@@ -286,8 +286,8 @@ fn apply_url_params(
         // calendar span instead of decades out (spec §6.4 DECIDED). Width isn't
         // measured yet at boot, so use the seeded `timeline_width_px`; the
         // per-frame reconcile corrects the tier once the real width is known.
-        let min = state::PlaybackState::min_zoom_for_width(playback.state.timeline_width_px);
-        playback.state.timeline_zoom = tz.clamp(min, state::TIMELINE_ZOOM_MAX);
+        let min = crate::core::PlaybackState::min_zoom_for_width(playback.state.timeline_width_px);
+        playback.state.timeline_zoom = tz.clamp(min, crate::core::TIMELINE_ZOOM_MAX);
         // Seed the tier deterministically from the restored zoom+width (no
         // hysteresis memory at boot). The per-frame reconcile corrects it once
         // the real strip width is measured.

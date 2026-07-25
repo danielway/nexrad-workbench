@@ -281,8 +281,8 @@ fn apply_zoom(
     // floor `set_timeline_zoom` will apply — the widest view stays the readable
     // calendar span, never the deprecated year-wide strip.
     let new_zoom = (old_zoom * zoom_factor).clamp(
-        crate::state::PlaybackState::min_zoom_for_width(width),
-        crate::state::TIMELINE_ZOOM_MAX,
+        crate::core::PlaybackState::min_zoom_for_width(width),
+        crate::core::TIMELINE_ZOOM_MAX,
     );
 
     let attached = playback.state.time_model.is_pinned() || playback.state.time_model.is_lookback();

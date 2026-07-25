@@ -68,11 +68,11 @@ impl WorkbenchApp {
         self.live.mode_state.detached_since = None;
         self.playback.state.clear_selection();
         self.playback.state.enter_pinned_live(now);
-        self.playback.state.speed = state::PlaybackSpeed::Realtime;
+        self.playback.state.speed = crate::core::PlaybackSpeed::Realtime;
         // Return-to-live re-tethers, so the zoom floor must land the tier back
         // in Micro. The Micro-enter threshold carries hysteresis (≥ 1.15),
         // so floor to LIVE_DEFAULT_ZOOM (2.0) rather than the nominal 1.0.
-        if self.playback.state.timeline_tier != state::TimelineTier::Micro {
+        if self.playback.state.timeline_tier != crate::core::TimelineTier::Micro {
             let width = self.playback.state.timeline_width_px;
             let spacing = self.playback.state.median_frame_spacing();
             self.playback
@@ -95,10 +95,10 @@ impl WorkbenchApp {
     ///   a *fixed* loop of that extent ending at the current playhead.
     pub(crate) fn apply_loop_preset(
         &mut self,
-        preset: crate::state::LoopPreset,
+        preset: crate::core::LoopPreset,
         ctx: &egui::Context,
     ) {
-        use crate::state::LoopPreset;
+        use crate::core::LoopPreset;
         let basis = preset.basis();
         let now = self.state.frame_now.secs();
 
@@ -138,8 +138,8 @@ impl WorkbenchApp {
         }
         let end = self.playback.state.playback_position();
         let span = match basis {
-            crate::state::LoopBasis::Duration(secs) => secs,
-            crate::state::LoopBasis::FrameCount(_) => self.frame_count_span_ending_at(basis, end),
+            crate::core::LoopBasis::Duration(secs) => secs,
+            crate::core::LoopBasis::FrameCount(_) => self.frame_count_span_ending_at(basis, end),
         };
         let start = end - span;
         self.playback.state.set_selection(start, end);
@@ -157,8 +157,8 @@ impl WorkbenchApp {
     /// Span (seconds) of the last `n` matching frames ending at/<= `end`, for a
     /// frame-count basis fixed loop. Falls back to the basis's nominal span when
     /// too few frames are cached around `end`.
-    fn frame_count_span_ending_at(&self, basis: crate::state::LoopBasis, end: f64) -> f64 {
-        if let crate::state::LoopBasis::FrameCount(n) = basis {
+    fn frame_count_span_ending_at(&self, basis: crate::core::LoopBasis, end: f64) -> f64 {
+        if let crate::core::LoopBasis::FrameCount(n) = basis {
             if let Some((s, e)) = self.timeline.scans.lookback_window(
                 &self.state.viz_state.elevation_selection,
                 self.state.viz_state.product.to_worker_string(),
@@ -226,7 +226,7 @@ impl WorkbenchApp {
             let (start, end) = committed;
             // Surface the replay window as a live-anchored selection so it
             // renders like any other selection (one concept, one overlay).
-            self.playback.state.selection = Some(state::TimeSelection {
+            self.playback.state.selection = Some(crate::core::TimeSelection {
                 a: start,
                 b: end,
                 in_progress: false,
@@ -266,11 +266,11 @@ impl WorkbenchApp {
     /// at now.
     pub(crate) fn resolve_pinned_window(
         &self,
-        basis: crate::state::LoopBasis,
+        basis: crate::core::LoopBasis,
         now: f64,
     ) -> (f64, f64) {
         match basis {
-            crate::state::LoopBasis::FrameCount(n) => self
+            crate::core::LoopBasis::FrameCount(n) => self
                 .timeline
                 .scans
                 .lookback_window(
@@ -280,7 +280,7 @@ impl WorkbenchApp {
                     n as usize,
                 )
                 .unwrap_or((now - basis.fallback_span_secs(), now)),
-            crate::state::LoopBasis::Duration(secs) => (now - secs, now),
+            crate::core::LoopBasis::Duration(secs) => (now - secs, now),
         }
     }
 
@@ -436,7 +436,7 @@ impl WorkbenchApp {
         log::info!("Stopping live mode: {:?}", reason);
 
         self.live.stop(reason);
-        self.playback.state.exit_live(state::FreezeAt::Keep);
+        self.playback.state.exit_live(crate::core::FreezeAt::Keep);
         self.live.channel.stop();
 
         // Halt playback: every remaining stop path (explicit stop, error,

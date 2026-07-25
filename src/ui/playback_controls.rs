@@ -3,7 +3,8 @@
 use super::colors::{live, timeline as tl_colors, ui as ui_colors};
 use super::overflow_menu::overflow_menu;
 use super::timeline::format_timestamp_compact;
-use crate::state::{AppMode, AppState, LoopMode, PlaybackMode, PlaybackSpeed, WidthTier};
+use crate::core::{LoopMode, PlaybackMode, PlaybackSpeed};
+use crate::state::{AppMode, AppState, WidthTier};
 use crate::subsystem::Acquisition;
 use eframe::egui::{self, Color32, RichText, Vec2};
 
@@ -412,7 +413,7 @@ fn render_loop_preset_menu(
     playback: &crate::subsystem::Playback,
     interactive: bool,
 ) {
-    use crate::state::LoopPreset;
+    use crate::core::LoopPreset;
     let has_loop =
         playback.state.loop_window.is_some() || playback.state.time_model.playback_bounds.is_some();
     // Highlight the icon while a loop is active so the control reads as "on".
@@ -576,7 +577,7 @@ fn render_live_button(
         let lag = state.frame_now.secs() - playback.state.playback_position();
         let label = RichText::new(format!(
             "{dot} LIVE · {} behind",
-            crate::state::format_lag(lag)
+            crate::core::format_lag(lag)
         ))
         .size(11.0)
         .strong()

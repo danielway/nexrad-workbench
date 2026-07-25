@@ -17,7 +17,8 @@
 //! Red is reserved exclusively for this concept: muted red ([`NOW_IDLE`]) as
 //! an invitation, bright pulsing red ([`LIVE_ACTIVE`]) while live.
 
-use crate::state::{AppCommand, AppState, LiveExitReason, PlaybackSpeed};
+use crate::core::PlaybackSpeed;
+use crate::state::{AppCommand, AppState, LiveExitReason};
 use crate::ui::colors::timeline::{LIVE_ACTIVE, NOW_IDLE};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Sense, Stroke, StrokeKind};
 
@@ -332,7 +333,7 @@ fn stop_live(
     // were pinned to now or mid-replay.
     playback
         .state
-        .exit_live(crate::state::FreezeAt::Now(state.frame_now.secs()));
+        .exit_live(crate::core::FreezeAt::Now(state.frame_now.secs()));
     state.status_message = live
         .mode_state
         .last_exit_reason

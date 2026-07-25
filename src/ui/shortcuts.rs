@@ -15,9 +15,9 @@
 //! and live-mode interactions there don't generalize; its entry in the
 //! help overlay still lives here so users see the full set in one place.
 
-use crate::core::RadarProduct;
+use crate::core::{PlaybackSpeed, RadarProduct};
 use crate::geo::ViewMode;
-use crate::state::{AppState, PlaybackSpeed};
+use crate::state::AppState;
 use eframe::egui::{self, RichText};
 
 // ---------------------------------------------------------------------------
@@ -536,8 +536,8 @@ fn handle_scan_step(
 /// fallback `all()` ordering.
 fn active_mode_speeds(playback: &crate::subsystem::Playback) -> &'static [PlaybackSpeed] {
     match playback.state.effective_playback_mode() {
-        crate::state::PlaybackMode::Macro => PlaybackSpeed::macro_speeds(),
-        crate::state::PlaybackMode::Micro => PlaybackSpeed::all(),
+        crate::core::PlaybackMode::Macro => PlaybackSpeed::macro_speeds(),
+        crate::core::PlaybackMode::Micro => PlaybackSpeed::all(),
     }
 }
 
@@ -612,8 +612,8 @@ fn handle_zoom_step(
     // with the floor `set_timeline_zoom` will actually store (mirrors
     // `apply_zoom` in timeline/interaction.rs).
     let new_zoom = (old_zoom * factor).clamp(
-        crate::state::PlaybackState::min_zoom_for_width(width),
-        crate::state::TIMELINE_ZOOM_MAX,
+        crate::core::PlaybackState::min_zoom_for_width(width),
+        crate::core::TIMELINE_ZOOM_MAX,
     );
     if new_zoom == old_zoom {
         return;

@@ -20,7 +20,7 @@ impl UserPreferences {
     /// `playback` comes from the Playback subsystem.
     pub fn from_app_state(
         state: &AppState,
-        playback: &super::PlaybackState,
+        playback: &crate::core::PlaybackState,
         mping_api_key: Option<String>,
     ) -> Self {
         Self {
@@ -58,7 +58,7 @@ impl UserPreferences {
     pub fn apply_to(
         &self,
         state: &mut AppState,
-        playback: &mut super::PlaybackState,
+        playback: &mut crate::core::PlaybackState,
     ) -> Option<String> {
         playback.speed = self.speed;
         if self.elevation_auto {
@@ -241,14 +241,14 @@ mod tests {
 mod coverage_tests {
     use super::*;
     use crate::core::InterpolationMode;
-    use crate::state::PlaybackSpeed;
+    use crate::core::PlaybackSpeed;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     // Re-declared builder idioms (sibling `mod tests` helpers are private).
     // `AppState::default()` / `PlaybackState::default()` are the constructors
     // used throughout the state suite (see src/core/persist.rs tests).
-    fn states() -> (AppState, super::super::PlaybackState) {
-        (AppState::default(), super::super::PlaybackState::default())
+    fn states() -> (AppState, crate::core::PlaybackState) {
+        (AppState::default(), crate::core::PlaybackState::default())
     }
 
     // --- serde default table (`#[serde(default = ...)]`) -------------------

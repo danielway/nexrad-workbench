@@ -6,8 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::InterpolationMode;
-use crate::state::PlaybackSpeed;
+use crate::core::{InterpolationMode, PlaybackSpeed};
 
 /// User preferences that persist across page reloads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

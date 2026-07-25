@@ -74,7 +74,7 @@ impl WorkbenchApp {
         self.pump_anchor_fast_path();
 
         let playing_micro = self.playback.state.playing
-            && self.playback.state.playback_mode() == state::PlaybackMode::Micro;
+            && self.playback.state.playback_mode() == crate::core::PlaybackMode::Micro;
 
         // Debounce: require the view to settle, unless playing (then track the
         // advancing cursor continuously — dedup keeps that idempotent).
@@ -260,7 +260,8 @@ impl WorkbenchApp {
         // Shared with the queue's prune/priority logic so all three agree on
         // what "near the playhead" means; the volume cap is the backstop.
         let speed_mult = self.playback.state.speed.timeline_seconds_per_real_second();
-        let forward = self.playback.state.time_model.direction == state::PlaybackDirection::Forward;
+        let forward =
+            self.playback.state.time_model.direction == crate::core::PlaybackDirection::Forward;
         let (win_start_i64, win_end_i64) = crate::nexrad::download_queue::prefetch_window(
             pos,
             speed_mult,
@@ -639,7 +640,7 @@ impl WorkbenchApp {
         // `resolve_pinned_window`; widen the *start* by the basis fallback span
         // so a frame-count loop still backfills enough archive before its
         // frames are cached (its resolved span collapses to near-zero then).
-        let now = crate::state::TimeModel::wall_clock_time();
+        let now = crate::core::TimeModel::wall_clock_time();
         let basis = self
             .playback
             .state

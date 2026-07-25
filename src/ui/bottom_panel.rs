@@ -2,7 +2,8 @@
 
 use super::acquisition_drawer::render_acquisition_drawer;
 use super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::state::{AppState, PlaybackMode};
+use crate::core::PlaybackMode;
+use crate::state::AppState;
 use crate::subsystem::Acquisition;
 use eframe::egui;
 

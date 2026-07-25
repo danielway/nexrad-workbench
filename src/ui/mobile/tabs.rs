@@ -12,7 +12,8 @@
 //!   2. Scrubber (~44px) — topmost. The coverage strip (faint=available,
 //!      solid=cached, red=now, neutral thumb, REJOIN pill, long-press→inspector).
 
-use crate::state::{AppState, LiveExitReason, LoopPreset, MobileSettingsTab, PlaybackMode};
+use crate::core::{LoopPreset, PlaybackMode};
+use crate::state::{AppState, LiveExitReason, MobileSettingsTab};
 use eframe::egui::{self, Color32, RichText};
 
 const TRANSPORT_BAR_HEIGHT: f32 = 48.0;
@@ -250,7 +251,7 @@ fn render_live_button(
             .clicked()
         {
             live.stop(LiveExitReason::UserStopped);
-            playback.state.exit_live(crate::state::FreezeAt::Keep);
+            playback.state.exit_live(crate::core::FreezeAt::Keep);
             playback.state.playing = false;
         }
         return;
@@ -291,7 +292,7 @@ fn render_live_button(
     {
         playback.state.clear_selection();
         state.push_command(crate::state::AppCommand::StartLive);
-        playback.state.speed = crate::state::PlaybackSpeed::Realtime;
+        playback.state.speed = crate::core::PlaybackSpeed::Realtime;
     }
 }
 
@@ -388,7 +389,7 @@ pub(super) fn step_frame(
     playback: &mut crate::subsystem::Playback,
     direction: isize,
 ) {
-    use crate::state::PlaybackMode;
+    use crate::core::PlaybackMode;
 
     let current_pos = playback.state.playback_position();
     // Jogging detaches the playhead; a running stream keeps ingesting unless

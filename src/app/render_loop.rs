@@ -21,9 +21,9 @@ impl WorkbenchApp {
         // Rebuild macro frame list when dirty (elevation selection, bounds, or
         // scan count changed). Uses the *effective* mode so the list is also
         // built during a lookback replay (which frame-steps regardless of zoom).
-        if self.playback.state.effective_playback_mode() == crate::state::PlaybackMode::Macro {
+        if self.playback.state.effective_playback_mode() == crate::core::PlaybackMode::Macro {
             let product = self.state.viz_state.product.to_worker_string();
-            let inputs = crate::state::MacroFrameInputs {
+            let inputs = crate::core::MacroFrameInputs {
                 elevation: self.state.viz_state.elevation_selection.clone(),
                 product,
                 bounds: self.playback.state.time_model.playback_bounds,
@@ -58,7 +58,7 @@ impl WorkbenchApp {
                 // sweep at the new elevation in the current scan, blanking
                 // the canvas. Skip on bounds/scan_count changes so
                 // streaming and selection edits don't teleport the cursor.
-                if cause == crate::state::RebuildCause::ElevationChanged {
+                if cause == crate::core::RebuildCause::ElevationChanged {
                     self.playback.state.snap_playback_to_macro_frame();
                 }
             }
@@ -198,7 +198,7 @@ impl WorkbenchApp {
         if self.playback.state.playing
             && !live_active
             && self.render.coordinator.has_worker()
-            && self.playback.state.playback_mode() == crate::state::PlaybackMode::Micro
+            && self.playback.state.playback_mode() == crate::core::PlaybackMode::Micro
         {
             let playback_ts = self.playback.state.playback_position();
             let speed = self.playback.state.speed.timeline_seconds_per_real_second();

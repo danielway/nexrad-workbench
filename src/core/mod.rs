@@ -40,6 +40,14 @@ pub use domain::forecast::{
 #[allow(unused_imports)]
 pub use domain::forecast::RateSource;
 pub use domain::ops::OperationId;
+pub use domain::playback::{
+    format_lag, FreezeAt, LoopBasis, LoopMode, LoopPreset, MacroFrameInputs, MacroPlaybackState,
+    PlaybackDirection, PlaybackMode, PlaybackSpeed, PlaybackState, PlayheadMode, RebuildCause,
+    TimeModel, TimeSelection, TimelineTier, TIMELINE_ZOOM_MAX,
+};
+// Consumed only by test modules today; in a bin crate that reads as unused.
+#[allow(unused_imports)]
+pub use domain::playback::LoopWindow;
 pub use domain::prefs::UserPreferences;
 pub use domain::radar::{RadarTimeline, Scan, ScanMetadata, Sweep};
 #[allow(unused_imports)]

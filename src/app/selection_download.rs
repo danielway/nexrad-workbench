@@ -26,7 +26,7 @@ impl WorkbenchApp {
         // are never cancelled — they finish and free their slots naturally.
         let playhead = self.playback.state.playback_position();
         let forward =
-            self.playback.state.time_model.direction == crate::state::PlaybackDirection::Forward;
+            self.playback.state.time_model.direction == crate::core::PlaybackDirection::Forward;
         let speed = self.playback.state.speed.timeline_seconds_per_real_second();
         let playing = self.playback.state.playing;
         let (win_start, win_end) =

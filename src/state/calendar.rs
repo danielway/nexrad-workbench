@@ -200,7 +200,7 @@ fn union_seconds(spans: &mut [(f64, f64)]) -> f64 {
 /// The zoom is chosen so the visible span sits comfortably inside the Macro
 /// band (below the Archive-entry span, above the Micro boundary): we show a
 /// window of [`MACRO_LANDING_SPAN_SECS`] centred on the day's midpoint. Routing
-/// the returned zoom through [`crate::state::PlaybackState::set_timeline_zoom`]
+/// the returned zoom through [`crate::core::PlaybackState::set_timeline_zoom`]
 /// lands the tier machine in Macro.
 pub fn day_tap_macro_view(day_start: f64, width_px: f64) -> (f64, f64) {
     let span = MACRO_LANDING_SPAN_SECS;
@@ -440,10 +440,10 @@ mod tests {
     /// at/above Micro boundary handling) — the gesture's whole point.
     #[wasm_bindgen_test]
     fn day_tap_zoom_lands_in_macro_tier() {
-        use crate::state::TimelineTier;
+        use crate::core::TimelineTier;
         let width = 1000.0;
         let (_view_start, zoom) = day_tap_macro_view(DAY0, width);
-        let tier = crate::state::PlaybackState::seed_tier(zoom, width);
+        let tier = crate::core::PlaybackState::seed_tier(zoom, width);
         assert_eq!(tier, TimelineTier::Macro);
     }
 }

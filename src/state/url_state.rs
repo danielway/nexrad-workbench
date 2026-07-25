@@ -31,7 +31,7 @@ impl ViewState {
     /// dependency stays one-way.
     pub fn from_state(
         state: &super::AppState,
-        playback: &super::PlaybackState,
+        playback: &crate::core::PlaybackState,
         is_live: bool,
     ) -> Self {
         let snap = state.viz_state.camera.url_snapshot();
@@ -182,7 +182,7 @@ mod tests {
         // which requires both a stream session AND an attached playhead), so a
         // detached background stream persists `t` only — no `rt`.
         let state = crate::state::AppState::default();
-        let playback = crate::state::PlaybackState::default();
+        let playback = crate::core::PlaybackState::default();
 
         // Attached live → rt = Some(true).
         let attached = ViewState::from_state(&state, &playback, true);
@@ -271,7 +271,7 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn from_state_default_sets_core_view_fields() {
         let state = crate::state::AppState::default();
-        let playback = crate::state::PlaybackState::default();
+        let playback = crate::core::PlaybackState::default();
         let vs = ViewState::from_state(&state, &playback, false);
         // These are always populated (Some) regardless of live state.
         assert!(vs.mz.is_some());

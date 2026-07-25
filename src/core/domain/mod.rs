@@ -2,6 +2,7 @@
 
 pub mod forecast;
 pub mod ops;
+pub mod playback;
 pub mod prefs;
 pub mod radar;
 pub mod time;

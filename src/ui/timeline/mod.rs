@@ -16,7 +16,8 @@ pub(super) mod style;
 mod tooltips;
 
 use super::colors::timeline as tl_colors;
-use crate::state::{AppState, FrameJoinInputs, LivePhase, TimelineTier, WidthTier};
+use crate::core::TimelineTier;
+use crate::state::{AppState, FrameJoinInputs, LivePhase, WidthTier};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 

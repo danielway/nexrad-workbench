@@ -6,7 +6,8 @@
 //! so the mobile surface stays in sync with desktop automatically.
 
 use super::super::layout::{Layer, LayerKind, LayoutCtx};
-use crate::state::{AppState, MobileSettingsTab, PlaybackMode, PlaybackSpeed};
+use crate::core::{PlaybackMode, PlaybackSpeed};
+use crate::state::{AppState, MobileSettingsTab};
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 pub(in crate::ui) struct MobileSettingsModalLayer;
