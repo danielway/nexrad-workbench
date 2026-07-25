@@ -9,7 +9,7 @@ use eframe::egui;
 use super::api;
 use super::channel::{AlertsChannel, AlertsEvent};
 use super::zones::ZoneResolver;
-use crate::state::AlertsState;
+use crate::core::AlertsState;
 
 /// Poll interval in wall-clock milliseconds. NWS recommends <= 1 req/min;
 /// 2 minutes is comfortable and still plenty fresh for warnings.

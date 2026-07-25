@@ -894,7 +894,7 @@ pub(super) fn render_mode_badge(
 
     // Live-only trailing detail: chunk count, countdown, or elapsed acquire time.
     if mode == AppMode::Live {
-        use crate::state::LivePhase;
+        use crate::core::LivePhase;
         let now = playback.state.playback_position();
         let phase = live.mode_state.phase;
         let detail = match phase {

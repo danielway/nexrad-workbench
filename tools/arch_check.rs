@@ -34,9 +34,13 @@ const ALLOWED: &[(&str, &str)] = &[
     ("core", "data"),
     ("core", "geo"),
     ("core", "alerts"),
-    // feed modules
+    ("core", "mping"), // StormReport is pure feed vocabulary, like alerts types
+    // feed modules — may use net + the pure core vocabulary (their own
+    // feed-state containers live in core::domain::feeds)
     ("alerts", "net"),
+    ("alerts", "core"),
     ("mping", "net"),
+    ("mping", "core"),
     ("mping", "alerts"), // shared feed plumbing (channel idiom)
     ("mping", "data"),
     // pipeline

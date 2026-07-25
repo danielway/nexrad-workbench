@@ -128,7 +128,7 @@ pub struct VolumeForecastSnapshot {
 /// snapshot is derived on demand by
 /// [`derive_volume_forecast`] when the modal opens. Same shape feeds
 /// derivation for the in-progress volume — see
-/// [`crate::state::LiveModeState::derive_current_volume_forecast`].
+/// [`crate::core::LiveModeState::derive_current_volume_forecast`].
 #[derive(Clone, Debug)]
 pub struct CompletedVolumeRecord {
     pub vcp: crate::data::keys::ExtractedVcp,

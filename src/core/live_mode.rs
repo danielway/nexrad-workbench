@@ -26,7 +26,7 @@
 //! UI code reads forward-looking timing from the frame `Projection`
 //! ([`crate::subsystem::Live::frame_projection`] /
 //! [`crate::subsystem::Live::countdown_remaining_secs`]) and frame-cached
-//! derivations from [`crate::state::live_radar_model::LiveRadarModel`] (the
+//! derivations from [`crate::core::live_radar_model::LiveRadarModel`] (the
 //! timeline ghost, VCP panel position, the in-progress sweep), rebuilt once
 //! per frame so read sites in the same frame stay consistent. Diagnostics
 //! snapshots come from [`LiveModeState::derive_current_volume_forecast`] / the

@@ -241,14 +241,15 @@ impl WorkbenchApp {
             // next frame; `playing` is deliberately untouched so an archive
             // replay keeps running.
             self.playback.state.slide_anchored_selection(now);
-            if state::should_stop_for_detached_idle(
+            if crate::core::should_stop_for_detached_idle(
                 self.live.mode_state.detached_since,
                 now,
                 crate::LIVE_DETACHED_STOP_SECS,
             ) {
-                self.live.stop(state::LiveExitReason::DetachedTimeout);
-                self.state.status_message =
-                    state::LiveExitReason::DetachedTimeout.message().to_string();
+                self.live.stop(crate::core::LiveExitReason::DetachedTimeout);
+                self.state.status_message = crate::core::LiveExitReason::DetachedTimeout
+                    .message()
+                    .to_string();
             }
             return;
         }
@@ -432,7 +433,7 @@ impl WorkbenchApp {
 
     /// Stop live mode streaming.
     #[allow(dead_code)] // Called from UI when user stops live mode
-    pub(crate) fn stop_live_mode(&mut self, reason: state::LiveExitReason) {
+    pub(crate) fn stop_live_mode(&mut self, reason: crate::core::LiveExitReason) {
         log::info!("Stopping live mode: {:?}", reason);
 
         self.live.stop(reason);
@@ -577,7 +578,7 @@ impl WorkbenchApp {
             }
             nexrad::RealtimeResult::Error(msg) => {
                 log::error!("Realtime streaming error: {}", msg);
-                self.stop_live_mode(state::LiveExitReason::ConnectionError);
+                self.stop_live_mode(crate::core::LiveExitReason::ConnectionError);
                 // Preserve error message (stop_live_mode clears it)
                 self.live.mode_state.error_message = Some(msg.clone());
                 self.state.status_message = format!("Live error: {}", msg);

@@ -33,10 +33,10 @@
 //! failures + the live projection into per-cell states the frames-first strip
 //! renders (spec §6.3).
 
+use crate::core::LiveModeState;
 use crate::core::{RadarTimeline, Scan};
 use crate::nexrad::projection::{ScanProjection, SweepProjectionStatus, SweepTimingProvenance};
 use crate::nexrad::ScanBoundary;
-use crate::state::LiveModeState;
 use std::collections::BTreeSet;
 
 /// The single tolerance for matching one scan-start second against another
@@ -257,7 +257,7 @@ impl<'a> TimelineView<'a> {
 
     /// Cached ("settled") scans overlapping `[start, end]`, excluding the
     /// in-progress volume (the realtime overlay owns that). These carry
-    /// [`crate::state::SweepAvailability::Cached`] availability. Borrows tie
+    /// [`crate::nexrad::projection::SweepAvailability::Cached`] availability. Borrows tie
     /// to the underlying cache (`'a`), not to the view, so callers can return
     /// them past the view's own scope. Each item carries the clamped display
     /// end from [`Self::visual_scans_in_range`].
@@ -1200,8 +1200,8 @@ mod tests {
         let mut pos = live_model(vec![s_inprog, s_other, s_cached, s_future]);
         pos.in_progress_radials = Some(42);
 
-        let live = crate::state::LiveModeState::with_dummy_streaming(
-            crate::state::LivePhase::Streaming,
+        let live = crate::core::LiveModeState::with_dummy_streaming(
+            crate::core::LivePhase::Streaming,
             1_700_000_010.0,
         );
         let cache = RadarTimeline { scans: Vec::new() };
@@ -1300,8 +1300,8 @@ mod tests {
         s_inprog.collection_end_secs = 1_700_000_030.0;
         s_inprog.chunks_in_sweep = 3;
         let pos = live_model(vec![s_inprog]); // volume_start = 1_700_000_000.0
-        let live = crate::state::LiveModeState::with_dummy_streaming(
-            crate::state::LivePhase::Streaming,
+        let live = crate::core::LiveModeState::with_dummy_streaming(
+            crate::core::LivePhase::Streaming,
             1_700_000_010.0,
         );
         let cache = RadarTimeline { scans: Vec::new() };
@@ -1581,8 +1581,8 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn scan_start_at_prefers_live_volume() {
         let pos = live_model(vec![sweep_pos(1, SweepProjectionStatus::InProgress)]);
-        let live = crate::state::LiveModeState::with_dummy_streaming(
-            crate::state::LivePhase::Streaming,
+        let live = crate::core::LiveModeState::with_dummy_streaming(
+            crate::core::LivePhase::Streaming,
             1_700_000_010.0,
         );
         let cache = RadarTimeline { scans: Vec::new() };
@@ -1709,8 +1709,8 @@ mod coverage_tests {
         sp.collection_end_secs = 1_700_000_030.0;
         sp.chunks_in_sweep = 3;
         let pos = live_model(vec![sp]);
-        let live = crate::state::LiveModeState::with_dummy_streaming(
-            crate::state::LivePhase::Streaming,
+        let live = crate::core::LiveModeState::with_dummy_streaming(
+            crate::core::LivePhase::Streaming,
             1_700_000_010.0,
         );
         let shadows: Vec<ScanBoundary> = Vec::new();
@@ -1746,8 +1746,8 @@ mod coverage_tests {
         ghost.volume_end = 1_700_000_600.0;
         pos.next_scan_ghost = Some(Box::new(ghost));
 
-        let live = crate::state::LiveModeState::with_dummy_streaming(
-            crate::state::LivePhase::Streaming,
+        let live = crate::core::LiveModeState::with_dummy_streaming(
+            crate::core::LivePhase::Streaming,
             1_700_000_010.0,
         );
         let cache = RadarTimeline { scans: Vec::new() };

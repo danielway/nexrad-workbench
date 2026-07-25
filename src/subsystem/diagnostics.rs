@@ -13,9 +13,10 @@
 //! (e.g. recency-driven gating).
 
 use crate::alerts::AlertsManager;
+use crate::core::{AlertsState, GpsState, MpingState};
 use crate::mping::{MpingManager, MpingTickInputs};
 use crate::nexrad::NetworkMonitor;
-use crate::state::{AlertsState, ErrorContext, GpsState, MpingState};
+use crate::state::ErrorContext;
 use eframe::egui;
 
 /// Per-frame inputs the diagnostics subsystem needs to tick its managers.

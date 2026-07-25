@@ -14,10 +14,8 @@
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use super::timeline::format_timestamp_full;
-use crate::state::{
-    format_bytes, AppCommand, AppState, FrameCell, FrameCellState, FrameJoinInputs, ScanContainer,
-    TimelineView,
-};
+use crate::core::{FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView};
+use crate::state::{format_bytes, AppCommand, AppState};
 use crate::subsystem::{Acquisition, Chrome, Live, Playback, Timeline};
 use eframe::egui::{self, Color32, RichText, ScrollArea, Vec2};
 use egui_phosphor::regular as icons;
@@ -52,7 +50,7 @@ impl Layer for ScanInspectorLayer {
 /// Tolerance (seconds) for matching the stored inspected scan-start against a
 /// container's `key_secs` — the same join tolerance the strip uses, so the
 /// inspector resolves to the same container the user clicked.
-const MATCH_TOLERANCE_SECS: f64 = crate::state::SCAN_JOIN_TOLERANCE_SECS as f64;
+const MATCH_TOLERANCE_SECS: f64 = crate::core::SCAN_JOIN_TOLERANCE_SECS as f64;
 
 /// Estimated bytes for one sweep's blob. Real per-sweep blob sizes live in IDB
 /// behind an async read we don't add this phase; the volume estimate

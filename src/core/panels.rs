@@ -114,7 +114,7 @@ pub fn query_radar_state_at_timestamp<'a>(
     // so the panel can't drift from it. The in-progress volume is excluded from
     // `settled_scan_at` and surfaced via `live_volume()` (with its cached cuts
     // merged in).
-    let view = crate::state::TimelineView::build(
+    let view = crate::core::TimelineView::build(
         &timeline.scans,
         &timeline.shadow_scan_boundaries,
         Some(&live.mode_state),

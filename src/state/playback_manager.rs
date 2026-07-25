@@ -347,9 +347,9 @@ pub(crate) fn resolve_active_sweep_target(
 ///
 /// Mode-agnostic: live and archive are *sources* feeding this decision, not
 /// mutually-exclusive owners of the canvas. The canvas only ever shows one
-/// sweep, so the live↔cache merge that [`crate::state::timeline_view`] does
+/// sweep, so the live↔cache merge that [`crate::core::timeline_view`] does
 /// per-volume collapses here to a single precedence choice — the same rule as
-/// [`crate::state::timeline_view::merge_cached_into_live`]: the live session's
+/// [`crate::core::timeline_view::merge_cached_into_live`]: the live session's
 /// in-progress cut wins for *its own* elevation; cached data answers for every
 /// other (elevation, position) the user can select.
 #[derive(Debug, Clone, PartialEq)]

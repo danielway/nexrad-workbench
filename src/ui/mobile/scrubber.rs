@@ -99,7 +99,7 @@ pub(super) fn render_scrubber(
     {
         // The same suppress-where-cached rule the desktop timeline gets
         // from TimelineView, without the live-merge machinery.
-        let view = crate::state::TimelineView::build(
+        let view = crate::core::TimelineView::build(
             &timeline.scans,
             &timeline.shadow_scan_boundaries,
             None,
@@ -198,7 +198,7 @@ pub(super) fn render_scrubber(
     // via the merged view, then suppresses this frame's seek.
     if let Some(pos) = crate::ui::long_press::detect(ui.ctx(), &response, response.id) {
         let ts = x_to_ts(pos.x);
-        let view = crate::state::TimelineView::build(
+        let view = crate::core::TimelineView::build(
             &timeline.scans,
             &timeline.shadow_scan_boundaries,
             Some(&live.mode_state),

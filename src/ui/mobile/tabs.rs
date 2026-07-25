@@ -12,8 +12,9 @@
 //!   2. Scrubber (~44px) — topmost. The coverage strip (faint=available,
 //!      solid=cached, red=now, neutral thumb, REJOIN pill, long-press→inspector).
 
+use crate::core::LiveExitReason;
 use crate::core::{LoopPreset, PlaybackMode};
-use crate::state::{AppState, LiveExitReason, MobileSettingsTab};
+use crate::state::{AppState, MobileSettingsTab};
 use eframe::egui::{self, Color32, RichText};
 
 const TRANSPORT_BAR_HEIGHT: f32 = 48.0;

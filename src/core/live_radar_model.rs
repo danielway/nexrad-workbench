@@ -226,11 +226,11 @@ mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
+    use crate::core::live_mode::LivePhase;
     use crate::nexrad::projection::{
         ChunkSpan, ProjectionScanRole, SweepProjection, SweepProjectionStatus,
         SweepTimingProvenance,
     };
-    use crate::state::live_mode::LivePhase;
 
     // ── construction helpers (mirror the projection/mod.rs test idioms) ──
 

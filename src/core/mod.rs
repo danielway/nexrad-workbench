@@ -28,10 +28,14 @@ pub mod diagnostics;
 pub mod domain;
 pub mod effect;
 pub mod intent;
+pub mod live_mode;
+pub mod live_radar_model;
 pub mod panels;
 pub mod persist;
 pub mod render;
+pub mod timeline_view;
 
+pub use domain::feeds::{AlertsState, GpsState, MpingState};
 pub use domain::forecast::{
     derive_volume_forecast, BucketKey, ChunkArrivalStat, CompletedVolumeRecord,
     ForecastTimingLabel, SweepForecast, SweepStatus, VolumeForecastSnapshot, WaitResolution,
@@ -60,7 +64,13 @@ pub use domain::viz::{
 };
 pub use domain::volume::VolumeElevationRoster;
 pub use effect::{Effect, LocationResult};
+pub use live_mode::{should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase};
+pub use live_radar_model::LiveRadarModel;
 pub use persist::{decide_persist, PersistDecision};
+pub use timeline_view::{
+    FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView,
+    SCAN_JOIN_TOLERANCE_SECS,
+};
 
 // `Intent` is consumed starting P5; in a bin crate the re-export reads as unused
 // until the first consumer lands.

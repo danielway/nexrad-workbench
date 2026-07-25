@@ -92,7 +92,7 @@ impl WorkbenchApp {
             if self.live.mode_state.is_active() {
                 let was_attached = self.playback.state.time_model.is_pinned()
                     || self.playback.state.time_model.is_lookback();
-                self.stop_live_mode(crate::state::LiveExitReason::UserStopped);
+                self.stop_live_mode(crate::core::LiveExitReason::UserStopped);
                 if was_attached {
                     self.state.push_command(crate::state::AppCommand::StartLive);
                 }

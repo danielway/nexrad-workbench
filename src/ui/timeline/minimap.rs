@@ -205,7 +205,7 @@ pub(super) fn render_minimap(
     // cached paints over any overlap. Suppress shadows already covered by
     // cached data (same rule the strip and mobile scrubber use).
     {
-        let view = crate::state::TimelineView::build(
+        let view = crate::core::TimelineView::build(
             &timeline.scans,
             &timeline.shadow_scan_boundaries,
             None,

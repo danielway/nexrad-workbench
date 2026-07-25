@@ -69,7 +69,7 @@ const LIVE_DEFAULT_ZOOM: f64 = 2.0;
 /// and an archive file's timestamp for them to be considered the same scan.
 /// Aliases the timeline's single scan-start join tolerance so there is exactly
 /// one number governing "same scan" decisions across acquisition and the strip.
-const SCAN_CACHE_MATCH_TOLERANCE_SECS: i64 = crate::state::SCAN_JOIN_TOLERANCE_SECS;
+const SCAN_CACHE_MATCH_TOLERANCE_SECS: i64 = crate::core::SCAN_JOIN_TOLERANCE_SECS;
 
 /// A finalized timeline selection at or under this span downloads its scans
 /// immediately; a longer span first asks for confirmation (the bulk download

@@ -15,9 +15,10 @@
 
 use crate::core::PlaybackState;
 use crate::core::RadarTimeline;
+use crate::core::{LiveModeState, LiveRadarModel};
 use crate::nexrad::projection::{new_shared_engine, Projection, SharedProjectionEngine};
 use crate::nexrad::RealtimeChannel;
-use crate::state::{AppMode, LiveModeState, LiveRadarModel};
+use crate::state::AppMode;
 
 /// Inputs the per-frame `refresh` call reads from outside the
 /// subsystem. Kept explicit so [`Live`] doesn't take a back-reference
@@ -76,7 +77,7 @@ impl Live {
     /// Stop live streaming: reset the state machine and the engine's volume
     /// observations together (the engine owns the observations now, so the old
     /// `LiveModeState::stop` field-clear must also clear them).
-    pub fn stop(&mut self, reason: crate::state::LiveExitReason) {
+    pub fn stop(&mut self, reason: crate::core::LiveExitReason) {
         self.mode_state.stop(reason);
         self.engine.borrow_mut().reset_volume_observations();
     }
@@ -105,7 +106,7 @@ impl Live {
         }
         if pause_stream_while_reviewing {
             // Data-saver: stop the moment the user starts reviewing.
-            self.stop(crate::state::LiveExitReason::UserStopped);
+            self.stop(crate::core::LiveExitReason::UserStopped);
             self.channel.stop();
             return;
         }
@@ -126,7 +127,7 @@ impl Live {
     /// the "next in Xs" countdown. `Some` only while waiting for a chunk, read
     /// from this frame's projection (no `LiveModeState.plan`).
     pub fn countdown_remaining_secs(&self, now: f64) -> Option<f64> {
-        if self.mode_state.phase != crate::state::LivePhase::WaitingForChunk {
+        if self.mode_state.phase != crate::core::LivePhase::WaitingForChunk {
             return None;
         }
         self.frame_projection
@@ -184,9 +185,9 @@ mod coverage_tests {
     use super::*;
     use wasm_bindgen_test::wasm_bindgen_test;
 
+    use crate::core::{LiveExitReason, LivePhase};
     use crate::core::{LoopBasis, PlaybackState};
     use crate::nexrad::RealtimeChannel;
-    use crate::state::{LiveExitReason, LivePhase};
 
     fn live() -> Live {
         Live::new(RealtimeChannel::new())

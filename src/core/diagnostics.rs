@@ -14,8 +14,7 @@
 //!   render, so they don't recompute `visible_in` themselves.
 
 use crate::alerts::{Alert, AlertSeverity};
-use crate::core::Effect;
-use crate::state::{AlertsState, GpsState, MpingState};
+use crate::core::{AlertsState, Effect, GpsState, MpingState};
 
 // ---------------------------------------------------------------------------
 // Pure hit-test / focus decisions

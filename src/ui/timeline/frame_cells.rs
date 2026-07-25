@@ -19,7 +19,7 @@
 
 use super::strokes::{fill_hatched_rect, stroke_dashed_rect, DashedBorder};
 use super::{style, TimelineFrame};
-use crate::state::{FrameCell, FrameCellState, ScanContainer};
+use crate::core::{FrameCell, FrameCellState, ScanContainer};
 use crate::ui::colors::acquisition as acq_colors;
 use crate::ui::colors::timeline as tl_colors;
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Stroke, StrokeKind};

@@ -11,16 +11,11 @@ use crate::core::{
 
 #[allow(dead_code)]
 pub(crate) mod acquisition;
-mod alerts;
 mod app_mode;
 pub(crate) mod calendar;
 mod errors;
 mod frame_clock;
-mod gps;
 mod layer;
-mod live_mode;
-mod live_radar_model;
-mod mping;
 mod playback;
 pub(crate) mod playback_manager;
 mod preferences;
@@ -30,22 +25,16 @@ mod saved_events;
 mod settings;
 mod stats;
 pub(crate) mod theme;
-mod timeline_view;
 pub(crate) mod url_state;
 mod viz;
 
 pub use acquisition::{
     AcquisitionState, DrawerTab, NetworkGroupKey, OperationKind, OperationStatus,
 };
-pub use alerts::AlertsState;
 pub use app_mode::{derive_app_mode, AppMode};
 pub use calendar::{aggregate_day_buckets, day_tap_macro_view, DayBucket, DAY_SECS};
 pub use errors::{AppError, ErrorContext};
-pub use gps::GpsState;
 pub use layer::LayerState;
-pub use live_mode::{should_stop_for_detached_idle, LiveExitReason, LiveModeState, LivePhase};
-pub use live_radar_model::LiveRadarModel;
-pub use mping::MpingState;
 pub use render_cache::{PrevSweepCacheKey, RenderCache};
 pub use saved_events::{SavedEvent, SavedEvents};
 pub use settings::{format_bytes, StorageSettings};
@@ -55,10 +44,6 @@ pub use stats::{
 // Re-export the command type for ergonomic access.
 // AppCommand is defined directly in this module above.
 pub use theme::ThemeMode;
-pub use timeline_view::{
-    FrameCell, FrameCellState, FrameJoinInputs, ScanContainer, TimelineView,
-    SCAN_JOIN_TOLERANCE_SECS,
-};
 pub use viz::{derive_canvas_caption, CanvasCaption, VizState};
 
 /// Cap on the recent-network-requests ring used by the UI log.

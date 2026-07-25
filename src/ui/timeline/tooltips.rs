@@ -525,7 +525,7 @@ fn render_realtime_volume_tooltip(
 fn render_scan_tooltip_content(
     ui: &mut egui::Ui,
     scan: &crate::core::Scan,
-    live_state: &crate::state::LiveModeState,
+    live_state: &crate::core::LiveModeState,
     live_roster: Option<&crate::core::VolumeElevationRoster>,
     use_local: bool,
 ) {

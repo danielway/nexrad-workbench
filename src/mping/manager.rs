@@ -21,8 +21,8 @@ use eframe::egui;
 
 use super::api::{self, FetchParams};
 use super::channel::{MpingChannel, MpingEvent};
+use crate::core::MpingState;
 use crate::data::get_site;
-use crate::state::MpingState;
 
 /// Half-window around the current playback position, in seconds. A fetch
 /// spans `[p - HALF_WINDOW, p + HALF_WINDOW]`.

@@ -17,7 +17,8 @@ mod tooltips;
 
 use super::colors::timeline as tl_colors;
 use crate::core::TimelineTier;
-use crate::state::{AppState, FrameJoinInputs, LivePhase, WidthTier};
+use crate::core::{FrameJoinInputs, LivePhase};
+use crate::state::{AppState, WidthTier};
 use chrono::{Datelike, TimeZone, Timelike, Utc};
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 
@@ -58,7 +59,7 @@ pub(super) fn reduced_motion(ctx: &egui::Context) -> bool {
 /// subsystem (via [`TimelineView`]), so `&mut` access to state / live /
 /// playback stays available alongside it for the interaction paths.
 pub(super) struct TimelineFrame<'a> {
-    pub view: crate::state::TimelineView<'a>,
+    pub view: crate::core::TimelineView<'a>,
     /// This frame's wall clock (`AppState::frame_now`).
     pub now_secs: f64,
     /// Absolute timestamp of the view's left edge (Unix seconds).
@@ -406,7 +407,7 @@ pub(super) fn render_timeline(
     // volume's already-downloaded sweeps visible lives inside
     // `TimelineView::build`.
     let frame = TimelineFrame {
-        view: crate::state::TimelineView::build(
+        view: crate::core::TimelineView::build(
             &timeline.scans,
             &timeline.shadow_scan_boundaries,
             Some(&live.mode_state),
@@ -496,7 +497,7 @@ pub(super) fn render_timeline(
         // ghost (e.g. the next-volume ghost). Identified by INDEX so two
         // containers can't both claim it via f64-equal keys.
         let countdown = live.countdown_remaining_secs(frame.now_secs);
-        use crate::state::FrameCellState;
+        use crate::core::FrameCellState;
         let countdown_idx = containers
             .iter()
             .enumerate()

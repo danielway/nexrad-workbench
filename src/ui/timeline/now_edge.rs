@@ -17,8 +17,9 @@
 //! Red is reserved exclusively for this concept: muted red ([`NOW_IDLE`]) as
 //! an invitation, bright pulsing red ([`LIVE_ACTIVE`]) while live.
 
+use crate::core::LiveExitReason;
 use crate::core::PlaybackSpeed;
-use crate::state::{AppCommand, AppState, LiveExitReason};
+use crate::state::{AppCommand, AppState};
 use crate::ui::colors::timeline::{LIVE_ACTIVE, NOW_IDLE};
 use eframe::egui::{self, Color32, Painter, Pos2, Rect, Sense, Stroke, StrokeKind};
 
