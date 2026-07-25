@@ -55,7 +55,13 @@ fn render_radar_operations_section(
 
     ui.add_space(4.0);
 
-    let radar_state = query_radar_state_at_timestamp(timeline, live, playback);
+    let radar_state = query_radar_state_at_timestamp(
+        &timeline.scans,
+        &timeline.shadow_scan_boundaries,
+        &live.mode_state,
+        &live.radar_model,
+        &playback.state,
+    );
 
     // Top-down and side views side-by-side. The "future data" sector only
     // makes sense while the playhead tracks the live edge — a detached

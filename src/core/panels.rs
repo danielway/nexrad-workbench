@@ -76,7 +76,7 @@ pub fn status_message_visibility(set_ms: f64, now_ms: f64) -> StatusVisibility {
 
 /// State queried from the radar timeline at the current playback timestamp, for
 /// the left panel's azimuth/elevation/VCP readouts. Read-only projection of
-/// `Timeline` + `Live` + `Playback`; holds borrows tied to those subsystems.
+/// the timeline/live/playback state slices; holds borrows tied to them.
 pub struct RadarStateAtTimestamp<'a> {
     /// Current azimuth angle in degrees (0-360), from actual radial data.
     pub azimuth: Option<f32>,
@@ -100,25 +100,27 @@ pub struct RadarStateAtTimestamp<'a> {
 
 /// Derive the left panel's radar state at the current playback position.
 ///
-/// Pure read over the subsystems (no egui, no mutation, no I/O). Moved verbatim
+/// Pure read over core state slices (no egui, no mutation, no I/O). Moved verbatim
 /// from `ui::left_panel`; the high-speed freeze and the archive azimuth now use
 /// [`animation_frozen`] / [`archive_azimuth_from_progress`].
 pub fn query_radar_state_at_timestamp<'a>(
-    timeline: &'a crate::subsystem::Timeline,
-    live: &'a crate::subsystem::Live,
-    playback: &'a crate::subsystem::Playback,
+    scans: &'a crate::core::RadarTimeline,
+    shadow_scan_boundaries: &'a [crate::nexrad::ScanBoundary],
+    live_mode: &'a crate::core::live_mode::LiveModeState,
+    radar_model: &'a crate::core::live_radar_model::LiveRadarModel,
+    playback: &'a crate::core::PlaybackState,
 ) -> RadarStateAtTimestamp<'a> {
-    let ts = playback.state.playback_position();
+    let ts = playback.playback_position();
 
     // Resolve position detail through the same single adapter the timeline uses,
     // so the panel can't drift from it. The in-progress volume is excluded from
     // `settled_scan_at` and surfaced via `live_volume()` (with its cached cuts
     // merged in).
     let view = crate::core::TimelineView::build(
-        &timeline.scans,
-        &timeline.shadow_scan_boundaries,
-        Some(&live.mode_state),
-        live.radar_model.position.as_ref(),
+        scans,
+        shadow_scan_boundaries,
+        Some(live_mode),
+        radar_model.position.as_ref(),
     );
 
     match view.settled_scan_at(ts) {
@@ -145,8 +147,8 @@ pub fn query_radar_state_at_timestamp<'a>(
             // Freeze animated state at high playback speeds; static VCP info
             // (number, name, elevation list) still renders.
             let is_fast = animation_frozen(
-                playback.state.playing,
-                playback.state.speed.timeline_seconds_per_real_second(),
+                playback.playing,
+                playback.speed.timeline_seconds_per_real_second(),
             );
 
             let azimuth = if is_fast {
@@ -189,9 +191,9 @@ pub fn query_radar_state_at_timestamp<'a>(
             // js_sys::Date::now() — that would drift against every other surface
             // that consumed the same model.
             if let Some(position) = view.live_volume() {
-                let frame = &live.radar_model.frame_now;
+                let frame = &radar_model.frame_now;
                 let vcp = Some(position.vcp_number).filter(|&v| v > 0);
-                let azimuth = live.radar_model.estimated_azimuth;
+                let azimuth = radar_model.estimated_azimuth;
                 let sweep_index = frame.sweep_index.or_else(|| {
                     position
                         .in_progress_elevation
@@ -212,8 +214,7 @@ pub fn query_radar_state_at_timestamp<'a>(
                     current_elevation_number,
                     scan_progress,
                     scan: None,
-                    live_vcp_pattern: live
-                        .radar_model
+                    live_vcp_pattern: radar_model
                         .volume
                         .as_ref()
                         .and_then(|v| v.vcp_pattern.as_ref()),

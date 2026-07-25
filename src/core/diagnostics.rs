@@ -237,13 +237,9 @@ pub struct DiagnosticsVm {
 impl DiagnosticsVm {
     /// Build the view-model from the diagnostics state and this frame's visible
     /// bounds (`None` in 3D globe mode / before the canvas has rendered).
-    pub fn build(
-        diagnostics: &crate::subsystem::Diagnostics,
-        bounds: Option<(f64, f64, f64, f64)>,
-    ) -> Self {
+    pub fn build(alerts: &AlertsState, bounds: Option<(f64, f64, f64, f64)>) -> Self {
         let visible_alerts = match bounds {
-            Some(b) => diagnostics
-                .alerts
+            Some(b) => alerts
                 .visible_in(b)
                 .into_iter()
                 .map(|a| VisibleAlert {
@@ -983,13 +979,13 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn vm_none_bounds_is_empty() {
-        let mut d = crate::subsystem::Diagnostics::new();
-        d.alerts.alerts.push(warning(
+        let mut alerts = AlertsState::default();
+        alerts.alerts.push(warning(
             "a",
             AlertSeverity::Extreme,
             vec![vec![square(0.0, 10.0)]],
         ));
-        let vm = DiagnosticsVm::build(&d, None);
+        let vm = DiagnosticsVm::build(&alerts, None);
         assert!(vm.visible_alerts.is_empty());
     }
 
@@ -1001,7 +997,7 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn vm_projects_severity_sorted_with_field_mapping() {
-        let mut d = crate::subsystem::Diagnostics::new();
+        let mut state = AlertsState::default();
         // Insert in ascending severity to prove the VM re-sorts high-first.
         let mut minor = advisory("minor", AlertSeverity::Minor, vec![vec![square(0.0, 4.0)]]);
         minor.area_desc = "County A".into();
@@ -1009,10 +1005,10 @@ mod coverage_tests {
         let mut extreme = warning("ex", AlertSeverity::Extreme, vec![vec![square(0.0, 4.0)]]);
         extreme.area_desc = "County B".into();
         extreme.expires_secs = Some(222.0);
-        d.alerts.alerts.push(minor);
-        d.alerts.alerts.push(extreme);
+        state.alerts.push(minor);
+        state.alerts.push(extreme);
 
-        let vm = DiagnosticsVm::build(&d, Some((-1.0, -1.0, 5.0, 5.0)));
+        let vm = DiagnosticsVm::build(&state, Some((-1.0, -1.0, 5.0, 5.0)));
         assert_eq!(vm.visible_alerts.len(), 2);
         // Highest severity first.
         assert_eq!(vm.visible_alerts[0].id, "ex");
@@ -1029,19 +1025,19 @@ mod coverage_tests {
 
     #[wasm_bindgen_test]
     fn vm_filters_out_of_view_alert() {
-        let mut d = crate::subsystem::Diagnostics::new();
-        d.alerts.alerts.push(warning(
+        let mut state = AlertsState::default();
+        state.alerts.push(warning(
             "near",
             AlertSeverity::Severe,
             vec![vec![square(0.0, 5.0)]],
         ));
-        d.alerts.alerts.push(warning(
+        state.alerts.push(warning(
             "far",
             AlertSeverity::Extreme,
             vec![vec![rect(100.0, 100.0, 110.0, 110.0)]],
         ));
         // View covers only the "near" alert's bbox.
-        let vm = DiagnosticsVm::build(&d, Some((-1.0, -1.0, 6.0, 6.0)));
+        let vm = DiagnosticsVm::build(&state, Some((-1.0, -1.0, 6.0, 6.0)));
         assert_eq!(vm.visible_alerts.len(), 1);
         assert_eq!(vm.visible_alerts[0].id, "near");
     }

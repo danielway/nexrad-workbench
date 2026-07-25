@@ -93,11 +93,6 @@ const ALLOWED: &[(&str, &str)] = &[
 const GRANDFATHERED: &[(&str, &str, &str)] = &[
     (
         "core",
-        "subsystem",
-        "core decision fns read subsystem containers directly — arch-review F1/A1",
-    ),
-    (
-        "core",
         "nexrad",
         "core::panels uses nexrad::projection::ScanProjection — rehome per A1",
     ),

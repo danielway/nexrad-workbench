@@ -890,8 +890,10 @@ impl eframe::App for WorkbenchApp {
         // Diagnostics view-model: the read-only projection (severity-sorted
         // alerts in view) the chip + list modal render, built once from this
         // frame's bounds so neither recomputes `visible_in`.
-        let diagnostics_vm =
-            core::diagnostics::DiagnosticsVm::build(&self.diagnostics, derived.visible_bounds);
+        let diagnostics_vm = core::diagnostics::DiagnosticsVm::build(
+            &self.diagnostics.alerts,
+            derived.visible_bounds,
+        );
 
         let is_mobile = self.state.is_mobile;
         let mut layout_ctx = ui::LayoutCtx {
