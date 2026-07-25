@@ -97,11 +97,6 @@ const GRANDFATHERED: &[(&str, &str, &str)] = &[
         "core::panels uses nexrad::projection::ScanProjection — rehome per A1",
     ),
     (
-        "nexrad",
-        "state",
-        "RenderProcessing/Scan/Sweep etc. live in state — rehome per A1",
-    ),
-    (
         "app",
         "ui",
         "geolocation effect executor lives in ui — move executor into app, Phase C2",

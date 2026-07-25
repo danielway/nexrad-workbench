@@ -144,11 +144,11 @@ pub struct AppState {
     pub saved_events: SavedEvents,
 
     /// Aggregate network statistics from the service worker (all intercepted traffic).
-    pub network_aggregate: crate::nexrad::NetworkAggregate,
+    pub network_aggregate: crate::core::NetworkAggregate,
 
     /// Recent network requests from the service worker (ring buffer for UI log).
     /// Bounded by [`MAX_RECENT_NETWORK_REQUESTS`].
-    pub recent_network_requests: std::collections::VecDeque<crate::nexrad::NetworkRequest>,
+    pub recent_network_requests: std::collections::VecDeque<crate::core::NetworkRequest>,
 
     /// Whether the browsing context is cross-origin isolated (SharedArrayBuffer available).
     pub cross_origin_isolated: bool,

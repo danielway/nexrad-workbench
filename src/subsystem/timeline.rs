@@ -20,7 +20,7 @@ use crate::nexrad::ScanBoundary;
 #[derive(Default)]
 pub struct Timeline {
     /// Scans currently loaded into memory plus their sweep listings.
-    /// Populated by [`crate::nexrad::PersistenceManager`]'s refresh and
+    /// Populated by [`crate::app::persistence_manager::PersistenceManager`]'s refresh and
     /// the worker ingest callback.
     pub scans: RadarTimeline,
     /// Per-scan time boundaries derived from the archive listing for the

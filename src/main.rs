@@ -6,8 +6,8 @@
 //! the coordination managers (acquisition, render, streaming, persistence), and runs
 //! the main update loop that polls channels, processes commands, and renders the UI.
 //!
-//! Heavy data operations run in a dedicated Web Worker (see `nexrad::decode_worker`
-//! and `nexrad::worker_api`). The main thread is a thin UI shell that uploads
+//! Heavy data operations run in a dedicated Web Worker (see `nexrad::decode::decode_worker`
+//! and `nexrad::decode::worker_api`). The main thread is a thin UI shell that uploads
 //! worker results to the GPU and paints the interface.
 
 mod alerts;
@@ -97,7 +97,7 @@ const LIVE_DETACHED_STOP_SECS: f64 = 60.0 * 60.0;
 
 fn main() {}
 
-// Worker exports (worker_ingest, worker_render) are in nexrad::worker_api.
+// Worker exports (worker_ingest, worker_render) are in nexrad::decode::worker_api.
 
 /// Entry point for the WASM application.
 #[wasm_bindgen::prelude::wasm_bindgen(start)]
@@ -206,7 +206,7 @@ pub struct WorkbenchApp {
     chrome: subsystem::Chrome,
 
     /// URL state, preferences, and site change detection.
-    persistence: nexrad::PersistenceManager,
+    persistence: app::persistence_manager::PersistenceManager,
 
     /// Transient state for the modal UI overlays (site picker, event
     /// editor, mPING settings). Aggregated here so the three modals share
@@ -567,7 +567,10 @@ impl WorkbenchApp {
             timeline: subsystem::Timeline::default(),
             playback,
             chrome,
-            persistence: nexrad::PersistenceManager::new(initial_site_id, initial_prefs),
+            persistence: app::persistence_manager::PersistenceManager::new(
+                initial_site_id,
+                initial_prefs,
+            ),
             modals: ui::ModalStates::new(has_preferred_site),
             diagnostics: {
                 let mut diag = subsystem::Diagnostics::new();
@@ -581,7 +584,7 @@ impl WorkbenchApp {
         };
 
         // Check cross-origin isolation status on startup
-        app.state.cross_origin_isolated = nexrad::is_cross_origin_isolated();
+        app.state.cross_origin_isolated = subsystem::network_monitor::is_cross_origin_isolated();
         if !app.state.cross_origin_isolated {
             log::warn!("Not cross-origin isolated: SharedArrayBuffer unavailable");
         }
@@ -589,7 +592,7 @@ impl WorkbenchApp {
         // Attach the service-worker network monitor only in dev mode. When
         // toggled on later, `update_network_stats` will lazily attach it.
         if app.state.dev_mode {
-            app.diagnostics.network_monitor = nexrad::NetworkMonitor::new();
+            app.diagnostics.network_monitor = subsystem::NetworkMonitor::new();
         }
 
         app
@@ -609,7 +612,7 @@ impl WorkbenchApp {
             return;
         }
         if self.diagnostics.network_monitor.is_none() {
-            self.diagnostics.network_monitor = nexrad::NetworkMonitor::new();
+            self.diagnostics.network_monitor = subsystem::NetworkMonitor::new();
         }
 
         // Drain service worker network metrics into app state

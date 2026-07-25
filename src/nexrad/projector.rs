@@ -6,14 +6,14 @@
 //! recently observed chunk collection-end timestamp (the projection
 //! anchor). [`Projector::build_plan`] composes these into a plan.
 //!
-//! Extracted from [`super::streaming_state::StreamingState`] so the
+//! Extracted from [`crate::nexrad::live::streaming_state::StreamingState`] so the
 //! projection concern stands alone. Today [`StreamingState`] still owns
 //! the projector (delegating projection-related methods to it); a later
 //! commit moves ownership to the main thread so observations from the
 //! worker pipeline can feed projection without an async round-trip.
 
-use super::streaming_filter::StreamingFilter;
-use super::streaming_plan::StreamingPlan;
+use super::live::streaming_filter::StreamingFilter;
+use super::live::streaming_plan::StreamingPlan;
 use super::timing::{
     project_scan_timing_with_next, AnchorSource, ChunkCharacteristics, ChunkTimingStats,
     ElevationChunkMapper, TimingTuning,

@@ -75,7 +75,8 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         // --- Phase 1: Decompress + decode all records into radials ---
         let t_decode = web_time::Instant::now();
-        let decoded = crate::nexrad::ingest_phases::decompress_and_decode_records(&records)?;
+        let decoded =
+            crate::nexrad::decode::ingest_phases::decompress_and_decode_records(&records)?;
         let all_radials = decoded.all_radials;
         let radial_metas = decoded.radial_metas;
         let decompress_ms_total = decoded.decompress_ms;
@@ -100,12 +101,14 @@ pub fn worker_ingest(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         // here skips the expensive sweep-blob extraction + IDB write for them.
         let t_extract = web_time::Instant::now();
         let mut by_elevation =
-            crate::nexrad::ingest_phases::group_radials_by_elevation(&all_radials);
+            crate::nexrad::decode::ingest_phases::group_radials_by_elevation(&all_radials);
         if !wanted_elevations.is_empty() {
             by_elevation.retain(|elev, _| wanted_elevations.contains(elev));
         }
-        let elevations =
-            crate::nexrad::ingest_phases::build_elevation_uploads(&by_elevation, &radial_metas);
+        let elevations = crate::nexrad::decode::ingest_phases::build_elevation_uploads(
+            &by_elevation,
+            &radial_metas,
+        );
         let extract_ms = t_extract.elapsed().as_secs_f64() * 1000.0;
 
         let sweep_count: u32 = elevations.iter().map(|e| e.blobs.len() as u32).sum();
@@ -296,7 +299,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let (chunk_radials, chunk_vcp, chunk_has_vcp, mut volume_header_time_secs);
 
         if is_start {
-            let result = crate::nexrad::ingest_phases::decode_start_chunk(data, false);
+            let result = crate::nexrad::decode::ingest_phases::decode_start_chunk(data, false);
             chunk_radials = result.chunk_radials;
             chunk_vcp = result.chunk_vcp;
             chunk_has_vcp = result.chunk_has_vcp;
@@ -346,7 +349,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
                     .unwrap_or(false)
             });
 
-            let result = crate::nexrad::ingest_phases::decode_subsequent_chunk(
+            let result = crate::nexrad::decode::ingest_phases::decode_subsequent_chunk(
                 &data,
                 accum_has_full_vcp,
                 chunk_index,
@@ -359,7 +362,7 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
 
         if volume_header_time_secs.is_none() {
             volume_header_time_secs =
-                crate::nexrad::record_decode::extract_volume_start_time(&chunk_radials);
+                crate::nexrad::decode::record_decode::extract_volume_start_time(&chunk_radials);
         }
 
         // --- Update accumulator with this chunk's radials ---
@@ -367,7 +370,8 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
         let chunk_elevation = chunk_radials.first().map(|r| r.elevation_number());
         let mut newly_completed: Vec<u8> = Vec::new();
 
-        let time_spans = crate::nexrad::ingest_phases::compute_chunk_time_spans(&chunk_radials);
+        let time_spans =
+            crate::nexrad::decode::ingest_phases::compute_chunk_time_spans(&chunk_radials);
         let chunk_min_ts_secs = time_spans.chunk_min_ts_secs;
         let chunk_max_ts_secs = time_spans.chunk_max_ts_secs;
         let chunk_elev_spans = time_spans.chunk_elev_spans;
@@ -489,11 +493,12 @@ pub fn worker_ingest_chunk(params: wasm_bindgen::JsValue) -> js_sys::Promise {
             // radials are in memory — no filtering needed.
             let elevations = with_chunk_accum_mut(|accum| {
                 let accum = accum.unwrap();
-                let result = crate::nexrad::ingest_phases::build_elevation_uploads_for_flush(
-                    &accum.current_radials,
-                    &accum.current_radial_metas,
-                    &newly_completed,
-                );
+                let result =
+                    crate::nexrad::decode::ingest_phases::build_elevation_uploads_for_flush(
+                        &accum.current_radials,
+                        &accum.current_radial_metas,
+                        &newly_completed,
+                    );
                 // Mirror the derived manifest into the accumulator's response
                 // log, then clean up radials. The IDB layer derives the same
                 // CachedSweep set on its side from these uploads.

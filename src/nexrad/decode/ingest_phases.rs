@@ -121,7 +121,7 @@ pub(crate) struct DecodeResult {
 pub(crate) fn decompress_and_decode_records(
     records: &[nexrad_data::volume::Record<'_>],
 ) -> Result<DecodeResult, wasm_bindgen::JsValue> {
-    use crate::nexrad::record_decode::decode_record_to_radials;
+    use super::record_decode::decode_record_to_radials;
 
     let mut decompress_ms_total = 0.0f64;
     let mut decode_only_ms = 0.0f64;
@@ -256,7 +256,7 @@ fn elevation_upload_for(
     radial_metas: &[(i64, u8, f32, f32)],
     elev_num: u8,
 ) -> Option<ElevationUpload> {
-    use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
+    use super::record_decode::extract_sweep_data_from_sorted;
 
     let mut blobs: Vec<ProductBlob> = Vec::new();
     for (product, product_name) in PRODUCTS {
@@ -305,7 +305,7 @@ pub(crate) struct ChunkDecodeResult {
 }
 
 pub(crate) fn decode_start_chunk(data: Vec<u8>, accum_has_full_vcp: bool) -> ChunkDecodeResult {
-    use crate::nexrad::record_decode::decode_record_to_radials;
+    use super::record_decode::decode_record_to_radials;
 
     let mut chunk_radials: Vec<::nexrad::model::data::Radial> = Vec::new();
     let mut chunk_vcp: Option<ExtractedVcp> = None;
@@ -376,7 +376,7 @@ pub(crate) fn decode_subsequent_chunk(
     accum_has_full_vcp: bool,
     chunk_index: u32,
 ) -> ChunkDecodeResult {
-    use crate::nexrad::record_decode::decode_record_to_radials;
+    use super::record_decode::decode_record_to_radials;
     use nexrad_data::volume::Record;
 
     let mut chunk_radials: Vec<::nexrad::model::data::Radial> = Vec::new();

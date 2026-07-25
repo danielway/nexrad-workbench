@@ -59,6 +59,7 @@ pub use domain::prefs::UserPreferences;
 pub use domain::radar::{RadarTimeline, Scan, ScanMetadata, Sweep};
 #[allow(unused_imports)]
 pub use domain::radar::{Radial, TimeRange};
+pub use domain::telemetry::{NetworkAggregate, NetworkRequest};
 pub use domain::time::FrameNow;
 pub use domain::view::ViewState;
 pub use domain::viz::{

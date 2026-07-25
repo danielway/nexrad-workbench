@@ -7,6 +7,7 @@ pub mod ops;
 pub mod playback;
 pub mod prefs;
 pub mod radar;
+pub mod telemetry;
 pub mod time;
 pub mod view;
 pub mod viz;

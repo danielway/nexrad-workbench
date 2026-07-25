@@ -11,7 +11,7 @@
 //!
 //! - **results** (loop → UI): every [`RealtimeResult`] the loop produces.
 //! - **observations** (UI → loop): projector hints
-//!   ([`super::ProjectorObservation`]) the UI gathers from worker results
+//!   ([`crate::nexrad::ProjectorObservation`]) the UI gathers from worker results
 //!   and forwards via [`RealtimeChannel::observe`].
 //! - **control** (UI → loop): stop signal + filter changes, drained on
 //!   every iteration and inside the sleep loop so a filter swap doesn't
@@ -25,9 +25,9 @@
 //! as local variables; nothing about per-stream coordination requires
 //! `Rc<RefCell<_>>` anymore.
 
-use super::download::NetworkStats;
 use super::streaming_filter::StreamingFilter;
 use crate::data::facade::DataFacade;
+use crate::nexrad::acquisition::download::NetworkStats;
 use eframe::egui;
 use futures_channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
 use std::cell::{Cell, RefCell};
@@ -70,16 +70,16 @@ pub struct ChunkProjectedTimes {
     pub poll_at_secs: f64,
     /// Physics decomposition for the hop into this chunk (azimuth gap,
     /// inter-sweep transition, inter-volume gap).
-    pub physics_breakdown: super::timing::PhysicsBreakdown,
+    pub physics_breakdown: crate::nexrad::timing::PhysicsBreakdown,
     /// Bucket sample count consulted at projection time. `0` when no
     /// historical samples were available.
     pub stats_n: usize,
     /// Which projector branch supplied the interval: `Blended` when
     /// historical samples contributed, `Physics` otherwise.
-    pub scheduler_path: super::timing::SchedulerPath,
+    pub scheduler_path: crate::nexrad::timing::SchedulerPath,
     /// The bucket key the lookup hit (or missed). `None` when no
     /// elevation was resolvable (Start chunk).
-    pub bucket: Option<super::timing::ChunkCharacteristics>,
+    pub bucket: Option<crate::nexrad::timing::ChunkCharacteristics>,
 }
 
 /// Projected timing and structural info for a single chunk in the volume.
@@ -101,7 +101,7 @@ pub struct ChunkProjectionInfo {
     /// Total chunks in this sweep (3 for standard, 6 for super-res).
     pub chunks_in_sweep: usize,
     /// Projected timing & projector diagnostics. `Some` iff this chunk is
-    /// in the future (the projector emitted a [`super::timing::ChunkProjection`]
+    /// in the future (the projector emitted a [`crate::nexrad::timing::ChunkProjection`]
     /// for it); `None` for past chunks.
     pub projected: Option<ChunkProjectedTimes>,
 }
@@ -130,7 +130,7 @@ pub enum RealtimeResult {
         chunks_in_volume: u32,
         is_volume_end: bool,
         fetch_latency_ms: f64,
-        plan: Option<super::StreamingPlan>,
+        plan: Option<super::streaming_plan::StreamingPlan>,
         /// Arrival diagnostics (empty-poll counts, predicted vs. actual time).
         /// `None` on synthetic emissions such as the resume-from-cache path.
         arrival_stat: Option<crate::core::ChunkArrivalStat>,
@@ -219,10 +219,10 @@ impl ResultsChannel {
 }
 
 struct ObservationsChannel {
-    tx: UnboundedSender<super::ProjectorObservation>,
+    tx: UnboundedSender<crate::nexrad::ProjectorObservation>,
     /// `Option` so `start()` can `take()` the receiver and hand it to
     /// the streaming loop; reset to `Some` on every fresh channel pair.
-    rx: Option<UnboundedReceiver<super::ProjectorObservation>>,
+    rx: Option<UnboundedReceiver<crate::nexrad::ProjectorObservation>>,
 }
 
 impl ObservationsChannel {
@@ -359,9 +359,9 @@ impl RealtimeChannel {
 
     /// Enqueue a projector observation to be applied on the next
     /// streaming-loop iteration. Adding new observation kinds is purely
-    /// a matter of extending [`super::ProjectorObservation`] and the
+    /// a matter of extending [`crate::nexrad::ProjectorObservation`] and the
     /// drain dispatch — no new state field or new channel method needed.
-    pub fn observe(&self, observation: super::ProjectorObservation) {
+    pub fn observe(&self, observation: crate::nexrad::ProjectorObservation) {
         // Drop the result silently; if the loop has finished and
         // closed the receiver, late observations have no consumer.
         let _ = self.observations.borrow().tx.unbounded_send(observation);
@@ -371,14 +371,16 @@ impl RealtimeChannel {
     /// the chunk that was just ingested. Convenience wrapper over
     /// [`Self::observe`].
     pub fn record_chunk_collection_end_secs(&self, secs: f64) {
-        self.observe(super::ProjectorObservation::CollectionEndSecs(secs));
+        self.observe(crate::nexrad::ProjectorObservation::CollectionEndSecs(secs));
     }
 
     /// Push an empirical availability lag (S3 upload − ACTUAL chunk
     /// collection time, seconds) for the chunk just ingested. Convenience
     /// wrapper over [`Self::observe`].
     pub fn record_availability_lag_secs(&self, lag_secs: f64) {
-        self.observe(super::ProjectorObservation::AvailabilityLagSecs(lag_secs));
+        self.observe(crate::nexrad::ProjectorObservation::AvailabilityLagSecs(
+            lag_secs,
+        ));
     }
 
     /// Update the active streaming filter. The loop's de-dupe check
@@ -514,7 +516,9 @@ mod coverage_tests {
     #[wasm_bindgen_test]
     fn observe_does_not_touch_active_or_results() {
         let ch = RealtimeChannel::new();
-        ch.observe(super::super::ProjectorObservation::CollectionEndSecs(123.5));
+        ch.observe(crate::nexrad::ProjectorObservation::CollectionEndSecs(
+            123.5,
+        ));
         assert!(!ch.is_active());
         // Observation goes to the observations channel, never to results.
         assert!(ch.try_recv().is_none());

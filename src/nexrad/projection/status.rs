@@ -555,7 +555,7 @@ pub fn build_sweeps(ctx: &SweepBuildCtx) -> Vec<SweepProjection> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nexrad::realtime::ChunkProjectedTimes;
+    use crate::nexrad::live::realtime::ChunkProjectedTimes;
     use crate::nexrad::timing::{IntervalCase, PhysicsBreakdown, SchedulerPath};
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -1018,7 +1018,7 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::nexrad::realtime::ChunkProjectedTimes;
+    use crate::nexrad::live::realtime::ChunkProjectedTimes;
     use crate::nexrad::timing::{IntervalCase, PhysicsBreakdown, SchedulerPath};
     use wasm_bindgen_test::wasm_bindgen_test;
 

@@ -3,12 +3,12 @@
 //! Consolidates download channel, cache load channel, download queue,
 //! archive index, and current scan into a single owner.
 
+use super::archive_index::ArchiveIndex;
+use super::cache_channel::{CacheLoadChannel, CacheLoadResult};
+use super::download::{DownloadChannel, NetworkStats};
+use super::download_queue::DownloadQueueManager;
+use super::types::DownloadResult;
 use crate::data::DataFacade;
-use crate::nexrad::archive_index::ArchiveIndex;
-use crate::nexrad::cache_channel::{CacheLoadChannel, CacheLoadResult};
-use crate::nexrad::download::{DownloadChannel, NetworkStats};
-use crate::nexrad::download_queue::DownloadQueueManager;
-use crate::nexrad::types::DownloadResult;
 use crate::nexrad::ListingResult;
 use crate::nexrad::ScanBoundary;
 
@@ -98,7 +98,7 @@ impl AcquisitionCoordinator {
         &mut self,
         site_id: &str,
         date: chrono::NaiveDate,
-        listing: crate::nexrad::archive_index::ArchiveListing,
+        listing: super::archive_index::ArchiveListing,
     ) {
         self.archive_index.insert(site_id, date, listing);
     }

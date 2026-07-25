@@ -21,8 +21,8 @@
 //! otherwise.
 
 use super::streaming_filter::StreamingFilter;
-use super::timing::{ScanTimingProjection, SchedulerPath};
-use super::{ChunkProjectedTimes, ChunkProjectionInfo};
+use crate::nexrad::timing::{ScanTimingProjection, SchedulerPath};
+use crate::nexrad::{ChunkProjectedTimes, ChunkProjectionInfo};
 
 /// Canonical projection of the real-time stream's near future.
 ///
@@ -44,7 +44,7 @@ pub struct StreamingPlan {
     #[allow(dead_code)] // Read alongside `revision` for diagnostic display.
     pub built_at_secs: f64,
     /// Monotonically-incrementing per-projector counter, bumped on every
-    /// [`super::projector::Projector::build_plan`] call. Lets diagnostics
+    /// [`crate::nexrad::projector::Projector::build_plan`] call. Lets diagnostics
     /// attribute a prediction to a specific plan revision and lets UI
     /// skip redraws when the plan hasn't changed since the last frame.
     pub revision: u64,
@@ -78,14 +78,14 @@ impl StreamingPlan {
     ///
     /// `current_volume_chunk_meta` must be every chunk's structural
     /// metadata for the current volume (from
-    /// [`super::timing::ElevationChunkMapper::all_chunk_metadata`]), in
+    /// [`crate::nexrad::timing::ElevationChunkMapper::all_chunk_metadata`]), in
     /// sequence order. Each chunk's `forecast` is populated by looking up
     /// `(volume_offset, sequence)` in `projection.chunks()` so pass-1 and
     /// pass-2 entries don't collide.
-    pub(super) fn from_projection(
+    pub(in crate::nexrad) fn from_projection(
         projection: ScanTimingProjection,
         filter: StreamingFilter,
-        current_volume_chunk_meta: &[super::timing::ChunkMetadata],
+        current_volume_chunk_meta: &[crate::nexrad::timing::ChunkMetadata],
         now_secs: f64,
         revision: u64,
     ) -> Self {
@@ -122,7 +122,7 @@ impl StreamingPlan {
         }
 
         let mut make_info =
-            |meta: &super::timing::ChunkMetadata, volume_offset: u8| ChunkProjectionInfo {
+            |meta: &crate::nexrad::timing::ChunkMetadata, volume_offset: u8| ChunkProjectionInfo {
                 sequence: meta.sequence(),
                 elevation_number: meta.elevation_number(),
                 azimuth_rate_dps: meta.azimuth_rate_dps(),
@@ -369,8 +369,8 @@ mod coverage_tests {
             collection_time_secs: collection,
             available_at_secs: available,
             poll_at_secs: poll,
-            physics_breakdown: super::super::timing::PhysicsBreakdown {
-                case: super::super::timing::IntervalCase::IntraSweep,
+            physics_breakdown: crate::nexrad::timing::PhysicsBreakdown {
+                case: crate::nexrad::timing::IntervalCase::IntraSweep,
                 total_secs: 0.0,
                 chunk_duration_secs: None,
                 inter_sweep_gap_secs: None,

@@ -2,8 +2,10 @@
 //!
 //! Listens for `network-metric` messages from the service worker and
 //! accumulates per-request telemetry into a pending queue (for the UI
-//! request log) and aggregate session statistics.
+//! request log) and aggregate session statistics. The pure record types
+//! live in [`crate::core::domain::telemetry`].
 
+use crate::core::{NetworkAggregate, NetworkRequest};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::prelude::*;
@@ -13,39 +15,6 @@ use wasm_bindgen::JsCast;
 /// should never be reached in practice; it only bounds memory if the
 /// UI stalls for long enough that thousands of metrics accumulate.
 const MAX_PENDING_REQUESTS: usize = 500;
-
-/// A single completed network request reported by the service worker.
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub struct NetworkRequest {
-    /// Request URL (truncated for display).
-    pub url: String,
-    /// HTTP status code (0 if the request failed before a response).
-    pub status: u16,
-    /// Response body size in bytes (from Content-Length).
-    pub bytes: u64,
-    /// Duration of the request in milliseconds.
-    pub duration_ms: f64,
-    /// Whether the response was successful (2xx).
-    pub ok: bool,
-    /// Timestamp when this metric was received (ms since epoch).
-    pub timestamp_ms: f64,
-    /// Error message, if the request failed.
-    pub error: Option<String>,
-    /// Correlated acquisition operation ID (populated by URL matching in main loop).
-    pub operation_id: Option<crate::core::OperationId>,
-}
-
-/// Aggregate network statistics for the session.
-#[derive(Clone, Debug, Default)]
-pub struct NetworkAggregate {
-    /// Total number of requests intercepted.
-    pub total_requests: u32,
-    /// Number of failed requests (non-ok or network error).
-    pub failed_requests: u32,
-    /// Total bytes transferred.
-    pub total_bytes: u64,
-}
 
 /// Listens for service worker messages and accumulates network metrics.
 ///

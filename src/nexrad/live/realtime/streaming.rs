@@ -10,10 +10,10 @@ use crate::data::facade::DataFacade;
 use crate::net::retry::{
     attempt_with_timeout, compute_delay, sleep_duration, sleep_ms, Verdict, REALTIME_CHUNK_POLICY,
 };
-use crate::nexrad::download::NetworkStats;
+use crate::nexrad::acquisition::download::NetworkStats;
+use crate::nexrad::live::streaming_filter::StreamingFilter;
+use crate::nexrad::live::streaming_state::StreamingState;
 use crate::nexrad::projection::{ChunkCoord, KnownChunk, SharedProjectionEngine};
-use crate::nexrad::streaming_filter::StreamingFilter;
-use crate::nexrad::streaming_state::StreamingState;
 use crate::nexrad::StreamingPlan;
 use eframe::egui;
 use futures_channel::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -1257,15 +1257,15 @@ enum FilterFetchResult {
     SyntheticEnd,
 }
 
-/// Map a [`crate::nexrad::streaming_state::TryNextOutcome`] to a retry [`Verdict`]
+/// Map a [`crate::nexrad::live::streaming_state::TryNextOutcome`] to a retry [`Verdict`]
 /// for the filter-aware fetch path. Mirrors [`classify_chunk_result`] for
 /// the unfiltered path; the only new case is `SyntheticVolumeEnd`, which is
 /// not a retry — it's a terminal-for-this-iteration outcome the loop turns
 /// into a synthetic `is_volume_end` signal.
 fn classify_filter_outcome(
-    result: nexrad_data::result::Result<crate::nexrad::streaming_state::TryNextOutcome>,
+    result: nexrad_data::result::Result<crate::nexrad::live::streaming_state::TryNextOutcome>,
 ) -> Verdict<FilterFetchResult> {
-    use crate::nexrad::streaming_state::TryNextOutcome;
+    use crate::nexrad::live::streaming_state::TryNextOutcome;
     use nexrad_data::result::aws::AWSError;
     use nexrad_data::result::Error;
     match result {
@@ -1727,7 +1727,7 @@ fn load_cached_timing_stats(site_id: &str) -> Option<crate::nexrad::timing::Chun
 /// search via `get_latest_volume`, so there is no correctness regression.
 async fn acquire_streaming_state(
     site_id: &str,
-) -> nexrad_data::result::Result<crate::nexrad::streaming_state::StreamingInit> {
+) -> nexrad_data::result::Result<crate::nexrad::live::streaming_state::StreamingInit> {
     if let Some((hint, cached_at)) = get_cached_volume_hint(site_id) {
         if current_timestamp_f64() - cached_at < VOLUME_HINT_MAX_AGE_SECS {
             if let Some((volume, calls)) = probe_latest_from_hint(site_id, hint).await {

@@ -1,4 +1,4 @@
-use super::super::streaming_filter::StreamingFilter;
+use crate::nexrad::live::streaming_filter::StreamingFilter;
 use nexrad_decode::messages::volume_coverage_pattern::{self, WaveformType};
 
 /// Metadata describing a chunk's position within the volume scan.

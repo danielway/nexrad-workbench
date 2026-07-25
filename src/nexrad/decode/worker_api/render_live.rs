@@ -22,7 +22,7 @@ struct RenderLiveParams {
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn worker_render_live(params: wasm_bindgen::JsValue) -> Result<JsValue, JsValue> {
     use crate::nexrad::color_table::product_from_str;
-    use crate::nexrad::record_decode::extract_sweep_data_from_sorted;
+    use crate::nexrad::decode::record_decode::extract_sweep_data_from_sorted;
 
     let t_total = web_time::Instant::now();
 

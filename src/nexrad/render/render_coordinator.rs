@@ -3,10 +3,10 @@
 //! Consolidates the five tightly-coupled fields that were scattered between
 //! WorkbenchApp and Renderers into a single owner.
 
-use super::decode_worker::{default_pool_size, WorkerOutcome, WorkerPool};
 use super::render_request::VolumeRenderRequest;
 use crate::core::SweepIdentity;
 use crate::data::ScanKey;
+use crate::nexrad::decode::decode_worker::{default_pool_size, WorkerOutcome, WorkerPool};
 
 /// Coordinates render requests to a pool of decode workers, deduplicating
 /// identical requests and owning the current scan/elevation state.

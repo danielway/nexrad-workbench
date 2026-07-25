@@ -12,11 +12,11 @@
 //! reached through a single subsystem handle for cross-cutting work
 //! (e.g. recency-driven gating).
 
+use super::network_monitor::NetworkMonitor;
 use crate::alerts::AlertsManager;
 use crate::core::ErrorContext;
 use crate::core::{AlertsState, GpsState, MpingState};
 use crate::mping::{MpingManager, MpingTickInputs};
-use crate::nexrad::NetworkMonitor;
 use eframe::egui;
 
 /// Per-frame inputs the diagnostics subsystem needs to tick its managers.

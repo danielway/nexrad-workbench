@@ -11,7 +11,7 @@
 //!    preferences snapshot (both assembled by the shell from app state), emit
 //!    the [`Effect`]s and the tracking updates.
 //!
-//! The shell ([`crate::nexrad::PersistenceManager`] +
+//! The shell ([`crate::app::persistence_manager::PersistenceManager`] +
 //! [`crate::WorkbenchApp::apply_effects`]) injects the frame clock, builds the
 //! inputs (`state::url_state::build_url_push`,
 //! `UserPreferences::from_app_state`), applies the returned tracking updates,
