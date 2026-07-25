@@ -8,7 +8,7 @@
 //! ([`crate::state::playback_manager::PrevSweepAction`]); this module covers the
 //! main-sweep prefetch + dedup gates.
 
-use crate::state::radar_data::Scan;
+use crate::core::Scan;
 
 /// Decide which elevation number (if any) to prefetch as the playhead nears the
 /// end of the current sweep, or `None` to prefetch nothing.
@@ -64,7 +64,7 @@ pub fn should_dispatch<T: PartialEq>(new: &T, last: Option<&T>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::radar_data::{Scan, Sweep};
+    use crate::core::{Scan, Sweep};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep(elev_num: u8, start: f64, end: f64) -> Sweep {
@@ -172,7 +172,7 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::state::radar_data::{Scan, Sweep};
+    use crate::core::{Scan, Sweep};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep(elev_num: u8, start: f64, end: f64) -> Sweep {

@@ -223,8 +223,8 @@ fn render_available_tooltip_content(
 /// Render tooltip content when hovering over a sweep block.
 fn render_sweep_tooltip_content(
     ui: &mut egui::Ui,
-    sweep: &crate::state::radar_data::Sweep,
-    parent_scan: Option<&crate::state::radar_data::Scan>,
+    sweep: &crate::core::Sweep,
+    parent_scan: Option<&crate::core::Scan>,
     use_local: bool,
 ) {
     let display_angle = parent_scan
@@ -524,7 +524,7 @@ fn render_realtime_volume_tooltip(
 /// Render tooltip content when hovering over a scan block.
 fn render_scan_tooltip_content(
     ui: &mut egui::Ui,
-    scan: &crate::state::radar_data::Scan,
+    scan: &crate::core::Scan,
     live_state: &crate::state::LiveModeState,
     live_roster: Option<&crate::state::VolumeElevationRoster>,
     use_local: bool,

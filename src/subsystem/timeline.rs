@@ -13,8 +13,8 @@
 //! single handle and gives a place for future timeline-derivation
 //! helpers (e.g. matching-completion lookups, sweep accessors) to land.
 
+use crate::core::RadarTimeline;
 use crate::nexrad::ScanBoundary;
-use crate::state::RadarTimeline;
 
 /// Owner of the timeline (real + shadowed) scan inventory.
 #[derive(Default)]

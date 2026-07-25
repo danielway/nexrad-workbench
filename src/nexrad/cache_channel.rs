@@ -4,7 +4,7 @@
 //! from IndexedDB asynchronously. The UI can request a cache load and poll
 //! for results each frame.
 
-use super::types::ScanMetadata;
+use crate::core::ScanMetadata;
 use crate::data::{DataFacade, SiteId, UnixMillis};
 use eframe::egui::Context;
 use std::cell::RefCell;

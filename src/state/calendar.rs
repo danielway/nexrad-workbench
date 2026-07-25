@@ -20,8 +20,8 @@
 //! so the aggregation is unit-testable without a clock. The renderer labels day
 //! cells from the same UTC day start.
 
+use crate::core::RadarTimeline;
 use crate::nexrad::ScanBoundary;
-use crate::state::radar_data::RadarTimeline;
 use crate::state::SavedEvents;
 
 /// Seconds in a UTC day. Day buckets are `[day_start, day_start + DAY_SECS)`.
@@ -219,7 +219,7 @@ pub const MACRO_LANDING_SPAN_SECS: f64 = DAY_SECS;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::radar_data::{Scan, Sweep};
+    use crate::core::{Scan, Sweep};
     use crate::state::SavedEvent;
     use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -451,7 +451,7 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::state::radar_data::{Scan, Sweep};
+    use crate::core::{Scan, Sweep};
     use crate::state::SavedEvent;
     use wasm_bindgen_test::wasm_bindgen_test;
 

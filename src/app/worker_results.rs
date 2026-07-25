@@ -6,7 +6,7 @@
 //! plus the small helpers (`set_active_scan`, `advance_active_scan_chunk`,
 //! `clear_active_scan`) that bridge worker output and `RenderCoordinator`.
 
-use crate::core::SweepIdentity;
+use crate::core::{RadarTimeline, SweepIdentity};
 use crate::state::playback_manager::{sweep_cache_key, CachedSweepData};
 use crate::{data, nexrad, state, WorkbenchApp, MAX_SCAN_AGE_SECS};
 use eframe::egui;
@@ -76,7 +76,7 @@ impl WorkbenchApp {
                 self.state.session_stats.cache_size_bytes = total_cache_size;
 
                 // Build timeline from metadata
-                self.timeline.scans = state::RadarTimeline::from_metadata(metadata);
+                self.timeline.scans = RadarTimeline::from_metadata(metadata);
 
                 // Get time ranges (may be non-contiguous)
                 let ranges = self.timeline.scans.time_ranges();

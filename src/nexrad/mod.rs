@@ -56,7 +56,7 @@ pub use projector::ProjectorObservation;
 pub use realtime::{ChunkProjectedTimes, ChunkProjectionInfo, RealtimeChannel, RealtimeResult};
 pub use render_coordinator::RenderCoordinator;
 pub use streaming_plan::StreamingPlan;
-pub use types::{DownloadResult, ScanMetadata};
+pub use types::DownloadResult;
 pub use volume_ray_renderer::VolumeRayRenderer;
 
 /// Standard NEXRAD coverage range in km.

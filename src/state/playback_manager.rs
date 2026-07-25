@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::state::radar_data::{RadarTimeline, Scan, Sweep};
+use crate::core::{RadarTimeline, Scan, Sweep};
 
 // ---------------------------------------------------------------------------
 // Cached sweep data
@@ -524,7 +524,7 @@ pub(crate) fn build_elevation_list_from_vcp(
 mod tests {
     use super::*;
     use crate::core::{ElevationSelection, RadarProduct};
-    use crate::state::radar_data::{Radial, Scan, Sweep};
+    use crate::core::{Radial, Scan, Sweep};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     const MAX_AGE: f64 = 15.0 * 60.0;
@@ -924,9 +924,9 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
+    use crate::core::{Radial, Scan, Sweep};
     use crate::data::keys::{ExtractedVcp, ExtractedVcpElevation};
     use crate::data::ScanKey;
-    use crate::state::radar_data::{Radial, Scan, Sweep};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     const MAX_AGE: f64 = 15.0 * 60.0;

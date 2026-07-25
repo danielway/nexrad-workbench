@@ -33,9 +33,9 @@
 //! failures + the live projection into per-cell states the frames-first strip
 //! renders (spec §6.3).
 
+use crate::core::{RadarTimeline, Scan};
 use crate::nexrad::projection::{ScanProjection, SweepProjectionStatus, SweepTimingProvenance};
 use crate::nexrad::ScanBoundary;
-use crate::state::radar_data::{RadarTimeline, Scan};
 use crate::state::LiveModeState;
 use std::collections::BTreeSet;
 
@@ -489,7 +489,7 @@ impl<'a> TimelineView<'a> {
     fn make_cell(
         &self,
         scan: &Scan,
-        sw: &crate::state::radar_data::Sweep,
+        sw: &crate::core::Sweep,
         state: FrameCellState,
         chunks: Option<CellChunkProgress>,
         join: &FrameJoinInputs<'_>,
@@ -765,11 +765,11 @@ pub fn merge_cached_into_live(position: &mut ScanProjection, cached: &Scan) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Sweep;
     use crate::nexrad::projection::{
         ProjectionScanRole, SweepAvailability, SweepProjection, SweepProjectionStatus,
         SweepTimingProvenance,
     };
-    use crate::state::radar_data::Sweep;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep_pos(elev: u8, status: SweepProjectionStatus) -> SweepProjection {
@@ -1329,10 +1329,10 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
+    use crate::core::Sweep;
     use crate::nexrad::projection::{
         ProjectionScanRole, SweepProjection, SweepProjectionStatus, SweepTimingProvenance,
     };
-    use crate::state::radar_data::Sweep;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep_pos(elev: u8, status: SweepProjectionStatus) -> SweepProjection {

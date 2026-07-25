@@ -4,7 +4,7 @@
 //! State is organized into logical groupings that correspond to different
 //! areas of functionality.
 
-use crate::core::{ElevationListEntry, RenderProcessing};
+use crate::core::{ElevationListEntry, RadarTimeline, RenderProcessing};
 
 #[allow(dead_code)]
 pub(crate) mod acquisition;
@@ -21,7 +21,6 @@ mod mping;
 mod playback;
 pub(crate) mod playback_manager;
 mod preferences;
-pub(crate) mod radar_data;
 pub mod recency;
 pub(crate) mod render_cache;
 mod saved_events;
@@ -54,7 +53,6 @@ pub use playback::{
     TimelineTier, TIMELINE_ZOOM_MAX,
 };
 pub use preferences::UserPreferences;
-pub use radar_data::RadarTimeline;
 pub use render_cache::{PrevSweepCacheKey, RenderCache};
 pub use saved_events::{SavedEvent, SavedEvents};
 pub use settings::{format_bytes, StorageSettings};

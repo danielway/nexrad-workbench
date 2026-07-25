@@ -32,6 +32,9 @@ pub mod panels;
 pub mod persist;
 pub mod render;
 
+pub use domain::radar::{RadarTimeline, Scan, ScanMetadata, Sweep};
+#[allow(unused_imports)]
+pub use domain::radar::{Radial, TimeRange};
 pub use domain::viz::{
     DisplayedSweep, ElevationListEntry, ElevationSelection, InterpolationMode, RadarProduct,
     RenderProcessing, StormCellInfo, SweepIdentity,

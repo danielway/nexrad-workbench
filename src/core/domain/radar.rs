@@ -1,7 +1,7 @@
 //! Radar data structures for timeline representation.
 
-use crate::data::ScanCompleteness;
-use crate::nexrad::ScanMetadata;
+use crate::data::{ScanCompleteness, ScanKey};
+use serde::{Deserialize, Serialize};
 
 /// A contiguous time range of radar data.
 #[derive(Clone, Debug, PartialEq)]
@@ -185,6 +185,29 @@ impl Scan {
         }
         Some(((ts - self.start_time) / duration) as f32)
     }
+}
+
+/// Lightweight metadata for timeline display (avoids loading full scan data).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanMetadata {
+    /// Storage key identifying this scan
+    pub key: ScanKey,
+    /// Original file name from AWS
+    pub file_name: String,
+    /// File size in bytes
+    pub file_size: u64,
+    /// End timestamp of the scan in seconds (populated when scan is decoded)
+    pub end_timestamp: Option<i64>,
+    /// Full Volume Coverage Pattern extracted from scan data.
+    pub vcp: Option<crate::data::keys::ExtractedVcp>,
+    /// Completeness state for this scan.
+    pub completeness: Option<crate::data::ScanCompleteness>,
+    /// Number of sweeps actually cached for this scan.
+    pub cached_sweep_count: Option<u32>,
+    /// Number of sweeps the VCP plans (`vcp.elevations.len()`).
+    pub planned_sweep_count: Option<u32>,
+    /// Cached sweep metadata, if any.
+    pub sweeps: Option<Vec<crate::data::CachedSweep>>,
 }
 
 /// Collection of radar data for timeline display

@@ -2,7 +2,8 @@
 
 use super::layout::{Layer, LayerKind, LayoutCtx};
 use crate::core::panels::{query_radar_state_at_timestamp, RadarStateAtTimestamp};
-use crate::state::{get_vcp_definition, radar_data::Scan};
+use crate::core::Scan;
+use crate::state::get_vcp_definition;
 use eframe::egui::{self, Color32, Pos2, RichText, Stroke, Vec2};
 use std::f32::consts::PI;
 

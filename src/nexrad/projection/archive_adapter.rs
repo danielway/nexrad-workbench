@@ -9,7 +9,7 @@ use super::{
     ProjectionScanRole, ScanProjection, SweepProjection, SweepProjectionStatus,
     SweepTimingProvenance,
 };
-use crate::state::radar_data::Scan;
+use crate::core::Scan;
 
 /// Build a [`ScanProjection`] from a cached/archived [`Scan`] — all sweeps
 /// observed and collected-by-us, no projection/ghost/extrapolation.
@@ -53,7 +53,7 @@ pub fn scan_to_projection(scan: &Scan) -> ScanProjection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::radar_data::{Scan, Sweep};
+    use crate::core::{Scan, Sweep};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep(elev: u8, start: f64, end: f64) -> Sweep {
@@ -102,7 +102,7 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::state::radar_data::{Scan, Sweep};
+    use crate::core::{Scan, Sweep};
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep(elev: u8, start: f64, end: f64) -> Sweep {

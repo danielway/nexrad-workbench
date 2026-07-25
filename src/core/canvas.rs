@@ -14,7 +14,7 @@
 //! The shell wrappers (`ui::canvas`, `gpu_renderer::inspect`) feed these the data
 //! they read from subsystems / GL handles and apply the results.
 
-use crate::state::radar_data::Sweep;
+use crate::core::Sweep;
 
 // ---------------------------------------------------------------------------
 // Sweep-animation decisions
@@ -328,7 +328,7 @@ pub fn cutout_lon_range_deg(center_lat: f64, range_km: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::radar_data::Radial;
+    use crate::core::Radial;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep(start: f64, end: f64, start_az: f32, radials: Vec<Radial>) -> Sweep {
@@ -536,7 +536,7 @@ mod tests {
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
-    use crate::state::radar_data::Radial;
+    use crate::core::Radial;
     use wasm_bindgen_test::wasm_bindgen_test;
 
     fn sweep(start: f64, end: f64, start_az: f32, radials: Vec<Radial>) -> Sweep {

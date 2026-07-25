@@ -10,7 +10,7 @@
 //! (transport, layer toggles, camera) is intentionally *not* done here — see
 //! `docs/CORE_SHELL_MIGRATION_LOG.md` (D6) for why that half is QA-gated.
 
-use crate::state::radar_data::Scan;
+use crate::core::Scan;
 
 // ---------------------------------------------------------------------------
 // Small shared predicates / math
